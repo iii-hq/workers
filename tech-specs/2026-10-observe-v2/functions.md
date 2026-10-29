@@ -1,5 +1,13 @@
 # observe v2 in iii-hq/workers: the function contract
 
+> **Amendment (spec commit a93643b29).** `onObserverMatch` replaces `keyed`
+> and `next`: an observer is chosen for a call by a predicate
+> `(obs, call) => boolean` or by keys `{ observer, call }` that iii indexes, and
+> iii delivers to the matched observers. `onObserverDeliver` takes no `next`;
+> it receives the matched observers, delivers itself, and returns what the
+> caller gets back. Wherever this file says `keyed`, read match by keys.
+
+
 Binding naming and shape contract for porting every worker in this repo to
 iii observe v2. It applies the engine spec
 ([`iii/tech-specs/2026-10-29-observe-v2/README.md`](../../../iii/tech-specs/2026-10-29-observe-v2/README.md))
@@ -68,7 +76,7 @@ its row (`publish` is public; the guest rows describe an API).
   `(e: Event) => e` with `{ private: true }`; Python: `lambda e: e` with
   `private=True`; Go: `iii.Identity` with `iii.FunctionOptions{Private: true}`.
 - **The worker emits by calling its function.** A function delivered by iii
-  (`default` or `keyed` in §2) is called with `CallAction::Void`
+  (`default` or `match` in §2) is called with `CallAction::Void`
   (`action: CallAction.Void()`, Go `iii.VoidAction()`): the call runs
   in-process and delivery does not wait for targets. A function whose deliver
   hook returns a result to the caller (`http::on-request`,
@@ -76,7 +84,7 @@ its row (`publish` is public; the guest rows describe an API).
   `github::pr::on-event`) or holds the caller for back-pressure
   (`browser::on-crawl-item`) is called without an action and awaited.
 - **Gate on observation.** Before building an event, the emitter checks
-  `is_observed(id)` (one atomic load). A keyed function checks
+  `is_observed(id)` (one atomic load). A function matched by keys checks
   `is_observed_for(id, &call)` with the call's input, which looks up the
   call's keys. Counters that must advance whatever the observers (agent feed
   `seq`, kanban revisions) advance before the check.
@@ -141,7 +149,7 @@ only when the provider needs a per-observer value:
    stories narrowing, github notification policy), a per-observer delivery
    slot or timeout.
 3. **High-volume per-key streams that must skip unwatched keys:** frame
-   streams and agent feeds, delivered with `keyed` and gated with
+   streams and agent feeds, matched by keys (`onObserverMatch`) and gated with
    `is_observed_for(call)`, so a call for a key nobody watches costs one hash
    lookup per key.
 
@@ -260,9 +268,10 @@ READMEs, `InvokePanel` command strings). Workers never use the aliases.
 | | Rust | Node / browser | Python | Go |
 |---|---|---|---|---|
 | Register a source | `iii.register_function(ID, RegisterFunction::new(\|e: E\| Ok::<_, Error>(e)).args_format::<A>().private())` | `iii.registerFunction(ID, (e: E) => e, { args_format, private: true })` | `iii.register_function(ID, lambda e: e, args_format=A, private=True)` | `client.RegisterFunction(ID, iii.Identity, iii.FunctionOptions{ArgsFormat: a, Private: true})` |
-| Hooks for one function | `iii.on_observer_added_for(ID, h)`, `on_observer_removed_for`, `on_observer_deliver_for` | `iii.onObserverAdded(ID, h)` or `ref.onObserverAdded(h)`, `onObserverRemoved`, `onObserverDeliver` | `@ref.on_observer_added`, `iii.on_observer_added(ID)(h)`, `on_observer_deliver` | `client.OnObserverAddedFor(ID, h)`, `ref.OnObserverDeliver(h)` |
+| Hooks for one function | `iii.on_observer_added_for(ID, h)`, `on_observer_removed_for`, `on_observer_match_for`, `on_observer_deliver_for` | `iii.onObserverAdded(ID, h)` or `ref.onObserverAdded(h)`, `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver` | `@ref.on_observer_added`, `iii.on_observer_added(ID)(h)`, `on_observer_match`, `on_observer_deliver` | `client.OnObserverAddedFor(ID, h)`, `ref.OnObserverMatch(m)`, `ref.OnObserverDeliver(h)` |
 | Hooks for every function | `iii.on_observer_added(h)`, `iii.on_observer_removed(h)` | `iii.onObserverAdded(h)` | `@iii.on_observer_added` | `client.OnObserverAdded(h)` |
-| Keyed delivery | `Keyed::new(\|o\| keys, \|c\| keys)` | `keyed({ observer, call })` | `keyed(observer=..., call=...)` | `iii.Keyed(obsKeys, callKeys)` |
+| Match by predicate | `iii.on_observer_match_for(ID, Match::predicate(\|o, c\| …))` | `ref.onObserverMatch((obs, call) => …)` | `ref.on_observer_match(lambda obs, call: …)` | `ref.OnObserverMatch(iii.MatchFunc(func(o *iii.Observer, c *iii.Call) bool { … }))` |
+| Match by keys (indexed) | `Match::keys(\|o\| keys, \|c\| keys)` | `ref.onObserverMatch({ observer, call })` | `ref.on_observer_match(observer=..., call=...)` | `iii.MatchKeys(obsKeys, callKeys)` |
 | Is anyone watching | `iii.is_observed(ID)`, `iii.is_observed_for(ID, &call)` | `iii.isObserved(ID, call?)` | `iii.is_observed(ID, call)` | `client.IsObserved(ID)`, `client.IsObservedFor(ID, call)` |
 | Emit | `iii.call(CallRequest::new(ID, json!(e)).action(CallAction::Void))` | `iii.call({ function_id: ID, payload: e, action: CallAction.Void() })` | `await iii.call_async({"function_id": ID, "payload": e, "action": CallAction.Void()})` | `client.Call(ctx, iii.CallRequest{FunctionID: ID, Payload: e, Action: iii.VoidAction()})` |
 | Call through an observer | `iii.call(CallRequest::observer(&obs, payload))` | `iii.call({ observer: obs, payload })` | `await iii.call_async({"observer": obs, "payload": payload})` | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: p})` |
@@ -283,9 +292,13 @@ fields where the name does not say them), and the consumers in this repo
 (`worker:path`). Delivery is one of:
 
 - **default**: iii delivers every call to each observer whose filters match.
-- **keyed(o: …, c: …)**: `onObserverDeliver(keyed(...))` with the observer key
-  and the call key; `*` lists a wildcard key.
-- **custom**: a deliver hook described in the cell.
+- **match(o: …, c: …)**: `onObserverMatch` by keys, with the observer key and
+  the call key; `*` lists a wildcard key. iii delivers to the matched
+  observers. (Rows written `match(o: …, c: …)` mean exactly this.)
+- **custom**: an `onObserverDeliver` hook described in the cell. It receives
+  the observers that matched (all of them, unless the row also names match
+  keys) and has no `next`: it calls through observers itself and returns what
+  the caller gets back.
 
 `added` and `removed` name the `onObserverAdded` / `onObserverRemoved` hooks.
 
@@ -293,11 +306,11 @@ fields where the name does not say them), and the consumers in this repo
 
 | # | Worker | Old type | Function | Args | Delivery | Event | Consumers |
 |---|---|---|---|---|---|---|---|
-| 1 | cron | `cron` | `cron::on-tick` | `{ expression }` | keyed(o: `args.expression`, c: `input.expression`); added: retain the expression's job (`INVALID_CRON_EXPRESSION`); removed: release it; one job per distinct expression calls the function once per fire | `CronTick { expression, scheduled_time, actual_time }` | memory-consolidate:src/main.rs, sentinel:src/triggers.rs, eval:src/main.rs, github:src/webhooks/wiring.rs, openwiki:src/index.mjs (args `{ expression }`), security-scan:src/schedule.rs (`{ repository }` as observe metadata), workflow:src/configuration.rs, worktree:src/configuration.rs, harness:src/configuration.rs, cron:tests/e2e_schedule.rs, cron:tests/e2e_on_tick.rs |
+| 1 | cron | `cron` | `cron::on-tick` | `{ expression }` | match(o: `args.expression`, c: `input.expression`); added: retain the expression's job (`INVALID_CRON_EXPRESSION`); removed: release it; one job per distinct expression calls the function once per fire | `CronTick { expression, scheduled_time, actual_time }` | memory-consolidate:src/main.rs, sentinel:src/triggers.rs, eval:src/main.rs, github:src/webhooks/wiring.rs, openwiki:src/index.mjs (args `{ expression }`), security-scan:src/schedule.rs (`{ repository }` as observe metadata), workflow:src/configuration.rs, worktree:src/configuration.rs, harness:src/configuration.rs, cron:tests/e2e_schedule.rs, cron:tests/e2e_on_tick.rs |
 | 2 | http | `http` | `http::on-request` | `{ method, path, middleware_function_ids?, public_webhook? }` | custom (spec §10.3): added: `routes.add` (`HTTP_ROUTE_CONFLICT`); removed: `routes.remove`; deliver: match method and path, `{ status_code: 404 }` on a miss, `422` when `!obs.matches(call)`, run middleware, then `call({ observer, payload: { ...request, params } })`; its result is the response | `HttpRequest` (target receives `HttpRequest` with `params`, returns `HttpResponse`) | hermes:src/hooks.py, memory-consolidate:src/main.rs (paths gain the leading `/`), memory:src/main.rs, slack:src/ingress.rs, telegram-bot:src/functions/mod.rs, whatsapp:cloud_webhook.go, whatsapp:cloud_flow_endpoint.go, github:src/webhooks/wiring.rs, image-resize:example/src/hooks.ts, image-resize:example/src/index.ts, mcp:src/main.rs, mcp:tests/common/engine.rs, openwiki:src/index.mjs, worktree:src/main.rs, github:tests/webhooks_integration.rs, http:tests/common/backend.rs, http:tests/webhook_listener.rs, http:tests/on_request.rs, http:tests/e2e_request_body.rs, http:tests/e2e_streaming.rs |
 | 3 | queue | `durable:subscriber` | `queue::on-message` | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` | custom (spec §10.4): added: `consumers.start(obs.id, args)` (`OBSERVER_ID_CONFLICT`); removed: `consumers.stop(obs.id)`; consumer loops call the function with `metadata: { subscriber: obs.id }`; deliver: that observer, or `OBSERVER_NOT_ACTIVE` (retried, then dead-lettered); a filter miss acks with `null`; else `call({ observer, payload: input })`, whose result acks, retries or dead-letters | `QueueMessage` (the published data) | memory:src/main.rs, github:src/webhooks/wiring.rs, queue:tests/e2e_durability.rs, queue:tests/e2e_scaled_out.rs, queue:tests/e2e_observe.rs |
 | 4 | database | `database::row-changed` | `database::on-row-changed` | `{ db, table?, ops? }` (table canonical) | as row 5 | `RowChangedEvent` | database:ui/src/page/useRowChanges.ts, database:tests/observe.rs, database:tests/e2e/workers/harness/src/cases-native-capture.ts, database:tests/e2e/workers/harness/src/cases-row-changed.ts, database:tests/e2e/workers/harness/src/cases-pg-routing.ts |
-| 5 | database | `database::on-row-changed` (0.25 owner-delivered) | `database::on-row-changed` | `{ db, table?, ops? }` | keyed(o: `db\|table or *\|op or *` for each op, c: `db\|{table,*}\|{op,*}`, four keys); added: `NativeCapture` validates against live config and installs capture (`UNKNOWN_DB`, `NATIVE_CAPTURE_REQUIRES_TABLE`, `NON_CANONICAL_TABLE`, `CAPTURE_INSTALL_FAILED`); removed: release; config revalidation calls `obs.reject` | `RowChangedEvent` | as row 4 |
+| 5 | database | `database::on-row-changed` (0.25 owner-delivered) | `database::on-row-changed` | `{ db, table?, ops? }` | match(o: `db\|table or *\|op or *` for each op, c: `db\|{table,*}\|{op,*}`, four keys); added: `NativeCapture` validates against live config and installs capture (`UNKNOWN_DB`, `NATIVE_CAPTURE_REQUIRES_TABLE`, `NON_CANONICAL_TABLE`, `CAPTURE_INSTALL_FAILED`); removed: release; config revalidation calls `obs.reject` | `RowChangedEvent` | as row 4 |
 | 6 | state | `state` | `state::on-changed` | none; filters `input.scope`, `input.key`, `input.event_type` | default; emitted in the writing handler's context (`caller.parent` names the writer) | `StateEvent { type, event_type, scope, key, old_value, new_value }` | canvas:ui/src/lib/live.ts, a2ui:ui/src/live.ts, state:ui/src/lib/events.ts, onboarding:ui/src/conditions.ts, harness:ui/src/context-chip/index.tsx, crates/provider-integration-testkit:src/codex_login.rs, kits:deepwork/agents/deepwork.md, kits:deepwork/agents/deepwork-lead.md, state:tests/e2e_state.rs |
 | 7 | state | `state::on-changed` (0.25 auto) | `state::on-changed` | none | default | `StateEvent` | as row 6 |
 | 8 | pubsub | `subscribe` | `publish` (public, callable by anyone) | none; filters `input.topic` | default; observers use `deliver: 'input'` | `PubSubInput { topic, data }` | pubsub:tests/e2e_pubsub.rs, pubsub:README.md |
@@ -306,7 +319,7 @@ fields where the name does not say them), and the consumers in this repo
 
 | # | Worker | Old type | Function | Args | Delivery | Event | Consumers |
 |---|---|---|---|---|---|---|---|
-| 9 | a2ui (example) | `demo::counter-changed` | `demo::on-counter-changed` | `{ counter }` | keyed(o: `args.counter`, c: `input.counter`); added: `OBSERVER_LIMIT` past 64 | `CounterChanged { counter, revision }` | a2ui:tests/live_owned_binding.rs |
+| 9 | a2ui (example) | `demo::counter-changed` | `demo::on-counter-changed` | `{ counter }` | match(o: `args.counter`, c: `input.counter`); added: `OBSERVER_LIMIT` past 64 | `CounterChanged { counter, revision }` | a2ui:tests/live_owned_binding.rs |
 | 10 | approval-gate | `approval::pending-created` | `approval::on-pending-created` | none; filters `input.session_id`, `input.session_metadata.<key>` | default | `PendingApprovalRecord` | slack:src/functions/bindings.rs, telegram-bot:src/functions/mod.rs, ade:web/src/lib/backend/approval-events-live.ts, approval-gate:src/testkit/engine.rs |
 | 11 | approval-gate | `approval::pending-resolved` | `approval::on-pending-resolved` | none; filters as row 10 | default | `PendingResolvedEvent` | as row 10 |
 | 12 | browser | `browser::session-started` | `browser::on-session-started` | none; filters `input.session_id` | default | `SessionStartedEvent` | browser:ui/src/lib/events.ts, browser:ui/src/page/useBrowserSessionsLive.ts, browser:native-ui/src/api.ts |
@@ -319,10 +332,10 @@ fields where the name does not say them), and the consumers in this repo
 | 19 | browser | `browser::handoff-requested` | `browser::on-handoff-requested` | none; filters `input.session_id` | default | `HandoffRequestedEvent` | browser:ui/src/lib/events.ts, browser:native-ui/src/api.ts |
 | 20 | browser | `browser::handoff-resolved` | `browser::on-handoff-resolved` | none; filters `input.session_id` | default | `HandoffResolvedEvent` | browser:ui/src/lib/events.ts, browser:native-ui/src/api.ts |
 | 21 | browser | `browser::download-changed` | `browser::on-download-changed` | none; filters `input.session_id` | default | `DownloadChangedEvent` | browser:ui/src/page/DownloadsPanel.tsx |
-| 22 | browser | `browser::frame-event` | `browser::on-frame-event` | `{ session_id? }` | keyed(o: `args.session_id` or `*`, c: `[input.session_id, *]`); the frame pump gates on `is_observed_for(call)` before encoding; viewers observe with `max_in_flight: 1` so a slow viewer drops frames (`OVERFLOW`) | `FrameEventPayload` | browser:ui/src/page/useLiveFrames.ts, browser:native-ui/src/api.ts (`WIRE.frames`), browser:tests/integration.rs, browser:tests/native_viewer.rs |
+| 22 | browser | `browser::frame-event` | `browser::on-frame-event` | `{ session_id? }` | match(o: `args.session_id` or `*`, c: `[input.session_id, *]`); the frame pump gates on `is_observed_for(call)` before encoding; viewers observe with `max_in_flight: 1` so a slow viewer drops frames (`OVERFLOW`) | `FrameEventPayload` | browser:ui/src/page/useLiveFrames.ts, browser:native-ui/src/api.ts (`WIRE.frames`), browser:tests/integration.rs, browser:tests/native_viewer.rs |
 | 23 | browser | `browser::chromium-install-progress` | `browser::on-chromium-install-progress` | none | default | `InstallProgress` | browser:native-ui/src/api.ts, ade:web/src/lib/engine-trigger.ts, ade:web/src/lib/onboarding/chromium.ts |
-| 24 | browser | `browser::crawl-item` | `browser::on-crawl-item` | `{ crawl_id? }` (at most 256 bytes) | custom: keyed(o: `args.crawl_id` or `*`, c: `[input.crawl_id, *]`) picks observers; the hook awaits `call({ observer, payload, timeout_ms })` for each matching observer in `seq` order, so a slow consumer slows the crawl; added: validates `crawl_id`, `OBSERVER_LIMIT` past 64 | `CrawlItemEvent` (the crawl result's `trigger_type` field becomes `function_id`) | browser:tests/crawl_feed_live.rs |
-| 25 | claude-code | `claude::agent-event` | `claude::on-agent-event` | `{ session_id }` (required, 1..512 chars) | keyed(o: `args.session_id`, c: `input.session_id`); added: `OBSERVER_LIMIT` past 256; emitter gates on `isObserved(ID, { input: { session_id } })` | `FeedPayload { session_id, event_id, seq, epoch, source, event }` | acp:src/handler.rs, acp:src/agent_feed.rs |
+| 24 | browser | `browser::crawl-item` | `browser::on-crawl-item` | `{ crawl_id? }` (at most 256 bytes) | custom, with match(o: `args.crawl_id` or `*`, c: `[input.crawl_id, *]`) picks observers; the hook awaits `call({ observer, payload, timeout_ms })` for each matching observer in `seq` order, so a slow consumer slows the crawl; added: validates `crawl_id`, `OBSERVER_LIMIT` past 64 | `CrawlItemEvent` (the crawl result's `trigger_type` field becomes `function_id`) | browser:tests/crawl_feed_live.rs |
+| 25 | claude-code | `claude::agent-event` | `claude::on-agent-event` | `{ session_id }` (required, 1..512 chars) | match(o: `args.session_id`, c: `input.session_id`); added: `OBSERVER_LIMIT` past 256; emitter gates on `isObserved(ID, { input: { session_id } })` | `FeedPayload { session_id, event_id, seq, epoch, source, event }` | acp:src/handler.rs, acp:src/agent_feed.rs |
 | 26 | claude-code | `claude::raw-event` | `claude::on-raw-event` | `{ session_id }` | as row 25, its own `seq` | `FeedPayload` (raw CLI message) | none in repo |
 | 27 | code-runner | guest-defined (`iii.registerTriggerType` in guest code) | guest-defined, through the guest API of §4.4 | guest-defined `args_format` | iii's delivery, or the guest's calls through observers (§4.4) | guest-defined | guest code (code-runner:src/node_bus.rs) |
 | 28 | codex | `codex::agent-event` | `codex::on-agent-event` | `{ session_id }` | as row 25 | `FeedPayload` | acp:src/handler.rs, acp:src/agent_feed.rs |
@@ -330,7 +343,7 @@ fields where the name does not say them), and the consumers in this repo
 | 30 | computer | `computer::session-started` | `computer::on-session-started` | none; filters `input.session_id` | default | `SessionStartedEvent` | computer:ui/src/page/index.tsx |
 | 31 | computer | `computer::session-stopped` | `computer::on-session-stopped` | none; filters `input.session_id` | default | `SessionStoppedEvent` | computer:ui/src/overlay/ComputerOverlay.tsx, computer:ui/src/page/index.tsx |
 | 32 | computer | `computer::activity` | `computer::on-activity` | none; filters `input.session_id` | default | `ActivityEvent` | computer:ui/src/overlay/ComputerOverlay.tsx |
-| 33 | computer | `computer::frame-changed` | `computer::on-frame-changed` | `{ session_id }` (required, non-empty) | custom: keyed(o: `args.session_id`, c: `input.session_id`) picks observers; the hook offers the frame to each matching observer's delivery slot (latest frame wins) and the slot's drain calls through the observer (`timeout_ms: 5000`); added: `OBSERVER_LIMIT` past 64, opens the slot; removed: closes it | `FrameChange` | computer:ui/src/page/useLiveFrames.ts, computer:tests/live_frames.rs |
+| 33 | computer | `computer::frame-changed` | `computer::on-frame-changed` | `{ session_id }` (required, non-empty) | custom, with match(o: `args.session_id`, c: `input.session_id`) picks observers; the hook offers the frame to each matching observer's delivery slot (latest frame wins) and the slot's drain calls through the observer (`timeout_ms: 5000`); added: `OBSERVER_LIMIT` past 64, opens the slot; removed: closes it | `FrameChange` | computer:ui/src/page/useLiveFrames.ts, computer:tests/live_frames.rs |
 | 34 | crates/node-core | guest-defined (`registerTriggerType`) | guest-defined (§4.4) | guest-defined | as row 27 | guest-defined | guest code run by code-runner |
 | 35 | cursor | `cursor::agent-event` | `cursor::on-agent-event` | `{ session_id }` | as row 25 | `FeedPayload` | acp:src/handler.rs, acp:src/agent_feed.rs |
 | 36 | cursor | `cursor::raw-event` | `cursor::on-raw-event` | `{ session_id }` | as row 25 | `FeedPayload` (raw frame) | none in repo |
@@ -342,11 +355,11 @@ fields where the name does not say them), and the consumers in this repo
 | 42 | github | `github::pr::event` | `github::pr::on-event` | `EventFilter { notifications?, watch_id?, repo?, number?, categories? }` | custom (the queue pattern): added: validate repo and policy, persist the subscriber under `obs.id`; removed: drop it (orphan and grace logic stay); the job processor calls the function once per subscriber notification with `metadata: { subscriber: obs.id }` and that subscriber's payload (digest, compact or full); deliver: that observer if `obs.matches(call)`, `call({ observer, payload: input, timeout_ms: 8000 })`; reconciliation reads `iii.observers(ID)` | `NotificationEvent` | github:tests/webhooks_integration.rs |
 | 43 | grok | `grok::agent-event` | `grok::on-agent-event` | `{ session_id }` | as row 25 | `FeedPayload` | acp:src/handler.rs, acp:src/agent_feed.rs |
 | 44 | grok | `grok::raw-event` | `grok::on-raw-event` | `{ session_id }` | as row 25 | `FeedPayload` (streaming-json event) | none in repo |
-| 45 | hermes | `hermes::agent-event` | `hermes::on-agent-event` | `{ session_id }` | as row 25 (Python: `keyed(observer=..., call=...)`) | `FeedPayload` | acp:src/handler.rs, acp:src/agent_feed.rs |
+| 45 | hermes | `hermes::agent-event` | `hermes::on-agent-event` | `{ session_id }` | as row 25 (Python: `match(observer=..., call=...)`) | `FeedPayload` | acp:src/handler.rs, acp:src/agent_feed.rs |
 | 46 | hermes | `hermes::raw-event` | `hermes::on-raw-event` | `{ session_id }` | as row 25 | `FeedPayload` (inbound platform delivery) | none in repo |
-| 47 | ide | `shell::changed` | `shell::on-changed` | `{ path, include_ignored? }` | keyed(o: `root\|include_ignored` of the root resolved at add, c: the producing watch's key); added: resolve and jail-check `path`, retain the `(root, include_ignored)` watch and await its start (`ObserveRejection` on failure); removed: release it; the pump calls the function once per event | `ChangedEvent { path, kind, root, dir, ignored }` | ide:ui/src/page/live.ts, ide:ui/src/page/git-watch.ts, a2ui:ui/src/live.ts |
-| 48 | ide | `shell::git-changed` | `shell::on-git-changed` | `{ path }` | keyed(o and c: canonical path); added: retain the path's `GitWatch`; removed: release it | `GitChangedEvent` | ide:ui/src/page/git-watch.ts |
-| 49 | ide | `shell::job-finished` | `shell::on-job-finished` | `{ job_id? }` | keyed(o: `args.job_id` or `*`, c: `[input.job_id, *]`); added: when the job already finished, after `obs.accepted()` call through the observer with its retained terminal event | `JobFinishedEvent` | kits:deepwork/agents/deepwork.md (through `harness::observe`) |
+| 47 | ide | `shell::changed` | `shell::on-changed` | `{ path, include_ignored? }` | match(o: `root\|include_ignored` of the root resolved at add, c: the producing watch's key); added: resolve and jail-check `path`, retain the `(root, include_ignored)` watch and await its start (`ObserveRejection` on failure); removed: release it; the pump calls the function once per event | `ChangedEvent { path, kind, root, dir, ignored }` | ide:ui/src/page/live.ts, ide:ui/src/page/git-watch.ts, a2ui:ui/src/live.ts |
+| 48 | ide | `shell::git-changed` | `shell::on-git-changed` | `{ path }` | match(o and c: canonical path); added: retain the path's `GitWatch`; removed: release it | `GitChangedEvent` | ide:ui/src/page/git-watch.ts |
+| 49 | ide | `shell::job-finished` | `shell::on-job-finished` | `{ job_id? }` | match(o: `args.job_id` or `*`, c: `[input.job_id, *]`); added: when the job already finished, after `obs.accepted()` call through the observer with its retained terminal event | `JobFinishedEvent` | kits:deepwork/agents/deepwork.md (through `harness::observe`) |
 | 50 | ide | `shell::turns::changed` | `shell::turns::on-changed` | none; filters `input.session_id` | default; the 200 ms coalescing stays in the producer | `TurnsChangedEvent { session_id }` | ide:ui/src/page/turn.ts |
 | 51 | iii-directory | `directory::skills::on-change` | `directory::skills::on-change` | none; filters `input.op`, `input.name` | default | `SkillsChange { op, name? }` | harness:src/skills.rs, iii-directory:ui/src/page/browser.tsx |
 | 52 | iii-directory | `directory::system-prompts::on-change` | `directory::system-prompts::on-change` | none | default | `SystemPromptsChange { op, name? }` | none in repo |
@@ -354,7 +367,7 @@ fields where the name does not say them), and the consumers in this repo
 | 54 | iii-directory | `directory::kits::on-change` | `directory::kits::on-change` | none; filters `input.op`, `input.plan_id` | default | `KitsChange { op: plan \| discard \| progress \| apply \| updates, kit?, plan_id?, steps? }` | iii-directory:ui/src/kits/api.ts |
 | 55 | ios-simulator | `ios-simulator::device-changed` | `ios-simulator::on-device-changed` | none; filters `input.tenant`, `input.udid` | default | `DeviceChangedEvent` | ios-simulator:ui/src/overlay/SimulatorOverlay.tsx, ios-simulator:ui/src/page/index.tsx |
 | 56 | ios-simulator | `ios-simulator::media-changed` | `ios-simulator::on-media-changed` | none; filters `input.tenant`, `input.udid` | default | `MediaChangedEvent` | ios-simulator:ui/src/page/Media.tsx |
-| 57 | ios-simulator | `ios-simulator::frame-event` | `ios-simulator::on-frame-event` | `{ tenant?, udid? }` | keyed(o: `tenant or *\|udid or *`, c: `{tenant,*}\|{udid,*}`, four keys); the bridge gates on `is_observed_for(call)` before encoding; viewers observe with `max_in_flight: 1` | `FrameEvent` | ios-simulator:ui/src/page/live.ts |
+| 57 | ios-simulator | `ios-simulator::frame-event` | `ios-simulator::on-frame-event` | `{ tenant?, udid? }` | match(o: `tenant or *\|udid or *`, c: `{tenant,*}\|{udid,*}`, four keys); the bridge gates on `is_observed_for(call)` before encoding; viewers observe with `max_in_flight: 1` | `FrameEvent` | ios-simulator:ui/src/page/live.ts |
 | 58 | ios-simulator | `ios-simulator::activity` | `ios-simulator::on-activity` | none; filters `input.tenant`, `input.udid` | default | `ActivityEvent` | ios-simulator:ui/src/overlay/SimulatorOverlay.tsx |
 | 59 | kanban | `kanban:change` | `kanban::on-change` | `{ ticket_id?, parent_id?, release_id?, ticket?: 'full' \| 'summary', events? }` | custom: selects observers with `matches_change(args, input)` (`matches_config` for `config.updated`) and `obs.matches(call)`; passes `ticket: full` observers to `next`; calls each `ticket: summary` observer through itself with the summarized payload (`Void`) | `ChangeEvent` or `ConfigEvent` | kanban:ui/src/shared.tsx, kanban:native-ui/src/api.ts |
 | 60 | kanban | `kanban:comment` | `kanban::on-comment` | `{ ticket_id?, parent_id?, author?, exclude_author?, root_only?, ticket? }` (one of `ticket_id`, `parent_id` required) | custom: `matches_comment(args, input)` and the summary split of row 59 | `CommentEvent` | kanban:skills/SKILL.md (through `harness::observe`) |
@@ -385,7 +398,7 @@ fields where the name does not say them), and the consumers in this repo
 | 85 | session-manager | `session::store::events` | `session::store::on-events` (main fs-mode instance only) | none | default | `EventEnvelope { function_id, payload, session_metadata? }` (`function_id` names the session event function; the wire field of `session::store::publish-events` follows) | session-manager:src/events.rs (each bridged instance observes the main instance's function) |
 | 86 | stories | `stories:changed` | `stories::on-changed` | `{ workspace?, project?, kinds? }` | custom: for each observer that `obs.matches(call)`, `narrow_changed(args, input)`; an empty result skips it, any other is called through the observer (`Void`) | `ChangedEvent` (narrowed per observer) | stories:ui/src/explorer.tsx |
 | 87 | stories | `stories:build` | `stories::on-build` | none; filters `input.workspace` | default | `BuildEvent` | stories:ui/src/explorer.tsx |
-| 88 | storage | `storage::object-created` | `storage::on-object-created` | `{ bucket, handler_timeout_ms? }` | custom: keyed(o: `args.bucket`, c: `input.bucket`) picks observers; the hook calls each matching observer through itself with the event (`timeout_ms: handler_timeout_ms`, default 60000) and returns `{ acked }`, true when every target returned `null` or `{ ack: true }`; pollers and the local backend ack upstream on `acked`; added: `CONFIG_ERROR` when the bucket has no wired notification source (under the reconfigure read lock) | `ObjectCreatedEvent` | storage:tests/e2e/workers/harness/src/runner.ts, storage:config.yaml.example, storage:README.md |
+| 88 | storage | `storage::object-created` | `storage::on-object-created` | `{ bucket, handler_timeout_ms? }` | custom, with match(o: `args.bucket`, c: `input.bucket`) picks observers; the hook calls each matching observer through itself with the event (`timeout_ms: handler_timeout_ms`, default 60000) and returns `{ acked }`, true when every target returned `null` or `{ ack: true }`; pollers and the local backend ack upstream on `acked`; added: `CONFIG_ERROR` when the bucket has no wired notification source (under the reconfigure read lock) | `ObjectCreatedEvent` | storage:tests/e2e/workers/harness/src/runner.ts, storage:config.yaml.example, storage:README.md |
 | 89 | storage | `storage::object-deleted` | `storage::on-object-deleted` | `{ bucket, handler_timeout_ms? }` | as row 88 | `ObjectDeletedEvent` | as row 88 |
 | 90 | tmux | `tmux::changed` | `tmux::on-changed` | none | default; added: after `obs.accepted()`, call through the observer with the current overview (`Void`); the poll loop gates on `is_observed()` | `Overview` | tmux:ui/src/lib/live.ts |
 | 91 | voice | `voice::transcript` | `voice::on-transcript` | none; filters `input.session_id` | default; the session's `output_function_id` keeps its plain `call` | `TranscriptEvent` | none in repo |
@@ -433,7 +446,7 @@ agent observers it creates are in §5.1.
 | 114 | harness | `harness::hook::pre-trigger` | `harness::hook::on-pre-call` | `HookArgs` | custom: the hook chain | the hook input | a2ui:src/hook.rs, ide:src/turns.rs, approval-gate:src/configuration.rs, workflow:src/configuration.rs, ade:src/context_tracking.rs, ade:src/functions/working_directory.rs |
 | 115 | harness | `harness::hook::post-trigger` | `harness::hook::on-post-call` | `HookArgs` | custom: the hook chain | the hook input | ide:src/turns.rs, approval-gate:src/configuration.rs |
 | 116 | harness | `harness::hook::post-turn` | `harness::hook::on-post-turn` | `HookArgs` | custom: the hook chain | the hook input | ide:src/turns.rs, harness:src/functions/subscribe.rs (agent self-validators) |
-| 117 | harness | `timer` | `harness::on-timer` | `{ at }` (epoch ms) | keyed(o: `args.at`, c: `input.scheduled_at`); added: validate `at` (`CONFIG_ERROR` past `MAX_TIMER_MS` or in the past), arm a one-shot per distinct `at`; removed: cancel it with its last observer; at the deadline the harness calls the function once | `TimerEvent { scheduled_at, actual_at }` | kits:deepwork/agents/deepwork.md (through `harness::observe`, which turns `in_ms` into `at`), harness:tests/integration/src/scenarios/timer_wake.rs |
+| 117 | harness | `timer` | `harness::on-timer` | `{ at }` (epoch ms) | match(o: `args.at`, c: `input.scheduled_at`); added: validate `at` (`CONFIG_ERROR` past `MAX_TIMER_MS` or in the past), arm a one-shot per distinct `at`; removed: cancel it with its last observer; at the deadline the harness calls the function once | `TimerEvent { scheduled_at, actual_at }` | kits:deepwork/agents/deepwork.md (through `harness::observe`, which turns `in_ms` into `at`), harness:tests/integration/src/scenarios/timer_wake.rs |
 
 ### 2.4 ADE
 
