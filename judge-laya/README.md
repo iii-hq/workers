@@ -14,7 +14,7 @@ automatically at start.
 ## Install
 
 ```bash
-iii trigger compose::add worker=judge-laya
+iii call compose::add worker=judge-laya
 ```
 
 The functions register at start; the checkpoints load on demand. While laya
@@ -77,7 +77,7 @@ the settings form.
 Make it the default under **Settings → Workers → judge**, then call the hub:
 
 ```bash
-iii trigger judge::evaluate --timeout-ms 65000 --json '{
+iii call judge::evaluate --timeout-ms 65000 --json '{
   "timeout_ms": 60000, "provider": "laya",
   "evaluations": [{
     "id": "ticket-4411",
