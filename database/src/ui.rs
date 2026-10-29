@@ -4,19 +4,19 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `database/page.js` (`console:script`) — a function-trigger renderer for
+//! - `database/page.js` (a `script` asset) — a function-call renderer for
 //!   every `database::*` call (SQL with highlighting, request chips, result
 //!   tables, batch/transaction step lists; errors fall through to the
 //!   console's built-in error card) plus the `database` page: schema
 //!   tree, paged row grid, row inspector, SQL panel (reads via
 //!   `database::query`, writes via `database::execute`).
-//! - `database/styles.css` (`console:style`) — the stylesheet for both, every
+//! - `database/styles.css` (a `style` asset) — the stylesheet for both, every
 //!   rule scoped under `[data-iii-ui="database"]`; the console mounts it as a
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `database::ui-content`, one
-//! Message-path trigger per asset, `III_DATABASE_UI_WATCH` hot-reload
-//! watcher) lives in the shared `iii-console-ui` crate (path-linked from
+//! observer of `console::ui::asset` per asset, `III_DATABASE_UI_WATCH`
+//! hot-reload watcher) lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and
 //! embeds their bytes.
 //!
@@ -25,8 +25,7 @@
 //! embedded at compile time so the worker stays one self-contained binary.
 //! For the dev loop, set `III_DATABASE_UI_WATCH` to the build output
 //! directory (or `1` for `ui/dist`): the worker polls both files and
-//! re-registers a changed asset's trigger — every open console tab
-//! hot-swaps it.
+//! observes a changed asset afresh — every open console tab hot-swaps it.
 
 use std::sync::Arc;
 

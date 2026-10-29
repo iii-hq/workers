@@ -139,10 +139,10 @@ pub struct AppState {
     pub handles: Arc<HandleRegistry>,
     pub transactions: TxRegistry,
     pub log: Logger,
-    /// Routes `database::on-row-changed` events to observers (and bindings of
-    /// the old trigger type) after commit. Absent when the worker runs without an engine
-    /// connection (tests).
-    pub row_changes: Option<Arc<crate::triggers::RowChangeBus>>,
+    /// Calls `database::on-row-changed` with each committed write, for its
+    /// observers. Absent when the worker runs without an engine connection
+    /// (tests).
+    pub row_changes: Option<Arc<crate::row_changes::RowChangeBus>>,
     /// Secret cache, per-connection build errors and what each pool was
     /// built from (see `configuration::apply_config`).
     pub runtime: Arc<crate::runtime::Runtime>,

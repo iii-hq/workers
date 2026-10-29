@@ -1,5 +1,5 @@
 import type { TestCase } from './cases.ts'
-import { expect, expectEqual } from './cases.ts'
+import { expect, expectEqual, observeRowChanged, ROW_CHANGED_FN } from './cases.ts'
 
 const EVENT_TIMEOUT_MS = 5_000
 const SILENCE_WINDOW_MS = 500
@@ -27,7 +27,7 @@ export const ROW_CHANGED_CASES: TestCase[] = [
     applies: ['sqlite_db'],
     async run({ iii }) {
       for (const functionId of ['database::execute', 'database::transactionExecute']) {
-        const info = await iii.trigger<{ function_id: string }, any>({
+        const info = await iii.call<{ function_id: string }, any>({
           function_id: 'engine::functions::info',
           payload: { function_id: functionId },
         })
@@ -53,10 +53,10 @@ export const ROW_CHANGED_CASES: TestCase[] = [
     },
   },
   {
-    // A subscriber should not have to guess how the writer spells the
-    // table: bindings match case-insensitively (and ignoring any schema
-    // qualifier) on the statements path.
-    name: 'row-changed table filter matches case-insensitively',
+    // An observer names the table canonically (bare, unquoted, lowercase):
+    // any other spelling is refused when the observer is created, with the
+    // spelling to use, instead of matching nothing.
+    name: 'row-changed observer must name the canonical table',
     async run({ driver, dialect, call, iii }) {
       const table = 'e2e_row_changed_case'
       const functionId = `harness::row_changed_case_${driver}`
@@ -73,29 +73,27 @@ export const ROW_CHANGED_CASES: TestCase[] = [
           events.push(payload)
           return null
         },
-        { description: 'Case-insensitive table filter E2E sink.' },
+        { description: 'Canonical table args E2E sink.' },
       )
-      const triggerRef = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: functionId,
-        config: { db: driver, table: table.toUpperCase() },
-      })
 
+      const refused = observeRowChanged(iii, { db: driver, table: table.toUpperCase() }, functionId)
+      const observer = observeRowChanged(iii, { db: driver, table }, functionId)
       try {
-        // Registration propagates asynchronously; write only once the engine
-        // can see the binding, or a slow ack fails the case on timeout
-        // rather than on the behavior under test.
-        const registered = await iii.trigger<
-          Record<string, never>,
-          { registered_triggers: Array<{ trigger_type: string; function_id: string }> }
-        >({ function_id: 'engine::registered-triggers::list', payload: {} })
-        expect(
-          registered.registered_triggers.some(
-            (t) => t.trigger_type === 'database::row-changed' && t.function_id === functionId,
-          ),
-          'case-insensitive binding is visible to the engine',
+        let refusal: unknown
+        try {
+          await refused.ready()
+        } catch (e) {
+          refusal = e
+        }
+        const message = String((refusal as { message?: string } | undefined)?.message ?? refusal)
+        expectEqual(
+          (refusal as { code?: string } | undefined)?.code,
+          'NON_CANONICAL_TABLE',
+          `uppercase table is refused (got ${message})`,
         )
+        expect(message.includes(`use \`${table}\``), `the refusal names the canonical table: ${message}`)
 
+        await observer.ready()
         await call('database::execute', {
           db: driver,
           sql: `INSERT INTO ${table} (n) VALUES (${dialect.placeholder(1)})`,
@@ -103,82 +101,61 @@ export const ROW_CHANGED_CASES: TestCase[] = [
         })
         const deadline = Date.now() + EVENT_TIMEOUT_MS
         while (events.length === 0 && Date.now() < deadline) await sleep(20)
-        expectEqual(events.length, 1, 'uppercase binding hears the lowercase table')
-        expectEqual(events[0].op, 'insert', 'case-insensitive match op')
+        expectEqual(events.length, 1, 'the canonical observer hears the insert')
+        expectEqual(events[0].op, 'insert', 'canonical observer op')
+        expectEqual(events[0].table, table, 'the event names the canonical table')
       } finally {
-        triggerRef.unregister()
+        await refused.dispose().catch(() => {})
+        await observer.dispose()
         fnRef.unregister()
         await call('database::execute', { db: driver, sql: `DROP TABLE IF EXISTS ${table}` })
       }
     },
   },
   {
-    // A binding made by calling the engine function rather than over a
-    // worker connection (the CLI, a code-runner script) has no owner. The
-    // worker's own trigger type serves it on every engine; the 0.25 engine's
-    // legacy shim would leave it pending.
-    name: 'row-changed binding made through engine::register_trigger fires',
-    async run({ driver, dialect, call, iii }) {
-      const table = 'e2e_row_changed_ownerless'
-      const functionId = `harness::row_changed_ownerless_${driver}`
+    // The function is private: only the database worker calls it. A call
+    // from any other worker is refused by the engine, and observers hear
+    // nothing, so no worker can raise a row change of its own making.
+    // Driver-independent; runs once.
+    name: 'row-changed refuses a call from another worker',
+    applies: ['sqlite_db'],
+    async run({ driver, iii }) {
+      const functionId = `harness::row_changed_forged_${driver}`
       const events: RowChangedEvent[] = []
-
-      await call('database::execute', { db: driver, sql: `DROP TABLE IF EXISTS ${table}` })
-      await call('database::execute', {
-        db: driver,
-        sql: `CREATE TABLE ${table} (id ${dialect.idColumnDDL()}, n INT NOT NULL)`,
-      })
       const fnRef = iii.registerFunction(
         functionId,
         async (payload: RowChangedEvent) => {
           events.push(payload)
           return null
         },
-        { description: 'Ownerless row-changed binding E2E sink.' },
+        { description: 'Forged row-changed E2E sink.' },
       )
-      const created = await iii.trigger<Record<string, unknown>, { id: string }>({
-        function_id: 'engine::register_trigger',
-        payload: {
-          trigger_type: 'database::row-changed',
-          function_id: functionId,
-          config: { db: driver, table },
-        },
-      })
-      expect(typeof created?.id === 'string', `engine::register_trigger returns an id: ${JSON.stringify(created)}`)
-
+      const observer = observeRowChanged(iii, { db: driver }, functionId)
       try {
-        // Live once the engine lists it as served (a parked binding is not
-        // listed).
-        const deadline = Date.now() + EVENT_TIMEOUT_MS
-        let listed = false
-        while (!listed && Date.now() < deadline) {
-          const registered = await iii.trigger<
-            Record<string, never>,
-            { registered_triggers: Array<{ id: string; status?: string }> }
-          >({ function_id: 'engine::registered-triggers::list', payload: {} })
-          listed = registered.registered_triggers.some(
-            (t) => t.id === created.id && (t.status === undefined || t.status === 'active'),
-          )
-          if (!listed) await sleep(50)
+        await observer.ready()
+        let refusal: unknown
+        try {
+          await iii.call({
+            function_id: ROW_CHANGED_FN,
+            payload: {
+              db: driver,
+              schema: null,
+              table: 'forged',
+              op: 'delete',
+              affected_rows: 999,
+              at: Date.now(),
+            },
+          })
+        } catch (e) {
+          refusal = e
         }
-        expect(listed, 'the ownerless binding is active, not pending')
-
-        await call('database::execute', {
-          db: driver,
-          sql: `INSERT INTO ${table} (n) VALUES (${dialect.placeholder(1)})`,
-          params: [1],
-        })
-        while (events.length === 0 && Date.now() < deadline + EVENT_TIMEOUT_MS) await sleep(20)
-        expectEqual(events.length, 1, 'the ownerless binding hears the insert')
-        expectEqual(events[0].op, 'insert', 'ownerless binding op')
-        expectEqual(events[0].affected_rows, 1, 'ownerless binding affected_rows')
+        expect(refusal !== undefined, 'a call from another worker is refused')
+        expect(String((refusal as Error).message ?? refusal).includes('FORBIDDEN'), `refused as FORBIDDEN: ${refusal}`)
+        await sleep(SILENCE_WINDOW_MS)
+        expectEqual(events.length, 0, 'no observer hears the forged event')
       } finally {
-        await iii.trigger({
-          function_id: 'engine::unregister_trigger',
-          payload: { id: created.id, trigger_type: 'database::row-changed' },
-        })
+        await observer.dispose()
         fnRef.unregister()
-        await call('database::execute', { db: driver, sql: `DROP TABLE IF EXISTS ${table}` })
       }
     },
   },
@@ -208,11 +185,6 @@ export const ROW_CHANGED_CASES: TestCase[] = [
         },
         { description: 'Database row-changed E2E event sink.' },
       )
-      const triggerRef = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: functionId,
-        config: { db: driver, table },
-      })
       const insertFunctionRef = iii.registerFunction(
         insertFunctionId,
         async (payload: RowChangedEvent) => {
@@ -221,11 +193,8 @@ export const ROW_CHANGED_CASES: TestCase[] = [
         },
         { description: 'Database row-changed insert-only E2E event sink.' },
       )
-      const insertTriggerRef = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: insertFunctionId,
-        config: { db: driver, table, ops: ['insert'] },
-      })
+      const observer = observeRowChanged(iii, { db: driver, table }, functionId)
+      const insertObserver = observeRowChanged(iii, { db: driver, table, ops: ['insert'] }, insertFunctionId)
 
       const nextEvent = async (): Promise<RowChangedEvent> => {
         const deadline = Date.now() + EVENT_TIMEOUT_MS
@@ -259,20 +228,9 @@ export const ROW_CHANGED_CASES: TestCase[] = [
       }
 
       try {
-        const registered = await iii.trigger<
-          Record<string, never>,
-          { registered_triggers: Array<{ trigger_type: string; function_id: string }> }
-        >({ function_id: 'engine::registered-triggers::list', payload: {} })
-        for (const expectedFunction of [functionId, insertFunctionId]) {
-          expect(
-            registered.registered_triggers.some(
-              (trigger) =>
-                trigger.trigger_type === 'database::row-changed' &&
-                trigger.function_id === expectedFunction,
-            ),
-            `row-changed trigger registration for ${expectedFunction} is visible to the engine`,
-          )
-        }
+        // Active once the worker accepted each observer: the next commit
+        // reaches both.
+        await Promise.all([observer.ready(), insertObserver.ready()])
 
         const p1 = dialect.placeholder(1)
         const p2 = dialect.placeholder(2)
@@ -390,9 +348,9 @@ export const ROW_CHANGED_CASES: TestCase[] = [
             /* transaction may already be finalized */
           }
         }
-        insertTriggerRef.unregister()
+        await insertObserver.dispose()
         insertFunctionRef.unregister()
-        triggerRef.unregister()
+        await observer.dispose()
         functionRef.unregister()
         await call('database::execute', { db: driver, sql: `DROP TABLE IF EXISTS ${table}` })
       }
@@ -400,7 +358,7 @@ export const ROW_CHANGED_CASES: TestCase[] = [
   },
   {
     // Known classifier quirk, pinned on purpose: `sql::classify`
-    // (triggers/sql.rs) reads keywords, not a parse, so a CTE statement whose
+    // (row_changes/sql.rs) reads keywords, not a parse, so a CTE statement whose
     // TEXT contains a DML keyword — even inside a string literal — is
     // reported as an unknown write. The README documents this. If someone
     // teaches the classifier about literals, this case is the deliberate
@@ -422,24 +380,10 @@ export const ROW_CHANGED_CASES: TestCase[] = [
         { description: 'CTE-classification E2E sink.' },
       )
       // db-wide: a statement the classifier cannot pin to a table only
-      // reaches bindings that did not name one.
-      const triggerRef = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: functionId,
-        config: { db: driver },
-      })
+      // reaches observers that did not name one.
+      const observer = observeRowChanged(iii, { db: driver }, functionId)
       try {
-        const registered = await iii.trigger<
-          Record<string, never>,
-          { registered_triggers: Array<{ trigger_type: string; function_id: string }> }
-        >({ function_id: 'engine::registered-triggers::list', payload: {} })
-        expect(
-          registered.registered_triggers.some(
-            (t) => t.trigger_type === 'database::row-changed' && t.function_id === functionId,
-          ),
-          'CTE case: binding is visible to the engine',
-        )
-
+        await observer.ready()
         const read = await call('database::execute', {
           db: driver,
           sql: `WITH x AS (SELECT 1 AS n) SELECT 'update' AS note FROM x`,
@@ -459,7 +403,7 @@ export const ROW_CHANGED_CASES: TestCase[] = [
           "statements mode forwards the writer's rows, reads included",
         )
       } finally {
-        triggerRef.unregister()
+        await observer.dispose()
         fnRef.unregister()
       }
     },

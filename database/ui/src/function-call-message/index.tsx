@@ -1,6 +1,6 @@
 /**
- * Injected function-trigger message renderer for every `database::*` call —
- * registered through `host.functionTriggers`, so it dispatches BEFORE the
+ * Injected function-call message renderer for every `database::*` call —
+ * registered through `host.functionCalls`, so it dispatches BEFORE the
  * console's built-in families and overrides how database calls render in
  * chat and in the traces span tab.
  *
@@ -19,8 +19,8 @@ import {
   Badge,
   CodeHighlight,
   Eyebrow,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   JsonHighlight,
   MetaRow,
@@ -268,7 +268,7 @@ function HandleView({ details, label }: { details: unknown; label: string }) {
   )
 }
 
-function SettledView({ message }: { message: FunctionTriggerMessage }) {
+function SettledView({ message }: { message: FunctionCallMessage }) {
   const op = message.functionId.slice(DB_PREFIX.length)
   const req = parseRequest(message.input)
   const details = unwrapEnvelope(message.output)
@@ -323,7 +323,7 @@ function SettledView({ message }: { message: FunctionTriggerMessage }) {
   )
 }
 
-function RunningView({ message }: { message: FunctionTriggerMessage }) {
+function RunningView({ message }: { message: FunctionCallMessage }) {
   const op = message.functionId.slice(DB_PREFIX.length)
   const req = parseRequest(message.input)
   return (
@@ -335,7 +335,7 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
 }
 
 /** Pending-approval preview: the SQL a call is about to run. */
-function Preview({ message }: { message: FunctionTriggerMessage }) {
+function Preview({ message }: { message: FunctionCallMessage }) {
   const op = message.functionId.slice(DB_PREFIX.length)
   const req = parseRequest(message.input)
   return (
@@ -371,11 +371,11 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-export function createDatabaseTriggerRenderer(
+export function createDatabaseCallRenderer(
   host: Host,
-): FunctionTriggerRenderer {
+): FunctionCallRenderer {
   const render = (
-    message: FunctionTriggerMessage,
+    message: FunctionCallMessage,
     running: boolean,
   ): React.ReactNode | null => {
     if (!message.functionId.startsWith(DB_PREFIX)) return null

@@ -47,7 +47,7 @@ export class Runner {
   constructor(private opts: RunnerOptions) {}
 
   private async callOnce(functionId: string, payload: unknown): Promise<any> {
-    return await this.opts.iii.trigger<unknown, any>({ function_id: functionId, payload })
+    return await this.opts.iii.call<unknown, any>({ function_id: functionId, payload })
   }
 
   private async callWithRetry(functionId: string, payload: unknown, attempts = 10): Promise<any> {

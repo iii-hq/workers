@@ -97,9 +97,9 @@ mod tests {
         serde_json::from_value(v).unwrap()
     }
 
-    fn state_with_bus() -> (AppState, Arc<crate::triggers::RowChangeBus>) {
+    fn state_with_bus() -> (AppState, Arc<crate::row_changes::RowChangeBus>) {
         let mut st = state();
-        let bus = Arc::new(crate::triggers::RowChangeBus::new(
+        let bus = Arc::new(crate::row_changes::RowChangeBus::new(
             Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:9")),
             100,
         ));

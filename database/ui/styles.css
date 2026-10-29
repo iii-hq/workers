@@ -3,7 +3,7 @@
  * the db-ui- prefix. Surfaces and type come from the console's tokens: sans is
  * the chrome, mono only on identifiers, SQL, plans and database values. */
 
-/* --- function-trigger message (chat / traces card) ------------------- */
+/* --- function-call message (chat / traces card) ---------------------- */
 [data-iii-ui="database"] .db-ui-msg {
   background: var(--color-bg);
   font-family: var(--font-sans);

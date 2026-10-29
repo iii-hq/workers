@@ -1,5 +1,5 @@
 /**
- * Live subscription to `database::row-changed`.
+ * Live observer of `database::on-row-changed`.
  *
  * The worker announces a change after it commits, and what that covers depends
  * on the handle's configured capture mode:
@@ -10,15 +10,16 @@
  *               database triggers and NOTIFY / the binlog.
  *
  * A grid that claims to be live while missing a colleague's write is worse
- * than one that claims nothing, so this hook reports what it is bound to and
+ * than one that claims nothing, so this hook reports what it observes and
  * leaves the wording to the caller. Delivery is best effort either way — no
  * replay, no exactly-once — so it drives an indicator and a refresh prompt,
  * never a source of truth.
  *
- * **A binding must name a table.** A `{db}`-only config is rejected outright
- * on a native handle, which would leave a panel that looks subscribed and
- * receives nothing. `table` is therefore required, and the hook stays idle
- * until it has one.
+ * **An observer must name a table.** `{ db }`-only args are rejected outright
+ * on a native handle, which would leave a panel that looks live and receives
+ * nothing. `table` is therefore required, and the hook stays idle until it
+ * has one. The args carry it canonical (bare, unquoted, lowercased), as the
+ * worker requires.
  */
 
 import type { Host } from '@iii-dev/console-ui'
@@ -49,8 +50,8 @@ export interface RowChange extends RowChangedEvent {
 
 export interface RowChangeFeed {
   changes: RowChange[]
-  /** Idle until a table is selected; bound once the engine accepts it. */
-  status: 'idle' | 'bound' | 'unsupported'
+  /** Idle until a table is selected; observing once the observer is made. */
+  status: 'idle' | 'observing' | 'unsupported'
   /** Events since the caller last acknowledged. */
   pending: number
   lastAt: number | null
@@ -61,6 +62,20 @@ const MAX_KEPT = 60
 
 /** Shared across feeds on purpose: any two changes anywhere differ. */
 let feedSeq = 0
+
+/** The worker's canonical table: the last dotted segment, unquoted, ASCII
+ *  lowercased (`public."Orders"` → `orders`). Observer args must use it. */
+export function canonicalTable(table: string): string {
+  const last = table.split('.').pop() ?? table
+  const trimmed = last.trim()
+  const quoted = [
+    ['"', '"'],
+    ['`', '`'],
+    ['[', ']'],
+  ].find(([open, close]) => trimmed.length >= 2 && trimmed.startsWith(open) && trimmed.endsWith(close))
+  const bare = quoted ? trimmed.slice(1, -1) : trimmed
+  return bare.replace(/[A-Z]/g, (c) => c.toLowerCase())
+}
 
 export function useRowChanges(host: Host, db: string | undefined, table: string | null | undefined): RowChangeFeed {
   const [changes, setChanges] = useState<RowChange[]>([])
@@ -79,7 +94,7 @@ export function useRowChanges(host: Host, db: string | undefined, table: string 
     }
     live.current = true
     // `on` namespaces the handler per tab as `<id>::<browserId>`, so the
-    // binding must name the namespaced id to reach it.
+    // observer must name the namespaced id as its target.
     const localFn = `iii::database-ui::row-changed::${instance}`
     const boundFn = `${localFn}::${host.iii.browserId}`
 
@@ -102,19 +117,18 @@ export function useRowChanges(host: Host, db: string | undefined, table: string 
       setLastAt(change.seen)
     })
 
-    let unregister: (() => void) | undefined
+    let dispose: (() => void) | undefined
     try {
-      unregister = host.iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: boundFn,
-        // Matching is case-insensitive and ignores any schema qualifier, so
-        // the tree's spelling of the table is fine as-is.
-        config: { db, table },
-      })
-      setStatus('bound')
+      // The handler takes the event: extension observers receive the
+      // function's output, which is the event.
+      dispose = host.iii.observe(
+        { function_id: 'database::on-row-changed', args: { db, table: canonicalTable(table) } },
+        boundFn,
+      )
+      setStatus('observing')
     } catch {
-      // An older worker has no such trigger type. Not a failure to report as
-      // an error — the caller renders "not following" instead.
+      // A console without `observe`. Not a failure to report as an error —
+      // the caller renders "not following" instead.
       setStatus('unsupported')
     }
 
@@ -122,15 +136,15 @@ export function useRowChanges(host: Host, db: string | undefined, table: string 
       live.current = false
       setStatus('idle')
       try {
-        unregister?.()
+        dispose?.()
       } catch {
-        /* the engine drops the binding on disconnect anyway */
+        /* the engine disposes the observer on disconnect anyway */
       }
       off()
     }
   }, [host, db, table, instance])
 
-  // Changes belong to the table that was bound when they arrived; switching
+  // Changes belong to the table observed when they arrived; switching
   // tables must not carry the previous table's history across.
   useEffect(() => {
     setChanges([])

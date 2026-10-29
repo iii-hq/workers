@@ -34,15 +34,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The worker serves old consumers through its fallback trigger type
-        # on an engine without observe (0.24) and through the engine's legacy
-        # shim on 0.25. Legs: the oldest supported engine (the atomic
-        # configuration release, configuration::ensure), the latest 0.24, and
-        # the 0.25 release candidate until 0.25.0 is released.
+        # database::on-row-changed is a private function with args_format,
+        # which registers only on an engine that advertises observe.v2
+        # (0.26): the oldest engine the worker supports.
         engine:
-          - 'iii/v0.24.0-rc.2'
-          - 'iii/v0.24.6'
-          - 'iii/v0.25.0-rc.4'
+          - 'iii/v0.26.0'
     env:
       III_RELEASE_TAG: ${{ matrix.engine }}
     steps:
