@@ -3894,6 +3894,35 @@ async fn a_replay_reproduces_the_signal_and_the_proposed_change_removes_it() {
 }
 
 #[tokio::test]
+async fn the_fidelity_count_carries_the_turns_thinking_level() {
+    let mut record = turn_record(TURN);
+    record["options"]["thinking_level"] = json!("off");
+    let (h, evaluation_id) = replayable(World::new(), record).await;
+    let id = reproduce(
+        &h,
+        json!({"evaluation_id": evaluation_id, "suggestion_index": 0, "samples": 1, "by": "ana"}),
+    )
+    .await
+    .unwrap()
+    .reproduction_id
+    .unwrap();
+    assert!(settled(&h, &evaluation_id, &id).await.fidelity.is_some());
+    // The provider counts the prompt the turn sends: assemble and the
+    // fidelity count must render the same thinking mode.
+    let counts = h.world().calls_to("router::count_tokens");
+    assert!(!counts.is_empty());
+    assert!(
+        counts.iter().all(|count| count["thinking_level"] == "off"),
+        "{counts:?}"
+    );
+    assert!(h
+        .world()
+        .calls_to("context::assemble")
+        .iter()
+        .all(|assemble| assemble["options"]["thinking_level"] == "off"));
+}
+
+#[tokio::test]
 async fn only_user_chats_are_analyzed_automatically_and_the_rest_by_hand() {
     // What session-manager holds for each session the monitor must not observe
     // on its own, as measured: an E2E run, a sentinel investigation and the

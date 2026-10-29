@@ -19,7 +19,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::ports::{Clock, ModelBudget, ModelResolver};
+use crate::ports::{Clock, ModelBudget, ModelResolver, TurnKnobs};
 use crate::types::{AgentFunction, AgentMessage};
 
 const MODELS_CHANGED_FN_ID: &str = "context::on-models-changed";
@@ -106,9 +106,10 @@ impl ModelResolver for CachingModelResolver {
         system_prompt: &str,
         tools: &[AgentFunction],
         messages: &[AgentMessage],
+        knobs: TurnKnobs<'_>,
     ) -> Result<u64, String> {
         self.inner
-            .count_prompt_tokens(provider, id, system_prompt, tools, messages)
+            .count_prompt_tokens(provider, id, system_prompt, tools, messages, knobs)
             .await
     }
 }
@@ -196,6 +197,7 @@ mod tests {
             _system_prompt: &str,
             _tools: &[AgentFunction],
             messages: &[AgentMessage],
+            _knobs: TurnKnobs<'_>,
         ) -> Result<u64, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(messages.len() as u64)
@@ -301,7 +303,7 @@ mod tests {
         .unwrap();
         for _ in 0..2 {
             let counted = cache
-                .count_prompt_tokens(Some("p"), "m", "", &[], &messages)
+                .count_prompt_tokens(Some("p"), "m", "", &[], &messages, TurnKnobs::default())
                 .await;
             assert_eq!(counted, Ok(1));
         }

@@ -1,9 +1,10 @@
 //! Local prompt token counting for the OpenAI families
 //! (`provider::openai::count_tokens`, `provider::openai-codex::count_tokens`)
 //! with the tiktoken tokenizers, whose vocabularies are embedded in the
-//! binary. These providers expose no metering endpoint, so the count is
-//! computed locally; it never runs the model, costs nothing, and needs no
-//! network.
+//! binary. provider-openai meters through OpenAI's Responses input_tokens
+//! route and uses this only as its fallback (Chat Completions gateways, a
+//! failed metering call); the Codex backend has no such route. The count
+//! never runs the model, costs nothing, and needs no network.
 //!
 //! Only the encoder lives here. Which text a request contributes and what the
 //! chat framing costs are in

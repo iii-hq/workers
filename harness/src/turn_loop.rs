@@ -798,6 +798,7 @@ async fn generate_step(
             ContextAssemblyInputs {
                 system_prompt: assembly_system_prompt.clone(),
                 tools: &tools,
+                response_format: response_format.as_ref(),
                 request_overhead_tokens: request_overhead_tokens
                     .saturating_add(extra_overhead_tokens),
             },
@@ -3443,6 +3444,7 @@ async fn assemble_context(
         previous_summary: anchor.summary.clone(),
         lease_key: record.session_id.clone(),
         thinking_level: record.options.thinking_level,
+        response_format: inputs.response_format.cloned(),
         tools: inputs.tools.to_vec(),
         request_overhead_tokens: inputs.request_overhead_tokens,
         // Pruning rewrites results the model already reasoned over; on a
@@ -3885,6 +3887,7 @@ struct Assembled {
 struct ContextAssemblyInputs<'a> {
     system_prompt: Option<String>,
     tools: &'a [AgentFunction],
+    response_format: Option<&'a Value>,
     request_overhead_tokens: u64,
 }
 

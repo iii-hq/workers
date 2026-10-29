@@ -140,8 +140,8 @@ pub fn write_file_atomic(dest: &Path, contents: &[u8]) -> Result<(), String> {
 /// writes from external ones (worker-mediated writes already fan out a
 /// precise on-change op; re-reporting them as `external` would double-
 /// wake subscribers). TTL bounds the map when no watcher is draining
-/// (tests, watch-init failure). Best-effort: a symlinked skills root or
-/// >TTL watcher lag yields a spurious extra refresh, never a lost one.
+/// (tests, watch-init failure). Best-effort: >TTL watcher lag yields a
+/// spurious extra refresh, never a lost one.
 static SELF_WRITES: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
 const SELF_WRITE_TTL: Duration = Duration::from_secs(5);
 

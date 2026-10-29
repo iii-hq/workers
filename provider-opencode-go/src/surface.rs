@@ -29,8 +29,8 @@ pub const REFRESH_MODELS_DESC: &str =
 
 pub const COUNT_TOKENS_ID: &str = "provider::opencode_go::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with the \
-     tiktoken tokenizers; never runs the model and costs nothing.";
+    "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with \
+     each model family's own published vocabulary; never runs the model and costs nothing.";
 
 pub const ON_ROUTER_READY_ID: &str = "provider::opencode_go::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =

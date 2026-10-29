@@ -212,15 +212,13 @@ fn start_watch(
     let mut watcher = notify::recommended_watcher(move |event| {
         let _ = tx.send(event);
     })?;
-    watcher.watch(&location.state_dir, RecursiveMode::NonRecursive)?;
-    let compose_dir = location.file.parent().unwrap_or_else(|| Path::new("."));
-    watcher.watch(compose_dir, RecursiveMode::NonRecursive)?;
+    let state_dir = watch_dirs(&mut watcher, &location)?;
 
     let healthy = Arc::new(AtomicBool::new(true));
     let task_location = location.clone();
     let task_health = healthy.clone();
     let task = tokio::spawn(async move {
-        run_watch(iii, bindings, task_location, rx, task_health).await;
+        run_watch(iii, bindings, task_location, state_dir, rx, task_health).await;
     });
     tracing::info!(
         state_dir = %location.state_dir.display(),
@@ -235,6 +233,22 @@ fn start_watch(
     })
 }
 
+/// Watches the state dir and the compose file's dir; returns the state dir
+/// in the form events name it.
+fn watch_dirs(watcher: &mut impl Watcher, location: &ProjectLocation) -> notify::Result<PathBuf> {
+    // FSEvents reports resolved paths (`/var/..` arrives as `/private/var/..`)
+    // and `III_COMPOSE_STATE_DIR` reaches us unresolved, so state.json is
+    // matched against the resolved dir; watching it makes inotify agree.
+    let state_dir = location
+        .state_dir
+        .canonicalize()
+        .unwrap_or_else(|_| location.state_dir.clone());
+    watcher.watch(&state_dir, RecursiveMode::NonRecursive)?;
+    let compose_dir = location.file.parent().unwrap_or_else(|| Path::new("."));
+    watcher.watch(compose_dir, RecursiveMode::NonRecursive)?;
+    Ok(state_dir)
+}
+
 #[derive(Debug)]
 struct PendingEvent {
     path: String,
@@ -245,6 +259,7 @@ async fn run_watch(
     iii: Arc<IIIClient>,
     bindings: Bindings,
     location: ProjectLocation,
+    state_dir: PathBuf,
     mut rx: mpsc::UnboundedReceiver<notify::Result<Event>>,
     healthy: Arc<AtomicBool>,
 ) {
@@ -264,7 +279,7 @@ async fn run_watch(
                 let Some(event) = event else { break };
                 match event {
                     Ok(event) => {
-                        for (kind, path) in changes_for_event(&location, &event) {
+                        for (kind, path) in changes_for_event(&location, &state_dir, &event) {
                             pending.insert(kind, PendingEvent {
                                 path,
                                 due: tokio::time::Instant::now() + COALESCE,
@@ -295,7 +310,11 @@ async fn run_watch(
     healthy.store(false, Ordering::Release);
 }
 
-fn changes_for_event(location: &ProjectLocation, event: &Event) -> Vec<(ChangeKind, String)> {
+fn changes_for_event(
+    location: &ProjectLocation,
+    state_dir: &Path,
+    event: &Event,
+) -> Vec<(ChangeKind, String)> {
     if matches!(event.kind, EventKind::Access(_)) {
         return Vec::new();
     }
@@ -311,7 +330,7 @@ fn changes_for_event(location: &ProjectLocation, event: &Event) -> Vec<(ChangeKi
                     .into_owned(),
             ));
         }
-        if path.parent() == Some(location.state_dir.as_path())
+        if path.parent() == Some(state_dir)
             && path.file_name().and_then(|name| name.to_str()) == Some(STATE_FILE)
         {
             changes.push((ChangeKind::State, STATE_FILE.to_string()));
@@ -400,8 +419,9 @@ mod tests {
             ],
             attrs: Default::default(),
         };
+        let location = location();
         assert_eq!(
-            changes_for_event(&location(), &event),
+            changes_for_event(&location, &location.state_dir, &event),
             [
                 (ChangeKind::State, "state.json".to_string()),
                 (ChangeKind::File, "worker-compose.yaml".to_string()),
@@ -416,6 +436,56 @@ mod tests {
             paths: vec![PathBuf::from("/state/app/state.json")],
             attrs: Default::default(),
         };
-        assert!(changes_for_event(&location(), &event).is_empty());
+        let location = location();
+        assert!(changes_for_event(&location, &location.state_dir, &event).is_empty());
+    }
+
+    /// iii-compose uses `III_COMPOSE_STATE_DIR` as given, so the state dir can
+    /// sit behind a symlink (macOS `/var`, a linked home): FSEvents reports the
+    /// resolved path.
+    #[cfg(unix)]
+    #[test]
+    fn state_dir_behind_a_symlink_reports_state_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let location = ProjectLocation {
+            file: tmp
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("worker-compose.yaml"),
+            namespace: "app".to_string(),
+            state_dir: link.clone(),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::recommended_watcher(tx).unwrap();
+        let state_dir = watch_dirs(&mut watcher, &location).unwrap();
+        let state_change = (ChangeKind::State, STATE_FILE.to_string());
+
+        std::fs::write(link.join(STATE_FILE), "{}").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let event = rx
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("state.json written through the link")
+                .unwrap();
+            if changes_for_event(&location, &state_dir, &event).contains(&state_change) {
+                break;
+            }
+        }
+
+        // The FSEvents form, checked on every platform.
+        let resolved = Event {
+            kind: EventKind::Modify(ModifyKind::Any),
+            paths: vec![real.canonicalize().unwrap().join(STATE_FILE)],
+            attrs: Default::default(),
+        };
+        assert_eq!(
+            changes_for_event(&location, &state_dir, &resolved),
+            [state_change]
+        );
     }
 }

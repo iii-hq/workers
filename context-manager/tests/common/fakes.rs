@@ -14,9 +14,9 @@ use async_trait::async_trait;
 use context_manager::core::estimate::{Estimator, HeuristicEstimator};
 use context_manager::ports::{
     Clock, LeaseRecord, LeaseStore, ModelBudget, ModelResolver, SummarizeError, SummarizeRequest,
-    Summarizer,
+    Summarizer, TurnKnobs,
 };
-use context_manager::types::{AgentFunction, AgentMessage, Model};
+use context_manager::types::{AgentFunction, AgentMessage, Model, ThinkingLevel};
 
 // ---------------------------------------------------------------------------
 // Clock
@@ -65,6 +65,8 @@ pub struct FakeModelResolver {
     pub billed_per_estimate: Mutex<Option<f64>>,
     /// How many times `count_prompt_tokens` was asked.
     pub counts: AtomicI64,
+    /// The turn knobs each count carried, in order.
+    pub knobs: Mutex<Vec<(Option<ThinkingLevel>, Option<serde_json::Value>)>>,
 }
 
 impl FakeModelResolver {
@@ -75,6 +77,7 @@ impl FakeModelResolver {
             calls: Mutex::new(Vec::new()),
             billed_per_estimate: Mutex::new(None),
             counts: AtomicI64::new(0),
+            knobs: Mutex::new(Vec::new()),
         }
     }
 
@@ -130,8 +133,13 @@ impl ModelResolver for FakeModelResolver {
         system_prompt: &str,
         tools: &[AgentFunction],
         messages: &[AgentMessage],
+        knobs: TurnKnobs<'_>,
     ) -> Result<u64, String> {
         self.counts.fetch_add(1, Ordering::SeqCst);
+        self.knobs
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push((knobs.thinking_level, knobs.response_format.cloned()));
         let ratio = (*self
             .billed_per_estimate
             .lock()

@@ -1,5 +1,5 @@
 {
-  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with the tiktoken tokenizers; never runs the model and costs nothing.",
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with each model family's own published vocabulary; never runs the model and costs nothing.",
   "function_id": "provider::opencode_go::count_tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -511,7 +511,7 @@
         "type": "array"
       },
       "model": {
-        "description": "Model id the prompt targets; selects the tokenizer (o200k_base for modern chat families and anything unknown-modern).",
+        "description": "Model id the prompt targets; its family selects the vocabulary.",
         "type": "string"
       },
       "system_prompt": {
@@ -524,7 +524,7 @@
       },
       "tools": {
         "default": null,
-        "description": "Function invocation schemas; each serialized schema counts toward the total.",
+        "description": "Function invocation schemas; each counts as the tool entry the wire sends.",
         "items": {
           "$ref": "#/definitions/AgentFunction"
         },
@@ -545,14 +545,14 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "estimator": {
-        "description": "Always `tiktoken`: a local tokenizer produced the estimate.",
+        "description": "`tokenizer` when the model's own vocabulary produced the count, `tiktoken` for the gpt models.",
         "type": "string"
       },
       "model": {
         "type": "string"
       },
       "tokens": {
-        "description": "Estimated prompt tokens for the assembled request.",
+        "description": "Prompt tokens for the assembled request.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"

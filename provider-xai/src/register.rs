@@ -219,11 +219,17 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     let iii_count = iii.clone();
     let http_count = http.clone();
     let cache_count = cache.clone();
+    let cell_count = cell.clone();
     iii.register_function(
         surface::COUNT_TOKENS_ID,
         RegisterFunction::new_async(move |req: crate::count_tokens::CountTokensRequest| {
-            let (iii, http, cache) = (iii_count.clone(), http_count.clone(), cache_count.clone());
-            async move { crate::count_tokens::handle(&iii, &http, &cache, req).await }
+            let (iii, http, cache, cell) = (
+                iii_count.clone(),
+                http_count.clone(),
+                cache_count.clone(),
+                cell_count.clone(),
+            );
+            async move { crate::count_tokens::handle(&iii, &http, &cache, &cell, req).await }
         })
         .description(surface::COUNT_TOKENS_DESC)
         .metadata(json!({ "internal": true })),

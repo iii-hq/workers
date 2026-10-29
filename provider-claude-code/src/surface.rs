@@ -33,9 +33,9 @@ pub const ON_ROUTER_READY_DESC: &str =
 
 pub const COUNT_TOKENS_ID: &str = "provider::claude-code::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, system_prompt?, tools?, messages} via the upstream \
-     count_tokens metering endpoint with the Claude Code subscription OAuth token; never \
-     runs the model and costs nothing.";
+    "Count prompt tokens for {model, system_prompt?, tools?, thinking_level?, messages} via \
+     the upstream count_tokens metering endpoint with the Claude Code subscription OAuth \
+     token; never runs the model and costs nothing.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
