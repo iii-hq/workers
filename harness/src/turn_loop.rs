@@ -673,15 +673,17 @@ async fn generate_step(
             (current_aid, None)
         }
     };
-    let (stable_prompt, assembly_system_prompt) =
-        with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
     // Static hook injections join before assembly, so the budget, the
     // compaction gate and the request count the same prompt (MOT-5569). One
     // snapshot for the whole step: a binding registering mid-step must not be
     // skipped at pre_generate as static yet missing from assembly.
     let pre_generate = deps.hooks.pre_generate.ordered();
-    let assembly_system_prompt =
-        crate::hooks::runner::with_static_prompts(&pre_generate, assembly_system_prompt);
+    let (stable_prompt, assembly_system_prompt) = with_runtime_context(
+        record.options.system_prompt.clone(),
+        &record,
+        &pre_generate,
+        &runtime_aid,
+    );
     // Registry-change notice: if a function this session may call changed or
     // left since it last acknowledged them, tell the model its cached
     // contracts may be stale. First sighting stamps silently, and so does a
@@ -3769,14 +3771,17 @@ fn compose_system_prompt(
 }
 
 /// The step's system prompt split at the cache seam: the STABLE prefix (the
-/// frozen profile/identity prompt + the frozen skills index — the same bytes
-/// for every session on the same profile) and the full prompt with the
-/// per-session runtime aid after it. The full prompt is exactly
-/// `stable + "\n\n" + aid`, which is what lets the router request carry both
-/// the flat string and the sections (MOT-4798).
+/// frozen profile/identity prompt + the frozen skills index + the static
+/// prompts `pre_generate` hooks inject — the same bytes for every session on
+/// the same profile) and the full prompt with the per-session runtime aid
+/// after it. The full prompt is exactly `stable + "\n\n" + aid`, which is
+/// what lets the router request carry both the flat string and the sections
+/// (MOT-4798); a hook prompt after the aid would be paid uncached by every
+/// session.
 fn with_runtime_context(
     system_prompt: Option<String>,
     record: &TurnRecord,
+    pre_generate: &[crate::hooks::HookBinding],
     aid: &str,
 ) -> (String, Option<String>) {
     let baseline = record
@@ -3784,8 +3789,18 @@ fn with_runtime_context(
         .skill_context
         .as_ref()
         .and_then(|context| context.baseline.as_deref());
-    let stable = compose_system_prompt(system_prompt.as_deref(), baseline, None);
-    let full = compose_system_prompt(system_prompt.as_deref(), baseline, Some(aid));
+    let stable = crate::hooks::runner::with_static_prompts(
+        pre_generate,
+        Some(compose_system_prompt(
+            system_prompt.as_deref(),
+            baseline,
+            None,
+        )),
+    )
+    .unwrap_or_default()
+    .trim_end_matches('\n')
+    .to_string();
+    let full = compose_system_prompt(Some(&stable), None, Some(aid));
     (stable, Some(full))
 }
 
@@ -5125,10 +5140,11 @@ mod tests {
             )
         };
         let (plain_stable, plain_full) =
-            super::with_runtime_context(Some("identity".into()), &record(None), &aid(None));
+            super::with_runtime_context(Some("identity".into()), &record(None), &[], &aid(None));
         let (stable, full) = super::with_runtime_context(
             Some("identity".into()),
             &record(Some(block)),
+            &[],
             &aid(Some(block)),
         );
         let full = full.unwrap();
@@ -5139,6 +5155,52 @@ mod tests {
         assert_eq!(head, "identity");
         assert!(rest.starts_with("Your session id is s_1."));
         assert!(rest.ends_with(&format!("\n\n{block}")));
+    }
+
+    /// Prevents: the static prompts hooks inject riding after the per-session
+    /// aid, where every session pays them uncached although their bytes are
+    /// the same in all of them.
+    #[test]
+    fn static_hook_prompts_sit_in_the_stable_prefix_before_the_aid() {
+        let record: crate::types::turn::TurnRecord = serde_json::from_value(serde_json::json!({
+            "turn_id": "t_1", "session_id": "s_1", "status": "running",
+            "step": 0, "turn_count": 0, "depth": 1,
+            "options": { "model": "m", "max_turns": 16 },
+            "created_at": 1, "updated_at": 1
+        }))
+        .unwrap();
+        let hook = |inject_prompt: Option<&str>| crate::hooks::HookBinding {
+            function_id: "memory::hook".into(),
+            namespace: None,
+            inject_prompt: inject_prompt.map(str::to_string),
+            functions: None,
+            sessions: None,
+            payload: None,
+            result_into: None,
+            retry_prompt: None,
+            priority: 0,
+            timeout_ms: 1_000,
+            fail_closed: false,
+        };
+        let bindings = [hook(Some("memory rules")), hook(None)];
+        let (stable, full) = super::with_runtime_context(
+            Some("identity".into()),
+            &record,
+            &bindings,
+            "Your session id is s_1.",
+        );
+        assert_eq!(stable, "identity\n\nmemory rules");
+        let full = full.unwrap();
+        assert_eq!(full, format!("{stable}\n\nYour session id is s_1."));
+        let (head, rest) = super::split_prompt_sections(&full, &stable).unwrap();
+        assert_eq!(head, stable);
+        assert_eq!(rest, "Your session id is s_1.");
+        // Without a profile prompt the hook text still leads the aid.
+        let (stable, full) = super::with_runtime_context(None, &record, &bindings, "aid");
+        assert_eq!(stable, "memory rules");
+        assert_eq!(full.as_deref(), Some("memory rules\n\naid"));
+        let (stable, full) = super::with_runtime_context(None, &record, &[], "aid");
+        assert_eq!((stable.as_str(), full.as_deref()), ("", Some("aid")));
     }
 
     /// Prevents: the model reading its working directory as an access

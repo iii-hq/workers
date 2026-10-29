@@ -205,12 +205,13 @@ fn build_parts(
             body,
         });
     }
+    // Hook prompts sit in the stable prefix, before the per-session context.
+    parts.extend(injections);
     parts.push(SystemPromptPart {
         kind: SystemPromptPartKind::Runtime,
         name: None,
         body: runtime,
     });
-    parts.extend(injections);
     parts
 }
 
@@ -268,11 +269,11 @@ mod tests {
                 SystemPromptPartKind::BuiltIn,
                 SystemPromptPartKind::Selected,
                 SystemPromptPartKind::Skills,
-                SystemPromptPartKind::Runtime,
                 SystemPromptPartKind::Injected,
+                SystemPromptPartKind::Runtime,
             ]
         );
-        assert_eq!(parts[4].name.as_deref(), Some("fp"));
+        assert_eq!(parts[3].name.as_deref(), Some("fp"));
         assert_eq!(parts[2].body, "skill index");
     }
 
