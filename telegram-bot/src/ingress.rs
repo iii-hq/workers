@@ -89,7 +89,8 @@ async fn ensure_webhook_route(deps: &Arc<Deps>) -> Result<(), Error> {
         return Ok(());
     }
     let route = functions::observe_webhook_route(&deps.iii);
-    match timeout(ROUTE_READY_WAIT, route.ready()).await {
+    let ready = timeout(ROUTE_READY_WAIT, route.ready()).await;
+    match ready {
         Ok(Ok(())) => tracing::info!(
             api_path = crate::config::WEBHOOK_API_PATH,
             "webhook http route active"

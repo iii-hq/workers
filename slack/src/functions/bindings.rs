@@ -230,7 +230,12 @@ fn observe(iii: &Arc<IIIClient>, source: &str, target: &str, filters: Option<Val
         src = src.filters(filters);
     }
     let handle = iii.observe(src, target);
-    tracing::info!(source, target, observer_id = handle.id(), "observing");
+    tracing::info!(
+        function_id = source,
+        observer_target = target,
+        observer_id = handle.id(),
+        "observing"
+    );
 }
 
 #[cfg(test)]

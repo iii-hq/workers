@@ -120,7 +120,12 @@ fn observe_event(iii: &IIIClient, source: &str, target: &str, filters: Option<Va
         src = src.filters(filters);
     }
     let handle = iii.observe(src, target);
-    tracing::info!(source, target, observer_id = handle.id(), "observing");
+    tracing::info!(
+        function_id = source,
+        observer_target = target,
+        observer_id = handle.id(),
+        "observing"
+    );
 }
 
 /// The args of the `http::on-request` observer that serves `POST /<api_path>`.
