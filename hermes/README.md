@@ -23,7 +23,7 @@ Container worker (`deploy: image`) — the image bundles the Hermes CLI (Python 
 
 Trigger sink (HTTP): `hermes::inbound` — the Hermes gateway delivers inbound platform/webhook events here; the worker republishes them on `hermes::raw-event` for other workers to react to.
 
-Trigger types: `hermes::agent-event` (normalized turn frames) and `hermes::raw-event` (raw Hermes frames and inbound deliveries); see [Event feeds](#event-feeds).
+Trigger types: `hermes::agent-event` (normalized turn frames) and `hermes::raw-event` (raw Hermes frames and inbound deliveries), also observable on iii 0.25 as `hermes::on-agent-event` and `hermes::on-raw-event`; see [Event feeds](#event-feeds).
 
 ## Quickstart
 
@@ -124,6 +124,25 @@ Each matching binding gets one fire-and-forget call with:
 `seq` counts from 0 per feed and session within one `epoch` (a new worker process starts a new epoch); order by `(epoch, seq)` and dedup by `event_id`, since deliveries may run concurrently. The binding's namespace is preserved, and `metadata` from the config (else the binding's) is forwarded. A failing consumer never fails the turn.
 
 The feeds are ephemeral: frames are neither stored nor replayed, and a consumer bound late never sees earlier frames. History lives in the session records (`hermes::status`, `hermes::sessions::list`) and the turn result `hermes::run` returns. These trigger types replace the former iii-stream feeds `agent::events` and `hermes::events` (see the guide "Migrate from iii-stream and pubsub").
+
+### How to observe (iii 0.25)
+
+`register_trigger` is deprecated in iii 0.25 and keeps working: both trigger types stay registered, unchanged, for 0.24 engines and existing consumers. On a 0.25 engine each feed is also an owner-delivered observable function:
+
+| Observable function | Same frames as |
+| --- | --- |
+| `hermes::on-agent-event` | `hermes::agent-event` |
+| `hermes::on-raw-event` | `hermes::raw-event` |
+
+```python
+observer = iii.observe(
+    {"function_id": "hermes::on-agent-event", "args": {"session_id": session_id}},
+    "my::on-hermes-event",
+    {"metadata": {"tenant": "a"}},  # the observer's own sidecar
+)
+```
+
+The args are the trigger config, `{session_id, metadata?}`, validated by the engine (`INVALID_ARGS`); `args.metadata` is accepted but not forwarded, so pass a sidecar with the observer's own `metadata` option. Your target receives the payload above, one call per frame. Observers and bindings share each feed's table, numbering and 256-entry limit (`BINDING_LIMIT` rejects an observer beyond it). Frames are routed by this worker only: invoking `hermes::on-agent-event` or `hermes::on-raw-event` directly is refused with `FORBIDDEN`. On an engine without observe (0.24), bind the trigger types.
 
 ## Scope
 

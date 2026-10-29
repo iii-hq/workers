@@ -24,5 +24,5 @@ def test_hermes_uses_current_sdk_release() -> None:
     )
     dependencies = pyproject["project"]["dependencies"]
 
-    assert "iii-sdk==0.24.6" in dependencies
-    assert "iii-helpers==0.24.6" in dependencies
+    assert "iii-sdk==0.25.0" in dependencies
+    assert "iii-helpers==0.25.0" in dependencies
