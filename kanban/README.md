@@ -215,7 +215,7 @@ console. Deleting a parent leaves its children; each then shows the parent as
 deleted. A deleted ticket can't become a subtask (restore it first), and
 restoring a subtask whose parent is gone, deleted or now a subtask itself
 detaches it, with an activity line on both. Attaching or detaching writes an activity line on both tickets and
-fires `kanban:change` for both. Creating a ticket with a `parent` does not copy
+calls `kanban::on-change` for both. Creating a ticket with a `parent` does not copy
 the parent's project or release; the console prefills them when you add a
 subtask from the parent, and you can change them.
 

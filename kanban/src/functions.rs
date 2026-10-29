@@ -606,10 +606,10 @@ fn limit(value: Option<u64>) -> Option<usize> {
 /// tickets to announce.
 pub struct Outcome<T> {
     pub result: T,
-    /// The tickets that changed, announced on `kanban:change` one event each:
-    /// the first under the call's own event name, any further one (a parent
-    /// written by an attach, a ticket moved by a ship) as `ticket.updated`.
-    /// Empty fires nothing.
+    /// The tickets that changed, announced on `kanban::on-change` one event
+    /// each: the first under the call's own event name, any further one (a
+    /// parent written by an attach, a ticket moved by a ship) as
+    /// `ticket.updated`. Empty announces nothing.
     pub tickets: Vec<TicketView>,
     pub comment: Option<Comment>,
 }
@@ -625,7 +625,7 @@ impl<T> Outcome<T> {
     }
 }
 
-/// The `kanban:change` events of one write, one per announced ticket: the
+/// The `kanban::on-change` events of one write, one per announced ticket: the
 /// first under the call's own `event` name (carrying the comment, if any), any
 /// further one (a parent written by an attach, a ticket moved by a ship) as
 /// `ticket.updated`. `at` is the write's timestamp.
@@ -652,8 +652,8 @@ pub fn change_events(
         .collect()
 }
 
-/// Run one mutation under the store lock, then fan the result out to the
-/// `kanban:change` (and, for a comment, `kanban:comment`) bindings.
+/// Run one mutation under the store lock, then call `kanban::on-change` (and,
+/// for a comment, `kanban::on-comment`) with the result when they are observed.
 async fn apply<T>(
     ctx: &Ctx,
     event: &str,

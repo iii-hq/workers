@@ -1113,7 +1113,7 @@
 /* ── chat cards ──────────────────────────────────────────────────────── */
 
 /* The facets of a ticket or a record, above its head row: the console's MetaRow, re-surfaced for a card (it is
-   made for the top of a trigger card: a bottom rule and a paper fill). */
+   made for the top of an observer card: a bottom rule and a paper fill). */
 [data-iii-ui="kanban"] .kanban-chat-meta {
   gap: 0 16px;
   min-height: 28px;
