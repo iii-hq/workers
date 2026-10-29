@@ -1,5 +1,5 @@
 //! Sandbox-target backend. Forwards every fs op to the engine daemon's
-//! `sandbox::fs::<op>` trigger via `iii.trigger`. Stateless — engine owns
+//! `sandbox::fs::<op>` function via `iii.call`. Stateless — engine owns
 //! all sandbox state, including channel allocation for write/read
 //! passthroughs.
 
@@ -15,21 +15,21 @@ use crate::fs::{
     SedArgs, SedResponse, StatArgs, StatResponse, WriteArgs, WriteResponse,
 };
 
-// TriggerFwd + IiiTriggerFwd live in `crate::triggers`; re-exported
-// here so existing `use crate::fs::sandbox::{TriggerFwd, IiiTriggerFwd}`
+// CallFwd + IiiCallFwd live in `crate::calls`; re-exported
+// here so existing `use crate::fs::sandbox::{CallFwd, IiiCallFwd}`
 // call sites inside the crate, plus the public
-// `shell::fs::sandbox::TriggerFwd` surface consumed by
+// `shell::fs::sandbox::CallFwd` surface consumed by
 // `tests/sandbox_dispatch.rs`, keep compiling without mechanical churn.
-pub use crate::triggers::{IiiTriggerFwd, TriggerFwd};
+pub use crate::calls::{CallFwd, IiiCallFwd};
 
 pub struct SandboxFsBackend {
-    fwd: Arc<dyn TriggerFwd>,
+    fwd: Arc<dyn CallFwd>,
     enabled: bool,
     sandbox_id: Uuid,
 }
 
 impl SandboxFsBackend {
-    pub fn new(fwd: Arc<dyn TriggerFwd>, enabled: bool, sandbox_id: Uuid) -> Self {
+    pub fn new(fwd: Arc<dyn CallFwd>, enabled: bool, sandbox_id: Uuid) -> Self {
         Self {
             fwd,
             enabled,
@@ -55,7 +55,7 @@ impl SandboxFsBackend {
         }
         let resp = self
             .fwd
-            .trigger(function_id, payload)
+            .call(function_id, payload)
             .await
             .map_err(|e| crate::scode::map_iii_err(&e, FsError::new))?;
         serde_json::from_value(resp)
@@ -175,8 +175,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl TriggerFwd for StubFwd {
-        async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, Error> {
+    impl CallFwd for StubFwd {
+        async fn call(&self, fid: &str, payload: Value) -> Result<Value, Error> {
             *self.captured.lock().unwrap() = Some((fid.into(), payload));
             match &self.respond_with {
                 Ok(v) => Ok(v.clone()),
@@ -360,8 +360,8 @@ mod tests {
     async fn engine_remote_with_s_code_forwards_directly() {
         struct RemoteFwd;
         #[async_trait]
-        impl TriggerFwd for RemoteFwd {
-            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+        impl CallFwd for RemoteFwd {
+            async fn call(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
                 Err(Error::Remote {
                     code: "S214".into(),
                     message: "directory not empty".into(),
@@ -388,8 +388,8 @@ mod tests {
         // the message body.
         struct WrappedFwd;
         #[async_trait]
-        impl TriggerFwd for WrappedFwd {
-            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+        impl CallFwd for WrappedFwd {
+            async fn call(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
                 Err(Error::Remote {
                     code: "invocation_failed".into(),
                     message: "handler error: S211: not found".into(),

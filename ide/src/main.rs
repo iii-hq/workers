@@ -6,6 +6,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use serde_json::Value;
 
+mod calls;
 mod code;
 mod config;
 mod configuration;
@@ -23,7 +24,6 @@ mod pty;
 mod scode;
 mod target;
 mod telemetry;
-mod triggers;
 mod turn_events;
 mod turn_observe;
 mod turn_snapshot;
@@ -241,18 +241,17 @@ async fn main() -> Result<()> {
         )),
     };
 
-    // Register the config-change trigger and reconcile BEFORE exposing public
-    // functions. The trigger registration + this reconcile sit ahead of every
-    // shell/fs function, so a failure here aborts startup before anything is
-    // exposed (fail-closed). The reconcile closes the boot race: an update that
-    // landed between the initial fetch (above) and trigger registration has no
-    // listener and no later event to repair it, so we MUST confirm the
+    // Observe configuration changes and reconcile BEFORE exposing public
+    // functions. The observer + this reconcile sit ahead of every shell/fs
+    // function, so a failure here aborts startup before anything is exposed
+    // (fail-closed). The reconcile closes the boot race: an update that
+    // landed between the initial fetch (above) and the observer becoming
+    // active has no listener and no later event to repair it, so we MUST confirm the
     // authoritative value before serving. fetch_config already retries
     // internally; the initial fetch already proved the engine reachable, so a
     // failure here means the engine just went away — refuse to serve a possibly
     // stale security policy and exit so the supervisor restarts us.
-    configuration::register_config_trigger(&iii, state.clone())
-        .context("registering configuration change trigger")?;
+    configuration::observe_config_changes(&iii, state.clone());
     configuration::reconcile(&state)
         .await
         .map_err(anyhow::Error::msg)
@@ -317,13 +316,13 @@ async fn main() -> Result<()> {
             })
             .description(
                 "Spawn a background job; returns { job_id, argv } immediately. Accepts the \
-                 shell::exec payload plus optional job_id. Register shell::job-finished with \
-                 a fresh job_id before calling exec_bg with that same ID, or omit job_id to \
-                 generate one. Duplicate retained IDs reject before execution. Host jobs \
-                 ignore timeout_ms and use the configured background hard cap; read output \
-                 with shell::status, list jobs with shell::list. Spawn-time failures are \
-                 plain-string messages; later failures emit shell::job-finished and appear \
-                 in shell::status.",
+                 shell::exec payload plus optional job_id. Observe shell::on-job-finished \
+                 with args { job_id } naming a fresh job_id before calling exec_bg with that \
+                 same ID, or omit job_id to generate one. Duplicate retained IDs reject before \
+                 execution. Host jobs ignore timeout_ms and use the configured background \
+                 hard cap; read output with shell::status, list jobs with shell::list. \
+                 Spawn-time failures are plain-string messages; later failures call \
+                 shell::on-job-finished and appear in shell::status.",
             ),
         );
     }
@@ -426,7 +425,7 @@ async fn main() -> Result<()> {
     // + sandbox toggle from AppState; the typed schema is attached separately.
     register_fs(&iii, &state);
 
-    // Injected console UI: the explorer page + shell::* trigger renderers
+    // Injected console UI: the explorer page + shell::* function-call renderers
     // (assets embedded from ui/dist; see src/ui.rs).
     ui::register(&iii);
 
@@ -441,20 +440,19 @@ async fn main() -> Result<()> {
     ui_state.migrate_legacy(&iii).await;
     ui_state::register(&iii, ui_state);
 
-    // The workspace change feed: a system-level directory watch behind the
-    // shell::changed trigger type — subscribers name the directory in their
-    // binding config.
-    events::register_changed_trigger(&iii, watch_resolver.clone());
+    // The workspace change feed: a system-level directory watch behind
+    // shell::on-changed — observers name the directory in their args.
+    events::register_changed(&iii, watch_resolver.clone());
 
     // The repository state feed: HEAD, index, refs and worktrees of the
-    // repository a bound directory sits in — what shell::changed leaves out
-    // (.git), so the branch chip and the Git window never re-read on a timer
-    // or on focus.
-    git_events::register_git_changed_trigger(&iii, watch_resolver.clone());
+    // repository an observed directory sits in — what shell::on-changed
+    // leaves out (.git), so the branch chip and the Git window never re-read
+    // on a timer or on focus.
+    git_events::register_git_changed(&iii, watch_resolver.clone());
 
-    // The background-job completion feed: subscribers name a job_id in their
-    // binding config and are woken once, instead of polling shell::status.
-    job_events::register_job_finished_trigger(&iii);
+    // The background-job completion feed: observers name a job_id in their
+    // args and are woken once, without polling shell::status.
+    job_events::register_job_finished(&iii);
 
     // Durable per-session change history: harness hooks on shell/coder
     // writes, read back by shell::turns::list / shell::turns::get.

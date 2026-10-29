@@ -10,7 +10,7 @@
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -93,7 +93,7 @@ pub struct IiiRouter(pub IIIClient);
 impl Router for IiiRouter {
     async fn complete(&self, payload: Value) -> Result<Value, Error> {
         self.0
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::complete".to_string(),
                 payload,
                 action: None,

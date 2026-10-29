@@ -56,7 +56,7 @@ export async function fetchSessionTurns(
   host: Host,
   sessionId: string,
 ): Promise<SessionTurnSummary[]> {
-  const out = await host.iii.trigger<{ turns?: SessionTurnSummary[] }>(
+  const out = await host.iii.call<{ turns?: SessionTurnSummary[] }>(
     'shell::turns::list',
     { session_id: sessionId },
   )
@@ -68,7 +68,7 @@ export async function fetchSessionTurn(
   sessionId: string,
   turnId: string,
 ): Promise<SessionTurn | null> {
-  const out = await host.iii.trigger<{ turn?: SessionTurn | null }>(
+  const out = await host.iii.call<{ turn?: SessionTurn | null }>(
     'shell::turns::get',
     { session_id: sessionId, turn_id: turnId },
   )

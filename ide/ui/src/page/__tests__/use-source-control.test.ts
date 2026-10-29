@@ -20,7 +20,7 @@ vi.mock('../git-actions', async (original) => ({
 // out); every git run is recorded by its first two arguments.
 function repository(status: string, diff: string | null) {
   const repo = { status, diff, runs: [] as string[], args: [] as string[][] }
-  const trigger = async (_fn: string, payload: { args: string[] }) => {
+  const call = async (_fn: string, payload: { args: string[] }) => {
     // Every read runs with --no-optional-locks first (git.ts READ_ONLY).
     const [verb, flag] = payload.args[0] === '--no-optional-locks' ? payload.args.slice(1) : payload.args
     repo.runs.push(`${verb} ${flag}`)
@@ -36,7 +36,7 @@ function repository(status: string, diff: string | null) {
     const timedOut = verb === 'diff' && repo.diff === null
     return { exit_code: 0, stdout, stderr: '', timed_out: timedOut, stdout_truncated: false, stderr_truncated: false }
   }
-  return { repo, host: { iii: { trigger } } as unknown as Host }
+  return { repo, host: { iii: { call } } as unknown as Host }
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))

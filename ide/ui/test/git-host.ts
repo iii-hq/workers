@@ -53,7 +53,7 @@ interface Payload {
 
 export const host = {
   iii: {
-    trigger: async (fn: string, payload: Payload) => {
+    call: async (fn: string, payload: Payload) => {
       if (fn === 'coder::read-file') {
         return {
           results: (payload.paths ?? []).map((path) =>

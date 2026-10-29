@@ -32,15 +32,15 @@ function reply(overrides: Partial<ExecReply> = {}): ExecReply {
 }
 
 function mockedHost(...responses: Array<unknown | Error>) {
-  const trigger = vi.fn(async () => {
+  const call = vi.fn(async () => {
     const next = responses.shift()
     if (next instanceof Error) throw next
     if (next === undefined) throw new Error('unexpected shell::exec call')
     return next
   })
   return {
-    host: { iii: { trigger } } as unknown as Parameters<typeof gitComparison>[0],
-    trigger,
+    host: { iii: { call } } as unknown as Parameters<typeof gitComparison>[0],
+    call,
   }
 }
 
@@ -73,7 +73,7 @@ describe('gitComparison', () => {
       ].join('\0') + '\0'
     const aggregate =
       ['R090', 'packages/app/src/old.ts', 'packages/app/src/new.ts'].join('\0') + '\0'
-    const { host, trigger } = uncommittedHost(status, aggregate, 'packages/app/\n')
+    const { host, call } = uncommittedHost(status, aggregate, 'packages/app/\n')
 
     const state = await gitComparison(host, '/repo/packages/app', 'uncommitted')
 
@@ -103,7 +103,7 @@ describe('gitComparison', () => {
         },
       ],
     })
-    expect(trigger).toHaveBeenNthCalledWith(2, 'shell::exec', {
+    expect(call).toHaveBeenNthCalledWith(2, 'shell::exec', {
       command: 'git',
       args: ['--no-optional-locks', 
         'status',
@@ -442,7 +442,7 @@ describe('gitComparison', () => {
     const status = ['## main', 'MM sub/both.ts', '?? sub/new.ts'].join('\0') + '\0'
     const read = await gitChanges(repoHost(status, 'sub/\n').host, '/repo/sub')
     // Only HEAD's check and its diff run: no second probe or status.
-    const { host, trigger } = mockedHost(
+    const { host, call } = mockedHost(
       reply({ stdout: `${'a'.repeat(40)}\n` }),
       reply({ stdout: 'M\0sub/both.ts\0' }),
     )
@@ -454,7 +454,7 @@ describe('gitComparison', () => {
         { path: 'new.ts', status: 'untracked' },
       ],
     })
-    expect(trigger.mock.calls.map((call) => (call as unknown[])[1])).toMatchObject([
+    expect(call.mock.calls.map((call) => (call as unknown[])[1])).toMatchObject([
       { args: ['--no-optional-locks', 'rev-parse', '--verify', '--quiet', 'HEAD'] },
       { args: expect.arrayContaining(['--no-optional-locks', 'diff', 'HEAD']) },
     ])
@@ -501,13 +501,13 @@ describe('gitReadSource', () => {
   it('resolves empty, HEAD, index, revision, and worktree descriptors', async () => {
     const empty = mockedHost()
     await expect(gitReadSource(empty.host, '/repo', { kind: 'empty' })).resolves.toBe('')
-    expect(empty.trigger).not.toHaveBeenCalled()
+    expect(empty.call).not.toHaveBeenCalled()
 
     const head = mockedHost(reply({ stdout: 'committed\n' }))
     await expect(
       gitReadSource(head.host, '/repo', { kind: 'head', path: 'src/app.ts' }),
     ).resolves.toBe('committed\n')
-    expect(head.trigger).toHaveBeenCalledWith('shell::exec', {
+    expect(head.call).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
       args: ['--no-optional-locks', 'show', 'HEAD:./src/app.ts'],
       cwd: '/repo',
@@ -518,7 +518,7 @@ describe('gitReadSource', () => {
     await expect(
       gitReadSource(index.host, '/repo', { kind: 'index', path: 'src/app.ts' }),
     ).resolves.toBe('staged\n')
-    expect(index.trigger).toHaveBeenCalledWith('shell::exec', {
+    expect(index.call).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
       args: ['--no-optional-locks', 'show', ':./src/app.ts'],
       cwd: '/repo',
@@ -533,7 +533,7 @@ describe('gitReadSource', () => {
         path: 'src/app.ts',
       }),
     ).resolves.toBe('historical\n')
-    expect(revision.trigger).toHaveBeenCalledWith('shell::exec', {
+    expect(revision.call).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
       args: ['--no-optional-locks', 'show', 'abc123:./src/app.ts'],
       cwd: '/repo',
@@ -544,7 +544,7 @@ describe('gitReadSource', () => {
     await expect(
       gitReadSource(worktree.host, '/repo', { kind: 'worktree', path: 'src/app.ts' }),
     ).resolves.toBe('working\n')
-    expect(worktree.trigger).toHaveBeenCalledWith('coder::read-file', {
+    expect(worktree.call).toHaveBeenCalledWith('coder::read-file', {
       path: '/repo/src/app.ts',
     })
   })
@@ -590,7 +590,7 @@ describe('git metadata', () => {
   it('returns recent commit ids and subjects and bounds the requested count', async () => {
     const first = 'a'.repeat(40)
     const second = 'b'.repeat(40)
-    const { host, trigger } = mockedHost(
+    const { host, call } = mockedHost(
       reply({ stdout: 'true\n' }),
       reply({ stdout: `${first}\n` }),
       reply({ stdout: `${first}\0First subject\n${second}\0Second subject\n` }),
@@ -603,7 +603,7 @@ describe('git metadata', () => {
         { sha: second, subject: 'Second subject' },
       ],
     })
-    expect(trigger).toHaveBeenNthCalledWith(3, 'shell::exec', {
+    expect(call).toHaveBeenNthCalledWith(3, 'shell::exec', {
       command: 'git',
       args: ['--no-optional-locks', 'log', '--max-count=100', '--format=%H%x00%s'],
       cwd: '/repo',
@@ -613,7 +613,7 @@ describe('git metadata', () => {
 
   it('returns no commits for an unborn repository', async () => {
     // The log runs beside HEAD's check, and fails on an unborn HEAD.
-    const { host, trigger } = mockedHost(
+    const { host, call } = mockedHost(
       reply({ stdout: 'true\n' }),
       reply({ exit_code: 1 }),
       reply({ exit_code: 128, stderr: 'fatal: your current branch does not have any commits yet' }),
@@ -622,7 +622,7 @@ describe('git metadata', () => {
       kind: 'ready',
       commits: [],
     })
-    expect(trigger).toHaveBeenCalledTimes(3)
+    expect(call).toHaveBeenCalledTimes(3)
   })
 
   it('lists local and remote refs while omitting symbolic remote HEAD aliases', async () => {
@@ -634,7 +634,7 @@ describe('git metadata', () => {
         `refs/remotes/origin/HEAD\0${remoteSha}\0 \0refs/remotes/origin/main`,
         `refs/remotes/origin/main\0${remoteSha}\0 \0`,
       ].join('\n') + '\n'
-    const { host, trigger } = mockedHost(
+    const { host, call } = mockedHost(
       reply({ stdout: 'true\n' }),
       reply({ stdout: output }),
     )
@@ -658,7 +658,7 @@ describe('git metadata', () => {
         },
       ],
     })
-    expect(trigger).toHaveBeenNthCalledWith(2, 'shell::exec', {
+    expect(call).toHaveBeenNthCalledWith(2, 'shell::exec', {
       command: 'git',
       args: ['--no-optional-locks', 
         'for-each-ref',
@@ -696,12 +696,12 @@ describe('git metadata', () => {
 
 describe('gitHeadBaseline', () => {
   it("reads the committed body from the file's own directory", async () => {
-    const { host, trigger } = mockedHost(reply({ stdout: 'committed\n' }))
+    const { host, call } = mockedHost(reply({ stdout: 'committed\n' }))
 
     await expect(
       gitHeadBaseline(host, '/root/nested/src', 'app.ts'),
     ).resolves.toBe('committed\n')
-    expect(trigger).toHaveBeenCalledWith('shell::exec', {
+    expect(call).toHaveBeenCalledWith('shell::exec', {
       command: 'git',
       args: ['--no-optional-locks', 'show', 'HEAD:./app.ts'],
       cwd: '/root/nested/src',

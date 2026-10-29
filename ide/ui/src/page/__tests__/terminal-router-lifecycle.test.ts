@@ -5,16 +5,16 @@ import {
   terminalOutputRouterHost,
 } from '../terminal-output-router'
 
-vi.mock('../../function-trigger', () => ({
-  createShellTriggerRenderer: () => ({}),
+vi.mock('../../function-call', () => ({
+  createShellCallRenderer: () => ({}),
 }))
-vi.mock('../../function-trigger/AgentRunView', () => ({
+vi.mock('../../function-call/AgentRunView', () => ({
   createAgentRunRenderer: () => ({}),
 }))
-vi.mock('../../function-trigger/FileChangesView', () => ({
+vi.mock('../../function-call/FileChangesView', () => ({
   createFileChangesRenderer: () => ({}),
 }))
-vi.mock('../../function-trigger/ScaffoldView', () => ({
+vi.mock('../../function-call/ScaffoldView', () => ({
   createScaffoldRenderer: () => ({}),
 }))
 vi.mock('../index', () => ({ ShellExplorerPage: () => null }))
@@ -32,7 +32,7 @@ describe('terminal output router lifecycle', () => {
         on: vi.fn(() => offOutput),
       },
       pages: { register: pageRegister },
-      functionTriggers: { register: vi.fn(() => vi.fn()) },
+      functionCalls: { register: vi.fn(() => vi.fn()) },
       chat: { registerTurnSummary: vi.fn(() => vi.fn()), registerComposerControl },
     } as never
 

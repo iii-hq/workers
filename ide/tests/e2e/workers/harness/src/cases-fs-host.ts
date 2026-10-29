@@ -47,7 +47,7 @@ export async function fsWriteStream(
       channel.writer.stream.end(() => resolve());
     });
   });
-  const triggerPromise = ctx.call('shell::fs::write', {
+  const callPromise = ctx.call('shell::fs::write', {
     target: args.target ?? { kind: 'host' },
     path: args.path,
     mode: args.mode ?? '0644',
@@ -56,7 +56,7 @@ export async function fsWriteStream(
   });
   await writePromise;
   channel.writer.close();
-  return (await triggerPromise) as { bytes_written: number; path: string };
+  return (await callPromise) as { bytes_written: number; path: string };
 }
 
 export async function fsReadStream(

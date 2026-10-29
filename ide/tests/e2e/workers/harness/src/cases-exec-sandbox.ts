@@ -4,7 +4,7 @@ import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts
 // shell::exec / shell::exec_bg.
 //
 // Unlike the fs-sandbox cases (which mock the engine's sandbox::fs::*
-// triggers to test shell's wire shape only), these cases drive the
+// functions to test shell's wire shape only), these cases drive the
 // *real* iii-sandbox worker. The flow is:
 //
 //   1. preflight: sandbox::create — boots a microVM, returns sandbox_id.
@@ -14,7 +14,7 @@ import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts
 //      clear "install iii-sandbox" message instead of a wall of red.
 //   2. cases: each one calls shell::exec / shell::exec_bg with
 //      target = { kind: 'sandbox', sandbox_id }. The engine routes the
-//      sandbox::exec trigger to iii-sandbox, which runs the command in
+//      sandbox::exec call to iii-sandbox, which runs the command in
 //      the microVM and returns the real result.
 //   3. teardown: the last case calls sandbox::stop on the shared
 //      sandbox.
@@ -228,7 +228,7 @@ export const EXEC_SANDBOX_CASES: TestCase[] = [
       );
       if (!sandbox_id) return;
       // Start a long-running sandbox job (sleep 30) capped at 1s so the
-      // server-side timeout fires fast. Kill it while the trigger is
+      // server-side timeout fires fast. Kill it while the call is
       // still in flight. shell::kill must:
       //   - return killed: true
       //   - include the caveat string ("sandbox::exec ... timeout_ms")
@@ -241,7 +241,7 @@ export const EXEC_SANDBOX_CASES: TestCase[] = [
         timeout_ms: 1000,
         target: { kind: 'sandbox', sandbox_id },
       });
-      // Brief wait so the tokio task is parked inside fwd.trigger.
+      // Brief wait so the tokio task is parked inside fwd.call.
       await ctx.sleep(150);
       const killResp = await ctx.call('shell::kill', { job_id: start.job_id });
       expectEqual(killResp.killed, true, 'kill reports killed=true for sandbox job');

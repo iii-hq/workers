@@ -1,6 +1,6 @@
 //! Sandbox-target exec backend. Forwards `cmd` + `args` + `timeout_ms`
-//! to `sandbox::exec` via `iii.trigger`. Stateless — the engine owns
-//! the sandbox lifecycle. Stdout/stderr arrive in the trigger response;
+//! to `sandbox::exec` via `iii.call`. Stateless — the engine owns
+//! the sandbox lifecycle. Stdout/stderr arrive in the call's response;
 //! shell does not stream them.
 
 use async_trait::async_trait;
@@ -9,11 +9,11 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::calls::CallFwd;
 use crate::exec::policy::ExecOverrides;
 use crate::exec::{backend::ExecBackend, error::ExecError, ExecCallResult, ExecOutcome};
-use crate::triggers::TriggerFwd;
 
-/// Wire response from the engine's `sandbox::exec` trigger.
+/// Wire response from the engine's `sandbox::exec` function.
 /// `pub(crate)` because `functions::exec_bg::spawn_sandbox_job` (T9)
 /// also deserializes this same shape when populating a `JobRecord`.
 #[derive(Debug, Deserialize)]
@@ -28,13 +28,13 @@ pub(crate) struct SandboxExecResponse {
 }
 
 pub struct SandboxExecBackend {
-    fwd: Arc<dyn TriggerFwd>,
+    fwd: Arc<dyn CallFwd>,
     enabled: bool,
     sandbox_id: Uuid,
 }
 
 impl SandboxExecBackend {
-    pub fn new(fwd: Arc<dyn TriggerFwd>, enabled: bool, sandbox_id: Uuid) -> Self {
+    pub fn new(fwd: Arc<dyn CallFwd>, enabled: bool, sandbox_id: Uuid) -> Self {
         Self {
             fwd,
             enabled,
@@ -79,7 +79,7 @@ impl ExecBackend for SandboxExecBackend {
             "timeout_ms": timeout_ms,
         });
 
-        let resp = match self.fwd.trigger("sandbox::exec", payload).await {
+        let resp = match self.fwd.call("sandbox::exec", payload).await {
             Ok(v) => v,
             Err(e) => {
                 let exec_err = crate::scode::map_iii_err(&e, ExecError::new);
@@ -178,8 +178,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl TriggerFwd for StubFwd {
-        async fn trigger(&self, fid: &str, payload: Value) -> Result<Value, Error> {
+    impl CallFwd for StubFwd {
+        async fn call(&self, fid: &str, payload: Value) -> Result<Value, Error> {
             *self.captured.lock().unwrap() = Some((fid.into(), payload));
             self.next
                 .lock()
@@ -338,7 +338,7 @@ mod tests {
         // sandbox::exec timeout (observed in the e2e harness):
         //   { "code": "S200", "type": "execution",
         //     "message": "exec timed out after N ms", ... }
-        // The trigger errors out, but shell must surface a successful
+        // The call errors out, but shell must surface a successful
         // ExecOutcome with timed_out=true so callers see the same shape
         // the host backend produces on timeout.
         let stub = StubFwd::handler_err(

@@ -42,7 +42,7 @@ export class Runner {
     // iii-sandbox is engine-owned and lives in `default`; only its fs
     // functions are mocked, in this suite's own namespace.
     const realSandbox = functionId.startsWith('sandbox::') && !functionId.startsWith('sandbox::fs::');
-    return await this.opts.iii.trigger<unknown, any>({
+    return await this.opts.iii.call<unknown, any>({
       function_id: functionId,
       payload,
       ...(realSandbox ? { namespace: 'default' } : {}),

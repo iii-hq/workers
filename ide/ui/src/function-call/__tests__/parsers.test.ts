@@ -39,7 +39,7 @@ import {
 const SB = '00000000-0000-0000-0000-000000000000'
 
 /** Build a `{ content, details, terminate }` envelope identical to
-    what `harness/src/turn-orchestrator/agent-trigger.ts` produces. */
+    what the harness's agent call wrapper produces. */
 function wrap<T>(details: T) {
   return {
     content: [{ type: 'text', text: JSON.stringify(details) }],
@@ -582,19 +582,19 @@ describe('parseShellErrorDisplay', () => {
     const out = parseShellErrorDisplay({
       error: {
         kind: 'function_error',
-        message: 'trigger_failed: IIIInvocationError: invocation_failed',
+        message: 'call_failed: IIIInvocationError: invocation_failed',
         details: {
           schema_version: 1,
           status: 'denied',
           denied_by: 'gate_unavailable',
           function_id: 'shell::status',
           reason:
-            'trigger_failed: IIIInvocationError: S211: no such job: job-x',
+            'call_failed: IIIInvocationError: S211: no such job: job-x',
         },
         content: [
           {
             type: 'text',
-            text: 'trigger_failed: IIIInvocationError: S211: no such job: job-x',
+            text: 'call_failed: IIIInvocationError: S211: no such job: job-x',
           },
         ],
       },
@@ -695,7 +695,7 @@ describe('extractEmbeddedSCode', () => {
   it('pulls the first S-code out of free text', () => {
     expect(
       extractEmbeddedSCode(
-        'trigger_failed: IIIInvocationError: S211: no such job: job-x',
+        'call_failed: IIIInvocationError: S211: no such job: job-x',
       ),
     ).toBe('S211')
     expect(extractEmbeddedSCode('handler error: S215: cwd escapes jail')).toBe(
@@ -719,7 +719,15 @@ describe('stripHandlerPrefix', () => {
     )
   })
 
-  it('strips the harness trigger_failed class prefix', () => {
+  it('strips the harness call_failed class prefix', () => {
+    expect(
+      stripHandlerPrefix(
+        'call_failed: IIIInvocationError: S211: no such job',
+      ),
+    ).toBe('S211: no such job')
+  })
+
+  it('strips the class prefix stored conversations carry', () => {
     expect(
       stripHandlerPrefix(
         'trigger_failed: IIIInvocationError: S211: no such job',

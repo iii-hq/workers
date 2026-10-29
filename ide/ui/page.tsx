@@ -1,8 +1,8 @@
 /**
  * Entry for the shell worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/page.js and served
- * over the `console:script` trigger (see src/ui.rs). The stylesheet is
- * its own asset: ./styles.css ships over `console:style` as
+ * as a `console::ui::asset` of kind `script` (see src/ui.rs). The
+ * stylesheet is its own asset: ./styles.css ships as kind `style`, at
  * ide/styles.css.
  *
  * `setup(host)` composes the worker's two console contributions:
@@ -10,7 +10,7 @@
  * - src/page/             — the shell explorer (page `ide`): file tree +
  *                           git + search sidebar beside the shared Monaco
  *                           editor / FileDiff pane
- * - src/function-trigger/ — how shell::* function triggers render in
+ * - src/function-call/    — how shell::* function calls render in
  *                           chat/traces (moved out of the console SPA)
  *
  * Registrations go through `host` so the loader disposes them on hot
@@ -18,10 +18,10 @@
  */
 
 import type { Host, PageRenderProps } from '@iii-dev/console-ui'
-import { createShellTriggerRenderer } from './src/function-trigger'
-import { createAgentRunRenderer } from './src/function-trigger/AgentRunView'
-import { createFileChangesRenderer } from './src/function-trigger/FileChangesView'
-import { createScaffoldRenderer } from './src/function-trigger/ScaffoldView'
+import { createShellCallRenderer } from './src/function-call'
+import { createAgentRunRenderer } from './src/function-call/AgentRunView'
+import { createFileChangesRenderer } from './src/function-call/FileChangesView'
+import { createScaffoldRenderer } from './src/function-call/ScaffoldView'
 import { ShellExplorerPage } from './src/page'
 import { registerShellPalette } from './src/page/palette'
 import { ShellTurnSummary } from './src/page/ShellTurnSummary'
@@ -47,10 +47,10 @@ export default function setup(host: Host) {
   // general shell renderer so their non-null card and display metadata win.
   // Agent runs are terminal-shaped work, so the terminal owner claims them —
   // one control here instead of the same button in every agent worker.
-  host.functionTriggers.register(createAgentRunRenderer(host))
-  host.functionTriggers.register(createFileChangesRenderer(host))
-  host.functionTriggers.register(createScaffoldRenderer(host))
-  host.functionTriggers.register(createShellTriggerRenderer())
+  host.functionCalls.register(createAgentRunRenderer(host))
+  host.functionCalls.register(createFileChangesRenderer(host))
+  host.functionCalls.register(createScaffoldRenderer(host))
+  host.functionCalls.register(createShellCallRenderer())
 
   host.chat?.registerTurnSummary?.({
     id: 'shell-last-turn',

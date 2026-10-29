@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
@@ -13,10 +13,10 @@ vi.mock('@iii-dev/console-ui', () => ({
 
 import { createAgentRunRenderer } from '../AgentRunView'
 
-function message(functionId: string, extra: Partial<FunctionTriggerMessage> = {}): FunctionTriggerMessage {
+function message(functionId: string, extra: Partial<FunctionCallMessage> = {}): FunctionCallMessage {
   return {
     id: 'message-1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId,
     input: { cwd: '/workspace/project' },
     output: { ok: true },

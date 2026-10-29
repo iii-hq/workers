@@ -3,7 +3,7 @@
 
    The refs are re-read (a few tens of milliseconds) when anything might
    have moved them: the root, the caller's refresh key, the ide worker
-   reporting the repository moved (`shell::git-changed`: a commit, a fetch
+   reporting the repository moved (`shell::on-git-changed`: a commit, a fetch
    or a switch in a terminal), a new filter or branch. When their listing is unchanged
    nothing else runs (a new filter's log still starts over, once); when it
    changed, the log starts over from the new tips, reading as many rows as

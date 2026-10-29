@@ -254,7 +254,7 @@ async fn exec_handler_runs_command() {
 }
 
 /// `command` is a required field — serde produces "missing field `command`"
-/// when absent. The SDK forwards that string verbatim as the trigger error.
+/// when absent. The SDK forwards that string verbatim as the call error.
 #[test]
 fn exec_request_rejects_missing_command() {
     let err = parse_err::<ExecRequest>(json!({"args": ["ok"]}));

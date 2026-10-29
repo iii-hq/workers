@@ -504,17 +504,18 @@ export function extractEmbeddedSCode(message: string): string | null {
   return message.match(/\b(S\d{3}):/)?.[1] ?? null
 }
 
-/** Strip the harness/SDK Display prefixes ("trigger_failed: <Class>: ",
+/** Strip the harness/SDK Display prefixes ("call_failed: <Class>: ",
     "handler error: ", "serialization error: ") for the headline — the
-    raw text stays available in the raw-json tab. */
+    raw text stays available in the raw-json tab. Stored conversations
+    carry the same class prefix as "trigger_failed: <Class>: ". */
 export function stripHandlerPrefix(message: string): string {
   return message
-    .replace(/^trigger_failed:.*?:\s*/, '')
+    .replace(/^(?:call|trigger)_failed:.*?:\s*/, '')
     .replace(/^(?:handler error|serialization error):\s*/, '')
 }
 
 /** Synthesize a wire display from an S-code embedded in free text —
-    `"trigger_failed: IIIInvocationError: S211: no such job: job-x"` →
+    `"call_failed: IIIInvocationError: S211: no such job: job-x"` →
     `{ code: 'S211', message: 'no such job: job-x' }`. */
 function wireFromText(text: string): ErrorDisplay | null {
   const match = text.match(/\b(S\d{3}):\s*([\s\S]+)/)
@@ -561,7 +562,7 @@ function collectStringCandidates(value: unknown): string[] {
  *    in the candidate traversal, or JSON embedded in strings.
  * 2. S-codes stringified into prose (the load-bearing real-world path):
  *    the harness re-wraps shell's plain-text errors into a gate-denial
- *    envelope whose `reason` reads e.g. `"trigger_failed:
+ *    envelope whose `reason` reads e.g. `"call_failed:
  *    IIIInvocationError: S211: no such job: job-x"` — scan every string
  *    candidate and synthesize the wire display from text.
  * 3. Delegate to `parseErrorDisplay` for denials without S-codes,

@@ -70,11 +70,11 @@ async function readAll(h: Host, filter: LogFilter = {}, size = 1000): Promise<Lo
 
 /** The host with every stdout cut to `cap` bytes, as the worker's output cap does. */
 function capped(cap: number): Host {
-  const inner = host as unknown as { iii: { trigger: (fn: string, payload: unknown) => Promise<unknown> } }
+  const inner = host as unknown as { iii: { call: (fn: string, payload: unknown) => Promise<unknown> } }
   return {
     iii: {
-      trigger: async (fn: string, payload: unknown) => {
-        const out = (await inner.iii.trigger(fn, payload)) as { stdout?: string; stdout_truncated?: boolean }
+      call: async (fn: string, payload: unknown) => {
+        const out = (await inner.iii.call(fn, payload)) as { stdout?: string; stdout_truncated?: boolean }
         if (typeof out.stdout !== 'string' || out.stdout.length <= cap) return out
         return { ...out, stdout: out.stdout.slice(0, cap), stdout_truncated: true }
       },

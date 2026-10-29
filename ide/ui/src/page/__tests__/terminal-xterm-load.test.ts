@@ -106,7 +106,7 @@ function mountPane(importModule?: () => Promise<unknown>) {
       browserId: 'console-test',
       on: () => () => undefined,
       addConnectionStateListener: () => () => undefined,
-      trigger: async () => undefined,
+      call: async () => undefined,
     },
     importModule,
   } as unknown as Host

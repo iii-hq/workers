@@ -26,7 +26,7 @@ async function git(
   cwd: string,
   args: string[],
 ): Promise<ExecResponse> {
-  return host.iii.trigger<ExecResponse>('shell::exec', {
+  return host.iii.call<ExecResponse>('shell::exec', {
     command: 'git',
     args: [READ_ONLY, ...args],
     cwd,
