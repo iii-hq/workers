@@ -8,11 +8,12 @@
 //!   3. Register the config schema (+ seed) and fetch the authoritative
 //!      value — a required boot dependency; failure aborts startup.
 //!   4. Probe `git --version` (warn below 2.35).
-//!   5. Register the six `worktree::*` trigger types FIRST so function
-//!      handlers can capture the subscriber sets.
-//!   6. Register the eleven public functions.
-//!   7. Register the config-change handler + `configuration` trigger, then
-//!      bind the prune cron.
+//!   5. Register the six `worktree::on-*` event functions.
+//!   6. Register the eleven public functions, and observe `http::on-request`
+//!      for the read-only ones.
+//!   7. Register the config-change handler and observe
+//!      `configuration::on-updated` with it, then observe `cron::on-tick` for
+//!      the prune schedule.
 //!   8. Sleep on Ctrl+C, then shut down cleanly.
 
 use std::sync::Arc;
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, InitOptions, ObserverState, Source};
 use tokio::sync::RwLock;
 
 use worktree::configuration::{self, ConfigCell, CronSlot};
@@ -120,8 +121,8 @@ async fn main() -> Result<()> {
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg.clone())));
 
-    let sets = worktree::events::register_trigger_types(&iii);
-    let emitter = Arc::new(Emitter::new(sets, Arc::new(IiiDeliverer::new(iii.clone()))));
+    worktree::events::register_functions(&iii);
+    let emitter = Arc::new(Emitter::new(Arc::new(IiiDeliverer::new(iii.clone()))));
 
     let deps = Arc::new(Deps {
         cell: cell.clone(),
@@ -138,32 +139,31 @@ async fn main() -> Result<()> {
     // console-ui crate clones it into its hot-reload watcher task).
     worktree::ui::register(&iii);
 
-    // Best-effort HTTP exposure for the read-only surface. The `http`
-    // trigger type may be absent (no http worker installed); a failed
-    // registration warns and the worker keeps serving the bus.
+    // Best-effort HTTP exposure for the read-only surface: one observer of
+    // `http::on-request` per route. Without an http worker the observers stay
+    // `pending` and the worker keeps serving the bus; a rejected route warns.
     for function_id in [
         "worktree::list",
         "worktree::get",
         "worktree::status",
         "worktree::validate",
     ] {
-        let api_path = function_id.replace("::", "/");
-        match iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
-            "http".to_string(),
-            function_id.to_string(),
-            serde_json::json!({ "api_path": api_path, "http_method": "POST" }),
-        )) {
-            Ok(_) => tracing::info!(function_id, api_path, "http trigger registered"),
-            Err(e) => {
-                tracing::warn!(error = %e, function_id, "http trigger registration failed")
+        let path = format!("/{}", function_id.replace("::", "/"));
+        let route = iii.observe(
+            Source::function("http::on-request")
+                .args(serde_json::json!({ "method": "POST", "path": &path })),
+            function_id,
+        );
+        route.on_state_change(move |state, reason| {
+            if *state == ObserverState::Error {
+                tracing::warn!(function_id, reason = ?reason, "http route rejected");
             }
-        }
+        });
+        tracing::info!(function_id, path = %path, "http route observed");
     }
 
     let cron = CronSlot::default();
-    if let Err(e) = configuration::register_config_trigger(&iii, cell, cron.clone()) {
-        tracing::warn!(error = %e, "failed to bind the configuration trigger");
-    }
+    configuration::observe_config_changes(&iii, cell, cron.clone());
     cron.rebind(&iii, &cfg.prune_schedule);
 
     tracing::info!("worktree ready, waiting for invocations");

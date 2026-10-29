@@ -3,8 +3,9 @@
  * (PageShell/PageHeader from @iii-dev/console-ui) over a live repo →
  * worktree → session topology graph (./WorktreeGraph) and a per-worktree
  * detail column (./WorktreeDetailPanel). Data is `worktree::list
- * {include_status:true}`, refreshed on all six lifecycle trigger types
- * with a poll fallback (`useWorkerLive`). Read-only on purpose:
+ * {include_status:true}`, refreshed on every call of the six
+ * `worktree::on-*` lifecycle functions it observes, and on tab focus while
+ * the observers are unavailable (`useWorkerLive`). Read-only on purpose:
  * create / claim / land stay in agent + CLI flows.
  *
  * Layout adapts to the width the page HAS (`useContainerNarrow` on its own
@@ -39,7 +40,7 @@ import { WorktreeGraph } from './WorktreeGraph'
 import {
   cn,
   listWorktrees,
-  WORKTREE_LIFECYCLE_TRIGGERS,
+  WORKTREE_LIFECYCLE_FUNCTIONS,
   type WorktreeInfo,
 } from './worktree-data'
 
@@ -61,7 +62,7 @@ export function WorktreesPage({
   // prefix keeps the per-event invocations out of the trace feed.
   const { data, loading, error, live, refresh } = useWorkerLive({
     iii: host.iii,
-    triggers: WORKTREE_LIFECYCLE_TRIGGERS,
+    sources: WORKTREE_LIFECYCLE_FUNCTIONS,
     fetch: () => listWorktrees(host),
     handlerId: 'iii::worktree-ui::events',
   })
@@ -132,8 +133,8 @@ export function WorktreesPage({
               className="wt-ui-liveness"
               title={
                 live
-                  ? 'updates arrive on the worktree lifecycle triggers'
-                  : 'live bindings unavailable; refreshing on a timer'
+                  ? 'updates arrive through the worktree lifecycle observers'
+                  : 'observers unavailable; refreshing when the tab regains focus'
               }
             >
               <StatusDot tone={live ? 'accent' : 'ink'} pulse={live} />
@@ -184,7 +185,7 @@ export function WorktreesPage({
               <EmptyState
                 icon={GitBranch}
                 title="no worktrees yet"
-                description="worktrees are isolated checkouts for parallel agent work: each agent gets its own branch and directory, then lands finished work back with worktree::land. create one from a chat's directory picker, ask an agent to call worktree::create, or run it from the CLI: iii trigger worktree::create"
+                description="worktrees are isolated checkouts for parallel agent work: each agent gets its own branch and directory, then lands finished work back with worktree::land. create one from a chat's directory picker, ask an agent to call worktree::create, or run it from the CLI: iii call worktree::create"
               />
             ) : (
               <WorktreeGraph

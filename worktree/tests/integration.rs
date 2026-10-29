@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::{register_worker, InitOptions};
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
@@ -95,7 +95,7 @@ async fn boot() -> Option<Harness> {
 async fn call(client: &iii_sdk::IIIClient, function_id: &str, payload: Value) -> Value {
     timeout(
         Duration::from_secs(15),
-        client.trigger(TriggerRequest {
+        client.call(CallRequest {
             function_id: function_id.into(),
             payload,
             action: None,
@@ -113,7 +113,7 @@ async fn call(client: &iii_sdk::IIIClient, function_id: &str, payload: Value) ->
 async fn wait_until_registered(client: &iii_sdk::IIIClient) {
     for _ in 0..40 {
         let listed = client
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::functions::list".into(),
                 payload: Value::Object(Default::default()),
                 action: None,

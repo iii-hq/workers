@@ -2,13 +2,19 @@
 //! single source of truth for each function's id and schemars-derived
 //! request/response schemas. Golden-tested in `tests/schemas.rs`; keep in
 //! lockstep with the boot registration order in `main.rs`
-//! (`functions::register_all`, then the configuration handler).
+//! (`events::register_functions`, `functions::register_all`, then the
+//! configuration handler). An event function's request and response are the
+//! event: its handler returns what it is called with.
 //!
 //! Schema generation MUST mirror iii-sdk's internal `json_schema_for`
 //! (`SchemaSettings::draft07()` on the handler's request/response types) so
 //! a catalog snapshot pins exactly what registration emits.
 
 use crate::configuration::{OnConfigChangeEvent, OnConfigChangeResponse};
+use crate::events::{
+    ClaimedEvent, CreatedEvent, LandBlockedEvent, LandedEvent, ReleasedEvent, RemovedEvent,
+    ON_CLAIMED_FN, ON_CREATED_FN, ON_LANDED_FN, ON_LAND_BLOCKED_FN, ON_RELEASED_FN, ON_REMOVED_FN,
+};
 use crate::functions::{
     claim, create, get, land, land_step, list, prune, release, remove, status, validate,
 };
@@ -42,6 +48,12 @@ where
 /// The full wire-surface catalog, in registration order.
 pub fn catalog() -> Vec<FunctionSpec> {
     vec![
+        spec::<CreatedEvent, CreatedEvent>(ON_CREATED_FN),
+        spec::<ClaimedEvent, ClaimedEvent>(ON_CLAIMED_FN),
+        spec::<ReleasedEvent, ReleasedEvent>(ON_RELEASED_FN),
+        spec::<RemovedEvent, RemovedEvent>(ON_REMOVED_FN),
+        spec::<LandedEvent, LandedEvent>(ON_LANDED_FN),
+        spec::<LandBlockedEvent, LandBlockedEvent>(ON_LAND_BLOCKED_FN),
         spec::<create::Request, create::Response>("worktree::create"),
         spec::<list::Request, list::Response>("worktree::list"),
         spec::<get::Request, get::Response>("worktree::get"),
