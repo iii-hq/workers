@@ -839,19 +839,19 @@
   max-width: 100%;
 }
 
-[data-iii-ui="kanban"] .kanban-trigger-detail {
+[data-iii-ui="kanban"] .kanban-observer-detail {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-[data-iii-ui="kanban"] .kanban-trigger-detail__row {
+[data-iii-ui="kanban"] .kanban-observer-detail__row {
   display: flex;
   align-items: baseline;
   gap: 8px;
 }
 
-[data-iii-ui="kanban"] .kanban-trigger-detail__label {
+[data-iii-ui="kanban"] .kanban-observer-detail__label {
   min-width: 96px;
   font-family: var(--font-sans);
   font-size: 11.5px;

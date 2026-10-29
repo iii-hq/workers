@@ -1,6 +1,6 @@
 /**
- * Typed wrappers over the kanban worker's functions and its `kanban:change`
- * trigger, as the native app uses them (design §8; the wire source is
+ * Typed wrappers over the kanban worker's functions and the `kanban::on-change`
+ * event function it observes, as the native app uses them (design §8; the wire source is
  * kanban/src/functions.rs and events.rs, the same ids and payloads the
  * console UI uses in ui/src/shared.tsx). Every answer is read entry by
  * entry: a bad entry is skipped, a field of the wrong type takes its default.
@@ -147,7 +147,7 @@ export interface Links {
   mentioned_by: Summary[]
 }
 
-/** A `kanban:change` delivery (`ticket: summary`): a card, or `config.updated` alone. */
+/** A `kanban::on-change` delivery (args `ticket: summary`): a card, or `config.updated` alone. */
 export interface ChangeEvent {
   event: string
   at: string
@@ -156,7 +156,7 @@ export interface ChangeEvent {
   from: string | null
 }
 
-export const CHANGE_TRIGGER = 'kanban:change'
+export const CHANGE_FN = 'kanban::on-change'
 export const CONFIG_EVENT = 'config.updated'
 
 // ── Reading values ──────────────────────────────────────────────────────────
@@ -360,7 +360,7 @@ export function linksOf(v: unknown): Links {
   return { mentions: summariesOf(raw.mentions), mentioned_by: summariesOf(raw.mentioned_by) }
 }
 
-/** A `kanban:change` payload, or null when it is neither a ticket event nor `config.updated`. */
+/** A `kanban::on-change` payload, or null when it is neither a ticket event nor `config.updated`. */
 export function changeOf(v: unknown): ChangeEvent | null {
   const raw = obj(v)
   if (!raw || typeof raw.event !== 'string') return null
@@ -449,15 +449,15 @@ export const kanban = {
 }
 
 /**
- * Binds `kanban:change` (bind first, read after `ready`); a failed binding is
- * reported and left unbound. A delivery that is not a change the app can
- * read goes to `bad`.
+ * Observes `kanban::on-change` with args `{ ticket: 'summary' }` (observe
+ * first, read after `ready`); an observer that fails is reported and left
+ * inactive. A delivery that is not a change the app can read goes to `bad`.
  */
 export function listen(
   handler: (event: ChangeEvent) => void,
   bad?: () => void,
 ): Unsubscribe & { ready: Promise<boolean> } {
-  const off = iii.on(CHANGE_TRIGGER, { ticket: 'summary' }, (payload) => {
+  const off = iii.on(CHANGE_FN, { args: { ticket: 'summary' } }, (payload) => {
     const event = changeOf(payload)
     if (event) handler(event)
     else bad?.()
