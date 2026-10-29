@@ -4,7 +4,7 @@ Users ask in chat to keep release progress, a goal, status or a checklist in the
 Context sidebar. They do not write code or install a custom extension per item.
 The agent discovers `console::context::{list,save,remove}` and stores a structured
 snapshot. `save` creates without an id; with an existing visible id it replaces
-all fields and may move scope. The Harness pre-trigger hook stamps the current
+all fields and may move scope. The Harness pre-call hook stamps the current
 session, overriding an agent-supplied session id. A pre-generation hook explains
 the feature and lists existing ids, without promoting stored prose to system
 instructions. No changes to Harness itself are required.

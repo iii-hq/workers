@@ -255,11 +255,11 @@ The chat shows the latter as a quiet "Context for the agent" row.
 - `engine::functions::list { include_internal: true }` lists the get function
   with `metadata.mention`, and the descriptor validates (name rules, non-empty
   `label` and `search`).
-- `iii trigger <worker>::mention::search --json '{"query":""}'` answers recent
+- `iii call <worker>::mention::search --json '{"query":""}'` answers recent
   items fast; a handle query (`KAN-12`) ranks that record first.
-- `iii trigger <worker>::mention::get --json '{"id":"<id>"}'` answers the view,
+- `iii call <worker>::mention::get --json '{"id":"<id>"}'` answers the view,
   and `null` for an unknown id.
-- `iii trigger judge::mentions::resolve --json '{"text":"@<name>(id=\"<id>\")"}'`
+- `iii call judge::mentions::resolve --json '{"text":"@<name>(id=\"<id>\")"}'`
   answers `status: "resolved"` with your summary and the details call.
 - In the ADE composer `@<name>` shows the provider, Tab scopes the search,
   picking inserts a pill; the pill previews on hover and opens on click.

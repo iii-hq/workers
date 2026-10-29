@@ -1,17 +1,18 @@
-# Custom trigger activity components
+# Custom observer activity components
 
-How a worker customizes trigger registration, firing, and retirement from a
-small source interpretation through a complete timeline/detail presentation.
+How a worker customizes how the observers of its functions look in chat —
+when an agent observes one, when it fires, and when it retires — from a small
+source interpretation through a complete timeline/detail presentation.
 
-Use this slot when generic JSON does not explain a trigger source well. A cron
-worker can show a readable schedule, replace the complete expanded Terminal
-tab, or supply the compact event row shown in chat. The Console continues to
-own the clickable disclosure and a raw-data fallback.
+Use this slot when generic JSON does not explain a function's observers well.
+A cron worker can show a readable schedule for `cron::on-tick`, replace the
+complete expanded Terminal tab, or supply the compact event row shown in chat.
+The Console continues to own the clickable disclosure and a raw-data fallback.
 
 The public contract is declared in
 [`packages/console-ui/index.d.ts`](../../../packages/console-ui/index.d.ts).
 The cron worker is the reference implementation:
-[`cron/ui/src/trigger-activity/`](../../../cron/ui/src/trigger-activity/).
+[`cron/ui/src/observer-activity/`](../../../cron/ui/src/observer-activity/).
 
 ## Layered ownership
 
@@ -20,7 +21,7 @@ Choose the smallest hook that expresses the worker's meaning:
 - `tryRender` interprets the source section inside the generic detail view;
 - `tryRenderDetails` replaces the complete expanded Terminal tab;
 - `tryRenderDisplay` replaces the compact clickable timeline content;
-- `redactRaw` filters registration and fire values before raw display/copy.
+- `redactRaw` filters observe and fire values before raw display/copy.
 
 Every hook is registration-ordered and may return `null` to fall through. A
 worker that only needs a schedule should keep using `tryRender`; a worker with
@@ -37,44 +38,46 @@ The host always owns:
 - renderer isolation, ordering, hot-reload disposal, and error boundaries.
 
 When overriding the complete detail, the worker becomes responsible for
-showing every lifecycle/delivery fact its operator needs. A once trigger that
-fires and retires remains one activity; never emit a second unbind card.
+showing every lifecycle/delivery fact its operator needs. A once observer that
+fires and retires remains one activity; never emit a second removal card.
 
 ## Event copy: label versus action
 
-Harness registrations accept both concepts:
+An agent's `harness::observe` call accepts both concepts:
 
 ```json
 {
-  "trigger_type": "on-message",
-  "config": { "scope": "explorer" },
+  "function_id": "session::on-message-added",
+  "filters": { "input.session_id": { "$eq": "explorer" } },
   "label": "explorer-messages",
-  "metadata": { "action": "new Explorer message received" }
+  "action": "new Explorer message received"
 }
 ```
 
-`label` is the stable identity of the binding. `metadata.action` is the short
+`label` is the stable identity of the observer. `action` is the short
 user-facing description of what a future fire means. The harness exposes the
 action as data before anything happens and persists it on the fired record,
-but the default registration and active-binding UI continues to show `label`.
-`action` becomes visible only when the trigger fires: the compact event row
-shows a status mark and `action`, then falls back to `label`, a state scope/key,
-or `triggerType`. Clicking it opens the full card already expanded. Keep action
+but the default observe receipt and active-observer UI show `label`. `action`
+becomes visible only when the observer fires: the compact event row shows a
+status mark and `action`, then falls back to `label`, a state scope/key, or
+`functionId`. Clicking it opens the full card already expanded. Keep action
 concise, standalone, and in the same language as the surrounding product UI.
-Raw JSON still retains the declared metadata for inspection; it is not part of
-the user-facing event copy.
 
 ## Message contract
 
-The host normalizes registration, fired, and retirement records before
+The host normalizes observe, fired, and retirement records before
 dispatching them:
 
 ```ts
-interface TriggerActivityMessage {
+interface ObserverActivityMessage {
   id: string
   kind: 'registration' | 'fired' | 'retirement'
-  triggerType: string
-  config?: unknown
+  /** The observed function, e.g. `cron::on-tick`. */
+  functionId: string
+  /** The observer's args, read by the function's worker. */
+  args?: Record<string, unknown>
+  /** The observer's filters on the call. */
+  filters?: Record<string, unknown>
   label?: string
   action?: string
   conditions?: readonly unknown[]
@@ -88,8 +91,7 @@ interface TriggerActivityMessage {
     expiresAt?: number
     fires: number
   }
-  subscriptionId?: string
-  triggerId?: string
+  observerId?: string
   payload?: unknown
   firedAt?: number
   note?: string
@@ -110,29 +112,30 @@ interface TriggerActivityMessage {
 }
 ```
 
-`config` and `payload` remain `unknown` because their schemas belong to the
-trigger worker. Parse them defensively. Fields under `delivery` and
-`lifecycle` are available to both source and complete-detail renderers.
+`args` belong to the worker that hosts the observed function, and `payload`
+is the event its handler returned; parse both defensively. `filters` use
+explicit operators (`{ 'input.scope': { $eq: 'orders' } }`). Fields under
+`delivery` and `lifecycle` are available to both source and complete-detail
+renderers.
 
-Match `triggerType`, not the function used to register the trigger. Several
-sources travel through the same `engine::register_trigger` function; the
-inner type (`cron`, `state`, or a worker-defined value) is the source
-identity.
+Match `functionId`, the observed function, not `harness::observe`: every
+agent observes through that one function, and the observed function is the
+source identity.
 
 ## Register a renderer
 
 Default-export `setup(host)` from the worker's injected script and
-feature-detect the slot for consoles released before trigger activity
+feature-detect the slot for consoles released before observer activity
 renderers:
 
 ```tsx
 import type {
   Host,
-  TriggerActivityMessage,
-  TriggerActivityRenderer,
+  ObserverActivityMessage,
+  ObserverActivityRenderer,
 } from '@iii-dev/console-ui'
 
-function readConfig(value: unknown): { expression: string } | null {
+function readArgs(value: unknown): { expression: string } | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const expression = (value as Record<string, unknown>).expression
   return typeof expression === 'string' && expression.trim()
@@ -140,37 +143,36 @@ function readConfig(value: unknown): { expression: string } | null {
     : null
 }
 
-function createRenderer(): TriggerActivityRenderer {
+function createRenderer(): ObserverActivityRenderer {
   return {
-    id: 'my-worker/page.js#trigger-activity',
-    isMatch: (triggerType) => triggerType === 'my-trigger',
-    tryRender: (activity: TriggerActivityMessage) => {
-      if (activity.triggerType !== 'my-trigger') return null
-      const config = readConfig(activity.config)
-      if (!config) return null
+    id: 'my-worker/page.js#observer-activity',
+    isMatch: (functionId) => functionId === 'my-worker::on-tick',
+    tryRender: (activity: ObserverActivityMessage) => {
+      const args = readArgs(activity.args)
+      if (!args) return null
       return (
-        <section aria-label="My trigger source">
+        <section aria-label="My schedule">
           <span>Schedule</span>
-          <code>{config.expression}</code>
+          <code>{args.expression}</code>
         </section>
       )
     },
     tryRenderDisplay: (activity) => {
-      const config = readConfig(activity.config)
-      return config && activity.kind === 'fired'
+      const args = readArgs(activity.args)
+      return args && activity.kind === 'fired'
         ? <span>{activity.action ?? 'schedule became due'}</span>
         : null
     },
     tryRenderDetails: (activity) => {
-      const config = readConfig(activity.config)
-      return config ? <MyCompleteTriggerDetails activity={activity} config={config} /> : null
+      const args = readArgs(activity.args)
+      return args ? <MyCompleteObserverDetails activity={activity} args={args} /> : null
     },
-    redactRaw: redactMyTriggerSecrets,
+    redactRaw: redactMyWorkerSecrets,
   }
 }
 
 export default function setup(host: Host) {
-  host.triggerRenderers?.register(createRenderer())
+  host.observerRenderers?.register(createRenderer())
 }
 ```
 
@@ -188,8 +190,8 @@ parallel global registry.
 Keep each surface appropriate to where it appears:
 
 - keep `tryRenderDisplay` to one non-interactive, truncation-safe line;
-- show `activity.action` only for `activity.kind === 'fired'`; registration
-  and active-binding surfaces identify the binding by `label`;
+- show `activity.action` only for `activity.kind === 'fired'`; observe
+  receipts and active-observer surfaces identify the observer by `label`;
 - in source/details, lead with human interpretation, then preserve exact values;
 - use sans-serif text for labels and prose, mono only for expressions, ids,
   paths, or payload values;
@@ -201,7 +203,7 @@ Keep each surface appropriate to where it appears:
   semantics.
 
 If raw data contains a secret, implement `redactRaw` as a pure,
-non-mutating, total, cycle-safe transform. It applies to registration,
+non-mutating, total, cycle-safe transform. It applies to observe,
 notification, and fire panes as well as their copy actions. A throw fails
 closed to a withheld-value placeholder; it never restores the secret.
 
@@ -224,7 +226,7 @@ my-worker/
     build.mjs
     package.json
     tsconfig.json
-    src/trigger-activity/
+    src/observer-activity/
       index.tsx
       parser.ts
       parser.test.ts
@@ -233,7 +235,7 @@ my-worker/
 
 Keep React, `react-dom`, `react-dom/client`, `react/jsx-runtime`, and
 `@iii-dev/console-ui` external in the ESM build. Rust workers can embed and
-register the script and stylesheet with the shared `iii-console-ui` crate.
+ship the script and stylesheet with the shared `iii-console-ui` crate.
 The delivery contract lives in
 [`ade/skills/injectable-ui.md`](../../skills/injectable-ui.md); the Rust wiring in
 [`docs/sops/injectable-console-ui.md`](../../../docs/sops/injectable-console-ui.md).
@@ -242,9 +244,9 @@ The delivery contract lives in
 
 At minimum, cover:
 
-- exact trigger-type matching and fallthrough for another type;
-- malformed/missing config returning `null`;
-- common and complex source configurations;
+- exact function-id matching and fallthrough for another function;
+- malformed/missing args returning `null`;
+- common and complex source args;
 - source, compact display, and complete details across the kinds each hook supports;
 - persistent and once lifecycle records without duplicating host status;
 - per-slot fallthrough and generic fallback when worker UI is disabled;
@@ -261,6 +263,7 @@ pnpm --dir cron/ui build
 cargo test --manifest-path cron/Cargo.toml ui
 ```
 
-Then register a persistent cron trigger and a once cron trigger in the real
-Console. Confirm that registration, firing, and retirement retain the custom
-schedule section while the host alone renders delivery and lifecycle.
+Then have an agent observe `cron::on-tick` once persistently and once with
+`once: true` in the real Console. Confirm that observing, firing, and
+retirement retain the custom schedule section while the host alone renders
+delivery and lifecycle.
