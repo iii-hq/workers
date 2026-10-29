@@ -111,3 +111,9 @@ polling `memory::list` / `memory::bank::list`.
    trigger of the wanted type pointing at it, optionally with
    `config: { "bank": "blog" }` to filter. Delivery is fire-and-forget,
    at-least-once, unordered.
+4. **Observe instead (iii 0.25)** — on a 0.25 engine new code observes the
+   owner-delivered function next to each trigger type instead of binding it:
+   `memory::on-item-changed` and `memory::on-bank-changed`, args `{ bank? }`,
+   deliver the same event as `memory::item-changed` and `memory::bank-changed`.
+   Invoking them directly is refused with `FORBIDDEN`; the trigger types keep
+   working.

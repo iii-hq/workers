@@ -146,3 +146,57 @@ fn no_orphan_schema_goldens() {
         );
     }
 }
+
+/// The schemas the SDK publishes for a typed sync handler `fn(T) -> Result<R, Error>`
+/// (same generator settings as `iii_sdk::RegisterFunction::new`).
+fn handler_schemas<T: schemars::JsonSchema, R: schemars::JsonSchema>(
+    _handler: fn(T) -> Result<R, iii_sdk::errors::Error>,
+) -> (serde_json::Value, serde_json::Value) {
+    let schema_for = |root| serde_json::to_value(root).unwrap();
+    let generator = || schemars::r#gen::SchemaSettings::draft07().into_generator();
+    (
+        schema_for(generator().into_root_schema_for::<T>()),
+        schema_for(generator().into_root_schema_for::<R>()),
+    )
+}
+
+/// Mirrors `.github/scripts/collect_worker_interface.py`: an AnyValue or
+/// empty schema carries none of these keywords.
+fn assert_typed_schema(function_id: &str, which: &str, schema: &serde_json::Value) {
+    const KEYS: [&str; 7] = [
+        "type",
+        "properties",
+        "$ref",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "enum",
+    ];
+    assert!(
+        schema
+            .as_object()
+            .is_some_and(|o| KEYS.iter().any(|k| o.contains_key(*k))),
+        "{function_id} {which} schema is untyped (AnyValue/empty): {schema}"
+    );
+}
+
+#[test]
+fn observable_functions_have_typed_request_and_response_schemas() {
+    use memory::events::{
+        refuse_on_bank_changed, refuse_on_item_changed, ON_BANK_CHANGED, ON_ITEM_CHANGED,
+    };
+    for (function_id, (request, response)) in [
+        (ON_ITEM_CHANGED, handler_schemas(refuse_on_item_changed)),
+        (ON_BANK_CHANGED, handler_schemas(refuse_on_bank_changed)),
+    ] {
+        assert_typed_schema(function_id, "request", &request);
+        assert_typed_schema(function_id, "response", &response);
+        assert_eq!(request["type"], "object", "{function_id}: {request}");
+        assert!(
+            request["required"]
+                .as_array()
+                .is_some_and(|r| r.contains(&"event_type".into()) && r.contains(&"bank".into())),
+            "{function_id} request must document the delivered event: {request}"
+        );
+    }
+}

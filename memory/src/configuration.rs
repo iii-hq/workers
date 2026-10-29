@@ -166,7 +166,9 @@ pub struct OnConfigChangeResponse {
 }
 
 /// Register the internal config-change handler and bind a `configuration`
-/// trigger.
+/// trigger. (`register_trigger` is deprecated in 0.25 and still served by
+/// 0.24 and 0.25 engines.)
+#[allow(deprecated)]
 pub fn register_config_trigger(
     iii: &IIIClient,
     cell: ConfigCell,
