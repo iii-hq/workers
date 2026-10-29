@@ -359,7 +359,7 @@
 /* ── freeform (excalidraw) ──────────────────────────────────────────────
    Owned by the freeform surface (ui/src/freeform). Only the WRAPPER is
    styled here: excalidraw's own stylesheet is unscoped vendor CSS that
-   cannot ride this (scoped) console:style asset, so it ships as a text
+   cannot ride this (scoped) `style` asset, so it ships as a text
    export of the freeform vendor bundle and loadFreeform() injects it into
    a <style data-iii-ui="canvas"> head tag (see ui/src/lib/loaders.ts).
 
