@@ -1,7 +1,7 @@
 //! `queue::on-message` against a live engine (connect-or-skip, like
 //! `e2e_durability.rs`): the queue worker boots in-process in a private
-//! namespace, and a second connection observes it next to an old-style
-//! `durable:subscriber` binding. Skipped on an engine without observe.
+//! namespace, and a second connection subscribes by observing it. Skipped on
+//! an engine without observe.
 
 mod common;
 
@@ -11,12 +11,10 @@ use std::time::Duration;
 use iii_queue::config::QueueConfig;
 use iii_queue::functions::{DLQ_MESSAGES_FN_ID, PUBLISH_FN_ID};
 use iii_queue::on_message::ON_MESSAGE_FN;
-use iii_queue::trigger::QueueTriggerHandler;
-use iii_queue::TRIGGER_TYPE;
+use iii_queue::subscribers::Subscribers;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{IIIClient, InitOptions, RegisterFunction, Source, WorkerIdentityMode};
+use iii_sdk::{CallRequest, IIIClient, InitOptions, RegisterFunction, Source, WorkerIdentityMode};
 use serde_json::{json, Value};
 use serial_test::serial;
 use tokio::time::Instant;
@@ -58,8 +56,8 @@ fn register_target(iii: &IIIClient, function_id: &str, fail: bool) -> Deliveries
 }
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value, namespace: &str) -> Value {
-    iii.trigger(
-        TriggerRequest {
+    iii.call(
+        CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
@@ -68,7 +66,7 @@ async fn call(iii: &IIIClient, function_id: &str, payload: Value, namespace: &st
         .namespace(namespace),
     )
     .await
-    .expect("trigger should succeed")
+    .expect("call should succeed")
 }
 
 async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
@@ -82,10 +80,10 @@ async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     assert!(done(), "timed out waiting for {what}");
 }
 
-async fn wait_for_subscribers(handler: &QueueTriggerHandler, expected: usize) {
+async fn wait_for_subscribers(subscribers: &Subscribers, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if handler.registrations().await.len() == expected {
+        if subscribers.registrations().await.len() == expected {
             return;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -118,7 +116,7 @@ fn data(deliveries: &Deliveries) -> Vec<Value> {
 
 #[tokio::test]
 #[serial]
-async fn observer_and_trigger_on_one_topic_each_get_every_message_connect_or_skip() {
+async fn each_observer_of_a_topic_gets_every_message_its_filters_admit_connect_or_skip() {
     let namespace = format!("queue-e2e-observe-{}", Uuid::new_v4());
     let Some(worker) = connect(&namespace, "queue").await else {
         return;
@@ -138,25 +136,31 @@ async fn observer_and_trigger_on_one_topic_each_get_every_message_connect_or_ski
         .expect("queue worker should boot");
 
     let topic = format!("orders-{}", Uuid::new_v4().simple());
-    let via_trigger = register_target(&consumer, "e2e::orders::legacy", false);
-    let via_observer = register_target(&consumer, "e2e::orders::observer", false);
-    #[allow(deprecated)]
-    consumer
-        .register_trigger(RegisterTriggerInput::new(
-            TRIGGER_TYPE.to_string(),
-            "e2e::orders::legacy".to_string(),
-            json!({ "queue": topic }),
-        ))
-        .expect("register durable subscriber trigger");
-    let observer = consumer.observe(
+    let via_first = register_target(&consumer, "e2e::orders::first", false);
+    let via_second = register_target(&consumer, "e2e::orders::second", false);
+    let via_filtered = register_target(&consumer, "e2e::orders::filtered", false);
+    let first = consumer.observe(
         Source::function(ON_MESSAGE_FN).args(json!({ "topic": topic })),
-        "e2e::orders::observer",
+        "e2e::orders::first",
     );
-    tokio::time::timeout(Duration::from_secs(5), observer.ready())
-        .await
-        .expect("observer ready in time")
-        .expect("observer active");
-    wait_for_subscribers(&boot.trigger_handler, 2).await;
+    let second = consumer.observe(
+        Source::function(ON_MESSAGE_FN).args(json!({ "topic": topic })),
+        "e2e::orders::second",
+    );
+    // Filters read the message as input; the messages they reject are acked.
+    let filtered = consumer.observe(
+        Source::function(ON_MESSAGE_FN)
+            .args(json!({ "topic": topic }))
+            .filters(json!({ "input.n": { "$gte": 2 } })),
+        "e2e::orders::filtered",
+    );
+    for observer in [&first, &second, &filtered] {
+        tokio::time::timeout(Duration::from_secs(5), observer.ready())
+            .await
+            .expect("observer ready in time")
+            .expect("observer active");
+    }
+    wait_for_subscribers(&boot.subscribers, 3).await;
 
     for n in 0..3 {
         call(
@@ -168,15 +172,29 @@ async fn observer_and_trigger_on_one_topic_each_get_every_message_connect_or_ski
         .await;
     }
     wait_for("three deliveries each", || {
-        count(&via_trigger) == 3 && count(&via_observer) == 3
+        count(&via_first) == 3 && count(&via_second) == 3
     })
     .await;
-    assert_eq!(data(&via_trigger), data(&via_observer), "same payloads");
+    assert_eq!(data(&via_first), data(&via_second), "same payloads");
+    wait_for("the filtered delivery", || count(&via_filtered) == 1).await;
+    assert_eq!(data(&via_filtered), vec![json!({ "n": 2 })]);
+    let dead = call(
+        &consumer,
+        DLQ_MESSAGES_FN_ID,
+        json!({ "queue": topic, "limit": 10 }),
+        &namespace,
+    )
+    .await;
+    assert_eq!(
+        dead.as_array().map(Vec::len),
+        Some(0),
+        "filter misses are acked"
+    );
 
-    // Invoking the source directly is refused.
+    // The function is private: a call from another worker is refused.
     let forged = consumer
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id: ON_MESSAGE_FN.to_string(),
                 payload: json!({ "n": 99 }),
                 action: None,
@@ -185,12 +203,12 @@ async fn observer_and_trigger_on_one_topic_each_get_every_message_connect_or_ski
             .namespace(&namespace),
         )
         .await
-        .expect_err("direct invocation must fail");
+        .expect_err("a call from another worker must fail");
     assert!(forged.to_string().contains("FORBIDDEN"), "{forged}");
 
-    // Disposing the observer stops its consumer; the trigger keeps going.
-    observer.dispose().await.expect("dispose");
-    wait_for_subscribers(&boot.trigger_handler, 1).await;
+    // Disposing an observer stops its consumer; the others keep going.
+    first.dispose().await.expect("dispose");
+    wait_for_subscribers(&boot.subscribers, 2).await;
     call(
         &consumer,
         PUBLISH_FN_ID,
@@ -198,10 +216,15 @@ async fn observer_and_trigger_on_one_topic_each_get_every_message_connect_or_ski
         &namespace,
     )
     .await;
-    wait_for("the trigger's fourth delivery", || count(&via_trigger) == 4).await;
+    wait_for("the second observer's fourth delivery", || {
+        count(&via_second) == 4
+    })
+    .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(count(&via_observer), 3, "no delivery after dispose");
+    assert_eq!(count(&via_first), 3, "no delivery after dispose");
 
+    second.dispose().await.expect("dispose");
+    filtered.dispose().await.expect("dispose");
     boot.shutdown().await;
     consumer.shutdown_async().await;
     worker.shutdown_async().await;

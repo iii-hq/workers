@@ -7,7 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use iii_queue::adapter::QueueAdapter;
 use iii_queue::adapters::redis::RedisAdapter;
-use iii_queue::trigger::{IiiInvoker, Invoker};
+use iii_queue::subscribers::{Invoker, Subscriber};
 use iii_sdk::errors::Error;
 use iii_sdk::RegisterFunction;
 use serde_json::{json, Value};
@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use common::docker;
 use common::engine;
+use common::invoker::FunctionInvoker;
 
 async fn wait_for_fires(fires: &AtomicUsize, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -32,29 +33,21 @@ async fn wait_for_fires(fires: &AtomicUsize, expected: usize) {
     );
 }
 
+/// Records `(subscriber, payload)` per delivery: the default
+/// [`Invoker::deliver`] calls [`Invoker::call`] with the subscriber id.
 #[derive(Default)]
 struct RecordingInvoker {
     fires: AtomicUsize,
-    deliveries: tokio::sync::Mutex<Vec<(String, Value, Option<Value>)>>,
+    deliveries: tokio::sync::Mutex<Vec<(String, Value)>>,
 }
 
 #[async_trait]
 impl Invoker for RecordingInvoker {
-    async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
-        Ok(None)
-    }
-
-    async fn call_delivery(
-        &self,
-        function_id: &str,
-        payload: Value,
-        metadata: Option<Value>,
-        _namespace: Option<&str>,
-    ) -> Result<Option<Value>, String> {
+    async fn call(&self, subscriber: &str, payload: Value) -> Result<Option<Value>, String> {
         self.deliveries
             .lock()
             .await
-            .push((function_id.to_string(), payload, metadata));
+            .push((subscriber.to_string(), payload));
         self.fires.fetch_add(1, Ordering::SeqCst);
         Ok(None)
     }
@@ -64,8 +57,9 @@ impl Invoker for RecordingInvoker {
 /// docker-backed Redis, bypassing `boot::start`/`QueueConfig` — the redis
 /// adapter isn't wired into the config factory yet (a later task), so this
 /// exercises the adapter the way that factory will: `from_config` + a
-/// direct `subscribe`/`enqueue` against the trait, instead of going through
-/// the `durable:subscriber` trigger type.
+/// direct `subscribe`/`enqueue` against the trait, with each delivery
+/// calling the subscribed function directly ([`FunctionInvoker`]) rather
+/// than through `queue::on-message`.
 #[tokio::test]
 #[serial]
 async fn publish_delivers_unwrapped_payload_to_subscriber_connect_or_skip() {
@@ -76,7 +70,7 @@ async fn publish_delivers_unwrapped_payload_to_subscriber_connect_or_skip() {
         return; // skip: engine not reachable
     };
 
-    let invoker = Arc::new(IiiInvoker::new(iii.clone()));
+    let invoker = Arc::new(FunctionInvoker::new(iii.clone()));
     let adapter =
         RedisAdapter::from_config(Some(&json!({"redis_url": container.redis_url()})), invoker)
             .await
@@ -104,7 +98,7 @@ async fn publish_delivers_unwrapped_payload_to_subscriber_connect_or_skip() {
 
     let topic = format!("e2e-redis-{}", Uuid::new_v4());
     adapter
-        .subscribe(&topic, "sub-1", &function_id, None, None, None, None)
+        .subscribe(&topic, "sub-1", Subscriber::new(&function_id), None)
         .await;
     // Give the subscription task a beat to actually SUBSCRIBE on the Redis
     // connection before the first publish — pub/sub has no buffering for a
@@ -136,7 +130,7 @@ async fn publish_delivers_unwrapped_payload_to_subscriber_connect_or_skip() {
 
 #[tokio::test]
 #[serial]
-async fn same_function_subscriptions_each_receive_their_metadata_connect_or_skip() {
+async fn each_subscription_receives_one_copy_connect_or_skip() {
     let Some(container) = docker::start_redis() else {
         return; // skip: docker not reachable
     };
@@ -151,26 +145,10 @@ async fn same_function_subscriptions_each_receive_their_metadata_connect_or_skip
     let topic = format!("e2e-redis-fanout-{}", Uuid::new_v4());
 
     adapter
-        .subscribe(
-            &topic,
-            "sub-a",
-            "same-function",
-            Some(json!({"binding": "a"})),
-            None,
-            None,
-            None,
-        )
+        .subscribe(&topic, "sub-a", Subscriber::new("subscriber-a"), None)
         .await;
     adapter
-        .subscribe(
-            &topic,
-            "sub-b",
-            "same-function",
-            Some(json!({"binding": "b"})),
-            None,
-            None,
-            None,
-        )
+        .subscribe(&topic, "sub-b", Subscriber::new("subscriber-b"), None)
         .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     adapter
@@ -183,18 +161,17 @@ async fn same_function_subscriptions_each_receive_their_metadata_connect_or_skip
     assert_eq!(
         deliveries.len(),
         2,
-        "exactly one delivery per binding — a duplicate subscription would add more"
+        "exactly one delivery per subscription — a duplicate subscription would add more"
     );
     assert!(deliveries
         .iter()
-        .all(|(function_id, payload, _)| function_id == "same-function"
-            && payload == &json!({"event": 1})));
-    assert!(deliveries
-        .iter()
-        .any(|(_, _, metadata)| metadata == &Some(json!({"binding": "a"}))));
-    assert!(deliveries
-        .iter()
-        .any(|(_, _, metadata)| metadata == &Some(json!({"binding": "b"}))));
+        .all(|(_, payload)| payload == &json!({"event": 1})));
+    for subscriber in ["subscriber-a", "subscriber-b"] {
+        assert!(
+            deliveries.iter().any(|(id, _)| id == subscriber),
+            "{subscriber} receives its copy"
+        );
+    }
     drop(deliveries);
 
     adapter.shutdown().await;
@@ -212,7 +189,7 @@ async fn dlq_operations_return_not_supported_connect_or_skip() {
         return; // skip: engine not reachable
     };
 
-    let invoker = Arc::new(IiiInvoker::new(iii.clone()));
+    let invoker = Arc::new(FunctionInvoker::new(iii.clone()));
     let adapter =
         RedisAdapter::from_config(Some(&json!({"redis_url": container.redis_url()})), invoker)
             .await
