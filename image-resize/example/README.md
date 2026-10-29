@@ -37,6 +37,14 @@ This will:
 
 ## API Endpoints
 
+Each endpoint is a function (`api::get::/health`, `api::post::/thumbnail`,
+`api::get::/image`) that observes `http::on-request` with its route as args,
+so the http worker routes matching requests to it:
+
+```typescript
+iii.observe({ function_id: 'http::on-request', args: { method: 'GET', path: '/image' } }, 'api::get::/image')
+```
+
 ### GET /health
 
 Returns service status.

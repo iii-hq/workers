@@ -1,6 +1,6 @@
 import { http } from '@iii-dev/helpers/http'
 import { createChannel } from 'iii-sdk/helpers'
-import { useApi } from './hooks'
+import { observeRoute, useApi } from './hooks'
 import { iii } from './iii'
 
 /** Detect image format from the first bytes (magic numbers). */
@@ -26,7 +26,7 @@ function serialized<T>(fn: () => Promise<T>): Promise<T> {
  * and return the thumbnail bytes.
  *
  * 1. Create two channels (input for image data, output for thumbnail data)
- * 2. Trigger the resize function with channel refs + metadata
+ * 2. Call the resize function with channel refs + metadata
  * 3. Write image bytes to input channel
  * 4. Read thumbnail metadata (text frame) + bytes (binary) from output channel
  * 5. Return result
@@ -43,8 +43,8 @@ async function processImage(
   // The SDK's ChannelWriter flushes all data before sending the close frame.
   inputChannel.writer.stream.end(imageBuffer)
 
-  // Trigger the resize function
-  const triggerPromise = iii.trigger({
+  // Call the resize function
+  const callPromise = iii.call({
     function_id: 'image_resize::resize',
     payload: {
       input_channel: inputChannel.readerRef,
@@ -82,8 +82,8 @@ async function processImage(
 
   const [metadata, thumbnail] = await Promise.all([metadataPromise, thumbnailPromise])
 
-  // Wait for the trigger to complete
-  await triggerPromise
+  // Wait for the call to complete
+  await callPromise
 
   // Explicitly close all channel endpoints to free engine resources
   outputChannel.reader.stream.destroy()
@@ -213,7 +213,7 @@ function sendJsonError(
   const function_id = 'api::get::/image'
 
   iii.registerFunction(
-    { id: function_id, metadata: { tags: ['image', 'resize', 'url'] } },
+    function_id,
     http(async (req, res) => {
       const qp = req.query_params ?? {}
       const str = (v: string | string[] | undefined): string | undefined => (Array.isArray(v) ? v[0] : v)
@@ -324,18 +324,13 @@ function sendJsonError(
         sendJsonError(res, 500, `Image processing failed: ${err}`)
       }
     }),
-  )
-
-  iii.registerTrigger({
-    type: 'http',
-    function_id,
-    config: {
-      api_path: '/image',
-      http_method: 'GET',
+    {
       description: 'Resize a remote image by URL — similar to Next.js /_next/image',
       metadata: { tags: ['image', 'resize', 'url'] },
     },
-  })
+  )
+
+  observeRoute(function_id, 'GET', '/image')
 }
 
 console.log('Image resize demo worker started — registering endpoints...')
