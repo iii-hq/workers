@@ -2,7 +2,7 @@
 //! token from the vault (or the ~/.claude/.credentials.json dev fallback),
 //! build an Anthropic Messages request, and relay AssistantMessageEvent frames
 //! into the router-owned channel. Login + refresh live in the oauth-claude-code
-//! worker / auth-credentials vault — this provider only *triggers* a refresh
+//! worker / auth-credentials vault — this provider only *calls* a refresh
 //! when the token is near expiry.
 use crate::config::build_config;
 use crate::errors::{classify_bus_error, SIGN_IN_EXPIRED};

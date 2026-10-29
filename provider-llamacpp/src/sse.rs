@@ -530,7 +530,7 @@ mod tests {
     // Local models misquote JSON args; the malformed text must survive as
     // `{"_raw": …}` evidence (a null would erase what the model actually
     // sent, leaving an undiagnosable empty call — and the harness turns
-    // null wrapper args into a literal `agent_trigger` dispatch). Text that
+    // null wrapper args into a literal `agent_call` dispatch). Text that
     // stops being JSON also carries llm-router's `_invalid` diagnosis.
     #[test]
     fn malformed_args_survive_as_raw_evidence() {
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn partial_args_salvage_leading_fields() {
         let (state, _) = run(&[json!({"choices":[{"index":0,"delta":{"tool_calls":[
-            {"index":0,"id":"call_1","type":"function","function":{"name":"agent_trigger",
+            {"index":0,"id":"call_1","type":"function","function":{"name":"agent_call",
              "arguments":"{\"function\":\"state::set\",\"payload\":{\"key\":\"article\",\"value\":\"long"}}]}}]})]);
         let partial = build_partial(&state, "llama-test");
         match &partial.content[0] {

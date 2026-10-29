@@ -1,7 +1,7 @@
 //! `router::chat` orchestration: validate → decide → gates → budget → attempt
 //! loop (relay + invisible pre-first-frame retries) → exactly one terminal.
 //! Each attempt invokes the provider's `provider::<id>::stream` iii function
-//! via `iii.trigger` with a fresh router-owned iii channel.
+//! via `iii.call` with a fresh router-owned iii channel.
 //!
 //! Engine-backed coverage: tests/integration.rs (happy path, cancellation,
 //! abort, retry).
@@ -15,8 +15,7 @@ use crate::types::router::{ChatResponse, ErrorShape, PromptCacheIntent, PromptSe
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
 use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -26,12 +25,12 @@ use crate::catalog::queries::{effective_model_ref, model_supports, models_get};
 use crate::catalog::store::CatalogStore;
 use crate::channels::create_router_channel;
 use crate::config::state::{snapshot, ConfigCell};
+use crate::events::RouterEvents;
 use crate::registry::resolve::unresolved_reference;
 use crate::registry::store::RegistryStore;
 use crate::routing::{decide, DecideInput};
 use crate::secrets::SecretCache;
 use crate::settings::RouterSettings;
-use crate::triggers::{self, RouterEvents};
 
 use super::inflight::InflightMap;
 use super::output_tokens::resolve_max_output_tokens;
@@ -245,15 +244,15 @@ fn take_provider_outcome(
 /// The RPC outcome is published before its error path closes the relay reader,
 /// so a pre-stream dispatch failure remains available for classification. If
 /// the RPC is still running, a reaper awaits it in the background instead of
-/// aborting its `IIIClient::trigger` future: that future owns the SDK timeout
+/// aborting its `IIIClient::call` future: that future owns the SDK timeout
 /// which removes the invocation from the SDK pending map. Thus Done, Error,
 /// Idle, and Abort return immediately while cleanup remains bounded by the
-/// `timeout_ms` passed to the trigger. The task itself owns an admission permit
-/// acquired before the trigger is spawned, so the same process-wide bound
+/// `timeout_ms` passed to the call. The task itself owns an admission permit
+/// acquired before the call is spawned, so the same process-wide bound
 /// covers both foreground RPCs and background reapers.
 ///
 /// This cannot repair the SDK's separate synchronous `send_message` failure
-/// path, where `trigger` returns after inserting a pending invocation. That
+/// path, where `call` returns after inserting a pending invocation. That
 /// cleanup belongs in `iii-sdk` itself.
 async fn finish_provider_call(
     call_task: tokio::task::JoinHandle<()>,
@@ -678,7 +677,7 @@ impl ChatPipeline {
                     let payload = serde_json::json!({ "request_id": rid });
                     tokio::spawn(async move {
                         let _ = iii
-                            .trigger(TriggerRequest {
+                            .call(CallRequest {
                                 function_id,
                                 payload,
                                 action: None,
@@ -721,7 +720,7 @@ impl ChatPipeline {
                 async move {
                     let _call_slot = call_slot;
                     let out = iii
-                        .trigger(TriggerRequest {
+                        .call(CallRequest {
                             function_id,
                             payload: stream_input,
                             action: None,
@@ -752,7 +751,7 @@ impl ChatPipeline {
             .await;
             // Relay completion owns the foreground attempt lifecycle. Closing
             // the reader propagates cancellation to a cooperative provider;
-            // the reaper lets a non-cooperative trigger run only until its SDK
+            // the reaper lets a non-cooperative call run only until its SDK
             // timeout without delaying Done/Error/Idle/Abort.
             reader.close();
             let call_outcome = finish_provider_call(call_task, outcome_rx).await;
@@ -771,12 +770,7 @@ impl ChatPipeline {
                         .set_availability_if_current(provider, provider_generation, true)
                         .await
                     {
-                        self.events
-                            .emit(
-                                triggers::PROVIDER_CHANGED,
-                                json!({ "provider": provider, "op": "available" }),
-                            )
-                            .await;
+                        self.events.provider_changed(provider, "available").await;
                     }
                     return Ok(ChatResponse {
                         ok: true,
@@ -893,12 +887,7 @@ impl ChatPipeline {
                                     )
                                     .await
                                 {
-                                    self.events
-                                        .emit(
-                                            triggers::PROVIDER_CHANGED,
-                                            json!({ "provider": provider, "op": "unavailable" }),
-                                        )
-                                        .await;
+                                    self.events.provider_changed(provider, "unavailable").await;
                                 }
                                 return Err(terminal_error);
                             }
@@ -1249,7 +1238,7 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_millis(25), &mut dropped_rx)
                 .await
                 .is_err(),
-            "cleanup must not abort the SDK trigger future"
+            "cleanup must not abort the SDK call future"
         );
 
         release_tx.send(()).unwrap();
@@ -1397,9 +1386,9 @@ mod tests {
         use crate::chat::inflight::InflightMap;
         use crate::chat::relay::{ReadEvent, RelayRead};
         use crate::config::state::new_config_cell;
+        use crate::events::RouterEvents;
         use crate::registry::store::RegistryStore;
         use crate::testkit::fake_channels::FakeChannel;
-        use crate::triggers::RouterEvents;
         use std::time::Duration;
 
         // empty registry + empty catalog → nothing routes "ghost-model".

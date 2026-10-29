@@ -38,7 +38,8 @@ chose. Counting is local and never runs the model.
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+  backoff until acked, and re-declares on every `router::on-ready` event
+  (it observes that function at boot; the observer outlives router restarts).
   The declaration carries no models and `credential_env_var:
   LLAMACPP_API_KEY`; the post-register refresh discovers the live catalog
   from the resolved server.
@@ -72,7 +73,7 @@ chose. Counting is local and never runs the model.
   `router::provider::list` and the ADE shows under its context-overflow
   card, pointing at the server's `--ctx-size`, the desktop app's per-model
   options, the llama.cpp server docs and the provider restart that picks the
-  new size up (`iii trigger compose::restart` or the Workers page). No
+  new size up (`iii call compose::restart` or the Workers page). No
   pricing (self-hosted).
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
   channel write (caller gone / `router::abort`) drops the SSE receiver and

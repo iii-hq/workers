@@ -101,7 +101,7 @@ mod tests {
 
     fn tool() -> AgentFunction {
         AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "d".into(),
             parameters: serde_json::json!({ "type": "object" }),
             label: None,
@@ -143,7 +143,7 @@ mod tests {
             body["thinking"].get("reasoning_effort").is_none(),
             "effort is top-level, never nested in thinking"
         );
-        assert_eq!(body["tools"][0]["function"]["name"], "agent__trigger");
+        assert_eq!(body["tools"][0]["function"]["name"], "agent__call");
     }
 
     #[test]

@@ -233,7 +233,7 @@ mod tests {
 
     fn tool() -> AgentFunction {
         AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "Invoke an iii function".into(),
             parameters: json!({ "type": "object" }),
             label: None,
@@ -310,7 +310,7 @@ mod tests {
         let system = body["system"].as_array().expect("system is an array");
         assert_eq!(system.len(), 1);
         assert_eq!(system[0]["text"], CLAUDE_CODE_SYSTEM);
-        assert_eq!(body["tools"][0]["name"], "agent__trigger");
+        assert_eq!(body["tools"][0]["name"], "agent__call");
     }
 
     #[test]

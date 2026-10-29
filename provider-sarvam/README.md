@@ -26,7 +26,7 @@ The voice worker reaches the speech half with `stt.backend: router` /
 ## Install
 
 ```bash
-iii trigger compose::add worker=provider-sarvam
+iii call compose::add worker=provider-sarvam
 ```
 
 Put the key where the router reads it: `SARVAM_API_KEY` in the router's

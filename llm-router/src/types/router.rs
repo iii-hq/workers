@@ -484,8 +484,9 @@ pub struct ProviderAbortResponse {
     pub aborted: bool,
 }
 
-/// Event delivered to a provider's `provider::<id>::on_router_ready` (the
-/// `router::ready` trigger payload, currently `{}`). Unknown fields are ignored.
+/// The router's ready event: what `router::on-ready` returns, and what a
+/// provider's `provider::<id>::on_router_ready` receives. Currently `{}`;
+/// unknown fields are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RouterReadyEvent {}
 
@@ -497,18 +498,23 @@ pub struct ProviderReadyAck {
 
 // ── event payloads ──────────────────────────────────────────────────────────
 
-/// Payload emitted on the `router::models::changed` trigger type.
+/// What `router::models::on-changed` returns: a provider reconciled its
+/// catalog slice.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ModelsChangedPayload {
+pub struct ModelsChangedEvent {
+    /// The provider whose slice changed.
     pub provider: String,
+    /// How many models the slice holds.
     pub count: usize,
 }
 
-/// Payload emitted on the `router::provider::changed` trigger type.
+/// What `router::provider::on-changed` returns: the provider registry changed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ProviderChangedPayload {
+pub struct ProviderChangedEvent {
+    /// The provider the change is about.
     pub provider: String,
-    pub op: String, // "register" | "available" | "unavailable"
+    /// `register`, `discovery`, `available` or `unavailable`.
+    pub op: String,
 }
 
 // ── typed function request/response wire types ───────────────────────────────
@@ -677,7 +683,7 @@ pub struct ModelsReconcileRequest {
     pub models: Vec<Model>,
 }
 
-/// Advisory configuration-change event delivered to
+/// Advisory `configuration::on-updated` event delivered to
 /// `router::on_config_changed`. The handler ignores event values and re-fetches
 /// the authoritative entry before replacing its in-memory snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -687,7 +693,7 @@ pub struct ConfigChangedEvent {
     pub id: Option<String>,
 }
 
-/// Advisory `engine::functions-available` event delivered to
+/// Advisory `engine::on-functions-changed` event delivered to
 /// `router::on_functions_changed`. The engine sends
 /// `{ event: "functions_changed", functions: [...] }` with the full current
 /// function list; it does not say which worker or function changed. The
@@ -700,7 +706,7 @@ pub struct FunctionsChangedEvent {
     pub event: Option<String>,
 }
 
-/// Advisory `secrets::changed` event delivered to `router::on_secret_changed`.
+/// Advisory `secrets::on-changed` event delivered to `router::on_secret_changed`.
 /// It never carries a value; the handler re-reads the reference through
 /// `secrets::resolve`. Other payload fields (`fingerprint`, `updated_at`) are
 /// ignored.
@@ -718,8 +724,8 @@ pub struct SecretChangedEvent {
     pub action: Option<String>,
 }
 
-/// Generic acknowledgement returned by trigger-bound handlers whose result is
-/// not consumed by callers (kept typed so the response schema is concrete).
+/// Generic acknowledgement returned by observer targets whose result is not
+/// consumed by callers (kept typed so the response schema is concrete).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RouterAck {
     pub ok: bool,

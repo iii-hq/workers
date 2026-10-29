@@ -30,8 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -260,7 +259,7 @@ pub async fn spawn_engine() -> Option<Engine> {
         let probe = probe.clone();
         async move {
             probe
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "state::get".into(),
                     payload: json!({ "scope": "engine-fixture", "key": "ready" }),
                     action: None,
@@ -327,7 +326,7 @@ pub async fn spawn_engine_with(config_for: impl FnOnce(u16, &Path) -> String) ->
         let probe = probe.clone();
         async move {
             probe
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "engine::workers::list".into(),
                     payload: json!({}),
                     action: None,

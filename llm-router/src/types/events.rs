@@ -46,7 +46,7 @@ pub struct Usage {
     pub cost_usd: Option<f64>, // filled by llm-router from catalog pricing
 }
 
-/// Small, bounded view of the top-level agent_trigger identity observed while
+/// Small, bounded view of the top-level agent_call identity observed while
 /// its JSON arguments are still forming. The router adds this to relayed
 /// deltas; providers leave it absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

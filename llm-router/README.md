@@ -7,13 +7,13 @@ to a provider directly.
 
 llm-router is a standalone iii worker. Providers plug in as separate workers
 at runtime through a self-registration protocol
-(`iii trigger compose::add worker=provider-<x>`); the router never compiles against a provider, and removing a
+(`iii call compose::add worker=provider-<x>`); the router never compiles against a provider, and removing a
 provider worker removes the provider.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=llm-router
+iii call compose::add worker=llm-router
 ```
 
 ## Quickstart
@@ -31,11 +31,15 @@ reader.onMessage((frame) => {
   if (event.type === 'text_delta') process.stdout.write(event.delta);
 });
 
-const res = await iii.trigger('router::chat', {
-  writer_ref: writerRef, // direction "write"
-  model: 'claude-sonnet-4',
-  messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
-}, { timeout_ms: 620_000 }); // outer timeout ≥ the router's 600s stream budget
+const res = await iii.call({
+  function_id: 'router::chat',
+  payload: {
+    writer_ref: writerRef, // direction "write"
+    model: 'claude-sonnet-4',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
+  },
+  timeout_ms: 620_000, // outer timeout ≥ the router's 600s stream budget
+});
 // res: { ok, provider, model, stop_reason, usage }
 ```
 
@@ -137,9 +141,9 @@ entry. The digest is a routing hint, never evidence of a hit — read
 All operator configuration lives in the engine's `llm-router` configuration
 entry — no env vars, no config file. The entry schema is composed at runtime
 from each registered provider's declaration. The router fetches the complete
-entry at boot and keeps an in-memory snapshot synchronized by the
-`configuration:updated` trigger; request handlers never poll
-`configuration::get`.
+entry at boot and keeps an in-memory snapshot synchronized by its observer of
+`configuration::on-updated` (the entry's `configuration:updated` events);
+request handlers never poll `configuration::get`.
 
 ```json
 {
@@ -226,8 +230,8 @@ field keeps its `config` | `env` | `none` values: a resolved reference reports
 Resolved values live only in the router's memory: never in the entry,
 logs or traces, and a cached value is wiped when replaced. They are re-read:
 
-- on `secrets::changed` (the router binds it at boot; without a secrets worker
-  the engine holds the binding until the type registers). A rotated, deleted
+- on `secrets::on-changed` (the router observes it at boot; without a secrets
+  worker the observer waits `pending` until the function registers). A rotated, deleted
   or revoked secret then nudges every provider whose slice references it
   through `provider::<id>::on_router_ready`, so the provider drops its cached
   resolve, re-declares and refreshes its models;
@@ -285,32 +289,42 @@ credential comes from, never its value.
 
 ## Events
 
-The router registers three custom trigger types and fans out to every bound
-handler. Bind with the standard two-step pattern; the handler receives the
-payload verbatim (no envelope).
+The router hosts three event functions. Each is private (only the router
+calls it) and returns the event it is called with, so its observers observe
+the event; none takes args, so observers select events with filters on
+`input`.
 
-| Trigger type | Fires when | Payload |
-|---|---|---|
-| `router::models::changed` | a provider reconciles its catalog slice | `{ "provider": "<id>", "count": <n> }` |
-| `router::provider::changed` | the registry changes (declare / availability flip) | `{ "provider": "<id>", "op": "register" \| "available" \| "unavailable" }` |
-| `router::ready` | the router finishes booting; providers re-declare on it | `{}` |
+| Function | Called when | Event | Filter on |
+|---|---|---|---|
+| `router::models::on-changed` | a provider reconciles its catalog slice | `{ "provider": "<id>", "count": <n> }` | `input.provider` |
+| `router::provider::on-changed` | the registry changes: a declaration, a discovery result or an availability flip | `{ "provider": "<id>", "op": "register" \| "discovery" \| "available" \| "unavailable" }` | `input.provider`, `input.op` |
+| `router::on-ready` | the router finishes booting, once per start; an observer added after that receives the event through itself once it is accepted | `{}` | — |
 
-The router itself binds the engine's `configuration` trigger (its entry) and,
-when the optional `secrets` worker is installed, `secrets::changed`
-(`router::on_secret_changed`).
+Delivery is iii's: every call reaches each observer whose filters match, and
+the router calls a function only while it is observed. Observe with
+`deliver: 'output'` so the target receives the event itself:
 
 ```ts
-iii.registerFunction('my-worker::on-models-changed', async (payload) => {
-  console.log('catalog changed:', payload); // { provider, count }
+iii.registerFunction('my-worker::on-models-changed', async (event) => {
+  console.log('catalog changed:', event); // { provider, count }
   return {};
 });
 
-iii.registerTrigger({
-  type: 'router::models::changed',
-  function_id: 'my-worker::on-models-changed',
-  config: {},
-});
+iii.observe(
+  {
+    function_id: 'router::models::on-changed',
+    filters: { 'input.provider': { $eq: 'anthropic' } },
+    deliver: 'output',
+  },
+  'my-worker::on-models-changed',
+);
 ```
+
+The router itself observes `configuration::on-updated` (its entry,
+`router::on_config_changed`), `engine::on-functions-changed`
+(`router::on_functions_changed`) and, when the optional `secrets` worker is
+installed, `secrets::on-changed` (`router::on_secret_changed`). The last
+observer waits `pending` until the `secrets` worker registers its function.
 
 ## Writing a provider worker
 
@@ -321,8 +335,11 @@ A provider worker must:
    `writer_ref` it receives, ending with one terminal frame.
 2. Declare itself at startup via `router::provider::register` — retrying with
    backoff until acknowledged (covers provider-before-router boot order) —
-   and re-declare on the `router::ready` event after a router restart. The
-   declaration may carry `icon_svg`: one self-contained, monochrome `<svg>`
+   and re-declare on every `router::on-ready` event. Observe it once at boot
+   (Rust providers use `provider_scaffold::router_client::observe_router_ready`
+   with their `provider::<id>::on_router_ready` handler as the target); the
+   observer outlives router restarts. The declaration may carry `icon_svg`:
+   one self-contained, monochrome `<svg>`
    document (square `viewBox`, no fixed size, at most 32 KiB). The router
    echoes it in `router::provider::list` and the console paints it as a
    `currentColor` mask beside the provider's models; a missing or malformed

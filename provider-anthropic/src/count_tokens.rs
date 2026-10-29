@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn empty_system_prompt_omits_the_field_and_tools_map_to_wire() {
         let tools = vec![AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "Invoke an iii function".into(),
             parameters: json!({ "type": "object" }),
             label: None,
@@ -230,7 +230,7 @@ mod tests {
         }];
         let body = build_count_body("m", "", &tools, count_messages(&[user("hi")]).unwrap());
         assert!(body.get("system").is_none());
-        assert_eq!(body["tools"][0]["name"], "agent__trigger");
+        assert_eq!(body["tools"][0]["name"], "agent__call");
     }
 
     fn partial(text: &str) -> AgentMessage {

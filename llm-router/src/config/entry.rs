@@ -4,8 +4,7 @@
 use std::collections::BTreeMap;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 
 use super::schema::compose_entry_schema;
@@ -35,8 +34,8 @@ pub async fn register_entry(
     provider_schemas: &BTreeMap<String, Value>,
 ) -> Result<(), Error> {
     migrate_provider_system_prompts(iii).await?;
-    iii.trigger(
-        TriggerRequest {
+    iii.call(
+        CallRequest {
             function_id: "configuration::register".into(),
             payload: json!({
                 "id": config_id(),
@@ -66,8 +65,8 @@ pub async fn read_entry_value(iii: &IIIClient) -> Result<Value, Error> {
 /// Read the resolved router entry, optionally preserving environment templates for migration.
 async fn read_entry_value_with_raw(iii: &IIIClient, raw: bool) -> Result<Value, Error> {
     let response: Value = iii
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id: "configuration::get".into(),
                 payload: json!({ "id": config_id(), "raw": raw }),
                 action: None,
@@ -86,8 +85,8 @@ pub async fn write_entry_value(iii: &IIIClient, value: Value) -> Result<(), Erro
 
 /// Persist a migrated value to the same resolved entry used for registration and reads.
 async fn set_entry_value(iii: &IIIClient, value: Value) -> Result<Value, Error> {
-    iii.trigger(
-        TriggerRequest {
+    iii.call(
+        CallRequest {
             function_id: "configuration::set".into(),
             payload: json!({ "id": config_id(), "value": value }),
             action: None,
@@ -120,8 +119,8 @@ async fn migrate_provider_system_prompts(iii: &IIIClient) -> Result<(), Error> {
     if !drop_provider_system_prompts(&mut migrated) {
         return Ok(());
     }
-    iii.trigger(
-        TriggerRequest {
+    iii.call(
+        CallRequest {
             function_id: "configuration::register".into(),
             payload: json!({
                 "id": config_id(),

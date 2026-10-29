@@ -3,8 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient};
+use iii_sdk::{register_worker, CallRequest, IIIClient};
 use llm_router::register::register_router;
 use provider_github_copilot::register::register_provider;
 use serde_json::{json, Value};
@@ -38,7 +37,7 @@ async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, iii_sdk::errors::Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
@@ -214,7 +213,7 @@ async fn configure_stub_key(router_iii: &IIIClient, stub_url: &str) {
 /// Pull the live (stubbed) list into the catalog and wait until routing can
 /// see it — the declaration carries no models, so tests that route by
 /// catalog ownership must refresh first. The refresh itself is retried: the
-/// router's config snapshot syncs off the configuration:updated trigger, so
+/// router's config snapshot syncs off configuration::on-updated, so
 /// the first attempt can run before the stub api_url is visible.
 async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expect_id: &str) {
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -307,7 +306,7 @@ async fn chat_streams_end_to_end_through_the_ready_bearer_path() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -357,7 +356,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -469,7 +468,7 @@ async fn provider_redeclares_on_router_ready() {
         .await
         .expect("router reboots");
 
-    // router::ready trigger → provider re-declares with its persisted token
+    // router::on-ready → provider re-declares with its persisted token
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let list = call(&router2, "router::provider::list", json!({}))

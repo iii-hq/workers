@@ -37,7 +37,7 @@ mod tests {
     #[test]
     fn maps_name_description_and_schema() {
         let tools = vec![AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "Invoke an iii function".into(),
             parameters: json!({ "type": "object", "properties": { "id": { "type": "string" } } }),
             label: None,
@@ -45,7 +45,7 @@ mod tests {
         }];
         let wire = functions_to_wire(&tools);
         assert_eq!(wire.len(), 1);
-        assert_eq!(wire[0]["name"], "agent__trigger");
+        assert_eq!(wire[0]["name"], "agent__call");
         assert_eq!(wire[0]["description"], "Invoke an iii function");
         assert_eq!(wire[0]["input_schema"]["type"], "object");
         // Incremental tool-input streaming: without it, large inputs are

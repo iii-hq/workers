@@ -2,7 +2,7 @@
 use super::{PrivateStateStore, SessionRecord, SessionStore};
 use crate::session::SessionError;
 use futures::future::BoxFuture;
-use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient};
+use iii_sdk::{errors::Error, CallRequest, IIIClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
@@ -35,7 +35,7 @@ impl SecretsSessionStore {
 
     async fn call(&self, function: &str, payload: Value) -> Result<Value, Error> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function.into(),
                 payload,
                 action: None,
