@@ -8,9 +8,11 @@
 //! it pins the three claims that removal makes:
 //!   * no trigger ever creates an agent — the only spawn is the parent's own
 //!     direct `harness::spawn` call;
-//!   * child outcomes flow ONLY through the medium — the parent's transcript
+//!   * child results flow ONLY through the medium — the parent's transcript
 //!     gains exactly one `[notification]` (the barrier payload) and never a
-//!     `[child-failure]` or injected child result;
+//!     `[child-failure]` or injected child result. The leaf ends after the
+//!     barrier fired, so the parent is no longer parked on a wake and gets no
+//!     child-ended notice either (INT-041 covers the parked case);
 //!   * the leaf runs on the shared identity and needs no trigger
 //!     knowledge — its generations are plain task → `state::set` writes.
 //!
@@ -272,11 +274,12 @@ pub(super) fn scenario() -> ScenarioFixture {
         );
 
         // No second channel: nothing anywhere in the parent's transcript is a
-        // child-failure injection or a child result outside the medium.
+        // child-failure injection, a child-ended notice (the wake had fired) or
+        // a child result outside the medium.
         for item in &run.transcript {
             let text = serde_json::to_string(item).unwrap_or_default();
             anyhow::ensure!(
-                !text.contains("[child-failure]"),
+                !text.contains("[child-failure]") && !text.contains("child ended:"),
                 "a child outcome was injected outside the medium: {text}"
             );
         }
