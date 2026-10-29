@@ -101,31 +101,31 @@ If the criteria were ambiguous, wrong, or the work legitimately revealed new sco
 ### Per-ticket wake
 
 ```json
-engine::register_trigger {
-  "trigger_type": "kanban:change",
-  "config": { "ticket_id": "KAN-7", "events": ["ticket.moved"], "ticket": "summary" },
+harness::observe {
+  "function_id": "kanban::on-change",
+  "args": { "ticket_id": "KAN-7", "events": ["ticket.moved"], "ticket": "summary" },
   "once": false,
   "label": "KAN-7-review",
   "lifecycle": { "max_fires": 20, "expires_in_ms": 3600000 }
 }
 ```
 
-**Guard against your own move, and reap on the landing.** `kanban:change` filters by ticket and event name only — there is no actor filter, so your own moves fire this binding. The handler's first act is `kanban::ticket::get`:
+**Guard against your own move, and reap on the landing.** `kanban::on-change` selects by ticket and event name only — there is no actor arg, so your own moves fire this observer. The handler's first act is `kanban::ticket::get`:
 
-- `status` is `done` → **unregister this ticket's bindings and stop**. Your own accept move fires it, and a review binding left armed on a closed ticket wakes you with nothing to do. `harness::triggers::list {}` for the `subscription_id`s, then `harness::triggers::unregister { "subscription_id": "..." }` for each — this binding **last**, so it stays alive while you reap — then list again to confirm none of your `KAN-7-*` labels remain.
+- `status` is `done` → **dispose of this ticket's observers and stop**. Your own accept move fires it, and a review observer left armed on a closed ticket wakes you with nothing to do. `harness::observers::list {}` for the `observer_id`s, then `harness::unobserve { "id": "..." }` for each — this observer **last**, so it stays alive while you reap — then list again to confirm none of your `KAN-7-*` labels remain.
 - `status` is `in_review` → review it.
 - anything else → do nothing and stop. Without that check you re-review your own rejection forever.
 
-Nobody can reap for you, here or anywhere: `engine::unregister_trigger` removes only bindings owned by the calling session, a foreign `session_id` is not honoured, and agent wakes do not appear in `engine::registered-triggers::list`. Label every binding `<KEY>-review` / `<KEY>-sweep` so the reap is mechanical.
+Nobody can reap for you, here or anywhere: `harness::unobserve` removes only observers the calling session armed. Label every observer `<KEY>-review` / `<KEY>-sweep` so the reap is mechanical.
 
 ### Cron sweep — the backstop that cannot fall silent
 
-The wake only fires if the kanban worker still holds the binding in its in-process subscriber map; a binding it lost reports nothing at all. Pair it with a check-in that reads the board file directly:
+A wake is delivered at most once, fire-and-forget: a dropped delivery, an observer that expired, or one left pending in the wrong namespace reports nothing at all. Pair it with a check-in that reads the board file directly:
 
 ```json
-engine::register_trigger {
-  "trigger_type": "cron",
-  "config": { "expression": "0 * * * *" },
+harness::observe {
+  "function_id": "cron::on-tick",
+  "args": { "expression": "0 * * * *" },
   "once": false,
   "label": "in-review-sweep"
 }
@@ -133,18 +133,18 @@ engine::register_trigger {
 
 Each fire: `kanban::ticket::list { "status": "in_review" }` and review anything whose last move actor is not you. This is also what catches the ticket that was moved while your session was offline.
 
-Teardown when the ticket lands: `harness::triggers::list {}` to find the `subscription_id`, then `harness::triggers::unregister { "subscription_id": "..." }`. Unregister the review binding when its ticket reaches `done`, and retire the sweep itself once nothing you were watching is left in `in_review` — a sweep with an empty watch is a session woken to read an empty list. Never leave a review binding armed on a `done` ticket.
+Teardown when the ticket lands: `harness::observers::list {}` to find the `observer_id`, then `harness::unobserve { "id": "..." }`. Dispose of the review observer when its ticket reaches `done`, and retire the sweep itself once nothing you were watching is left in `in_review` — a sweep with an empty watch is a session woken to read an empty list. Never leave a review observer armed on a `done` ticket.
 
 ## Traps
 
 - **You accepted on a summary.** Symptom: the ticket is `done` and the bug it described is still reproducible. Cause: the engineer's comment was read as evidence. Fix: one verdict per criterion, evidence per criterion.
-- **You rejected your own rejection.** Symptom: the same review comment appears on the ticket repeatedly. Cause: the `kanban:change` binding fired on your own move back to `in_progress`. Fix: re-read the ticket and no-op unless the status is `in_review`.
-- **A closed ticket keeps waking you.** Symptom: a wake for a ticket that is `done` and reviewed, with nothing to do. Cause: the handler read the status and returned without tearing the bindings down. Fix: on `done`, unregister `<KEY>-*` before you stop.
+- **You rejected your own rejection.** Symptom: the same review comment appears on the ticket repeatedly. Cause: the `kanban::on-change` observer fired on your own move back to `in_progress`. Fix: re-read the ticket and no-op unless the status is `in_review`.
+- **A closed ticket keeps waking you.** Symptom: a wake for a ticket that is `done` and reviewed, with nothing to do. Cause: the handler read the status and returned without tearing the observers down. Fix: on `done`, dispose of `<KEY>-*` before you stop.
 - **A parent accepted with open children.** Symptom: the console flags the feature ticket in the done column, with subtasks still open. Cause: only the parent's own criteria were checked. Fix: read `progress`; accept only at `progress.done == progress.total` or with every open child cut by comment.
 - **`done` with a caveat.** Symptom: the ticket is closed and the caveat lives only in a comment. Cause: "met, but…". Fix: a caveat is a not-met — comment and move to `in_progress`.
 - **The criteria moved after the work.** Symptom: the ticket passes against a description nobody built to. Cause: the description was edited during review. Fix: criteria changes go through the user as planning, in a separate turn.
 - **Reviewed stale work.** Symptom: you approve a commit that was superseded. Cause: you checked the artefact before the last activity row. Fix: read the activity timeline, then review the newest state.
-- **The binding dies and the ticket sits forever.** Symptom: a ticket in `in_review` for days, no review comment. Cause: the worker's copy of the binding went away with the process. Fix: the cron sweep.
+- **The wake stays silent and the ticket sits forever.** Symptom: a ticket in `in_review` for days, no review comment. Cause: the review observer expired, or its delivery was dropped. Fix: the cron sweep.
 
 ## Checklist
 
@@ -156,7 +156,7 @@ Teardown when the ticket lands: `harness::triggers::list {}` to find the `subscr
 - [ ] Any accept → comment, then move to `done`.
 - [ ] A parent is accepted only when `progress.done == progress.total`, or every open child is explicitly cut with a comment and detached.
 - [ ] `author` and `actor` are `product-manager` on every write.
-- [ ] On `done`: the ticket's review binding unregistered (this binding last), and `harness::triggers::list` re-read to confirm nothing of yours is left armed for it.
+- [ ] On `done`: the ticket's review observer disposed of (this observer last), and `harness::observers::list` re-read to confirm nothing of yours is left armed for it.
 - [ ] The sweep retired once nothing you were watching is still in `in_review`.
-- [ ] Bindings labelled `<KEY>-review` / `<KEY>-sweep` so the reap is mechanical.
+- [ ] Observers labelled `<KEY>-review` / `<KEY>-sweep` so the reap is mechanical.
 - [ ] No ticket deleted, no criterion rewritten to fit the implementation.

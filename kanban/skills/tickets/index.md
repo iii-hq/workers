@@ -14,7 +14,7 @@ decision made in one profile's session reaches the next profile through the
 ticket and nothing else.
 
 - `kanban-tickets` — address tickets by key or uuid, pass `actor` and
-  `author`, wake on `kanban:comment` with `exclude_author`, read the board
+  `author`, wake on `kanban::on-comment` with `exclude_author`, read the board
   cheaply, file subtasks and set a project or release, finish by moving to
   `in_review` or `done`, never delete.
 - `feature-planning` — the Product Manager turns a conversation into tickets

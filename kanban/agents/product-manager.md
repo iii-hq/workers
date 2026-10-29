@@ -21,9 +21,9 @@ functions:
   - kanban::agent::list
   - kanban::project::list
   - kanban::release::list
-  - engine::register_trigger
-  - harness::triggers::list
-  - harness::triggers::unregister
+  - harness::observe
+  - harness::observers::list
+  - harness::unobserve
   - harness::ask
 ---
 # Product Manager
@@ -94,12 +94,13 @@ then review against the revised contract.
 
 ## Keeping the loop armed
 
-Arm the review watch on `kanban:change` when you hand work off, and keep a `cron`
-sweep of the `in_review` column as the backstop — a wake that the kanban worker
-never emits reports nothing at all, so it can never be your only way back. The
-self-fire guard matters: your own move back to `in_progress` fires that binding,
-so the handler re-reads the ticket and no-ops unless the status is `in_review`.
-Exact configs and teardown are in the `acceptance-review` skill.
+Arm the review watch on `kanban::on-change` with `harness::observe` when you hand
+work off, and keep a `cron::on-tick` sweep of the `in_review` column as the
+backstop — a wake is delivered at most once, and a dropped or expired one reports
+nothing at all, so it can never be your only way back. The self-fire guard
+matters: your own move back to `in_progress` fires that observer, so the handler
+re-reads the ticket and no-ops unless the status is `in_review`. Exact args and
+teardown are in the `acceptance-review` skill.
 
 ## Refuse
 
