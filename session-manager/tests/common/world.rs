@@ -3,28 +3,29 @@
 //! Carries two stacks side by side:
 //!
 //! - **@pure**: a fresh production stack per scenario — real handlers,
-//!   real service, real emitter + filters — backed by a real `FsStore`
-//!   over a per-scenario tempdir, deterministic `SeqIds` / `FakeClock`,
-//!   and a recording deliverer. No engine involved; ids, timestamps and
-//!   on-disk files are exact. `reopen_fs` swaps in a fresh `FsStore`
-//!   over the same directory (same ids/clock) to simulate a worker
-//!   restart.
+//!   real service, real emitter — backed by a real `FsStore` over a
+//!   per-scenario tempdir, deterministic `SeqIds` / `FakeClock`, and a
+//!   recording deliverer that applies observers' filters the way iii
+//!   does. No engine involved; ids, timestamps and on-disk files are
+//!   exact. `reopen_fs` swaps in a fresh `FsStore` over the same
+//!   directory (same ids/clock) to simulate a worker restart.
 //! - **@engine**: the shared engine connection (`None` when
 //!   unreachable, so `@engine` steps soft-skip), alias bookkeeping for
-//!   the real (random) ids, and named in-process bridged-instance
-//!   stacks for the bridge propagation scenarios.
+//!   the real (random) ids, the scenario's engine observers, and named
+//!   in-process bridged-instance stacks for the bridge propagation
+//!   scenarios.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use cucumber::World;
-use iii_sdk::IIIClient;
+use iii_sdk::{IIIClient, ObserverHandle};
 use serde_json::Value;
 
 use session_manager::config::WorkerConfig;
 use session_manager::error::SessionError;
-use session_manager::events::{Emitter, TriggerSets};
+use session_manager::events::Emitter;
 use session_manager::functions::{
     append, append_many, create, delete, delete_attachment, ensure, fork, get, get_attachment,
     get_message, list, list_attachments, messages, messages_range, messages_tail, put_attachment,
@@ -58,8 +59,6 @@ pub struct SessionWorld {
     /// reachable); generic assertion steps then pass vacuously instead
     /// of panicking about a call that never happened.
     pub soft_skipped: bool,
-    /// Outcome of the most recent binding registration attempt.
-    pub last_binding_result: Option<Result<(), String>>,
 
     /// Alias -> value (e.g. "S1" -> a real session id) used by `${X}`
     /// substitution in payload docstrings.
@@ -67,10 +66,17 @@ pub struct SessionWorld {
 
     /// Shared engine connection; `None` soft-skips @engine steps.
     pub engine: Option<Arc<IIIClient>>,
-    /// Alias -> recorder function id for engine subscribers.
-    pub engine_subscribers: HashMap<String, String>,
+    /// Alias -> the scenario's engine observers.
+    pub engine_observers: HashMap<String, EngineObserver>,
     /// Named in-process bridged-instance stacks (@engine bridge tests).
     pub bridges: HashMap<String, BridgeStack>,
+}
+
+/// An observer the scenario created on the engine, and the recorder
+/// function it delivers to.
+pub struct EngineObserver {
+    pub target: String,
+    pub handle: ObserverHandle,
 }
 
 impl std::fmt::Debug for SessionWorld {
@@ -97,11 +103,21 @@ impl SessionWorld {
             last_response: None,
             last_error: None,
             soft_skipped: false,
-            last_binding_result: None,
             aliases: HashMap::new(),
             engine: None,
-            engine_subscribers: HashMap::new(),
+            engine_observers: HashMap::new(),
             bridges: HashMap::new(),
+        }
+    }
+
+    /// Dispose the scenario's engine observers and bridge relays, so their
+    /// targets stop receiving events. Runs after every scenario.
+    pub async fn retire_engine_observers(&mut self) {
+        for (_, observer) in self.engine_observers.drain() {
+            let _ = observer.handle.dispose().await;
+        }
+        for (_, stack) in self.bridges.drain() {
+            stack.relay.detach().await;
         }
     }
 
@@ -119,9 +135,8 @@ impl SessionWorld {
         self.last_response = None;
         self.last_error = None;
         self.soft_skipped = false;
-        self.last_binding_result = None;
         self.aliases.clear();
-        self.engine_subscribers.clear();
+        self.engine_observers.clear();
         self.bridges.clear();
     }
 
@@ -137,7 +152,7 @@ impl SessionWorld {
 
     /// Simulate a worker restart: a brand-new `FsStore` (empty cache)
     /// over the same directory, same ids/clock so the sequence
-    /// continues, same emitter/bindings/recorder.
+    /// continues, same emitter/observers/recorder.
     pub fn reopen_fs(&mut self) {
         self.reopen_fs_with(WorkerConfig::default());
     }
@@ -227,10 +242,7 @@ fn build_pure_stack() -> PureStack {
         &cfg,
     ));
     let recorder = Recorder::new();
-    let emitter = Arc::new(Emitter::new(
-        TriggerSets::new(),
-        Arc::new(RecorderDeliverer(recorder.clone())),
-    ));
+    let emitter = Arc::new(Emitter::new(Arc::new(RecorderDeliverer(recorder.clone()))));
     let deps = Arc::new(Deps {
         service,
         sink: emitter.clone(),

@@ -3,8 +3,8 @@ Feature: session::set-meta — update title, description and metadata
 
   Contract (session-manager.md § session::set-meta): updates
   title/description/metadata (e.g. once a titling worker generates them
-  from the first exchange). Does not change status or messages. Fires
-  session::meta-updated so consumers render new titles live instead of
+  from the first exchange). Does not change status or messages. Calls
+  session::on-meta-updated so consumers render new titles live instead of
   polling. A supplied metadata object REPLACES the stored one.
 
   Background:
@@ -16,10 +16,7 @@ Feature: session::set-meta — update title, description and metadata
   # Prevents: meta updates that don't notify — consumers render titles
   # live off meta_updated, never by polling get.
   Scenario: updating title and description fires meta_updated
-    Given a binding "b1" on "session::meta-updated" delivering to "ui::meta" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-meta-updated" delivering to "ui::meta"
     Given the clock advances by 250 ms
     When I call "session::set-meta" with:
       """
@@ -29,7 +26,7 @@ Feature: session::set-meta — update title, description and metadata
     And the response field "meta.title" is "Weather question"
     And the response field "meta.description" is "asks about rain"
     And the response field "meta.updated_at" is 1000250
-    And function "ui::meta" received 1 "session::meta-updated" delivery
+    And function "ui::meta" received 1 "session::on-meta-updated" delivery
     And delivery 0 to "ui::meta" has "session_id" = "s_001"
     And delivery 0 to "ui::meta" has "title" = "Weather question"
     And delivery 0 to "ui::meta" has "description" = "asks about rain"
@@ -57,10 +54,7 @@ Feature: session::set-meta — update title, description and metadata
 
   # Prevents: a no-op set_meta spamming meta_updated events.
   Scenario: a set_meta with no fields is a silent no-op
-    Given a binding "b1" on "session::meta-updated" delivering to "ui::meta" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-meta-updated" delivering to "ui::meta"
     When I call "session::set-meta" with:
       """
       { "session_id": "s_001" }
@@ -84,12 +78,12 @@ Feature: session::set-meta — update title, description and metadata
     And the response field "meta.message_count" is 1
 
   # Prevents: meta_updated filters evaluating against the PRE-update
-  # metadata — a consumer subscribed to the new owner must see the
+  # metadata — a consumer observing the new owner must see the
   # event that handed the session over.
   Scenario: metadata filters see the post-update metadata
-    Given a binding "b1" on "session::meta-updated" delivering to "obs::u2" with config:
+    Given an observer "b1" of "session::on-meta-updated" delivering to "obs::u2" with filters:
       """
-      { "metadata": { "owner": "u_2" } }
+      { "input.session_metadata.owner": { "$eq": "u_2" } }
       """
     When I call "session::set-meta" with:
       """

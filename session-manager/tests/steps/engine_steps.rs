@@ -7,12 +7,14 @@ use std::time::Duration;
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{CallRequest, Deliver, Source};
 use serde_json::Value;
+
+use session_manager::events::EventKind;
 
 use super::common_steps::{lookup_path, parse_expected};
 use crate::common::engine::{received_by, register_recorder_function};
-use crate::common::world::SessionWorld;
+use crate::common::world::{EngineObserver, SessionWorld};
 
 #[given("the iii engine is reachable")]
 async fn engine_reachable(_world: &mut SessionWorld) {
@@ -29,7 +31,7 @@ async fn engine_call(world: &mut SessionWorld, function: String, step: &Step) {
     let payload: Value = serde_json::from_str(raw.trim())
         .unwrap_or_else(|e| panic!("payload docstring must be valid JSON: {e}"));
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function,
             payload,
             action: None,
@@ -149,50 +151,54 @@ async fn engine_alias(world: &mut SessionWorld, path: String, alias: String) {
 }
 
 // ---------------------------------------------------------------------------
-// Engine subscribers
+// Engine observers
 // ---------------------------------------------------------------------------
 
-#[given(regex = r#"^an engine subscriber "([^"]+)" on "([^"]+)" with config:$"#)]
-async fn engine_subscriber(
-    world: &mut SessionWorld,
-    alias: String,
-    trigger_type: String,
-    step: &Step,
-) {
+/// Observe a session event function over the engine with a recorder
+/// function as the target, the event delivered as output, and wait until
+/// the observer is active.
+#[given(regex = r#"^an engine observer "([^"]+)" of "([^"]+)" with filters:$"#)]
+async fn engine_observer(world: &mut SessionWorld, alias: String, source: String, step: &Step) {
     let Some(iii) = world.engine.clone() else {
         return;
     };
+    assert!(
+        EventKind::from_function_id(&source).is_some(),
+        "{source} is not a session event function"
+    );
     let raw = world.substitute(step.docstring.as_deref().unwrap_or("{}"));
-    let config: Value = serde_json::from_str(raw.trim())
-        .unwrap_or_else(|e| panic!("subscriber config docstring must be valid JSON: {e}"));
+    let filters: Value = serde_json::from_str(raw.trim())
+        .unwrap_or_else(|e| panic!("filters docstring must be valid JSON: {e}"));
 
-    let function_id = register_recorder_function(&iii);
-    // Give the engine a beat to learn about the recorder function
-    // before routing events at it.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    let target = register_recorder_function(&iii);
+    let handle = iii.observe(
+        Source::function(source.as_str())
+            .filters(filters)
+            .deliver(Deliver::Output),
+        target.as_str(),
+    );
+    match tokio::time::timeout(Duration::from_secs(10), handle.ready()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("engine observer {alias} of {source} was refused: {e}"),
+        Err(_) => panic!("engine observer {alias} of {source} did not become active within 10s"),
+    }
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        trigger_type,
-        function_id.clone(),
-        config,
-    ))
-    .expect("register engine trigger");
-    // And a beat for the registration to round-trip to our handler.
-    tokio::time::sleep(Duration::from_millis(250)).await;
-
-    world.engine_subscribers.insert(alias, function_id);
+    world
+        .engine_observers
+        .insert(alias, EngineObserver { target, handle });
 }
 
-fn subscriber_fn(world: &SessionWorld, alias: &str) -> String {
+fn observer_target(world: &SessionWorld, alias: &str) -> String {
     world
-        .engine_subscribers
+        .engine_observers
         .get(alias)
-        .unwrap_or_else(|| panic!("no engine subscriber aliased `{alias}`"))
+        .unwrap_or_else(|| panic!("no engine observer aliased `{alias}`"))
+        .target
         .clone()
 }
 
 #[then(
-    regex = r#"^within (\d+) seconds the engine subscriber "([^"]+)" receives at least (\d+) deliver(?:y|ies)$"#
+    regex = r#"^within (\d+) seconds the engine observer "([^"]+)" receives at least (\d+) deliver(?:y|ies)$"#
 )]
 async fn engine_receives_at_least(
     world: &mut SessionWorld,
@@ -203,7 +209,7 @@ async fn engine_receives_at_least(
     if world.engine.is_none() {
         return;
     }
-    let function_id = subscriber_fn(world, &alias);
+    let function_id = observer_target(world, &alias);
     let deadline = std::time::Instant::now() + Duration::from_secs(secs);
     loop {
         let got = received_by(&function_id);
@@ -212,7 +218,7 @@ async fn engine_receives_at_least(
         }
         if std::time::Instant::now() > deadline {
             panic!(
-                "engine subscriber {alias} received {} deliveries within {secs}s, expected at least {expected}: {got:#?}",
+                "engine observer {alias} received {} deliveries within {secs}s, expected at least {expected}: {got:#?}",
                 got.len()
             );
         }
@@ -221,7 +227,7 @@ async fn engine_receives_at_least(
 }
 
 #[then(
-    regex = r#"^after (\d+) seconds? the engine subscriber "([^"]+)" has received exactly (\d+) deliver(?:y|ies)$"#
+    regex = r#"^after (\d+) seconds? the engine observer "([^"]+)" has received exactly (\d+) deliver(?:y|ies)$"#
 )]
 async fn engine_receives_exactly(
     world: &mut SessionWorld,
@@ -232,13 +238,13 @@ async fn engine_receives_exactly(
     if world.engine.is_none() {
         return;
     }
-    let function_id = subscriber_fn(world, &alias);
+    let function_id = observer_target(world, &alias);
     tokio::time::sleep(Duration::from_secs(secs)).await;
     let got = received_by(&function_id);
     assert_eq!(
         got.len(),
         expected,
-        "engine subscriber {alias} received {} deliveries, expected exactly {expected}: {got:#?}",
+        "engine observer {alias} received {} deliveries, expected exactly {expected}: {got:#?}",
         got.len()
     );
 }
@@ -254,7 +260,7 @@ async fn some_engine_delivery_has(
         return;
     }
     let expected = parse_expected(&world.substitute(&raw));
-    let function_id = subscriber_fn(world, &alias);
+    let function_id = observer_target(world, &alias);
     let got = received_by(&function_id);
     assert!(
         got.iter().any(|p| lookup_path(p, &path) == Some(&expected)),
@@ -273,7 +279,7 @@ async fn every_engine_delivery_has(
         return;
     }
     let expected = parse_expected(&world.substitute(&raw));
-    let function_id = subscriber_fn(world, &alias);
+    let function_id = observer_target(world, &alias);
     let got = received_by(&function_id);
     assert!(!got.is_empty(), "no deliveries to {alias} at all");
     for (i, p) in got.iter().enumerate() {

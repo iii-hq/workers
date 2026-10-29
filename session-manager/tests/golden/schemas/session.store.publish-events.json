@@ -4,10 +4,14 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "EventEnvelope": {
-        "description": "Wire form of an [`EmittableEvent`] for cross-instance propagation. `session_metadata` rides along so `metadata` filters keep working at every edge (the spec payloads do not carry it).",
+        "description": "Wire form of an [`EmittableEvent`] for cross-instance propagation: what `session::store::on-events` observers receive, and what `session::store::publish-events` takes.",
         "properties": {
+          "function_id": {
+            "description": "The event function the event belongs to (`session::on-created`, ...).",
+            "type": "string"
+          },
           "payload": {
-            "description": "The spec payload for that trigger type."
+            "description": "The event, without the session metadata."
           },
           "session_metadata": {
             "additionalProperties": true,
@@ -16,15 +20,11 @@
               "object",
               "null"
             ]
-          },
-          "trigger_type": {
-            "description": "One of the six public trigger type ids.",
-            "type": "string"
           }
         },
         "required": [
-          "payload",
-          "trigger_type"
+          "function_id",
+          "payload"
         ],
         "type": "object"
       }

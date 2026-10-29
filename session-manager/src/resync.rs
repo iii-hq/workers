@@ -1,22 +1,25 @@
-//! Post-reload trigger resync.
+//! Post-reload resync of the session event observers.
 //!
-//! Subscribers (the console, the harness, ...) hold session and transcript
-//! state they reconciled from the six `session::*` triggers — they do not poll.
-//! When an adapter change swaps the [`SessionStore`] under them, nothing has
-//! re-emitted those triggers, so an open view would stay stale until the next
-//! mutation even though new events would now flow correctly.
+//! Observers (the console, the harness, ...) hold session and transcript
+//! state they reconciled from the six `session::on-*` event functions; they do
+//! not poll. When an adapter change swaps the [`SessionStore`] under them,
+//! nothing has called those functions for the new store, so an open view would
+//! stay stale until the next mutation even though new events would flow
+//! correctly.
 //!
-//! [`resync_triggers`] walks the NEW store read-only and replays its current
-//! state through the local [`Emitter`]: `session::created` for every live
-//! session, then one snapshot event per entry (`message-added` for a fresh
-//! entry, `message-updated` for one that had been edited). Sessions that were
-//! present before the swap but are gone after it are signalled with
-//! `session::deleted`. Consumers reconcile by entry id and highest revision, so
-//! a single snapshot per entry is enough to converge an open view.
+//! [`resync_observers`] walks the NEW store read-only and replays its current
+//! state through the local [`Emitter`]: `session::on-created` for every live
+//! session, then one snapshot event per entry (`session::on-message-added` for
+//! a fresh entry, `session::on-message-updated` for one that had been edited).
+//! Sessions that were present before the swap but are gone after it are
+//! signalled with `session::on-deleted`. Consumers reconcile by entry id and
+//! highest revision, so a single snapshot per entry is enough to converge an
+//! open view.
 //!
 //! Delivery always goes through the local emitter (never a `RemotePublisher`):
-//! a replay is local state, and on an fs-main instance the emitter still fans
-//! each envelope out to attached bridges, so they resync too.
+//! a replay is local state, and on an fs-main instance the emitter still calls
+//! `session::store::on-events` with each envelope, so attached bridges resync
+//! too.
 
 use std::collections::HashSet;
 
@@ -31,20 +34,21 @@ use crate::types::{CustomPayload, JsonMap, SessionEntry, SessionMeta};
 /// What a resync replayed, for an operator-visible log line.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ResyncStats {
-    /// Live sessions re-announced via `session::created`.
+    /// Live sessions re-announced via `session::on-created`.
     pub sessions: usize,
-    /// Entries replayed via `session::message-added` / `message-updated`.
+    /// Entries replayed via `session::on-message-added` /
+    /// `session::on-message-updated`.
     pub entries: usize,
-    /// Sessions signalled gone via `session::deleted`.
+    /// Sessions signalled gone via `session::on-deleted`.
     pub deleted: usize,
     /// Total events emitted (`sessions + entries + deleted`).
     pub events: usize,
 }
 
 /// Replay the new store's current state through `emitter`, plus a
-/// `session::deleted` for every id in `old_metas` that is absent from the new
-/// store. Read-only: it never mutates the store.
-pub async fn resync_triggers(
+/// `session::on-deleted` for every id in `old_metas` that is absent from the
+/// new store. Read-only: it never mutates the store.
+pub async fn resync_observers(
     old_metas: &[SessionMeta],
     store: &dyn SessionStore,
     emitter: &Emitter,
@@ -170,39 +174,29 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use iii_sdk::trigger::TriggerConfig;
-    use serde_json::{json, Value};
+    use serde_json::Value;
 
-    use crate::events::{EventDeliverer, EventKind, TriggerSets};
+    use crate::events::EventDeliverer;
     use crate::store::FsStore;
     use crate::types::{AgentMessage, SessionKind, SessionStatus};
 
-    /// Records the (trigger_type, payload) of every delivery for assertions.
+    /// Observes every event function and records the (function_id, payload)
+    /// of every call for assertions.
     struct RecordingDeliverer {
         seen: Mutex<Vec<(String, Value)>>,
     }
 
     #[async_trait]
     impl EventDeliverer for RecordingDeliverer {
-        async fn deliver(&self, trigger_type: &str, _function_id: &str, payload: Value) {
+        fn is_observed(&self, _function_id: &str) -> bool {
+            true
+        }
+
+        async fn call(&self, function_id: &str, payload: Value) {
             self.seen
                 .lock()
                 .unwrap()
-                .push((trigger_type.to_string(), payload));
-        }
-    }
-
-    fn bind_all(sets: &TriggerSets) {
-        for kind in EventKind::all() {
-            sets.for_kind(kind)
-                .add(TriggerConfig {
-                    id: format!("b-{}", kind.trigger_type()),
-                    function_id: "test::recv".to_string(),
-                    config: json!({}),
-                    metadata: None,
-                    namespace: None,
-                })
-                .unwrap();
+                .push((function_id.to_string(), payload));
         }
     }
 
@@ -251,13 +245,11 @@ mod tests {
         let recorder = Arc::new(RecordingDeliverer {
             seen: Mutex::new(Vec::new()),
         });
-        let sets = TriggerSets::new();
-        bind_all(&sets);
-        let emitter = Emitter::new(sets, recorder.clone());
+        let emitter = Emitter::new(recorder.clone());
 
         // Pre-swap there was also s0, which is gone from the new store.
         let old = vec![meta("s0"), meta("s1")];
-        let stats = resync_triggers(&old, &store, &emitter).await.unwrap();
+        let stats = resync_observers(&old, &store, &emitter).await.unwrap();
 
         assert_eq!(stats.deleted, 1, "s0 vanished across the swap");
         assert_eq!(stats.sessions, 1, "s1 re-announced");
@@ -265,11 +257,11 @@ mod tests {
         assert_eq!(stats.events, 4);
 
         let seen = recorder.seen.lock().unwrap();
-        let kinds: Vec<&str> = seen.iter().map(|(t, _)| t.as_str()).collect();
-        assert!(kinds.contains(&"session::deleted"));
-        assert!(kinds.contains(&"session::created"));
-        assert!(kinds.contains(&"session::message-added"));
-        assert!(kinds.contains(&"session::message-updated"));
+        let functions: Vec<&str> = seen.iter().map(|(f, _)| f.as_str()).collect();
+        assert!(functions.contains(&"session::on-deleted"));
+        assert!(functions.contains(&"session::on-created"));
+        assert!(functions.contains(&"session::on-message-added"));
+        assert!(functions.contains(&"session::on-message-updated"));
     }
 
     #[tokio::test]
@@ -279,11 +271,9 @@ mod tests {
         let recorder = Arc::new(RecordingDeliverer {
             seen: Mutex::new(Vec::new()),
         });
-        let sets = TriggerSets::new();
-        bind_all(&sets);
-        let emitter = Emitter::new(sets, recorder.clone());
+        let emitter = Emitter::new(recorder.clone());
 
-        let stats = resync_triggers(&[], &store, &emitter).await.unwrap();
+        let stats = resync_observers(&[], &store, &emitter).await.unwrap();
         assert_eq!(stats.events, 0);
         assert!(recorder.seen.lock().unwrap().is_empty());
     }
