@@ -877,7 +877,11 @@ mod tests {
         assert_eq!(ack.ids, vec!["one", "three"]);
 
         assert!(matches!(
-            plan_sync(Some(&shown), true, &view(&["one", "two"], "sha256:reworded")),
+            plan_sync(
+                Some(&shown),
+                true,
+                &view(&["one", "two"], "sha256:reworded")
+            ),
             SyncPlan::Acknowledge(_)
         ));
     }
