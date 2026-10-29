@@ -1,5 +1,5 @@
 /**
- * Defensive parsing for database::* trigger messages. Every accessor
+ * Defensive parsing for database::* call messages. Every accessor
  * tolerates absent/odd shapes and returns undefined rather than throwing —
  * the console fences injected renderers, but a throw degrades the card to
  * an error chip, and a raw-JSON fallback is strictly better.

@@ -1,10 +1,9 @@
 /**
  * What has changed in the selected table, as it happens.
  *
- * The worker has emitted `database::row-changed` for a while and #640 gave it
- * real cross-client capture, but nothing ever rendered it — so a write from
- * another client was observable to agents and invisible to the person looking
- * at the table. This is that view.
+ * Agents observe `database::on-row-changed` and, with native capture, hear a
+ * write from another client; this view shows the person looking at the
+ * table the same writes.
  *
  * The panel is deliberate about what it promises. It never uses the words
  * "live" or "realtime"; it names the guarantee in force, because the two
@@ -66,9 +65,9 @@ export function ChangesPanel({
 }) {
   const [capOpen, setCapOpen] = useState(false)
   // A view is never the target of a write. The worker keys every change on the
-  // table the statement actually touched, so a binding on a view matches
+  // table the statement actually touched, so an observer of a view matches
   // nothing and would sit at "following" forever while rows visibly change
-  // underneath it. Refuse the binding and say why.
+  // underneath it. Refuse to observe it and say why.
   const isView = kind === 'view'
   const feed = useRowChanges(host, db, isView ? null : table)
   // Re-render on a slow cadence so relative stamps and the fade advance
@@ -195,7 +194,7 @@ function ChangeRow({ change }: { change: RowChange }) {
  * Which guarantee is in force.
  *
  * The mode is a property of the connection and is not exposed as a read, so
- * this reports what it can actually stand behind: that a binding is attached,
+ * this reports what it can actually stand behind: that an observer is made,
  * and when something last arrived. It never claims completeness — the tooltip
  * carries the caveat rather than a word in the badge implying more than is
  * true.
@@ -211,7 +210,7 @@ function FreshnessBadge({
   expanded: boolean
   onToggle: () => void
 }) {
-  const bound = status === 'bound'
+  const observing = status === 'observing'
   const recent = lastAt != null && Date.now() - lastAt < 10_000
   return (
     <button
@@ -219,10 +218,10 @@ function FreshnessBadge({
       className="db-freshness"
       onClick={onToggle}
       aria-expanded={expanded}
-      title={bound ? CAPTURE_NOTE : 'not following this table.'}
+      title={observing ? CAPTURE_NOTE : 'not following this table.'}
     >
-      <StatusDot tone={bound ? 'accent' : 'ink'} pulse={bound && recent} />
-      <span>{bound ? 'Following' : 'Not following'}</span>
+      <StatusDot tone={observing ? 'accent' : 'ink'} pulse={observing && recent} />
+      <span>{observing ? 'Following' : 'Not following'}</span>
       {lastAt != null ? (
         <span className="db-freshness-at">· Last {formatRelative(lastAt)}</span>
       ) : null}
