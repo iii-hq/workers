@@ -37,6 +37,7 @@ use iii_sdk::{
     RegisterTriggerType, TriggerAction,
 };
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -109,6 +110,46 @@ impl AssetKind {
             AssetKind::Module => "module",
         }
     }
+}
+
+/// What `console::on-script`, `console::on-style` and `console::on-module`
+/// observers receive: the console asks for one asset's source and the
+/// observer answers `{ content, content_type? }`, like a content function.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AssetContentRequest {
+    /// The asset path the observer registered (`<worker>/<name>.<ext>`).
+    pub path: String,
+}
+
+/// One asset as `console:assets` pushes name it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AssetRef {
+    pub path: String,
+    pub kind: AssetKind,
+    /// Content version (first 16 hex chars of its sha256); empty on the
+    /// delete of a superseded path.
+    pub hash: String,
+}
+
+/// What every `console:assets` binding and `console::on-assets` observer
+/// receives.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "event", rename_all = "lowercase")]
+pub enum AssetPushEvent {
+    /// Every served asset, pushed once when the subscription registers.
+    Sync { assets: Vec<AssetRef> },
+    /// An asset was added, changed or re-enabled.
+    Set {
+        path: String,
+        kind: AssetKind,
+        hash: String,
+    },
+    /// An asset was removed, superseded or disabled.
+    Delete {
+        path: String,
+        kind: AssetKind,
+        hash: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -603,12 +644,13 @@ impl UiBus for ObservingBus {
     }
 }
 
-/// The handler a `console::on-*` function is registered with: any payload,
-/// of any shape, is refused with FORBIDDEN.
-pub fn refuse_observable(
+/// The handler a `console::on-*` function is registered with: typed by `E`,
+/// the event its observers receive, every invocation is refused with
+/// FORBIDDEN.
+pub fn refuse_observable<E: 'static>(
     function_id: &'static str,
-) -> impl Fn(Value) -> Result<(), Error> + Send + Sync + 'static {
-    move |_payload: Value| Err(refuse_invocation(function_id))
+) -> impl Fn(E) -> Result<(), Error> + Send + Sync + 'static {
+    move |_event: E| Err(refuse_invocation(function_id))
 }
 
 /// The observe hooks of one `console::on-*` function: each observer is filed
@@ -722,8 +764,8 @@ impl ObserveHandler for AssetObserveHandler {
 
 /// Registers one owner-delivered `console::on-*` function whose observers
 /// join the `console:*` queue with `source`; args_format is the trigger
-/// config `A`.
-fn register_observable<A: JsonSchema>(
+/// config `A`, and `E` the event its observers receive.
+fn register_observable<A: JsonSchema, E: DeserializeOwned + JsonSchema + Send + 'static>(
     iii: &IIIClient,
     function_id: &'static str,
     description: &str,
@@ -733,7 +775,7 @@ fn register_observable<A: JsonSchema>(
 ) {
     iii.register_function(
         function_id,
-        RegisterFunction::new(refuse_observable(function_id))
+        RegisterFunction::new(refuse_observable::<E>(function_id))
             .description(description)
             .observe(
                 Observe::owner()
@@ -1119,7 +1161,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
         )
         .trigger_request_format::<SubscriptionTriggerConfig>(),
     );
-    register_observable::<AssetTriggerConfig>(
+    register_observable::<AssetTriggerConfig, AssetContentRequest>(
         iii,
         ON_SCRIPT_FN,
         "An ESM JavaScript asset for the console UI, served by the observer. Observe it with \
@@ -1130,7 +1172,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
         &tx,
         &observers,
     );
-    register_observable::<AssetTriggerConfig>(
+    register_observable::<AssetTriggerConfig, AssetContentRequest>(
         iii,
         ON_STYLE_FN,
         "A CSS asset for the console UI, served by the observer. Same contract as \
@@ -1140,7 +1182,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
         &tx,
         &observers,
     );
-    register_observable::<AssetTriggerConfig>(
+    register_observable::<AssetTriggerConfig, AssetContentRequest>(
         iii,
         ON_MODULE_FN,
         "An ESM JavaScript module the console serves but never imports at mount, served by \
@@ -1150,7 +1192,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
         &tx,
         &observers,
     );
-    register_observable::<SubscriptionTriggerConfig>(
+    register_observable::<SubscriptionTriggerConfig, AssetPushEvent>(
         iii,
         ON_ASSETS_FN,
         "A console tab's live-update subscription. Observe it with args {} (the \
@@ -1929,26 +1971,51 @@ mod tests {
         panic!("timed out waiting for {what}");
     }
 
+    fn assert_forbidden(function_id: &str, result: Result<(), Error>) {
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, Error::Remote { code, message, .. }
+                if code == "FORBIDDEN" && message.contains(function_id)),
+            "{err:?}"
+        );
+    }
+
     #[test]
     fn on_functions_refuse_direct_invocation() {
-        for function_id in [ON_SCRIPT_FN, ON_STYLE_FN, ON_MODULE_FN, ON_ASSETS_FN] {
+        for function_id in [ON_SCRIPT_FN, ON_STYLE_FN, ON_MODULE_FN] {
             // The very handler each function is registered with.
-            let handler = refuse_observable(function_id);
-            for junk in [
-                json!("junk"),
-                Value::Null,
-                json!({ "path": "state/page.js" }),
-                json!({ "event": "set", "path": "state/page.js" }),
-                json!([1, 2]),
-            ] {
-                let err = handler(junk).unwrap_err();
-                assert!(
-                    matches!(&err, Error::Remote { code, message, .. }
-                        if code == "FORBIDDEN" && message.contains(function_id)),
-                    "{err:?}"
-                );
+            let handler = refuse_observable::<AssetContentRequest>(function_id);
+            for path in ["state/page.js", "state/page.css", ""] {
+                let event = AssetContentRequest {
+                    path: path.to_string(),
+                };
+                assert_forbidden(function_id, handler(event));
             }
         }
+        let handler = refuse_observable::<AssetPushEvent>(ON_ASSETS_FN);
+        for push in [
+            json!({ "event": "sync", "assets": [] }),
+            json!({ "event": "set", "path": "state/page.js", "kind": "script", "hash": "ab" }),
+            json!({ "event": "delete", "path": "state/page.css", "kind": "style", "hash": "" }),
+        ] {
+            let event: AssetPushEvent = serde_json::from_value(push).unwrap();
+            assert_forbidden(ON_ASSETS_FN, handler(event));
+        }
+    }
+
+    #[test]
+    fn on_functions_schemas_are_typed() {
+        use crate::observe::schema_check::assert_typed_handler;
+        for function_id in [ON_SCRIPT_FN, ON_STYLE_FN, ON_MODULE_FN] {
+            assert_typed_handler(
+                function_id,
+                &refuse_observable::<AssetContentRequest>(function_id),
+            );
+        }
+        assert_typed_handler(
+            ON_ASSETS_FN,
+            &refuse_observable::<AssetPushEvent>(ON_ASSETS_FN),
+        );
     }
 
     #[tokio::test]
@@ -1991,6 +2058,10 @@ mod tests {
         assert_eq!(binding_pushes[0]["event"], "sync");
         assert_eq!(binding_pushes[1]["event"], "set");
         assert_eq!(tab.calls(), binding_pushes);
+        // Every push has the documented console::on-assets event shape.
+        for push in &binding_pushes {
+            serde_json::from_value::<AssetPushEvent>(push.clone()).unwrap();
+        }
         // Observer pushes never reach the engine bus.
         assert!(bus
             .pushes()
@@ -2024,6 +2095,8 @@ mod tests {
         assert_eq!(content, "export default 1");
         assert!(content_type.starts_with("text/javascript"));
         assert_eq!(worker.calls(), vec![json!({ "path": "state/page.js" })]);
+        // The call has the documented console::on-script event shape.
+        serde_json::from_value::<AssetContentRequest>(worker.calls()[0].clone()).unwrap();
 
         // Args the trigger type would refuse are refused up front.
         assert!(hooks

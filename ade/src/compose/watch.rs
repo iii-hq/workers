@@ -43,20 +43,26 @@ pub struct ProjectLocation {
     pub state_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, JsonSchema)]
+/// What changed: the daemon's `state.json` or the compose file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChangeKind {
     State,
     File,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+/// The event every `console::compose::changed` binding and every
+/// `console::on-compose-changed` observer receives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChangedEvent {
     pub kind: ChangeKind,
+    /// The compose file of the project.
     pub file: String,
     pub namespace: String,
     pub state_dir: String,
+    /// The file that changed.
     pub path: String,
+    /// Epoch milliseconds of the change.
     pub captured_at: u64,
 }
 

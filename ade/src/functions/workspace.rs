@@ -847,7 +847,10 @@ pub struct SetOutput {
 #[serde(deny_unknown_fields)]
 pub struct ChangedSpec {}
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+/// The event every `console::workspace::changed` binding and every
+/// `console::on-workspace-changed` observer receives: empty, a ring to
+/// re-read the layout with `console::workspace::list`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChangedEvent {}
 
 #[derive(Debug, Clone, PartialEq)]
@@ -959,7 +962,7 @@ impl ObserveHandler for OnChangedHandler {
 
 /// The handler of `console::on-workspace-changed`: its events come only from
 /// the store's writes.
-fn refuse_on_changed(_event: Value) -> Result<(), Error> {
+fn refuse_on_changed(_event: ChangedEvent) -> Result<(), Error> {
     Err(refuse_invocation(ON_CHANGED_FN))
 }
 
@@ -1933,8 +1936,9 @@ mod tests {
 
     #[test]
     fn on_workspace_changed_refuses_direct_invocation() {
-        for payload in [json!({}), json!({ "forged": true }), Value::Null] {
-            let error = refuse_on_changed(payload).unwrap_err();
+        for payload in [json!({}), json!({ "forged": true })] {
+            let event: ChangedEvent = serde_json::from_value(payload).unwrap();
+            let error = refuse_on_changed(event).unwrap_err();
             assert!(
                 matches!(&error, Error::Remote { code, message, .. }
                     if code == "FORBIDDEN" && message.contains(ON_CHANGED_FN)),
@@ -1942,6 +1946,11 @@ mod tests {
             );
         }
         assert_eq!(ON_CHANGED_FN, "console::on-workspace-changed");
+    }
+
+    #[test]
+    fn on_workspace_changed_schemas_are_typed() {
+        crate::observe::schema_check::assert_typed_handler(ON_CHANGED_FN, &refuse_on_changed);
     }
 
     #[tokio::test]

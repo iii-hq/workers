@@ -21,7 +21,6 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, Observe, RegisterFunction, RegisterTriggerType};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::observe::refuse_invocation;
 
@@ -44,7 +43,7 @@ pub const ON_CHANGED_DESCRIPTION: &str =
 
 /// The handler of `console::on-compose-changed`: its events come only from
 /// the compose watch.
-pub fn refuse_on_changed(_event: Value) -> Result<(), Error> {
+pub fn refuse_on_changed(_event: ChangedEvent) -> Result<(), Error> {
     Err(refuse_invocation(ON_CHANGED_FN))
 }
 
@@ -323,18 +322,28 @@ mod tests {
 
     #[test]
     fn on_compose_changed_refuses_direct_invocation() {
-        for payload in [
-            json!({}),
-            json!({ "kind": "state", "path": "state.json" }),
-            Value::Null,
-        ] {
-            let error = refuse_on_changed(payload).unwrap_err();
+        for kind in ["state", "file"] {
+            let event: ChangedEvent = serde_json::from_value(json!({
+                "kind": kind,
+                "file": "/p/iii.yaml",
+                "namespace": "default",
+                "state_dir": "/p/.iii",
+                "path": "/p/.iii/state.json",
+                "captured_at": 1,
+            }))
+            .unwrap();
+            let error = refuse_on_changed(event).unwrap_err();
             assert!(
                 matches!(&error, Error::Remote { code, message, .. }
                     if code == "FORBIDDEN" && message.contains(ON_CHANGED_FN)),
                 "{error:?}"
             );
         }
+    }
+
+    #[test]
+    fn on_compose_changed_schemas_are_typed() {
+        crate::observe::schema_check::assert_typed_handler(ON_CHANGED_FN, &refuse_on_changed);
     }
 
     #[test]

@@ -95,3 +95,52 @@ pub async fn deliver_when_active(observer: &dyn EventObserver, event: Value) {
 pub fn observer_key(id: &str) -> String {
     format!("observer:{id}")
 }
+
+/// Schema checks for the observable functions' handlers: the engine refuses a
+/// function whose request or response schema is untyped.
+#[cfg(test)]
+pub(crate) mod schema_check {
+    use iii_sdk::errors::Error;
+    use schemars::JsonSchema;
+    use serde_json::Value;
+
+    /// What a typed JSON schema carries at its root.
+    const TYPED_KEYS: [&str; 7] = ["type", "properties", "$ref", "allOf", "anyOf", "oneOf", "enum"];
+
+    /// The schema the SDK publishes for `T` (draft-07 root schema).
+    fn schema_for<T: JsonSchema>() -> Value {
+        serde_json::to_value(
+            schemars::r#gen::SchemaSettings::draft07()
+                .into_generator()
+                .into_root_schema_for::<T>(),
+        )
+        .unwrap()
+    }
+
+    /// The (request, response) schemas of a sync handler, as
+    /// `RegisterFunction::new(handler)` derives them.
+    pub fn handler_schemas<F, T, R>(_handler: &F) -> (Value, Value)
+    where
+        F: Fn(T) -> Result<R, Error>,
+        T: JsonSchema,
+        R: JsonSchema,
+    {
+        (schema_for::<T>(), schema_for::<R>())
+    }
+
+    /// Panics unless both schemas of `handler` are typed.
+    pub fn assert_typed_handler<F, T, R>(function_id: &str, handler: &F)
+    where
+        F: Fn(T) -> Result<R, Error>,
+        T: JsonSchema,
+        R: JsonSchema,
+    {
+        let (request, response) = handler_schemas(handler);
+        for (which, schema) in [("request", request), ("response", response)] {
+            assert!(
+                TYPED_KEYS.iter().any(|key| schema.get(key).is_some()),
+                "{function_id} {which} schema is untyped: {schema}"
+            );
+        }
+    }
+}
