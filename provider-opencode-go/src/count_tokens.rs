@@ -9,23 +9,29 @@
 //! with its published `tokenizer.json`, fetched once and cached on disk; only
 //! the gpt models keep tiktoken. DeepSeek-V4 models count the prompt
 //! DeepSeek's encoder renders, the way provider-deepseek does, since that is
-//! what DeepSeek bills.
+//! what DeepSeek bills: in the mode the effort `stream` sends puts it in,
+//! with the response format `stream` sends rendered into the system message.
 //!
 //! Exposed behind `router::count_tokens`.
 
 use iii_sdk::errors::Error;
 use llm_router::provider_scaffold::chat_framing::Framed;
-use llm_router::provider_scaffold::deepseek_prompt;
+use llm_router::provider_scaffold::deepseek_v41::{
+    self, effort_budget, Mode, DEFAULT_EFFORT_BUDGET,
+};
 use llm_router::provider_scaffold::tiktoken_count::{encoder_for, ESTIMATOR_TIKTOKEN};
 use llm_router::provider_scaffold::vocabulary_count::{
     resolve, VocabularyRef, ESTIMATOR_TOKENIZER,
 };
 use llm_router::types::messages::AgentMessage;
-use llm_router::types::model::AgentFunction;
+use llm_router::types::model::{AgentFunction, ThinkingLevel};
+use llm_router::types::router::ResponseFormat;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::reasoning::reasoning_effort_for;
+use crate::request::build_chat_response_format;
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
 
@@ -43,6 +49,15 @@ pub struct CountTokensRequest {
     /// Wire agent messages, the same shape `provider::opencode_go::stream`
     /// accepts. Must be non-empty.
     pub messages: Vec<AgentMessage>,
+    /// The turn's thinking level. DeepSeek-V4 models count the prompt at the
+    /// effort `stream` sends for it; other families ignore it.
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
+    /// The turn's response format. DeepSeek-V4 models render the body it
+    /// becomes into the system message, so it is billed as prompt; other
+    /// families ignore it.
+    #[serde(default)]
+    pub response_format: Option<ResponseFormat>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -67,7 +82,7 @@ fn counter(model: &str) -> Option<Counter> {
     let repo = if family("gpt-") {
         return Some(Counter::Tiktoken);
     } else if family("deepseek-") {
-        return Some(Counter::Vocabulary(deepseek_prompt::vocabulary()));
+        return Some(Counter::Vocabulary(deepseek_v41::vocabulary()));
     } else if family("glm-") {
         "zai-org/GLM-5"
     } else if family("qwen") {
@@ -121,8 +136,15 @@ pub async fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Erro
                 ))
             })?;
             let tokens = if req.model.starts_with("deepseek-v4") {
+                let response_format = req.response_format.as_ref().map(build_chat_response_format);
+                let prompt = deepseek_v41::prompt(
+                    &rows,
+                    &tools,
+                    response_format.as_ref(),
+                    deepseek_mode(&req.model, req.thinking_level),
+                );
                 tokenizer
-                    .encode(deepseek_prompt::prompt(&rows, &tools), false)
+                    .encode(prompt, false)
                     .map_err(|err| no_counter(err.to_string()))?
                     .len() as u64
             } else {
@@ -141,6 +163,18 @@ pub async fn handle(req: CountTokensRequest) -> Result<CountTokensResponse, Erro
         tokens,
         estimator: estimator.into(),
     })
+}
+
+/// The encoder mode `stream` puts a DeepSeek-V4 turn in: thinking at the
+/// effort it sends as `reasoning_effort`, or at the API default when it
+/// sends none. It never disables thinking (`off` maps to `none`, which these
+/// models do not list), so chat mode is never rendered.
+fn deepseek_mode(model: &str, level: Option<ThinkingLevel>) -> Mode {
+    Mode::Thinking {
+        budget: reasoning_effort_for(level, model)
+            .and_then(effort_budget)
+            .unwrap_or(DEFAULT_EFFORT_BUDGET),
+    }
 }
 
 /// The generic chat framing over the rows and tool entries the wire sends.
@@ -242,6 +276,8 @@ mod tests {
             system_prompt: None,
             tools: None,
             messages,
+            thinking_level: None,
+            response_format: None,
         }
     }
 
@@ -462,16 +498,49 @@ mod tests {
         req
     }
 
+    #[test]
+    fn deepseek_counts_at_the_effort_stream_sends() {
+        // high is the only level stream sends for these models (their ladder
+        // is high/max); every other level, `off` included, sends nothing and
+        // runs at the API default, which is also high.
+        for level in [
+            None,
+            Some(ThinkingLevel::Off),
+            Some(ThinkingLevel::Low),
+            Some(ThinkingLevel::High),
+            Some(ThinkingLevel::Xhigh),
+        ] {
+            assert_eq!(
+                deepseek_mode("deepseek-v4-flash", level),
+                Mode::Thinking { budget: 75 },
+                "{level:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn deepseek_v4_counts_the_prompt_its_encoder_renders_from_the_wire() {
         fixture_vocabularies();
+        let format = ResponseFormat {
+            r#type: "json".into(),
+            schema: Some(json!({ "type": "object" })),
+        };
         let req = CountTokensRequest {
             model: "deepseek-v4-flash".into(),
+            thinking_level: Some(ThinkingLevel::High),
+            response_format: Some(format.clone()),
             ..round_trip()
         };
         let rows = to_wire_messages(&req.messages, "be brief");
         let tools = functions_to_wire(req.tools.as_deref().unwrap());
-        let expected = words(&deepseek_prompt::prompt(&rows, &tools)).await;
+        let rendered = deepseek_v41::prompt(
+            &rows,
+            &tools,
+            Some(&build_chat_response_format(&format)),
+            Mode::Thinking { budget: 75 },
+        );
+        assert!(rendered.contains("json_schema"));
+        let expected = words(&rendered).await;
         let resp = handle(req).await.unwrap();
         assert_eq!(resp.tokens, expected);
         assert_eq!(resp.estimator, "tokenizer");
