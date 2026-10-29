@@ -408,8 +408,6 @@ rules:
   # opengantry: bus-internal registration hooks; agents must not call them.
   # gantry::verify and gantry::middleware stay at needs_approval (not listed).
   - '!gantry::on-function-registration'
-  - '!gantry::on-trigger-registration'
-  - '!gantry::on-trigger-type-registration'
 
   # Read-only / introspection (extend below for your tools).
   - configuration::list
