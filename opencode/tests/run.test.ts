@@ -47,7 +47,7 @@ describe('executeRun', () => {
     expect((result.usage as { output_tokens: number }).output_tokens).toBe(5);
   });
 
-  it('delivers the translated AgentEvent sequence on opencode::agent-event', async () => {
+  it('delivers the translated AgentEvent sequence on opencode::on-agent-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
     const types = fake.feedEvents(AGENT).map((d) => d.type);
     expect(types).toEqual([
@@ -64,7 +64,7 @@ describe('executeRun', () => {
     expect(end).toMatchObject({ function_id: 'opencode::bash', is_error: false });
   });
 
-  it('mirrors every raw OpenCode event onto opencode::raw-event', async () => {
+  it('mirrors every raw OpenCode event onto opencode::on-raw-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
     const raw = fake.feedEvents(RAW).map((d) => d.type);
     expect(raw).toEqual(['step_start', 'text', 'tool_use', 'step_finish']);
