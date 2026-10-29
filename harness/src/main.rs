@@ -155,11 +155,8 @@ async fn main() -> Result<()> {
     // after a restart (re-armed at the same absolute `at` — the registration
     // intercept resolves `in_ms` before the engine stores the config).
     let timer_bus = harness::timer::TimerBus::new(iii.clone(), cfg.dispatch_timeout_ms);
-    let _timer_type = iii.register_trigger_type(iii_sdk::RegisterTriggerType::new(
-        harness::timer::TIMER_TYPE,
-        harness::timer::TIMER_DESC,
-        harness::timer::TimerHandler { bus: timer_bus },
-    ));
+    // Next to it, the observable harness::on-timer over the same bus.
+    harness::timer::register(&iii, timer_bus);
 
     // The queue consumer may restore durable jobs as soon as this definition
     // succeeds. Discovery and `harness::turn` are already ready; do not bind

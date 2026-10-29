@@ -193,6 +193,22 @@ iii.registerTrigger({
 
 For the event payload shape, call `get function info` on the trigger type.
 
+On an iii 0.25 engine, worker code may instead observe the function next to
+each type, with the binding config as args: `harness::on-turn-started`,
+`harness::on-turn-completed`, `harness::on-message-queued`,
+`harness::on-triggers-changed`, `harness::on-compaction`, `harness::on-ready`,
+`harness::on-session-tree-deletion` and `harness::on-timer` (args `{ at }` or
+`{ in_ms }`). Observers get the same event a binding gets. Never invoke an
+on-* function: it is an event source and refuses calls with `FORBIDDEN`.
+An agent session keeps using `engine::register_trigger` as shown above.
+
+```typescript
+iii.observe(
+  { function_id: 'harness::on-turn-completed', args: { session_id: sessionId } },
+  'myapp::on-turn-done',
+)
+```
+
 ### Hooks (policy siblings only)
 
 The harness also registers five synchronous, in-path hook trigger types:

@@ -530,6 +530,18 @@ async fn find_call_arguments(
     None
 }
 
+/// [`resolve`] as a `'static`, `Send` boxed future, for a task of its own.
+/// The box also breaks the async recursion `resolve` → turn loop →
+/// [`resolve_parent`] → `resolve`, which `Send` inference cannot see through.
+fn resolve_task(
+    deps: Deps,
+    req: FunctionResolveRequest,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<FunctionResolveResponse, HarnessError>> + Send>,
+> {
+    Box::pin(async move { resolve(&deps, req).await })
+}
+
 /// Resolve a parked parent call from a finishing child (harness.md §
 /// Sub-agents). `completed` delivers the child's result; `failed`/`cancelled`
 /// deliver an `is_error`.
@@ -596,7 +608,21 @@ pub async fn resolve_parent(
         is_error: Some(is_error),
         details: Some(details),
     };
-    match resolve(deps, req).await {
+    // `resolve` is deep (it resumes the parent turn). Run it on a task of its
+    // own: a task is polled from the scheduler, so its stack starts there
+    // rather than on top of this child-finalize tail, which may already be
+    // deep on the SDK's default-size connection thread. The invocation
+    // context and the span go along; the caller still waits for the outcome.
+    let resolved = tokio::spawn(tracing::Instrument::instrument(
+        iii_sdk::scope(
+            iii_sdk::current_invocation(),
+            resolve_task(deps.clone(), req),
+        ),
+        tracing::Span::current(),
+    ))
+    .await
+    .unwrap_or_else(|join| Err(HarnessError::Internal(format!("resolve task: {join}"))));
+    match resolved {
         Ok(resp) => resp.resolved,
         Err(e) => {
             tracing::warn!(

@@ -428,6 +428,8 @@ pub async fn refresh(iii: &Arc<IIIClient>, cell: &SkillsCell, timeout_ms: u64) {
     reload(iii, cell, timeout_ms).await;
 }
 
+// register_trigger: deprecated in iii 0.25, still served by 0.24 and 0.25.
+#[allow(deprecated)]
 pub fn register_trigger(iii: &Arc<IIIClient>, cell: SkillsCell, timeout_ms: u64) {
     let handler_iii = iii.clone();
     iii.register_function(
