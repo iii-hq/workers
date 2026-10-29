@@ -148,3 +148,13 @@ sends its precise op, not an extra `external`). The watch is a doorbell, not a
 ledger: every read re-scans disk, so a missed event costs a stale open view until
 the next call, never data. For the event payload shape, call `get function info`
 on the trigger type.
+
+### Observing instead (iii 0.25)
+
+On a 0.25 engine new code observes the owner-delivered function next to each
+trigger type instead of binding it: `directory::on-skills-change`,
+`directory::on-system-prompts-change`, `directory::on-agents-change` and
+`directory::on-kits-change`, all with args `{}`, deliver the same event as
+`directory::skills::on-change`, `directory::system-prompts::on-change`,
+`directory::agents::on-change` and `directory::kits::on-change`. Invoking them
+directly is refused with `FORBIDDEN`; the trigger types keep working.
