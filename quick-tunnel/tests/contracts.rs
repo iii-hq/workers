@@ -156,6 +156,25 @@ async fn interface_registers_without_cloudflared_and_sdk_preserves_namespace_met
     assert!(on_changed["observe"]["args_format"]["properties"]["tunnel_id"].is_object());
     assert!(on_changed["observe"]["legacy_trigger_type"].is_null());
     assert!(on_changed["request_format"]["properties"]["generation"].is_object());
+    // Every on-* function publishes typed request and response schemas: the
+    // interface boot smoke refuses an untyped (AnyValue or empty) schema.
+    let typed = |schema: &Value| {
+        ["type", "properties", "$ref", "allOf", "anyOf", "oneOf", "enum"]
+            .iter()
+            .any(|key| schema.get(*key).is_some())
+    };
+    for (id, registration) in functions
+        .iter()
+        .filter(|(id, _)| id.starts_with("quick-tunnel::on-"))
+    {
+        for format in ["request_format", "response_format"] {
+            assert!(
+                typed(&registration[format]),
+                "{id} {format} is untyped: {}",
+                registration[format]
+            );
+        }
+    }
     for (_, registration) in functions
         .iter()
         .filter(|(id, _)| id.as_str() != service::ON_CHANGED)

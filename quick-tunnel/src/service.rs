@@ -265,8 +265,9 @@ impl ObserveHandler for OnChangedHandler {
 }
 
 /// The handler of [`ON_CHANGED`]: snapshots only come from this worker's own
-/// fan-out, so every invocation is refused, whatever its input.
-pub fn refuse_invocation(_input: Value) -> Result<(), Error> {
+/// fan-out, so every invocation is refused. It takes the [`Snapshot`] every
+/// observer receives, so the function publishes that as its request schema.
+pub fn refuse_invocation(_snapshot: Snapshot) -> Result<(), Error> {
     Err(Error::Remote {
         code: observe_codes::FORBIDDEN.to_string(),
         message: format!(
@@ -333,9 +334,6 @@ pub fn register(iii: Arc<IIIClient>, manager: Manager, targets: Vec<String>) -> 
         ON_CHANGED,
         RegisterFunction::new(refuse_invocation)
             .description(ON_CHANGED_DESCRIPTION)
-            .request_format(
-                serde_json::to_value(schemars::schema_for!(Snapshot)).unwrap_or(Value::Null),
-            )
             .observe(
                 Observe::owner()
                     .args_format::<ChangedConfig>()
@@ -436,7 +434,7 @@ mod tests {
 
     #[test]
     fn on_changed_refuses_direct_invocation() {
-        match refuse_invocation(serde_json::json!({ "tunnel_id": "web" })) {
+        match refuse_invocation(snapshot("web")) {
             Err(Error::Remote { code, message, .. }) => {
                 assert_eq!(code, observe_codes::FORBIDDEN);
                 assert!(message.contains(ON_CHANGED));
