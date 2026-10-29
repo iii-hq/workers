@@ -7,9 +7,12 @@ pub mod compact;
 pub mod context_policy;
 pub mod delete_session_tree;
 pub mod filesystem;
-pub mod function_resolve;
 pub mod function_call;
+pub mod function_resolve;
 pub mod metrics;
+pub mod observe;
+pub mod observer_deliver;
+pub mod observers_list;
 pub mod on_session_deleted;
 pub mod projects;
 pub mod send;
@@ -17,12 +20,9 @@ pub mod session_tree;
 pub mod spawn;
 pub mod status;
 pub mod stop;
-pub mod subscribe;
 pub mod sweep_pending;
 pub mod system_prompt;
 pub mod teardown;
-pub mod trigger_deliver;
-pub mod triggers_list;
 pub mod turn;
 
 use std::future::Future;
@@ -52,7 +52,7 @@ pub const COMPACT_DESC: &str =
 
 pub const SPAWN_ID: &str = "harness::spawn";
 pub const SPAWN_DESC: &str =
-    "Spawn a sub-agent in a child session (never a trigger target) and return \
+    "Spawn a sub-agent in a child session (never an observer target) and return \
      { child_session_id, child_turn_id } immediately; the child's outcome reaches you only \
      through whatever destination its task names. Check `harness::status` for child health; children are leaves unless \
      options.orchestrator is true.";
@@ -108,7 +108,7 @@ pub const METRICS_DESC: &str =
 
 pub const TEARDOWN_ID: &str = "harness::teardown";
 pub const TEARDOWN_DESC: &str =
-    "Internal control-plane: remove trigger bindings owned by a root harness session tree.";
+    "Internal control-plane: remove the observers a root harness session tree created.";
 
 pub const UNQUEUE_ID: &str = "harness::unqueue";
 pub const UNQUEUE_DESC: &str =
@@ -240,9 +240,9 @@ fn register_internal<Req, Resp, F, Fut>(
     );
 }
 
-/// [`register`] variant for a target kept OFF the agent catalog
-/// (`metadata.internal = true`): trigger-bridge plumbing the interceptor binds
-/// by id, never something an agent discovers or calls.
+/// [`register`] variant for an observer target kept OFF the agent catalog
+/// (`metadata.internal = true`): delivery plumbing the intercept aims
+/// observers at by id, never something an agent discovers or calls.
 fn register_internal_with_metadata<Req, Resp, F, Fut>(
     iii: &Arc<IIIClient>,
     deps: &Arc<Deps>,
@@ -321,16 +321,37 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(iii, deps, ASK_ID, ASK_DESC, |_d, r| async move {
         crate::ask::direct_handle(r).await
     });
-    // The ONE fire handler every agent-registered binding routes through.
-    // Registered, kept off the catalog: agents describe their target in the
-    // registration and never call this themselves.
+    // Catalog-visible so the model finds the observe controls; the turn loop
+    // intercepts the calls, and these handlers only answer direct calls
+    // (always an error).
+    register(
+        iii,
+        deps,
+        observe::OBSERVE_ID,
+        observe::OBSERVE_TOOL_DESC,
+        |_d, _r: observe::ObserveRequest| async move {
+            observe::direct_handle::<observe::ObserveResponse>(observe::OBSERVE_ID).await
+        },
+    );
+    register(
+        iii,
+        deps,
+        observe::UNOBSERVE_ID,
+        observe::UNOBSERVE_TOOL_DESC,
+        |_d, _r: observe::UnobserveRequest| async move {
+            observe::direct_handle::<observe::UnobserveResponse>(observe::UNOBSERVE_ID).await
+        },
+    );
+    // The ONE target every agent-created observer delivers to. Registered,
+    // kept off the catalog: agents describe their target when they observe
+    // and never call this themselves. It receives the Observed envelope.
     register_internal_with_metadata(
         iii,
         deps,
-        trigger_deliver::DELIVER_ID,
-        trigger_deliver::DELIVER_DESC,
-        |d, ev: trigger_deliver::DeliverEvent, meta| async move {
-            trigger_deliver::handle(&d, ev.0, meta).await
+        observer_deliver::DELIVER_ID,
+        observer_deliver::DELIVER_DESC,
+        |d, envelope: observer_deliver::DeliverEnvelope, meta| async move {
+            observer_deliver::handle(&d, observer_deliver::observed_event(&envelope), meta).await
         },
     );
     register_trace_hidden(iii, deps, TURN_ID, TURN_DESC, |d, r| async move {
@@ -386,16 +407,16 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     register(
         iii,
         deps,
-        triggers_list::TRIGGERS_LIST_ID,
-        triggers_list::TRIGGERS_LIST_DESC,
-        |d, r| async move { triggers_list::list(&d, r).await },
+        observers_list::OBSERVERS_LIST_ID,
+        observers_list::OBSERVERS_LIST_DESC,
+        |d, r| async move { observers_list::list(&d, r).await },
     );
     register(
         iii,
         deps,
-        triggers_list::TRIGGERS_UNREGISTER_ID,
-        triggers_list::TRIGGERS_UNREGISTER_DESC,
-        |d, r| async move { triggers_list::unregister(&d, r).await },
+        observers_list::OBSERVERS_DISPOSE_ID,
+        observers_list::OBSERVERS_DISPOSE_DESC,
+        |d, r| async move { observers_list::dispose(&d, r).await },
     );
 
     // Trusted control-plane (console) — registered, kept off the agent catalog.
@@ -474,7 +495,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         |d, r| async move { sweep_pending::handle(&d, r).await },
     );
 
-    // Internal session::deleted cleanup — registered, kept off the catalog.
+    // Internal session::on-deleted observer — registered, kept off the catalog.
     register_internal(
         iii,
         deps,
@@ -494,7 +515,7 @@ mod tests {
     fn spawn_tool_description_includes_a_one_shot_child_health_cue() {
         assert_eq!(
             SPAWN_DESC,
-            "Spawn a sub-agent in a child session (never a trigger target) and return \
+            "Spawn a sub-agent in a child session (never an observer target) and return \
              { child_session_id, child_turn_id } immediately; the child's outcome reaches you only \
              through whatever destination its task names. Check `harness::status` for child health; children are leaves unless \
              options.orchestrator is true."

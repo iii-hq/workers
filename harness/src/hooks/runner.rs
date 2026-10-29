@@ -185,9 +185,9 @@ impl HookRegistry {
     pub async fn run_pre_turn(&self, record: &TurnRecord, step: u64) -> Result<(), String> {
         let input = self.envelope(HookPoint::PreTurn, record, step);
         match self.call_point(HookPoint::PreTurn, input).await {
-            Some(outcome) if outcome.decision == ChainDecision::Deny => {
-                Err(outcome.reason.unwrap_or_else(|| "denied by hook".to_string()))
-            }
+            Some(outcome) if outcome.decision == ChainDecision::Deny => Err(outcome
+                .reason
+                .unwrap_or_else(|| "denied by hook".to_string())),
             _ => Ok(()),
         }
     }
@@ -231,7 +231,9 @@ impl HookRegistry {
                 annotations: Map::new(),
             },
             Some(outcome) if outcome.decision == ChainDecision::Deny => PreGenerateOutcome::Deny(
-                outcome.reason.unwrap_or_else(|| "denied by hook".to_string()),
+                outcome
+                    .reason
+                    .unwrap_or_else(|| "denied by hook".to_string()),
             ),
             Some(outcome) => PreGenerateOutcome::Continue {
                 system_prompt: outcome.system_prompt.or(base_system_prompt),
@@ -279,7 +281,9 @@ impl HookRegistry {
         };
         match outcome.decision {
             ChainDecision::Deny => PreCallOutcome::Deny(
-                outcome.reason.unwrap_or_else(|| "denied by hook".to_string()),
+                outcome
+                    .reason
+                    .unwrap_or_else(|| "denied by hook".to_string()),
             ),
             ChainDecision::Hold => PreCallOutcome::Hold {
                 held_by: outcome.held_by.unwrap_or_default(),
@@ -367,7 +371,9 @@ impl HookRegistry {
         input["result"] = result.clone();
         match self.call_point(HookPoint::PostTurn, input).await {
             Some(outcome) if outcome.decision == ChainDecision::Deny => Err(PostTurnDeny {
-                reason: outcome.reason.unwrap_or_else(|| "denied by hook".to_string()),
+                reason: outcome
+                    .reason
+                    .unwrap_or_else(|| "denied by hook".to_string()),
                 prompt: outcome.prompt,
             }),
             _ => Ok(()),
@@ -406,7 +412,7 @@ impl HookInvoker for ThroughObservers {
         payload: Value,
     ) -> Result<Value, String> {
         let Some(observer) = self.observers.get(&binding.observer_id) else {
-            return Err(format!("hook {} is no longer observed", binding.target));
+            return Err(format!("hook {} has no active observer", binding.target));
         };
         let baggage = [("iii.tag.kind", "harness.hook"), ("iii.hook.point", point)];
         let request = CallRequest::observer(observer, payload)
@@ -1170,7 +1176,10 @@ mod tests {
     #[tokio::test]
     async fn pre_call_chains_mutations_and_stops_at_the_first_hold() {
         let invoker = Scripted::new(&[
-            ("mutate", Ok(json!({ "mutations": { "arguments": { "x": 2 } } }))),
+            (
+                "mutate",
+                Ok(json!({ "mutations": { "arguments": { "x": 2 } } })),
+            ),
             (
                 "gate",
                 Ok(json!({
@@ -1181,7 +1190,11 @@ mod tests {
             ),
             ("audit", Ok(Value::Null)),
         ]);
-        let chain = vec![binding("mutate", 10), binding("gate", 20), binding("audit", 30)];
+        let chain = vec![
+            binding("mutate", 10),
+            binding("gate", 20),
+            binding("audit", 30),
+        ];
         let outcome = run_chain(
             HookPoint::PreCall,
             &invoker,
@@ -1203,7 +1216,11 @@ mod tests {
     #[tokio::test]
     async fn a_released_pre_call_resumes_after_its_holder() {
         let invoker = Scripted::new(&[]);
-        let chain = vec![binding("mutate", 10), binding("gate", 20), binding("audit", 30)];
+        let chain = vec![
+            binding("mutate", 10),
+            binding("gate", 20),
+            binding("audit", 30),
+        ];
         let mut input = call_input("shell::run", json!({ "x": 3 }));
         input[RESUME_AFTER] = json!("gate");
         let outcome = run_chain(HookPoint::PreCall, &invoker, chain, input).await;
@@ -1288,8 +1305,14 @@ mod tests {
         assert_eq!(outcome.append_messages.len(), 1);
         let calls = invoker.calls();
         assert_eq!(ids_of(&calls), vec!["first", "second"]);
-        assert_eq!(calls[1].1["generate"]["system_prompt"], json!("base + first"));
-        assert_eq!(calls[1].1["generate"]["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            calls[1].1["generate"]["system_prompt"],
+            json!("base + first")
+        );
+        assert_eq!(
+            calls[1].1["generate"]["messages"].as_array().unwrap().len(),
+            1
+        );
     }
 
     /// post_turn template mode sends the template with the result injected,

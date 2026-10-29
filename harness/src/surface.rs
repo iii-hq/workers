@@ -2,31 +2,35 @@
 //! function's id and schemars-derived request/response schemas. Golden-tested
 //! in `tests/schemas.rs`; keep in lockstep with `functions::register_all`.
 //!
-//! Internal trigger-bound handlers (`harness::sweep-pending`,
-//! `harness::on-config-change`) are intentionally excluded — they are not part
-//! of the agent-facing surface.
+//! Internal observer targets (`harness::sweep-pending`,
+//! `harness::on-config-change`, `harness::observer::deliver`) are
+//! intentionally excluded — they are not part of the agent-facing surface.
 
 use crate::ask::{AskRequest, AskResponse};
 use crate::compaction::Outcome as CompactOutcome;
 use crate::functions::{
     compact::CompactRequest,
     context_policy::{ContextPolicyRequest, ContextPolicyResponse},
-    function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     function_call::{FunctionCallRequest, FunctionCallResponse},
+    function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
     metrics::{SessionMetricsRequestV1, SessionMetricsResponseV1},
+    observe::{
+        ObserveRequest, ObserveResponse, UnobserveRequest, UnobserveResponse, OBSERVE_ID,
+        UNOBSERVE_ID,
+    },
+    observers_list::{
+        ObserversDisposeRequest, ObserversDisposeResponse, ObserversListRequest,
+        ObserversListResponse, OBSERVERS_DISPOSE_ID, OBSERVERS_LIST_ID,
+    },
     send::{SendRequest, SendResponse},
     session_tree::{SessionTreeRequestV1, SessionTreeResponseV1},
     spawn::{SpawnRequest, SpawnResponse},
     status::{StatusReport, StatusRequest},
     stop::{StopRequest, StopResponse},
     system_prompt::{SystemPromptPreview, SystemPromptRequest},
-    triggers_list::{
-        TriggersListRequest, TriggersListResponse, TriggersUnregisterRequest,
-        TriggersUnregisterResponse, TRIGGERS_LIST_ID, TRIGGERS_UNREGISTER_ID,
-    },
 };
 use crate::functions::{
-    ASK_ID, COMPACT_ID, CONTEXT_POLICY_ID, FUNCTION_RESOLVE_ID, FUNCTION_CALL_ID, METRICS_ID,
+    ASK_ID, COMPACT_ID, CONTEXT_POLICY_ID, FUNCTION_CALL_ID, FUNCTION_RESOLVE_ID, METRICS_ID,
     SEND_ID, SESSION_TREE_ID, SPAWN_ID, STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
 };
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
@@ -71,6 +75,8 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<CompactRequest, CompactOutcome>(COMPACT_ID),
         spec::<SpawnRequest, SpawnResponse>(SPAWN_ID),
         spec::<AskRequest, AskResponse>(ASK_ID),
+        spec::<ObserveRequest, ObserveResponse>(OBSERVE_ID),
+        spec::<UnobserveRequest, UnobserveResponse>(UNOBSERVE_ID),
         spec::<TurnStepPayload, TurnStepResult>(TURN_ID),
         spec::<FunctionCallRequest, FunctionCallResponse>(FUNCTION_CALL_ID),
         spec::<FunctionResolveRequest, FunctionResolveResponse>(FUNCTION_RESOLVE_ID),
@@ -88,7 +94,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<SystemPromptRequest, SystemPromptPreview>(SYSTEM_PROMPT_ID),
         spec::<SessionTreeRequestV1, SessionTreeResponseV1>(SESSION_TREE_ID),
         spec::<SessionMetricsRequestV1, SessionMetricsResponseV1>(METRICS_ID),
-        spec::<TriggersListRequest, TriggersListResponse>(TRIGGERS_LIST_ID),
-        spec::<TriggersUnregisterRequest, TriggersUnregisterResponse>(TRIGGERS_UNREGISTER_ID),
+        spec::<ObserversListRequest, ObserversListResponse>(OBSERVERS_LIST_ID),
+        spec::<ObserversDisposeRequest, ObserversDisposeResponse>(OBSERVERS_DISPOSE_ID),
     ]
 }

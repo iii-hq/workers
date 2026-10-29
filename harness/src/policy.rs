@@ -33,22 +33,23 @@ pub const SUBMIT_RESULT_NAME: &str = "submit_result";
 /// whatever they request. Enforcement is the ordinary dispatch gates — the
 /// same fail-closed globs every call already passes through.
 ///
-/// `engine::register_trigger` is deliberately NOT here. Walling it off left a
-/// leaf with no way to wait at all: it could not park on its own background
-/// job or its own compose operation, so an obedient child polled, and a
-/// resourceful one ran `shell::exec sleep` (MOT-4766 — 9 denied registrations
-/// and 176s of sleeping in one measured run). Arming a wake for your own
-/// session is the leaf's own work, not the control plane. The control-plane
-/// half of that function — a binding that mechanically calls some OTHER
-/// function — stays refused for leaves, by shape, in
-/// `functions::subscribe::reject_leaf_control_plane`. Unregistration stays
-/// walled off because it can reach another session's bindings; a leaf's wake
-/// is required to be self-limiting instead.
+/// `harness::observe` is deliberately NOT here. Walling it off left a leaf
+/// with no way to wait at all: it could not park on its own background job or
+/// its own compose operation, so an obedient child polled, and a resourceful
+/// one ran `shell::exec sleep` (MOT-4766 — 9 denied wakes and 176s of
+/// sleeping in one measured run). Arming a wake for your own session is the
+/// leaf's own work, not the control plane. The control-plane half of that
+/// tool — an observer that mechanically calls some OTHER function — stays
+/// refused for leaves, by shape, in
+/// `functions::observe::reject_leaf_control_plane`. Removal stays walled off
+/// because it can reach another session's observers, and so does the
+/// engine's observer surface; a leaf's wake is required to be self-limiting
+/// instead.
 pub const CONTROL_PLANE_DENY: [&str; 4] = [
     "harness::spawn",
     "harness::send",
-    "engine::unregister_trigger",
-    "engine::registered-triggers::*",
+    "harness::unobserve",
+    "engine::observers::*",
 ];
 
 /// Whether a session is a leaf — spawned to perform an assignment, rather than
@@ -248,7 +249,7 @@ pub fn submit_result_schema(output_schema: Option<&Value>) -> AgentFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallKind {
     /// An `agent_call` wrapper or a native call to a real iii function.
-    Trigger,
+    Call,
     /// The synthetic `submit_result` — consumed by the harness.
     SubmitResult,
 }
@@ -431,24 +432,24 @@ mod tests {
     #[test]
     fn the_control_plane_deny_set_walls_off_orchestration_only() {
         // The leaf wall is ordinary deny globs: the orchestration ids (and the
-        // registered-triggers read surface, glob-matched) go dark while the
-        // data plane stays open. Deny-overrides-allow makes it final under `*`.
+        // engine's observer surface, glob-matched) go dark while the data
+        // plane stays open. Deny-overrides-allow makes it final under `*`.
         let mut p = policy(&["*"], &[]);
         p.deny = CONTROL_PLANE_DENY.iter().map(|s| s.to_string()).collect();
         let compiled = CompiledPolicy::from(Some(&p));
         for id in [
             "harness::spawn",
             "harness::send",
-            "engine::unregister_trigger",
-            "engine::registered-triggers::list",
-            "engine::registered-triggers::info",
+            "harness::unobserve",
+            "engine::observers::list",
+            "engine::observers::dispose",
         ] {
             assert!(!compiled.allows(id), "{id} must be walled off");
         }
-        // Registration is NOT walled off at dispatch: a leaf with no way to
-        // arm a wake polls or sleeps instead (MOT-4766). The control-plane
-        // half of it is refused by shape, in `functions::subscribe`.
-        assert!(compiled.allows("engine::register_trigger"));
+        // Observing is NOT walled off at dispatch: a leaf with no way to arm
+        // a wake polls or sleeps instead (MOT-4766). The control-plane half
+        // of it is refused by shape, in `functions::observe`.
+        assert!(compiled.allows("harness::observe"));
         assert!(is_leaf(&compiled, true), "a spawned child under the wall");
         for id in ["state::set", "database::execute", "harness::status"] {
             assert!(compiled.allows(id), "{id} is data-plane and must survive");
@@ -532,7 +533,7 @@ mod tests {
     // A wrapper call whose arguments carry no resolvable `function` (null —
     // e.g. a local model emitted unparseable args the provider degraded)
     // keeps the wrapper name as its target: the dispatch loop matches that
-    // sentinel and fails locally instead of triggering `agent_call` on
+    // sentinel and fails locally instead of calling `agent_call` on
     // the engine (a guaranteed function_not_found).
     #[test]
     fn wrapper_call_without_target_keeps_wrapper_sentinel() {
@@ -584,17 +585,17 @@ mod tests {
             id: "fc_1".into(),
             function_id: AGENT_CALL_NAME.into(),
             arguments: json!({
-                "function": "engine::register_trigger",
-                "description": "Registering the state trigger",
-                "trigger_type": "state",
-                "config": { "key": "k" }
+                "function": "harness::observe",
+                "description": "Observing the state key",
+                "function_id": "state::on-changed",
+                "filters": { "input.key": { "$eq": "k" } }
             }),
         }]);
         let calls = plan_calls(&msg, ExposeMode::AgentCall);
-        assert_eq!(calls[0].function_id, "engine::register_trigger");
+        assert_eq!(calls[0].function_id, "harness::observe");
         assert_eq!(
             calls[0].arguments,
-            json!({ "trigger_type": "state", "config": { "key": "k" } })
+            json!({ "function_id": "state::on-changed", "filters": { "input.key": { "$eq": "k" } } })
         );
     }
 
@@ -666,12 +667,15 @@ mod tests {
         // The model hallucinated the target id as the tool name with real args.
         let msg = assistant_with(vec![ContentBlock::FunctionCall {
             id: "fc_1".into(),
-            function_id: "engine::triggers::info".into(),
-            arguments: json!({ "id": "state" }),
+            function_id: "engine::observers::list".into(),
+            arguments: json!({ "function_id": "state::on-changed" }),
         }]);
         let calls = plan_calls(&msg, ExposeMode::AgentCall);
-        assert_eq!(calls[0].function_id, "engine::triggers::info");
-        assert_eq!(calls[0].arguments, json!({ "id": "state" }));
+        assert_eq!(calls[0].function_id, "engine::observers::list");
+        assert_eq!(
+            calls[0].arguments,
+            json!({ "function_id": "state::on-changed" })
+        );
     }
 
     #[test]

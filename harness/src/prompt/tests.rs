@@ -191,7 +191,7 @@ fn runtime_model() {
     assert!(out.contains("Workers never talk to each other directly"));
     assert!(out.contains("The function id is the only contract"));
     assert!(out.contains("workers registering the same id load-balance"));
-    assert!(out.contains("register a trigger; do not poll"));
+    assert!(out.contains("observe it with `harness::observe`; do not poll"));
 }
 
 #[test]
@@ -281,11 +281,11 @@ fn registry_flow() {
 }
 
 #[test]
-fn observable_compose_mutations_register_a_terminal_wake_before_starting() {
+fn observable_compose_mutations_observe_a_terminal_wake_before_starting() {
     let out = default_prompt();
     let registration = out
-        .find("engine::register_trigger { trigger_type: \"compose-operation\"")
-        .expect("compose-operation registration");
+        .find("harness::observe { function_id: \"compose::on-operation-progress\"")
+        .expect("Compose progress observer");
     let add = out[registration..]
         .find("compose::add { worker: \"<name>\", operation_id: \"<operation-id>\" }")
         .map(|index| registration + index)
@@ -294,7 +294,9 @@ fn observable_compose_mutations_register_a_terminal_wake_before_starting() {
     assert!(registration < add);
     // Ids are daemon-global: a fixed name collides with an earlier session's op (MOT-5334).
     assert!(out.contains("start with your session id, e.g. `<session-id>:add-<name>-1`"));
-    assert!(out.contains("operation_id: \"<operation-id>\", terminal_only: true"));
+    assert!(out.contains(
+        "\"input.operation_id\": { \"$eq\": \"<operation-id>\" }, \"input.terminal\": { \"$eq\": true }"
+    ));
     assert!(
         out.contains("compose::update { worker: \"<name>\", operation_id: \"<operation-id>\" }")
     );
@@ -311,17 +313,14 @@ fn observable_compose_mutations_register_a_terminal_wake_before_starting() {
         "compose::remove { workers: [\"<name>\", \"<name>\"], operation_id: \"<operation-id>\" }"
     ));
     assert!(out.contains("applies only to `add`, `update`, and `remove`"));
-    assert!(out.contains("unregister the wake with its"));
+    assert!(out.contains("unobserve the wake by its observer id"));
     assert!(out.contains("compose::operation { operation_id: \"<operation-id>\" }"));
     assert!(out.contains(
-        "[if the snapshot is terminal, unregister the subscription and process the result]"
+        "[if the snapshot is terminal, unobserve the wake by its observer id and process the result]"
     ));
     assert!(out.contains(
-        "[otherwise end the turn; the terminal `compose-operation` event wakes this session]"
+        "[otherwise end the turn; the terminal `compose::on-operation-progress` event wakes this session]"
     ));
-    assert!(
-        !out.contains("[ends the turn; the terminal `compose-operation` event wakes this session]")
-    );
     assert!(out.contains("Do not poll"));
     assert!(out.contains("terminal: true"));
     assert!(!out.contains("The call waits until newly declared workers are ready"));
@@ -458,12 +457,12 @@ fn default_variant_teaches_only_the_two_binding_shapes() {
             "default prompt must not mention {gone}"
         );
     }
-    // The wake shape: omitted function_id, and no binding on turn events.
-    assert!(out.contains("omit `function_id`"));
-    assert!(out.contains("cannot bind the turn-event types"));
-    // The call shape: the target is the registration's `function_id`, the
-    // template is the metadata, and the result reaches nobody.
-    assert!(out.contains(r#"`function_id: "<any function your policy allows>"`"#));
+    // The wake shape: omitted target, and no observer on turn events.
+    assert!(out.contains("omit `target`"));
+    assert!(out.contains("cannot observe the turn events"));
+    // The call shape: the target names the function and its template, and
+    // the result reaches nobody.
+    assert!(out.contains(r#"`target: { function_id: "<any function your policy allows>""#));
     assert!(out.contains("event_into"));
     assert!(out.contains("result is DISCARDED"));
     // The by-shape once defaults, the barrier condition (fan-in as data, not
@@ -481,13 +480,13 @@ fn default_variant_teaches_only_the_two_binding_shapes() {
     for line in out.lines().filter(|l| l.contains("notify")) {
         assert!(
             !line.contains("turn-completed") && !line.contains("turn-started"),
-            "prompt routes a notify at a turn-event type, which is not \
-             agent-bindable: {line}"
+            "prompt routes a notify at a turn event, which is not \
+             agent-observable: {line}"
         );
     }
-    // `once` is a top-level register_trigger field; inside `metadata` it is
-    // an unknown key and fails registration.
-    assert!(out.contains("TOP-LEVEL, never inside metadata"));
+    // `once` is a top-level harness::observe field; inside `target` it is an
+    // unknown key and fails the observe.
+    assert!(out.contains("TOP-LEVEL, never inside `target`"));
 }
 
 /// Invariants for the sole top-level system prompt default owned by the harness.

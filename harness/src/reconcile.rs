@@ -43,9 +43,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::call::ResultData;
 use crate::config::{CallReconciliation, WorkerConfig};
 use crate::deps::Deps;
-use crate::call::ResultData;
 use crate::types::content::ContentBlock;
 use crate::types::turn::{ExposeMode, TurnRecord};
 
@@ -186,7 +186,7 @@ async fn schema_for(deps: &Deps, function_id: &str) -> Option<Value> {
             crate::functions::spawn::SpawnRequest,
         >());
     }
-    if let Some((_, schema)) = crate::functions::subscribe::control_contract(function_id) {
+    if let Some((_, schema)) = crate::functions::observe::control_contract(function_id) {
         return Some(schema);
     }
     deps.functions()
@@ -1223,6 +1223,8 @@ mod tests {
             let function_id = case["function_id"].as_str().expect("function_id");
             let schema = if function_id == crate::functions::SPAWN_ID {
                 crate::surface::schema_value::<crate::functions::spawn::SpawnRequest>()
+            } else if function_id == crate::functions::observe::OBSERVE_ID {
+                crate::surface::schema_value::<crate::functions::observe::ObserveRequest>()
             } else {
                 corpus["schemas"][function_id].clone()
             };

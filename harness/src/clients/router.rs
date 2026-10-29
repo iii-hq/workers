@@ -326,7 +326,7 @@ impl RouterClient {
             payload["provider_options"] = options.clone();
         }
 
-        // Run the held-open trigger concurrently with frame consumption.
+        // Run the held-open call concurrently with frame consumption.
         //
         // Carry the caller's OTel context into the spawned task so the SDK
         // injects the turn's traceparent and `router::chat` nests under
@@ -337,7 +337,7 @@ impl RouterClient {
         let iii = self.iii.clone();
         let timeout_ms = self.timeout_ms;
         let parent_cx = iii_helpers::observability::opentelemetry::Context::current();
-        let mut trigger = tokio::spawn(
+        let mut chat_call = tokio::spawn(
             async move {
                 iii.call(CallRequest {
                     function_id: "router::chat".into(),
@@ -367,11 +367,11 @@ impl RouterClient {
         let mut tracker = PartialTracker::default();
 
         // Consume frames until reader EOF — but ALSO watch the held-open
-        // trigger: when it resolves, the router is done (ack) or the dispatch
+        // call: when it resolves, the router is done (ack) or the dispatch
         // failed before a writer ever attached (e.g. provider unavailable).
         // In the failure case the channel never EOFs, so waiting on frames
         // alone would hang this turn forever with the session stuck "working".
-        // After the trigger resolves, drain already-buffered frames briefly,
+        // After the call resolves, drain already-buffered frames briefly,
         // then fall through to the outcome handling below.
         let mut response: Option<Result<Value, iii_sdk::errors::Error>> = None;
         let mut drain_deadline = Instant::now();
@@ -419,7 +419,7 @@ impl RouterClient {
                         let _ = pump.await;
                         // Kill the held-open router::chat task; the router's
                         // own teardown was already requested via router::abort.
-                        trigger.abort();
+                        chat_call.abort();
                         // Re-request the router abort: stop.rs's router::abort
                         // can race ahead of the router's stream registration
                         // and no-op — by now the stream is certainly
@@ -452,7 +452,7 @@ impl RouterClient {
                             error: None,
                         });
                     }
-                    r = &mut trigger => {
+                    r = &mut chat_call => {
                         response = Some(r.map_err(|e| {
                             HarnessError::Internal(format!("router::chat task: {e}"))
                         })?);
@@ -524,13 +524,13 @@ impl RouterClient {
             }
         }
 
-        // Stream drained; stop the pump and collect the trigger ack.
+        // Stream drained; stop the pump and collect the call ack.
         // notify_one: latched — safe even if the pump task hasn't polled yet.
         cancel.notify_one();
         let _ = pump.await;
         let response = match response {
             Some(r) => r,
-            None => trigger
+            None => chat_call
                 .await
                 .map_err(|e| HarnessError::Internal(format!("router::chat task: {e}")))?,
         };

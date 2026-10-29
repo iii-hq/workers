@@ -17,21 +17,27 @@ pub const DESCRIPTION: &str = "A subtree deletion changed status. Observe it bef
      deletion, with filters on input.session_id or input.operation_id, and recover once by \
      operation_id.";
 
+/// Register the function. Once per worker: [`crate::events::TurnEvents::register`]
+/// registers it with the other event functions.
+pub fn register(iii: &IIIClient) {
+    iii.register_function(
+        ON_SESSION_TREE_DELETION_FN,
+        RegisterFunction::new(|snapshot: Snapshot| Ok::<Snapshot, Error>(snapshot))
+            .description(DESCRIPTION)
+            .request_format(schema_value::<Snapshot>())
+            .response_format(schema_value::<Snapshot>())
+            .private(),
+    );
+}
+
+/// Emits deletion snapshots by calling the function.
 #[derive(Clone)]
 pub struct DeletionEvents {
     iii: Arc<IIIClient>,
 }
 
 impl DeletionEvents {
-    pub fn register(iii: &Arc<IIIClient>) -> Self {
-        iii.register_function(
-            ON_SESSION_TREE_DELETION_FN,
-            RegisterFunction::new(|snapshot: Snapshot| Ok::<Snapshot, Error>(snapshot))
-                .description(DESCRIPTION)
-                .request_format(schema_value::<Snapshot>())
-                .response_format(schema_value::<Snapshot>())
-                .private(),
-        );
+    pub fn new(iii: &Arc<IIIClient>) -> Self {
         Self { iii: iii.clone() }
     }
 

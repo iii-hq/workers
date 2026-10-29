@@ -1,15 +1,15 @@
 //! Integration with the `configuration` worker — register the schema, fetch
 //! the authoritative value at boot, and hot-reload it when it changes. Tier 1
-//! (ConfigCell + targeted re-bind), mirroring `context-manager` /
+//! (ConfigCell + targeted re-observe), mirroring `context-manager` /
 //! `approval-gate`.
 //!
 //! Every field hot-reloads — nothing requires a restart:
 //!
-//! - `sweep_expression` is the one STRUCTURAL field (the cron binding for the
-//!   pending-call sweep). On a change the handler re-binds the trigger live
-//!   (register the new binding, then `unregister()` the old — a fail-safe
-//!   overlap; the sweep is idempotent), keeping the [`Trigger`] handle in
-//!   [`TriggerHandles`].
+//! - `sweep_expression` is the one STRUCTURAL field (the `cron::on-tick`
+//!   observer that drives the pending-call sweep). On a change the handler
+//!   observes the new expression, then disposes the old observer — a
+//!   fail-safe overlap; the sweep is idempotent — keeping the
+//!   [`ObserverHandle`] in [`LifecycleObservers`].
 //! - Every OTHER field is a per-call tuning knob read from the live snapshot
 //!   via [`Deps::cfg`](crate::deps::Deps::cfg); a change swaps the snapshot.
 //!
@@ -20,9 +20,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, CallRequest};
-use iii_sdk::trigger::Trigger;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -89,7 +88,7 @@ mod initialization;
 /// Initialization only; intentional configuration migrations remain unchanged.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -140,12 +139,8 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 
 /// Returns `Ok(None)` when the entry does not exist (codes vary in case).
 async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(
-        iii,
-        "configuration::get",
-        configuration_get_payload(raw),
-    )
-    .await
+    match call_configuration_with_retry(iii, "configuration::get", configuration_get_payload(raw))
+        .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if is_not_found(&e) => Ok(None),
@@ -201,7 +196,7 @@ async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), 
          llm-router entry, approval defaults belong in the approval-gate entry"
     );
 
-    trigger_configuration_with_retry(
+    call_configuration_with_retry(
         iii,
         "configuration::register",
         json!({
@@ -216,7 +211,7 @@ async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), 
     )
     .await?;
 
-    trigger_configuration_with_retry(
+    call_configuration_with_retry(
         iii,
         "configuration::set",
         json!({
@@ -241,7 +236,7 @@ async fn drop_stored_provider_identity_prompt_if_needed(iii: &IIIClient) -> Resu
     }
 
     tracing::info!("removing retired provider_identity_prompt from harness configuration");
-    trigger_configuration_with_retry(
+    call_configuration_with_retry(
         iii,
         "configuration::register",
         json!({
@@ -258,7 +253,7 @@ async fn drop_stored_provider_identity_prompt_if_needed(iii: &IIIClient) -> Resu
 
     let mut expected = value;
     loop {
-        let response = trigger_configuration_with_retry(
+        let response = call_configuration_with_retry(
             iii,
             "configuration::set",
             json!({ "id": config_id(), "value": migrated }),
@@ -305,14 +300,21 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Live trigger handles retained for the worker lifetime.
-pub struct TriggerHandles {
-    pub sweep: std::sync::Mutex<Option<Trigger>>,
-    _session_deleted: Option<Trigger>,
+/// The cron worker's tick source; its args are `{ expression }`.
+const ON_TICK_FN: &str = "cron::on-tick";
+/// session-manager's deletion event.
+const ON_SESSION_DELETED_FN: &str = "session::on-deleted";
+/// The engine's configuration change event.
+const ON_CONFIGURATION_UPDATED_FN: &str = "configuration::on-updated";
+
+/// Live observer handles retained for the worker lifetime.
+pub struct LifecycleObservers {
+    pub sweep: std::sync::Mutex<ObserverHandle>,
+    _session_deleted: ObserverHandle,
 }
 
-impl TriggerHandles {
-    pub fn new(sweep: Option<Trigger>, session_deleted: Option<Trigger>) -> Self {
+impl LifecycleObservers {
+    pub fn new(sweep: ObserverHandle, session_deleted: ObserverHandle) -> Self {
         Self {
             sweep: std::sync::Mutex::new(sweep),
             _session_deleted: session_deleted,
@@ -320,55 +322,55 @@ impl TriggerHandles {
     }
 }
 
-/// Best-effort binding: the cron trigger type always exists (engine built-in),
-/// but a transient failure must not brick boot — it surfaces as a `None`
-/// handle.
-fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
-    match iii.register_trigger(RegisterTriggerInput::new(
-        trigger_type.to_string(),
-        function_id.to_string(),
-        config,
-    )) {
-        Ok(handle) => {
-            tracing::info!(trigger_type, function_id, "trigger binding requested");
-            Some(handle)
-        }
-        Err(e) => {
-            tracing::warn!(trigger_type, function_id, error = %e, "trigger binding failed");
-            None
-        }
-    }
-}
-
-/// (Re)bind the cron pending-sweep from the current config.
-pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
-    bind(
-        iii,
-        "cron",
+/// Observe `cron::on-tick` for the current `sweep_expression`. The observer
+/// stays `pending` while the cron worker is away, and a bad expression ends
+/// it in `error` (`INVALID_CRON_EXPRESSION`), which is logged.
+pub fn observe_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> ObserverHandle {
+    let handle = iii.observe(
+        Source::function(ON_TICK_FN)
+            .args(json!({ "expression": cfg.sweep_expression }))
+            .deliver(Deliver::Output),
         SWEEP_PENDING_ID,
-        json!({ "expression": cfg.sweep_expression }),
-    )
+    );
+    log_failure(&handle, ON_TICK_FN);
+    handle
 }
 
-pub fn bind_session_deleted(iii: &IIIClient) -> Option<Trigger> {
-    bind(iii, "session::deleted", ON_SESSION_DELETED_ID, json!({}))
+pub fn observe_session_deleted(iii: &IIIClient) -> ObserverHandle {
+    let handle = iii.observe(
+        Source::function(ON_SESSION_DELETED_FN).deliver(Deliver::Output),
+        ON_SESSION_DELETED_ID,
+    );
+    log_failure(&handle, ON_SESSION_DELETED_FN);
+    handle
 }
 
-/// Store the freshly-registered handle, then unregister the old one
-/// (register-new-then-unregister-old: a fail-safe overlap).
-fn rebind_slot(slot: &std::sync::Mutex<Option<Trigger>>, new: Option<Trigger>) {
-    let Some(new) = new else {
-        return;
-    };
-    let old = slot.lock().unwrap_or_else(|p| p.into_inner()).replace(new);
-    if let Some(old) = old {
-        old.unregister();
-    }
+/// Warn once if the observer ends in `error` or is disposed; a `pending` one
+/// waits quietly for its source.
+fn log_failure(handle: &ObserverHandle, source: &'static str) {
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        if let Err(error) = handle.ready().await {
+            tracing::warn!(source, observer = %handle.id(), %error, "lifecycle observer failed");
+        }
+    });
 }
 
-/// Internal `harness::on-config-change` trigger payload. The handler re-fetches
-/// the authoritative configuration, so this carries only the (advisory)
-/// configuration id; a struct keeps the request schema concrete.
+/// Keep the freshly created observer, then dispose the old one
+/// (observe-new-then-dispose-old: a fail-safe overlap).
+fn replace_slot(slot: &std::sync::Mutex<ObserverHandle>, new: ObserverHandle) {
+    let old = std::mem::replace(&mut *slot.lock().unwrap_or_else(|p| p.into_inner()), new);
+    tokio::spawn(async move {
+        if let Err(error) = old.dispose().await {
+            tracing::warn!(observer = %old.id(), %error, "disposing the previous sweep observer failed");
+        }
+    });
+}
+
+/// Internal `harness::on-config-change` payload: the `configuration::on-updated`
+/// event, delivered as the output. The handler re-fetches the authoritative
+/// configuration, so it reads only the (advisory) configuration id; a struct
+/// keeps the request schema concrete.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
     /// Configuration id that changed (advisory; the handler re-fetches).
@@ -382,14 +384,15 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger. `handles` holds the live cron `Trigger` the handler re-binds when
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` for this worker's entry with it. `handles`
+/// holds the live sweep observer the handler replaces when
 /// `sweep_expression` changes.
-pub fn register_config_trigger(
+pub fn observe_config_changes(
     iii: &Arc<IIIClient>,
     cell: ConfigCell,
-    handles: Arc<TriggerHandles>,
-) -> Result<(), Error> {
+    handles: Arc<LifecycleObservers>,
+) -> ObserverHandle {
     let cell_for_fn = cell.clone();
     let handles_for_fn = handles.clone();
     let engine = iii.clone();
@@ -406,26 +409,32 @@ pub fn register_config_trigger(
         })
         .description(
             "Internal: hot-reload harness from the authoritative configuration when it changes — \
-             re-binds the cron pending-sweep on a sweep_expression change and swaps the per-call \
-             tuning snapshot otherwise.",
+             replaces the cron pending-sweep observer on a sweep_expression change and swaps the \
+             per-call tuning snapshot otherwise.",
         )
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(ON_CONFIGURATION_UPDATED_FN)
+            .filters(config_change_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    )
 }
 
-/// Reload from the AUTHORITATIVE configuration. The caller-supplied trigger
-/// payload is intentionally ignored: a direct call can never inject config.
-async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, handles: &TriggerHandles) {
+/// The calls of `configuration::on-updated` this worker reloads on: updates
+/// of its own entry.
+fn config_change_filters(id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
+}
+
+/// Reload from the AUTHORITATIVE configuration. The delivered event is
+/// intentionally ignored: a direct call can never inject config.
+async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, handles: &LifecycleObservers) {
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -436,15 +445,15 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, handles: &TriggerH
 
     let old = cell.read().await.clone();
     if old.boot_signature() != cfg.boot_signature() {
-        rebind_slot(&handles.sweep, bind_sweep(iii, &cfg));
-        tracing::info!("harness pending-sweep re-bound (sweep_expression changed)");
+        replace_slot(&handles.sweep, observe_sweep(iii, &cfg));
+        tracing::info!("harness pending-sweep observer replaced (sweep_expression changed)");
     }
 
     apply_config(cell, cfg).await;
     tracing::info!("harness configuration reloaded");
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -584,6 +593,17 @@ mod tests {
         assert_eq!(
             configuration_get_payload(false),
             json!({ "id": config_id(), "raw": false })
+        );
+    }
+
+    #[test]
+    fn config_changes_select_updates_of_this_entry_only() {
+        assert_eq!(
+            config_change_filters("harness"),
+            json!({
+                "input.id": { "$eq": "harness" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
         );
     }
 

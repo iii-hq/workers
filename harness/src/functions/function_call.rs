@@ -9,15 +9,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::call;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::hooks::runner::PreCallOutcome;
 use crate::policy::CompiledPolicy;
-use crate::call;
 use crate::types::content::ContentBlock;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct TriggerCall {
+pub struct CallInput {
     /// function_call id, echoed into the result.
     pub id: String,
     /// The iii function to invoke (already unwrapped from `agent_call`).
@@ -28,10 +28,10 @@ pub struct TriggerCall {
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct FunctionCallRequest {
     pub session_id: String,
-    pub call: TriggerCall,
+    pub call: CallInput,
 }
 
-impl Default for TriggerCall {
+impl Default for CallInput {
     fn default() -> Self {
         Self {
             id: String::new(),
@@ -52,7 +52,7 @@ pub struct CallResultResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TriggerPendingResponse {
+pub struct CallPendingResponse {
     pub function_call_id: String,
     pub function_id: String,
     pub pending: bool,
@@ -64,7 +64,7 @@ pub struct TriggerPendingResponse {
 #[serde(untagged)]
 pub enum FunctionCallResponse {
     Result(CallResultResponse),
-    Pending(TriggerPendingResponse),
+    Pending(CallPendingResponse),
 }
 
 pub async fn handle(
@@ -81,8 +81,8 @@ pub async fn handle(
     let engine = deps.engine().await;
     let started = Instant::now();
 
-    // Trigger is a pipeline: fail-closed globs, then the pre_trigger chain,
-    // then the target, then the post_trigger chain (harness.md §
+    // A call is a pipeline: fail-closed globs, then the pre_call chain,
+    // then the target, then the post_call chain (harness.md §
     // `harness::function::call`).
     if !policy.allows(&req.call.function_id) {
         let data = call::denied_result(&req.call.function_id);
@@ -152,7 +152,7 @@ pub async fn handle(
                 ));
             }
             PreCallOutcome::Hold { .. } => {
-                return Ok(FunctionCallResponse::Pending(TriggerPendingResponse {
+                return Ok(FunctionCallResponse::Pending(CallPendingResponse {
                     function_call_id: req.call.id,
                     function_id: req.call.function_id,
                     pending: true,
@@ -174,7 +174,7 @@ pub async fn handle(
 
     // Single invocation chokepoint: subscription control calls are intercepted
     // (trusted session injected); everything else invokes the target.
-    let raw = crate::functions::subscribe::invoke(
+    let raw = crate::functions::observe::invoke(
         deps,
         &engine,
         &policy,
@@ -184,7 +184,7 @@ pub async fn handle(
         true, // direct pipeline now shares the session lifecycle lock
         record
             .as_ref()
-            .map(|rec| crate::functions::subscribe::CallerModel::from_options(&rec.options)),
+            .map(|rec| crate::functions::observe::CallerModel::from_options(&rec.options)),
     )
     .await;
     let data = if let Some(rec) = &record {
@@ -202,7 +202,7 @@ pub async fn handle(
         {
             crate::hooks::runner::PostCallOutcome::Result { result, .. } => result,
             crate::hooks::runner::PostCallOutcome::Hold { .. } => {
-                return Ok(FunctionCallResponse::Pending(TriggerPendingResponse {
+                return Ok(FunctionCallResponse::Pending(CallPendingResponse {
                     function_call_id: req.call.id,
                     function_id: req.call.function_id,
                     pending: true,

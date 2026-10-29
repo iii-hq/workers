@@ -2,7 +2,7 @@
 //!
 //! The `queue` worker does not infer named function queues from enqueue calls.
 //! The harness therefore defines its turn queue after registering
-//! `harness::turn`, but before binding lifecycle triggers or announcing ready.
+//! `harness::turn`, but before observing lifecycle events or announcing ready.
 
 use std::time::Duration;
 

@@ -1,11 +1,11 @@
-//! The function-trigger pipeline (harness.md § Functions / §
+//! The function-call pipeline (harness.md § Functions / §
 //! `harness::function::call`): the fail-closed allow/deny globs first,
 //! then the target invocation, then result normalisation. Discovery results
 //! (`engine::functions::list` / `info`) are post-filtered through the same
 //! globs so the model only discovers what it can call.
 //!
-//! P1 covers the glob policy + target + normalisation. The `pre_trigger` /
-//! `post_trigger` hook chain and `pending` deferral layer on in later phases.
+//! P1 covers the glob policy + target + normalisation. The `pre_call` /
+//! `post_call` hook chain and `pending` deferral layer on in later phases.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -312,7 +312,7 @@ fn compact_contract(item: &mut Value) -> bool {
         "response_schema",
         "response_format",
         "metadata",
-        "registered_triggers",
+        "observer_count",
         "worker_name",
         "namespace",
         "$schema",
@@ -651,7 +651,7 @@ pub(crate) fn repeated_failure_result(
     })
 }
 
-/// The outcome of triggering one call.
+/// The outcome of calling one function.
 pub enum CallOutcome {
     /// A settled result (success, policy denial, or target error).
     Result(ResultData),
@@ -674,7 +674,7 @@ pub struct PendingInfo {
     pub child_turn_id: Option<String>,
 }
 
-/// Run the trigger pipeline for one call. `function_id` is the unwrapped
+/// Run the call pipeline for one call. `function_id` is the unwrapped
 /// target; `arguments` the target payload.
 pub async fn call_function(
     engine: &EngineClient,
@@ -693,7 +693,7 @@ pub async fn call_function(
 /// Invoke the target and normalise its result — WITHOUT the policy gate (the
 /// caller checks `policy.allows` first) or the hook chain. `policy` is still
 /// used to post-filter runtime discovery results. Used by the loop and the
-/// hook-held release path after `pre_trigger` has run.
+/// hook-held release path after `pre_call` has run.
 pub async fn invoke_target(
     engine: &EngineClient,
     policy: &CompiledPolicy,
@@ -758,7 +758,7 @@ pub(crate) fn normalized_result(value: Value) -> ResultData {
 /// Bound a captured function result BEFORE it is written to the session or
 /// echoed to the provider: past `max_bytes` (0 disables) `content` + `details`
 /// are replaced by an elision marker, `is_error` kept. Applied once at the
-/// exit of `subscribe::invoke` and on the `function::resolve` deliver path.
+/// exit of `observe::invoke` and on the `function::resolve` deliver path.
 /// An oversized frame resets the engine connection and the SDK re-flushes it
 /// forever, wedging the worker (MOT-4498).
 pub(crate) fn cap_result(result: ResultData, max_bytes: usize) -> ResultData {
@@ -830,7 +830,7 @@ pub(crate) fn project_wide_compose_denial(
         "{function_id} without a target acts on every container in this project, including the \
          harness running this session: the turn would be lost mid-flight and the session left \
          with an unanswered call. Pass `container` (or `worker` / `workers`) to {op} one worker, \
-         or ask the user to run `iii trigger {function_id}` from their own terminal."
+         or ask the user to run `iii call {function_id}` from their own terminal."
     );
     Some(invocation_error_result(
         Some("compose_project_scope_denied".to_string()),
@@ -948,11 +948,10 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
     }
 }
 
-/// `engine::register_trigger` / `engine::unregister_trigger` are intercepted
-/// in-turn, so the engine's own registration (raw: `function_id` required, no
-/// `once`/`lifecycle`/`conditions`) is NOT the contract an agent calls.
-/// Discovery must describe the intercept, or an agent that reads
-/// `functions::info` "learns" its tool schema is wrong. Only the schema keys
+/// `harness::observe` / `harness::unobserve` are intercepted in-turn, so the
+/// registered functions (which only answer calls from outside a turn) are NOT
+/// the contract an agent calls. Discovery must describe the intercept, or an
+/// agent that reads `functions::info` "learns" its tool schema is wrong. Only the schema keys
 /// the engine sent are replaced: an info detail gets the intercepted request
 /// (and, for the raw details — console, hooks, contract ledger — its response;
 /// the model-visible copy strips response schemas), a list row carries no
@@ -964,7 +963,7 @@ fn overlay_control_contract(item: &mut Value, id: &str) {
     if item.get("error").is_some() {
         return;
     }
-    let Some((description, schema)) = crate::functions::subscribe::control_contract(id) else {
+    let Some((description, schema)) = crate::functions::observe::control_contract(id) else {
         return;
     };
     if let Some(map) = item.as_object_mut() {
@@ -974,7 +973,7 @@ fn overlay_control_contract(item: &mut Value, id: &str) {
                 map.insert(key.into(), schema.clone());
             }
         }
-        if let Some(response) = crate::functions::subscribe::control_response_schema(id) {
+        if let Some(response) = crate::functions::observe::control_response_schema(id) {
             for key in ["response_schema", "response_format"] {
                 if map.contains_key(key) {
                     map.insert(key.into(), response.clone());
@@ -1397,21 +1396,20 @@ mod tests {
     }
 
     #[test]
-    fn discovery_reports_the_intercepted_registration_contract() {
-        // The raw engine row for register_trigger would claim `function_id`
-        // is required and know nothing of once/lifecycle/conditions — the
-        // overlay swaps in the intercept's contract.
+    fn discovery_reports_the_intercepted_observe_contract() {
+        // A row other than the intercept's own would describe a different
+        // request — the overlay swaps in the intercept's contract.
         let policy = pol(&["*"]);
         let mut info = serde_json::json!({
-            "function_id": "engine::register_trigger",
-            "description": "Register a trigger that fires `function_id` directly",
-            "request_schema": { "required": ["function_id", "trigger_type"] }
+            "function_id": "harness::observe",
+            "description": "raw",
+            "request_schema": { "required": ["source"] }
         });
         post_filter_info(&mut info, &policy);
         assert!(info["description"]
             .as_str()
             .unwrap()
-            .contains("omit function_id"));
+            .contains("omit `target`"));
         let schema = serde_json::to_string(&info["request_schema"]).unwrap();
         assert!(
             schema.contains("lifecycle"),
@@ -1419,14 +1417,14 @@ mod tests {
         );
 
         let mut list = serde_json::json!({ "functions": [
-            { "function_id": "engine::register_trigger", "description": "raw" },
+            { "function_id": "harness::observe", "description": "raw" },
             { "function_id": "state::get", "description": "Get a value from state" }
         ]});
         post_filter_discovery(&mut list, &policy);
         assert!(list["functions"][0]["description"]
             .as_str()
             .unwrap()
-            .contains("omit function_id"));
+            .contains("omit `target`"));
         assert_eq!(
             list["functions"][1]["description"],
             "Get a value from state"
@@ -2399,7 +2397,6 @@ mod tests {
             "description": "Does the thing.",
             "namespace": "default",
             "worker_name": "worker",
-            "registered_triggers": [],
             "metadata": { "k": "v" },
             "response_schema": { "type": "object" },
             "request_schema": {
@@ -2522,8 +2519,7 @@ mod tests {
             {
                 "function_id": "worker::function",
                 "request_schema": { "title": "T", "type": "object" },
-                "response_schema": { "type": "object" },
-                "registered_triggers": []
+                "response_schema": { "type": "object" }
             }
         ]});
         let data = ResultData {
@@ -2588,7 +2584,7 @@ mod tests {
                 "title",
                 "response_schema",
                 "worker_name",
-                "registered_triggers",
+                "observer_count",
                 "namespace",
                 "metadata",
             ] {
@@ -2716,7 +2712,7 @@ mod tests {
 
     #[test]
     fn virtual_info_overlay_matches_preload_and_preserves_real_errors() {
-        for id in ["engine::register_trigger", "engine::unregister_trigger"] {
+        for id in ["harness::observe", "harness::unobserve"] {
             let policy = pol(&["*"]);
             let expected = crate::agents::effective_contract(
                 id,
@@ -2726,7 +2722,7 @@ mod tests {
             .unwrap();
             for key in ["request_schema", "request_format", "parameters"] {
                 let mut detail = json!({"function_id":id, "description":"native"});
-                detail[key] = json!({"required":["function_id"]});
+                detail[key] = json!({"required":["source"]});
                 post_filter_info(&mut detail, &policy);
                 assert_eq!(
                     crate::agents::contract_digest(
@@ -2749,12 +2745,12 @@ mod tests {
             assert!(row.get("request_schema").is_none(), "{row}");
             assert_eq!(
                 row["description"],
-                crate::functions::subscribe::control_contract(id).unwrap().0
+                crate::functions::observe::control_contract(id).unwrap().0
             );
-            // The native `{ id }` response is not what the intercept returns.
+            // A registered `{ id }` response is not what the intercept returns.
             let mut detail = json!({
                 "function_id": id, "description": "native",
-                "request_schema": {"required": ["function_id"]},
+                "request_schema": {"required": ["source"]},
                 "response_schema": {"required": ["id"]},
                 "response_format": {"required": ["id"]}
             });
@@ -2765,8 +2761,8 @@ mod tests {
                 .iter()
                 .filter_map(Value::as_str)
                 .collect();
-            let wrapper_field = if id.ends_with("::register_trigger") {
-                "subscription_id"
+            let wrapper_field = if id == "harness::observe" {
+                "observer_id"
             } else {
                 "removed"
             };
@@ -2791,13 +2787,12 @@ mod tests {
         }
         // Only the two intercepted controls own a wrapper response.
         assert!(
-            crate::functions::subscribe::control_response_schema("engine::functions::info")
-                .is_none()
+            crate::functions::observe::control_response_schema("engine::functions::info").is_none()
         );
     }
 
     /// The production gate is `turn_loop`'s `if !policy.allows(&call.function_id)`,
-    /// which answers `denied_result` before `subscribe::invoke` can intercept:
+    /// which answers `denied_result` before `observe::invoke` can intercept:
     /// both exposures must plan the control under its own id, and that id must
     /// fail the gate. (End to end, AC3 of MOT-4861 was observed live.)
     #[test]
@@ -2811,15 +2806,17 @@ mod tests {
                 None,
                 Some(FunctionPolicy {
                     allow: vec!["*".into()],
-                    deny: vec!["engine::*".into()],
+                    deny: vec!["harness::*".into()],
                     expose,
                 }),
                 Some(FunctionPolicy::default()),
             ] {
                 let policy = CompiledPolicy::from(raw_policy.as_ref());
-                for id in ["engine::register_trigger", "engine::unregister_trigger"] {
-                    let args =
-                        json!({"trigger_type":"state","config":{"scope":"test","key":"done"}});
+                for id in ["harness::observe", "harness::unobserve"] {
+                    let args = json!({
+                        "function_id": "state::on-changed",
+                        "filters": { "input.scope": { "$eq": "test" }, "input.key": { "$eq": "done" } }
+                    });
                     let mut message = crate::types::message::empty_assistant("fixture", "fixture");
                     message.content = vec![ContentBlock::FunctionCall {
                         id: "call".into(),

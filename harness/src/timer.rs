@@ -281,6 +281,7 @@ impl AddedHook for TimerBus {
             )));
         }
         let first = self.retain(args.at);
+        tracing::info!(observer = %obs.id(), at = args.at, "timer armed");
         if args.at > now {
             if first {
                 self.arm(args.at);
@@ -295,7 +296,6 @@ impl AddedHook for TimerBus {
                 }
             });
         }
-        tracing::info!(observer = %obs.id(), at = args.at, "timer armed");
         Ok(())
     }
 }
@@ -389,7 +389,10 @@ mod tests {
     #[test]
     fn observers_of_one_instant_share_its_one_shot() {
         let bus = TimerBus::new(Arc::new(IIIClient::new("ws://127.0.0.1:0")));
-        assert!(bus.retain(5_000), "the first observer of an instant arms it");
+        assert!(
+            bus.retain(5_000),
+            "the first observer of an instant arms it"
+        );
         assert!(!bus.retain(5_000), "the second shares it");
         assert!(bus.retain(9_000), "another instant is armed on its own");
         assert!(!bus.release(5_000), "one observer of 5000 remains");
@@ -421,7 +424,10 @@ mod tests {
         let at = 1_700_000_000_000_i64;
         assert_eq!(
             instant(&json!({ "at": at }), "at"),
-            instant(&json!({ "scheduled_at": at, "actual_at": 1 }), "scheduled_at")
+            instant(
+                &json!({ "scheduled_at": at, "actual_at": 1 }),
+                "scheduled_at"
+            )
         );
         assert_eq!(instant(&json!({}), "scheduled_at"), None);
     }

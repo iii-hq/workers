@@ -13,7 +13,10 @@ use harness::functions::delete_session_tree::{
 use harness::types::turn::TurnRecord;
 use iii_sdk::{register_worker, InitOptions};
 use serde_json::{json, Value};
-use tokio::sync::{oneshot, Notify, RwLock};
+use tokio::sync::{mpsc, oneshot, Notify, RwLock};
+
+mod support;
+use support::host;
 
 #[derive(Default)]
 struct Store {
@@ -33,6 +36,8 @@ struct Store {
     /// whether it was still held while the delete RPC was in flight.
     topology_probe: Option<Arc<tokio::sync::Mutex<()>>>,
     topology_held_on_delete: Vec<bool>,
+    /// The targets of the observers the mock engine added, by observer id.
+    observers: BTreeMap<String, String>,
 }
 impl Store {
     fn state(&self, scope: &str, key: &str) -> Value {
@@ -156,7 +161,7 @@ impl Store {
                 Err("intentional boundary stop after observing LLM input".into())
             }
             "state::claim-namespace" => Ok(json!({"claimed":true})),
-            "engine::unregister_trigger" => Ok(json!({"removed":true})),
+            "engine::observers::dispose" => Ok(json!({"disposed":true})),
             _ => Err(format!("unexpected mock RPC {function}: {data}")),
         }
     }
@@ -166,6 +171,7 @@ struct Stack {
     deps: Deps,
     store: Arc<Mutex<Store>>,
     changed: Arc<Notify>,
+    push: mpsc::UnboundedSender<Value>,
     server: tokio::task::JoinHandle<()>,
 }
 impl Drop for Stack {
@@ -181,18 +187,52 @@ impl Stack {
         let store = Arc::new(Mutex::new(Store::default()));
         let changed = Arc::new(Notify::new());
         let (ready_tx, ready_rx) = oneshot::channel();
+        let (push, mut pushed) = mpsc::unbounded_channel::<Value>();
         let (state, notice) = (store.clone(), changed.clone());
         let server = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let text = |value: Value| {
+                tokio_tungstenite::tungstenite::Message::Text(value.to_string().into())
+            };
+            let mut engine = host::Host::default();
+            socket.send(text(host::hello())).await.unwrap();
             let _ = ready_tx.send(());
-            while let Some(Ok(frame)) = socket.next().await {
-                let Ok(text) = frame.to_text() else {
+            loop {
+                let frame = tokio::select! {
+                    Some(message) = pushed.recv() => {
+                        if let Some(message) = engine.announce(message) {
+                            socket.send(text(message)).await.unwrap();
+                        }
+                        continue;
+                    }
+                    frame = socket.next() => match frame {
+                        Some(Ok(frame)) => frame,
+                        _ => break,
+                    },
+                };
+                let Ok(raw) = frame.to_text() else {
                     continue;
                 };
-                let Ok(message) = serde_json::from_str::<Value>(text) else {
+                let Ok(message) = serde_json::from_str::<Value>(raw) else {
                     continue;
                 };
+                if let Some(answer) = engine.answer(&message) {
+                    socket.send(text(answer)).await.unwrap();
+                    continue;
+                }
+                let activations = host::activations(&message);
+                if !activations.is_empty() {
+                    let mut store = state.lock().unwrap();
+                    for (id, observed) in activations {
+                        if let Some(target) = store.observers.get(&id).cloned() {
+                            store.calls.push((target, observed));
+                        }
+                    }
+                    drop(store);
+                    notice.notify_waiters();
+                    continue;
+                }
                 if message["type"] != "invokefunction" {
                     continue;
                 }
@@ -248,6 +288,7 @@ impl Stack {
             deps,
             store,
             changed,
+            push,
             server,
         };
         for (id, parent, status) in [
@@ -348,6 +389,32 @@ impl Stack {
         })
         .await
         .unwrap();
+    }
+    /// Add an observer of `harness::on-session-tree-deletion` the way the
+    /// engine does, and wait until the harness accepted it.
+    async fn observe_deletions(&self, id: &str, target: &str, filters: Value) {
+        let function_id = harness::deletion_events::ON_SESSION_TREE_DELETION_FN;
+        self.store
+            .lock()
+            .unwrap()
+            .observers
+            .insert(id.into(), target.into());
+        self.push
+            .send(host::observer_added(
+                id,
+                function_id,
+                target,
+                json!({}),
+                filters,
+            ))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !self.deps.iii.is_observed(function_id) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the deletion observer is accepted");
     }
 }
 
@@ -997,20 +1064,14 @@ async fn partial_guard_recovery_rejects_conflict_without_overwriting_foreign_own
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_retry_increments_once_and_late_terminal_event_keeps_old_attempt() {
-    use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
     let stack = Stack::new("completed").await;
     stack
-        .deps
-        .deletion_events
-        .register_trigger(TriggerConfig {
-            id: "review-subscription".into(),
-            function_id: "test::deletion-event".into(),
-            config: json!({"session_id":"child2"}),
-            metadata: None,
-            namespace: None,
-        })
-        .await
-        .unwrap();
+        .observe_deletions(
+            "review-observer",
+            "test::deletion-event",
+            json!({ "input.session_id": { "$eq": "child2" } }),
+        )
+        .await;
     let accepted = stack.request("child2").await;
     stack.store.lock().unwrap().fail_delete = Some("grandchild1".into());
     let old = stack.run(&accepted.operation_id).await;
@@ -1711,7 +1772,7 @@ async fn agent_exec_bg_is_stamped_with_the_calling_session() {
     let stack = Stack::new("completed").await;
     let engine = stack.deps.engine().await;
     let policy = harness::policy::CompiledPolicy::from(None);
-    harness::functions::subscribe::invoke(
+    harness::functions::observe::invoke(
         &stack.deps,
         &engine,
         &policy,
@@ -1746,7 +1807,7 @@ async fn agent_dispatch_witness_follows_the_structured_outcome_not_error_text() 
     // The first target's failure text mentions a connection timeout, but the
     // target answered: its outcome is known and the witness is released.
     for (function, keeps_witness) in [("ext::connection-timeout", false), ("ext::stopped", true)] {
-        let result = harness::functions::subscribe::invoke(
+        let result = harness::functions::observe::invoke(
             &stack.deps,
             &engine,
             &policy,
@@ -1816,7 +1877,7 @@ async fn agent_dispatch_takes_no_process_wide_lock_and_reuses_a_live_answer() {
     for _ in 0..2 {
         let result = tokio::time::timeout(
             Duration::from_secs(5),
-            harness::functions::subscribe::invoke(
+            harness::functions::observe::invoke(
                 &stack.deps,
                 &engine,
                 &policy,
@@ -1862,7 +1923,7 @@ async fn a_tombstone_after_a_live_answer_refuses_dispatch_and_withdraws_its_witn
     let policy = harness::policy::CompiledPolicy::from(None);
     let args = json!({});
     let dispatch = |function: &'static str| {
-        harness::functions::subscribe::invoke(
+        harness::functions::observe::invoke(
             &stack.deps,
             &engine,
             &policy,

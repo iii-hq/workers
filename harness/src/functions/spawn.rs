@@ -105,7 +105,7 @@ pub struct SpawnOptions {
     /// reused child inherits when omitted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
-    /// Let the child spawn, send, and register triggers (still capped by the
+    /// Let the child spawn, send, and remove observers (still capped by the
     /// parent's policy); default false makes it a leaf.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<bool>,

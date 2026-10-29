@@ -11,8 +11,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::HarnessError;
 use crate::call::ResultData;
+use crate::error::HarnessError;
 use crate::types::content::ContentBlock;
 
 /// Fewest questions one `harness::ask` call may carry.

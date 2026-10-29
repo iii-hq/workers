@@ -1,5 +1,5 @@
 //! Fire-time gating: the typed contract for the conditions a binding declares
-//! (architecture/trigger-bindings.md § The condition contract).
+//! (architecture/observer-bindings.md § The condition contract).
 //!
 //! One rule shapes this module: a declared condition that ERRORS skips the
 //! delivery and says why. The engine's own condition contract treats an
@@ -8,7 +8,7 @@
 //! lands on the delivery record.
 //!
 //! There are no built-in reaction gates anymore — they existed to bound
-//! trigger-spawned agent chains, and a binding no longer starts an agent.
+//! event-spawned agent chains, and a binding no longer starts an agent.
 //! Nothing throttles a wake or call binding besides its own `lifecycle` and
 //! conditions.
 
@@ -109,7 +109,7 @@ pub async fn evaluate(deps: &Deps, binding: &Binding, event: Value) -> Result<Va
             "binding": { "id": binding.id, "fires": binding.fires },
             "context": { "owner_session_id": binding.owner.session_id },
         });
-        if let Err(e) = crate::functions::subscribe::approval_allows_unattended(
+        if let Err(e) = crate::functions::observe::approval_allows_unattended(
             deps,
             &condition.function_id,
             &binding.owner.session_id,

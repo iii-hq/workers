@@ -8,11 +8,12 @@ use async_trait::async_trait;
 use iii_helpers::observability::opentelemetry::trace::{Status, TraceContextExt as _};
 use iii_helpers::observability::opentelemetry::{Context, KeyValue};
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{IIIClient, CallAction};
+use iii_sdk::{CallAction, IIIClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::call;
 use crate::clients::router::{ChatError, ChatParams, StreamSink};
 use crate::clients::{LoadedEntry, SessionClient};
 use crate::deps::Deps;
@@ -20,7 +21,6 @@ use crate::error::HarnessError;
 use crate::ids;
 use crate::policy::{self, CallKind, CompiledPolicy};
 pub use crate::queue::TURN_QUEUE;
-use crate::call;
 use crate::types::content::ContentBlock;
 use crate::types::event::ErrorKind;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
@@ -1576,7 +1576,7 @@ async fn finish_step(
             .await;
     }
 
-    // Trigger any function calls in content order.
+    // Call the planned functions in content order.
     let expose = record
         .options
         .functions
@@ -1584,20 +1584,20 @@ async fn finish_step(
         .map(|f| f.expose)
         .unwrap_or(ExposeMode::AgentCall);
     let planned = policy::plan_calls(&outcome.message, expose);
-    let trigger_calls: Vec<_> = planned
+    let dispatch_calls: Vec<_> = planned
         .iter()
         .filter(|c| c.kind == CallKind::Call)
         .collect();
     let submit_call = planned.iter().find(|c| c.kind == CallKind::SubmitResult);
 
-    if !trigger_calls.is_empty() {
+    if !dispatch_calls.is_empty() {
         let policy = CompiledPolicy::from(record.options.functions.as_ref());
         let engine = deps.engine().await;
         let session_grants =
             crate::filesystem_grants::roots(&deps.iii, &record.session_id, cfg.session_timeout_ms)
                 .await?;
         let filesystem_root = record.options.filesystem_root().map(str::to_string);
-        for call in trigger_calls.iter().copied() {
+        for call in dispatch_calls.iter().copied() {
             // Cancel check between tool calls. Only the in-process signal can
             // be observed here: this phase holds the session lock, so the
             // durable abort write in harness::stop is blocked behind it by
@@ -1609,7 +1609,7 @@ async fn finish_step(
             }
 
             // Per-call checkpoint: skip done/pending, recover an interrupted
-            // trigger.
+            // call.
             match record.calls.get(&call.id).map(|c| c.state) {
                 Some(CallState::Done) | Some(CallState::Pending) => continue,
                 Some(CallState::Dispatched) => {
@@ -1687,8 +1687,7 @@ async fn finish_step(
             // only after it passes (a denial never reaches a hook).
             if !policy.allows(&call.function_id) {
                 let functions = deps.functions().await;
-                let did_you_mean =
-                    call::closest_permitted(&call.function_id, &policy, &functions);
+                let did_you_mean = call::closest_permitted(&call.function_id, &policy, &functions);
                 let data =
                     call::denied_result_with_hint(&call.function_id, did_you_mean.as_deref());
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
@@ -1758,7 +1757,7 @@ async fn finish_step(
 
             // harness::ask is a harness control like submit_result, not a
             // dispatched function, so it is answered HERE, before the
-            // pre_trigger chain: an approval hook could only
+            // pre_call chain: an approval hook could only
             // hold it, and a held call's release re-dispatches it to the
             // registered handler, which cannot show the card. The session's
             // allow/deny policy, the repeated-failure breaker and argument
@@ -1810,7 +1809,7 @@ async fn finish_step(
                 continue;
             }
 
-            // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
+            // pre_call chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
@@ -1901,8 +1900,8 @@ async fn finish_step(
 
             // harness::spawn is fire-and-forget: seed a child and return its
             // ids immediately (never invoke a target, never park). The child's
-            // result reaches consumers only through registered triggers/state.
-            // Guard failures skip post_trigger.
+            // result reaches consumers only through observers and state.
+            // Guard failures skip post_call.
             if call.function_id == crate::functions::SPAWN_ID {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 let (mut data, child) = match crate::subagent::spawn_from_turn(
@@ -1963,7 +1962,7 @@ async fn finish_step(
                 continue;
             }
 
-            // Checkpoint triggered before invoking the (at-most-once) target.
+            // Checkpoint dispatched before invoking the (at-most-once) target.
             record.calls.insert(
                 call.id.clone(),
                 CallCheckpoint {
@@ -1984,20 +1983,20 @@ async fn finish_step(
 
             // Single invocation chokepoint: subscription control calls are
             // intercepted (trusted session injected); everything else invokes the
-            // target. Then the post_trigger chain runs over the result.
+            // target. Then the post_call chain runs over the result.
             //
             // An engine dispatch is raced against `harness::stop`: a target
             // that never returns would otherwise hold this step, and the
             // session lock `harness::stop` waits on, until the dispatch
             // timeout. Interceptions are short and not drop-safe, so they run
             // uninterrupted.
-            let raw = if crate::functions::subscribe::is_locally_intercepted(
+            let raw = if crate::functions::observe::is_locally_intercepted(
                 &call.function_id,
                 &eff_args,
                 &record.session_id,
                 true,
             ) {
-                crate::functions::subscribe::invoke(
+                crate::functions::observe::invoke(
                     deps,
                     &engine,
                     &policy,
@@ -2005,7 +2004,7 @@ async fn finish_step(
                     &eff_args,
                     &record.session_id,
                     true, // run_step holds this session's lock
-                    Some(crate::functions::subscribe::CallerModel::from_options(
+                    Some(crate::functions::observe::CallerModel::from_options(
                         &record.options,
                     )),
                 )
@@ -2016,7 +2015,7 @@ async fn finish_step(
                     let (function_id, args) = (call.function_id.clone(), eff_args.clone());
                     let (session_id, options) = (record.session_id.clone(), record.options.clone());
                     async move {
-                        crate::functions::subscribe::invoke(
+                        crate::functions::observe::invoke(
                             &deps,
                             &engine,
                             &policy,
@@ -2024,7 +2023,7 @@ async fn finish_step(
                             &args,
                             &session_id,
                             true, // as inline: only interceptions read it
-                            Some(crate::functions::subscribe::CallerModel::from_options(
+                            Some(crate::functions::observe::CallerModel::from_options(
                                 &options,
                             )),
                         )
@@ -2068,7 +2067,7 @@ async fn finish_step(
                     let info = call::PendingInfo {
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
-                        // A post-trigger release re-invokes the target: keep
+                        // A post-call release re-invokes the target: keep
                         // the fully pre-mutated args, not the model originals.
                         held_arguments: Some(eff_args.clone()),
                         reconciled: reconciled.as_ref().map(|r| r.changes.clone()),
@@ -2124,7 +2123,7 @@ async fn finish_step(
     }
 
     // If any call deferred, the turn parks: no re-enqueue while the deferred
-    // work runs (harness.md § Deferred trigger).
+    // work runs (harness.md, deferred calls).
     let has_pending = record.calls.values().any(|c| c.state == CallState::Pending);
     if has_pending {
         record.status = TurnStatus::AwaitingFunctions;
@@ -2138,19 +2137,19 @@ async fn finish_step(
         });
     }
 
-    // submit_result is terminal: triggered calls already landed above; now
+    // submit_result is terminal: dispatched calls already landed above; now
     // the harness consumes the submit_result (validate + record + finalise).
     if let Some(submit) = submit_call {
         return handle_submit(deps, &session, &mut record, &strategy, submit).await;
     }
 
-    // With triggered calls and no submit_result, re-enqueue so the model
+    // With dispatched calls and no submit_result, re-enqueue so the model
     // reacts to the results — unless the step showed a harness::ask card:
     // then the turn ends on the question and the answer arrives as the
     // user's next message. A user message already waiting (steering) needs
     // the model, so that step advances as usual. Steering is only read when
     // an ask was accepted, so ordinary function steps pay no extra reads.
-    if !trigger_calls.is_empty() {
+    if !dispatch_calls.is_empty() {
         let asked_this_step = ask_accepted_this_step(&record);
         let steering = asked_this_step
             && (has_user_after_watermark(&session, &record).await?
@@ -2374,7 +2373,7 @@ async fn handle_submit(
 }
 
 /// Contract-valid result → run the `post_turn` hook chain (validators
-/// attached via `engine::register_trigger` on `harness::hook::post-turn`)
+/// observing `harness::hook::on-post-turn` through `harness::observe`)
 /// before finalising; a deny re-prompts through the same retry budget as a
 /// schema failure.
 async fn complete_validated(
@@ -3252,7 +3251,7 @@ async fn append_function_result(
     // `session::append`. Keep the per-session step lock while the dependency
     // catches up: this append is idempotent on `entry_id`, and retaining the
     // lock prevents a restart-redelivered copy of the same step from
-    // regenerating against the still-triggered call checkpoint.
+    // regenerating against the still-dispatched call checkpoint.
     const ATTEMPTS: u32 = 10;
     const BACKOFF_MS: u64 = 250;
     for attempt in 1..=ATTEMPTS {
@@ -4245,7 +4244,7 @@ fn concrete_allowed_tools(
     descriptors: &[crate::clients::FunctionDescriptor],
     hidden: &[String],
 ) -> Vec<crate::types::model::AgentFunction> {
-    let mut tools = crate::functions::subscribe::native_control_tools(policy);
+    let mut tools = crate::functions::observe::native_control_tools(policy);
     for descriptor in descriptors {
         if !policy.allows(&descriptor.function_id)
             || hidden.iter().any(|id| id == &descriptor.function_id)
@@ -4880,15 +4879,9 @@ mod tests {
         assert_eq!(updates[0].1.repeats, 1);
         assert_eq!(
             first.content,
-            crate::call::prepare_info_result(
-                "probe",
-                &arguments,
-                &data,
-                &Default::default(),
-                true
-            )
-            .0
-            .content,
+            crate::call::prepare_info_result("probe", &arguments, &data, &Default::default(), true)
+                .0
+                .content,
             "the first result is the full (response-schema-stripped) rendering"
         );
     }
@@ -5222,10 +5215,7 @@ mod tests {
     fn authorized_virtual_controls_are_not_removed_by_public_catalog() {
         let policy =
             crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
-                allow: vec![
-                    "engine::register_trigger".into(),
-                    "engine::unregister_trigger".into(),
-                ],
+                allow: vec!["harness::observe".into(), "harness::unobserve".into()],
                 deny: vec![],
                 expose: crate::types::turn::ExposeMode::Native,
             }));
@@ -6088,7 +6078,7 @@ mod tests {
                 .contains("now available"));
             assert!(stale(Some(&missing), &snap(&live), &CompiledPolicy::from(None)).is_none());
         }
-        for id in ["engine::register_trigger", "engine::unregister_trigger"] {
+        for id in ["harness::observe", "harness::unobserve"] {
             let effective = effective_contract(id, &all, &snap(&[])).unwrap();
             let frozen = std::collections::BTreeMap::from([(
                 id.to_string(),

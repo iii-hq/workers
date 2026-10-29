@@ -1,5 +1,6 @@
 {
-  "call_request_format": {
+  "function_id": "harness::on-session-tree-deletion",
+  "request_format": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
     "definitions": {
@@ -51,25 +52,56 @@
     "title": "Snapshot",
     "type": "object"
   },
-  "trigger_request_format": {
+  "response_format": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
+    "definitions": {
+      "DeletionStatus": {
+        "enum": [
+          "deleting",
+          "completed",
+          "failed"
+        ],
+        "type": "string"
+      }
+    },
     "properties": {
-      "operation_id": {
+      "attempt": {
+        "description": "Initial attempt is 1; only an explicit failed-operation retry increments it.",
+        "format": "uint32",
+        "minimum": 1.0,
+        "type": "integer"
+      },
+      "deleted_session_ids": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "error": {
         "type": [
           "string",
           "null"
         ]
       },
+      "operation_id": {
+        "type": "string"
+      },
       "session_id": {
-        "type": [
-          "string",
-          "null"
-        ]
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/DeletionStatus"
       }
     },
-    "title": "DeletionConfig",
+    "required": [
+      "attempt",
+      "deleted_session_ids",
+      "operation_id",
+      "session_id",
+      "status"
+    ],
+    "title": "Snapshot",
     "type": "object"
-  },
-  "trigger_type": "harness::session-tree-deletion"
+  }
 }

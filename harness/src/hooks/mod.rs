@@ -11,9 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use iii_sdk::errors::Error;
-use iii_sdk::{
-    Call, IIIClient, ObserveRejection, Observer, ObserverHandle, RegisterFunction,
-};
+use iii_sdk::{Call, IIIClient, ObserveRejection, Observer, ObserverHandle, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -355,8 +353,7 @@ pub fn filesystem_boundary(
     // give them the boundary a direct scoped call would get, or a step
     // would run under a WIDER jail than the same call made directly.
     // shell::exec represents the watch's fixed shell::*/coder::* observer set.
-    let target_function_id = if crate::filesystem_scope::carries_scoped_steps(target_function_id)
-    {
+    let target_function_id = if crate::filesystem_scope::carries_scoped_steps(target_function_id) {
         "shell::exec"
     } else {
         target_function_id

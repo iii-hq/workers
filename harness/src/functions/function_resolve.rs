@@ -23,7 +23,7 @@ pub struct FunctionResolveRequest {
     pub turn_id: String,
     pub function_call_id: String,
     /// `deliver` (default) supplies the result; `execute` releases a
-    /// hook-held call through the remaining trigger pipeline.
+    /// hook-held call through the remaining call pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     /// execute only: one-shot additional roots trusted by the caller and

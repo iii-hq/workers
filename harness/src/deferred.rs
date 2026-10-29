@@ -1,4 +1,4 @@
-//! Deferred trigger (harness.md § Deferred trigger): a pending call parks the
+//! Deferred calls (harness.md, deferred calls): a pending call parks the
 //! turn — an approval/hook hold, or a legacy pre-fire-and-forget child spawn.
 //! `harness::function::resolve` settles it (delivering a result or releasing a
 //! hook-held call) and resumes the parked turn; a cron sweep expires
@@ -120,10 +120,10 @@ pub async fn resolve(
             })
         }
         "execute" => {
-            // `execute` releases a `pre_trigger` hook-held call: resume the
-            // pre_trigger chain AFTER the holding hook (earlier hooks and the
+            // `execute` releases a `pre_call` hook-held call: resume the
+            // pre_call chain AFTER the holding hook (earlier hooks and the
             // holder's own decision already ran — harness.md §
-            // `function::resolve`), invoke the target, run the post_trigger
+            // `function::resolve`), invoke the target, run the post_call
             // chain, append the result, and resume the turn.
             let Some(held_by) = checkpoint.held_by.clone() else {
                 return Ok(not_resolved());
@@ -232,7 +232,7 @@ pub async fn resolve(
             // turn loop — depth/fan-out guards, policy subsetting, ParentLink
             // — never the generic dispatcher (which would seed a parentless,
             // unguarded child). Fire-and-forget: the result is the child ids;
-            // post_trigger is skipped, mirroring the loop's spawn branch.
+            // post_call is skipped, mirroring the loop's spawn branch.
             if function_id == crate::functions::SPAWN_ID {
                 // Dispatched + persist BEFORE the spawn (mirrors the non-spawn
                 // path below): a crash or redelivered resolve between a
@@ -346,7 +346,7 @@ pub async fn resolve(
             // Held calls resume outside the inline loop, so use the same
             // invocation chokepoint to keep subscription session injection/owner
             // checks.
-            let raw = crate::functions::subscribe::invoke(
+            let raw = crate::functions::observe::invoke(
                 deps,
                 &engine,
                 &policy,
@@ -354,7 +354,7 @@ pub async fn resolve(
                 &arguments,
                 &record.session_id,
                 true, // resolve holds this session's lock
-                Some(crate::functions::subscribe::CallerModel::from_options(
+                Some(crate::functions::observe::CallerModel::from_options(
                     &record.options,
                 )),
             )
@@ -813,15 +813,9 @@ mod tests {
         assert_eq!(updates[0].1.repeats, 1);
         assert_eq!(
             first.content,
-            crate::call::prepare_info_result(
-                "probe",
-                &arguments,
-                &data,
-                &Default::default(),
-                true
-            )
-            .0
-            .content,
+            crate::call::prepare_info_result("probe", &arguments, &data, &Default::default(), true)
+                .0
+                .content,
             "the first result is the full (response-schema-stripped) rendering"
         );
     }

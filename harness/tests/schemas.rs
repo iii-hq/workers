@@ -28,15 +28,16 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
 }
 
 #[test]
-fn deletion_trigger_schema_matches_golden() {
+fn deletion_event_schema_matches_golden() {
+    let snapshot =
+        harness::surface::schema_value::<harness::functions::delete_session_tree::Snapshot>();
     let actual = serde_json::json!({
-        "trigger_type": harness::deletion_events::TYPE,
-        "trigger_request_format": harness::surface::schema_value::<harness::deletion_events::DeletionConfig>(),
-        "call_request_format": harness::surface::schema_value::<harness::functions::delete_session_tree::Snapshot>(),
-
+        "function_id": harness::deletion_events::ON_SESSION_TREE_DELETION_FN,
+        "request_format": snapshot,
+        "response_format": snapshot,
     });
     support::check_golden(
-        "schemas/harness.session-tree-deletion.json",
+        "schemas/harness.on-session-tree-deletion.json",
         &(serde_json::to_string_pretty(&actual).unwrap() + "\n"),
     )
     .unwrap();
@@ -52,6 +53,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::compact",
             "harness::spawn",
             "harness::ask",
+            "harness::observe",
+            "harness::unobserve",
             "harness::turn",
             "harness::function::call",
             "harness::function::resolve",
@@ -63,8 +66,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::system-prompt::get",
             "harness::session-tree",
             "harness::metrics",
-            "harness::triggers::list",
-            "harness::triggers::unregister",
+            "harness::observers::list",
+            "harness::observers::dispose",
         ]
     );
 }

@@ -219,6 +219,7 @@ impl TurnEvents {
              Filter on input.session_id.",
             schema_value::<ObserversChangedEvent>(),
         );
+        crate::deletion_events::register(iii);
         register_event(
             iii,
             ON_COMPACTION_FN,
@@ -229,7 +230,7 @@ impl TurnEvents {
         );
         tracing::info!(
             "registered harness::on-ready / on-turn-started / on-turn-completed / \
-             on-message-queued / on-observers-changed / on-compaction"
+             on-message-queued / on-observers-changed / on-session-tree-deletion / on-compaction"
         );
 
         Self {

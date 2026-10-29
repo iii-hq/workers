@@ -30,8 +30,8 @@ pub const QUEUE_SCOPE: &str = "harness_queue";
 /// Per-session anonymous-usage bookkeeping (`usage_report::UsageRow`): which
 /// milestones and outcomes this session has already announced.
 pub const USAGE_SCOPE: &str = "harness_usage";
-/// One durable trigger binding per key (`bindings::Binding`). The engine-side
-/// trigger metadata holds only this key; everything the fire needs is here.
+/// One durable observer binding per key (`bindings::Binding`). The observer's
+/// metadata holds only this key; everything a delivery needs is here.
 pub const BINDING_SCOPE: &str = "harness_binding";
 /// Per-owner binding ids. Updated with CAS so capacity reservation and binding
 /// insertion are one logical operation across concurrent harness workers.
@@ -623,7 +623,7 @@ pub async fn read_changed_turns(
     read
 }
 
-/// Read one trigger binding (`None` when absent or null).
+/// Read one observer binding (`None` when absent or null).
 pub async fn get_binding(
     iii: &IIIClient,
     id: &str,

@@ -55,7 +55,7 @@ pub async fn effective_default(iii: &IIIClient) -> EffectiveDefault {
 ///    would error-stamp every send of every no-override deployment.
 /// 3. Only then fetch the body.
 async fn stored_default_body(iii: &IIIClient) -> Option<String> {
-    let functions = trigger(iii, FUNCTIONS_LIST_ID, json!({ "prefix": GET_ID })).await?;
+    let functions = call(iii, FUNCTIONS_LIST_ID, json!({ "prefix": GET_ID })).await?;
     let present = functions
         .get("functions")
         .and_then(Value::as_array)
@@ -63,7 +63,7 @@ async fn stored_default_body(iii: &IIIClient) -> Option<String> {
     if !present {
         return None;
     }
-    let prompts = trigger(iii, LIST_ID, json!({})).await?;
+    let prompts = call(iii, LIST_ID, json!({})).await?;
     let has_default = prompts
         .get("prompts")
         .and_then(Value::as_array)
@@ -75,14 +75,14 @@ async fn stored_default_body(iii: &IIIClient) -> Option<String> {
     if !has_default {
         return None;
     }
-    trigger(iii, GET_ID, json!({ "name": STORED_DEFAULT_PROMPT_NAME }))
+    call(iii, GET_ID, json!({ "name": STORED_DEFAULT_PROMPT_NAME }))
         .await?
         .get("body")
         .and_then(Value::as_str)
         .map(str::to_string)
 }
 
-async fn trigger(iii: &IIIClient, function_id: &str, payload: Value) -> Option<Value> {
+async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Option<Value> {
     run_hidden(
         HIDDEN_FAMILY,
         iii.call(CallRequest {

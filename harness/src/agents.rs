@@ -300,7 +300,7 @@ pub(crate) fn render_preloaded_skills(
 
 /// One preloaded function as rendered into the prompt: the current description
 /// and request schema (compacted the way `engine::functions::info` results
-/// are compacted for the model — see `trigger::compact_schema`).
+/// are compacted for the model — see `call::compact_schema`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreloadedContract {
     pub function_id: String,
@@ -369,7 +369,7 @@ pub(crate) fn effective_contract(
     if !policy.allows(id) {
         return None;
     }
-    if let Some((description, schema)) = crate::functions::subscribe::control_contract(id) {
+    if let Some((description, schema)) = crate::functions::observe::control_contract(id) {
         return Some(PreloadedContract::new(id, Some(description), Some(schema)));
     }
     if let Some(descriptor) = snapshot.functions.iter().find(|d| d.function_id == id) {
@@ -1146,8 +1146,8 @@ mod tests {
             policy::CompiledPolicy,
             types::turn::{ExposeMode, FunctionPolicy},
         };
-        let deps = crate::functions::subscribe::tests::disconnected_deps();
-        let ids: Vec<String> = ["engine::register_trigger", "engine::unregister_trigger"]
+        let deps = crate::functions::observe::tests::disconnected_deps();
+        let ids: Vec<String> = ["harness::observe", "harness::unobserve"]
             .into_iter()
             .map(str::to_string)
             .collect();
@@ -1161,7 +1161,7 @@ mod tests {
                 }),
                 Some(FunctionPolicy {
                     allow: vec!["*".into()],
-                    deny: vec!["engine::register_trigger".into()],
+                    deny: vec!["harness::observe".into()],
                     expose,
                 }),
                 Some(FunctionPolicy {
@@ -1202,7 +1202,7 @@ mod tests {
                         assert_eq!(digests[id].is_some(), policy.allows(id));
                         if let Some(actual) = actual {
                             let (description, schema) =
-                                crate::functions::subscribe::control_contract(id).unwrap();
+                                crate::functions::observe::control_contract(id).unwrap();
                             assert_eq!(
                                 *actual,
                                 PreloadedContract::new(id, Some(description), Some(schema))
@@ -1225,29 +1225,29 @@ mod tests {
 
     #[tokio::test]
     async fn profile_freezes_only_effectively_authorized_controls() {
-        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let deps = crate::functions::observe::tests::disconnected_deps();
         let mut agent = normalize(
             "fixture",
             wire(json!({
                 "name":"Fixture", "system_prompt":"Identity.",
-                "functions":["engine::register_trigger", "engine::unregister_trigger"]
+                "functions":["harness::observe", "harness::unobserve"]
             })),
         );
         let policy =
             crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
                 allow: vec!["*".into()],
-                deny: vec!["engine::unregister_trigger".into()],
+                deny: vec!["harness::unobserve".into()],
                 ..Default::default()
             }));
         attach_preloaded_functions(&deps, &mut agent, &policy).await;
         assert!(agent
             .prompt
             .starts_with("Identity.\n\n<preloaded_functions>"));
-        assert!(agent.prompt.contains("### `engine::register_trigger`"));
-        assert!(!agent.prompt.contains("### `engine::unregister_trigger`"));
+        assert!(agent.prompt.contains("### `harness::observe`"));
+        assert!(!agent.prompt.contains("### `harness::unobserve`"));
         assert!(agent
             .prompt
-            .contains("NOT available in this session — do not call: `engine::unregister_trigger`"));
-        assert_eq!(agent.contract_digests["engine::unregister_trigger"], None);
+            .contains("NOT available in this session — do not call: `harness::unobserve`"));
+        assert_eq!(agent.contract_digests["harness::unobserve"], None);
     }
 }

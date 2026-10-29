@@ -673,7 +673,7 @@ async fn erase(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
 }
 
 async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
-    deps.hooks.unregister_session(id);
+    deps.hooks.dispose_session(id).await;
     let timeout = deps.cfg().await.session_timeout_ms;
     let store = deps.bindings().await;
     for binding in
@@ -682,22 +682,13 @@ async fn cleanup(deps: &Deps, id: &str) -> Result<(), HarnessError> {
             .into_iter()
             .filter(|binding| binding.owner.session_id == id)
     {
-        if let Some(trigger) = &binding.trigger_id {
-            if trigger.starts_with(super::subscribe::SDK_TRIGGER_ID_PREFIX) {
-                if !super::subscribe::unregister_engine_trigger(deps, trigger).await {
-                    return Err(failure(format!("failed to unregister {trigger}")));
-                }
-            } else {
-                deps.iii
-                    .call(CallRequest {
-                        function_id: "engine::unregister_trigger".into(),
-                        payload: json!({"id":trigger}),
-                        action: None,
-                        timeout_ms: Some(timeout),
-                    })
-                    .await
-                    .map_err(|e| HarnessError::Dependency(format!("unregister {trigger}: {e}")))?;
-            }
+        if binding.observer_id.is_some()
+            && !crate::bindings::dispose_observer(deps, &binding.id).await
+        {
+            return Err(failure(format!(
+                "failed to dispose observer {}",
+                binding.id
+            )));
         }
         store.delete(&binding.id).await?;
     }

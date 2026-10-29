@@ -2654,7 +2654,7 @@ mod tests {
     #[test]
     fn a_woken_child_keeps_its_leaf_boundary_and_depth() {
         let policy = policy::CompiledPolicy::from(Some(&FunctionPolicy {
-            allow: vec!["engine::register_trigger".into(), "state::*".into()],
+            allow: vec!["harness::observe".into(), "state::*".into()],
             deny: vec![],
             expose: Default::default(),
         }));
@@ -3648,7 +3648,7 @@ mod tests {
     }
     #[tokio::test]
     async fn agent_send_validation_runs_before_profile_rpc() {
-        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let deps = crate::functions::observe::tests::disconnected_deps();
         let cfg = WorkerConfig::default();
         let invalid = agent_send_request(SendOptions {
             agent: Some("fixture".into()),

@@ -1,6 +1,6 @@
 //! iii engine client: function registry reads (`engine::functions::list` /
 //! `engine::functions::info`) for runtime discovery post-filtering and native
-//! exposure, and generic function dispatch (`iii.trigger`) for the target of
+//! exposure, and generic function dispatch (`iii.call`) for the target of
 //! an `agent_call` call.
 
 use std::sync::Arc;
@@ -46,7 +46,7 @@ const OUTCOME_UNKNOWN_REMOTE_CODES: &[&str] = &[
     "engine_restart",
 ];
 
-/// Whether a failed `iii.trigger` leaves the target's execution unknown, so
+/// Whether a failed `iii.call` leaves the target's execution unknown, so
 /// it must be treated as possibly still running. Decided from the structured
 /// SDK error (iii-sdk 0.23) BEFORE any string conversion; the match is
 /// exhaustive, so a new SDK variant must be classified here.
@@ -63,7 +63,7 @@ const OUTCOME_UNKNOWN_REMOTE_CODES: &[&str] = &[
 ///   target's own completed failure.
 /// - `Handler`: raised on the caller side by request validation before
 ///   anything is sent (a target's handler error arrives as `Remote`).
-/// - `Serde`: the caller-side trigger path yields it only for a local
+/// - `Serde`: the caller-side call path yields it only for a local
 ///   (de)serialization failure; a target's serde failure arrives as
 ///   `Remote { code: "invocation_failed" }`.
 /// - `RegistrationRejected`: a fatal registration state, not an invocation.

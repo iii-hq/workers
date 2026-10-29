@@ -283,8 +283,8 @@ pub enum CallState {
     Done,
 }
 
-/// One call's checkpoint on the turn record. `held_by` marks a `pre_trigger`
-/// hook hold; `child_*` marks a `harness::spawn` pending trigger.
+/// One call's checkpoint on the turn record. `held_by` marks a `pre_call`
+/// hook hold; `child_*` marks a `harness::spawn` pending call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CallCheckpoint {
     pub state: CallState,
@@ -341,7 +341,7 @@ pub struct FunctionContractLedgerEntry {
     pub eligible: bool,
     /// How many times this turn answered a request for this contract from
     /// the ledger instead of sending it. Drives the re-fetch loop breaker in
-    /// `trigger::prepare_info_result`; reset at the start of every turn.
+    /// `call::prepare_info_result`; reset at the start of every turn.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub repeats: u32,
 }
@@ -463,7 +463,7 @@ pub struct TurnRecord {
 }
 
 impl TurnRecord {
-    /// Function_call ids still awaiting a result (`triggered` or `pending`).
+    /// Function_call ids still awaiting a result (dispatched or pending).
     pub fn pending_call_ids(&self) -> Vec<String> {
         self.calls
             .iter()
@@ -727,7 +727,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn pending_call_ids_lists_triggered_and_pending() {
+    fn pending_call_ids_lists_dispatched_and_pending() {
         let mut r = record();
         r.calls.insert("a".into(), cp(CallState::Done, None, false));
         r.calls
@@ -786,7 +786,7 @@ pub(crate) mod tests {
         r.calls
             .insert("pending".into(), cp(CallState::Pending, None, false));
         r.calls
-            .insert("triggered".into(), cp(CallState::Dispatched, None, false));
+            .insert("dispatched".into(), cp(CallState::Dispatched, None, false));
         r.failed_calls.insert(
             "digest".into(),
             FailedCall {
@@ -803,7 +803,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             r.calls.keys().map(String::as_str).collect::<Vec<_>>(),
-            vec!["done_child", "pending", "triggered"]
+            vec!["dispatched", "done_child", "pending"]
         );
         assert!(r.failed_calls.is_empty());
         assert_eq!(r.watermark_entry_id, None);
@@ -835,7 +835,7 @@ pub(crate) mod tests {
         let mut r = record();
         r.calls
             .insert("a".into(), cp(CallState::Pending, Some("s_child"), false));
-        // Populate the trigger-spawn fields so the round trip exercises them
+        // Populate the pending-spawn fields so the round trip exercises them
         // with values, not just their skip-if-none defaults.
         r.display_parent_session_id = Some("s_display_parent".into());
         let back: TurnRecord = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
