@@ -280,6 +280,8 @@ pub async fn register_provider_with_auth(
             .metadata(json!({ "internal": true })),
         );
     }
+    // Deprecated in iii 0.25, still served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger(RegisterTriggerInput::new(
         "router::ready",
         surface::ON_ROUTER_READY_ID,

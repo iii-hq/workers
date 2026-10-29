@@ -91,6 +91,7 @@ async fn discovery_feedback_recovery_authorization_and_stale_attempts() {
             }
         }),
     );
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         "router::models::changed",
         "probe::discovery_event",
