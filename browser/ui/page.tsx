@@ -1,15 +1,16 @@
 /**
  * Entry for the browser worker's injected console UI — compiled by esbuild
- * (react + @iii-dev/console-ui external) into dist/page.js and served over
- * the `console:script` trigger (see src/ui.rs). The stylesheet is its own
- * asset: ../styles.css ships over `console:style` as browser/styles.css —
- * the console mounts and link-swaps it, styles-before-scripts on boot.
+ * (react + @iii-dev/console-ui external) into dist/page.js and served as a
+ * `script` asset (an observer of `console::ui::asset`, see src/ui.rs). The
+ * stylesheet is its own asset: ../styles.css ships as a `style` asset,
+ * browser/styles.css — the console mounts and link-swaps it,
+ * styles-before-scripts on boot.
  *
  * `setup(host)` registers four contributions:
  * - src/page/ — the `browser` page: a browser — a Chrome-style tab
  *   strip, the address bar, a screencast-fed live viewport, and the
  *   developer-tools dock (console/network/downloads/history) behind the menu.
- * - src/function-trigger-message/ — how every `browser::*` call renders in
+ * - src/function-call-message/ — how every `browser::*` call renders in
  *   chat and the traces span tab (per-function terminal cards).
  * - src/configuration/ — the full-width, purpose-built browser settings
  *   editor used inside the Console's global Settings modal.
@@ -25,8 +26,8 @@ import { BrowserConfigForm } from './src/configuration'
 import {
   createBrowserRenderer,
   createBrowserScreenshotRenderer,
-} from './src/function-trigger-message'
-import { createScraplingRenderer } from './src/function-trigger-message/scrapling'
+} from './src/function-call-message'
+import { createScraplingRenderer } from './src/function-call-message/scrapling'
 import { BrowserOverlay } from './src/overlay/BrowserOverlay'
 import { BrowserPage } from './src/page'
 import { registerBrowserPalette } from './src/page/palette'
@@ -53,9 +54,9 @@ export default function setup(host: Host) {
   // A captured page is a first-class chat artifact. Register its focused
   // renderer first; the general browser renderer still owns errors/running
   // states and every other browser::* function.
-  host.functionTriggers.register(createBrowserScreenshotRenderer())
-  host.functionTriggers.register(createScraplingRenderer(host))
-  host.functionTriggers.register(createBrowserRenderer(host))
+  host.functionCalls.register(createBrowserScreenshotRenderer())
+  host.functionCalls.register(createScraplingRenderer(host))
+  host.functionCalls.register(createBrowserRenderer(host))
 
   // A session an agent starts shows up as a small live preview in a corner
   // (the `overlays` slot) instead of pulling the browser page into the

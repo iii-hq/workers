@@ -414,13 +414,14 @@ export const crawlResponseSchema = z.object({
     stopped: z.string().optional(),
   }),
   items: z.array(crawlItemSchema).optional(),
-  // Where every item lives: browser::crawl::items with crawl.id, or the
-  // browser::crawl-item trigger. Absent on results from older workers.
+  // Where every item lives: browser::crawl::items with crawl.id, or an
+  // observer of browser::on-crawl-item (function_id). Absent on results from
+  // older workers.
   crawl: z
     .object({
       id: z.string().optional(),
       items_function: z.string().optional(),
-      trigger_type: z.string().optional(),
+      function_id: z.string().optional(),
       retained: z.number().optional(),
       dropped_events: z.number().optional(),
     })

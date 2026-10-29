@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { createBrowserRenderer } from './index'
@@ -54,7 +54,7 @@ function render(output: unknown, goal = 'File a Bug titled Login loop and save i
     input: { session_id: 'b54', goal },
     output,
     running: false,
-  } as unknown as FunctionTriggerMessage
+  } as unknown as FunctionCallMessage
   return renderToStaticMarkup(<>{renderer.tryRender(message)}</>)
 }
 

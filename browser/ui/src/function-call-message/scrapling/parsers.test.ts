@@ -17,13 +17,14 @@ describe('crawl results', () => {
       crawl: {
         id: '3',
         items_function: 'browser::crawl::items',
-        trigger_type: 'browser::crawl-item',
+        function_id: 'browser::on-crawl-item',
         retained: 2,
         dropped_events: 0,
       },
       warnings: ['stream_name is deprecated and ignored'],
     })
     expect(parsed?.crawl?.id).toBe('3')
+    expect(parsed?.crawl?.function_id).toBe('browser::on-crawl-item')
     expect(parsed?.crawl?.retained).toBe(2)
     expect(parsed?.warnings).toHaveLength(1)
     const older = safeParseResponse(crawlResponseSchema, {
