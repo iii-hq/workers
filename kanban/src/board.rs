@@ -224,8 +224,8 @@ pub fn view_of(
         .map(|ticket| ticket_view(board, ticket, done_status, canceled_status))
 }
 
-/// A release as the trigger filters see it: its id and its name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A release as a `release_id` arg sees it: its id and its name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReleaseRef {
     pub id: String,
     pub name: String,
@@ -235,8 +235,8 @@ pub struct ReleaseRef {
 /// release, and the release named by `from` in the `release` changes the write
 /// at `at` recorded (names are unique, so the name finds the id). Activity of
 /// earlier writes is ignored: a reorder records none, and the ticket must not
-/// announce a release it left long ago. A `kanban:change` filtered by release
-/// matches any of them.
+/// announce a release it left long ago. A `kanban::on-change` observer with a
+/// `release_id` arg matches any of them.
 pub fn event_releases(board: &Board, ticket: &Ticket, at: &str) -> Vec<ReleaseRef> {
     let current = ticket
         .release_id

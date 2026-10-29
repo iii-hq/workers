@@ -2,9 +2,10 @@
 //! `workers/docs/sops/injectable-console-ui.md`).
 //!
 //! Two assets, built from `ui/` by esbuild and embedded at compile time:
-//! `kanban/page.js` (`console:script`) registers the board page, the ticket
-//! page, the configuration form and the function/trigger renderers;
-//! `kanban/styles.css` (`console:style`) is the stylesheet, every rule scoped
+//! `kanban/page.js` (a `script` asset of `console::ui::asset`) registers the
+//! board page, the ticket page, the configuration form, the function-call
+//! renderers and the observer renderer; `kanban/styles.css` (a `style` asset)
+//! is the stylesheet, every rule scoped
 //! under `[data-iii-ui="kanban"]`. Set `III_KANBAN_UI_WATCH=1` for hot reload
 //! from `ui/dist` during development.
 
@@ -46,10 +47,10 @@ mod tests {
             "kanban-board",
             "kanban-ticket",
             "configForms",
-            "functionTriggers",
-            "triggerRenderers",
+            "functionCalls",
+            "observerRenderers",
             "kanban/page.js#ticket",
-            "kanban/page.js#trigger-activity",
+            "kanban/page.js#observer-activity",
         ] {
             assert!(
                 PAGE_JS.contains(needle),

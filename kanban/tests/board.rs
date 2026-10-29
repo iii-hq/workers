@@ -1,5 +1,5 @@
-//! Behaviour of the board operations, the store round-trip, the trigger
-//! filters and the function catalog — engine-free.
+//! Behaviour of the board operations, the store round-trip, the observer
+//! args of the event functions and the function catalog — engine-free.
 
 use iii_kanban::board::TicketView;
 use iii_kanban::board::{
@@ -10,7 +10,7 @@ use iii_kanban::board::{
 };
 use iii_kanban::config::{Column, KanbanConfig, normalize};
 use iii_kanban::events::{
-    ChangeConfig, ChangeEvent, CommentEvent, matches_change, matches_comment, matches_ticket,
+    ChangeArgs, ChangeEvent, CommentEvent, matches_change, matches_comment, matches_ticket,
     payloads, wants_summary,
 };
 use iii_kanban::functions::{
@@ -1148,7 +1148,7 @@ fn the_change_filter_matches_by_key_uuid_and_event_name() {
     ));
     assert!(
         matches_change(&Value::Null, &event),
-        "a malformed config is no filter"
+        "malformed args select nothing out"
     );
 }
 
@@ -1164,7 +1164,7 @@ fn the_comment_filter_narrows_by_ticket_author_and_thread() {
     ));
     assert!(
         matches_comment(&json!({ "ticket_id": "KAN-7" }), &reply),
-        "replies match a ticket-wide binding"
+        "replies match a ticket-wide observer"
     );
     assert!(matches_comment(
         &json!({ "ticket_id": "KAN-7", "author": "console-ui" }),
@@ -1195,7 +1195,7 @@ fn the_comment_filter_narrows_by_ticket_author_and_thread() {
     ));
     assert!(
         !matches_comment(&json!({}), &from_user),
-        "a comment binding always names its ticket"
+        "a comment observer always names its ticket"
     );
     assert!(!matches_comment(
         &json!({ "ticket_id": "KAN-99" }),
@@ -1204,7 +1204,7 @@ fn the_comment_filter_narrows_by_ticket_author_and_thread() {
 }
 
 #[test]
-fn a_binding_can_ask_for_the_summary_payload() {
+fn an_observer_can_ask_for_the_summary_payload() {
     assert!(!wants_summary(&json!({ "ticket_id": "KAN-7" })));
     assert!(!wants_summary(
         &json!({ "ticket_id": "KAN-7", "ticket": "full" })
@@ -1232,13 +1232,21 @@ fn a_binding_can_ask_for_the_summary_payload() {
         "the new comment itself stays"
     );
 
-    let config: ChangeConfig = serde_json::from_value(json!({ "ticket": "summary" })).unwrap();
-    assert!(config.ticket.is_some());
-    let schema = serde_json::to_value(schemars::schema_for!(ChangeConfig)).unwrap();
+    let args: ChangeArgs = serde_json::from_value(json!({ "ticket": "summary" })).unwrap();
+    assert!(args.ticket.is_some());
+    let schema = serde_json::to_value(schemars::schema_for!(ChangeArgs)).unwrap();
     assert!(schema["properties"]["ticket"].is_object());
+    assert_eq!(
+        schema["additionalProperties"], false,
+        "the engine refuses args it does not know"
+    );
     assert!(
-        serde_json::from_value::<ChangeConfig>(json!({ "ticket": "whole" })).is_err(),
+        serde_json::from_value::<ChangeArgs>(json!({ "ticket": "whole" })).is_err(),
         "only full and summary are accepted"
+    );
+    assert!(
+        serde_json::from_value::<ChangeArgs>(json!({ "metadata": { "tab": 1 } })).is_err(),
+        "metadata is an observe option, not an arg"
     );
 }
 
@@ -1464,7 +1472,7 @@ fn the_catalog_names_every_function_once_with_typed_object_schemas() {
     let board = serde_json::to_value(schemars::schema_for!(BoardView)).unwrap();
     assert_eq!(board["properties"]["columns"]["type"], "array");
     let info = serde_json::to_value(schemars::schema_for!(ConfigInfo)).unwrap();
-    assert!(info["properties"]["subscribers"].is_object());
+    assert!(info["properties"]["observers"].is_object());
     assert_eq!(info["properties"]["done_status"]["type"], "string");
 }
 
