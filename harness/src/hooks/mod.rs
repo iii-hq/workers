@@ -1,27 +1,29 @@
-//! The five synchronous hook points (harness.md § Hooks). Siblings bind iii
-//! triggers to `harness::hook::*` types; the harness invokes them in-path, in
-//! priority order, and acts on their return value (veto / hold / mutate).
-//!
-//! P1 registers the trigger types and collects bindings; the in-path chain
-//! invocation is wired into the loop in a later phase.
+//! The six synchronous hook points (harness.md § Hooks), each a private
+//! function `harness::hook::on-<point>`. Siblings observe a hook function
+//! with [`HookArgs`]; at each point the harness calls the function with the
+//! hook input and awaits it. The function's deliver hook runs the chain: the
+//! observers whose `sessions` and `functions` globs match the input and whose
+//! filters match the call, in priority order, each called through its
+//! observer and each seeing the input as mutated by the previous. It returns
+//! the merged outcome (veto / hold / mutate) to the harness.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType};
+use iii_sdk::{
+    Call, IIIClient, ObserveRejection, Observer, ObserverHandle, RegisterFunction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PRE_TURN: &str = "harness::hook::pre-turn";
-pub const PRE_GENERATE: &str = "harness::hook::pre-generate";
-pub const POST_GENERATE: &str = "harness::hook::post-generate";
-pub const PRE_TRIGGER: &str = "harness::hook::pre-trigger";
-pub const POST_TRIGGER: &str = "harness::hook::post-trigger";
-pub const POST_TURN: &str = "harness::hook::post-turn";
+pub const ON_PRE_TURN_FN: &str = "harness::hook::on-pre-turn";
+pub const ON_PRE_GENERATE_FN: &str = "harness::hook::on-pre-generate";
+pub const ON_POST_GENERATE_FN: &str = "harness::hook::on-post-generate";
+pub const ON_PRE_CALL_FN: &str = "harness::hook::on-pre-call";
+pub const ON_POST_CALL_FN: &str = "harness::hook::on-post-call";
+pub const ON_POST_TURN_FN: &str = "harness::hook::on-post-turn";
 
 /// The six hook points, in spec order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,20 +31,21 @@ pub enum HookPoint {
     PreTurn,
     PreGenerate,
     PostGenerate,
-    PreTrigger,
-    PostTrigger,
+    PreCall,
+    PostCall,
     PostTurn,
 }
 
 impl HookPoint {
-    pub fn trigger_type(self) -> &'static str {
+    /// The point's hook function.
+    pub fn function_id(self) -> &'static str {
         match self {
-            HookPoint::PreTurn => PRE_TURN,
-            HookPoint::PreGenerate => PRE_GENERATE,
-            HookPoint::PostGenerate => POST_GENERATE,
-            HookPoint::PreTrigger => PRE_TRIGGER,
-            HookPoint::PostTrigger => POST_TRIGGER,
-            HookPoint::PostTurn => POST_TURN,
+            HookPoint::PreTurn => ON_PRE_TURN_FN,
+            HookPoint::PreGenerate => ON_PRE_GENERATE_FN,
+            HookPoint::PostGenerate => ON_POST_GENERATE_FN,
+            HookPoint::PreCall => ON_PRE_CALL_FN,
+            HookPoint::PostCall => ON_POST_CALL_FN,
+            HookPoint::PostTurn => ON_POST_TURN_FN,
         }
     }
 
@@ -51,8 +54,8 @@ impl HookPoint {
             HookPoint::PreTurn,
             HookPoint::PreGenerate,
             HookPoint::PostGenerate,
-            HookPoint::PreTrigger,
-            HookPoint::PostTrigger,
+            HookPoint::PreCall,
+            HookPoint::PostCall,
             HookPoint::PostTurn,
         ]
     }
@@ -63,8 +66,8 @@ impl HookPoint {
             HookPoint::PreTurn => "pre_turn",
             HookPoint::PreGenerate => "pre_generate",
             HookPoint::PostGenerate => "post_generate",
-            HookPoint::PreTrigger => "pre_trigger",
-            HookPoint::PostTrigger => "post_trigger",
+            HookPoint::PreCall => "pre_call",
+            HookPoint::PostCall => "post_call",
             HookPoint::PostTurn => "post_turn",
         }
     }
@@ -77,36 +80,44 @@ impl HookPoint {
     pub fn default_fail_closed(self) -> bool {
         matches!(
             self,
-            HookPoint::PreTurn
-                | HookPoint::PreGenerate
-                | HookPoint::PreTrigger
-                | HookPoint::PostTurn
+            HookPoint::PreTurn | HookPoint::PreGenerate | HookPoint::PreCall | HookPoint::PostTurn
         )
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            HookPoint::PreTurn => "Synchronous hook: first step of a turn, before any model spend. May veto. Observe it with args { sessions?, priority?, timeout_ms?, on_error? }; each observer's target is called with the hook input and answers { decision, reason?, mutations?, annotations? }.",
+            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as args.inject_prompt; it joins the prompt before assembly and its target is not called.",
+            HookPoint::PostGenerate => "Synchronous hook: after the final assistant message update. Observe only.",
+            HookPoint::PreCall => "Synchronous hook: after the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Args `functions` globs select the called functions.",
+            HookPoint::PostCall => "Synchronous hook: after the called function returns, before the result is appended. May rewrite content/details/is_error. Args `functions` globs select the called functions.",
+            HookPoint::PostTurn => "Synchronous hook: at finalize, after the output contract validated the result, before the turn completes. Deny re-prompts the turn (bounded by max_validation_retries). Args `sessions` globs scope it; args `payload`+`result_into` call a plain composition function (fp::pipe) as the validator.",
+        }
     }
 }
 
-/// The `config` of a `harness::hook::<point>` trigger binding.
+/// The args of an observer of a `harness::hook::on-<point>` function.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct HookTriggerConfig {
-    /// pre/post_trigger only: target function_id globs to consult on.
+pub struct HookArgs {
+    /// on-pre-call / on-post-call only: called function id globs to consult on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<Vec<String>>,
-    /// pre_turn/post_turn: session_id globs this hook applies to (omit = all).
+    /// session_id globs this hook applies to (omit = every session).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions: Option<Vec<String>>,
-    /// post_turn only: template mode — send THIS argument object to the
-    /// bound function instead of the hook envelope, with the turn's parsed
-    /// result injected at `result_into`. Lets a plain composition function
+    /// on-post-turn only: template mode — send THIS argument object to the
+    /// target instead of the hook input, with the turn's parsed result
+    /// injected at `result_into`. Lets a plain composition function
     /// (`fp::pipe`) validate turns without speaking the hook contract; its
     /// receipt is read as the verdict (`valid`, or `short_circuited`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<Value>,
-    /// post_turn template mode: JSON pointer where the result lands in
+    /// on-post-turn template mode: JSON pointer where the result lands in
     /// `payload` (default `/value`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_into: Option<String>,
-    /// post_turn only: custom corrective prompt sent VERBATIM when this
+    /// on-post-turn only: custom corrective prompt sent VERBATIM when this
     /// validator denies (replaces the generic "result was not accepted"
     /// wrapper). Placeholders: `{value}` = the validator's measured value
     /// (fp::pipe receipt `value_preview`), `{reason}` = the deny reason.
@@ -114,26 +125,30 @@ pub struct HookTriggerConfig {
     /// not mask a broken validator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_prompt: Option<String>,
-    /// Chain order: ascending, ties broken by function_id (default 0).
+    /// Chain order: ascending, ties broken by target function id (default 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i64>,
-    /// Per-invocation timeout (default 5000ms).
+    /// Per-call timeout (default 5000ms).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
-    /// Failure policy (default fail_closed for pre_* and post_turn,
-    /// fail_open for the other post_*).
+    /// Failure policy, `fail_open` or `fail_closed` (default fail_closed for
+    /// pre-* and post-turn, fail_open for the other post-*).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<String>,
+    /// on-pre-generate only: a static system-prompt contribution. It joins
+    /// the prompt before assembly, and the observer's target is not called.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inject_prompt: Option<String>,
 }
 
-/// One parsed hook binding.
+/// One observer of a hook point, as the chain runs it.
 #[derive(Debug, Clone)]
 pub struct HookBinding {
-    pub function_id: String,
-    pub namespace: Option<String>,
-    /// Static system-prompt contribution declared in trigger metadata. New
-    /// harnesses apply it directly; the bound function remains the fallback
-    /// for older harnesses that ignore the metadata.
+    /// The observer's id: the chain calls its target through it.
+    pub observer_id: String,
+    /// The observer's target function id: the chain order's tie-break and
+    /// the identity a hold names (`held_by`).
+    pub target: String,
     pub inject_prompt: Option<String>,
     pub functions: Option<Vec<String>>,
     pub sessions: Option<Vec<String>>,
@@ -146,175 +161,136 @@ pub struct HookBinding {
 }
 
 impl HookBinding {
-    fn parse(point: HookPoint, config: TriggerConfig) -> Result<Self, String> {
-        let raw = if config.config.is_null() {
+    /// Parse an observer's args for `point`.
+    pub fn parse(
+        point: HookPoint,
+        observer_id: &str,
+        target: &str,
+        args: &Value,
+    ) -> Result<Self, String> {
+        let raw = if args.is_null() {
             Value::Object(Default::default())
         } else {
-            config.config.clone()
+            args.clone()
         };
-        let cfg: HookTriggerConfig =
-            serde_json::from_value(raw).map_err(|e| format!("invalid hook config: {e}"))?;
-        let fail_closed = match cfg.on_error.as_deref() {
+        let args: HookArgs =
+            serde_json::from_value(raw).map_err(|e| format!("invalid hook args: {e}"))?;
+        let fail_closed = match args.on_error.as_deref() {
             Some("fail_closed") => true,
             Some("fail_open") => false,
             Some(other) => return Err(format!("invalid on_error `{other}`")),
             None => point.default_fail_closed(),
         };
-        let inject_prompt = config
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("inject_prompt"))
-            .and_then(Value::as_str)
-            .filter(|prompt| !prompt.is_empty())
-            .map(str::to_string);
         Ok(HookBinding {
-            function_id: config.function_id,
-            namespace: config.namespace,
-            inject_prompt,
-            functions: cfg.functions,
-            sessions: cfg.sessions,
-            payload: cfg.payload,
-            result_into: cfg.result_into,
-            retry_prompt: cfg.retry_prompt,
-            priority: cfg.priority.unwrap_or(0),
-            timeout_ms: cfg.timeout_ms.unwrap_or(5_000),
+            observer_id: observer_id.to_string(),
+            target: target.to_string(),
+            inject_prompt: args.inject_prompt.filter(|prompt| !prompt.is_empty()),
+            functions: args.functions,
+            sessions: args.sessions,
+            payload: args.payload,
+            result_into: args.result_into,
+            retry_prompt: args.retry_prompt,
+            priority: args.priority.unwrap_or(0),
+            timeout_ms: args.timeout_ms.unwrap_or(5_000),
             fail_closed,
         })
     }
-}
 
-#[derive(Clone, Default)]
-pub struct HookSet {
-    inner: Arc<Mutex<HashMap<String, HookBinding>>>,
-}
-
-impl HookSet {
-    fn add(&self, point: HookPoint, config: TriggerConfig) -> Result<(), String> {
-        let binding = HookBinding::parse(point, config.clone())?;
-        self.lock().insert(config.id, binding);
-        Ok(())
-    }
-
-    fn remove(&self, id: &str) {
-        self.lock().remove(id);
-    }
-
-    /// Bindings sorted into chain order: ascending priority, ties by
-    /// function_id.
-    pub fn ordered(&self) -> Vec<HookBinding> {
-        let mut v: Vec<HookBinding> = self.lock().values().cloned().collect();
-        v.sort_by(|a, b| {
-            a.priority
-                .cmp(&b.priority)
-                .then_with(|| a.function_id.cmp(&b.function_id))
-        });
-        v
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
-    }
-
-    pub fn has_function_binding(&self, function_id: &str, target_function_id: &str) -> bool {
-        self.lock().values().any(|binding| {
-            binding.function_id == function_id
-                && runner::functions_match(binding, target_function_id)
-        })
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, HookBinding>> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    pub fn from_observer(point: HookPoint, obs: &Observer) -> Result<Self, String> {
+        Self::parse(point, obs.id(), obs.target(), obs.args_value())
     }
 }
 
-struct HookTriggerHandler {
-    point: HookPoint,
-    set: HookSet,
+/// Bindings sorted into chain order: ascending priority, ties by target.
+pub fn ordered(mut bindings: Vec<HookBinding>) -> Vec<HookBinding> {
+    bindings.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| a.target.cmp(&b.target))
+    });
+    bindings
 }
 
-#[async_trait]
-impl TriggerHandler for HookTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let id = config.id.clone();
-        let function_id = config.function_id.clone();
-        self.set.add(self.point, config).map_err(Error::Handler)?;
-        tracing::info!(trigger_type = self.point.trigger_type(), %id, %function_id, "hook binding registered");
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.set.remove(&config.id);
-        Ok(())
-    }
+/// Whether any of `bindings` targets `target_function_id` and consults on
+/// calls of `function_id`.
+pub fn has_function_binding(
+    bindings: &[HookBinding],
+    target_function_id: &str,
+    function_id: &str,
+) -> bool {
+    bindings.iter().any(|binding| {
+        binding.target == target_function_id && runner::functions_match(binding, function_id)
+    })
 }
 
-/// All five hook subscriber sets plus the engine handle for in-path
-/// invocation. Cloned into [`crate::deps::Deps`].
+/// The six hook functions plus the engine handle the harness calls them
+/// with. Cloned into [`crate::deps::Deps`].
 #[derive(Clone)]
 pub struct HookRegistry {
     pub iii: Arc<IIIClient>,
-    pub pre_turn: HookSet,
-    pub pre_generate: HookSet,
-    pub post_generate: HookSet,
-    pub pre_trigger: HookSet,
-    pub post_trigger: HookSet,
-    pub post_turn: HookSet,
-    /// Agent-registered post-turn validators: subscription id → (owner
-    /// session, engine unregister handle). The subscribe intercept records
-    /// here so teardown stays owner-checked.
-    /// ponytail: in-memory only — a harness restart orphans the engine-side
-    /// binding (it re-arms, but ownership is forgotten; operator cleanup).
-    /// Persist to state if that bites.
-    owned: Arc<Mutex<HashMap<String, (String, iii_sdk::trigger::Trigger)>>>,
+    /// Agent-created post-turn validators: observer id → (owner session,
+    /// handle). The `harness::observe` intercept records here so teardown
+    /// stays owner-checked.
+    /// ponytail: in-memory only — a harness restart forgets the ownership
+    /// (the observer is disposed with the old connection; nothing re-creates
+    /// it). Persist to state if that bites.
+    owned: Arc<Mutex<HashMap<String, (String, ObserverHandle)>>>,
 }
 
 impl HookRegistry {
-    /// Register the five hook trigger types and return the registry. Must run
-    /// before function registration so handlers capture the sets.
+    /// Set each hook function's hooks, then register it, and return the
+    /// registry.
     pub fn register(iii: &Arc<IIIClient>) -> Self {
-        let registry = HookRegistry {
-            iii: iii.clone(),
-            pre_turn: HookSet::default(),
-            pre_generate: HookSet::default(),
-            post_generate: HookSet::default(),
-            pre_trigger: HookSet::default(),
-            post_trigger: HookSet::default(),
-            post_turn: HookSet::default(),
+        for point in HookPoint::all() {
+            let id = point.function_id();
+            iii.on_observer_added_for(id, move |obs: Observer| async move {
+                HookBinding::from_observer(point, &obs)
+                    .map(|_| ())
+                    .map_err(|message| ObserveRejection::new("CONFIG_ERROR", message))
+            });
+            iii.on_observer_deliver_for(id, {
+                let iii = iii.clone();
+                move |call: Call, observers: Vec<Observer>| {
+                    let iii = iii.clone();
+                    async move { Ok::<Value, Error>(runner::deliver(iii, point, call, observers).await) }
+                }
+            });
+            iii.register_function(
+                id,
+                RegisterFunction::new(|input: Value| Ok::<Value, Error>(input))
+                    .description(point.description())
+                    .response_format(crate::surface::schema_value::<runner::HookChainOutcome>())
+                    .args_format::<HookArgs>()
+                    .private(),
+            );
+        }
+        tracing::info!("registered the six harness::hook::on-* functions");
+        Self::new(iii.clone())
+    }
+
+    /// A registry over `iii` that registers nothing.
+    pub fn new(iii: Arc<IIIClient>) -> Self {
+        HookRegistry {
+            iii,
             owned: Arc::new(Mutex::new(HashMap::new())),
-        };
-        registry.register_type(iii, HookPoint::PreTurn, registry.pre_turn.clone());
-        registry.register_type(iii, HookPoint::PreGenerate, registry.pre_generate.clone());
-        registry.register_type(iii, HookPoint::PostGenerate, registry.post_generate.clone());
-        registry.register_type(iii, HookPoint::PreTrigger, registry.pre_trigger.clone());
-        registry.register_type(iii, HookPoint::PostTrigger, registry.post_trigger.clone());
-        registry.register_type(iii, HookPoint::PostTurn, registry.post_turn.clone());
-        tracing::info!("registered the six harness::hook::* trigger types");
-        registry
+        }
     }
 
-    fn register_type(&self, iii: &Arc<IIIClient>, point: HookPoint, set: HookSet) {
-        let description = match point {
-            HookPoint::PreTurn => "Synchronous hook: first step of a turn, before any model spend. May veto.",
-            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Static-only bindings may declare their exact contribution as metadata.inject_prompt; it joins the prompt before assembly.",
-            HookPoint::PostGenerate => "Synchronous hook: after the final assistant message update. Observe only.",
-            HookPoint::PreTrigger => "Synchronous hook: after the allow/deny policy passes, before the target is invoked. May deny, hold, or rewrite arguments.",
-            HookPoint::PostTrigger => "Synchronous hook: after the target returns, before the result is appended. May rewrite content/details/is_error.",
-            HookPoint::PostTurn => "Synchronous hook: at finalize, after the output contract validated the result, before the turn completes. Deny re-prompts the turn (bounded by max_validation_retries). Config `sessions` globs scope it; config `payload`+`result_into` bind a plain composition function (fp::pipe) as the validator.",
-        };
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                point.trigger_type(),
-                description,
-                HookTriggerHandler { point, set },
-            )
-            .trigger_request_format::<HookTriggerConfig>(),
-        );
+    /// The active observers of `point`, in chain order.
+    pub fn bindings(&self, point: HookPoint) -> Vec<HookBinding> {
+        ordered(
+            self.iii
+                .observers(point.function_id())
+                .iter()
+                .filter_map(|obs| HookBinding::from_observer(point, obs).ok())
+                .collect(),
+        )
     }
 
-    /// Record an agent-registered post-turn validator; returns the
-    /// subscription id handed back to the agent.
-    pub fn record_owned(&self, session_id: &str, handle: iii_sdk::trigger::Trigger) -> String {
-        let id = format!("posthook_{}", uuid::Uuid::new_v4().simple());
+    /// Record an agent-created post-turn validator; the observer id is what
+    /// the agent gets back.
+    pub fn record_owned(&self, session_id: &str, handle: ObserverHandle) -> String {
+        let id = handle.id().to_string();
         self.owned
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -322,43 +298,42 @@ impl HookRegistry {
         id
     }
 
-    /// Owner-checked teardown for an agent-registered post-turn validator.
+    /// Owner-checked teardown for an agent-created post-turn validator.
     /// `None` = not one of ours (or not this caller's) — fall through to the
-    /// normal subscription path.
-    pub fn unregister_owned(&self, id: &str, session_id: &str) -> Option<bool> {
-        let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
-        match owned.get(id) {
-            Some((owner, _)) if owner == session_id => {
-                let (_, handle) = owned.remove(id).expect("checked above");
-                handle.unregister();
-                Some(true)
+    /// binding path.
+    pub async fn dispose_owned(&self, id: &str, session_id: &str) -> Option<bool> {
+        let handle = {
+            let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
+            match owned.get(id) {
+                Some((owner, _)) if owner == session_id => {
+                    owned.remove(id).map(|(_, handle)| handle)
+                }
+                _ => None,
             }
-            _ => None,
+        }?;
+        if let Err(error) = handle.dispose().await {
+            tracing::warn!(observer = %id, %error, "post-turn validator dispose failed");
         }
+        Some(true)
     }
 
-    /// Remove the SDK handles still owned by a deleting session. Legacy
-    /// engine registrations whose ownership was lost need operator cleanup.
-    pub fn unregister_session(&self, session_id: &str) {
-        let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
-        owned.retain(|_, (owner, handle)| {
-            if owner == session_id {
-                handle.unregister();
-                false
-            } else {
-                true
+    /// Dispose the validators still owned by a deleting session.
+    pub async fn dispose_session(&self, session_id: &str) {
+        let handles: Vec<ObserverHandle> = {
+            let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
+            let ids: Vec<String> = owned
+                .iter()
+                .filter(|(_, (owner, _))| owner == session_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.iter()
+                .filter_map(|id| owned.remove(id).map(|(_, handle)| handle))
+                .collect()
+        };
+        for handle in handles {
+            if let Err(error) = handle.dispose().await {
+                tracing::warn!(observer = %handle.id(), %error, "post-turn validator dispose failed");
             }
-        });
-    }
-
-    pub fn set_for(&self, point: HookPoint) -> &HookSet {
-        match point {
-            HookPoint::PreTurn => &self.pre_turn,
-            HookPoint::PreGenerate => &self.pre_generate,
-            HookPoint::PostGenerate => &self.post_generate,
-            HookPoint::PreTrigger => &self.pre_trigger,
-            HookPoint::PostTrigger => &self.post_trigger,
-            HookPoint::PostTurn => &self.post_turn,
         }
     }
 
@@ -366,24 +341,34 @@ impl HookRegistry {
         &self,
         target_function_id: &str,
     ) -> crate::filesystem_scope::FilesystemBoundary {
-        // fp::pipe and fp::batch are stamped on behalf of their scoped steps:
-        // give them the boundary a direct scoped call would get, or a step
-        // would run under a WIDER jail than the same call made directly.
-        // shell::exec represents the watch's fixed shell::*/coder::* binding set.
-        let target_function_id =
-            if crate::filesystem_scope::carries_scoped_steps(target_function_id) {
-                "shell::exec"
-            } else {
-                target_function_id
-            };
-        if self.post_trigger.has_function_binding(
-            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
-            target_function_id,
-        ) {
-            crate::filesystem_scope::FilesystemBoundary::Workspace
-        } else {
-            crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots
-        }
+        filesystem_boundary(&self.bindings(HookPoint::PostCall), target_function_id)
+    }
+}
+
+/// The boundary a call of `target_function_id` runs under, given the live
+/// post-call observers.
+pub fn filesystem_boundary(
+    post_call: &[HookBinding],
+    target_function_id: &str,
+) -> crate::filesystem_scope::FilesystemBoundary {
+    // fp::pipe and fp::batch are stamped on behalf of their scoped steps:
+    // give them the boundary a direct scoped call would get, or a step
+    // would run under a WIDER jail than the same call made directly.
+    // shell::exec represents the watch's fixed shell::*/coder::* observer set.
+    let target_function_id = if crate::filesystem_scope::carries_scoped_steps(target_function_id)
+    {
+        "shell::exec"
+    } else {
+        target_function_id
+    };
+    if has_function_binding(
+        post_call,
+        crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
+        target_function_id,
+    ) {
+        crate::filesystem_scope::FilesystemBoundary::Workspace
+    } else {
+        crate::filesystem_scope::FilesystemBoundary::ConfiguredRoots
     }
 }
 
@@ -394,222 +379,134 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn cfg(id: &str, function_id: &str, body: Value) -> TriggerConfig {
-        TriggerConfig {
-            id: id.into(),
-            function_id: function_id.into(),
-            config: body,
-            metadata: None,
-            namespace: None,
-        }
+    fn binding(point: HookPoint, id: &str, target: &str, args: Value) -> HookBinding {
+        HookBinding::parse(point, id, target, &args).unwrap()
     }
 
     #[test]
-    fn bindings_order_by_priority_then_function_id() {
-        let set = HookSet::default();
-        set.add(
-            HookPoint::PreTrigger,
-            cfg("a", "z::hook", json!({ "priority": 5 })),
-        )
-        .unwrap();
-        set.add(
-            HookPoint::PreTrigger,
-            cfg("b", "a::hook", json!({ "priority": 5 })),
-        )
-        .unwrap();
-        set.add(
-            HookPoint::PreTrigger,
-            cfg("c", "m::hook", json!({ "priority": 1 })),
-        )
-        .unwrap();
-        let order: Vec<String> = set.ordered().into_iter().map(|b| b.function_id).collect();
+    fn bindings_order_by_priority_then_target() {
+        let order: Vec<String> = ordered(vec![
+            binding(HookPoint::PreCall, "a", "z::hook", json!({ "priority": 5 })),
+            binding(HookPoint::PreCall, "b", "a::hook", json!({ "priority": 5 })),
+            binding(HookPoint::PreCall, "c", "m::hook", json!({ "priority": 1 })),
+        ])
+        .into_iter()
+        .map(|b| b.target)
+        .collect();
         assert_eq!(order, vec!["m::hook", "a::hook", "z::hook"]);
     }
 
     #[test]
-    fn binding_preserves_target_namespace() {
-        let set = HookSet::default();
-        let mut config = cfg("a", "audit::hook", json!({}));
-        config.namespace = Some("project-a".into());
-        set.add(HookPoint::PostTrigger, config).unwrap();
-        assert_eq!(set.ordered()[0].namespace.as_deref(), Some("project-a"));
-    }
-
-    #[test]
-    fn static_prompt_injection_comes_from_binding_metadata() {
-        let set = HookSet::default();
-        let mut binding = cfg("fp", "fp::inject-guidance", json!({}));
-        binding.metadata = Some(json!({ "inject_prompt": "fp guidance" }));
-        set.add(HookPoint::PreGenerate, binding).unwrap();
-        assert_eq!(
-            set.ordered()[0].inject_prompt.as_deref(),
-            Some("fp guidance")
+    fn static_prompt_injection_comes_from_the_observer_args() {
+        let fp = binding(
+            HookPoint::PreGenerate,
+            "fp",
+            "fp::inject-guidance",
+            json!({ "inject_prompt": "fp guidance" }),
         );
+        assert_eq!(fp.inject_prompt.as_deref(), Some("fp guidance"));
 
-        let mut empty = cfg("empty", "empty::hook", json!({}));
-        empty.metadata = Some(json!({ "inject_prompt": "" }));
-        set.add(HookPoint::PreGenerate, empty).unwrap();
-        assert!(set
-            .ordered()
-            .into_iter()
-            .find(|binding| binding.function_id == "empty::hook")
-            .unwrap()
-            .inject_prompt
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn static_prompts_join_before_assembly_and_never_again_at_pre_generate() {
-        let registry = HookRegistry {
-            iii: Arc::new(IIIClient::new("ws://127.0.0.1:0")),
-            pre_turn: HookSet::default(),
-            pre_generate: HookSet::default(),
-            post_generate: HookSet::default(),
-            pre_trigger: HookSet::default(),
-            post_trigger: HookSet::default(),
-            post_turn: HookSet::default(),
-            owned: Arc::new(Mutex::new(HashMap::new())),
-        };
-        let base = || Some("base".to_string());
-        let with_static =
-            |prompt| runner::with_static_prompts(&registry.pre_generate.ordered(), prompt);
-        assert_eq!(with_static(base()), base());
-
-        for (id, prompt, priority) in [("b", "second", 2), ("a", "first", 1)] {
-            let mut config = cfg(id, &format!("{id}::hook"), json!({ "priority": priority }));
-            config.metadata = Some(json!({ "inject_prompt": prompt }));
-            registry
-                .pre_generate
-                .add(HookPoint::PreGenerate, config)
-                .unwrap();
-        }
-        let assembled = with_static(base());
-        assert_eq!(assembled.as_deref(), Some("base\n\nfirst\n\nsecond"));
-        assert_eq!(with_static(None).as_deref(), Some("first\n\nsecond"));
-
-        // Assembly already carried them: pre_generate must not append them twice.
-        let record = crate::types::turn::tests::record();
-        match registry
-            .run_pre_generate(
-                &registry.pre_generate.ordered(),
-                &record,
-                0,
-                assembled.clone(),
-                &[],
-                0,
-                &[],
-            )
-            .await
-        {
-            runner::PreGenerateOutcome::Continue { system_prompt, .. } => {
-                assert_eq!(system_prompt, assembled)
-            }
-            runner::PreGenerateOutcome::Deny(reason) => panic!("unexpected deny: {reason}"),
-        }
+        let empty = binding(
+            HookPoint::PreGenerate,
+            "empty",
+            "empty::hook",
+            json!({ "inject_prompt": "" }),
+        );
+        assert!(empty.inject_prompt.is_none());
     }
 
     #[test]
-    fn filesystem_boundary_tracks_the_live_access_watch_binding() {
-        let set = HookSet::default();
-        assert!(!set.has_function_binding(
-            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
-            "shell::fs::ls"
-        ));
-        set.add(
-            HookPoint::PostTrigger,
-            cfg(
-                "access-watch",
-                crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
-                json!({ "functions": ["shell::*", "coder::*"] }),
+    fn static_prompts_join_in_chain_order() {
+        let bindings = ordered(vec![
+            binding(
+                HookPoint::PreGenerate,
+                "b",
+                "b::hook",
+                json!({ "priority": 2, "inject_prompt": "second" }),
             ),
-        )
-        .unwrap();
-        assert!(set.has_function_binding(
-            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
-            "shell::fs::ls"
-        ));
-        assert!(!set.has_function_binding(
-            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
-            "web::fetch"
-        ));
-        set.remove("access-watch");
-        assert!(!set.has_function_binding(
-            crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
-            "shell::fs::ls"
-        ));
+            binding(
+                HookPoint::PreGenerate,
+                "a",
+                "a::hook",
+                json!({ "priority": 1, "inject_prompt": "first" }),
+            ),
+        ]);
+        let base = || Some("base".to_string());
+        assert_eq!(runner::with_static_prompts(&[], base()), base());
+        assert_eq!(
+            runner::with_static_prompts(&bindings, base()).as_deref(),
+            Some("base\n\nfirst\n\nsecond")
+        );
+        assert_eq!(
+            runner::with_static_prompts(&bindings, None).as_deref(),
+            Some("first\n\nsecond")
+        );
     }
 
     #[test]
-    fn pipe_boundary_matches_a_direct_scoped_call() {
-        let registry = HookRegistry {
-            iii: Arc::new(IIIClient::new("ws://127.0.0.1:0")),
-            pre_turn: HookSet::default(),
-            pre_generate: HookSet::default(),
-            post_generate: HookSet::default(),
-            pre_trigger: HookSet::default(),
-            post_trigger: HookSet::default(),
-            post_turn: HookSet::default(),
-            owned: Arc::new(Mutex::new(HashMap::new())),
-        };
-        use crate::filesystem_scope::FilesystemBoundary;
-        // no access watch bound: both direct scoped calls and the pipe run at
-        // the default boundary
+    fn filesystem_boundary_tracks_the_live_access_watch_observer() {
+        use crate::filesystem_scope::{FilesystemBoundary, FILESYSTEM_ACCESS_WATCH_ID};
         assert_eq!(
-            registry.filesystem_boundary("fp::pipe"),
+            filesystem_boundary(&[], "shell::fs::ls"),
             FilesystemBoundary::ConfiguredRoots
         );
-        registry
-            .post_trigger
-            .add(
-                HookPoint::PostTrigger,
-                cfg(
-                    "access-watch",
-                    crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
-                    json!({ "functions": ["shell::*", "coder::*"] }),
-                ),
-            )
-            .unwrap();
+        let watch = vec![binding(
+            HookPoint::PostCall,
+            "access-watch",
+            FILESYSTEM_ACCESS_WATCH_ID,
+            json!({ "functions": ["shell::*", "coder::*"] }),
+        )];
+        assert_eq!(
+            filesystem_boundary(&watch, "shell::fs::ls"),
+            FilesystemBoundary::Workspace
+        );
+        assert_eq!(
+            filesystem_boundary(&watch, "web::fetch"),
+            FilesystemBoundary::ConfiguredRoots
+        );
         // watch bound to shell::*/coder::* only — the pipe must still pick up
         // Workspace, or its steps would run under a wider jail than direct calls
         assert_eq!(
-            registry.filesystem_boundary("shell::exec"),
+            filesystem_boundary(&watch, "fp::pipe"),
             FilesystemBoundary::Workspace
         );
         assert_eq!(
-            registry.filesystem_boundary("fp::pipe"),
+            filesystem_boundary(&watch, "fp::batch"),
             FilesystemBoundary::Workspace
-        );
-        assert_eq!(
-            registry.filesystem_boundary("fp::batch"),
-            FilesystemBoundary::Workspace
-        );
-        assert_eq!(
-            registry.filesystem_boundary("web::fetch"),
-            FilesystemBoundary::ConfiguredRoots
         );
     }
 
     #[test]
     fn on_error_default_depends_on_point() {
-        let set = HookSet::default();
-        set.add(HookPoint::PreTrigger, cfg("a", "h", json!({})))
-            .unwrap();
-        assert!(set.ordered()[0].fail_closed);
-
-        let post = HookSet::default();
-        post.add(HookPoint::PostTrigger, cfg("a", "h", json!({})))
-            .unwrap();
-        assert!(!post.ordered()[0].fail_closed);
+        assert!(binding(HookPoint::PreCall, "a", "h", json!({})).fail_closed);
+        assert!(!binding(HookPoint::PostCall, "a", "h", json!({})).fail_closed);
+        assert!(binding(HookPoint::PostTurn, "a", "h", json!({})).fail_closed);
     }
 
     #[test]
-    fn invalid_on_error_rejected() {
-        let set = HookSet::default();
-        assert!(set
-            .add(
-                HookPoint::PreTurn,
-                cfg("a", "h", json!({ "on_error": "maybe" }))
-            )
-            .is_err());
+    fn invalid_args_are_rejected() {
+        assert!(HookBinding::parse(
+            HookPoint::PreTurn,
+            "a",
+            "h",
+            &json!({ "on_error": "maybe" })
+        )
+        .is_err());
+        assert!(
+            HookBinding::parse(HookPoint::PreTurn, "a", "h", &json!({ "prority": 1 })).is_err(),
+            "a typo in the args is refused, never silently ignored"
+        );
+        assert!(HookBinding::parse(HookPoint::PreTurn, "a", "h", &Value::Null).is_ok());
+    }
+
+    #[test]
+    fn every_hook_function_follows_the_on_naming() {
+        for point in HookPoint::all() {
+            assert!(
+                point.function_id().starts_with("harness::hook::on-"),
+                "{}",
+                point.function_id()
+            );
+        }
     }
 }

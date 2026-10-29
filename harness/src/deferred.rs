@@ -141,7 +141,7 @@ pub async fn resolve(
             };
             let (arguments, pre_annotations) = match deps
                 .hooks
-                .run_pre_trigger(
+                .run_pre_call(
                     &record,
                     record.step,
                     &req.function_call_id,
@@ -151,11 +151,11 @@ pub async fn resolve(
                 )
                 .await
             {
-                crate::hooks::runner::PreTriggerOutcome::Continue {
+                crate::hooks::runner::PreCallOutcome::Continue {
                     arguments,
                     annotations,
                 } => (arguments, annotations),
-                crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
+                crate::hooks::runner::PreCallOutcome::Deny(reason) => {
                     let mut data = crate::call::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
                         is_error: true,
@@ -207,7 +207,7 @@ pub async fn resolve(
                         turn_resumed,
                     });
                 }
-                crate::hooks::runner::PreTriggerOutcome::Hold {
+                crate::hooks::runner::PreCallOutcome::Hold {
                     held_by,
                     arguments,
                     annotations: _,
@@ -362,7 +362,7 @@ pub async fn resolve(
             let info_raw = (function_id == "engine::functions::info").then(|| raw.clone());
             let post_outcome = deps
                 .hooks
-                .run_post_trigger(
+                .run_post_call(
                     &record,
                     record.step,
                     &req.function_call_id,
@@ -372,11 +372,11 @@ pub async fn resolve(
                 )
                 .await;
             let (data, annotations) = match post_outcome {
-                crate::hooks::runner::PostTriggerOutcome::Result {
+                crate::hooks::runner::PostCallOutcome::Result {
                     result,
                     annotations,
                 } => (result, annotations),
-                crate::hooks::runner::PostTriggerOutcome::Hold {
+                crate::hooks::runner::PostCallOutcome::Hold {
                     held_by,
                     annotations: _,
                 } => {

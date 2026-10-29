@@ -1,126 +1,69 @@
-//! Filtered, replayable registration surface for deletion snapshots.
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+//! `harness::on-session-tree-deletion`: every status change of a durable
+//! subtree deletion, as a private function whose handler returns the
+//! deletion snapshot it is called with. It takes no args: consumers observe
+//! it with filters on `input.session_id` and `input.operation_id`, before
+//! requesting the deletion, and recover once by operation id.
+use std::sync::Arc;
 
-use async_trait::async_trait;
-use iii_sdk::protocol::CallRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{Error, IIIClient, RegisterTriggerType, CallAction};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use serde_json::Value;
+use iii_sdk::{CallAction, CallRequest, Error, IIIClient, RegisterFunction};
 
 use crate::error::HarnessError;
 use crate::functions::delete_session_tree::Snapshot;
+use crate::surface::schema_value;
 
-pub const TYPE: &str = "harness::session-tree-deletion";
+pub const ON_SESSION_TREE_DELETION_FN: &str = "harness::on-session-tree-deletion";
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct DeletionConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub operation_id: Option<String>,
-}
-
-impl DeletionConfig {
-    fn matches(&self, event: &Snapshot) -> bool {
-        self.session_id
-            .as_ref()
-            .is_none_or(|id| id == &event.session_id)
-            && self
-                .operation_id
-                .as_ref()
-                .is_none_or(|id| id == &event.operation_id)
-    }
-}
-
-#[derive(Clone)]
-struct Binding {
-    target: TriggerConfig,
-    filter: DeletionConfig,
-}
+pub const DESCRIPTION: &str = "A subtree deletion changed status. Observe it before requesting \
+     deletion, with filters on input.session_id or input.operation_id, and recover once by \
+     operation_id.";
 
 #[derive(Clone)]
 pub struct DeletionEvents {
     iii: Arc<IIIClient>,
-    bindings: Arc<Mutex<HashMap<String, Binding>>>,
 }
 
 impl DeletionEvents {
     pub fn register(iii: &Arc<IIIClient>) -> Self {
-        let bus = Self {
-            iii: iii.clone(),
-            bindings: Arc::new(Mutex::new(HashMap::new())),
-        };
-        iii.register_trigger_type(RegisterTriggerType::new(TYPE,
-            "A subtree deletion changed status; subscribe before requesting deletion and recover once by operation_id.", bus.clone())
-            .trigger_request_format::<DeletionConfig>().call_request_format::<Snapshot>());
-        bus
+        iii.register_function(
+            ON_SESSION_TREE_DELETION_FN,
+            RegisterFunction::new(|snapshot: Snapshot| Ok::<Snapshot, Error>(snapshot))
+                .description(DESCRIPTION)
+                .request_format(schema_value::<Snapshot>())
+                .response_format(schema_value::<Snapshot>())
+                .private(),
+        );
+        Self { iii: iii.clone() }
     }
 
+    /// Call the function with the snapshot; iii delivers it to each observer
+    /// whose filters match. Delivery does not wait for targets.
     pub async fn emit(&self, snapshot: &Snapshot) -> Result<(), HarnessError> {
-        let bindings: Vec<_> = self
-            .bindings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .cloned()
-            .collect();
-        for binding in bindings {
-            if !binding.filter.matches(snapshot) {
-                continue;
-            }
-            let request = CallRequest {
-                function_id: binding.target.function_id,
-                payload: serde_json::to_value(snapshot)
-                    .map_err(|e| HarnessError::Internal(e.to_string()))?,
-                action: Some(CallAction::Void),
-                timeout_ms: None,
-            };
-            let request = match binding.target.metadata {
-                Some(metadata) => request.metadata(metadata),
-                None => request.into(),
-            };
-            self.iii
-                .call(
-                    request.namespace(binding.target.namespace.as_deref().unwrap_or("default")),
-                )
-                .await
-                .map_err(|e| HarnessError::Dependency(format!("deletion event delivery: {e}")))?;
+        if !self.iii.is_observed(ON_SESSION_TREE_DELETION_FN) {
+            return Ok(());
         }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl TriggerHandler for DeletionEvents {
-    async fn register_trigger(&self, target: TriggerConfig) -> Result<(), Error> {
-        let filter = serde_json::from_value::<DeletionConfig>(target.config.clone())
-            .map_err(|e| Error::Handler(format!("invalid deletion filter: {e}")))?;
-        self.bindings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(target.id.clone(), Binding { target, filter });
-        Ok(())
-    }
-    async fn unregister_trigger(&self, target: TriggerConfig) -> Result<(), Error> {
-        self.bindings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&target.id);
-        Ok(())
+        let request = CallRequest {
+            function_id: ON_SESSION_TREE_DELETION_FN.to_string(),
+            payload: serde_json::to_value(snapshot)
+                .map_err(|e| HarnessError::Internal(e.to_string()))?,
+            action: Some(CallAction::Void),
+            timeout_ms: None,
+        };
+        self.iii
+            .call(request)
+            .await
+            .map(|_| ())
+            .map_err(|e| HarnessError::Dependency(format!("deletion event call: {e}")))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::functions::delete_session_tree::DeletionStatus;
+    use crate::functions::delete_session_tree::{DeletionStatus, Snapshot};
+
+    /// Consumers filter on `input.session_id` and `input.operation_id`: the
+    /// event carries both, and nothing beyond the snapshot.
     #[test]
-    fn filters_are_conjunctive_and_snapshot_has_no_extra_fields() {
+    fn the_event_is_the_snapshot_with_its_filterable_fields() {
         let snapshot = Snapshot {
             operation_id: "op".into(),
             attempt: 1,
@@ -129,20 +72,9 @@ mod tests {
             deleted_session_ids: vec!["grandchild1".into(), "child2".into()],
             error: None,
         };
-        let config = DeletionConfig {
-            session_id: Some("child2".into()),
-            operation_id: Some("op".into()),
-        };
-        assert!(config.matches(&snapshot));
-        assert!(!DeletionConfig {
-            operation_id: Some("other".into()),
-            ..config
-        }
-        .matches(&snapshot));
         assert_eq!(
             serde_json::to_value(snapshot).unwrap(),
             serde_json::json!({"operation_id":"op","attempt":1,"session_id":"child2","status":"completed","deleted_session_ids":["grandchild1","child2"]})
         );
-        assert!(serde_json::from_value::<DeletionConfig>(Value::Null).is_err());
     }
 }

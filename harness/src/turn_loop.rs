@@ -675,10 +675,9 @@ async fn generate_step(
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
     // Static hook injections join before assembly, so the budget, the
-    // compaction gate and the request count the same prompt (MOT-5569). One
-    // snapshot for the whole step: a binding registering mid-step must not be
-    // skipped at pre_generate as static yet missing from assembly.
-    let pre_generate = deps.hooks.pre_generate.ordered();
+    // compaction gate and the request count the same prompt (MOT-5569). The
+    // pre_generate chain never calls an observer with a static contribution.
+    let pre_generate = deps.hooks.bindings(crate::hooks::HookPoint::PreGenerate);
     let assembly_system_prompt =
         crate::hooks::runner::with_static_prompts(&pre_generate, assembly_system_prompt);
     // Registry-change notice: if a function this session may call changed or
@@ -830,7 +829,6 @@ async fn generate_step(
         let (gen_system_prompt, appended, gen_annotations) = match deps
             .hooks
             .run_pre_generate(
-                &pre_generate,
                 &record,
                 payload.step,
                 assembled.system_prompt.clone(),
@@ -1826,7 +1824,7 @@ async fn finish_step(
             );
             let (eff_args, pre_ann) = match deps
                 .hooks
-                .run_pre_trigger(
+                .run_pre_call(
                     &record,
                     payload.step,
                     &call.id,
@@ -1836,7 +1834,7 @@ async fn finish_step(
                 )
                 .await
             {
-                crate::hooks::runner::PreTriggerOutcome::Continue {
+                crate::hooks::runner::PreCallOutcome::Continue {
                     arguments,
                     annotations,
                 } => {
@@ -1849,7 +1847,7 @@ async fn finish_step(
                     );
                     (arguments, annotations)
                 }
-                crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
+                crate::hooks::runner::PreCallOutcome::Deny(reason) => {
                     let mut data = call::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
                         is_error: true,
@@ -1884,7 +1882,7 @@ async fn finish_step(
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                     continue;
                 }
-                crate::hooks::runner::PreTriggerOutcome::Hold {
+                crate::hooks::runner::PreCallOutcome::Hold {
                     held_by, arguments, ..
                 } => {
                     let info = call::PendingInfo {
@@ -2048,7 +2046,7 @@ async fn finish_step(
             let info_raw = (call.function_id == "engine::functions::info").then(|| raw.clone());
             let post_outcome = deps
                 .hooks
-                .run_post_trigger(
+                .run_post_call(
                     &record,
                     payload.step,
                     &call.id,
@@ -2059,11 +2057,11 @@ async fn finish_step(
                 .await;
             let mut annotations = pre_ann;
             let (data, post_ann) = match post_outcome {
-                crate::hooks::runner::PostTriggerOutcome::Result {
+                crate::hooks::runner::PostCallOutcome::Result {
                     result,
                     annotations,
                 } => (result, annotations),
-                crate::hooks::runner::PostTriggerOutcome::Hold {
+                crate::hooks::runner::PostCallOutcome::Hold {
                     held_by,
                     annotations: _,
                 } => {

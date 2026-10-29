@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::hooks::runner::PreTriggerOutcome;
+use crate::hooks::runner::PreCallOutcome;
 use crate::policy::CompiledPolicy;
 use crate::call;
 use crate::types::content::ContentBlock;
@@ -119,7 +119,7 @@ pub async fn handle(
     if let Some(rec) = &record {
         match deps
             .hooks
-            .run_pre_trigger(
+            .run_pre_call(
                 rec,
                 rec.step,
                 &req.call.id,
@@ -129,7 +129,7 @@ pub async fn handle(
             )
             .await
         {
-            PreTriggerOutcome::Continue { arguments: a, .. } => {
+            PreCallOutcome::Continue { arguments: a, .. } => {
                 arguments = crate::filesystem_scope::inject(
                     &req.call.function_id,
                     a,
@@ -138,7 +138,7 @@ pub async fn handle(
                     filesystem_boundary,
                 );
             }
-            PreTriggerOutcome::Deny(reason) => {
+            PreCallOutcome::Deny(reason) => {
                 let data = call::ResultData {
                     content: vec![ContentBlock::text(reason.clone())],
                     is_error: true,
@@ -151,7 +151,7 @@ pub async fn handle(
                     elapsed(started),
                 ));
             }
-            PreTriggerOutcome::Hold { .. } => {
+            PreCallOutcome::Hold { .. } => {
                 return Ok(FunctionCallResponse::Pending(TriggerPendingResponse {
                     function_call_id: req.call.id,
                     function_id: req.call.function_id,
@@ -190,7 +190,7 @@ pub async fn handle(
     let data = if let Some(rec) = &record {
         match deps
             .hooks
-            .run_post_trigger(
+            .run_post_call(
                 rec,
                 rec.step,
                 &req.call.id,
@@ -200,8 +200,8 @@ pub async fn handle(
             )
             .await
         {
-            crate::hooks::runner::PostTriggerOutcome::Result { result, .. } => result,
-            crate::hooks::runner::PostTriggerOutcome::Hold { .. } => {
+            crate::hooks::runner::PostCallOutcome::Result { result, .. } => result,
+            crate::hooks::runner::PostCallOutcome::Hold { .. } => {
                 return Ok(FunctionCallResponse::Pending(TriggerPendingResponse {
                     function_call_id: req.call.id,
                     function_id: req.call.function_id,
