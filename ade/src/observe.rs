@@ -105,7 +105,15 @@ pub(crate) mod schema_check {
     use serde_json::Value;
 
     /// What a typed JSON schema carries at its root.
-    const TYPED_KEYS: [&str; 7] = ["type", "properties", "$ref", "allOf", "anyOf", "oneOf", "enum"];
+    const TYPED_KEYS: [&str; 7] = [
+        "type",
+        "properties",
+        "$ref",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "enum",
+    ];
 
     /// The schema the SDK publishes for `T` (draft-07 root schema).
     fn schema_for<T: JsonSchema>() -> Value {
