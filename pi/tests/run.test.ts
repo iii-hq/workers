@@ -115,7 +115,7 @@ describe('executeRun', () => {
     expect(final.total_cost_usd).toBe(0.01);
   });
 
-  it('mirrors every Pi event verbatim onto pi::raw-event', async () => {
+  it('mirrors every Pi event verbatim onto pi::on-raw-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
     const raw = fake.feedFrames(ON_RAW_EVENT_FN).map((f) => f.event);
     expect(raw).toEqual(fullTurnEvents);
@@ -123,7 +123,7 @@ describe('executeRun', () => {
     expect(new Set(sessionIds)).toEqual(new Set(['s1']));
   });
 
-  it('emits the translated AgentEvent sequence on pi::agent-event', async () => {
+  it('emits the translated AgentEvent sequence on pi::on-agent-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
     const types = fake.feedFrames(ON_AGENT_EVENT_FN).map((f) => (f.event as { type: string }).type);
     expect(types).toEqual([
