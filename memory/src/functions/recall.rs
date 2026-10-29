@@ -1,6 +1,6 @@
 //! `memory::recall` — the read path. Zero LLM; the same scorer the
-//! pre-generate hook uses, exposed so humans and agents can preview
-//! exactly what a turn would be given.
+//! pre-generate hook uses. The hook then keeps only the hits with
+//! evidence, one line per fact; `memory::preview` shows what a turn is given.
 
 use std::collections::HashMap;
 

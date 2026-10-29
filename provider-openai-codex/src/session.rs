@@ -1,6 +1,6 @@
 //! Owns the provider's session, refresh serialization, and cancellable device
 //! login. The UI sees ceremony/status data only, never OAuth credentials.
-use crate::credential_store::{PrivateStateStore, SessionRecord, SessionStore};
+use crate::credential_store::{SecretsSessionStore, SessionRecord, SessionStore};
 use crate::oauth::{Credential, DeviceCode, OAuthClient, OAuthError, PollOutcome};
 use futures::future::BoxFuture;
 use iii_sdk::{errors::Error, IIIClient};
@@ -25,7 +25,7 @@ impl SessionError {
     pub fn storage() -> Self {
         Self::new(
             "storage_unavailable",
-            "Could not read or save the Codex session. Check the state worker and retry.",
+            "Could not read or save the Codex session. Check credential storage and retry.",
         )
     }
     fn expired() -> Self {
@@ -40,7 +40,7 @@ impl SessionError {
             "Codex rejected the current session. Sign in with ChatGPT again.",
         )
     }
-    fn changed() -> Self {
+    pub(crate) fn changed() -> Self {
         Self::new(
             "session_changed",
             "The Codex session changed. Retry the operation.",
@@ -229,7 +229,7 @@ pub struct AuthManager {
 impl AuthManager {
     pub fn new(iii: IIIClient, http: reqwest::Client) -> Arc<Self> {
         Self::with_dependencies(
-            Arc::new(PrivateStateStore::new(iii.clone())),
+            Arc::new(SecretsSessionStore::new(iii.clone())),
             Arc::new(OAuthClient::new(http)),
             Arc::new(LegacyCredentials(iii)),
         )

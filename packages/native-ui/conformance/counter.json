@@ -1,0 +1,61 @@
+{
+  "name": "counter",
+  "description": "Design §5.7, a counter: Page \"Demo\" > Column (gap 12, padding 16) > Text \"Count 0\" (role title), Button \"Add\" (primary, press). init and mount go in one message; one press and the text update.",
+  "catalog": 1,
+  "encoding": "json-v0",
+  "app": "conformance/apps/counter.tsx",
+  "ns": "demo",
+  "toVm": [
+    "[[1,{\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"host\":\"android 0.1.0\",\"engine\":\"quickjs-ng 0.17.0\",\"app\":{\"key\":\"worker:demo\",\"ns\":\"demo\"},\"env\":{\"windowClass\":\"compact\",\"posture\":\"flat\",\"platform\":\"android\",\"visible\":true,\"theme\":\"dark\",\"locale\":\"en-US\",\"online\":true}}],[6,1,\"root\",{}]]",
+    "[[2,4,1,[]]]"
+  ],
+  "fromVm": [
+    "[[23,{\"sdk\":\"0.1.0\",\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"pages\":[{\"name\":\"root\",\"modal\":false,\"fullScreen\":false}]}]]",
+    "[[1,1,40],[2,1,16,\"Demo\"],[1,2,1],[2,2,16,12],[2,2,8,16],[1,3,10],[2,3,16,\"Count 0\"],[2,3,17,7],[3,2,0,0,3],[1,4,20],[2,4,16,\"Add\"],[2,4,17,1],[2,4,2,2],[3,2,0,1,4],[3,1,0,0,2],[7,1,1]]",
+    "[[2,3,16,\"Count 1\"]]"
+  ],
+  "order": ["fromVm", "toVm", "fromVm", "toVm", "fromVm"],
+  "tree": {
+    "1": {
+      "type": "Page",
+      "id": 1,
+      "props": {
+        "title": "Demo"
+      },
+      "slots": {
+        "body": [
+          {
+            "type": "Column",
+            "id": 2,
+            "props": {
+              "padding": 16,
+              "gap": 12
+            },
+            "slots": {
+              "children": [
+                {
+                  "type": "Text",
+                  "id": 3,
+                  "props": {
+                    "text": "Count 1",
+                    "role": "title"
+                  }
+                },
+                {
+                  "type": "Button",
+                  "id": 4,
+                  "props": {
+                    "events": ["press"],
+                    "text": "Add",
+                    "kind": "primary"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "designExamples": ["counter.ready", "counter.init", "counter.mount", "counter.press", "counter.update"]
+}

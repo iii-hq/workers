@@ -1,5 +1,6 @@
 //! `llm-router` adapters: model-limit resolution via
-//! `router::models::budget` and the summariser via `router::chat`.
+//! `router::models::budget`, the provider's prompt count via
+//! `router::count_tokens`, and the summariser via `router::chat`.
 //!
 //! Both are soft dependencies — when the router is absent the resolver
 //! errors (callers degrade to the conservative fallback) and the
@@ -17,10 +18,15 @@ use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use crate::configuration::ConfigCell;
-use crate::ports::{ModelBudget, ModelResolver, SummarizeError, SummarizeRequest, Summarizer};
-use crate::types::Model;
+use crate::ports::{
+    ModelBudget, ModelResolver, SummarizeError, SummarizeRequest, Summarizer, TurnKnobs,
+};
+use crate::types::{AgentFunction, AgentMessage, Model};
 
 const MODELS_GET_TIMEOUT_MS: u64 = 5_000;
+/// A local tokenizer answers in milliseconds; a provider's metering API is a
+/// network call. Past this the assembly keeps its own estimate.
+const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
 /// Grace period for the stream reader to drain after `router::chat`
 /// returns; the terminal `done`/`error` event lands before or with the
 /// trigger response, so this only covers socket latency.
@@ -125,6 +131,58 @@ impl ModelResolver for RouterModelResolver {
             })
             .map_err(|e| format!("router::models::budget returned an unparseable model: {e}"))
     }
+
+    async fn count_prompt_tokens(
+        &self,
+        provider: Option<&str>,
+        id: &str,
+        system_prompt: &str,
+        tools: &[AgentFunction],
+        messages: &[AgentMessage],
+        knobs: TurnKnobs<'_>,
+    ) -> Result<u64, String> {
+        let payload = count_payload(provider, id, system_prompt, tools, messages, knobs);
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "router::count_tokens".to_string(),
+                payload,
+                action: None,
+                timeout_ms: Some(COUNT_TOKENS_TIMEOUT_MS),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        resp.get("tokens")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "router::count_tokens response has no `tokens` field".to_string())
+    }
+}
+
+/// The `router::count_tokens` request: the turn's knobs ride only when set.
+fn count_payload(
+    provider: Option<&str>,
+    id: &str,
+    system_prompt: &str,
+    tools: &[AgentFunction],
+    messages: &[AgentMessage],
+    knobs: TurnKnobs<'_>,
+) -> Value {
+    let mut payload = json!({
+        "model": id,
+        "system_prompt": system_prompt,
+        "tools": tools,
+        "messages": messages,
+    });
+    if let Some(p) = provider {
+        payload["provider"] = json!(p);
+    }
+    if let Some(level) = knobs.thinking_level {
+        payload["thinking_level"] = json!(level);
+    }
+    if let Some(format) = knobs.response_format {
+        payload["response_format"] = format.clone();
+    }
+    payload
 }
 
 /// `router::chat` — one summariser turn streamed over a channel the
@@ -317,6 +375,23 @@ fn text_of_message(message: Option<&Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_count_carries_the_turns_level_and_format_only_when_set() {
+        let format = json!({ "type": "json" });
+        let knobs = TurnKnobs {
+            thinking_level: Some(crate::types::ThinkingLevel::Off),
+            response_format: Some(&format),
+        };
+        let payload = count_payload(Some("deepseek"), "m", "", &[], &[], knobs);
+        assert_eq!(payload["thinking_level"], "off");
+        assert_eq!(payload["response_format"], format);
+        assert_eq!(payload["provider"], "deepseek");
+
+        let payload = count_payload(None, "m", "", &[], &[], TurnKnobs::default());
+        assert!(payload.get("thinking_level").is_none(), "{payload}");
+        assert!(payload.get("response_format").is_none(), "{payload}");
+    }
 
     fn frame(v: Value) -> String {
         v.to_string()

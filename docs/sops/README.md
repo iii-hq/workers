@@ -11,6 +11,7 @@ YAML, **the workflow wins** — update these docs.
 | [`configuration.md`](configuration.md) | Integrating a worker with the `configuration` worker (schema-validated, hot-reloadable, shared config). Workers on the configuration worker do not ship a `config.yaml`; the registry and console own live config. |
 | [`trace-hidden-functions.md`](trace-hidden-functions.md) | Marking a function's spans hidden-by-default in trace UIs (`trace_hidden: true` registration metadata) — for per-turn bookkeeping and dispatch machinery that drowns timelines |
 | [`injectable-console-ui.md`](injectable-console-ui.md) | The Rust worker side of injectable console UI — linking the `iii-console-ui` crate, `build.rs` freshness, `include_str!` embedding and registration in `src/ui.rs`, the hot-reload watcher, the three embedding tests. What the UI contains (slots, build driver, lint, scoped CSS, UX, tokens) lives in [`ade/skills/`](../../ade/skills/) |
+| [`native-ui.md`](native-ui.md) | Shipping a worker's native app to the iii mobile and desktop app — the TSX project on `@iii-dev/native-ui`, its build and size limits, `build.rs` freshness, registering `<ns>::native-ui` with the `iii-native-ui` crate, hot reload, and tests in the QuickJS harness. The browser worker's `native-ui/` is the reference app |
 | [`release.md`](release.md) | Cutting a version, re-running a failed release, troubleshooting publish |
 
 ## Typical flow

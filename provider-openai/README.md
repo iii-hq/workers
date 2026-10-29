@@ -11,9 +11,12 @@ chat/reasoning families ∪ curated capability snapshot →
 embeddings behind `router::embed`; the endpoint derives from the configured
 `api_url`, so OpenAI-compatible local servers — llama.cpp `--embeddings`,
 Ollama, vLLM, LM Studio — and gateways work through the same surface), and
-`provider::openai::count_tokens` (local prompt token estimation with the
-tiktoken tokenizers behind `router::count_tokens`; never runs the model,
-costs nothing, and needs no network).
+`provider::openai::count_tokens` (prompt token counting behind
+`router::count_tokens`: on the Responses API through OpenAI's own
+`POST …/responses/input_tokens` metering route with the body the stream
+sends, estimator `metered`; on Chat Completions endpoints, or when that route
+fails, a local tiktoken estimate, estimator `tiktoken`. Never runs the model
+and costs nothing).
 
 ## Behavior
 

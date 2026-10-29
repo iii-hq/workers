@@ -57,9 +57,9 @@ pub const SPEAK_DESC: &str =
 
 pub const COUNT_TOKENS_ID: &str = "router::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
-    "Count prompt tokens for {model, provider?, system_prompt?, tools?, messages} through the \
-     resolved provider's provider::<id>::count_tokens surface; never runs the model and costs \
-     nothing.";
+    "Count prompt tokens for {model, provider?, system_prompt?, tools?, messages, \
+     thinking_level?, response_format?} through the resolved provider's \
+     provider::<id>::count_tokens surface; never runs the model and costs nothing.";
 
 pub const MODELS_LIST_ID: &str = "router::models::list";
 pub const MODELS_LIST_DESC: &str =

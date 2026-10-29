@@ -74,6 +74,8 @@
       "verify_token": ""
     },
     "data_dir": "data/whatsapp-go",
+    "device_name": "",
+    "device_platform": "desktop",
     "max_events": 1000,
     "max_inbox_messages": 10000,
     "max_media_bytes": 16777216,
@@ -107,6 +109,44 @@
       "default": "data/whatsapp-go",
       "description": "Private local session metadata and immutable legacy database backups. Message archives and native keys are stored through the database worker.",
       "minLength": 1,
+      "type": "string"
+    },
+    "device_name": {
+      "default": "",
+      "description": "Name a newly paired device shows in the phone's Linked devices list. Empty keeps the generic \"Other device\" entry. Applies only to new pairings: an already linked device keeps its name until it is unlinked and the QR code is scanned again. Changing this requires a worker restart.",
+      "maxLength": 64,
+      "type": "string"
+    },
+    "device_platform": {
+      "default": "desktop",
+      "description": "Platform type a newly paired device reports with device_name; the phone picks the entry's icon from it. Ignored while device_name is empty. Applies only to new pairings and requires a worker restart.",
+      "enum": [
+        "unknown",
+        "chrome",
+        "firefox",
+        "ie",
+        "opera",
+        "safari",
+        "edge",
+        "desktop",
+        "ipad",
+        "android_tablet",
+        "ohana",
+        "aloha",
+        "catalina",
+        "tcl_tv",
+        "ios_phone",
+        "ios_catalyst",
+        "android_phone",
+        "android_ambiguous",
+        "wear_os",
+        "ar_wrist",
+        "ar_device",
+        "uwp",
+        "vr",
+        "cloud_api",
+        "smartglasses"
+      ],
       "type": "string"
     },
     "max_events": {

@@ -15,6 +15,8 @@ pub(crate) struct Engine {
     pub(crate) url: String,
     child: Child,
     state_child: Option<Child>,
+    #[cfg(feature = "provider-openai-codex")]
+    secrets: Option<std::sync::Arc<secrets::Ctx>>,
     _directory: TempDir,
 }
 
@@ -65,6 +67,8 @@ impl Engine {
             url,
             child,
             state_child: None,
+            #[cfg(feature = "provider-openai-codex")]
+            secrets: None,
             _directory: directory,
         };
         wait_for_engine(&engine.url).await?;
@@ -87,12 +91,70 @@ impl Engine {
             .with_context(|| format!("spawn state worker {}", state_binary.display()))?;
         engine.state_child = Some(state_child);
         wait_for_state(&engine.url).await?;
+        #[cfg(feature = "provider-openai-codex")]
+        engine.start_secrets().await?;
         Ok(engine)
+    }
+
+    #[cfg(feature = "provider-openai-codex")]
+    pub(crate) fn secrets_vault_path(&self) -> PathBuf {
+        self._directory.path().join("secrets/vault.json")
+    }
+
+    #[cfg(feature = "provider-openai-codex")]
+    async fn start_secrets(&mut self) -> anyhow::Result<()> {
+        use std::sync::Arc;
+        let mut options = test_init_options();
+        options.metadata.as_mut().context("worker metadata")?.name = "secrets".into();
+        let iii = Arc::new(register_worker(&self.url, options));
+        let ctx = Arc::new(secrets::Ctx {
+            iii: iii.clone(),
+            store: Arc::new(secrets::Store::new(
+                secrets::StorePaths {
+                    data_dir: self._directory.path().join("secrets"),
+                    key_file: None,
+                    key_dir: None,
+                    project_dir: None,
+                    dotenv: None,
+                },
+                secrets::keys::EnvKey::from_value(Some(
+                    secrets::crypto::MasterKey::from_bytes([41; 32])
+                        .to_base64()
+                        .to_string(),
+                )),
+            )),
+            callers: secrets::access::CallerDirectory::new(iii.clone()),
+            subscribers: secrets::events::Subscribers::default(),
+            detector: secrets::detect::Detector {
+                process_env: false,
+                dotenv: None,
+                shell: None,
+                shell_timeout: Duration::from_secs(1),
+            },
+            env_watch: Default::default(),
+        });
+        secrets::register(&ctx);
+        self.secrets = Some(ctx);
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if call(&iii, "secrets::status", json!({})).await.is_ok() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .context("secrets worker did not become ready")?;
+        Ok(())
     }
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        #[cfg(feature = "provider-openai-codex")]
+        if let Some(ctx) = self.secrets.take() {
+            ctx.iii.shutdown();
+        }
         if let Some(state_child) = self.state_child.as_mut() {
             let _ = state_child.kill();
             let _ = state_child.wait();
@@ -163,7 +225,7 @@ pub(crate) fn provider_init_options(provider: &str) -> InitOptions {
 
 #[cfg(feature = "provider-openai-codex")]
 pub(crate) async fn wait_for_codex_state(provider: &IIIClient) -> anyhow::Result<()> {
-    use provider_openai_codex::credential_store::{PrivateStateStore, SessionStore};
+    use provider_openai_codex::credential_store::PrivateStateStore;
     let store = PrivateStateStore::new(provider.clone());
     // The claim response can precede engine visibility of the dynamic
     // accessors. Probe through the real store before boot-time discovery.

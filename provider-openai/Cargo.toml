@@ -5,7 +5,7 @@
 # collides.
 [package]
 name = "provider-openai"
-version = "1.2.27"
+version = "1.2.28"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
@@ -46,6 +46,8 @@ iii-worker-paths = { path = "../crates/worker-paths" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 
 [dev-dependencies]
+# `test-util`: a paused clock pins that a hung metering call falls back in time.
+tokio = { version = "1", features = ["test-util"] }
 
 [features]
 # The injectable console UI (ui.rs + the pnpm bundle in build.rs).

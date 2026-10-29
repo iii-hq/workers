@@ -16,7 +16,7 @@ provider-command-code = ["dep:provider-command-code"]
 provider-deepseek = ["dep:provider-deepseek"]
 provider-kimi = ["dep:provider-kimi"]
 provider-openai = ["dep:provider-openai"]
-provider-openai-codex = ["dep:provider-openai-codex"]
+provider-openai-codex = ["dep:provider-openai-codex", "dep:secrets"]
 provider-openrouter = ["dep:provider-openrouter"]
 provider-xai = ["dep:provider-xai"]
 provider-zai = ["dep:provider-zai"]
@@ -38,6 +38,7 @@ provider-xai = { path = "../../provider-xai", optional = true }
 provider-zai = { path = "../../provider-zai", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+secrets = { path = "../../secrets", optional = true }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
 tokio-stream = "0.1"

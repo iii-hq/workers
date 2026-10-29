@@ -137,7 +137,8 @@ overflow if nothing fits.
     allow_prune?: boolean;         // default true
     max_result_tokens?: number;    // per-call cap override (default 20000); 0 disables the cap pass
     protected_functions?: string[];   // function_ids whose outputs are never pruned
-    thinking_level?: ThinkingLevel;   // reserve the model's thinking budget for this tier
+    thinking_level?: ThinkingLevel;   // reserve the model's thinking budget for this tier; also sent to the provider count
+    response_format?: unknown;        // the turn's router::chat format, for the provider count
     lease_key?: string;            // compaction mutual-exclusion key (e.g. a session id)
     previous_summary?: string;     // persisted summary from a prior compaction (round trip)
   };

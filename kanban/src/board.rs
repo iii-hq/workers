@@ -420,6 +420,8 @@ pub struct TicketFilter {
     pub project_id: Option<String>,
     /// Release (id or name); `Some("")` matches tickets in no release.
     pub release_id: Option<String>,
+    /// Tickets skipped (after the sort) before `limit`: the next page starts here.
+    pub offset: Option<usize>,
     pub limit: Option<usize>,
 }
 
@@ -473,10 +475,17 @@ pub fn list_tickets<'a>(board: &'a Board, filter: &TicketFilter) -> Vec<&'a Tick
         .filter(|ticket| facet_matches(&release, ticket.release_id.as_deref()))
         .collect();
     rows.sort_by(|a, b| by_order(a, b));
-    if let Some(limit) = filter.limit.filter(|limit| *limit > 0) {
-        rows.truncate(limit);
+    page(rows, filter.offset, filter.limit)
+}
+
+/// One page of `rows`: skip `offset`, then keep at most `limit` (none or 0 =
+/// the rest). An offset past the end is an empty page.
+pub fn page<T>(rows: Vec<T>, offset: Option<usize>, limit: Option<usize>) -> Vec<T> {
+    let rest = rows.into_iter().skip(offset.unwrap_or(0));
+    match limit.filter(|limit| *limit > 0) {
+        Some(limit) => rest.take(limit).collect(),
+        None => rest.collect(),
     }
-    rows
 }
 
 /// How well a ticket matches a search query; lower is better, `None` is no

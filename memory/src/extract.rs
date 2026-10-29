@@ -1,6 +1,6 @@
 //! Post-turn memory extraction: one `router::complete` call per completed
-//! turn, off the hot path (spawned from the `harness::turn-completed`
-//! handler, never inside a turn).
+//! turn (one per run of a long span, [`chunks`]), off the hot path (spawned
+//! from the `harness::turn-completed` handler, never inside a turn).
 //!
 //! Extraction adds; it never edits a memory in place or deletes one. The
 //! model sees what the bank already holds about the excerpt, so it returns
@@ -31,6 +31,7 @@ use iii_sdk::IIIClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::events::ItemEvent;
 use crate::hooks::ExtractJobInput;
@@ -100,6 +101,35 @@ style\" is a rule for \"reviewer\"), even when the user's reason is about their 
 repository. Write it without the agent's name. Who the user is and how they want every reply \
 written (language, tone, length, formatting) stay \"user\"; this project's code, tools and \
 conventions stay \"project\". A one-off task for an agent is nothing to keep.";
+
+/// Appended to [`EXTRACT_SYSTEM`] when the input gives the user's own
+/// instructions for the bank ([`instructions`]), after every keep clause:
+/// what they say not to keep is their exception to all of them. Only that
+/// direction wins: a hand rule (agents can write one) never lifts a ban
+/// above, such as on secrets the redactor does not know.
+// shortcut: only the model honours a do-not-keep rule; no term filter backs
+// it, since a rule names a category ("health") and a fact an instance (a
+// diagnosis); add a check on returned items if live runs show leaks.
+// shortcut: a do-not-keep rule said in chat lands in `learned`, listed only
+// as "never return one of them again", and binds nothing here; list learned
+// lines among the instructions if live runs show one ignored.
+const EXTRACT_INSTRUCTIONS: &str = "\n- The input first gives the user's own instructions \
+for this bank: their rules, then what it is for, if they said. One that says not to keep \
+something overrides every keep rule above: never return what it says not to keep, not even \
+what a scope above names (health, habits, …). No instruction ever makes you keep what a rule \
+above excludes, and one about anything else (how to reply, style, tools) changes nothing you \
+return.";
+
+/// Closes [`EXTRACT_INSTRUCTIONS`] for a bank read alone: every item but an
+/// agent's lands in it.
+const FOCUS_ALL: &str = " If they say what the bank is for, keep its \"user\" and \"project\" \
+items to that.";
+
+/// Closes [`EXTRACT_INSTRUCTIONS`] under a layer ([`placement`]): "user"
+/// items go up to `default_bank`, which this bank's description does not
+/// describe.
+const FOCUS_PROJECT: &str = " If they say what the bank is for, keep its \"project\" items to \
+that: \"user\" items go to the user's own bank, which it does not describe.";
 
 /// Added for a repository bank: the project's own knowledge is worth keeping
 /// there even when the assistant, not the user, found it out.
@@ -266,18 +296,24 @@ async fn listed(
     out
 }
 
-/// The extraction model's input: the agents an item may be for (`own`: the
-/// first is the assistant's own profile, the rest its sub-agents'), the
-/// numbered known memories, the learned lines numbered after them, then the
-/// excerpt.
+/// The extraction model's input: the user's own instructions for the bank
+/// ([`instructions`]), the agents an item may be for (`own`: the first is
+/// the assistant's own profile, the rest its sub-agents'), the numbered
+/// known memories, the learned lines numbered after them, then the excerpt.
 fn extraction_input(
     agents: &[String],
     own: bool,
+    instructions: &str,
     known: &[Memory],
     learned: &[(String, bool)],
     transcript: &str,
 ) -> String {
     let mut input = String::new();
+    if !instructions.is_empty() {
+        input.push_str("The user's instructions for this bank:\n");
+        input.push_str(instructions);
+        input.push_str("\n\n");
+    }
     if !agents.is_empty() {
         input.push_str("Agents in this conversation:\n");
         for (i, agent) in agents.iter().enumerate() {
@@ -356,6 +392,51 @@ async fn learned_lines(store: &Store, bank: &str, layer: Option<&str>) -> Vec<(S
     lines
 }
 
+/// Names the bank's description among the user's instructions.
+const BANK_FOCUS: &str = "what this bank is for";
+
+/// The user's own instructions to `bank`: every hand-written rule the turn
+/// reads, `layers` included, in the turn's order
+/// ([`crate::hooks::turn_rules`]), then its description, so the budget
+/// reaches the rules first; never `learned`, which extraction writes and
+/// lists apart. Redacted and bounded by `max_rule_chars` as the turn's rules
+/// are; empty when there are none.
+async fn instructions(
+    store: &Store,
+    bank: &str,
+    layers: &[String],
+    own_first: bool,
+    max_rule_chars: usize,
+) -> String {
+    let hand = |b: &Bank| -> Vec<crate::types::Rule> {
+        let rules = b.list_rules().unwrap_or_default().into_iter();
+        rules.filter(|r| r.name != LEARNED_RULE).collect()
+    };
+    let own = store.bank(bank).await.ok();
+    let mut layered = Vec::new();
+    for name in layers {
+        if let Ok(b) = store.bank(name).await {
+            layered.push((name.as_str(), hand(&b)));
+        }
+    }
+    let focus = own
+        .as_ref()
+        .filter(|b| !b.description.trim().is_empty())
+        .map(|b| crate::types::Rule {
+            name: BANK_FOCUS.into(),
+            content: b.description.clone(),
+            updated_at: 0,
+        });
+    let own = own.as_deref().map(hand).unwrap_or_default();
+    let rules: Vec<_> = crate::hooks::turn_rules(layered, own, own_first)
+        .into_iter()
+        .chain(focus)
+        .collect();
+    let (section, _) = crate::hooks::build_rules_section(&rules, max_rule_chars);
+    let body = section.strip_prefix(crate::hooks::RULES_INTRO);
+    body.unwrap_or(&section).trim().to_string()
+}
+
 /// The `learned` rule of bank `name`, redacted as `Bank::set_rule` writes it
 /// (a hand edit never went through it); empty when the bank or the rule
 /// does not exist.
@@ -402,15 +483,30 @@ fn lands<'a>(
 /// same fact.
 const NEGATIONS: &[&str] = &["no", "not", "never", "nor", "without"];
 
+/// Not an English stopword, or a negation.
+fn is_content(token: &str) -> bool {
+    NEGATIONS.contains(&token) || !crate::store::STOPWORDS.contains(&token)
+}
+
 /// A memory text's content words: its tokens minus English stopwords, with
 /// negations kept.
 fn content_words(text: &str) -> BTreeSet<String> {
     crate::index::tokenize(text)
         .into_iter()
-        .filter(|t| {
-            NEGATIONS.contains(&t.as_str()) || !crate::store::STOPWORDS.contains(&t.as_str())
-        })
+        .filter(|t| is_content(t))
         .collect()
+}
+
+/// The word a statement leads with, stemmed: its first content word, past a
+/// possessive `user's` ("the user's sister" leads with "sister"). English
+/// puts the subject there.
+pub(crate) fn lead(text: &str) -> Option<String> {
+    let tokens = crate::index::tokenize(text);
+    let mut at = tokens.iter().position(|t| is_content(t))?;
+    if tokens[at] == "user" && tokens.get(at + 1).is_some_and(|t| t == "s") {
+        at += 2 + tokens[at + 2..].iter().position(|t| is_content(t))?;
+    }
+    Some(stem(&tokens[at]).into_owned())
 }
 
 /// The same fact in other words: at least four in five content words shared
@@ -435,6 +531,136 @@ fn near_duplicate(a: &str, b: &str) -> bool {
         return false;
     }
     a.intersection(&b).count() * 5 >= a.union(&b).count() * 4
+}
+
+/// Weekday and month names: values even when lowercase or sentence-initial
+/// ("may" left out: a verb far more often than a month).
+const CALENDAR: &[&str] = &[
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "january",
+    "february",
+    "march",
+    "april",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+];
+
+/// Words that state a change: the vocabulary memory-consolidate's judge is
+/// given, inflected; English only.
+const CHANGE_MARKERS: &[&str] = &[
+    "now",
+    "longer",
+    "anymore",
+    "moved",
+    "switched",
+    "instead",
+    "rescheduled",
+    "replaced",
+    "migrated",
+];
+
+/// Words a text capitalizes past a sentence's first word: names.
+fn names(text: &str) -> BTreeSet<String> {
+    let (mut out, mut initial) = (BTreeSet::new(), true);
+    for piece in text.split_inclusive(|c: char| !c.is_alphanumeric()) {
+        let w = piece.trim_end_matches(|c: char| !c.is_alphanumeric());
+        if !initial && w.starts_with(char::is_uppercase) {
+            out.insert(w.to_lowercase());
+        }
+        initial = (initial && w.is_empty()) || piece.ends_with(['.', '!', '?']);
+    }
+    out
+}
+
+/// What pins a statement to one value: numbers, negations, names, dates.
+fn values(text: &str, names: &BTreeSet<String>) -> BTreeSet<String> {
+    content_words(text)
+        .into_iter()
+        .filter(|w| {
+            w.bytes().any(|b| b.is_ascii_digit())
+                || NEGATIONS.contains(&w.as_str())
+                || names.contains(w)
+                || CALENDAR.contains(&stem(w).as_ref())
+        })
+        .map(|w| stem(&w).into_owned())
+        .collect()
+}
+
+/// The other content words, stemmed, without the `user` subject.
+fn words(text: &str, values: &BTreeSet<String>) -> BTreeSet<String> {
+    content_words(text)
+        .iter()
+        .map(|w| stem(w).into_owned())
+        .filter(|w| w != "user" && !values.contains(w))
+        .collect()
+}
+
+/// The same fact reworded, for injection: equal values, the same subject,
+/// two other words or more each, three in five of the shorter's shared;
+/// with no number, name or date to anchor them, only a [`near_duplicate`].
+/// Looser than extraction's on purpose: a hidden line is back next turn, a
+/// merge is forever. Two texts each leading with a word the other lacks
+/// ([`lead`]) are about two subjects ("the billing service" and "the ledger
+/// service" on Postgres 16), however much else they share.
+// shortcut: only the lead word is read as the subject, so siblings that differ
+// past it ("Postgres 16 backs the billing/ledger service", "takes 10 mg of
+// vitamin D/zinc") still join unless their entity tags differ, and a paraphrase
+// where each leads with a word the other lacks ("Deploys to production
+// happen..." / "User ships to production...") is told twice; parse the subject
+// if the eval or a case shows either.
+pub(crate) fn same_fact(a: &str, b: &str) -> bool {
+    let n = &names(a) | &names(b);
+    let (va, vb) = (values(a, &n), values(b, &n));
+    if va != vb {
+        return false;
+    }
+    let leads_apart =
+        |x: &str, y: &str| lead(x).is_some_and(|w| !content_words(y).iter().any(|c| stem(c) == w));
+    if leads_apart(a, b) && leads_apart(b, a) {
+        return false;
+    }
+    let (wa, wb) = (words(a, &va), words(b, &vb));
+    let shorter = wa.len().min(wb.len());
+    if shorter < 2 {
+        return false;
+    }
+    if va.iter().all(|v| NEGATIONS.contains(&v.as_str())) {
+        return near_duplicate(a, b);
+    }
+    wa.intersection(&wb).count() * 5 >= shorter * 3
+}
+
+/// `new` restates `old` as a change: a change word, other values, and at
+/// least half of `old`'s other words. The caller checks which is newer.
+pub(crate) fn supersedes(old: &str, new: &str) -> bool {
+    if !crate::index::tokenize(new)
+        .iter()
+        .any(|t| CHANGE_MARKERS.contains(&t.as_str()))
+    {
+        return false; // raw tokens: "now" is a stopword
+    }
+    let n = &names(old) | &names(new);
+    let (vo, vn) = (values(old, &n), values(new, &n));
+    if vo == vn {
+        return false;
+    }
+    let marks: BTreeSet<String> = CHANGE_MARKERS
+        .iter()
+        .map(|w| stem(w).into_owned())
+        .collect();
+    let old_words: BTreeSet<String> = words(old, &vo).difference(&marks).cloned().collect();
+    !old_words.is_empty() && old_words.intersection(&words(new, &vn)).count() * 2 >= old_words.len()
 }
 
 /// The first live memory among `candidates` that `text` restates.
@@ -768,6 +994,57 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         }
         return Ok(false);
     };
+    // Read oldest first, one call per run ([`pass_runs`]); each run moves
+    // the cursor past itself, so a failed call retries from there. The
+    // session's lock holds while the pass runs; after a failed run it is
+    // released, and a later turn's pass may read the rest before the retry does.
+    let runs = pass_runs(entries, cfg.extraction_window);
+    tracing::debug!(session_id, runs = runs.len(), "extraction pass");
+    let mut asked = false;
+    for run in runs {
+        asked |= read_run(deps, &cfg, session_id, &resolved, run).await?;
+    }
+    Ok(asked)
+}
+
+/// The most excerpt one extraction call reads: what a window of 12 lines
+/// of 2,000 chars could always send.
+const CALL_CHARS: usize = 24_000;
+
+/// The most calls one pass makes: a long turn's span fits in them.
+const PASS_CALLS: usize = 4;
+
+/// The runs one pass reads: every entry after the cursor, unless that
+/// takes more than [`PASS_CALLS`] calls, which only a backlog does (passes
+/// the queue gave up on, a skipped turn whose end was never found).
+// shortcut: past PASS_CALLS, only the newest `window` entries are read, then
+// only their newest PASS_CALLS runs (long pasted lines take a run each), and
+// the cursor moves past the rest unread, as before runs existed; drain the
+// backlog over later passes if facts are ever lost there.
+// shortcut: runs after the first are read without the turn's opening request;
+// carry the request into later runs if facts are lost there.
+fn pass_runs(entries: Vec<Entry>, window: usize) -> Vec<Vec<Entry>> {
+    let runs = chunks(entries, CALL_CHARS);
+    if runs.len() <= PASS_CALLS {
+        return runs;
+    }
+    let mut entries = runs.concat();
+    keep_window(&mut entries, window);
+    let mut runs = chunks(entries, CALL_CHARS);
+    runs.drain(..runs.len().saturating_sub(PASS_CALLS));
+    runs
+}
+
+/// One extraction call over `entries`, a run of the span ([`chunks`]), and
+/// its writes; then the cursor moves past the run. `Ok(true)` once the
+/// model was asked for the run's items.
+async fn read_run(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    session_id: &str,
+    resolved: &crate::scope::Resolved,
+    entries: Vec<Entry>,
+) -> Result<bool, String> {
     let bank_name = resolved.bank.as_str();
     let layer_name = resolved.layer(&cfg.default_bank);
     let query = entries
@@ -776,12 +1053,16 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         .collect::<Vec<_>>()
         .join("\n");
     let user_words = user_words(&entries);
-    let (transcript, newest_id, content_len) = excerpt(entries, cfg.extraction_window);
+    let said = said_at(&entries, now_ms());
+    let (transcript, newest_id, content_len) = excerpt(entries);
     // Measured on message text, not the dated transcript: the per-line
     // `role [date]: ` prefix alone would clear any threshold.
     if content_len < 20 {
         // Nothing new worth an LLM call; still advance past trivia so the
         // same span is never re-fetched.
+        // shortcut: the last run of a long span is judged alone, so a tail
+        // under 20 chars is skipped too; fold it into the run before if a
+        // fact is ever lost there.
         if let Some(id) = newest_id {
             cursor_set(&deps.iii, session_id, &id).await;
         }
@@ -799,6 +1080,14 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
     )
     .await;
     let learned = learned_lines(&*deps.store().await, bank_name, layer_name).await;
+    let instructions = instructions(
+        &*deps.store().await,
+        bank_name,
+        &resolved.layers(&cfg.default_bank),
+        bank_name == cfg.default_bank,
+        cfg.max_rule_chars,
+    )
+    .await;
 
     // The agents this pass may teach: the session's own profile, then its
     // sub-agents' (their turns are never extracted; what the user tells
@@ -832,10 +1121,11 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         &model,
         cfg.max_memories_per_turn,
         cfg.extraction_timeout_ms,
-        extraction_input(&agents, own, &known, &learned, &transcript),
+        extraction_input(&agents, own, &instructions, &known, &learned, &transcript),
         !agents.is_empty(),
         session_id,
         layer_name.is_some(),
+        !instructions.is_empty(),
     )
     .await?;
     // An agent item naming no listed agent has no bank to go to: never the
@@ -845,7 +1135,7 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         .filter(|i| !i.is_agent() || i.agent_in(&agents).is_some())
         .collect();
     if items.is_empty() {
-        // Nothing to write: the span is done, advance past it.
+        // Nothing to write: the run is done, advance past it.
         if let Some(id) = newest_id {
             cursor_set(&deps.iii, session_id, &id).await;
         }
@@ -1047,13 +1337,13 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
         let (mut memory, event) = match existing {
             // Known memory re-observed: never duplicated; reinforced, or left
             // exactly as it is (still retiring what the item corrects).
-            Some(existing) => match reinforced(existing, text, &user_words, retires, now) {
+            Some(existing) => match reinforced(existing, text, &user_words, retires, now, said) {
                 Some((f, true)) => (f, Some(ItemEvent::Updated)),
                 Some((f, false)) => (f, None),
                 None => continue,
             },
             None => (
-                new_memory(item, session_id, newest_id.as_deref(), now),
+                new_memory(item, session_id, newest_id.as_deref(), now, said),
                 Some(ItemEvent::Created),
             ),
         };
@@ -1098,7 +1388,7 @@ async fn one_pass(deps: &Deps, job: &ExtractJobInput) -> Result<bool, String> {
                 .await;
         }
     }
-    // Every durable write landed: NOW the span is processed.
+    // Every durable write landed: NOW the run is processed.
     if let Some(id) = newest_id {
         cursor_set(&deps.iii, session_id, &id).await;
     }
@@ -1124,6 +1414,7 @@ fn reinforced(
     user_words: &BTreeSet<String>,
     retires: bool,
     now: u64,
+    said_at: u64,
 ) -> Option<(Memory, bool)> {
     if !m.is_live() || m.pinned {
         return None;
@@ -1137,7 +1428,8 @@ fn reinforced(
     }
     m.corroboration = m.corroboration.saturating_add(1);
     m.updated_at = now;
-    m.stated_at = Some(now);
+    // An older restatement (a late pass) never moves the fact back in time.
+    m.stated_at = Some(m.last_stated().max(said_at));
     m.revision += 1;
     Some((m, true))
 }
@@ -1150,10 +1442,17 @@ fn extracts(kind: Option<&str>) -> bool {
     matches!(kind, None | Some("user"))
 }
 
-/// A fresh record for one extracted item. `entry_id` is the newest
+/// A fresh record for one extracted item, written `now` and stated at
+/// `said_at`, when its message was sent. `entry_id` is the newest
 /// transcript entry of the extracted span — the turn's last message — so
 /// the memory points back at the turn it came from.
-fn new_memory(item: ExtractedItem, session_id: &str, entry_id: Option<&str>, now: u64) -> Memory {
+fn new_memory(
+    item: ExtractedItem,
+    session_id: &str,
+    entry_id: Option<&str>,
+    now: u64,
+    said_at: u64,
+) -> Memory {
     let text = item.text.trim().to_string();
     Memory {
         id: fingerprint(&text),
@@ -1188,7 +1487,7 @@ fn new_memory(item: ExtractedItem, session_id: &str, entry_id: Option<&str>, now
         invalid_at: None,
         superseded_by: None,
         revision: 0,
-        stated_at: Some(now),
+        stated_at: Some(said_at),
     }
 }
 
@@ -1317,12 +1616,41 @@ async fn fetch_span(
     Ok(span.finish())
 }
 
-/// The dated excerpt of a span (its [`keep_window`]), the span's newest
-/// entry id, and the kept message text length (excluding the per-line date
-/// prefix).
-fn excerpt(mut entries: Vec<Entry>, window: usize) -> (String, Option<String>, usize) {
+/// When what `entries` hold was said: their newest message's time, not
+/// when the pass runs (a queue retry, a first pass over an old session run
+/// late), and never later than `now`: a message clock ahead of ours must
+/// not outrank later statements. Nothing said is `now`.
+// shortcut: one date for the whole run, not the line that says each item;
+// date per line if runs ever cover days.
+fn said_at(entries: &[Entry], now: u64) -> u64 {
+    entries.last().map_or(now, |(.., ts)| *ts).min(now)
+}
+
+/// A span cut into the runs one extraction call reads, oldest first: whole
+/// entries, at most `budget` chars of excerpt each, unless one line alone
+/// is longer, which is then a run of its own. Nothing is dropped.
+fn chunks(entries: Vec<Entry>, budget: usize) -> Vec<Vec<Entry>> {
+    let mut runs: Vec<Vec<Entry>> = Vec::new();
+    let mut used = 0;
+    for entry in entries {
+        // The excerpt joins lines with "\n": one char each.
+        let len = transcript_line(&entry.1, &entry.2, entry.3).map_or(0, |l| l.len() + 1);
+        match runs.last_mut() {
+            Some(run) if used + len <= budget => run.push(entry),
+            _ => {
+                used = 0;
+                runs.push(vec![entry]);
+            }
+        }
+        used += len;
+    }
+    runs
+}
+
+/// The dated excerpt of a span, the span's newest entry id, and the kept
+/// message text length (excluding the per-line date prefix).
+fn excerpt(entries: Vec<Entry>) -> (String, Option<String>, usize) {
     let newest_id = entries.last().map(|(id, ..)| id.clone());
-    keep_window(&mut entries, window);
     let mut content_len = 0;
     let lines: Vec<String> = entries
         .into_iter()
@@ -1548,11 +1876,14 @@ fn transcript_line(role: &str, text: &str, ts: u64) -> Option<String> {
     // Redact before the cut: a key crossing it would otherwise reach the
     // model half-visible.
     let mut excerpt = crate::redact::redact(trimmed).text;
-    // Over 2000 chars, keep the head and the tail: a pasted log usually
-    // ends with what to do about it.
-    if excerpt.len() > 2_000 {
-        let head = clamp_char_boundary(&excerpt, 1_000);
-        let tail = clamp_char_boundary(&excerpt, excerpt.len() - 1_000);
+    // A user's own message is read whole to 12,000 chars (about 3k tokens):
+    // their notes for a project hold facts all the way through. Past that,
+    // and past 2,000 for any other line, keep the head and the tail: a
+    // pasted log usually ends with what to do about it.
+    let max = if role == "user" { 12_000 } else { 2_000 };
+    if excerpt.len() > max {
+        let head = clamp_char_boundary(&excerpt, max / 2);
+        let tail = clamp_char_boundary(&excerpt, excerpt.len() - max / 2);
         excerpt.replace_range(head..tail, " … ");
     }
     Some(format!(
@@ -1675,7 +2006,8 @@ fn listed_agents(reply: &Value, out: &mut Vec<String>) {
 
 /// One extraction call: the production prompt over `input` (with the agent
 /// scope when it lists `agents`), its items. `repository`: the pass writes
-/// into a repository bank ([`REPOSITORY_RULE`]).
+/// into a repository bank ([`REPOSITORY_RULE`]); `instructions`: `input`
+/// gives the user's own ([`EXTRACT_INSTRUCTIONS`]).
 #[allow(clippy::too_many_arguments)]
 async fn extract_items(
     iii: &IIIClient,
@@ -1686,18 +2018,14 @@ async fn extract_items(
     agents: bool,
     session_id: &str,
     repository: bool,
+    instructions: bool,
 ) -> Result<Vec<ExtractedItem>, String> {
-    let repository = if repository { REPOSITORY_RULE } else { "" };
-    let scopes = if agents { EXTRACT_AGENTS } else { "" };
     let reply = iii
         .trigger(TriggerRequest {
             function_id: "router::complete".into(),
             payload: json!({
                 "model": model,
-                "system_prompt": format!(
-                    "{EXTRACT_SYSTEM}{repository}{scopes}\n- Return at most {max_memories} memories and \
-            {MAX_RULES_PER_TURN} rules, the most durable first."
-                ),
+                "system_prompt": system_prompt(repository, agents, instructions, max_memories),
                 "messages": [{
                     "role": "user",
                     "content": [{ "type": "text", "text": input }],
@@ -1711,6 +2039,28 @@ async fn extract_items(
         .await
         .map_err(|e| format!("router::complete: {e}"))?;
     reply_items(&reply, session_id)
+}
+
+/// The extraction system prompt: [`EXTRACT_SYSTEM`], then the clauses the
+/// input calls for, the user's instructions last of the rules.
+fn system_prompt(
+    repository: bool,
+    agents: bool,
+    instructions: bool,
+    max_memories: usize,
+) -> String {
+    let focus = if repository { FOCUS_PROJECT } else { FOCUS_ALL };
+    let (binding, focus) = if instructions {
+        (EXTRACT_INSTRUCTIONS, focus)
+    } else {
+        ("", "")
+    };
+    let repository = if repository { REPOSITORY_RULE } else { "" };
+    let scopes = if agents { EXTRACT_AGENTS } else { "" };
+    format!(
+        "{EXTRACT_SYSTEM}{repository}{scopes}{binding}{focus}\n- Return at most {max_memories} \
+         memories and {MAX_RULES_PER_TURN} rules, the most durable first."
+    )
 }
 
 /// The items of a `router::complete` reply. A provider failure (rate limit,
@@ -2109,6 +2459,48 @@ mod tests {
         assert!(learned_lines(&store, "new-000000", None).await.is_empty());
     }
 
+    #[tokio::test]
+    async fn the_instructions_listed_are_the_turns_hand_rules_then_the_banks_focus() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (repo, _) = store
+            .ensure_bank("w-abc123", Some("Build and deploy facts."))
+            .await
+            .unwrap();
+        let (main, _) = store
+            .ensure_bank("main", Some("Not this bank's focus."))
+            .await
+            .unwrap();
+        let header = LEARNED_HEADER;
+        repo.set_rule(LEARNED_RULE, &format!("{header}- Use pnpm.\n"))
+            .unwrap();
+        main.set_rule(LEARNED_RULE, &format!("{header}- Never use emoji.\n"))
+            .unwrap();
+        main.set_rule("privacy", "Never remember anything about my health.")
+            .unwrap();
+        // A hand edit never went through `set_rule`'s redaction.
+        let key = format!("ghp_{}", "a1B2c3D4e5".repeat(4).get(..36).unwrap());
+        let style = dir.path().join("w-abc123/rules/style.md");
+        std::fs::write(style, format!("No em-dashes. CI token is {key}")).unwrap();
+        let layers = ["main".to_string()];
+        assert_eq!(
+            instructions(&store, "w-abc123", &layers, false, 6_000).await,
+            "## privacy (main)\nNever remember anything about my health.\n\n\
+             ## style\nNo em-dashes. CI token is [REDACTED:github_token]\n\n\
+             ## what this bank is for\nBuild and deploy facts."
+        );
+        // The budget reaches the hand rules first: a description never pushes one out.
+        let bounded = instructions(&store, "w-abc123", &layers, false, 45).await;
+        assert!(bounded.contains("health"), "{bounded}");
+        assert!(
+            bounded.contains("## what this bank is for [omitted"),
+            "{bounded}"
+        );
+        assert!(instructions(&store, "new-000000", &[], false, 6_000)
+            .await
+            .is_empty());
+    }
+
     #[test]
     fn a_rule_is_learned_only_from_the_users_own_lines() {
         let line = |role: &str, text: &str| -> Entry { ("e".into(), role.into(), text.into(), 1) };
@@ -2267,7 +2659,7 @@ mod tests {
             entries.extend(turn.iter().cloned());
             let (span, until_seen) = walk_entries(entries, since, Some("end"), 12);
             assert!(until_seen);
-            let (transcript, newest_id, _) = excerpt(span, 12);
+            let (transcript, newest_id, _) = excerpt(span);
             assert_eq!(
                 newest_id.as_deref(),
                 Some("end"),
@@ -2283,7 +2675,8 @@ mod tests {
     fn a_woken_turn_keeps_the_wake_that_started_it() {
         let mut entries = vec![said("w", "notice", "[notification] digest: {}")];
         entries.extend((1..=13).map(|i| said(&format!("a{i}"), "assistant", "Step done.")));
-        let (transcript, ..) = excerpt(entries, 12);
+        let (span, _) = walk_entries(entries, None, None, 12);
+        let (transcript, ..) = excerpt(span);
         assert!(transcript.starts_with("notice ["), "{transcript}");
     }
 
@@ -2304,7 +2697,7 @@ mod tests {
         let ids: Vec<&str> = span.iter().map(|e| e.0.as_str()).collect();
         assert_eq!(ids.len(), 13, "the window plus the newest request: {ids:?}");
         assert_eq!((ids[0], ids[1], ids[12]), ("u", "a4", "a15"));
-        let (transcript, newest_id, _) = excerpt(span, 12);
+        let (transcript, newest_id, _) = excerpt(span);
         assert!(transcript.starts_with("user ["), "{transcript}");
         assert_eq!(transcript.lines().count(), 13);
         assert_eq!(newest_id.as_deref(), Some("a15"));
@@ -2313,7 +2706,8 @@ mod tests {
         let mut entries = vec![said("u0", "user", "An older request.")];
         entries.extend((1..=11).map(|i| said(&format!("a{i}"), "assistant", "Checking.")));
         entries.push(said("u", "user", "Now the signup test."));
-        let (transcript, ..) = excerpt(entries, 12);
+        let (span, _) = walk_entries(entries, None, None, 12);
+        let (transcript, ..) = excerpt(span);
         assert_eq!(transcript.lines().count(), 12);
         assert!(!transcript.contains("An older request."));
     }
@@ -2334,6 +2728,138 @@ mod tests {
             ),
             "a job without a turn end reads to the newest entry"
         );
+    }
+
+    #[test]
+    fn a_long_span_after_the_cursor_is_read_whole() {
+        // The cursor is found: every entry after it is read, not the newest
+        // window of them, or the cursor moves past entries never read.
+        let mut entries = vec![
+            said("c", "assistant", "An earlier reply."),
+            said("u", "user", "Map the repository for me."),
+        ];
+        entries.extend(
+            (1..=20).map(|i| said(&format!("a{i}"), "assistant", &format!("Found fact {i}."))),
+        );
+        let (span, until_seen) = walk_entries(entries, Some("c"), Some("a20"), 12);
+        assert!(until_seen);
+        assert_eq!(span.len(), 21);
+        let (transcript, newest_id, _) = excerpt(span);
+        assert_eq!(newest_id.as_deref(), Some("a20"));
+        assert!(transcript.contains("Map the repository"), "{transcript}");
+        for i in 1..=20 {
+            assert!(
+                transcript.contains(&format!("Found fact {i}.")),
+                "fact {i} unread: {transcript}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_span_over_the_budget_is_split_never_dropped() {
+        // 30 narrated steps of about 1,450 chars each: over one call's budget.
+        let mut span = vec![said("u", "user", "Map the repository for me.")];
+        span.extend((1..=30).map(|i| {
+            let text = format!("Found fact {i}. {}", "detail ".repeat(200));
+            said(&format!("a{i}"), "assistant", &text)
+        }));
+        span.push(said("end", "assistant", ""));
+        let parts = chunks(span, CALL_CHARS);
+        assert!(parts.len() > 1, "{} call(s)", parts.len());
+        let mut read = String::new();
+        for part in &parts {
+            let (transcript, ..) = excerpt(part.clone());
+            assert!(transcript.len() <= CALL_CHARS, "{}", transcript.len());
+            read.push_str(&transcript);
+        }
+        let ids: Vec<&str> = parts.iter().flatten().map(|e| e.0.as_str()).collect();
+        assert_eq!(ids.len(), 32, "every entry, in order: {ids:?}");
+        assert_eq!(
+            (ids[0], ids[31]),
+            ("u", "end"),
+            "the cursor ends on the span's end"
+        );
+        for i in 1..=30 {
+            assert_eq!(
+                read.matches(&format!("Found fact {i}.")).count(),
+                1,
+                "fact {i}"
+            );
+        }
+        // A line longer than the budget is a call of its own, never dropped.
+        let long = vec![
+            said("a", "user", "first line"),
+            said("b", "user", "second line"),
+        ];
+        assert_eq!(
+            chunks(long, 10).iter().map(Vec::len).collect::<Vec<_>>(),
+            [1, 1]
+        );
+        assert!(chunks(Vec::new(), CALL_CHARS).is_empty());
+    }
+
+    #[test]
+    fn a_backlog_past_one_pass_is_cut_to_its_newest_window() {
+        let step = |i: usize| {
+            let text = format!("Found fact {i}. {}", "detail ".repeat(200));
+            said(&format!("a{i}"), "assistant", &text)
+        };
+        let span = |steps: usize| {
+            let mut span = vec![said("u", "user", "Map the repository for me.")];
+            span.extend((1..=steps).map(step));
+            span.push(said("end", "assistant", ""));
+            span
+        };
+        // A long turn within one pass's calls is read whole.
+        let runs = pass_runs(span(30), 12);
+        assert!(runs.len() > 1);
+        assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 32);
+        // A backlog (passes the queue gave up on) costs at most one pass's
+        // calls: its newest window, the request, and the end the cursor
+        // lands on.
+        let runs = pass_runs(span(100), 12);
+        assert!(runs.len() <= PASS_CALLS, "{} calls", runs.len());
+        let ids: Vec<&str> = runs.iter().flatten().map(|e| e.0.as_str()).collect();
+        assert_eq!(ids.len(), 14, "{ids:?}");
+        assert_eq!((ids[0], ids[1], ids[13]), ("u", "a89", "end"));
+    }
+
+    #[test]
+    fn long_pasted_messages_never_cost_more_than_one_pass() {
+        // Each user line keeps up to 12,000 chars, so two never share a run:
+        // ten inside the window are ten runs until the pass keeps its newest.
+        let mut span: Vec<Entry> = (1..=10)
+            .map(|i| {
+                said(
+                    &format!("p{i}"),
+                    "user",
+                    &format!("Paste {i}. {}", "x".repeat(12_000)),
+                )
+            })
+            .collect();
+        span.push(said("end", "assistant", ""));
+        let runs = pass_runs(span, 12);
+        assert!(runs.len() <= PASS_CALLS, "{} calls", runs.len());
+        let ids: Vec<&str> = runs.iter().flatten().map(|e| e.0.as_str()).collect();
+        assert_eq!((ids[0], *ids.last().unwrap()), ("p7", "end"), "{ids:?}");
+    }
+
+    #[test]
+    fn a_span_is_said_when_its_newest_message_was() {
+        let now = 1_760_443_200_000;
+        let day = 86_400_000;
+        let at = |ts: u64| {
+            (
+                String::from("e"),
+                String::from("user"),
+                String::from("hi"),
+                ts,
+            )
+        };
+        assert_eq!(said_at(&[at(now - 3 * day), at(now - day)], now), now - day);
+        // A message clock ahead of ours never dates a fact in the future.
+        assert_eq!(said_at(&[at(now - day), at(now + day)], now), now);
+        assert_eq!(said_at(&[], now), now, "nothing said: now");
     }
 
     #[test]
@@ -2376,7 +2902,7 @@ mod tests {
             scope: None,
             agent: None,
         };
-        new_memory(item, "s", None, 1)
+        new_memory(item, "s", None, 1, 1)
     }
 
     #[test]
@@ -2386,31 +2912,101 @@ mod tests {
             known("ledger-sync uses pnpm."),
         ];
         assert_eq!(
-            extraction_input(&[], false, &ms, &[], "user [d]: hi"),
+            extraction_input(&[], false, "", &ms, &[], "user [d]: hi"),
             "Already remembered:\n[1] The user's name is Rafael Costa.\n[2] ledger-sync uses pnpm.\n\n\
              Conversation excerpt:\nuser [d]: hi"
         );
         assert_eq!(
-            extraction_input(&[], false, &[], &[], "user [d]: hi"),
+            extraction_input(&[], false, "", &[], &[], "user [d]: hi"),
             "Conversation excerpt:\nuser [d]: hi"
         );
         let learned = [("Never use emoji.".to_string(), true)];
         assert_eq!(
-            extraction_input(&[], false, &ms[..1], &learned, "user [d]: hi"),
+            extraction_input(&[], false, "", &ms[..1], &learned, "user [d]: hi"),
             "Already remembered:\n[1] The user's name is Rafael Costa.\n\n\
              Learned rules:\n[2] Never use emoji.\n\nConversation excerpt:\nuser [d]: hi"
         );
         let agents = ["tech-lead".to_string(), "reviewer".to_string()];
         assert_eq!(
-            extraction_input(&agents, true, &[], &[], "user [d]: hi"),
+            extraction_input(&agents, true, "", &[], &[], "user [d]: hi"),
             "Agents in this conversation:\n- tech-lead: the assistant\n\
              - reviewer: a sub-agent the assistant started\n\nConversation excerpt:\nuser [d]: hi"
         );
         assert!(
-            extraction_input(&agents[1..], false, &[], &[], "")
+            extraction_input(&agents[1..], false, "", &[], &[], "")
                 .starts_with("Agents in this conversation:\n- reviewer: a sub-agent"),
             "a session with no profile of its own lists only its sub-agents"
         );
+    }
+
+    #[test]
+    fn the_extraction_input_gives_the_users_instructions_first() {
+        let rules = "## privacy\nNever remember anything about my health.";
+        let agents = ["tech-lead".to_string()];
+        assert_eq!(
+            extraction_input(
+                &agents,
+                true,
+                rules,
+                &[known("ledger-sync uses pnpm.")],
+                &[],
+                "user [d]: hi"
+            ),
+            "The user's instructions for this bank:\n\
+             ## privacy\nNever remember anything about my health.\n\n\
+             Agents in this conversation:\n- tech-lead: the assistant\n\n\
+             Already remembered:\n[1] ledger-sync uses pnpm.\n\nConversation excerpt:\nuser [d]: hi"
+        );
+    }
+
+    #[test]
+    fn a_do_not_keep_instruction_outranks_the_prompts_keep_list() {
+        assert_eq!(
+            system_prompt(true, true, false, 8),
+            format!(
+                "{EXTRACT_SYSTEM}{REPOSITORY_RULE}{EXTRACT_AGENTS}\n- Return at most 8 memories \
+                 and 3 rules, the most durable first."
+            ),
+            "without instructions the prompt is unchanged"
+        );
+        let prompt = system_prompt(true, true, true, 8);
+        let binding = prompt
+            .find(EXTRACT_INSTRUCTIONS)
+            .expect("listed instructions bind extraction");
+        // After every keep clause, the user scope's health included: read
+        // as the user's exception to them, not the other way round.
+        for keep in ["health", REPOSITORY_RULE, EXTRACT_AGENTS] {
+            assert!(prompt.find(keep).unwrap() < binding, "{keep}");
+        }
+        for says in [
+            "One that says not to keep something overrides every keep rule above",
+            "not even what a scope above names (health, habits, …)",
+            // Only the do-not-keep direction wins: a hand rule (an agent
+            // can write one) never lifts a secret or outside-text ban.
+            "No instruction ever makes you keep what a rule above excludes",
+            "one about anything else (how to reply, style, tools) changes nothing you return",
+        ] {
+            assert!(prompt.contains(says), "{says}");
+        }
+        assert!(!prompt.contains("what to remember"), "{prompt}");
+    }
+
+    #[test]
+    fn the_banks_focus_binds_only_what_lands_in_the_bank() {
+        // Under a layer, "user" items go up to default_bank, which this
+        // bank's description does not describe; "agent" items go to their
+        // agent's bank either way.
+        let layered = system_prompt(true, true, true, 8);
+        let alone = system_prompt(false, true, true, 8);
+        let project = "If they say what the bank is for, keep its \"project\" items to that: \
+                       \"user\" items go to the user's own bank, which it does not describe.";
+        let both = "If they say what the bank is for, keep its \"user\" and \"project\" items \
+                    to that.";
+        assert!(layered.contains(project), "{layered}");
+        assert!(!layered.contains(both), "{layered}");
+        assert!(alone.contains(both), "{alone}");
+        assert!(!alone.contains(project), "{alone}");
+        assert!(!layered.contains("keep to what the bank is for"));
     }
 
     #[test]
@@ -2598,17 +3194,17 @@ mod tests {
             ),
         ]);
         assert!(
-            reinforced(porto.clone(), &porto.text, &echo, false, 9).is_none(),
+            reinforced(porto.clone(), &porto.text, &echo, false, 9, 9).is_none(),
             "the assistant echoing an injected memory is not the user"
         );
         assert_eq!(
-            reinforced(porto.clone(), &porto.text, &echo, true, 9),
+            reinforced(porto.clone(), &porto.text, &echo, true, 9, 9),
             Some((porto.clone(), false)),
             "unbacked, the twin is left as it is and still retires what it corrects"
         );
 
         let restated = user_words(&[said("u", "user", "I still live in Porto, by the way.")]);
-        let (m, changed) = reinforced(porto.clone(), &porto.text, &restated, false, 9).unwrap();
+        let (m, changed) = reinforced(porto.clone(), &porto.text, &restated, false, 9, 9).unwrap();
         assert!(changed);
         assert_eq!(
             (m.corroboration, m.revision, m.updated_at, m.stated_at),
@@ -2617,7 +3213,7 @@ mod tests {
         // "The user" is not a word the user has to say again.
         let acme = known("The user works at Acme as a backend engineer.");
         let at_acme = user_words(&[said("u", "user", "I still work at Acme, by the way.")]);
-        assert!(reinforced(acme.clone(), &acme.text, &at_acme, false, 9).is_some_and(|(_, r)| r));
+        assert!(reinforced(acme.clone(), &acme.text, &at_acme, false, 9, 9).is_some_and(|(_, r)| r));
 
         let pinned = Memory {
             pinned: true,
@@ -2630,7 +3226,7 @@ mod tests {
         for m in [pinned, retired] {
             for retires in [false, true] {
                 assert!(
-                    reinforced(m.clone(), &porto.text, &restated, retires, 9).is_none(),
+                    reinforced(m.clone(), &porto.text, &restated, retires, 9, 9).is_none(),
                     "left exactly as it is"
                 );
             }
@@ -2958,6 +3554,205 @@ mod tests {
     }
 
     #[test]
+    fn same_fact_joins_rewordings_around_the_same_values() {
+        let migrate = [
+            "The project applies database migrations with pnpm migrate:v2 before each deploy.",
+            "Database migrations in this project run through pnpm migrate:v2 before each deploy.",
+            "Before each deploy, apply the database migrations using pnpm migrate:v2.",
+        ];
+        // Led by "ledger", "ledger" and "migrate": each lead is in the others.
+        let ledger = [
+            "The ledger service applies its database migrations with migrate-1c5fdf5f.",
+            "Ledger database migrations are run with the migrate-1c5fdf5f command.",
+            "To migrate the ledger database, run migrate-1c5fdf5f.",
+        ];
+        for triple in [migrate, ledger] {
+            for (i, a) in triple.iter().enumerate() {
+                for b in &triple[i + 1..] {
+                    assert!(same_fact(a, b), "{a} ~ {b}");
+                    assert!(same_fact(b, a), "{b} ~ {a}");
+                }
+            }
+        }
+        let same = [
+            (
+                "User's partner is Rafael, a UX designer she has been dating since 2019.",
+                "Rafael, a UX designer, has been the user's partner since 2019.",
+            ),
+            (
+                "User ships to production only on Tuesdays and Thursdays, between 10:00 and 15:00 local time.",
+                "User deploys to production only on Tuesday and Thursday, from 10:00 to 15:00 local time.",
+            ),
+            (
+                "ledger-sync uses pnpm as its package manager.",
+                "The ledger-sync project uses pnpm as its package manager.",
+            ),
+            (
+                "ledger-sync is deployed every Thursday.",
+                "The ledger-sync project is deployed every Thursday.",
+            ),
+        ];
+        for (a, b) in same {
+            assert!(same_fact(a, b), "{a} ~ {b}");
+        }
+    }
+
+    #[test]
+    fn same_fact_keeps_facts_apart() {
+        let different = [
+            (
+                "ledger-sync is deployed every Thursday.",
+                "ledger-sync is deployed every Friday.",
+            ),
+            (
+                "The ledger-sync project uses Postgres 16.",
+                "The ledger-sync project uses Postgres 17.",
+            ),
+            (
+                "The user likes cilantro a lot.",
+                "The user does not like cilantro a lot.",
+            ),
+            (
+                "The user wants green tea.",
+                "The user no longer wants green tea.",
+            ),
+            ("Uses pnpm.", "Uses npm."),
+            (
+                "The project uses pnpm as its package manager.",
+                "The project uses npm as its package manager.",
+            ),
+            // Lowercase days still pin the value.
+            (
+                "the team standup is at 09:30 on thursday.",
+                "the team standup is at 09:30 on friday.",
+            ),
+            (
+                "The team standup is at 09:30.",
+                "The gym class is at 09:30.",
+            ),
+            (
+                "The user is allergic to peanuts, tree nuts and sesame.",
+                "The user is allergic to shellfish, tree nuts and sesame.",
+            ),
+        ];
+        for (a, b) in different {
+            assert!(!same_fact(a, b), "{a} !~ {b}");
+            assert!(!same_fact(b, a), "{b} !~ {a}");
+        }
+    }
+
+    #[test]
+    fn same_fact_by_text_alone_keeps_same_value_siblings_apart() {
+        // Two services on one database share every value and most words, but
+        // each leads with a subject the other lacks: two facts, both told.
+        let (billing, ledger) = (
+            "The billing service uses Postgres 16.",
+            "The ledger service uses Postgres 16.",
+        );
+        assert!(!same_fact(billing, ledger));
+        assert!(!same_fact(ledger, billing));
+    }
+
+    #[test]
+    fn same_value_siblings_about_different_subjects_are_not_twins() {
+        let siblings = [
+            (
+                "The billing service runs on Postgres 16.",
+                "The ledger service runs on Postgres 16.",
+            ),
+            (
+                "The staging cluster runs Kubernetes 1.29.",
+                "The production cluster runs Kubernetes 1.29.",
+            ),
+            (
+                "Ledgerly runs on PostgreSQL 16 in production.",
+                "Rotafy runs on PostgreSQL 16 in production.",
+            ),
+            // Past the user's possessive, the subject is whose it is.
+            (
+                "The user's sister works as a nurse in Madrid.",
+                "The user's cousin works as a nurse in Madrid.",
+            ),
+        ];
+        for (a, b) in siblings {
+            assert!(!same_fact(a, b), "{a} !~ {b}");
+            assert!(!same_fact(b, a), "{b} !~ {a}");
+        }
+    }
+
+    #[test]
+    fn known_limit_user_facts_that_both_lead_with_user_still_join() {
+        // Extraction's usual form for user facts leads both with "User", so
+        // the lead rule never sees their subjects: one line when untagged.
+        let joined = [
+            (
+                "User takes 10 mg of zinc every morning.",
+                "User takes 10 mg of iron every morning.",
+            ),
+            (
+                "User has a sister who works as a nurse in Madrid.",
+                "User has a cousin who works as a nurse in Madrid.",
+            ),
+        ];
+        for (a, b) in joined {
+            assert!(same_fact(a, b), "{a} ~ {b}");
+        }
+    }
+
+    #[test]
+    fn supersedes_needs_a_marker_new_values_and_most_old_words() {
+        let changes = [
+            (
+                "The nightly backup runs at 02:00.",
+                "The nightly backup now runs at 04:00.",
+            ),
+            ("The user lives in Lisbon.", "The user now lives in Porto."),
+            (
+                "The user wants green tea.",
+                "The user no longer wants green tea.",
+            ),
+        ];
+        for (old, new) in changes {
+            assert!(supersedes(old, new), "{old} -> {new}");
+        }
+        let not = [
+            // The same pairs without a marker.
+            (
+                "The nightly backup runs at 02:00.",
+                "The nightly backup runs at 04:00.",
+            ),
+            ("The user lives in Lisbon.", "The user lives in Porto."),
+            (
+                "The user wants green tea.",
+                "The user does not want green tea.",
+            ),
+            // The marker is only in the older text.
+            (
+                "The nightly backup now runs at 02:00.",
+                "The nightly backup runs at 04:00.",
+            ),
+            // Equal values.
+            (
+                "The nightly backup runs at 02:00.",
+                "The nightly backup now runs at 02:00 sharp.",
+            ),
+            // A marker and new values, but not the same subject.
+            (
+                "CI runs lint before tests.",
+                "CI now runs on GitHub Actions.",
+            ),
+            // golden evt-passport vs evt-dentist-moved: another appointment.
+            (
+                "User has a passport renewal appointment at 14:00 on 2026-10-27.",
+                "User moved her dentist appointment from 2026-10-15 to 9:30 on 2026-10-20.",
+            ),
+        ];
+        for (old, new) in not {
+            assert!(!supersedes(old, new), "{old} -/-> {new}");
+        }
+    }
+
+    #[test]
     fn a_near_twin_is_the_first_live_rewording() {
         let mut retired = known("The ledger-sync project uses pnpm as its package manager.");
         retired.invalid_at = Some(5);
@@ -3135,14 +3930,32 @@ mod tests {
         );
         // A key crossing the 2000-char cut is redacted, not half-sent.
         let long = format!("{} {key}", "x".repeat(1_990));
-        let cut = transcript_line("user", &long, day1).unwrap();
+        let cut = transcript_line("assistant", &long, day1).unwrap();
         assert!(!cut.contains("sk-ant-api03"), "{cut}");
         // A long paste keeps its head and its tail, where the ask usually is.
-        let paste = format!("{}Why does this fail?", "log line\n".repeat(400));
+        let paste = format!("{}Why does this fail?", "log line\n".repeat(1_400));
         let line = transcript_line("user", &paste, day1).unwrap();
         assert!(line.contains("]: log line\n") && line.contains(" … "));
-        assert!(line.ends_with("Why does this fail?") && line.len() < 2_100);
+        assert!(line.ends_with("Why does this fail?") && line.len() < 12_100);
         assert!(transcript_line("user", "   ", day1).is_none());
+    }
+
+    #[test]
+    fn a_users_long_message_reaches_extraction_whole() {
+        let day = 1_760_443_200_000;
+        // About 4,500 chars of the user's own notes, a fact in the middle.
+        let notes = format!(
+            "{}The staging database host is db-mid.internal.{}",
+            "Some notes for later, all of these hold here. ".repeat(48),
+            " Then we tidy the docs.".repeat(98)
+        );
+        let mid = notes.find("db-mid").unwrap();
+        assert!(notes.len() > 4_400 && mid > 2_000 && notes.len() - mid > 2_000);
+        let line = transcript_line("user", &notes, day).unwrap();
+        assert!(line.contains("db-mid.internal") && !line.contains(" … "));
+        // An assistant line keeps its cut.
+        let reply = transcript_line("assistant", &notes, day).unwrap();
+        assert!(!reply.contains("db-mid") && reply.contains(" … "));
     }
 
     #[test]
@@ -3157,7 +3970,7 @@ mod tests {
             scope: None,
             agent: None,
         };
-        let m = new_memory(item, "s_1", Some("e_9"), 42);
+        let m = new_memory(item, "s_1", Some("e_9"), 42, 42);
         assert_eq!(m.text, "user prefers tea");
         assert_eq!(m.id, fingerprint("user prefers tea"));
         assert_eq!(m.entities, vec!["mike"]);
@@ -3167,6 +3980,39 @@ mod tests {
         assert_eq!(src.session_id.as_deref(), Some("s_1"));
         assert_eq!(src.entry_id.as_deref(), Some("e_9"));
         assert_eq!((m.created_at, m.updated_at), (42, 42));
+    }
+
+    #[test]
+    fn an_extracted_memory_is_stated_when_its_message_was_said() {
+        // A pass that runs late (a queue retry, a first pass over an old
+        // session) writes the record now, but the fact is as old as its
+        // message.
+        let day = 86_400_000;
+        let now = 1_760_443_200_000;
+        let item = ExtractedItem {
+            text: "The user lives in Porto.".into(),
+            entities: vec![],
+            tags: vec![],
+            confidence: None,
+            kind: None,
+            replaces: None,
+            scope: None,
+            agent: None,
+        };
+        let m = new_memory(item, "s", Some("e_1"), now, now - 3 * day);
+        assert_eq!(
+            (m.created_at, m.updated_at, m.stated_at),
+            (now, now, Some(now - 3 * day))
+        );
+
+        // A restatement read late is dated by its message too, and an older
+        // one never moves the fact back in time.
+        let restated = user_words(&[said("u", "user", "I still live in Porto.")]);
+        let (again, _) = reinforced(m.clone(), &m.text, &restated, false, now, now - day).unwrap();
+        assert_eq!((again.updated_at, again.stated_at), (now, Some(now - day)));
+        let (older, _) =
+            reinforced(m.clone(), &m.text, &restated, false, now, now - 9 * day).unwrap();
+        assert_eq!(older.stated_at, Some(now - 3 * day));
     }
 
     #[test]

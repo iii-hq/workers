@@ -31,8 +31,8 @@ pub const ON_ROUTER_READY_DESC: &str =
 
 pub const COUNT_TOKENS_ID: &str = "provider::sarvam::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
-    "Estimate prompt tokens for {model, system_prompt?, tools?, messages} locally with tiktoken; \
-     never runs the model and costs nothing.";
+    "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with \
+     Sarvam's own published vocabulary and chat template; never runs the model and costs nothing.";
 
 pub const TRANSCRIBE_ID: &str = "provider::sarvam::transcribe";
 pub const TRANSCRIBE_DESC: &str =

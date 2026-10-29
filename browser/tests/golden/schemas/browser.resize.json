@@ -1,6 +1,6 @@
 {
   "function_id": "browser::resize",
-  "description": "Set the session's live viewport size (CSS pixels). The console calls this as its browser pane resizes so the streamed frame fills the pane with no letterboxing and clicks map 1:1; the device toolbar calls it with a preset. Clamped 200..4000.",
+  "description": "Set the session's live viewport size (CSS pixels). The console calls this as its browser pane resizes so the streamed frame fills the pane with no letterboxing and clicks map 1:1; the device toolbar calls it with a preset. Clamped 200..4000. mobile=true emulates a phone (touch input, an Android Chrome user agent); reload once when mode_changed.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ResizeInput",
@@ -35,7 +35,7 @@
         "minimum": 0.0
       },
       "mobile": {
-        "description": "Emulate a mobile device (viewport meta, overlay scrollbars, touch). Default false. The device toolbar sets this for phone presets.",
+        "description": "Emulate a phone: the mobile viewport (viewport meta, overlay scrollbars), touch input (`navigator.maxTouchPoints`, `(pointer: coarse)`, an `act` left click arrives as a tap) and an Android Chrome user agent with matching client hints. Default false, which restores the desktop browser. The user agent reaches the page on its next load: reload once when `mode_changed`. The device toolbar sets this for phone presets.",
         "default": null,
         "type": [
           "boolean",
@@ -59,6 +59,8 @@
     "type": "object",
     "required": [
       "height",
+      "mobile",
+      "mode_changed",
       "ok",
       "width"
     ],
@@ -67,6 +69,14 @@
         "type": "integer",
         "format": "uint32",
         "minimum": 0.0
+      },
+      "mobile": {
+        "description": "The emulation now in force: true for a phone, false for the desktop browser. A fit that was refused or only grown (several viewers) keeps the mode the tab had.",
+        "type": "boolean"
+      },
+      "mode_changed": {
+        "description": "True when this call switched between phone and desktop; the page sees the other user agent only after it loads again.",
+        "type": "boolean"
       },
       "ok": {
         "type": "boolean"

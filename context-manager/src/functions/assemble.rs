@@ -1,6 +1,7 @@
 //! `context::assemble` — build the model-ready context from a history
 //! (context-manager.md § context::assemble). The pipeline, in order:
-//! media-normalize -> cap results (always) -> (if over) age-prune ->
+//! media-normalize -> cap results (always) -> (past a third of the
+//! window) let the provider's count set the budget -> (if over) age-prune ->
 //! (if still over) compact -> (if still over) emergency-reduce function
 //! results -> assemble the final list or return a structured overflow.
 //!
@@ -26,7 +27,7 @@ use crate::core::selection::select;
 use crate::core::summary::render_system_prompt;
 use crate::error::ContextError;
 use crate::functions::resolve_model;
-use crate::ports::Deps;
+use crate::ports::{Deps, TurnKnobs};
 use crate::types::{
     AgentFunction, AgentMessage, ByRoleTokens, ContentBlock, EstimatorName, ModelInput, Role,
     ThinkingLevel,
@@ -128,9 +129,14 @@ pub struct AssembleOptions {
     /// not otherwise represented by the prompt, messages, or tools.
     #[serde(default)]
     pub request_overhead_tokens: Option<u64>,
-    /// Reserve the model's thinking budget for this tier.
+    /// Reserve the model's thinking budget for this tier. Also forwarded to
+    /// the provider's count, whose template may render it.
     #[serde(default)]
     pub thinking_level: Option<ThinkingLevel>,
+    /// The `response_format` the turn sends on `router::chat`, forwarded to
+    /// the provider's count for providers that render it into the prompt.
+    #[serde(default)]
+    pub response_format: Option<serde_json::Value>,
     /// Compaction mutual-exclusion key (e.g. a session id); default:
     /// hash of the message set.
     #[serde(default)]
@@ -304,6 +310,10 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     let mut system_prompt = render_system_prompt(base_prompt, options.previous_summary.as_deref());
     let tools = req.tools.as_deref().unwrap_or_default();
     let request_overhead_tokens = options.request_overhead_tokens.unwrap_or(0);
+    let knobs = TurnKnobs {
+        thinking_level: options.thinking_level,
+        response_format: options.response_format.as_ref(),
+    };
 
     // Size memo: every message, tool, and the prompt are estimated once;
     // the pipeline's recounts become O(1)-per-message sums, and the
@@ -362,6 +372,24 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         token_count = total(&sizes, prompt_tokens);
     }
 
+    // The estimate is chars/4, and dense content bills far more: random hex
+    // about 2.25x, so a 128k window took a 256k prompt without compacting.
+    // Past a third of the window the provider's own count sets the budget
+    // the steps below hold the estimate to.
+    let gated_estimate = token_count;
+    let mut gate_budget = gate_budget(
+        deps,
+        &req.model,
+        usable_budget,
+        token_count,
+        request_overhead_tokens,
+        &system_prompt,
+        tools,
+        &working,
+        knobs,
+    )
+    .await;
+
     // Step 1: prune aged function outputs — only over budget
     // (context-manager.md § context::assemble). A prune rewrites results an
     // earlier request already sent, and provider prompt caches (DeepSeek,
@@ -370,7 +398,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // tutorial that was 92% of the uncached input and 63% of the cost, with
     // the window never past a third full. Over budget it still runs first,
     // the cheapest relief before compaction.
-    if options.allow_prune.unwrap_or(true) && token_count > usable_budget {
+    if options.allow_prune.unwrap_or(true) && token_count > gate_budget {
         let params = PruneParams {
             protect_recent_tokens: config.protect_recent_tokens,
             decay_user_turns: config.decay_user_turns,
@@ -387,7 +415,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
 
     // Step 2: compact the head.
     if !options.preview_only
-        && token_count > usable_budget
+        && token_count > gate_budget
         && options.allow_compaction.unwrap_or(true)
     {
         // The default lease key hashes the *request* message set —
@@ -403,10 +431,11 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             &req.model,
             &working,
             &sizes,
-            usable_budget,
+            gate_budget,
             options.tail_turns.unwrap_or(config.tail_turns),
             &lease_key,
             options.previous_summary.as_deref(),
+            max_result_tokens,
         )
         .await
         {
@@ -426,18 +455,60 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     // Step 3: enforce the budget by reducing complete function-result
     // messages, including latest/protected results and their details.
     // This pass is intentionally independent of all normal-prune knobs.
-    if !options.preview_only && token_count > usable_budget {
-        let emergency = emergency_reduce_with_sizes(
-            &mut working,
-            &mut sizes,
-            token_count.saturating_sub(usable_budget),
-            estimator,
-        );
-        applied.pruned |= emergency.pruned_parts > 0;
-        applied.pruned_tokens = applied
-            .pruned_tokens
-            .saturating_add(emergency.pruned_tokens);
+    if !options.preview_only && token_count > gate_budget {
+        let excess = token_count.saturating_sub(gate_budget);
+        reduce_results(&mut working, &mut sizes, excess, estimator, &mut applied);
         token_count = total(&sizes, prompt_tokens);
+    }
+
+    // Step 4: the provider's count scaled the whole request's estimate, but
+    // relief keeps what it did not remove, and the emergency pass removes the
+    // largest estimates first: the least dense content, about one billed
+    // token per estimate unit. Count what is left; while it is over the
+    // window, take the excess off in estimate units. Once it fits, the
+    // estimate decides against `usable` again: content the emergency pass
+    // cannot reduce (long prose prompts) may never reach the tight budget.
+    if !options.preview_only && gate_budget < usable_budget && token_count < gated_estimate {
+        for round in 0..=MAX_RECOUNTS {
+            let Ok(counted) = deps
+                .resolver
+                .count_prompt_tokens(
+                    req.model.provider.as_deref(),
+                    &req.model.id,
+                    &system_prompt,
+                    tools,
+                    &working,
+                    knobs,
+                )
+                .await
+            else {
+                break;
+            };
+            let counted = counted.saturating_add(request_overhead_tokens);
+            if counted <= usable_budget {
+                gate_budget = usable_budget;
+                break;
+            }
+            gate_budget = token_count.saturating_sub(counted - usable_budget);
+            tracing::info!(
+                counted,
+                usable = usable_budget,
+                budget = gate_budget,
+                "assemble: the reduced request still counts over the window; reducing further"
+            );
+            // Out of rounds, or (below) nothing left to reduce: the check
+            // after the loop answers.
+            if round == MAX_RECOUNTS {
+                break;
+            }
+            let excess = token_count.saturating_sub(gate_budget);
+            let before = token_count;
+            reduce_results(&mut working, &mut sizes, excess, estimator, &mut applied);
+            token_count = total(&sizes, prompt_tokens);
+            if token_count == before {
+                break;
+            }
+        }
     }
 
     debug_assert_eq!(
@@ -452,10 +523,10 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         "size memo drifted from a from-scratch recount"
     );
 
-    if !options.preview_only && token_count > usable_budget {
+    if !options.preview_only && token_count > gate_budget {
         return Err(ContextError::Overflow {
             token_count,
-            usable: usable_budget,
+            usable: gate_budget,
         });
     }
 
@@ -489,6 +560,81 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     })
 }
 
+/// The provider is asked once the estimate passes this share (1/N) of the
+/// window; content billing more than N times its estimate still slips past.
+const PROVIDER_COUNT_SHARE: u64 = 3;
+
+/// Reductions after relief left a request the provider counts over the
+/// window; past them the request is an overflow.
+const MAX_RECOUNTS: usize = 3;
+
+/// Step 3's emergency pass: reduce complete function results by `excess`.
+fn reduce_results(
+    working: &mut [AgentMessage],
+    sizes: &mut [u64],
+    excess: u64,
+    estimator: &dyn Estimator,
+    applied: &mut Applied,
+) {
+    let emergency = emergency_reduce_with_sizes(working, sizes, excess, estimator);
+    applied.pruned |= emergency.pruned_parts > 0;
+    applied.pruned_tokens = applied
+        .pruned_tokens
+        .saturating_add(emergency.pruned_tokens);
+}
+
+/// The budget, in estimate units, that keeps the provider's count of the
+/// request within `usable`: the window itself while the estimate is small,
+/// when nothing can count the request, or when the count is no larger.
+#[allow(clippy::too_many_arguments)]
+async fn gate_budget(
+    deps: &Deps,
+    model: &ModelInput,
+    usable: u64,
+    estimate: u64,
+    request_overhead_tokens: u64,
+    system_prompt: &str,
+    tools: &[AgentFunction],
+    messages: &[AgentMessage],
+    knobs: TurnKnobs<'_>,
+) -> u64 {
+    if messages.is_empty() || estimate.saturating_mul(PROVIDER_COUNT_SHARE) < usable {
+        return usable;
+    }
+    // The estimate carries the request overhead; the provider's count of
+    // the prompt, messages and tools does not.
+    match deps
+        .resolver
+        .count_prompt_tokens(
+            model.provider.as_deref(),
+            &model.id,
+            system_prompt,
+            tools,
+            messages,
+            knobs,
+        )
+        .await
+        .map(|counted| counted.saturating_add(request_overhead_tokens))
+    {
+        Ok(counted) if counted > estimate => {
+            let budget = (u128::from(usable) * u128::from(estimate) / u128::from(counted)) as u64;
+            tracing::info!(
+                estimate,
+                counted,
+                usable,
+                budget,
+                "assemble: the provider counts more than the estimate; budget tightened"
+            );
+            budget
+        }
+        Ok(_) => usable,
+        Err(error) => {
+            tracing::debug!(%error, "assemble: no provider count; the estimate holds");
+            usable
+        }
+    }
+}
+
 struct CompactionOutcome {
     summary: String,
     head_len: usize,
@@ -509,6 +655,7 @@ async fn try_compact(
     tail_turns: usize,
     lease_key: &str,
     previous_summary: Option<&str>,
+    max_result_tokens: u64,
 ) -> Option<CompactionOutcome> {
     let config = deps.config().await;
     let leases = deps.leases().await;
@@ -540,6 +687,7 @@ async fn try_compact(
             model,
             head,
             usable_budget,
+            max_result_tokens,
             PromptSteering {
                 previous_summary,
                 instructions: None,

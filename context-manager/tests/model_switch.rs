@@ -140,10 +140,7 @@ async fn switching_to_a_smaller_model_compacts_in_bounded_calls_and_keeps_the_ta
         .cloned()
         .map(|m| serde_json::from_value(m).unwrap())
         .collect();
-    let rendered = render_user_prompt(&strip_media(
-        &head,
-        WorkerConfig::default().max_output_chars,
-    ));
+    let rendered = render_user_prompt(&strip_media(&head));
     assert_eq!(
         calls
             .iter()

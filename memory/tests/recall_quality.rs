@@ -1,39 +1,41 @@
-//! Recall-quality eval (MOT-5383): a synthetic golden bank and queries scored
+//! Recall-quality eval: a synthetic golden bank and queries scored
 //! through the production `Bank::recall`, in `lexical` (no query vector) and
 //! `hybrid` (cached embeddings) modes, sliced by category and language.
 //!
-//! Design follows Hindsight's retrieval eval
-//! (`hindsight-system-evals/hindsight_system_evals/retrieval_metrics.py`):
-//! trec_eval-style linear-gain nDCG, Recall over all relevant, MRR/Hit at
-//! cutoffs, macro averages, a retrieval-vs-ranking blame per query, and a
-//! trap count that is reported on its own, never averaged in. Two
-//! deliberate differences: vectors are CACHED (Hindsight re-embeds with a
-//! local model and its runs drift between two states) so this runs
-//! deterministically as a PR gate, and a trap is deterministic — a stale
-//! (superseded) memory ranking above the current one — where Hindsight
-//! LLM-judges answers.
+//! Design: trec_eval-style linear-gain nDCG, Recall over all relevant,
+//! MRR/Hit at cutoffs, macro averages, a retrieval-vs-ranking blame per
+//! query, and a trap count that is reported on its own, never averaged in.
+//! Vectors are CACHED (re-embedding with a local model drifts between
+//! runs), so this runs deterministically as a PR gate, and a trap is
+//! deterministic — a stale (superseded) memory ranking above the current
+//! one — not an LLM judge's call.
 //!
 //! - Report: `cargo test --test recall_quality -- --nocapture`
 //! - Re-baseline after an intended scorer change: `UPDATE_GOLDENS=1 cargo
 //!   test --test recall_quality`, then review the
 //!   `tests/golden/recall_quality.json` diff.
 //! - Re-embed after editing `tests/recall_quality/golden.json` (needs a live
-//!   engine with an embed provider): `III_NAMESPACE=<ns> cargo test --test
-//!   recall_quality -- --ignored --exact embed_golden_set`, and against an
-//!   engine running iii-directory, `-- --ignored --exact
-//!   embed_golden_set_minilm`.
+//!   engine with an embed provider; `III_URL` picks it): `III_NAMESPACE=<ns>
+//!   cargo test --test recall_quality -- --ignored --exact embed_golden_set`,
+//!   and against an engine running iii-directory, `-- --ignored --exact
+//!   embed_golden_set_minilm`. Only texts without a vector are embedded.
 //!
 //! The gate runs once per embedder: text-embedding-3-small, and the local
 //! MiniLM that serves stacks without an embedding API. Semantic floors are
 //! per model, so each one needs its own baseline.
+//!
+//! `injection_quality` scores what the injection hook sends instead: each
+//! query and each negative (a message no memory answers) through
+//! `recall_evidence` and `hooks::select` on one bank, without rules, budget
+//! or layers, into its own `tests/golden/injection_quality*.json`.
 
 mod support;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use memory::config::WorkerConfig;
-use memory::store::Store;
+use memory::store::{Store, STOPWORDS};
 use memory::types::{fingerprint, now_ms, Confidence, Memory};
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +55,29 @@ const DAY_MS: u64 = 86_400_000;
 struct Golden {
     memories: Vec<GoldenMemory>,
     queries: Vec<GoldenQuery>,
+    #[serde(default)]
+    negatives: Vec<Negative>,
+}
+
+/// A message no memory answers: whatever it injects outside `related` is
+/// noise. Scored by `injection_quality` only.
+#[derive(Deserialize)]
+struct Negative {
+    id: String,
+    text: String,
+    lang: String,
+    /// `greeting`, `first-person`, `incidental-word`, `near-topic` or
+    /// `chatter` (a follow-up with no subject of its own: "tell me more").
+    kind: String,
+    /// `dev` (tune on it) or `test` (held out).
+    split: String,
+    /// Memories a reasonable assistant could use: injecting them is clean.
+    #[serde(default)]
+    related: Vec<String>,
+    /// The words it shares with the bank on purpose, each with the memories
+    /// holding it.
+    #[serde(default)]
+    shares: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -129,8 +154,10 @@ fn load_golden() -> Golden {
 }
 
 /// Fixture integrity, checked before any scoring so a broken fixture never
-/// reads as a quality change: unique keys, ids and texts, and every
-/// `expect`/`stale` key present.
+/// reads as a quality change: unique keys, ids and texts, every
+/// `expect`/`stale`/`related` key present, every `shares` word in the
+/// memories it names, and no `first-person` or `chatter` negative sharing a
+/// content word with the bank, so only the pronoun can pull a memory in.
 fn validate(golden: &Golden) {
     let mut keys = HashSet::new();
     let mut texts = HashSet::new();
@@ -163,6 +190,46 @@ fn validate(golden: &Golden) {
             assert!(named.insert(k.as_str()), "{} names {k} twice", q.id);
         }
     }
+    // Each memory's tokens as the index holds them: text and entities.
+    let tokens: HashMap<&str, HashSet<String>> = golden
+        .memories
+        .iter()
+        .map(|m| {
+            let indexed = format!("{} {}", m.text, m.entities.join(" "));
+            (
+                m.key.as_str(),
+                memory::index::tokenize(&indexed).into_iter().collect(),
+            )
+        })
+        .collect();
+    for n in &golden.negatives {
+        assert!(ids.insert(n.id.as_str()), "duplicate query id {}", n.id);
+        for k in &n.related {
+            assert!(keys.contains(k.as_str()), "{} names unknown key {k}", n.id);
+        }
+        for (word, named) in &n.shares {
+            for k in named {
+                assert!(
+                    tokens.get(k.as_str()).is_some_and(|t| t.contains(word)),
+                    "{} shares {word:?} with {k}, which does not hold it",
+                    n.id
+                );
+            }
+        }
+        if n.kind == "first-person" || n.kind == "chatter" {
+            let shared: Vec<String> = memory::index::tokenize(&n.text)
+                .into_iter()
+                .filter(|t| !STOPWORDS.contains(&t.as_str()))
+                .filter(|t| tokens.values().any(|m| m.contains(t)))
+                .collect();
+            assert!(
+                shared.is_empty(),
+                "{} {} shares {shared:?} with the bank",
+                n.kind,
+                n.id
+            );
+        }
+    }
 }
 
 // ---- metrics (binary relevance, trec_eval conventions) -------------------
@@ -185,7 +252,7 @@ impl Outcome {
         self.first_hit.map_or(0.0, |r| 1.0 / r as f64)
     }
 
-    /// Hindsight's blame: `retrieval` when a relevant key never came back,
+    /// The blame: `retrieval` when a relevant key never came back,
     /// `ranking` when all did but the best one is not first.
     fn blame(&self) -> &'static str {
         if self.recall < 1.0 {
@@ -219,8 +286,8 @@ fn score(ranked: &[&str], relevant: &[String], stale: &[String]) -> Outcome {
     let idcg: f64 = (0..relevant.len().min(DEPTH))
         .map(|i| 1.0 / ((i + 2) as f64).log2())
         .sum();
-    // Measured against the CURRENT answer (`expect[0]`), as Hindsight's
-    // stale-vs-current check: another relevant memory ranking first must
+    // Measured against the CURRENT answer (`expect[0]`), a stale-vs-current
+    // check: another relevant memory ranking first must
     // not mask a superseded fact sitting above the current one.
     let trap = match (rank_of(stale), rank_of(&relevant[..1])) {
         (Some(s), Some(c)) => s < c,
@@ -429,15 +496,18 @@ fn load_vectors(golden: &Golden, file: &str) -> (Vectors, String) {
         )
     });
     let vectors: Vectors = serde_json::from_str(&raw).expect("vectors.json parses");
+    // A negative may have no vector: hybrid reports it unmeasured (MiniLM
+    // needs an iii-directory built with it to embed one).
     let texts = golden
         .memories
         .iter()
-        .map(|m| (&m.key, &m.text))
-        .chain(golden.queries.iter().map(|q| (&q.id, &q.text)));
-    for (key, text) in texts {
+        .map(|m| (&m.key, &m.text, true))
+        .chain(golden.queries.iter().map(|q| (&q.id, &q.text, true)))
+        .chain(golden.negatives.iter().map(|n| (&n.id, &n.text, false)));
+    for (key, text, required) in texts {
         let e = vectors.items.get(key.as_str());
         assert!(
-            e.is_some_and(|e| &e.text == text),
+            e.map_or(!required, |e| &e.text == text),
             "cached vector for {key} in {file} is missing or embeds an older text: run \
              `cargo test --test recall_quality -- --ignored --exact {regen}`"
         );
@@ -592,6 +662,426 @@ async fn gate(vectors_file: &str, baseline_file: &str) {
     }
 }
 
+// ---- injection_quality: what the hook sends --------------------------------
+
+/// A message the injection eval sends: a golden query, or a negative.
+struct Message<'a> {
+    id: &'a str,
+    text: &'a str,
+    negative: bool,
+    /// Needed keys (none for a negative), superseded keys, usable keys.
+    expect: &'a [String],
+    stale: &'a [String],
+    related: &'a [String],
+    /// `all`, `lang:*`, `category:*` or `kind:*`, and `split:*`.
+    slices: [String; 4],
+}
+
+/// Held-out positives: about a third, by id, so no data edit moves one.
+fn split_of(id: &str) -> &'static str {
+    match fingerprint(id).as_bytes()[2] {
+        b'0'..=b'4' => "test",
+        _ => "dev",
+    }
+}
+
+fn messages(golden: &Golden) -> Vec<Message<'_>> {
+    let queries = golden.queries.iter().map(|q| Message {
+        id: &q.id,
+        text: &q.text,
+        negative: false,
+        expect: &q.expect,
+        stale: &q.stale,
+        related: &[],
+        slices: [
+            "all".into(),
+            format!("lang:{}", q.lang),
+            format!("category:{}", q.category),
+            format!("split:{}", split_of(&q.id)),
+        ],
+    });
+    let negatives = golden.negatives.iter().map(|n| Message {
+        id: &n.id,
+        text: &n.text,
+        negative: true,
+        expect: &[],
+        stale: &[],
+        related: &n.related,
+        slices: [
+            "all".into(),
+            format!("lang:{}", n.lang),
+            format!("kind:{}", n.kind),
+            format!("split:{}", n.split),
+        ],
+    });
+    queries.chain(negatives).collect()
+}
+
+/// Each memory's paraphrase cluster: the key its `dup_of` chain ends at.
+fn clusters(golden: &Golden) -> HashMap<&str, &str> {
+    let of: HashMap<&str, &str> = golden
+        .memories
+        .iter()
+        .filter_map(|m| m.dup_of.as_deref().map(|d| (m.key.as_str(), d)))
+        .collect();
+    golden
+        .memories
+        .iter()
+        .map(|m| {
+            let mut k = m.key.as_str();
+            while let Some(&n) = of.get(k) {
+                k = n;
+            }
+            (m.key.as_str(), k)
+        })
+        .collect()
+}
+
+/// What one message's injection held, in golden keys and fact clusters.
+struct Shown<'a> {
+    injected: Vec<&'a str>,
+    /// Needed clusters, and how many of them came through.
+    needed: usize,
+    delivered: usize,
+    /// Needed clusters recall ranks within `recall_limit` that `select` dropped.
+    lost: Vec<&'a str>,
+    /// Lines neither needed, related nor stale.
+    irrelevant: usize,
+    /// Two lines of one cluster.
+    duplicate: bool,
+    /// A superseded line, and whether the current fact (`expect[0]`) came too.
+    stale: bool,
+    current: bool,
+}
+
+fn clusters_of<'a>(
+    keys: &[impl AsRef<str>],
+    cluster: &HashMap<&str, &'a str>,
+) -> BTreeSet<&'a str> {
+    keys.iter().map(|k| cluster[k.as_ref()]).collect()
+}
+
+fn judge<'a>(
+    m: &Message,
+    injected: Vec<&'a str>,
+    ranked: &[&str],
+    cluster: &HashMap<&str, &'a str>,
+) -> Shown<'a> {
+    let need = clusters_of(m.expect, cluster);
+    let related = clusters_of(m.related, cluster);
+    let ranked = clusters_of(ranked, cluster);
+    let got = clusters_of(&injected, cluster);
+    let is_stale = |k: &str| m.stale.iter().any(|s| s == k);
+    Shown {
+        needed: need.len(),
+        delivered: need.intersection(&got).count(),
+        lost: need
+            .iter()
+            .filter(|c| ranked.contains(*c) && !got.contains(*c))
+            .copied()
+            .collect(),
+        irrelevant: injected
+            .iter()
+            .filter(|k| !need.contains(cluster[*k]) && !related.contains(cluster[*k]))
+            .filter(|k| !is_stale(k))
+            .count(),
+        duplicate: got.len() < injected.len(),
+        stale: injected.iter().any(|k| is_stale(k)),
+        current: m
+            .expect
+            .first()
+            .is_some_and(|k| got.contains(cluster[k.as_str()])),
+        injected,
+    }
+}
+
+/// A slice's positives: what the needed facts cost and what came with them.
+#[derive(Serialize)]
+struct Positives {
+    queries: usize,
+    /// Needed fact clusters (`dup_of` closure), and the share injected.
+    needed: usize,
+    expected_injected: f64,
+    /// `query: cluster` for each needed cluster `Bank::recall` ranks within
+    /// `recall_limit` that `select` dropped.
+    injection_loss: Vec<String>,
+    /// Lines neither needed, related nor stale.
+    irrelevant_injected: usize,
+    /// Queries with two lines of one cluster.
+    duplicate_queries: usize,
+    /// Queries with a superseded line beside the current one, or alone.
+    stale_with_current: usize,
+    stale_alone: usize,
+}
+
+/// A slice's negatives.
+#[derive(Serialize)]
+struct Negatives {
+    negatives: usize,
+    /// Without a vector in this file: not scored in hybrid mode.
+    unmeasured: usize,
+    /// Share of the scored ones that injected nothing outside `related`.
+    negative_clean_rate: Option<f64>,
+    /// Lines they injected outside `related`.
+    negative_injected: usize,
+}
+
+#[derive(Serialize)]
+struct InjectionSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    positives: Option<Positives>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    negatives: Option<Negatives>,
+}
+
+/// A row is a message and what it injected (`None`: not scored in this mode).
+type Row<'a> = (&'a Message<'a>, Option<Shown<'a>>);
+
+fn summarize_injection<'a>(rows: &[&'a Row<'a>]) -> InjectionSummary {
+    let scored = |negative: bool| -> Vec<(&'a str, &'a Shown<'a>)> {
+        rows.iter()
+            .copied()
+            .filter(|row| row.0.negative == negative)
+            .filter_map(|row: &'a Row<'a>| row.1.as_ref().map(|s| (row.0.id, s)))
+            .collect()
+    };
+    let positives = scored(false);
+    let scored_negatives = scored(true);
+    let negatives = rows.iter().filter(|row| row.0.negative).count();
+    let count =
+        |of: &[(&str, &Shown)], f: &dyn Fn(&Shown) -> bool| of.iter().filter(|(_, s)| f(s)).count();
+    let needed: usize = positives.iter().map(|(_, s)| s.needed).sum();
+    let delivered: usize = positives.iter().map(|(_, s)| s.delivered).sum();
+    InjectionSummary {
+        positives: (!positives.is_empty()).then(|| Positives {
+            queries: positives.len(),
+            needed,
+            expected_injected: round4(delivered as f64 / needed as f64),
+            injection_loss: positives
+                .iter()
+                .flat_map(|(id, s)| s.lost.iter().map(move |c| format!("{id}: {c}")))
+                .collect(),
+            irrelevant_injected: positives.iter().map(|(_, s)| s.irrelevant).sum(),
+            duplicate_queries: count(&positives, &|s| s.duplicate),
+            stale_with_current: count(&positives, &|s| s.stale && s.current),
+            stale_alone: count(&positives, &|s| s.stale && !s.current),
+        }),
+        negatives: (negatives > 0).then(|| Negatives {
+            negatives,
+            unmeasured: negatives - scored_negatives.len(),
+            negative_clean_rate: (!scored_negatives.is_empty()).then(|| {
+                let clean = count(&scored_negatives, &|s| s.irrelevant == 0);
+                round4(clean as f64 / scored_negatives.len() as f64)
+            }),
+            negative_injected: scored_negatives.iter().map(|(_, s)| s.irrelevant).sum(),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn injection_quality_matches_baseline() {
+    injection_gate("vectors.json", "injection_quality.json").await;
+}
+
+#[tokio::test]
+async fn minilm_injection_quality_matches_baseline() {
+    injection_gate("vectors-minilm.json", "injection_quality-minilm.json").await;
+}
+
+/// Each message through the hook's path on one bank: every candidate with
+/// its evidence, then `hooks::select` with nothing visible and the updates
+/// `hooks::with_updates` links to what it keeps. One bank's
+/// shared BM25 max is its own best, as the hook's is with no layers.
+async fn injection_gate(vectors_file: &str, baseline_file: &str) {
+    let golden = load_golden();
+    validate(&golden);
+    let (vectors, vectors_fp) = load_vectors(&golden, vectors_file);
+    let (_dir, bank, key_of_id) = build_bank(&golden, &vectors).await;
+    let cfg = WorkerConfig::default();
+    let (half_life, limit) = (cfg.decay_half_life_days, cfg.recall_limit);
+    let cluster = clusters(&golden);
+    let messages = messages(&golden);
+
+    let mut report = String::new();
+    let mut snapshot = BTreeMap::new();
+    for mode in ["lexical", "hybrid"] {
+        let mut rows: Vec<Row> = Vec::new();
+        for m in &messages {
+            let qv = match (mode, vectors.items.get(m.id)) {
+                ("lexical", _) => None,
+                (_, Some(e)) => Some(e.v.as_slice()),
+                (_, None) => {
+                    rows.push((m, None));
+                    continue;
+                }
+            };
+            let (hits, evidence) = bank
+                .recall_evidence(
+                    m.text,
+                    qv,
+                    &vectors.model,
+                    usize::MAX,
+                    half_life,
+                    false,
+                    0.0,
+                )
+                .await;
+            let key = |mem: &Memory| key_of_id[&mem.id].as_str();
+            // `Bank::recall` at `recall_limit` is this ranking, cut.
+            let ranked: Vec<&str> = hits.iter().take(limit).map(|(mem, _)| key(mem)).collect();
+            let told = memory::hooks::select(hits, &evidence, &HashSet::new(), limit);
+            let subjects = told
+                .iter()
+                .flat_map(|(mem, _)| memory::hooks::subjects(mem))
+                .collect();
+            let tagged = bank.tagged(&subjects).await;
+            let injected = memory::hooks::with_updates(told, &tagged, m.text)
+                .iter()
+                .map(|(mem, _)| key(mem))
+                .collect();
+            rows.push((m, Some(judge(m, injected, &ranked, &cluster))));
+        }
+
+        let mut slices: BTreeMap<&str, Vec<&Row>> = BTreeMap::new();
+        for row in &rows {
+            for slice in &row.0.slices {
+                slices.entry(slice.as_str()).or_default().push(row);
+            }
+        }
+        let summaries: BTreeMap<&str, InjectionSummary> = slices
+            .iter()
+            .map(|(k, v)| (*k, summarize_injection(v)))
+            .collect();
+
+        report.push_str(&format!(
+            "\n[{mode}]\n{:<26} {:>4} {:>6} {:>8} {:>4} {:>10} {:>4} {:>9} {:>11} | {:>4} {:>5} {:>6} {:>8}\n",
+            "slice", "n", "needed", "expected", "loss", "irrelevant", "dups", "stale+cur",
+            "stale-alone", "neg", "unmsr", "clean", "injected"
+        ));
+        for (slice, s) in &summaries {
+            let mut line = format!("{slice:<26}");
+            match &s.positives {
+                Some(p) => line.push_str(&format!(
+                    " {:>4} {:>6} {:>8.3} {:>4} {:>10} {:>4} {:>9} {:>11}",
+                    p.queries,
+                    p.needed,
+                    p.expected_injected,
+                    p.injection_loss.len(),
+                    p.irrelevant_injected,
+                    p.duplicate_queries,
+                    p.stale_with_current,
+                    p.stale_alone
+                )),
+                None => line.push_str(&format!("{:64}", "")),
+            }
+            if let Some(n) = &s.negatives {
+                line.push_str(&format!(
+                    " | {:>4} {:>5} {:>6} {:>8}",
+                    n.negatives,
+                    n.unmeasured,
+                    n.negative_clean_rate
+                        .map_or("-".into(), |r| format!("{r:.3}")),
+                    n.negative_injected
+                ));
+            }
+            report.push_str(line.trim_end());
+            report.push('\n');
+        }
+        // Every offending message, never a worst-N cut.
+        for (m, s) in &rows {
+            let Some(s) = s else { continue };
+            let mut why = Vec::new();
+            if m.negative && s.irrelevant > 0 {
+                why.push(format!("NEGATIVE {}", m.slices[2]));
+            }
+            if !s.lost.is_empty() {
+                why.push(format!("LOSS {:?}", s.lost));
+            }
+            if s.duplicate {
+                why.push("DUPLICATE".into());
+            }
+            if s.stale {
+                why.push(
+                    if s.current {
+                        "STALE+CURRENT"
+                    } else {
+                        "STALE ALONE"
+                    }
+                    .into(),
+                );
+            }
+            if !why.is_empty() {
+                report.push_str(&format!(
+                    "{} [{}] injected {:?} — {}\n",
+                    m.id,
+                    why.join(", "),
+                    s.injected,
+                    m.text
+                ));
+            }
+        }
+
+        // A superseded fact told without its replacement misleads the turn.
+        let stale_alone = summaries["all"]
+            .positives
+            .as_ref()
+            .map_or(0, |p| p.stale_alone);
+        assert_eq!(
+            stale_alone, 0,
+            "{mode}: a stale line injected without the current one\n{report}"
+        );
+        // A needed line recall ranks but the hook drops: only the three
+        // paraphrases that share no word with their question, reached through
+        // a bare `user` alone, in lexical mode. A new loss fails here, not
+        // only in the snapshot.
+        let lost = summaries["all"]
+            .positives
+            .as_ref()
+            .map(|p| p.injection_loss.clone())
+            .unwrap_or_default();
+        let known: &[&str] = match mode {
+            "lexical" => &[
+                "q-en-work-release-days: en-work-deploy-window",
+                "q-en-work-late-week-rollout: en-work-deploy-window",
+                "q-id-job-title: id-role",
+            ],
+            _ => &[],
+        };
+        assert_eq!(
+            lost, known,
+            "{mode}: injection dropped a needed line recall ranks\n{report}"
+        );
+        // Nothing relevant, nothing injected: a greeting, a task in the
+        // first person or a follow-up the bank shares no word with.
+        if mode == "lexical" {
+            for kind in ["kind:greeting", "kind:first-person", "kind:chatter"] {
+                let clean = summaries[kind]
+                    .negatives
+                    .as_ref()
+                    .and_then(|n| n.negative_clean_rate);
+                assert_eq!(
+                    clean,
+                    Some(1.0),
+                    "{mode}: a {kind} negative injected\n{report}"
+                );
+            }
+        }
+        snapshot.insert(mode, serde_json::to_value(&summaries).unwrap());
+    }
+    println!("{report}");
+
+    let baseline = serde_json::json!({
+        "embedding": { "model": vectors.model, "dims": vectors.dims, "vectors_fingerprint": vectors_fp },
+        "half_life_days": half_life,
+        "recall_limit": limit,
+        "modes": snapshot,
+    });
+    let actual = serde_json::to_string_pretty(&baseline).unwrap() + "\n";
+    if let Err(diff) = support::check_golden(baseline_file, &actual) {
+        panic!("injection quality changed vs the committed baseline:\n{report}\n{diff}");
+    }
+}
+
 /// Regenerates `tests/recall_quality/vectors.json` through a live engine's
 /// `router::embed`. Pins the model so reruns are comparable, and the
 /// provider: only provider-openai serves it, and an auto-pick could land on
@@ -613,12 +1103,17 @@ async fn embed_golden_set_minilm() {
 /// The reply must be from `model` (bare or `model@<revision>`) and `provider`.
 /// Only Matryoshka text-embedding-3-small is cut to its first `dims`; any
 /// other model's vectors must be exactly `dims` long, and none may be shorter.
+/// Incremental: only a key without a vector, or whose text changed, is
+/// embedded; every other entry stays byte-identical (a re-embed drifts about
+/// 1e-4 and would move every baseline), and keys the golden set dropped go.
 async fn embed_golden(model: &str, dims: usize, provider: &str, file: &str) {
     let golden = load_golden();
     validate(&golden);
-    let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".into());
-    let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
-    let items: Vec<(String, String)> = golden
+    let path = eval_dir().join(file);
+    let cached: Option<Vectors> = std::fs::read_to_string(&path)
+        .ok()
+        .map(|raw| serde_json::from_str(&raw).expect("vectors file parses"));
+    let all: Vec<(String, String)> = golden
         .memories
         .iter()
         .map(|m| (m.key.clone(), m.text.clone()))
@@ -628,7 +1123,43 @@ async fn embed_golden(model: &str, dims: usize, provider: &str, file: &str) {
                 .iter()
                 .map(|q| (q.id.clone(), q.text.clone())),
         )
+        .chain(
+            golden
+                .negatives
+                .iter()
+                .map(|n| (n.id.clone(), n.text.clone())),
+        )
         .collect();
+    let wanted: HashSet<String> = all.iter().map(|(k, _)| k.clone()).collect();
+    let items: Vec<(String, String)> = all
+        .into_iter()
+        .filter(|(key, text)| {
+            !cached
+                .as_ref()
+                .and_then(|c| c.items.get(key))
+                .is_some_and(|e| &e.text == text)
+        })
+        .collect();
+    let mut vectors = cached.unwrap_or_else(|| Vectors {
+        model: String::new(),
+        dims,
+        items: BTreeMap::new(),
+    });
+    vectors.items.retain(|key, _| wanted.contains(key));
+    // New vectors are cut to `dims`: one file of two widths scores 0.0 across them.
+    assert!(
+        vectors.items.is_empty() || vectors.dims == dims,
+        "{file} holds {}-dim vectors, {dims} were asked for: delete it to re-embed the \
+         whole file",
+        vectors.dims
+    );
+    if items.is_empty() {
+        println!("{file}: every text already has a vector");
+        std::fs::write(&path, serde_json::to_string(&vectors).unwrap() + "\n").unwrap();
+        return;
+    }
+    let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".into());
+    let iii = iii_sdk::register_worker(&url, iii_sdk::InitOptions::default());
     let texts: Vec<String> = items.iter().map(|(_, t)| t.clone()).collect();
     let reply = iii
         .trigger(iii_sdk::protocol::TriggerRequest {
@@ -645,34 +1176,34 @@ async fn embed_golden(model: &str, dims: usize, provider: &str, file: &str) {
         "router::embed answered with {reported:?}, not {model}"
     );
     assert_eq!(reply["provider"], provider, "answered by another provider");
+    // The model the provider reported: what recall keys vectors by. Vectors
+    // of two revisions live in different spaces.
+    assert!(
+        vectors.items.is_empty() || vectors.model == reported,
+        "{file} holds {} vectors, router::embed answered with {reported}: delete the file \
+         to re-embed every text",
+        vectors.model
+    );
+    vectors.model = reported;
     let embedded: Vec<Vec<f32>> =
         serde_json::from_value(reply["embeddings"].clone()).expect("embeddings array");
     assert_eq!(embedded.len(), texts.len(), "one vector per input");
     let matryoshka = model == EMBED_MODEL;
-    let vectors = Vectors {
-        // The model the provider reported: what recall keys vectors by.
-        model: reported,
-        dims,
-        items: items
+    for ((key, text), v) in items.into_iter().zip(embedded) {
+        assert!(
+            v.len() == dims || (matryoshka && v.len() > dims),
+            "{key}: {} dims, want {dims}",
+            v.len()
+        );
+        let v = v
             .into_iter()
-            .zip(embedded)
-            .map(|((key, text), v)| {
-                assert!(
-                    v.len() == dims || (matryoshka && v.len() > dims),
-                    "{key}: {} dims, want {dims}",
-                    v.len()
-                );
-                let v = v
-                    .into_iter()
-                    .take(dims)
-                    .map(|x| (x * 1e4).round() / 1e4)
-                    .collect();
-                (key, Embedded { text, v })
-            })
-            .collect(),
-    };
-    let out = serde_json::to_string(&vectors).unwrap() + "\n";
-    std::fs::write(eval_dir().join(file), out).unwrap();
+            .take(dims)
+            .map(|x| (x * 1e4).round() / 1e4)
+            .collect();
+        vectors.items.insert(key, Embedded { text, v });
+    }
+    println!("{file}: embedded {} texts", texts.len());
+    std::fs::write(&path, serde_json::to_string(&vectors).unwrap() + "\n").unwrap();
 }
 
 #[cfg(test)]

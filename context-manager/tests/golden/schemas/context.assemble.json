@@ -319,6 +319,10 @@
               "null"
             ]
           },
+          "response_format": {
+            "default": null,
+            "description": "The `response_format` the turn sends on `router::chat`, forwarded to the provider's count for providers that render it into the prompt."
+          },
           "tail_turns": {
             "default": null,
             "description": "user+assistant pairs always kept verbatim (default 2).",
@@ -339,7 +343,7 @@
               }
             ],
             "default": null,
-            "description": "Reserve the model's thinking budget for this tier."
+            "description": "Reserve the model's thinking budget for this tier. Also forwarded to the provider's count, whose template may render it."
           }
         },
         "type": "object"

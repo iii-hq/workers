@@ -54,16 +54,23 @@ pub fn spawn_fs_watch(
 ) -> Result<FsWatchHandle, String> {
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| format!("fs watch: {e}"))?;
-    let mut watched: Vec<WatchRoot> = Vec::new();
+    let mut watched: Vec<(PathBuf, WatchRoot)> = Vec::new();
     for root in roots {
         if root.kind != WatchRootKind::AgentSkills {
             let _ = std::fs::create_dir_all(&root.path);
         }
         if root.path.is_dir() {
+            // FSEvents reports resolved paths (`/var/..` arrives as
+            // `/private/var/..`), so events are matched against the resolved
+            // root; watching it makes inotify report that same form.
+            let resolved = root
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| root.path.clone());
             watcher
-                .watch(&root.path, RecursiveMode::Recursive)
+                .watch(&resolved, RecursiveMode::Recursive)
                 .map_err(|e| format!("fs watch {}: {e}", root.path.display()))?;
-            watched.push(root);
+            watched.push((resolved, root));
         }
     }
     if watched.is_empty() {
@@ -80,7 +87,7 @@ pub fn spawn_fs_watch(
 /// collecting for `window`, then fire each collected kind once.
 fn debounce_loop(
     rx: &mpsc::Receiver<notify::Result<notify::Event>>,
-    roots: &[WatchRoot],
+    roots: &[(PathBuf, WatchRoot)],
     window: Duration,
     sink: impl Fn(SourceKind),
 ) {
@@ -114,7 +121,7 @@ fn debounce_loop(
 /// contains them.
 fn collect(
     ev: notify::Result<notify::Event>,
-    roots: &[WatchRoot],
+    roots: &[(PathBuf, WatchRoot)],
     seen: &mut HashSet<PathBuf>,
     kinds: &mut HashSet<SourceKind>,
 ) {
@@ -136,27 +143,38 @@ fn collect(
         if !seen.insert(path.clone()) {
             continue;
         }
-        if take_self_write(&path) {
+        let matches: Vec<_> = roots
+            .iter()
+            .filter_map(|(resolved, root)| {
+                path.strip_prefix(resolved)
+                    .ok()
+                    .map(|rel| (resolved.components().count(), root, rel))
+            })
+            .collect();
+        // The deepest root owns the path; several roots at that depth are one
+        // directory under several kinds (same path or a symlink), and each
+        // kind's subscribers read it.
+        let Some(depth) = matches.iter().map(|(depth, _, _)| *depth).max() else {
+            continue;
+        };
+        let owners = || matches.iter().filter(|(d, _, _)| *d == depth);
+        // Self-write marks carry the configured path, not the resolved one.
+        if owners().any(|(_, root, rel)| take_self_write(&root.path.join(rel))) {
             continue;
         }
-        let Some((root, rel)) = roots
-            .iter()
-            .filter_map(|root| path.strip_prefix(&root.path).ok().map(|rel| (root, rel)))
-            .max_by_key(|(root, _)| root.path.components().count())
-        else {
-            continue;
-        };
-        let kind = match root.kind {
-            WatchRootKind::Directory => {
-                classify_rel_path(rel).filter(|kind| *kind != SourceKind::Agent)
+        for (_, root, rel) in owners() {
+            let kind = match root.kind {
+                WatchRootKind::Directory => {
+                    classify_rel_path(rel).filter(|kind| *kind != SourceKind::Agent)
+                }
+                WatchRootKind::AgentProfiles => {
+                    (rel.components().count() == 1).then_some(SourceKind::Agent)
+                }
+                WatchRootKind::AgentSkills => Some(SourceKind::Skill),
+            };
+            if let Some(kind) = kind {
+                kinds.insert(kind);
             }
-            WatchRootKind::AgentProfiles => {
-                (rel.components().count() == 1).then_some(SourceKind::Agent)
-            }
-            WatchRootKind::AgentSkills => Some(SourceKind::Skill),
-        };
-        if let Some(kind) = kind {
-            kinds.insert(kind);
         }
     }
 }
@@ -316,6 +334,101 @@ mod tests {
             rx.recv_timeout(Duration::from_secs(3)).expect("root 2"),
             SourceKind::Skill
         );
+    }
+
+    /// A root reached through a symlink (macOS `/var`, a linked `~/.iii`):
+    /// FSEvents reports the resolved path, self-write marks the linked one.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_root_fires_external_writes_and_suppresses_self_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("real/ns")).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(tmp.path().join("real"), &link).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _h = super::spawn_fs_watch(
+            vec![super::WatchRoot {
+                path: link.clone(),
+                kind: super::WatchRootKind::Directory,
+            }],
+            move |k| {
+                let _ = tx.send(k);
+            },
+        )
+        .unwrap();
+
+        crate::sources::write_file_atomic(&link.join("ns/own.md"), b"# own\n").unwrap();
+        assert!(
+            rx.recv_timeout(Duration::from_millis(900)).is_err(),
+            "self-write through the link must not fire"
+        );
+
+        std::fs::write(link.join("ns/pasted.md"), "# pasted\n").unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(3))
+                .expect("external write through the link"),
+            SourceKind::Skill
+        );
+    }
+
+    /// One directory serving as both a profiles root and an agent-skills
+    /// root (same path, or a symlink to it): an edit there must reach every
+    /// kind that reads it, not just whichever root was registered last.
+    #[cfg(unix)]
+    #[test]
+    fn shared_profiles_and_agent_skills_dir_notifies_both_kinds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(real.join("review")).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        for skills_root in [real.clone(), link] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _h = super::spawn_fs_watch(
+                vec![
+                    super::WatchRoot {
+                        path: real.clone(),
+                        kind: super::WatchRootKind::AgentProfiles,
+                    },
+                    super::WatchRoot {
+                        path: skills_root.clone(),
+                        kind: super::WatchRootKind::AgentSkills,
+                    },
+                ],
+                move |k| {
+                    let _ = tx.send(k);
+                },
+            )
+            .unwrap();
+            let fired = |rx: &std::sync::mpsc::Receiver<SourceKind>| {
+                let mut kinds = vec![rx.recv_timeout(Duration::from_secs(3)).expect("fire")];
+                while let Ok(k) = rx.recv_timeout(Duration::from_millis(700)) {
+                    kinds.push(k);
+                }
+                kinds.sort_by_key(|k| format!("{k:?}"));
+                kinds
+            };
+
+            crate::sources::write_file_atomic(&real.join("own.md"), b"# own\n").unwrap();
+            assert!(
+                rx.recv_timeout(Duration::from_millis(900)).is_err(),
+                "self-write must not fire under either kind ({skills_root:?})"
+            );
+
+            std::fs::write(real.join("reviewer.md"), "profile").unwrap();
+            assert_eq!(
+                fired(&rx),
+                [SourceKind::Agent, SourceKind::Skill],
+                "profile edit ({skills_root:?})"
+            );
+
+            std::fs::write(real.join("review/SKILL.md"), "skill").unwrap();
+            assert_eq!(
+                fired(&rx),
+                [SourceKind::Skill],
+                "skill edit ({skills_root:?})"
+            );
+        }
     }
 
     #[test]

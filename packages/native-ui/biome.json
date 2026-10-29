@@ -1,0 +1,18 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.10/schema.json",
+  "root": false,
+  "extends": "//",
+  "files": {
+    "includes": ["**", "!catalog.json"]
+  },
+  "linter": {
+    "rules": {
+      "a11y": {
+        "useValidAriaRole": {
+          "level": "error",
+          "options": { "ignoreNonDom": true }
+        }
+      }
+    }
+  }
+}

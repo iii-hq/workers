@@ -28,7 +28,7 @@ use iii_sdk::protocol::TriggerRequest;
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::extract;
-use crate::store::Bank;
+use crate::store::{Bank, Evidence};
 use crate::types::{local_date, now_ms, Memory};
 
 pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
@@ -278,8 +278,7 @@ pub(crate) struct Injection {
     pub rules: usize,
     pub rules_truncated: bool,
     /// The memories the appended message carries, in order, with their
-    /// recall score (0.0 for ambient-floor fill-ins) and the bank holding
-    /// them.
+    /// recall score and the bank holding them.
     pub memories: Vec<(Memory, f32, String)>,
     /// The appended `<memory>` message, when a memory fits the budget.
     pub message: Option<String>,
@@ -334,7 +333,7 @@ pub(crate) fn rules_section(
 /// Build what a turn on `bank_name` is given, with `layers` read under it
 /// (`scope::Resolved::layers`): their rules first ([`turn_rules`]), each labelled with its
 /// bank's name so two `learned` rules never read as one, and the memories
-/// of theirs it reads (`scope::layer_keeps`) in the same recall and floor.
+/// of theirs it reads (`scope::layer_keeps`) in the same recall.
 /// `query` is the user message to recall for (`None`: no recall, as on a
 /// turn's later steps), `seen` the memory texts the window already carries
 /// ([`injected_in_window`]).
@@ -407,55 +406,77 @@ pub(crate) async fn injection(
     };
     let (qv, query_model) = crate::embed_client::QueryVector::split(query_vec.as_ref());
     // One BM25 scale for every bank merged below: each bank's own best
-    // would lift a layer matching only the `user` every first-person query
-    // carries level with the bank's strong hits.
+    // would lift a layer's weak match level with the bank's strong hits,
+    // in the ranking and against `select`'s relevance cut.
     let mut bm25_max = 0.0_f32;
     for (name, b, layered) in &sources {
         let keep = |m: &Memory| keeps(name, *layered, m);
         bm25_max = bm25_max.max(b.bm25_max(&query, keep).await);
     }
-    let (mut hits, mut top, mut held) = (Vec::new(), Vec::new(), HashMap::new());
-    for (name, b, layered) in sources {
+    let (mut hits, mut held) = (Vec::new(), HashMap::new());
+    // Per memory, its best-scored copy: the source and the score.
+    let mut best: HashMap<String, (usize, f32)> = HashMap::new();
+    let (mut evidence, mut names) = (HashMap::new(), Vec::new());
+    for (i, &(name, b, layered)) in sources.iter().enumerate() {
         let keep = |m: &Memory| keeps(name, layered, m);
-        // The default bank's memories it reads as a layer may rank past the
-        // limit; an agent layer keeps every memory, so the limit is enough.
-        let fetch = if layered && name == cfg.default_bank {
-            usize::MAX
-        } else {
-            cfg.recall_limit
-        };
-        let found = b
-            .recall_scaled(
+        // Every candidate: `select` cuts the merged ranking.
+        let (found, found_evidence) = b
+            .recall_evidence(
                 &query,
                 qv,
                 query_model,
-                fetch,
+                usize::MAX,
                 cfg.decay_half_life_days,
                 false,
                 bm25_max,
             )
             .await;
         let found: Vec<(Memory, f32)> = found.into_iter().filter(|(m, _)| keep(m)).collect();
-        let strongest = b.top_memories(cfg.recall_limit, keep).await;
-        // The first bank holding a memory holds it, as `merge_ranked` keeps
-        // the first copy.
-        for m in found.iter().map(|(m, _)| m).chain(&strongest) {
-            held.entry(m.id.clone()).or_insert(name);
+        for (m, s) in &found {
+            // A tie keeps the earlier source, as `merge_ranked` keeps the first copy.
+            let at = best.entry(m.id.clone()).or_insert((i, *s));
+            if *s > at.1 {
+                *at = (i, *s);
+            }
         }
-        hits.extend(found);
-        top.extend(strongest);
+        evidence.extend(found_evidence.into_iter().map(|(id, e)| ((id, i), e)));
+        hits.extend(found.into_iter().map(|(m, s)| (m, s, i)));
+        names.push(name);
     }
-    let hits = merge_ranked(hits, cfg.recall_limit);
-    let mut scores: HashMap<String, f32> = hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
-    // Ambient floor: lexical recall misses identity questions and session
-    // openers entirely (their words never appear in memory texts), so pad
-    // thin results with the bank's strongest memories — still bounded by
-    // the same count and token budget.
-    let hits: Vec<Memory> = hits.into_iter().map(|(m, _)| m).collect();
-    top.sort_by_key(|m| std::cmp::Reverse(crate::store::strength(m)));
-    // After the floor, so the floor never walks the bank turn by turn; a
-    // slot this frees stays free.
-    let memories = unseen(apply_ambient_floor(hits, top, cfg.recall_limit), seen);
+    // A memory several banks hold is ranked once, by its best-scored copy: a
+    // bank's weak copy, past its own `recall_limit`, never shadowed another
+    // bank's. The copy's evidence and bank go with it.
+    hits.retain(|(m, _, i)| best[&m.id].0 == *i);
+    let mut best_evidence = HashMap::new();
+    let mut ranked = Vec::with_capacity(hits.len());
+    for (m, s, i) in hits {
+        held.insert(m.id.clone(), names[i]);
+        if let Some(e) = evidence.remove(&(m.id.clone(), i)) {
+            best_evidence.insert(m.id.clone(), e);
+        }
+        ranked.push((m, s));
+    }
+    let hits = select(
+        merge_ranked(ranked, usize::MAX),
+        &best_evidence,
+        seen,
+        cfg.recall_limit,
+    );
+    // What each source holds on a told line's subject; a memory two hold is the earlier's.
+    let linked: HashSet<String> = hits.iter().flat_map(|(m, _)| subjects(m)).collect();
+    let mut tagged = Vec::new();
+    for &(name, b, layered) in &sources {
+        for m in b.tagged(&linked).await {
+            if keeps(name, layered, &m) {
+                held.entry(m.id.clone()).or_insert(name);
+                tagged.push(m);
+            }
+        }
+    }
+    let hits = with_updates(hits, &tagged, &query);
+    let scores: HashMap<String, f32> = hits.iter().map(|(m, s)| (m.id.clone(), *s)).collect();
+    // After `select`, so a slot this frees stays free.
+    let memories = unseen(hits.into_iter().map(|(m, _)| m).collect(), seen);
     if let Some((body, ids)) =
         memories_message(bank_name, &memories, cfg.recall_budget_tokens, now_ms())
     {
@@ -463,8 +484,7 @@ pub(crate) async fn injection(
             .into_iter()
             .filter(|m| ids.contains(&m.id))
             .map(|m| {
-                let score = scores.remove(&m.id).unwrap_or(0.0);
-                let holder = held.get(&m.id).copied().unwrap_or(bank_name);
+                let (score, holder) = (scores[&m.id], held[&m.id]);
                 (m, score, holder.to_string())
             })
             .collect();
@@ -478,7 +498,7 @@ pub(crate) async fn injection(
 /// order, labelled with its bank's name so two `learned` rules never read as
 /// one, then the bank's own; the bank's own first when it is `default_bank`,
 /// whose rules come before every layer's.
-fn turn_rules(
+pub(crate) fn turn_rules(
     layers: Vec<(&str, Vec<crate::types::Rule>)>,
     own: Vec<crate::types::Rule>,
     own_first: bool,
@@ -509,6 +529,297 @@ pub(crate) fn merge_ranked(mut hits: Vec<(Memory, f32)>, limit: usize) -> Vec<(M
     hits.sort_by(|a, b| b.1.total_cmp(&a.1));
     hits.truncate(limit);
     hits
+}
+
+/// A hit under half the turn's best relevance shares a stray word or a
+/// loose meaning with the question, not its subject (recall eval: 0.4 and
+/// 0.5 lose no expected memory in any mode; 0.6 loses three).
+const RELEVANCE_SHARE: f32 = 0.5;
+/// A meaning match this many standard deviations above the question's
+/// mean similarity stands out even behind a strong lexical best.
+const SEMANTIC_Z: f32 = 2.0;
+// shortcut: the pair passes are quadratic, so they see the best 4 x
+// recall_limit admitted hits, and a list question's siblings past them are
+// never told; widen it if the eval shows a newer fact ranked past it
+// (stale_alone > 0) or lists outgrow it.
+const POOL_PER_SLOT: usize = 4;
+
+/// What a memory is about: its entities but `user`, which every user fact
+/// carries and is no subject of its own.
+pub fn subjects(m: &Memory) -> HashSet<String> {
+    m.entities
+        .iter()
+        .filter(|e| *e != crate::scope::LAYER_ENTITY)
+        .cloned()
+        .collect()
+}
+
+/// Both tagged and sharing no entity: a change to one says nothing of the
+/// other.
+fn unrelated(a: &Memory, b: &Memory) -> bool {
+    let (a, b) = (subjects(a), subjects(b));
+    !a.is_empty() && !b.is_empty() && a.is_disjoint(&b)
+}
+
+/// Memories an entity may tag and still link a told line to its update: one
+/// more lines carry (a repo-wide service, a team) is a topic, not a subject.
+const LINK_MAX_TAGGED: usize = 5;
+
+/// `told` with, right after each line, every newer statement made later on its
+/// [`subjects`] alone, oldest first: "dana left the company" after "dana is the
+/// on-call engineer for payments-api", though it shares no word with "whom do I
+/// page for payments-api?"; never one older than a told line on those subjects.
+/// Only a line on a subject the question names links, and through an entity at
+/// most [`LINK_MAX_TAGGED`] memories carry; each note once, at its line's score,
+/// never a line told already or a rewording of one. `tagged`: the live memories
+/// the turn reads carrying a told line's subject ([`Bank::tagged`]).
+// shortcut: a line told on other words ("who is on call?" over "dana is on
+// call") links nothing, and an update naming one more subject ("dana moved to
+// the ledger team") never joins: without both, the injection eval's stray-word
+// lines drag their subjects' updates in. Widen when an eval slice of linked
+// updates shows the misses.
+// shortcut: a trivial later note on the subject joins beside the update, and a
+// told later line on the subject hides an older real update. Narrow it when an
+// eval slice of linked updates shows noise.
+pub fn with_updates(
+    told: Vec<(Memory, f32)>,
+    tagged: &[Memory],
+    query: &str,
+) -> Vec<(Memory, f32)> {
+    let mut unique = HashSet::new();
+    let tagged: Vec<&Memory> = tagged.iter().filter(|m| unique.insert(&m.id)).collect();
+    let mut carry: HashMap<&str, usize> = HashMap::new();
+    for e in tagged.iter().flat_map(|m| &m.entities) {
+        *carry.entry(e).or_default() += 1;
+    }
+    let rare = |e: &String| carry.get(e.as_str()).is_some_and(|n| *n <= LINK_MAX_TAGGED);
+    let asked: HashSet<String> = crate::index::tokenize(query).into_iter().collect();
+    let named = |e: &String| {
+        let words = crate::index::tokenize(e);
+        !words.is_empty() && words.iter().all(|w| asked.contains(w))
+    };
+    let mut taken: HashSet<&str> = told.iter().map(|(m, _)| m.id.as_str()).collect();
+    let updates: Vec<Vec<Memory>> = told
+        .iter()
+        .map(|(m, _)| {
+            let about = subjects(m);
+            if !about.iter().any(named) {
+                return Vec::new();
+            }
+            // The newest told statement on these subjects: a note before it is stale.
+            let since = told
+                .iter()
+                .map(|(t, _)| (t, subjects(t)))
+                .filter(|(_, on)| !on.is_empty() && on.is_subset(&about))
+                .map(|(t, _)| t.last_stated())
+                .fold(m.last_stated(), Ord::max);
+            let mut later: Vec<&Memory> = tagged
+                .iter()
+                .copied()
+                .filter(|u| {
+                    let on = subjects(u);
+                    !taken.contains(u.id.as_str())
+                        && u.last_stated() > since
+                        // On the line's subjects alone: one more ("Ledgerly caches
+                        // in Redis" after "Ledgerly runs on Postgres") is a new fact.
+                        && on.is_subset(&about)
+                        && on.iter().any(rare)
+                        && !told.iter().any(|(t, _)| extract::same_fact(&t.text, &u.text))
+                })
+                .collect();
+            // Oldest first, so the newest reads last; a tie by id, as the bank's order is a map's.
+            later.sort_by(|a, b| {
+                a.last_stated()
+                    .cmp(&b.last_stated())
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            for u in &later {
+                taken.insert(&u.id);
+            }
+            later.into_iter().cloned().collect()
+        })
+        .collect();
+    told.into_iter()
+        .zip(updates)
+        .flat_map(|((m, s), later)| {
+            std::iter::once((m, s)).chain(later.into_iter().map(move |u| (u, s)))
+        })
+        .collect()
+}
+
+/// Both tagged and neither's entities within the other's: two subjects.
+fn two_subjects(a: &Memory, b: &Memory) -> bool {
+    let within = |x: &Memory, y: &Memory| x.entities.iter().all(|e| y.entities.contains(e));
+    !a.entities.is_empty() && !b.entities.is_empty() && !within(a, b) && !within(b, a)
+}
+
+/// What a turn is told from its ranked hits (every candidate, best first):
+/// those with evidence ([`Evidence`], why each matched) that stand on their
+/// own, or with the turn's best in a turn anchored in the bank (a bank too
+/// small for a z-score anchors on any meaning match), one line per fact,
+/// `limit` of them, or more for a list (every line on the same two or more
+/// question words, each leading with its own subject, or on the `user` of a
+/// question about what memory holds of the user: all its siblings come);
+/// nothing when none has any.
+/// An older statement of a changed fact is never told: when it stands,
+/// the current statement takes its place, whatever the newer's own rank or
+/// relevance. `seen` holds the memory lines the window shows: a rewording of
+/// one is not sent again.
+pub fn select(
+    hits: Vec<(Memory, f32)>,
+    evidence: &HashMap<String, Evidence>,
+    seen: &HashSet<String>,
+    limit: usize,
+) -> Vec<(Memory, f32)> {
+    let none = Evidence::default();
+    let ev = |m: &Memory| evidence.get(&m.id).unwrap_or(&none);
+    // Every question word `a` matched, `b` matched too.
+    let within = |a: &Evidence, b: &Evidence| a.matched.iter().all(|t| b.matched.contains(t));
+    // Evidence: a word of the question, or a meaning above the model's floor.
+    let pool: Vec<(Memory, f32)> = hits
+        .into_iter()
+        .filter(|(m, _)| !ev(m).matched.is_empty() || ev(m).cosine.is_some())
+        .take(POOL_PER_SLOT.saturating_mul(limit))
+        .collect();
+    // Each stale line's newest superseder in `pool` (reversed: a tie goes to the better-ranked).
+    let newest: Vec<Option<usize>> = pool
+        .iter()
+        .map(|(old, _)| {
+            if old.pinned {
+                return None;
+            }
+            let newer = pool.iter().enumerate().filter(|(_, (new, _))| {
+                new.last_stated() > old.last_stated()
+                    && !unrelated(old, new)
+                    // An older line answering a word the newer lacks stays.
+                    && within(ev(old), ev(new))
+                    && extract::supersedes(&old.text, &new.text)
+            });
+            newer
+                .rev()
+                .max_by_key(|(_, (new, _))| new.last_stated())
+                .map(|(j, _)| j)
+        })
+        .collect();
+    // Without the stale lines, so a stale best hit never sets the bar. Visible
+    // hits count: a strong one already shown still sets it.
+    let best = pool
+        .iter()
+        .zip(&newest)
+        .filter(|(_, newer)| newer.is_none())
+        .map(|((m, _), _)| ev(m).relevance)
+        .fold(0.0, f32::max);
+    // Holds two of the question's words, or its one.
+    let on_words = |e: &Evidence| !e.matched.is_empty() && e.matched.len() >= e.terms.min(2);
+    // Stands on its own evidence, whatever the turn's best.
+    let alone = |e: &Evidence| {
+        let words = e.matched.len();
+        on_words(e)
+            || e.z.is_some_and(|z| z >= SEMANTIC_Z)
+            // No vector to weigh it against meaning matches: judge its words, as in lexical mode.
+            // shortcut: so without vectors the best hit anchors the turn on one word ("go
+            // ahead" injects a Go memory); gating this arm too loses two needed lines in the
+            // lexical eval ("my current diet", "which units"): revisit with a lexical signal
+            // that tells them apart.
+            || (!e.vector && words > 0 && e.lexical >= RELEVANCE_SHARE)
+    };
+    // The share of the best counts in a turn with a subject in the bank: a hit
+    // that stands alone, hits holding two of its words between them, or, in a
+    // bank under MIN_Z_POOL vectors (no z to tell a meaning that stands out),
+    // any meaning match. A turn sharing one word ("Great, go ahead.") injects
+    // nothing on it.
+    // shortcut: so in a small embedded bank small talk close in meaning to a
+    // memory anchors itself again; calibrate a cosine bar on a small-bank eval
+    // slice if that noise matters.
+    // shortcut: the two words may land in two different memories, so chatter sharing
+    // one word with each ("great, carry on" beside a "great" and a "carry" memory)
+    // anchors itself; per-hit anchors alone lose two needed lines in the MiniLM hybrid
+    // eval (q-id-apelido, q-evt-next-week): revisit when a per-hit signal delivers them.
+    let covered: HashSet<&String> = pool.iter().flat_map(|(m, _)| &ev(m).matched).collect();
+    // The question's term count, the same on every hit.
+    let terms = pool.first().map_or(0, |(m, _)| ev(m).terms);
+    let anchored = (!covered.is_empty() && covered.len() >= terms.min(2))
+        || pool.iter().any(|(m, _)| {
+            let e = ev(m);
+            alone(e) || (e.cosine.is_some() && e.z.is_none())
+        });
+    let stands = |m: &Memory| {
+        let e = ev(m);
+        alone(e) || (anchored && e.relevance >= RELEVANCE_SHARE * best)
+    };
+    // A line that stands, told by the statement nothing in `pool` supersedes
+    // (later statements are newer, so this ends), once, at its first place.
+    let mut order: Vec<usize> = Vec::new();
+    for (i, (m, _)) in pool.iter().enumerate() {
+        let mut current = i;
+        while let Some(newer) = newest[current] {
+            current = newer;
+        }
+        if stands(m) && !order.contains(&current) {
+            order.push(current);
+        }
+    }
+    let mut pool: Vec<Option<(Memory, f32)>> = pool.into_iter().map(Some).collect();
+    // After the cut, so a low-relevance twin never takes the fact down with it.
+    let mut kept: Vec<(Memory, f32)> = Vec::new();
+    for (m, s) in order.into_iter().filter_map(|i| pool[i].take()) {
+        let e = ev(&m);
+        let line = memory_line_text(&m);
+        let twin = !m.pinned
+            && (kept.iter().any(|(k, _)| {
+                !two_subjects(k, &m) && within(e, ev(k)) && extract::same_fact(&k.text, &m.text)
+            }) || seen.iter().any(|t| {
+                *t != line
+                    && {
+                        let words = crate::index::tokenize(t);
+                        e.matched.iter().all(|w| words.contains(w))
+                    }
+                    && extract::same_fact(t, &m.text)
+            }));
+        if !twin {
+            kept.push((m, s));
+        }
+    }
+    // `limit` lines on rank. A list question carries on: when every line told
+    // stands on the same question words ("which services use Postgres 16?"
+    // over seven services), so does each sibling past it, to the token budget.
+    // A mixed list keeps the count: its tail shares a stray word, not the subject.
+    // Siblings lead with different subjects, while facts on one subject
+    // ("payments-api", two question words) keep the count. One word is a list
+    // only as the `user` of "what do you remember about me?", whose facts all
+    // lead with "user": "kotlin?" over many Kotlin lines, or "what should I do
+    // now?" over the user's, keeps the count.
+    // shortcut: one line in the first `limit` on other words (a meaning-only hit,
+    // a pinned line, a newer statement in an older line's slot) cancels the whole
+    // list; carry on per sibling when an eval shows a list lost that way.
+    // shortcut: object-first siblings ("Postgres 16 runs search") and siblings
+    // sharing a hyphen prefix ("payments-api", "payments-worker") lead with the
+    // same word and keep the count; read the whole subject if an eval shows such
+    // a list lost.
+    let past = kept.split_off(limit.min(kept.len()));
+    let same = |a: &Evidence, b: &Evidence| within(a, b) && within(b, a);
+    let Some(first) = kept
+        .first()
+        .map(|(m, _)| ev(m))
+        .filter(|first| on_words(first) && kept.iter().all(|(m, _)| same(ev(m), first)))
+    else {
+        return kept;
+    };
+    if first.matched == ["user"] && first.of_me {
+        kept.extend(past.into_iter().filter(|(m, _)| same(ev(m), first)));
+    } else if first.terms >= 2 {
+        // Each line's lead, once: a line with none, or a repeat, is no list.
+        let mut leads = HashSet::new();
+        let mut lead_once = |m: &Memory| extract::lead(&m.text).is_some_and(|l| leads.insert(l));
+        if kept.iter().all(|(m, _)| lead_once(m)) {
+            let siblings: Vec<_> = past
+                .into_iter()
+                .filter(|(m, _)| same(ev(m), first) && lead_once(m))
+                .collect();
+            kept.extend(siblings);
+        }
+    }
+    kept
 }
 
 /// A plain user-role text message for `append_messages`.
@@ -682,7 +993,7 @@ pub async fn turn_completed(
         .turn_id
         .as_deref()
         .and_then(crate::scope::take_turn_bank);
-    if !cfg.extraction_enabled || input.session_id.is_empty() || is_sub_agent(&input) {
+    if input.session_id.is_empty() || is_sub_agent(&input) {
         return Ok(AckResponse { ok: true });
     }
     let (until, stamped) = match input.turn_id.as_deref() {
@@ -692,7 +1003,7 @@ pub async fn turn_completed(
     // Not seen by this process (a restart): the bank the hook stamped on
     // the turn's reply.
     let bank = bank.or(stamped.map(Some));
-    let Some(job) = plan_extraction(&input, bank, until) else {
+    let Some(job) = plan_extraction(&input, bank, until, cfg.extraction_enabled) else {
         return Ok(AckResponse { ok: true });
     };
     let receipt = input
@@ -732,16 +1043,19 @@ fn is_sub_agent(input: &TurnCompletedInput) -> bool {
 /// which the next turn's pass would otherwise sweep into ITS bank — is
 /// extracted into the bank it was injected with (`bank`: what the hook
 /// recorded, `None` when this process never saw the turn). A turn that ran
-/// without memory only steps the cursor past itself, which needs its end,
-/// or the skip could swallow the next turn too.
+/// without memory, or with extraction off (`enabled` false: turned back
+/// on, it never reads what was said meanwhile), only steps the cursor past
+/// itself, which needs its end, or the skip could swallow the next turn too.
 pub(crate) fn plan_extraction(
     input: &TurnCompletedInput,
     bank: Option<Option<crate::scope::Resolved>>,
     until: Option<String>,
+    enabled: bool,
 ) -> Option<ExtractJobInput> {
     if input.session_id.is_empty() || is_sub_agent(input) {
         return None;
     }
+    let bank = if enabled { bank } else { Some(None) };
     let skip = matches!(bank, Some(None));
     if skip && until.is_none() {
         return None;
@@ -938,33 +1252,11 @@ fn newest_lines(body: &str, budget: usize) -> String {
     lines.join("\n")
 }
 
-/// Pad thin recall results with the bank's strongest memories, deduped by
-/// id and bounded by `min(AMBIENT_FLOOR, recall_limit)`.
-pub(crate) fn apply_ambient_floor(
-    mut memories: Vec<Memory>,
-    top: Vec<Memory>,
-    recall_limit: usize,
-) -> Vec<Memory> {
-    const AMBIENT_FLOOR: usize = 3;
-    let floor = AMBIENT_FLOOR.min(recall_limit);
-    if memories.len() < floor {
-        for memory in top {
-            if memories.len() >= floor {
-                break;
-            }
-            if !memories.iter().any(|f| f.id == memory.id) {
-                memories.push(memory);
-            }
-        }
-    }
-    memories
-}
-
 /// The one appended `<memory>` message: bulleted memory texts, each dated
-/// with its last update, under a 4-chars-per-token budget counted over the
-/// whole rendered line, plus the ids of the memories that made the cut. A
-/// memory too long for what is left is skipped, not a stop — shorter ones
-/// ranked below it still fit. The header names the day the recall ran,
+/// when its fact was last stated, under a 4-chars-per-token budget counted
+/// over the whole rendered line, plus the ids of the memories that made the
+/// cut. A memory too long for what is left is skipped, not a stop — shorter
+/// ones ranked below it still fit. The header names the day the recall ran,
 /// never "today": the message is persisted and replayed on later turns.
 /// `None` when nothing fits.
 pub(crate) fn memories_message(
@@ -980,7 +1272,7 @@ pub(crate) fn memories_message(
         let line = format!(
             "- {} ({})",
             memory_line_text(memory),
-            local_date(memory.updated_at, "%Y-%m-%d")
+            local_date(memory.last_stated(), "%Y-%m-%d")
         );
         if line.len() > budget {
             continue;
@@ -993,7 +1285,7 @@ pub(crate) fn memories_message(
         return None;
     }
     let body = format!(
-        "<memory bank=\"{bank}\">\nRelevant remembered memories (\"the user\" is the person you are talking to; recalled {}; each dated when last updated; verify anything surprising):\n{}\n</memory>",
+        "<memory bank=\"{bank}\">\nRelevant remembered memories (\"the user\" is the person you are talking to; recalled {}; each dated when last stated; verify anything surprising):\n{}\n</memory>",
         local_date(now, "%Y-%m-%d %A"),
         lines.join("\n")
     );
@@ -1142,7 +1434,7 @@ mod tests {
         // Failed or cancelled included: the next turn's pass would otherwise
         // sweep it into that turn's bank.
         let blog = Some(Some(crate::scope::Resolved::named("blog")));
-        let job = plan_extraction(&finished(), blog, Some("e9".into())).unwrap();
+        let job = plan_extraction(&finished(), blog, Some("e9".into()), true).unwrap();
         assert_eq!(
             (
                 job.bank.as_deref(),
@@ -1158,23 +1450,40 @@ mod tests {
             derived: true,
             agent: Some("reviewer".into()),
         };
-        let job = plan_extraction(&finished(), Some(Some(repo)), None).unwrap();
+        let job = plan_extraction(&finished(), Some(Some(repo)), None, true).unwrap();
         assert_eq!(
             (job.bank.as_deref(), job.derived, job.agent.as_deref()),
             (Some("w-abc123"), true, Some("reviewer")),
             "and so does its agent profile"
         );
         // Not seen by this process (a restart): the job resolves it.
-        let job = plan_extraction(&finished(), None, None).unwrap();
+        let job = plan_extraction(&finished(), None, None, true).unwrap();
         assert_eq!((job.bank, job.skip), (None, false));
     }
 
     #[test]
     fn a_turn_without_memory_only_steps_the_cursor() {
-        let job = plan_extraction(&finished(), Some(None), Some("e9".into())).unwrap();
+        let job = plan_extraction(&finished(), Some(None), Some("e9".into()), true).unwrap();
         assert_eq!((job.skip, job.until.as_deref()), (true, Some("e9")));
         // Skipping without the turn's end could skip the next turn too.
-        assert!(plan_extraction(&finished(), Some(None), None).is_none());
+        assert!(plan_extraction(&finished(), Some(None), None, true).is_none());
+    }
+
+    #[test]
+    fn turned_back_on_extraction_never_reads_what_was_said_while_it_was_off() {
+        // Off: the turn only steps the cursor past its end, so the first
+        // pass after extraction is back on starts after it.
+        let blog = Some(Some(crate::scope::Resolved::named("blog")));
+        let off = plan_extraction(&finished(), blog.clone(), Some("e4".into()), false).unwrap();
+        assert_eq!(
+            (off.bank, off.skip, off.until.as_deref()),
+            (None, true, Some("e4"))
+        );
+        // Back on: the next turn goes to its bank as before.
+        let on = plan_extraction(&finished(), blog.clone(), Some("e6".into()), true).unwrap();
+        assert_eq!((on.bank.as_deref(), on.skip), (Some("blog"), false));
+        // Off with no end to step to: nothing, like a turn without memory.
+        assert!(plan_extraction(&finished(), blog, None, false).is_none());
     }
 
     #[test]
@@ -1184,12 +1493,12 @@ mod tests {
             ..finished()
         };
         let blog = Some(Some(crate::scope::Resolved::named("blog")));
-        assert!(plan_extraction(&child, blog, Some("e9".into())).is_none());
+        assert!(plan_extraction(&child, blog, Some("e9".into()), true).is_none());
         let detached = TurnCompletedInput {
             parent_session_id: Some("p".into()),
             ..finished()
         };
-        assert!(plan_extraction(&detached, None, Some("e9".into())).is_none());
+        assert!(plan_extraction(&detached, None, Some("e9".into()), true).is_none());
     }
 
     #[test]
@@ -1313,20 +1622,6 @@ Formal."
         assert!(truncated);
         assert!(section.contains("## second [omitted: over the injection budget]"));
         assert!(!section.contains("bbbb"));
-    }
-
-    #[test]
-    fn ambient_floor_pads_thin_results_and_dedups() {
-        let hits = vec![memory("fp1", "hit")];
-        let top = vec![
-            memory("fp1", "hit"),
-            memory("fp2", "strong"),
-            memory("fp3", "also strong"),
-            memory("fp4", "never reached"),
-        ];
-        let out = apply_ambient_floor(hits, top, 6);
-        let ids: Vec<&str> = out.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["fp1", "fp2", "fp3"]);
     }
 
     #[test]
@@ -1473,18 +1768,1292 @@ Formal."
         );
     }
 
-    #[test]
-    fn ambient_floor_respects_a_small_recall_limit() {
-        let out = apply_ambient_floor(vec![], vec![memory("fp1", "a"), memory("fp2", "b")], 1);
-        assert_eq!(out.len(), 1);
+    /// Deps over a store in `dir` and no engine: embeddings off, so
+    /// nothing in `injection` reaches the client.
+    fn offline_deps(dir: &std::path::Path, cfg: WorkerConfig) -> Deps {
+        let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:1"));
+        let sets = crate::events::register_trigger_types(&iii);
+        let store = crate::store::Store::open(dir.to_path_buf()).unwrap();
+        Deps {
+            emitter: Arc::new(crate::events::Emitter::new(sets, iii.clone())),
+            iii,
+            store: Arc::new(tokio::sync::RwLock::new(Arc::new(store))),
+            config: Arc::new(tokio::sync::RwLock::new(Arc::new(cfg))),
+        }
+    }
+
+    fn offline_cfg(recall_limit: usize) -> WorkerConfig {
+        WorkerConfig {
+            recall_limit,
+            embeddings_enabled: false,
+            ..WorkerConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_memory_both_banks_hold_is_injected_from_the_copy_inside_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(3));
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (layer, _) = store.ensure_bank("agent-x", None).await.unwrap();
+        for n in 0..3 {
+            repo.commit(memory(&format!("fp-r{n}"), &format!("kiwi kiwi kiwi r{n}")))
+                .await
+                .unwrap();
+        }
+        // The turn bank ranks this copy fourth, past the limit; the layer,
+        // holding only it, ranks it first.
+        let twin = memory(
+            "fp-twin",
+            "kiwi was mentioned once, among a long run of other words that dilute the match",
+        );
+        repo.commit(twin.clone()).await.unwrap();
+        layer.commit(twin).await.unwrap();
+
+        let out = injection(
+            &deps,
+            &offline_cfg(3),
+            "w-abc123",
+            &["agent-x".to_string()],
+            Some("kiwi"),
+            &HashSet::new(),
+        )
+        .await;
+        let injected: Vec<(String, String)> = out
+            .memories
+            .iter()
+            .map(|(m, _, bank)| (m.id.clone(), bank.clone()))
+            .collect();
+        assert_eq!(
+            injected,
+            vec![
+                ("fp-twin".into(), "agent-x".into()),
+                ("fp-r0".into(), "w-abc123".into()),
+                ("fp-r1".into(), "w-abc123".into()),
+            ],
+            "the layer's copy ranks inside the limit, so it is the one injected, and its bank holds it"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_shared_memory_the_global_top_of_both_banks_is_injected() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = offline_cfg(3);
+        let deps = offline_deps(dir.path(), cfg.clone());
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (layer, _) = store.ensure_bank("agent-x", None).await.unwrap();
+        let filler = "and some other words to dilute the match";
+        for (bank, name, kiwis) in [
+            (&repo, "r0", 4),
+            (&repo, "r1", 2),
+            (&repo, "r2", 1),
+            (&repo, "r3", 1),
+            (&layer, "l0", 3),
+            (&layer, "l1", 2),
+            (&layer, "l2", 1),
+            (&layer, "l3", 1),
+        ] {
+            let text = format!("{} {name} {filler}", "kiwi ".repeat(kiwis).trim_end());
+            bank.commit(memory(&format!("fp-{name}"), &text))
+                .await
+                .unwrap();
+        }
+        let query = "kiwi";
+        // Today's flow: each source cut to the limit, then one ranking.
+        let shared = repo
+            .bm25_max(query, |_| true)
+            .await
+            .max(layer.bm25_max(query, |_| true).await);
+        let mut hits = Vec::new();
+        for b in [&repo, &layer] {
+            hits.extend(
+                b.recall_scaled(
+                    query,
+                    None,
+                    "",
+                    cfg.recall_limit,
+                    cfg.decay_half_life_days,
+                    false,
+                    shared,
+                )
+                .await,
+            );
+        }
+        let top: Vec<String> = merge_ranked(hits, cfg.recall_limit)
+            .into_iter()
+            .map(|(m, _)| m.id)
+            .collect();
+
+        let out = injection(
+            &deps,
+            &cfg,
+            "w-abc123",
+            &["agent-x".to_string()],
+            Some(query),
+            &HashSet::new(),
+        )
+        .await;
+        let injected: Vec<String> = out.memories.iter().map(|(m, _, _)| m.id.clone()).collect();
+        assert_eq!(injected, top);
+        let banks: HashSet<&str> = out.memories.iter().map(|(_, _, b)| b.as_str()).collect();
+        assert_eq!(banks.len(), 2, "both banks reach the top: {injected:?}");
+    }
+
+    /// What `injection` tells a turn on `w-abc123` reading `layers`: each
+    /// memory's id and the bank holding it.
+    async fn told(deps: &Deps, layers: &[&str], query: &str) -> Vec<(String, String)> {
+        let layers: Vec<String> = layers.iter().map(|l| l.to_string()).collect();
+        let cfg = deps.config().await;
+        injection(
+            deps,
+            &cfg,
+            "w-abc123",
+            &layers,
+            Some(query),
+            &HashSet::new(),
+        )
+        .await
+        .memories
+        .into_iter()
+        .map(|(m, _, bank)| (m.id, bank))
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn the_copy_injected_is_judged_on_its_own_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (layer, _) = store.ensure_bank("agent-x", None).await.unwrap();
+        // One memory, two copies: the turn bank's matches the question only
+        // through the `user` the pronoun adds; the layer's is tagged with the
+        // question's word, so it scores higher and is evidence.
+        let text = "The user eats fruit daily.";
+        let tagged = |entity: &str| Memory {
+            entities: vec![entity.into()],
+            ..memory("fp-x", text)
+        };
+        repo.commit(tagged("user")).await.unwrap();
+        layer.commit(tagged("kiwi")).await.unwrap();
+        let query = "what about my kiwi";
+        assert_eq!(
+            told(&deps, &["agent-x"], query).await,
+            [("fp-x".to_string(), "agent-x".to_string())]
+        );
+        assert!(
+            told(&deps, &[], query).await.is_empty(),
+            "the turn bank's copy alone is no evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_memory_two_banks_score_alike_is_held_by_the_earlier_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (layer, _) = store.ensure_bank("agent-x", None).await.unwrap();
+        let twin = memory("fp-x", "kiwi grows on the vine");
+        repo.commit(twin.clone()).await.unwrap();
+        layer.commit(twin).await.unwrap();
+        let mut scores = Vec::new();
+        for b in [&repo, &layer] {
+            let hits = b.recall_scaled("kiwi", None, "", 6, 30, false, 0.0).await;
+            scores.push(hits[0].1);
+        }
+        assert_eq!(scores[0], scores[1], "a tie, or the test proves nothing");
+        assert_eq!(
+            told(&deps, &["agent-x"], "kiwi").await,
+            [("fp-x".to_string(), "w-abc123".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_repo_hit_is_injected_when_a_layer_matches_on_user_alone() {
+        // The fixture of `a_layer_matching_only_on_the_user_never_outranks_a_strong_repo_hit`.
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let (main, _) = store.ensure_bank("main", None).await.unwrap();
+        repo.commit(memory(
+            "fp-deploy",
+            "ledger-sync deploy runs Bazel from ops.",
+        ))
+        .await
+        .unwrap();
+        repo.commit(memory("fp-lint", "The linter runs before every commit."))
+            .await
+            .unwrap();
+        for n in 0..3 {
+            let m = Memory {
+                entities: vec!["user".into()],
+                ..memory(&format!("fp-u{n}"), &format!("The user drinks tea {n}."))
+            };
+            main.commit(m).await.unwrap();
+        }
+        assert_eq!(
+            told(&deps, &["main"], "how do I deploy ledger-sync with Bazel").await,
+            [("fp-deploy".to_string(), "w-abc123".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pronoun_only_question_still_injects_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let store = deps.store().await;
+        let (repo, _) = store.ensure_bank("w-abc123", None).await.unwrap();
+        let about_user = |id: &str, text: &str| Memory {
+            entities: vec!["user".into()],
+            ..memory(id, text)
+        };
+        for m in [
+            about_user("fp-name", "The user's name is Ana."),
+            about_user("fp-city", "The user lives in Lisbon."),
+            memory("fp-ci", "CI runs the linter before the tests."),
+        ] {
+            repo.commit(m).await.unwrap();
+        }
+        let mut ids: Vec<String> = told(&deps, &[], "who am I?")
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["fp-city", "fp-name"]);
+        // Asking what memory holds about you is how people check it.
+        let mut ids: Vec<String> = told(&deps, &[], "what do you remember about me?")
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["fp-city", "fp-name"]);
+        assert!(
+            told(&deps, &[], "can you help me refactor my parser")
+                .await
+                .is_empty(),
+            "a task in the first person is not a question about the user"
+        );
+    }
+
+    const POSTGRES_QUESTION: &str =
+        "Which of our services use Postgres 16? Reply with the service names.";
+
+    /// Deps over a `w-abc123` bank holding "The <name> service uses Postgres
+    /// 16." per name: sibling facts, each standing on the question's words.
+    /// Beside them, a near miss on one word of the question.
+    async fn postgres_services(dir: &std::path::Path, cfg: WorkerConfig, names: &[&str]) -> Deps {
+        let deps = offline_deps(dir, cfg);
+        let (repo, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        let near_miss = memory(
+            "fp-gateway",
+            "The gateway service caches sessions in Redis.",
+        );
+        let siblings = names.iter().map(|name| {
+            let text = format!("The {name} service uses Postgres 16.");
+            memory(&format!("fp-{name}"), &text)
+        });
+        for m in siblings.chain([near_miss]) {
+            repo.commit(m).await.unwrap();
+        }
+        deps
+    }
+
+    #[tokio::test]
+    async fn seven_relevant_siblings_all_reach_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = [
+            "billing", "ledger", "search", "mailer", "auth", "export", "report",
+        ];
+        let deps = postgres_services(dir.path(), offline_cfg(6), &names).await;
+        let mut ids: Vec<String> = told(&deps, &[], POSTGRES_QUESTION)
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        let mut all: Vec<String> = names.iter().map(|n| format!("fp-{n}")).collect();
+        all.sort();
+        assert_eq!(
+            ids, all,
+            "every sibling past recall_limit, not the near miss"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_token_budget_still_binds_the_siblings() {
+        // Nine siblings stand, with lines of one length; the budget holds seven.
+        let names = [
+            "ledger", "search", "mailer", "export", "report", "backup", "upload", "signer",
+            "ticket",
+        ];
+        let line = format!(
+            "- The ledger service uses Postgres 16. ({})",
+            local_date(1, "%Y-%m-%d")
+        );
+        let budget = (7 * line.len()).div_ceil(4);
+        assert!(8 * line.len() > 4 * budget, "fixture sized to seven lines");
+        let cfg = WorkerConfig {
+            recall_budget_tokens: budget as u64,
+            ..offline_cfg(6)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let deps = postgres_services(dir.path(), cfg, &names).await;
+        assert_eq!(told(&deps, &[], POSTGRES_QUESTION).await.len(), 7);
+    }
+
+    #[tokio::test]
+    async fn a_one_word_question_gets_recall_limit_lines() {
+        // Every line holds the question's one word: a shared word, no list.
+        let names = [
+            "billing", "ledger", "search", "mailer", "auth", "export", "report", "backup",
+            "upload", "signer",
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let deps = postgres_services(dir.path(), offline_cfg(6), &names).await;
+        assert_eq!(told(&deps, &[], "Postgres?").await.len(), 6);
+    }
+
+    /// Sixteen facts "The user …", all tagged `user`.
+    const USER_FACTS: [&str; 16] = [
+        "The user's team nickname is nick-7f3a.",
+        "The user's cat is named Pixel.",
+        "The user grew up in Porto.",
+        "The user plays the cello in a quartet.",
+        "The user's favorite author is Ursula Le Guin.",
+        "The user is vegetarian.",
+        "The user's sister lives in Montreal.",
+        "The user speaks Portuguese and Italian.",
+        "The user was born in 1988.",
+        "The user keeps bees on a rooftop.",
+        "The user drives an electric scooter.",
+        "The user swims every Saturday morning.",
+        "The user collects vintage typewriters.",
+        "The user is allergic to peanuts.",
+        "The user studied physics in Coimbra.",
+        "The user runs a book club on Thursdays.",
+    ];
+
+    /// Deps over a `w-abc123` bank holding [`USER_FACTS`] (`fp-u<n>`) beside
+    /// workplace facts on no user.
+    async fn user_facts_bank(dir: &std::path::Path) -> Deps {
+        let deps = offline_deps(dir, offline_cfg(6));
+        let (repo, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        let workplace = [
+            "The office coffee machine is on the third floor.",
+            "The quarterly planning meeting happens in March.",
+            "The design team draws mockups in Figma.",
+            "The marketing site is built with Astro.",
+            "The legal team reviews every press release.",
+            "The analytics dashboards are hosted on Metabase.",
+            "Team lunches are on Fridays.",
+            "The support rotation changes every Monday.",
+        ];
+        for (n, text) in USER_FACTS.iter().enumerate() {
+            let m = Memory {
+                entities: vec!["user".into()],
+                ..memory(&format!("fp-u{n}"), text)
+            };
+            repo.commit(m).await.unwrap();
+        }
+        for (n, text) in workplace.iter().enumerate() {
+            repo.commit(memory(&format!("fp-w{n}"), text))
+                .await
+                .unwrap();
+        }
+        deps
+    }
+
+    #[tokio::test]
+    async fn what_you_remember_about_me_lists_every_user_fact() {
+        // The question's one term is the `user` its pronoun stands for: a list.
+        let dir = tempfile::tempdir().unwrap();
+        let deps = user_facts_bank(dir.path()).await;
+        let mut ids: Vec<String> = told(&deps, &[], "What do you remember about me?")
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        let mut all: Vec<String> = (0..USER_FACTS.len()).map(|n| format!("fp-u{n}")).collect();
+        all.sort();
+        assert_eq!(
+            ids, all,
+            "every user fact past recall_limit, no workplace fact"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pronoun_only_follow_up_keeps_the_count() {
+        // Its `user` stands for "I", but it asks nothing of what memory holds.
+        let dir = tempfile::tempdir().unwrap();
+        let deps = user_facts_bank(dir.path()).await;
+        let told = told(&deps, &[], "What should I do now?").await;
+        assert!(told.len() <= 6, "{told:?}");
+    }
+
+    #[tokio::test]
+    async fn facts_on_one_hyphenated_service_keep_the_count() {
+        // "payments-api" is two question words, and every line leads with it.
+        let facts = [
+            "payments-api runs three replicas in production.",
+            "payments-api is written in Kotlin.",
+            "payments-api keeps its secrets in Vault.",
+            "payments-api ships its logs to Loki.",
+            "payments-api deploys on Tuesday mornings.",
+            "payments-api talks to the ledger over gRPC.",
+            "payments-api stores card tokens in Postgres 16.",
+            "payments-api pages the billing rotation.",
+            "payments-api retries webhooks five times.",
+            "payments-api caches exchange rates in Redis.",
+            "payments-api exposes metrics on port 9090.",
+            "payments-api was split out of the monolith in 2022.",
+        ];
+        let memories = facts
+            .iter()
+            .enumerate()
+            .map(|(n, text)| memory(&format!("fp-p{n}"), text))
+            .collect();
+        let ids = told_ids(memories, "Is payments-api down right now?").await;
+        assert!(ids.len() <= 6, "{ids:?}");
+    }
+
+    /// A memory tagged with `entities`, last stated at `at`.
+    fn tagged(id: &str, text: &str, at: u64, entities: &[&str]) -> Memory {
+        Memory {
+            entities: entities.iter().map(|e| e.to_string()).collect(),
+            ..stated(id, text, at)
+        }
+    }
+
+    /// Ids `injection` tells a turn on `w-abc123`, a bank holding `memories`.
+    async fn told_ids(memories: Vec<Memory>, query: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let (repo, _) = deps
+            .store()
+            .await
+            .ensure_bank("w-abc123", None)
+            .await
+            .unwrap();
+        for m in memories {
+            repo.commit(m).await.unwrap();
+        }
+        told(&deps, &[], query)
+            .await
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_newer_note_about_a_told_lines_subject_joins_right_after_it() {
+        // The departure shares no word with the question and no change word
+        // with the on-call line: only the entity both carry.
+        let mut memories = vec![
+            tagged(
+                "fp-hired",
+                "dana-7f3a joined our company in 2023.",
+                1,
+                &["dana"],
+            ),
+            tagged(
+                "fp-oncall",
+                "dana-7f3a is the primary on-call engineer for payments-api incidents.",
+                2,
+                &["dana", "payments-api"],
+            ),
+            tagged(
+                "fp-backup",
+                "Unanswered payments-api pages escalate to marco-1c2d after 15 minutes.",
+                3,
+                &["marco", "payments-api"],
+            ),
+            tagged(
+                "fp-left",
+                "dana-7f3a left our company last week and her accounts were deactivated.",
+                4,
+                &["dana"],
+            ),
+        ];
+        let question =
+            "Who should I page for a payments-api incident right now? Reply with the name only.";
+        let ids = told_ids(memories.clone(), question).await;
+        let at = |id: &str| ids.iter().position(|i| i == id);
+        assert_eq!(
+            at("fp-left"),
+            at("fp-oncall").map(|i| i + 1),
+            "the departure right after the line it updates: {ids:?}"
+        );
+        assert!(at("fp-backup").is_some(), "{ids:?}");
+        assert_eq!(ids.len(), 3, "each later note once: {ids:?}");
+        memories.pop();
+        let mut ids = told_ids(memories, question).await;
+        ids.sort();
+        assert_eq!(ids, ["fp-backup", "fp-oncall"], "an older note never joins");
+    }
+
+    const PAGE: &str = "Who should I page for a payments-api incident right now?";
+
+    /// dana on call for payments-api, said at `at`.
+    fn on_call(at: u64) -> Memory {
+        tagged(
+            "fp-oncall",
+            "dana-7f3a is the primary on-call engineer for payments-api incidents.",
+            at,
+            &["dana", "payments-api"],
+        )
+    }
+
+    /// A note on dana alone, said at `at`.
+    fn on_dana(id: &str, text: &str, at: u64) -> Memory {
+        tagged(id, text, at, &["dana"])
+    }
+
+    /// The ids [`with_updates`] gives a turn told `told` asking `query`, the
+    /// bank's memories on their subjects being `told` and `notes`.
+    fn joined(told: Vec<Memory>, notes: Vec<Memory>, query: &str) -> Vec<String> {
+        let tagged: Vec<Memory> = told.iter().cloned().chain(notes).collect();
+        let told = told.into_iter().map(|m| (m, 1.0)).collect();
+        with_updates(told, &tagged, query)
+            .into_iter()
+            .map(|(m, _)| m.id)
+            .collect()
     }
 
     #[test]
-    fn ambient_floor_leaves_rich_results_alone() {
-        let hits = vec![memory("fp1", "a"), memory("fp2", "b"), memory("fp3", "c")];
-        let out = apply_ambient_floor(hits.clone(), vec![memory("fp9", "top")], 6);
-        assert_eq!(out.len(), 3);
-        assert!(!out.iter().any(|m| m.id == "fp9"));
+    fn a_stale_note_older_than_a_told_line_never_joins() {
+        let back = tagged(
+            "fp-back",
+            "dana-7f3a is back from leave and takes payments-api pages again.",
+            29,
+            &["dana", "payments-api"],
+        );
+        let leave = on_dana(
+            "fp-leave",
+            "dana-7f3a is on parental leave until March.",
+            20,
+        );
+        assert_eq!(
+            joined(vec![back, on_call(10)], vec![leave], PAGE),
+            ["fp-back", "fp-oncall"]
+        );
+    }
+
+    #[test]
+    fn a_trivial_later_note_does_not_push_the_update_out() {
+        let notes = || {
+            vec![
+                on_dana(
+                    "fp-left",
+                    "dana-7f3a left our company and her accounts were deactivated.",
+                    25,
+                ),
+                on_dana("fp-laptop", "dana-7f3a returned her laptop to IT.", 29),
+            ]
+        };
+        assert_eq!(
+            joined(vec![on_call(10)], notes(), PAGE),
+            ["fp-oncall", "fp-left", "fp-laptop"],
+            "every later note, oldest first"
+        );
+        // A newer told line on no subject is no statement on dana.
+        let runbook = stated(
+            "fp-runbook",
+            "The payments-api runbook lives in Notion.",
+            40,
+        );
+        assert_eq!(
+            joined(vec![on_call(10), runbook], notes(), PAGE),
+            ["fp-oncall", "fp-left", "fp-laptop", "fp-runbook"]
+        );
+    }
+
+    #[test]
+    fn a_note_joins_one_told_line_only() {
+        let schema = tagged(
+            "fp-schema",
+            "dana-7f3a reviews every payments-api schema change.",
+            10,
+            &["dana", "payments-api"],
+        );
+        let left = on_dana("fp-left", "dana-7f3a left our company last week.", 25);
+        let ids = joined(vec![on_call(10), schema], vec![left], PAGE);
+        assert_eq!(ids, ["fp-oncall", "fp-left", "fp-schema"]);
+    }
+
+    #[test]
+    fn an_update_naming_another_subject_never_joins() {
+        let moved = tagged(
+            "fp-moved",
+            "dana-7f3a moved to the ledger team.",
+            25,
+            &["dana", "ledger"],
+        );
+        assert_eq!(joined(vec![on_call(10)], vec![moved], PAGE), ["fp-oncall"]);
+    }
+
+    #[test]
+    fn a_line_whose_subject_the_question_never_names_links_nothing() {
+        let left = on_dana("fp-left", "dana-7f3a left our company last week.", 25);
+        assert_eq!(
+            joined(vec![on_call(10)], vec![left], "Who is on call this week?"),
+            ["fp-oncall"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_popular_entity_links_nothing() {
+        // Each question names the told line's subject; later lines carry only
+        // its `user`, or a service many lines name.
+        let mut memories = vec![
+            tagged(
+                "fp-dog",
+                "The user's dog Biscuit is a beagle.",
+                1,
+                &["user", "biscuit"],
+            ),
+            tagged(
+                "fp-japanese",
+                "The user is learning Japanese.",
+                2,
+                &["user"],
+            ),
+            tagged(
+                "fp-schema",
+                "dana-7f3a reviews every payments-api schema change.",
+                1,
+                &["dana", "payments-api"],
+            ),
+        ];
+        for (n, text) in [
+            "Unanswered payments-api pages escalate after 15 minutes.",
+            "The payments-api deploy window is Tuesday morning.",
+            "payments-api keeps its secrets in Vault.",
+            "payments-api logs ship to Loki.",
+            "payments-api runs three replicas in production.",
+            "payments-api is written in Kotlin.",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = format!("fp-svc{n}");
+            memories.push(tagged(&id, text, 2 + n as u64, &["payments-api"]));
+        }
+        assert_eq!(
+            told_ids(memories.clone(), "How old is Biscuit?").await,
+            ["fp-dog"]
+        );
+        assert_eq!(
+            told_ids(memories, "What does dana-7f3a review?").await,
+            ["fp-schema"]
+        );
+    }
+
+    /// `select` over hits ranked in the order given: the ids it keeps.
+    fn kept(hits: Vec<(Memory, Evidence)>, seen: &HashSet<String>, limit: usize) -> Vec<String> {
+        let evidence: HashMap<String, Evidence> = hits
+            .iter()
+            .map(|(m, e)| (m.id.clone(), e.clone()))
+            .collect();
+        let ranked = hits
+            .into_iter()
+            .enumerate()
+            .map(|(i, (m, _))| (m, 1.0 / (i + 1) as f32))
+            .collect();
+        select(ranked, &evidence, seen, limit)
+            .into_iter()
+            .map(|(m, _)| m.id)
+            .collect()
+    }
+
+    /// [`kept`] for memories whose text is their id, nothing visible.
+    fn selected(hits: Vec<(&str, Evidence)>, limit: usize) -> Vec<String> {
+        let hits = hits.into_iter().map(|(id, e)| (memory(id, id), e));
+        kept(hits.collect(), &HashSet::new(), limit)
+    }
+
+    /// `words` of the question's `terms` matched, at `relevance`, all of it
+    /// lexical.
+    fn words(words: usize, terms: usize, relevance: f32) -> Evidence {
+        Evidence {
+            matched: (0..words).map(|n| format!("w{n}")).collect(),
+            terms,
+            lexical: relevance,
+            relevance,
+            ..Evidence::default()
+        }
+    }
+
+    #[test]
+    fn nothing_admitted_means_nothing_injected() {
+        // Ranked through the `user` a pronoun added, or a stopword: no word
+        // of the question and no meaning, however well it scores.
+        let bare = Evidence {
+            terms: 3,
+            lexical: 1.0,
+            relevance: 1.0,
+            ..Evidence::default()
+        };
+        assert!(selected(vec![("fp1", bare.clone()), ("fp2", bare)], 6).is_empty());
+        assert!(selected(Vec::new(), 6).is_empty());
+        let unexplained = vec![(memory("fp3", "no evidence recorded"), 1.0)];
+        assert!(select(unexplained, &HashMap::new(), &HashSet::new(), 6).is_empty());
+    }
+
+    #[test]
+    fn a_meaning_only_hit_above_the_floor_is_injected() {
+        // No word of the question, a cosine above the model's floor: that is evidence.
+        let near = Evidence {
+            terms: 2,
+            relevance: 1.0,
+            cosine: Some(0.27),
+            z: Some(2.5),
+            vector: true,
+            ..Evidence::default()
+        };
+        assert_eq!(selected(vec![("fp-near", near)], 6), ["fp-near"]);
+    }
+
+    #[test]
+    fn a_stray_word_behind_a_strong_match_is_dropped() {
+        let picked = selected(
+            vec![
+                ("fp-best", words(3, 4, 1.0)),
+                ("fp-stray", words(1, 4, 0.18)),
+                ("fp-half", words(1, 4, 0.6)),
+                ("fp-two", words(2, 4, 0.1)),
+            ],
+            6,
+        );
+        assert_eq!(picked, ["fp-best", "fp-half", "fp-two"]);
+    }
+
+    /// [`words`], for a memory with a vector, close in meaning to nothing.
+    fn embedded(words_matched: usize, terms: usize, relevance: f32) -> Evidence {
+        Evidence {
+            vector: true,
+            ..words(words_matched, terms, relevance)
+        }
+    }
+
+    #[test]
+    fn a_one_word_question_still_keeps_every_match() {
+        // "deploy?": the one word is the whole question.
+        let picked = selected(
+            vec![("fp1", embedded(1, 1, 1.0)), ("fp2", embedded(1, 1, 0.4))],
+            6,
+        );
+        assert_eq!(picked, ["fp1", "fp2"]);
+    }
+
+    #[test]
+    fn a_lone_one_word_best_hit_is_not_injected() {
+        // "Great, go ahead." beside "The API gateway is written in Go.": the
+        // best hit, on one word of three, however many memories hold it.
+        let hits = vec![
+            (
+                memory("fp-gateway", "The API gateway is written in Go."),
+                embedded(1, 3, 1.0),
+            ),
+            (
+                memory("fp-tools", "Internal tools are written in Go."),
+                embedded(1, 3, 0.9),
+            ),
+        ];
+        assert!(kept(hits, &HashSet::new(), 6).is_empty());
+    }
+
+    #[test]
+    fn a_meaning_match_anchors_only_a_bank_too_small_for_z() {
+        // One word of two, close in meaning: "When do backups happen?".
+        let close = |z| Evidence {
+            cosine: Some(0.8),
+            z,
+            ..embedded(1, 2, 1.0)
+        };
+        // Under MIN_Z_POOL vectors no z exists: the cosine anchors, as before z did.
+        assert_eq!(selected(vec![("fp-backup", close(None))], 6), ["fp-backup"]);
+        // With z, the meaning must stand out to anchor the turn.
+        assert!(selected(vec![("fp-backup", close(Some(1.0)))], 6).is_empty());
+    }
+
+    #[test]
+    fn an_anchored_turn_keeps_its_share_hits() {
+        let one = |word: &str, relevance| Evidence {
+            matched: vec![word.into()],
+            ..embedded(1, 3, relevance)
+        };
+        // A hit holding two of the question's words anchors the turn.
+        let picked = selected(
+            vec![("fp-two", embedded(2, 3, 1.0)), ("fp-half", one("w0", 0.6))],
+            6,
+        );
+        assert_eq!(picked, ["fp-two", "fp-half"]);
+        // So do two hits holding one word each.
+        let picked = selected(vec![("fp-a", one("w0", 1.0)), ("fp-b", one("w1", 0.6))], 6);
+        assert_eq!(picked, ["fp-a", "fp-b"]);
+        // And a meaning outlier.
+        let far = Evidence {
+            terms: 3,
+            relevance: 1.0,
+            cosine: Some(0.45),
+            z: Some(2.3),
+            vector: true,
+            ..Evidence::default()
+        };
+        let picked = selected(vec![("fp-far", far), ("fp-half", one("w0", 0.6))], 6);
+        assert_eq!(picked, ["fp-far", "fp-half"]);
+    }
+
+    #[test]
+    fn a_meaning_outlier_survives_a_strong_lexical_best() {
+        let best = Evidence {
+            vector: true,
+            ..words(2, 3, 1.0)
+        };
+        let meaning = |z: f32| Evidence {
+            terms: 3,
+            relevance: 0.28,
+            cosine: Some(0.45),
+            z: Some(z),
+            vector: true,
+            ..Evidence::default()
+        };
+        let picked = selected(vec![("fp-best", best.clone()), ("fp-far", meaning(2.3))], 6);
+        assert_eq!(picked, ["fp-best", "fp-far"]);
+        let picked = selected(vec![("fp-best", best), ("fp-near", meaning(1.2))], 6);
+        assert_eq!(picked, ["fp-best"]);
+    }
+
+    #[test]
+    fn a_memory_without_a_vector_is_judged_on_its_words() {
+        // A meaning match far ahead: by share of the best, one word is out.
+        let best = Evidence {
+            relevance: 5.0,
+            cosine: Some(0.6),
+            z: Some(3.0),
+            vector: true,
+            ..words(1, 3, 1.0)
+        };
+        let unembedded = words(1, 3, 0.8);
+        let picked = selected(
+            vec![("fp-best", best.clone()), ("fp-new", unembedded.clone())],
+            6,
+        );
+        assert_eq!(picked, ["fp-best", "fp-new"]);
+        let embedded = Evidence {
+            vector: true,
+            ..unembedded
+        };
+        let picked = selected(vec![("fp-best", best), ("fp-new", embedded)], 6);
+        assert_eq!(picked, ["fp-best"], "its vector says it is far in meaning");
+    }
+
+    #[test]
+    fn the_best_hit_sets_the_bar_even_when_visible() {
+        let shown = memory("fp-best", "ledger-sync deploys with Bazel from ops.");
+        let seen: HashSet<String> = [memory_line_text(&shown)].into();
+        let evidence: HashMap<String, Evidence> = [
+            ("fp-best".to_string(), words(3, 4, 1.0)),
+            ("fp-stray".to_string(), words(1, 4, 0.18)),
+        ]
+        .into();
+        let hits = vec![
+            (shown, 2.0),
+            (memory("fp-stray", "The design team uses Bazel."), 1.0),
+        ];
+        let picked = select(hits, &evidence, &seen, 6);
+        // The window shows the best already, so the turn is told nothing.
+        let sent = unseen(picked.into_iter().map(|(m, _)| m).collect(), &seen);
+        assert!(sent.is_empty(), "{sent:?}");
+    }
+
+    #[test]
+    fn a_hit_past_the_pool_cap_neither_sets_the_bar_nor_hides_a_line() {
+        // One slot: the bar and the pair passes see the best 4 admitted hits,
+        // and the fillers' two words each anchor the turn.
+        let at = |relevance| Evidence {
+            vector: true,
+            ..words(1, 4, relevance)
+        };
+        let past_the_cap = |last: (Memory, Evidence)| {
+            let mut hits = vec![(stated("fp-old", BACKUP_OLD, 1), at(1.0))];
+            hits.extend((1..POOL_PER_SLOT).map(|n| {
+                let id = format!("fp-{n}");
+                (memory(&id, &id), embedded(2, 4, 1.0))
+            }));
+            hits.push(last);
+            kept(hits, &HashSet::new(), 1)
+        };
+        assert_eq!(
+            past_the_cap((memory("fp-far", "far"), at(10.0))),
+            ["fp-old"]
+        );
+        assert_eq!(
+            past_the_cap((stated("fp-new", BACKUP_NEW, 2), at(1.0))),
+            ["fp-old"]
+        );
+    }
+
+    /// One deploy step, worded three ways.
+    const MIGRATE: [&str; 3] = [
+        "The project applies database migrations with pnpm migrate:v2 before each deploy.",
+        "Database migrations in this project run through pnpm migrate:v2 before each deploy.",
+        "Before each deploy, apply the database migrations using pnpm migrate:v2.",
+    ];
+
+    #[test]
+    fn rewordings_collapse_to_the_highest_ranked() {
+        let e = words(2, 3, 1.0);
+        let hits = vec![
+            (memory("fp-mig1", MIGRATE[1]), e.clone()),
+            (
+                memory("fp-standup", "The team standup is at 09:30."),
+                e.clone(),
+            ),
+            (memory("fp-mig0", MIGRATE[0]), e.clone()),
+            (memory("fp-mig2", MIGRATE[2]), e),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig1", "fp-standup"]);
+    }
+
+    #[test]
+    fn a_rewording_of_a_visible_line_is_not_sent() {
+        let shown = memory("fp-shown", "ledger-sync uses pnpm as its package manager.");
+        let seen: HashSet<String> = [memory_line_text(&shown)].into();
+        let reworded = memory(
+            "fp-reworded",
+            "The ledger-sync project uses pnpm as its package manager.",
+        );
+        let hit = |matched: &[&str]| {
+            let e = Evidence {
+                matched: matched.iter().map(|w| w.to_string()).collect(),
+                ..words(0, 3, 1.0)
+            };
+            vec![(reworded.clone(), e)]
+        };
+        assert_eq!(
+            kept(hit(&["pnpm", "package"]), &HashSet::new(), 6),
+            ["fp-reworded"]
+        );
+        assert!(kept(hit(&["pnpm", "package"]), &seen, 6).is_empty());
+        // It answers "project", a word of the question the visible line lacks.
+        assert_eq!(kept(hit(&["pnpm", "project"]), &seen, 6), ["fp-reworded"]);
+    }
+
+    #[test]
+    fn a_twin_naming_a_question_word_the_survivor_lacks_stays() {
+        let mig0 = || memory("fp-mig0", MIGRATE[0]);
+        let mig1 = || memory("fp-mig1", MIGRATE[1]);
+        let hits = vec![(mig0(), words(1, 3, 1.0)), (mig1(), words(2, 3, 1.0))];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig0", "fp-mig1"]);
+        // The other way round, the survivor names every word its twin does.
+        let hits = vec![(mig1(), words(2, 3, 1.0)), (mig0(), words(1, 3, 1.0))];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig1"]);
+    }
+
+    #[test]
+    fn sibling_facts_both_reach_a_question_about_both() {
+        // "Which of our services run on Postgres 16?", untagged.
+        let billing = memory("fp-billing", "The billing service runs on Postgres 16.");
+        let ledger = memory("fp-ledger", "The ledger service runs on Postgres 16.");
+        let e = Evidence {
+            matched: vec!["postgres".into(), "16".into()],
+            ..words(0, 4, 1.0)
+        };
+        let hits = vec![(billing.clone(), e.clone()), (ledger.clone(), e.clone())];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-billing", "fp-ledger"]);
+        // One already visible is no rewording of the other.
+        let seen: HashSet<String> = [memory_line_text(&billing)].into();
+        assert_eq!(kept(vec![(ledger, e)], &seen, 6), ["fp-ledger"]);
+    }
+
+    #[test]
+    fn only_a_list_on_one_set_of_words_carries_on_past_the_limit() {
+        let two = || words(2, 3, 1.0);
+        let other = || Evidence {
+            matched: vec!["w0".into(), "w2".into()],
+            ..two()
+        };
+        // Each line's text is its id, so each leads with its own subject.
+        let list = vec![
+            ("alpha", two()),
+            ("bravo", two()),
+            ("charlie", two()),
+            ("delta", other()),
+        ];
+        assert_eq!(selected(list, 1), ["alpha", "bravo", "charlie"]);
+        // A mixed list keeps the count, even for the last line's sibling.
+        let mixed = vec![("alpha", other()), ("bravo", two()), ("charlie", two())];
+        assert_eq!(selected(mixed, 2), ["alpha", "bravo"]);
+        // One word of three is no list, however many lines hold it.
+        let one = || words(1, 3, 1.0);
+        assert_eq!(
+            selected(vec![("alpha", one()), ("bravo", one())], 1),
+            ["alpha"]
+        );
+        // Lines leading with one subject are facts on it, not siblings.
+        assert_eq!(
+            selected(vec![("fp-a", two()), ("fp-b", two())], 1),
+            ["fp-a"]
+        );
+    }
+
+    #[test]
+    fn differently_tagged_twins_both_stay() {
+        // Two rewordings by text: their tags alone keep them apart.
+        let tagged = |id: &str, text: &str, entities: &[&str]| Memory {
+            entities: entities.iter().map(|e| e.to_string()).collect(),
+            ..memory(id, text)
+        };
+        let pair = |a: &[&str], b: &[&str]| {
+            let e = words(2, 3, 1.0);
+            let hits = vec![
+                (tagged("fp-mig0", MIGRATE[0], a), e.clone()),
+                (tagged("fp-mig1", MIGRATE[1], b), e),
+            ];
+            kept(hits, &HashSet::new(), 6)
+        };
+        assert_eq!(pair(&["billing"], &["ledger"]), ["fp-mig0", "fp-mig1"]);
+        // Untagged, or one's entities within the other's: the text decides.
+        assert_eq!(pair(&[], &[]), ["fp-mig0"]);
+        assert_eq!(pair(&["billing"], &["billing", "postgres"]), ["fp-mig0"]);
+    }
+
+    #[test]
+    fn known_limit_untagged_siblings_whose_subject_comes_late_are_told_once() {
+        // Two facts, but the subject sits past the lead word, where the text
+        // alone misses it: only entity tags keep them apart.
+        let service = |name: &str| {
+            memory(
+                &format!("fp-{name}"),
+                &format!("Postgres 16 backs the {name} service."),
+            )
+        };
+        let e = words(2, 3, 1.0);
+        let hits = vec![(service("billing"), e.clone()), (service("ledger"), e)];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-billing"]);
+    }
+
+    #[test]
+    fn a_pinned_twin_is_never_dropped() {
+        let e = words(2, 3, 1.0);
+        let pinned = Memory {
+            pinned: true,
+            ..memory("fp-mig2", MIGRATE[2])
+        };
+        let hits = vec![(memory("fp-mig0", MIGRATE[0]), e.clone()), (pinned, e)];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig0", "fp-mig2"]);
+    }
+
+    #[test]
+    fn a_low_relevance_twin_never_takes_the_fact_down() {
+        // Ranked first on its boosts, but one word of four and under half
+        // the best: the cut drops it, and its twin delivers the fact.
+        let hits = vec![
+            (memory("fp-mig0", MIGRATE[0]), words(1, 4, 0.2)),
+            (memory("fp-mig1", MIGRATE[1]), words(1, 4, 1.0)),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-mig1"]);
+    }
+
+    const BACKUP_OLD: &str = "The nightly backup runs at 02:00.";
+    const BACKUP_NEW: &str = "The nightly backup now runs at 04:00.";
+
+    /// A memory whose fact was last stated at `at`.
+    fn stated(id: &str, text: &str, at: u64) -> Memory {
+        Memory {
+            created_at: at,
+            updated_at: at,
+            stated_at: Some(at),
+            ..memory(id, text)
+        }
+    }
+
+    #[test]
+    fn the_newer_statement_hides_the_older() {
+        // The older ranks first: the clock decides, not the rank.
+        let e = words(2, 3, 1.0);
+        let hits = vec![
+            (stated("fp-old", BACKUP_OLD, 1), e.clone()),
+            (stated("fp-new", BACKUP_NEW, 2), e),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-new"]);
+    }
+
+    #[test]
+    fn a_stale_top_hit_does_not_set_the_bar() {
+        // One word of four each, the older over twice the newer's relevance,
+        // in a turn another hit anchors.
+        let at = |relevance| Evidence {
+            vector: true,
+            ..words(1, 4, relevance)
+        };
+        let hits = vec![
+            (stated("fp-old", BACKUP_OLD, 1), at(2.5)),
+            (stated("fp-new", BACKUP_NEW, 2), at(1.0)),
+            (memory("fp-anchor", "fp-anchor"), embedded(2, 4, 0.9)),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-new", "fp-anchor"]);
+    }
+
+    #[test]
+    fn an_older_line_that_passes_the_cut_is_told_as_its_newer() {
+        // The newer has no vector yet: on its words alone, it falls short.
+        let vector = |e: Evidence| Evidence { vector: true, ..e };
+        let hits = vec![
+            (memory("fp-other", "fp-other"), vector(words(2, 4, 7.0))),
+            (stated("fp-old", BACKUP_OLD, 1), vector(words(1, 4, 5.5))),
+            (stated("fp-new", BACKUP_NEW, 2), words(1, 4, 0.45)),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-other", "fp-new"]);
+    }
+
+    #[test]
+    fn the_newer_takes_the_older_lines_slot_within_the_limit() {
+        let e = || words(2, 3, 1.0);
+        // Other words: no sibling to carry on past the limit.
+        let other = Evidence {
+            matched: vec!["w0".into(), "w2".into()],
+            ..e()
+        };
+        let hits = vec![
+            (memory("fp-a", "fp-a"), e()),
+            (stated("fp-old", BACKUP_OLD, 1), e()),
+            (memory("fp-b", "fp-b"), other),
+            (stated("fp-new", BACKUP_NEW, 2), e()),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 2), ["fp-a", "fp-new"]);
+    }
+
+    #[test]
+    fn an_older_line_is_told_as_the_statement_nothing_supersedes() {
+        // The middle line replaces the oldest and is replaced in turn; the
+        // newest shares no entity with the oldest, so only the chain links them.
+        let tagged = |m: Memory, entity: &str| Memory {
+            entities: vec![entity.into()],
+            ..m
+        };
+        let newest = "The nightly backup now runs at 05:00.";
+        let e = || words(2, 3, 1.0);
+        let hits = vec![
+            (tagged(stated("fp-old", BACKUP_OLD, 1), "billing-db"), e()),
+            (stated("fp-mid", BACKUP_NEW, 2), e()),
+            (tagged(stated("fp-new", newest, 3), "ledger-db"), e()),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 1), ["fp-new"]);
+    }
+
+    #[test]
+    fn a_pinned_older_fact_is_never_hidden() {
+        let e = words(2, 3, 1.0);
+        let old = Memory {
+            pinned: true,
+            ..stated("fp-old", BACKUP_OLD, 1)
+        };
+        let hits = vec![(old, e.clone()), (stated("fp-new", BACKUP_NEW, 2), e)];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-old", "fp-new"]);
+    }
+
+    #[test]
+    fn an_older_statement_written_late_stays_older() {
+        // Said at 1 but written at 9 (a late extraction pass): the change
+        // said at 5 is still the current statement.
+        let e = words(2, 3, 1.0);
+        let late = Memory {
+            created_at: 9,
+            updated_at: 9,
+            ..stated("fp-old", BACKUP_OLD, 1)
+        };
+        let hits = vec![(late, e.clone()), (stated("fp-new", BACKUP_NEW, 5), e)];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-new"]);
+    }
+
+    #[test]
+    fn equal_last_stated_keeps_both() {
+        let pair = |new: Memory| {
+            let e = words(2, 3, 1.0);
+            let hits = vec![(stated("fp-old", BACKUP_OLD, 1), e.clone()), (new, e)];
+            kept(hits, &HashSet::new(), 6)
+        };
+        // A pin or tag edit moves `updated_at`, never when the fact was stated.
+        let edited = Memory {
+            updated_at: 9,
+            ..stated("fp-new", BACKUP_NEW, 1)
+        };
+        assert_eq!(pair(edited.clone()), ["fp-old", "fp-new"]);
+        // A record from before `stated_at` existed goes by its last update.
+        let legacy = Memory {
+            stated_at: None,
+            ..edited
+        };
+        assert_eq!(pair(legacy), ["fp-new"]);
+    }
+
+    #[test]
+    fn a_change_without_a_marker_keeps_both() {
+        let e = words(2, 3, 1.0);
+        let hits = vec![
+            (
+                stated("fp-lisbon", "The user lives in Lisbon.", 1),
+                e.clone(),
+            ),
+            (stated("fp-porto", "The user lives in Porto.", 2), e),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-lisbon", "fp-porto"]);
+    }
+
+    #[test]
+    fn a_supersede_needs_a_shared_entity_when_both_are_tagged() {
+        let tagged = |m: Memory, entities: &[&str]| Memory {
+            entities: entities.iter().map(|e| e.to_string()).collect(),
+            ..m
+        };
+        let pair = |old: &[&str], new: &[&str]| {
+            let e = words(2, 3, 1.0);
+            let hits = vec![
+                (tagged(stated("fp-old", BACKUP_OLD, 1), old), e.clone()),
+                (tagged(stated("fp-new", BACKUP_NEW, 2), new), e),
+            ];
+            kept(hits, &HashSet::new(), 6)
+        };
+        assert_eq!(pair(&["billing-db"], &["ledger-db"]), ["fp-old", "fp-new"]);
+        assert_eq!(
+            pair(&["billing-db"], &["ledger-db", "billing-db"]),
+            ["fp-new"]
+        );
+        assert_eq!(pair(&["billing-db"], &[]), ["fp-new"]);
+        // `user`, which every user fact carries, makes no two of them one subject.
+        assert_eq!(
+            pair(&["ana", "user"], &["pedro", "user"]),
+            ["fp-old", "fp-new"]
+        );
+        assert_eq!(pair(&["user"], &["porto", "user"]), ["fp-new"]);
+    }
+
+    #[test]
+    fn an_older_line_answering_a_word_the_newer_lacks_stays() {
+        let hits = vec![
+            (stated("fp-old", BACKUP_OLD, 1), words(2, 3, 1.0)),
+            (stated("fp-new", BACKUP_NEW, 2), words(1, 3, 1.0)),
+        ];
+        assert_eq!(kept(hits, &HashSet::new(), 6), ["fp-old", "fp-new"]);
     }
 
     /// 2025-10-14T12:00:00Z — the same calendar day from UTC-11 to UTC+11.
@@ -1504,6 +3073,42 @@ Formal."
         );
         assert!(body.ends_with("</memory>"));
         assert_eq!(ids, vec!["fp1", "fp2"]);
+    }
+
+    #[tokio::test]
+    async fn a_pin_keeps_an_old_facts_recency_and_its_shown_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let deps = offline_deps(dir.path(), offline_cfg(6));
+        let (bank, _) = deps.store().await.ensure_bank("main", None).await.unwrap();
+        let now = now_ms();
+        let then = now - 200 * 86_400_000;
+        let old = stated("fp-old", "The user drinks oolong tea.", then);
+        bank.commit(old.clone()).await.unwrap();
+        crate::functions::items::update(
+            &deps,
+            crate::functions::items::UpdateRequest {
+                bank: Some("main".into()),
+                id: old.id.clone(),
+                text: None,
+                entities: None,
+                tags: None,
+                pinned: Some(true),
+            },
+        )
+        .await
+        .unwrap();
+        let pinned = bank.get(&old.id).await.unwrap();
+        assert!(pinned.pinned && pinned.updated_at > then, "{pinned:?}");
+        // Only the pin boost moves the score: the fact is as old as it was.
+        let score = |m: &Memory| crate::index::fused_score(1.0, m, &[], now, 30);
+        let as_stated = Memory {
+            pinned: true,
+            ..old
+        };
+        assert_eq!(score(&pinned), score(&as_stated));
+        let (body, _) = memories_message("main", &[pinned], 1_200, now).unwrap();
+        let day = local_date(then, "%Y-%m-%d");
+        assert!(body.contains(&format!("oolong tea. ({day})")), "{body}");
     }
 
     #[test]

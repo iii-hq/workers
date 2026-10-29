@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '**/Cargo.lock'
+      - '**/.cargo/audit-ignore'
   schedule:
     - cron: '23 9 * * 1'
 
@@ -40,9 +41,12 @@ jobs:
 
           lockfiles=()
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            while IFS= read -r -d '' lockfile; do
-              [[ -f "$lockfile" ]] && lockfiles+=("$lockfile")
-            done < <(git diff --name-only -z "$BASE_SHA...$HEAD_SHA" -- '**/Cargo.lock')
+            # A changed <dir>/.cargo/audit-ignore re-audits <dir>/Cargo.lock.
+            while IFS= read -r -d '' changed; do
+              lockfile="${changed%/.cargo/audit-ignore}"
+              [[ "$lockfile" == "$changed" ]] || lockfile="$lockfile/Cargo.lock"
+              [[ -f "$lockfile" && " ${lockfiles[*]-} " != *" $lockfile "* ]] && lockfiles+=("$lockfile")
+            done < <(git diff --name-only -z "$BASE_SHA...$HEAD_SHA" -- '**/Cargo.lock' '**/.cargo/audit-ignore')
           else
             while IFS= read -r -d '' lockfile; do
               lockfiles+=("${lockfile#./}")
@@ -62,8 +66,16 @@ jobs:
           # lookups with "No such crate in crates.io index". The repeat
           # advisory-db fetch is a fast no-op once the clone is fresh.
           for lockfile in "${lockfiles[@]}"; do
-            echo "::group::cargo audit --file $lockfile"
-            cargo audit --file "$lockfile" || status=1
+            # On top of .cargo/audit.toml, ids only this lockfile may ignore.
+            scoped=()
+            ignore_file="$(dirname "$lockfile")/.cargo/audit-ignore"
+            if [[ -f "$ignore_file" ]]; then
+              while read -r id; do
+                scoped+=(--ignore "$id")
+              done < <(grep -oE '^RUSTSEC-[0-9]{4}-[0-9]{4}' "$ignore_file")
+            fi
+            echo "::group::cargo audit --file $lockfile ${scoped[*]-}"
+            cargo audit --file "$lockfile" ${scoped[@]+"${scoped[@]}"} || status=1
             echo "::endgroup::"
           done
 

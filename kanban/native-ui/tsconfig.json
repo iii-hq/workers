@@ -1,0 +1,4 @@
+{
+  "extends": "@iii-dev/native-ui/tsconfig.app.json",
+  "include": ["src"]
+}

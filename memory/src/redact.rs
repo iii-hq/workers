@@ -8,9 +8,8 @@
 //! passes. Secrets only — no PII (an email or a phone number is a
 //! legitimate memory). Structural shapes come from the sentinel worker's
 //! redactor (whole PEM blocks, URL credentials, bearer tokens, key=value
-//! assignments); prefixed provider keys from Hindsight's Memory Defense
-//! catalog (`extensions/memory_defense.py`), in its order: specific prefixes
-//! before generic ones. A match becomes `[REDACTED:<label>]`.
+//! assignments); prefixed provider keys, specific
+//! prefixes before generic ones. A match becomes `[REDACTED:<label>]`.
 //!
 //! Invisible characters are stripped on the same pass (label
 //! `invisible_unicode`), and [`reject_injection`] refuses the few

@@ -1,5 +1,5 @@
 {
-  "description": "Preview the memory injection for a hypothetical chat message: the exact system-prompt memory section a new session gets (rules, budgets, truncation markers; running sessions receive changes as an appended update), the memories the turn would be handed (post ambient floor and token budget), and the appended message verbatim. Runs the pre-generate hook's own code.",
+  "description": "Preview the memory injection for a hypothetical chat message: the exact system-prompt memory section a new session gets (rules, budgets, truncation markers; running sessions receive changes as an appended update), the memories the turn would be handed (past the relevance cut and token budget), and the appended message verbatim. Runs the pre-generate hook's own code.",
   "function_id": "memory::preview",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -115,7 +115,7 @@
             ]
           },
           "stated_at": {
-            "description": "When the fact was last STATED (created, re-observed, text edited). Unlike `updated_at`, pin/tag/entity edits never bump it, so consolidation can order \"which statement is current\" by it. Legacy records load as None.",
+            "description": "When the fact was last STATED (said, re-observed, text edited): an extracted memory takes its message's time, not the pass's. Unlike `updated_at`, pin/tag/entity edits never bump it, so recency, the shown date and \"which statement is current\" go by it. Legacy records load as None.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -169,7 +169,7 @@
             "$ref": "#/definitions/Memory"
           },
           "score": {
-            "description": "Recall score; 0.0 for memories added by the ambient floor.",
+            "description": "Recall score.",
             "format": "float",
             "type": "number"
           }
@@ -210,7 +210,7 @@
         "type": "string"
       },
       "memories": {
-        "description": "Memories the turn would be handed, post ambient floor and token budget, in injection order.",
+        "description": "Memories the turn would be handed, past the relevance cut and token budget, in injection order.",
         "items": {
           "$ref": "#/definitions/PreviewMemory"
         },

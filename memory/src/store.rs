@@ -17,7 +17,7 @@
 //! [`Store::commit`] is the single choke point through which every memory
 //! mutation flows: file, map, and index update together or not at all.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -59,6 +59,39 @@ fn semantic_scale(model: &str) -> (f32, f32, f32) {
     } else {
         (SEMANTIC_FLOOR, SEMANTIC_ANCHOR, SEMANTIC_WEIGHT)
     }
+}
+
+/// Vectors a bank needs before a cosine's z-score means anything: z >= 2
+/// is impossible below 5 and noise below about 20.
+const MIN_Z_POOL: usize = 20;
+
+/// Why a recalled memory matched, for the injection hook to tell a hit
+/// from a coincidence. Ranking never reads it.
+#[derive(Debug, Clone, Default)]
+pub struct Evidence {
+    /// The question's content terms the memory holds: never a stopword,
+    /// never the `user` a pronoun added, except `user` alone for a
+    /// question of pronouns only ("who am I"), or of `MEMORY_VERBS` asked
+    /// of "me" ("what do you remember about me").
+    pub matched: Vec<String>,
+    /// How many content terms the question has.
+    pub terms: usize,
+    /// The question asks what memory holds of the user ("what do you
+    /// remember about me?"), not a question of pronouns alone ("what should
+    /// I do now?").
+    pub of_me: bool,
+    /// BM25 over the shared max: the lexical part of `relevance`.
+    pub lexical: f32,
+    /// `lexical + weight * semantic`, before entity, corroboration, pin
+    /// and recency boosts: those rank, they do not say what is relevant.
+    pub relevance: f32,
+    /// The cosine, when above the model's floor (`semantic_scale`).
+    pub cosine: Option<f32>,
+    /// Standard deviations above the question's mean cosine over this
+    /// bank, for a cosine above the floor in a bank of MIN_Z_POOL vectors.
+    pub z: Option<f32>,
+    /// Whether the memory has a vector of the query's model at all.
+    pub vector: bool,
 }
 
 pub struct Store {
@@ -168,12 +201,14 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// English function words dropped from QUERIES before lexical scoring (the
-/// index keeps every token), as Hindsight's lexical arm gets from Postgres's
-/// `english` tsvector. Without it a natural-language question matches every
+/// index keeps every token), as Postgres's `english` tsvector drops them.
+/// Without it a natural-language question matches every
 /// memory through "the/do/my", and that BM25 noise outscores a paraphrase's
 /// semantic match. "us" is kept (US), as Snowball's English list does.
+// `pub` only so the recall_quality eval checks its data against this list.
+#[doc(hidden)]
 #[rustfmt::skip]
-pub(crate) const STOPWORDS: &[&str] = &[
+pub const STOPWORDS: &[&str] = &[
     "a", "about", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be",
     "been", "being", "but", "by", "can", "could", "d", "did", "do", "does", "doing", "for",
     "from", "had", "has", "have", "having", "he", "her", "here", "hers", "him", "his", "how",
@@ -184,6 +219,10 @@ pub(crate) const STOPWORDS: &[&str] = &[
     "to", "too", "under", "up", "ve", "very", "was", "we", "were", "what", "when", "where",
     "which", "who", "whom", "whose", "why", "will", "with", "would", "you", "your", "yours",
 ];
+
+/// Verbs that ask what memory holds ("what do you remember about me"); English only, by decision.
+/// Not "tell": its "me" is who is told ("tell me more").
+const MEMORY_VERBS: &[&str] = &["remember", "know", "recall"];
 
 /// Bytes of a recall query kept: half from its head, half from its tail.
 const QUERY_MAX_BYTES: usize = 800;
@@ -210,8 +249,11 @@ pub(crate) fn cap_query(query: &str) -> String {
 /// Query tokens without stopwords (all kept when nothing else is left) or
 /// repeats (BM25 would count a pasted term once per occurrence), with
 /// first-person pronouns expanded to the `user` entity handle so identity
-/// questions reach memories phrased about the user.
-fn query_tokens(query: &str) -> Vec<String> {
+/// questions reach memories phrased about the user. The flag is true when
+/// the pronoun added `user`, which a typed "user" does not: that `user`
+/// ranks, but is [`Evidence`] only for a question of pronouns alone (or
+/// with [`MEMORY_VERBS`]).
+fn query_tokens(query: &str) -> (Vec<String>, bool) {
     let mut tokens = crate::index::tokenize(query);
     let mut seen = std::collections::HashSet::new();
     tokens.retain(|t| seen.insert(t.clone()));
@@ -221,10 +263,11 @@ fn query_tokens(query: &str) -> Vec<String> {
     if tokens.iter().any(|t| !STOPWORDS.contains(&t.as_str())) {
         tokens.retain(|t| !STOPWORDS.contains(&t.as_str()));
     }
-    if first_person && !tokens.iter().any(|t| t == "user") {
+    let expanded = first_person && !tokens.iter().any(|t| t == "user");
+    if expanded {
         tokens.push("user".to_string());
     }
-    tokens
+    (tokens, expanded)
 }
 
 /// Score descending, ties by id (HashMap iteration order would otherwise
@@ -277,12 +320,6 @@ pub fn validate_name(name: &str) -> Result<(), MemoryError> {
             "name `{name}` must match [a-z0-9][a-z0-9_-]{{0,63}}"
         )))
     }
-}
-
-/// How strongly a memory stands with no query: pinned first, then
-/// corroboration, then recency.
-pub(crate) fn strength(m: &Memory) -> (bool, u32, u64) {
-    (m.pinned, m.corroboration, m.updated_at)
 }
 
 impl Store {
@@ -721,6 +758,20 @@ impl Bank {
         out
     }
 
+    /// Live memories tagged with any of `entities`, exactly.
+    pub async fn tagged(&self, entities: &HashSet<String>) -> Vec<Memory> {
+        if entities.is_empty() {
+            return Vec::new();
+        }
+        let inner = self.inner.read().await;
+        inner
+            .memories
+            .values()
+            .filter(|m| m.is_live() && m.entities.iter().any(|e| entities.contains(e)))
+            .cloned()
+            .collect()
+    }
+
     pub async fn counts(&self) -> (usize, usize) {
         let inner = self.inner.read().await;
         let live = inner.memories.values().filter(|f| f.is_live()).count();
@@ -738,7 +789,9 @@ impl Bank {
     /// vocabulary with the query. Read-only; zero LLM at query time (the
     /// caller embeds the query, if at all). First-person pronouns expand
     /// to the `user` entity handle so identity questions reach the memories
-    /// phrased third-person about the user.
+    /// phrased third-person about the user; the injection hook counts that
+    /// `user` as a match only in a question of pronouns alone ("who am I"),
+    /// or with `MEMORY_VERBS` ("what do you know about me").
     ///
     /// `embedding_model` is the model the provider REPORTED for `query_vec`;
     /// vectors are tagged the same way, so ones from any other model (an
@@ -775,7 +828,7 @@ impl Bank {
         let inner = self.inner.read().await;
         inner
             .index
-            .score(&query_tokens(query))
+            .score(&query_tokens(query).0)
             .into_iter()
             .filter(|(id, _)| {
                 inner
@@ -801,9 +854,57 @@ impl Bank {
         include_superseded: bool,
         bm25_max: f32,
     ) -> Vec<(Memory, f32)> {
-        let query_tokens = query_tokens(query);
+        self.recall_evidence(
+            query,
+            query_vec,
+            embedding_model,
+            limit,
+            half_life_days,
+            include_superseded,
+            bm25_max,
+        )
+        .await
+        .0
+    }
+
+    /// [`Bank::recall_scaled`] plus, for every candidate it ranked (also
+    /// those `limit` cut), the [`Evidence`] of why it matched. The ranking
+    /// is the same arithmetic; the evidence only reads it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recall_evidence(
+        &self,
+        query: &str,
+        query_vec: Option<&[f32]>,
+        embedding_model: &str,
+        limit: usize,
+        half_life_days: u64,
+        include_superseded: bool,
+        bm25_max: f32,
+    ) -> (Vec<(Memory, f32)>, HashMap<String, Evidence>) {
+        let (query_tokens, expanded) = query_tokens(query);
         if query_tokens.is_empty() && query_vec.is_none() {
-            return Vec::new();
+            return (Vec::new(), HashMap::new());
+        }
+        // What a hit must share with the question to be evidence.
+        let mut content: Vec<&str> = query_tokens
+            .iter()
+            .map(String::as_str)
+            .filter(|t| !STOPWORDS.contains(t) && !(expanded && *t == "user"))
+            .collect();
+        // What memory holds of "me", not who is told ("tell me more") or a bare "I know".
+        let words = crate::index::tokenize(query);
+        let has = |w: &str| words.iter().any(|t| t == w);
+        let verb = content.iter().any(|t| MEMORY_VERBS.contains(t));
+        // "tell" asks it only beside a memory verb or "myself" ("tell me about myself").
+        let tell = verb || has("myself");
+        let of_me = content
+            .iter()
+            .all(|t| MEMORY_VERBS.contains(t) || *t == "anything" || (*t == "tell" && tell))
+            // Or asked of the user addressed as "I": "do you know who I am?".
+            && (has("me") || has("myself") || (has("you") && verb && has("i")));
+        if expanded && (content.is_empty() || of_me) {
+            // A question of pronouns alone, or of what memory holds of them, is about the user.
+            content = vec!["user"];
         }
         let inner = self.inner.read().await;
         let mut bm25 = inner.index.score(&query_tokens);
@@ -820,24 +921,29 @@ impl Bank {
         // Semantic candidates join the pool even without a lexical hit.
         let (floor, anchor, weight) = semantic_scale(embedding_model);
         let mut sem: HashMap<String, f32> = HashMap::new();
+        // The query's cosine over every same-model vector: what a single
+        // cosine stands out from.
+        let (mut pool, mut sum, mut sum_sq) = (0usize, 0f64, 0f64);
         if let Some(qv) = query_vec {
             for (id, (model, v)) in &inner.vectors {
                 if !embedding_model.is_empty() && model != embedding_model {
                     continue;
                 }
                 let c = cosine(qv, v);
+                pool += 1;
+                sum += f64::from(c);
+                sum_sq += f64::from(c) * f64::from(c);
                 if c > floor {
                     sem.insert(id.clone(), c);
                     bm25.entry(id.clone()).or_insert(0.0);
                 }
             }
         }
-        let candidates: Vec<(Memory, f32, f32)> = bm25
+        let candidates: Vec<(Memory, f32, Option<f32>)> = bm25
             .into_iter()
             .filter_map(|(id, s)| {
                 let f = inner.memories.get(&id)?;
-                (include_superseded || f.is_live())
-                    .then(|| (f.clone(), s, sem.get(&id).copied().unwrap_or(0.0)))
+                (include_superseded || f.is_live()).then(|| (f.clone(), s, sem.get(&id).copied()))
             })
             .collect();
         // BM25 over the caller's shared maximum (computed over what it can
@@ -848,35 +954,60 @@ impl Bank {
         } else {
             candidates.iter().map(|c| c.1).fold(f32::EPSILON, f32::max)
         };
+        // Population mean and sd of the query's cosine over the pool; a
+        // z-score needs a pool big enough to mean anything and some spread.
+        let mean = sum / pool.max(1) as f64;
+        let sd = (sum_sq / pool.max(1) as f64 - mean * mean).max(0.0).sqrt();
+        let z_of =
+            |c: f32| (pool >= MIN_Z_POOL && sd > 0.0).then(|| ((f64::from(c) - mean) / sd) as f32);
         let now = now_ms();
-        let mut scored: Vec<(Memory, f32)> = candidates
-            .into_iter()
-            .map(|(f, s, c)| {
-                // Semantic joins lexical BEFORE fusion so recency decays
-                // both alike.
-                let sem = ((c - anchor) / (1.0 - anchor)).max(0.0);
-                let relevance = s / max_bm25 + weight * sem;
-                let fused =
-                    crate::index::fused_score(relevance, &f, &query_tokens, now, half_life_days);
-                (f, fused)
-            })
-            .collect();
+        let mut evidence = HashMap::with_capacity(candidates.len());
+        let mut scored: Vec<(Memory, f32)> = Vec::with_capacity(candidates.len());
+        for (f, s, cos) in candidates {
+            // Semantic joins lexical BEFORE fusion so recency decays
+            // both alike.
+            let sem = ((cos.unwrap_or(0.0) - anchor) / (1.0 - anchor)).max(0.0);
+            let relevance = s / max_bm25 + weight * sem;
+            let fused =
+                crate::index::fused_score(relevance, &f, &query_tokens, now, half_life_days);
+            evidence.insert(
+                f.id.clone(),
+                Evidence {
+                    matched: content
+                        .iter()
+                        .filter(|t| inner.index.has(t, &f.id))
+                        .map(|t| t.to_string())
+                        .collect(),
+                    terms: content.len(),
+                    of_me: expanded && of_me,
+                    lexical: s / max_bm25,
+                    relevance,
+                    cosine: cos,
+                    z: cos.and_then(z_of),
+                    vector: query_vec.is_some()
+                        && inner.vectors.get(&f.id).is_some_and(|(model, _)| {
+                            embedding_model.is_empty() || model == embedding_model
+                        }),
+                },
+            );
+            scored.push((f, fused));
+        }
         rank_desc(&mut scored, limit);
-        scored
+        (scored, evidence)
     }
 
     /// The raw lexical arm: plain BM25 order (entity handles are part of
     /// the indexed text) with no recency, pin, or corroboration fusion — an
     /// old exact twin must not sink below fresh weak matches. Consolidation
-    /// interleaves this with [`Bank::semantic`], as Hindsight's consolidator
-    /// does, because a fused rank buries the twin.
+    /// interleaves this with [`Bank::semantic`], because a fused rank buries
+    /// the twin.
     pub async fn lexical(
         &self,
         query: &str,
         limit: usize,
         include_superseded: bool,
     ) -> Vec<(Memory, f32)> {
-        let tokens = query_tokens(query);
+        let tokens = query_tokens(query).0;
         let inner = self.inner.read().await;
         let mut bm25 = inner.index.score(&tokens);
         // The index only holds live records; history seeds non-live ones.
@@ -919,20 +1050,6 @@ impl Bank {
             .collect();
         rank_desc(&mut scored, limit);
         scored
-    }
-
-    /// The bank's strongest live memories that `keep` accepts, with no
-    /// query ([`strength`]). The injection floor for turns whose query
-    /// recalls little (identity questions, session openers).
-    pub async fn top_memories(&self, limit: usize, keep: impl Fn(&Memory) -> bool) -> Vec<Memory> {
-        let inner = self.inner.read().await;
-        let mut all: Vec<&Memory> = inner
-            .memories
-            .values()
-            .filter(|f| f.is_live() && keep(f))
-            .collect();
-        all.sort_by_key(|m| std::cmp::Reverse(strength(m)));
-        all.into_iter().take(limit).cloned().collect()
     }
 
     // ---- rules ------------------------------------------------------------
@@ -1175,19 +1292,21 @@ mod tests {
     #[test]
     fn query_tokens_drop_stopwords_but_never_empty_the_query() {
         assert_eq!(
-            query_tokens("what is my dog's name"),
+            query_tokens("what is my dog's name").0,
             ["dog", "name", "user"]
         );
-        assert_eq!(query_tokens("which OS do I use"), ["os", "use", "user"]);
-        assert_eq!(
-            query_tokens("does the user live in the US"),
-            ["user", "live", "us"]
-        );
+        // `.1` says the pronoun added `user`; a typed one is no expansion.
+        let (tokens, expanded) = query_tokens("which OS do I use");
+        assert_eq!(tokens, ["os", "use", "user"]);
+        assert!(expanded);
+        let (tokens, expanded) = query_tokens("does the user live in the US");
+        assert_eq!(tokens, ["user", "live", "us"]);
+        assert!(!expanded);
         // An all-stopword query keeps its tokens rather than matching nothing.
-        assert_eq!(query_tokens("what is it"), ["what", "is", "it"]);
+        assert_eq!(query_tokens("what is it").0, ["what", "is", "it"]);
         // A pasted term counts once.
         assert_eq!(
-            query_tokens("error: timeout\nerror: timeout\nwhy my error"),
+            query_tokens("error: timeout\nerror: timeout\nwhy my error").0,
             ["error", "timeout", "user"]
         );
     }
@@ -1511,6 +1630,280 @@ mod tests {
         assert!(history.iter().any(|(m, _)| m.id == old.id));
     }
 
+    fn user_memory(text: &str) -> Memory {
+        let mut m = memory(text);
+        m.entities = vec!["user".into()];
+        m
+    }
+
+    async fn evidence_for(
+        bank: &Bank,
+        query: &str,
+    ) -> (Vec<(Memory, f32)>, HashMap<String, Evidence>) {
+        bank.recall_evidence(query, None, "", 10, 30, false, 0.0)
+            .await
+    }
+
+    #[tokio::test]
+    async fn the_pronoun_user_is_not_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        for t in [
+            "The user lives in Recife",
+            "The user prefers dark themes",
+            "The user drinks green tea",
+        ] {
+            bank.commit(user_memory(t)).await.unwrap();
+        }
+        bank.commit(memory("Ledgerly stores invoices in Postgres"))
+            .await
+            .unwrap();
+
+        let query = "can you help me refactor my parser";
+        let (hits, evidence) = evidence_for(&bank, query).await;
+        assert_eq!(hits.len(), 3, "the three user memories: {hits:?}");
+        for (m, _) in &hits {
+            let e = &evidence[&m.id];
+            assert!(e.matched.is_empty(), "{}: {e:?}", m.text);
+            assert_eq!(e.terms, 3, "help, refactor, parser");
+        }
+        // Ranking keeps them: only the evidence says they are coincidence.
+        let plain = bank
+            .recall_scaled(query, None, "", 10, 30, false, 0.0)
+            .await;
+        assert_eq!(plain.len(), 3);
+        let ids = |h: &[(Memory, f32)]| {
+            h.iter()
+                .map(|(m, s)| (m.id.clone(), *s))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&plain), ids(&hits));
+    }
+
+    #[tokio::test]
+    async fn a_pronoun_only_question_matches_the_user_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mine = user_memory("The user lives in Recife");
+        let also = user_memory("The user drinks green tea");
+        let stray = memory("Ask who reviews the release, I think Marta");
+        for m in [&mine, &also, &stray] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+
+        let (_, evidence) = evidence_for(&bank, "who am I").await;
+        for m in [&mine, &also] {
+            assert_eq!(evidence[&m.id].matched, ["user"], "{}", m.text);
+            assert_eq!(evidence[&m.id].terms, 1);
+        }
+        // Reached through "who" and "i" alone, which are not evidence.
+        assert!(
+            evidence[&stray.id].matched.is_empty(),
+            "{:?}",
+            evidence[&stray.id]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_question_about_what_memory_knows_of_me_is_about_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mine = user_memory("The user lives in Recife");
+        let also = user_memory("The user drinks green tea");
+        let stray = memory("Ask who reviews the release, I think Marta");
+        for m in [&mine, &also, &stray] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+
+        for query in [
+            "what do you remember about me",
+            "what do you know about me?",
+            "can you recall anything about me?",
+            "tell me what you know about me",
+            "tell me what you remember about me",
+            "tell me about myself",
+            "do you know who I am?",
+        ] {
+            let (_, evidence) = evidence_for(&bank, query).await;
+            for m in [&mine, &also] {
+                assert_eq!(evidence[&m.id].matched, ["user"], "{query}: {}", m.text);
+            }
+            let e = evidence.get(&stray.id).cloned().unwrap_or_default();
+            assert!(e.matched.is_empty(), "{query}: {e:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tell_and_bare_verbs_are_not_about_the_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mine = user_memory("The user lives in Recife");
+        bank.commit(mine.clone()).await.unwrap();
+
+        // "me" as who is told, or no object at all: a follow-up, not a question about the user.
+        for query in [
+            "tell me more",
+            "tell me again",
+            "can you tell me more about it?",
+            "I know.",
+            "you know.",
+            "I remember",
+        ] {
+            let (_, evidence) = evidence_for(&bank, query).await;
+            let e = evidence.get(&mine.id).cloned().unwrap_or_default();
+            assert!(e.matched.is_empty(), "{query}: {e:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn stopwords_alone_are_never_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        bank.commit(memory("Notes on how things are going, you know"))
+            .await
+            .unwrap();
+        bank.commit(user_memory("The user drinks green tea"))
+            .await
+            .unwrap();
+
+        let (hits, evidence) = evidence_for(&bank, "how are you").await;
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        let e = &evidence[&hits[0].0.id];
+        assert!(e.matched.is_empty(), "{e:?}");
+        assert_eq!(e.terms, 0);
+    }
+
+    #[tokio::test]
+    async fn a_typed_user_is_a_content_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let mine = user_memory("The user lives in Recife");
+        bank.commit(mine.clone()).await.unwrap();
+
+        let (_, evidence) = evidence_for(&bank, "who is the user").await;
+        assert_eq!(evidence[&mine.id].matched, ["user"]);
+        assert_eq!(evidence[&mine.id].terms, 1);
+    }
+
+    #[tokio::test]
+    async fn semantic_evidence_needs_the_floor_and_z_a_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+        let near = memory("nearest by meaning");
+        let below = memory("kiwi sits under the floor");
+        let other = memory("kiwi has another model's vector");
+        for m in [&near, &below, &other] {
+            bank.commit(m.clone()).await.unwrap();
+        }
+        bank.set_vector(&near.id, "m", &near.text, vec![1.0, 0.0])
+            .await
+            .unwrap();
+        bank.set_vector(&below.id, "m", &below.text, vec![0.1, 0.995])
+            .await
+            .unwrap();
+        bank.set_vector(&other.id, "x", &other.text, vec![1.0, 0.0])
+            .await
+            .unwrap();
+        // 17 orthogonal fillers: 19 vectors of model "m" in all.
+        for i in 0..17 {
+            let f = memory(&format!("filler {i}"));
+            bank.commit(f.clone()).await.unwrap();
+            bank.set_vector(&f.id, "m", &f.text, vec![0.0, 1.0])
+                .await
+                .unwrap();
+        }
+        let q = [1.0, 0.0];
+
+        let (_, ev) = bank
+            .recall_evidence("kiwi", Some(&q), "m", 50, 30, false, 0.0)
+            .await;
+        assert!((ev[&near.id].cosine.unwrap() - 1.0).abs() < 1e-6);
+        assert!(ev[&near.id].vector);
+        assert!(ev[&near.id].matched.is_empty());
+        // Under the floor: a vector, but no semantic evidence.
+        assert_eq!(ev[&below.id].cosine, None);
+        assert!(ev[&below.id].vector);
+        assert_eq!(ev[&below.id].matched, ["kiwi"]);
+        assert_eq!(ev[&below.id].terms, 1);
+        // Another model's vector is not a vector of the query's model.
+        assert!(!ev[&other.id].vector);
+        assert_eq!(ev[&other.id].cosine, None);
+        // 19 vectors of the query's model (the other model's never count).
+        assert_eq!(ev[&near.id].z, None);
+
+        let last = memory("filler last");
+        bank.commit(last.clone()).await.unwrap();
+        bank.set_vector(&last.id, "m", &last.text, vec![0.0, 1.0])
+            .await
+            .unwrap();
+        let (_, ev) = bank
+            .recall_evidence("kiwi", Some(&q), "m", 50, 30, false, 0.0)
+            .await;
+        // mean 0.055, population sd 0.2179 over [1.0, 0.1, 0 x 18].
+        let z = ev[&near.id].z.expect("20 vectors make a pool");
+        assert!((z - 4.337).abs() < 0.01, "{z}");
+        assert_eq!(ev[&below.id].z, None, "no cosine above the floor, no z");
+    }
+
+    #[tokio::test]
+    async fn a_bank_too_small_for_z_still_injects_on_meaning() {
+        // A new bank: five memories, each question close in meaning to one,
+        // sharing one word with it or none.
+        let texts = [
+            memory("The API gateway is written in Go."),
+            memory("Nightly backups run at 2am UTC."),
+            memory("The billing service runs on Postgres 16."),
+            user_memory("The user works as a senior backend engineer."),
+            user_memory("The user prefers a dark editor theme."),
+        ];
+        let questions = [
+            "What language is the gateway in?",
+            "When do backups happen?",
+            "Which postgres version again?",
+            "what's my job title?",
+            "which theme do I like",
+        ];
+        for model in ["m", "sentence-transformers/all-MiniLM-L6-v2@rev"] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path().to_path_buf()).unwrap();
+            let (bank, _) = store.ensure_bank("main", None).await.unwrap();
+            let one_hot = |i: usize| {
+                let mut v = vec![0.0f32; texts.len() + 1];
+                v[i] = 1.0;
+                v
+            };
+            for (i, m) in texts.iter().enumerate() {
+                bank.commit(m.clone()).await.unwrap();
+                bank.set_vector(&m.id, model, &m.text, one_hot(i))
+                    .await
+                    .unwrap();
+            }
+            for (target, question) in questions.iter().enumerate() {
+                // Cosine 0.8 to its memory, 0 to the others.
+                let mut q = one_hot(target);
+                q[target] = 0.8;
+                q[texts.len()] = 0.6;
+                let (hits, ev) = bank
+                    .recall_evidence(question, Some(&q), model, usize::MAX, 30, false, 0.0)
+                    .await;
+                assert_eq!(ev[&texts[target].id].z, None, "{question}");
+                let picked = crate::hooks::select(hits, &ev, &std::collections::HashSet::new(), 6);
+                let picked: Vec<&str> = picked.iter().map(|(m, _)| m.text.as_str()).collect();
+                assert!(
+                    picked.contains(&texts[target].text.as_str()),
+                    "{model} {question}: {picked:?}"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn semantic_ranks_raw_cosine_with_floor_model_and_liveness() {
         let dir = tempfile::tempdir().unwrap();
@@ -1678,32 +2071,6 @@ mod tests {
             "history mode must reach non-live records with no query vector"
         );
         assert_eq!(hits[0].0.id, m.id);
-    }
-
-    #[tokio::test]
-    async fn top_memories_order_pinned_then_corroboration_then_recency() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path().to_path_buf()).unwrap();
-        let (bank, _) = store.ensure_bank("main", None).await.unwrap();
-        let mut a = memory("plain old");
-        a.updated_at = 10;
-        let mut b = memory("corroborated");
-        b.corroboration = 5;
-        b.updated_at = 10;
-        let mut c = memory("pinned one");
-        c.pinned = true;
-        c.updated_at = 1;
-        let mut d = memory("plain new");
-        d.updated_at = 20;
-        for m in [&a, &b, &c, &d] {
-            bank.commit(m.clone()).await.unwrap();
-        }
-        let top = bank.top_memories(10, |_| true).await;
-        let texts: Vec<&str> = top.iter().map(|m| m.text.as_str()).collect();
-        assert_eq!(
-            texts,
-            vec!["pinned one", "corroborated", "plain new", "plain old"]
-        );
     }
 
     #[tokio::test]

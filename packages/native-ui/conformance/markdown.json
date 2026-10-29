@@ -1,0 +1,64 @@
+{
+  "name": "markdown",
+  "description": "Catalogue 2, Markdown (type 19): a dense, selectable Markdown with a heading, a list, a code block, a web link and an app link (kan:KAN-12), subscribed to link. The person taps the app link, then the web link: each arrives as link [href] (event 14), the host opens nothing, and the script shows the last href.",
+  "catalog": 2,
+  "encoding": "json-v0",
+  "app": "conformance/apps/markdown.tsx",
+  "ns": "demo",
+  "toVm": [
+    "[[1,{\"catalog\":2,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"host\":\"android 0.1.0\",\"engine\":\"quickjs-ng 0.17.0\",\"app\":{\"key\":\"worker:demo\",\"ns\":\"demo\"},\"env\":{\"windowClass\":\"compact\",\"posture\":\"flat\",\"platform\":\"android\",\"visible\":true,\"theme\":\"dark\",\"locale\":\"en-US\",\"online\":true}}],[6,1,\"root\",{}]]",
+    "[[2,3,14,[\"kan:KAN-12\"]]]",
+    "[[2,3,14,[\"https://example.com\"]]]"
+  ],
+  "fromVm": [
+    "[[23,{\"sdk\":\"0.1.0\",\"catalog\":2,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"pages\":[{\"name\":\"root\",\"modal\":false,\"fullScreen\":false}]}]]",
+    "[[1,1,40],[2,1,16,\"Notes\"],[1,2,1],[2,2,16,8],[2,2,8,16],[1,3,19],[2,3,16,\"## Release notes\\n\\n- Faster boards\\n- See [the docs](https://example.com) and [KAN-12](kan:KAN-12)\\n\\n```\\npnpm test\\n```\"],[2,3,17,true],[2,3,18,true],[2,3,2,16384],[2,3,3,\"notes\"],[3,2,0,0,3],[1,4,10],[2,4,3,\"last-link\"],[3,2,0,1,4],[3,1,0,0,2],[7,1,1]]",
+    "[[2,4,16,\"kan:KAN-12\"]]",
+    "[[2,4,16,\"https://example.com\"]]"
+  ],
+  "order": ["fromVm", "toVm", "fromVm", "toVm", "fromVm", "toVm", "fromVm"],
+  "tree": {
+    "1": {
+      "type": "Page",
+      "id": 1,
+      "props": {
+        "title": "Notes"
+      },
+      "slots": {
+        "body": [
+          {
+            "type": "Column",
+            "id": 2,
+            "props": {
+              "padding": 16,
+              "gap": 8
+            },
+            "slots": {
+              "children": [
+                {
+                  "type": "Markdown",
+                  "id": 3,
+                  "props": {
+                    "events": ["link"],
+                    "testTag": "notes",
+                    "text": "## Release notes\n\n- Faster boards\n- See [the docs](https://example.com) and [KAN-12](kan:KAN-12)\n\n```\npnpm test\n```",
+                    "selectable": true,
+                    "dense": true
+                  }
+                },
+                {
+                  "type": "Text",
+                  "id": 4,
+                  "props": {
+                    "testTag": "last-link",
+                    "text": "https://example.com"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "name": "nav-result",
+  "description": "Navigation with a result: the root pushes \"console\" (a fullScreen page); the console pops itself with {picked: \"error\"} (navPop); the host unmounts it and answers the push with that result, which the root shows.",
+  "catalog": 1,
+  "encoding": "json-v0",
+  "app": "conformance/apps/nav.tsx",
+  "ns": "browser",
+  "toVm": [
+    "[[1,{\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"host\":\"android 0.1.0\",\"engine\":\"quickjs-ng 0.17.0\",\"app\":{\"key\":\"worker:browser\",\"ns\":\"browser\"},\"env\":{\"windowClass\":\"compact\",\"posture\":\"flat\",\"platform\":\"android\",\"visible\":true,\"theme\":\"dark\",\"locale\":\"en-US\",\"online\":true}}],[6,1,\"root\",{}]]",
+    "[[2,4,1,[]]]",
+    "[[6,2,\"console\",{\"session\":\"s1\"}]]",
+    "[[2,6,1,[]]]",
+    "[[7,2],[8,1,1,{\"result\":{\"picked\":\"error\"}}],[8,2,1,null]]"
+  ],
+  "fromVm": [
+    "[[23,{\"sdk\":\"0.1.0\",\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"pages\":[{\"name\":\"root\",\"modal\":false,\"fullScreen\":false},{\"name\":\"console\",\"modal\":false,\"fullScreen\":true}]}]]",
+    "[[1,1,40],[2,1,16,\"Browser\"],[1,2,1],[1,3,10],[2,3,16,\"No console yet\"],[3,2,0,0,3],[1,4,20],[2,4,16,\"Console\"],[2,4,2,2],[3,2,0,1,4],[3,1,0,0,2],[7,1,1]]",
+    "[[20,1,10,{\"page\":\"console\",\"params\":{\"session\":\"s1\"}}]]",
+    "[[1,5,40],[2,5,16,\"Console\"],[2,5,17,\"s1\"],[2,5,18,true],[1,6,20],[2,6,16,\"Done\"],[2,6,2,2],[3,5,0,0,6],[7,2,5]]",
+    "[[20,2,11,{\"page\":2,\"result\":{\"picked\":\"error\"}}]]",
+    "[[2,3,16,\"Console closed: {\\\"picked\\\":\\\"error\\\"}\"],[6,5]]"
+  ],
+  "order": ["fromVm", "toVm", "fromVm", "toVm", "fromVm", "toVm", "fromVm", "toVm", "fromVm", "toVm", "fromVm"],
+  "tree": {
+    "1": {
+      "type": "Page",
+      "id": 1,
+      "props": {
+        "title": "Browser"
+      },
+      "slots": {
+        "body": [
+          {
+            "type": "Column",
+            "id": 2,
+            "slots": {
+              "children": [
+                {
+                  "type": "Text",
+                  "id": 3,
+                  "props": {
+                    "text": "Console closed: {\"picked\":\"error\"}"
+                  }
+                },
+                {
+                  "type": "Button",
+                  "id": 4,
+                  "props": {
+                    "events": ["press"],
+                    "text": "Console"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -82,6 +82,16 @@
       "response_format": {
         "default": null
       },
+      "retry_max": {
+        "default": null,
+        "description": "Maximum retries after the first provider attempt. Omitted uses the router's configured limit; zero disables retries. Can only reduce that limit.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
       "session_id": {
         "default": null,
         "description": "Stable conversation identity, forwarded separately from the per-turn request id.",

@@ -13,9 +13,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	validate "github.com/santhosh-tekuri/jsonschema/v6"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -46,6 +49,8 @@ type DatabaseConfig struct {
 type Config struct {
 	Database             DatabaseConfig `json:"database" yaml:"database"`
 	DataDir              string         `json:"data_dir" yaml:"data_dir"`
+	DeviceName           string         `json:"device_name" yaml:"device_name"`
+	DevicePlatform       string         `json:"device_platform" yaml:"device_platform"`
 	MaxSessions          int            `json:"max_sessions" yaml:"max_sessions"`
 	MaxMediaBytes        int            `json:"max_media_bytes" yaml:"max_media_bytes"`
 	MaxEvents            int            `json:"max_events" yaml:"max_events"`
@@ -56,7 +61,7 @@ type Config struct {
 }
 
 func DefaultConfig() Config {
-	return Config{DataDir: "data/whatsapp-go", MaxSessions: 32, MaxMediaBytes: 16 * 1024 * 1024, MaxEvents: 1000, MaxInboxMessages: 10000, OperationTimeoutSecs: 30, ShutdownTimeoutSecs: 15, Cloud: DefaultCloudConfig(), Database: DatabaseConfig{Name: "whatsapp"}}
+	return Config{DataDir: "data/whatsapp-go", DevicePlatform: "desktop", MaxSessions: 32, MaxMediaBytes: 16 * 1024 * 1024, MaxEvents: 1000, MaxInboxMessages: 10000, OperationTimeoutSecs: 30, ShutdownTimeoutSecs: 15, Cloud: DefaultCloudConfig(), Database: DatabaseConfig{Name: "whatsapp"}}
 }
 func (c Config) Validate() error {
 	if strings.TrimSpace(c.Database.Name) == "" || len(c.Database.Name) > 128 || len(c.Database.Namespace) > 256 {
@@ -64,6 +69,12 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.DataDir) == "" {
 		return errors.New("data_dir must not be empty")
+	}
+	if utf8.RuneCountInString(c.DeviceName) > 64 || strings.IndexFunc(c.DeviceName, unicode.IsControl) >= 0 {
+		return errors.New("device_name must be at most 64 characters without control characters")
+	}
+	if v, ok := waCompanionReg.DeviceProps_PlatformType_value[strings.ToUpper(c.DevicePlatform)]; !ok || c.DevicePlatform != strings.ToLower(waCompanionReg.DeviceProps_PlatformType_name[v]) {
+		return errors.New("device_platform must be a lowercase WhatsApp platform type such as desktop or chrome")
 	}
 	for _, v := range []struct {
 		name       string

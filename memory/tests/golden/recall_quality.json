@@ -2,7 +2,7 @@
   "embedding": {
     "dims": 256,
     "model": "text-embedding-3-small",
-    "vectors_fingerprint": "fp9b88c6adb7105abb"
+    "vectors_fingerprint": "fp8619d27cd3ce36de"
   },
   "half_life_days": 60,
   "modes": {

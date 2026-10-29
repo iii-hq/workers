@@ -48,5 +48,20 @@
         "noNonNullAssertion": "off"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["**/native-ui/**"],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useValidAriaRole": {
+              "level": "error",
+              "options": { "ignoreNonDom": true }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

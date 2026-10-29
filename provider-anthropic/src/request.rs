@@ -40,16 +40,15 @@ pub struct BodyArgs {
     pub cache_ttl: Option<&'static str>,
 }
 
-/// No `temperature`: the API default applies (required when thinking is on).
-pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
-    let mut wire_messages = to_wire_messages(&args.messages);
-    // Claude 4.6+/Sonnet 5/Fable/Mythos reject any request whose final message
-    // is an assistant turn — "Prefilling assistant messages is not supported
-    // for this model" — with or without thinking. A trailing call-less
-    // assistant here is always a dead partial from an aborted stream (a
-    // tool_use turn always gets a tool_result/placeholder user flushed after
-    // it), so drop it instead of failing the whole turn.
-    let mut dropped_prefill = false;
+/// Claude 4.6+/Sonnet 5/Fable/Mythos reject any request whose final message
+/// is an assistant turn — "Prefilling assistant messages is not supported
+/// for this model" — with or without thinking. A trailing call-less
+/// assistant here is always a dead partial from an aborted stream (a
+/// tool_use turn always gets a tool_result/placeholder user flushed after
+/// it), so drop it instead of failing the whole turn. The count body drops
+/// it too, so the count matches what the send bills. True when it dropped.
+pub fn drop_trailing_prefill(wire_messages: &mut Vec<Value>) -> bool {
+    let mut dropped = false;
     while wire_messages
         .last()
         .and_then(|m| m.get("role"))
@@ -57,9 +56,15 @@ pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
         == Some("assistant")
     {
         wire_messages.pop();
-        dropped_prefill = true;
+        dropped = true;
     }
-    if dropped_prefill {
+    dropped
+}
+
+/// No `temperature`: the API default applies (required when thinking is on).
+pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
+    let mut wire_messages = to_wire_messages(&args.messages);
+    if drop_trailing_prefill(&mut wire_messages) {
         warnings.push(
             "trailing partial assistant message dropped: assistant prefill is not supported \
              (conversation must end with a user message)"

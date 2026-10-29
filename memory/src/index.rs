@@ -19,7 +19,7 @@ const CORROBORATION_BOOST: f32 = 0.3;
 /// Relevance multiplier for pinned memories.
 const PINNED_BOOST: f32 = 0.25;
 /// How much recency can move a score: ±`RECENCY_WEIGHT / 2` around neutral
-/// (fresh ×1.2, very old ×0.8). Hindsight uses 0.2; 0.4 measured best on the
+/// (fresh ×1.2, very old ×0.8). 0.4 measured best on the
 /// recall eval (durable-old hit@1 0.5 -> 1.0) without adding traps.
 const RECENCY_WEIGHT: f32 = 0.4;
 
@@ -120,6 +120,13 @@ impl Bm25Index {
         self.doc_len.is_empty()
     }
 
+    /// Whether memory `id`'s indexed text (text plus entity handles) holds `term`.
+    pub fn has(&self, term: &str, id: &str) -> bool {
+        self.postings
+            .get(term)
+            .is_some_and(|docs| docs.contains_key(id))
+    }
+
     /// Okapi BM25 over the query tokens.
     pub fn score(&self, query_tokens: &[String]) -> HashMap<String, f32> {
         let n = self.doc_len.len() as f32;
@@ -173,11 +180,12 @@ pub fn fused_score(
         } else {
             1.0
         };
-    let age_days = (now_ms.saturating_sub(memory.updated_at)) as f32 / 86_400_000.0;
+    // Aged from when the fact was said: a pin or a retag never makes it new.
+    let age_days = (now_ms.saturating_sub(memory.last_stated())) as f32 / 86_400_000.0;
     let half_life = half_life_days.max(1) as f32;
     // Freshness in (0, 1], neutral (0.5) at the half-life, folded in as a
-    // MILD multiplier — Hindsight's `1 + alpha * (recency - 0.5)`. A full
-    // multiplier faded durable preferences to a third of their weight.
+    // MILD multiplier, `1 + alpha * (recency - 0.5)`. A full multiplier faded
+    // durable preferences to a third of their weight.
     let recency = 0.5_f32.powf(age_days / half_life);
     base * (1.0 + RECENCY_WEIGHT * (recency - 0.5))
 }

@@ -1,5 +1,5 @@
 {
-  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with the tiktoken tokenizers; never runs the model and costs nothing.",
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, response_format?} locally with each model family's own published vocabulary; never runs the model and costs nothing.",
   "function_id": "provider::opencode_go::count_tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -409,6 +409,18 @@
         ],
         "type": "string"
       },
+      "ResponseFormat": {
+        "properties": {
+          "schema": true,
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
       "StopReason": {
         "enum": [
           "end",
@@ -416,6 +428,18 @@
           "function_call",
           "aborted",
           "error"
+        ],
+        "type": "string"
+      },
+      "ThinkingLevel": {
+        "description": "\"off\" asks the provider not to reason at all and is honoured only where the model advertises `Model::supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns). \"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
         ],
         "type": "string"
       },
@@ -511,8 +535,20 @@
         "type": "array"
       },
       "model": {
-        "description": "Model id the prompt targets; selects the tokenizer (o200k_base for modern chat families and anything unknown-modern).",
+        "description": "Model id the prompt targets; its family selects the vocabulary.",
         "type": "string"
+      },
+      "response_format": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ResponseFormat"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's response format. DeepSeek-V4 models render the body it becomes into the system message, so it is billed as prompt; other families ignore it."
       },
       "system_prompt": {
         "default": null,
@@ -522,9 +558,21 @@
           "null"
         ]
       },
+      "thinking_level": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ThinkingLevel"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's thinking level. DeepSeek-V4 models count the prompt at the effort `stream` sends for it; other families ignore it."
+      },
       "tools": {
         "default": null,
-        "description": "Function invocation schemas; each serialized schema counts toward the total.",
+        "description": "Function invocation schemas; each counts as the tool entry the wire sends.",
         "items": {
           "$ref": "#/definitions/AgentFunction"
         },
@@ -545,14 +593,14 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "estimator": {
-        "description": "Always `tiktoken`: a local tokenizer produced the estimate.",
+        "description": "`tokenizer` when the model's own vocabulary produced the count, `tiktoken` for the gpt models.",
         "type": "string"
       },
       "model": {
         "type": "string"
       },
       "tokens": {
-        "description": "Estimated prompt tokens for the assembled request.",
+        "description": "Prompt tokens for the assembled request.",
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"

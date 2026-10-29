@@ -1,0 +1,16 @@
+# Advisories ignored for database/Cargo.lock only (see .github/workflows/rust-security-audit.yml).
+#
+# zstd 0.13 / zstd-safe 7 come from mysql_common, whose latest release (0.38.2)
+# still requires zstd ^0.13. It uses zstd only to read binlog transaction
+# payloads (zstd::Decoder, zstd::stream::copy_decode), none of which reaches
+# the vulnerable code. Drop all three when mysql_common moves to zstd 0.14.
+#
+# Affects only raw::Encoder::with_context and raw::Decoder::with_context, which
+# borrow a context across streams. mysql_common does not call them: each
+# decode builds its own context.
+RUSTSEC-2026-0391
+# Affects only Seekable::decompress (the `seekable` feature, not enabled).
+RUSTSEC-2026-0398
+# Affects only zstd::stream::write::Decoder. The advisory states that
+# read::Decoder, decode_all and the bulk API are unaffected.
+RUSTSEC-2026-0403
