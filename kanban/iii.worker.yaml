@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: kanban
 tags: [kanban, tickets, board, agents, console-ui]
-description: File-backed kanban board — tickets, threaded comments, agent assignment, the kanban:change and kanban:comment trigger types, and an injectable console board with agent profiles for planning and review.
+description: File-backed kanban board — tickets, threaded comments, agent assignment, the kanban:change and kanban:comment trigger types with the observable functions kanban::on-change and kanban::on-comment next to them (iii 0.25), and an injectable console board with agent profiles for planning and review.
 
 runtime:
   kind: rust

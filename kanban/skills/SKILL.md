@@ -158,3 +158,11 @@ ticket with its thread — the right choice for an agent that re-reads the
 ticket on a wake. Mutations fire triggers; reads do not. The worker delivers only to bindings in its own in-process map,
 so pair a standing wake with a `cron` check-in over `kanban::comment::list`.
 For the payload shape call `get function info` on the trigger type.
+
+### Observable functions (iii 0.25)
+
+`kanban::on-change` and `kanban::on-comment` deliver the `kanban:change` and
+`kanban:comment` events to observers: observe them with the same config as
+args (filters and `ticket: summary` included). Only the kanban worker emits
+them; invoking either directly is refused with `FORBIDDEN`. The trigger types
+above keep working unchanged.
