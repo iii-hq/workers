@@ -26,7 +26,7 @@
  * caught here rather than hidden behind an inert mock.
  */
 
-import type { FunctionTriggerMessage, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { truncateRuntimeId } from '../lib/shared'
@@ -67,16 +67,16 @@ const TRUNCATED = truncateRuntimeId(RUNTIME_ID)
 const FUNCTION_ID = 'code-runner::run'
 const HOST = {} as unknown as Host
 
-function msg(input: unknown, output: unknown): FunctionTriggerMessage {
+function msg(input: unknown, output: unknown): FunctionCallMessage {
   return {
     id: 'm1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: FUNCTION_ID,
     input,
     output,
     running: false,
     createdAt: 0,
-  } as FunctionTriggerMessage
+  } as FunctionCallMessage
 }
 
 /** The settled card's HTML for one request/response pair. */

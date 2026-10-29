@@ -24,7 +24,7 @@ export class Runner {
   constructor(private opts: RunnerOptions) {}
 
   private async call(functionId: string, payload: unknown = {}): Promise<any> {
-    return this.opts.iii.trigger({
+    return this.opts.iii.call({
       function_id: functionId,
       payload: payload ?? {},
       timeoutMs: this.opts.callTimeoutMs ?? 20000,

@@ -1,5 +1,5 @@
 /**
- * Injected function-trigger renderer for `code-runner::run`.
+ * Injected function-call renderer for `code-runner::run`.
  *
  * The default card prints the request as JSON, which turns `code` into one
  * escaped single-line string and `stdout`/`stderr` into two more —
@@ -49,8 +49,8 @@ import {
   Chip,
   CodeHighlight,
   Eyebrow,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   uiClasses,
 } from '@iii-dev/console-ui'
@@ -203,7 +203,7 @@ function StreamOrNote({ label, value, tone }: { label: string; value: unknown; t
   )
 }
 
-function SettledView({ message }: { message: FunctionTriggerMessage }) {
+function SettledView({ message }: { message: FunctionCallMessage }) {
   const req = parseRequest(message.input)
   const res = asRecord(unwrapEnvelope(message.output)) ?? {}
   const runtimeId = typeof res.runtime_id === 'string' ? res.runtime_id : req.runtimeId
@@ -245,7 +245,7 @@ function SettledView({ message }: { message: FunctionTriggerMessage }) {
 }
 
 /** In-flight: what is being run, and where. No verdict to show yet. */
-function RunningView({ message }: { message: FunctionTriggerMessage }) {
+function RunningView({ message }: { message: FunctionCallMessage }) {
   const req = parseRequest(message.input)
   return (
     <CardShell op={opName(message.functionId)} running chips={<Chips req={req} runtimeId={req.runtimeId} />}>
@@ -264,7 +264,7 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
  * excerpt rather than presented as the whole program on the one card gating
  * arbitrary code execution.
  */
-function PreviewView({ message, code }: { message: FunctionTriggerMessage; code: string }) {
+function PreviewView({ message, code }: { message: FunctionCallMessage; code: string }) {
   const req = parseRequest(message.input)
   const clipped = code.endsWith('…')
   return (
@@ -280,10 +280,10 @@ function PreviewView({ message, code }: { message: FunctionTriggerMessage; code:
   )
 }
 
-export function createRunRenderer(host: Host): FunctionTriggerRenderer {
+export function createRunRenderer(host: Host): FunctionCallRenderer {
   void host // the run card reads nothing off the host
 
-  const render = (message: FunctionTriggerMessage, running: boolean): React.ReactNode | null => {
+  const render = (message: FunctionCallMessage, running: boolean): React.ReactNode | null => {
     if (message.functionId !== FUNCTION_ID) return null
     if (message.pendingApproval) return null // tryRenderPreview handles it
     // Not a record — e.g. a double-encoded (stringified) payload, which the
