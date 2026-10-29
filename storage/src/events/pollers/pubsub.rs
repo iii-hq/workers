@@ -1,7 +1,7 @@
 //! GCS → Pub/Sub poller. Pulls from a subscription, normalizes the GCS
 //! notification JSON, dispatches.
 
-use crate::triggers::normalize::{normalize_gcs, EventKind, NormalizeError, ObjectEventNormalized};
+use crate::events::normalize::{normalize_gcs, EventKind, NormalizeError, ObjectEventNormalized};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,10 +22,9 @@ impl PubsubPoller {
     }
 
     /// One iteration of the pull loop. The actual GCS Pub/Sub pull cycle
-    /// requires a `gcloud_pubsub::Client` instance; live wiring lands when
-    /// `main.rs` plumbs the trigger registration. This method is the
-    /// in-process logic — given a raw event JSON value, normalize and
-    /// dispatch.
+    /// requires a `gcloud_pubsub::Client` instance, which `run_loop` holds;
+    /// this method is the in-process logic — given a raw event JSON value,
+    /// normalize and dispatch.
     ///
     /// `event` must be the published Pub/Sub message attributes+data
     /// envelope (matching the fixture shape under tests/fixtures/events/).
@@ -62,7 +61,7 @@ pub async fn run_loop<D>(
     pubsub_client: gcloud_pubsub::client::Client,
     dispatcher: std::sync::Arc<D>,
 ) where
-    D: crate::triggers::dispatcher::EventDispatcher + 'static,
+    D: crate::events::dispatcher::EventDispatcher + 'static,
 {
     use tokio::time::{sleep, Duration};
     let subscription = pubsub_client.subscription(&poller.subscription);

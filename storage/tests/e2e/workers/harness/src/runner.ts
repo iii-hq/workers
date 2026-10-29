@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { IIIClient } from 'iii-sdk';
+import type { IIIClient, ObserverHandle } from 'iii-sdk';
 import {
   BUCKETS,
   LOCAL_BUCKET,
@@ -12,7 +12,7 @@ import {
   type Provider,
   type TestCase,
 } from './cases.ts';
-import { buildTriggerCases } from './cases-triggers.ts';
+import { buildEventCases } from './cases-events.ts';
 import { ERROR_CASES } from './cases-errors.ts';
 import {
   buildBodyShapeCases,
@@ -37,20 +37,34 @@ export interface RunnerOptions {
   reportPath: string;
   providers: Provider[];
   /**
-   * Subset of `providers` whose trigger plumbing is wired. Trigger
-   * registration, probe, and case fan-out all use this list. Defaults to
-   * `providers`, so callers that don't care opt into "fan out triggers
-   * across every selected provider" automatically. CI sets this to
-   * `local,s3` to keep `r2` (no Cloudflare Queue plumbing here) out of
-   * trigger ERRORs that would otherwise force a non-zero exit.
+   * Subset of `providers` whose object-event plumbing is wired. Observers,
+   * probe, and case fan-out all use this list. Defaults to `providers`, so
+   * callers that don't care opt into "fan out object events across every
+   * selected provider" automatically. CI sets this to `local,s3` to keep
+   * `r2` (no Cloudflare Queue plumbing here) out of object-event ERRORs that
+   * would otherwise force a non-zero exit.
    */
-  triggerProviders?: Provider[];
+  eventProviders?: Provider[];
   /** Optional case-name substring filter — when set, only matching cases run. */
   filterCase?: string;
 }
 
 const READY_TIMEOUT_MS = 30_000;
 const READY_PROBE_INTERVAL_MS = 250;
+/** How long an observer of an object function may take to become active. */
+const OBSERVE_READY_TIMEOUT_MS = 10_000;
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export class Runner {
   /**
@@ -69,23 +83,24 @@ export class Runner {
     timer: NodeJS.Timeout;
   }> = [];
 
-  private triggers: { unregister: () => void }[] = [];
+  private observers: ObserverHandle[] = [];
 
   /**
-   * Providers whose trigger plumbing didn't deliver a probe event within
-   * the deadline. Their trigger cases get ERROR-skipped instead of FAILing
-   * so a half-broken cloud profile (e.g., MinIO up, bridge down) doesn't
-   * mask unrelated regressions in the rest of the suite.
+   * Providers whose observers storage refused, or whose object-event
+   * plumbing didn't deliver a probe event within the deadline. Their
+   * object-event cases get ERROR-skipped instead of FAILing so a
+   * half-broken cloud profile (e.g., MinIO up, bridge down) doesn't mask
+   * unrelated regressions in the rest of the suite.
    */
-  private triggerlessProviders = new Set<Provider>();
+  private eventlessProviders = new Set<Provider>();
 
   constructor(private opts: RunnerOptions) {}
 
   // ---------------- sink fns ----------------
 
   /**
-   * The `storage::object-created` trigger payload shape (per
-   * storage/src/triggers/object_created.rs::Event):
+   * The `storage::on-object-created` event shape (per
+   * storage/src/events/object_created.rs::ObjectCreatedEvent):
    *   { bucket, key, size, etag, content_type?, created_at, raw_event_id }
    */
   onObjectCreated = async (payload: any): Promise<{ ack: boolean }> => {
@@ -102,8 +117,8 @@ export class Runner {
   };
 
   /**
-   * The `storage::object-deleted` trigger payload shape (per
-   * storage/src/triggers/object_deleted.rs::Event):
+   * The `storage::on-object-deleted` event shape (per
+   * storage/src/events/object_deleted.rs::ObjectDeletedEvent):
    *   { bucket, key, deleted_at, raw_event_id }
    */
   onObjectDeleted = async (payload: any): Promise<{ ack: boolean }> => {
@@ -135,7 +150,7 @@ export class Runner {
   // ---------------- helpers exposed to cases ----------------
 
   private async callOnce(functionId: string, payload: unknown): Promise<any> {
-    return await this.opts.iii.trigger<unknown, any>({ function_id: functionId, payload });
+    return await this.opts.iii.call<unknown, any>({ function_id: functionId, payload });
   }
 
   private async waitForEvent(
@@ -288,57 +303,61 @@ export class Runner {
     );
   }
 
-  // ---------------- trigger lifecycle ----------------
+  // ---------------- observer lifecycle ----------------
 
-  private registerTriggers(providers: readonly Provider[]): void {
-    // Register both trigger types pointing at our two sink functions, once
-    // per provider. The 60s handler_timeout is the storage default (see
-    // triggers/object_created.rs::default_handler_timeout); we leave it
-    // as-is since our handlers are near-instant.
+  private async observeObjectEvents(providers: readonly Provider[]): Promise<void> {
+    // Observe both object functions with our two sink functions as targets,
+    // once per provider. The 60s handler_timeout_ms is the storage default
+    // (see storage/src/events/source.rs::DEFAULT_HANDLER_TIMEOUT_MS); we
+    // leave it as-is since our handlers are near-instant.
     //
-    // If a provider's bucket isn't wired for triggers in the worker config
-    // (e.g., scratch-s3 missing the `notifications.sqs_queue_url` field),
-    // registerTrigger throws synchronously per
-    // storage/src/triggers/handler.rs::register, and we tag the provider
-    // as triggerless so its cases ERROR-skip later.
+    // If a provider's bucket has no wired notifications source in the
+    // worker config (e.g., scratch-s3 missing `notifications.sqs_queue_url`),
+    // storage rejects the observer with CONFIG_ERROR
+    // (storage/src/events/source.rs::admit), `ready()` rejects, and we tag
+    // the provider as eventless so its cases ERROR-skip later.
     for (const provider of providers) {
       const bucket = BUCKETS[provider];
+      const handles = [
+        this.opts.iii.observe(
+          { function_id: 'storage::on-object-created', args: { bucket } },
+          'harness::on_object_created',
+        ),
+        this.opts.iii.observe(
+          { function_id: 'storage::on-object-deleted', args: { bucket } },
+          'harness::on_object_deleted',
+        ),
+      ];
+      this.observers.push(...handles);
       try {
-        this.triggers.push(
-          this.opts.iii.registerTrigger({
-            type: 'storage::object-created',
-            function_id: 'harness::on_object_created',
-            config: { bucket },
-          }),
-          this.opts.iii.registerTrigger({
-            type: 'storage::object-deleted',
-            function_id: 'harness::on_object_deleted',
-            config: { bucket },
-          }),
+        await withTimeout(
+          Promise.all(handles.map((h) => h.ready())),
+          OBSERVE_READY_TIMEOUT_MS,
+          `observing ${bucket}`,
         );
       } catch (e: unknown) {
-        this.triggerlessProviders.add(provider);
+        this.eventlessProviders.add(provider);
         const msg = e instanceof Error ? e.message : String(e);
-        console.error(`[harness] trigger registration failed for ${provider}: ${msg}`);
+        console.error(`[harness] observing object events failed for ${provider}: ${msg}`);
       }
     }
   }
 
   /**
-   * Smoke-test the trigger delivery path for each provider that managed to
-   * register triggers. Local skips the probe (in-process webhook is
+   * Smoke-test the object-event path for each provider whose observers
+   * storage accepted. Local skips the probe (in-process dispatch is
    * deterministic). Cloud providers do a put + waitForEvent and on timeout
-   * are added to `triggerlessProviders`. The probe key namespace is
-   * disjoint from scenario keys so any leftover events drained at the
-   * start of the first scenario via `flush()` won't confuse assertions.
+   * are added to `eventlessProviders`. The probe key namespace is disjoint
+   * from scenario keys so any leftover events drained at the start of the
+   * first scenario via `flush()` won't confuse assertions.
    */
-  private async probeTriggerPaths(providers: readonly Provider[]): Promise<void> {
+  private async probeEventPaths(providers: readonly Provider[]): Promise<void> {
     const PROBE_TIMEOUT_MS = 8_000;
     for (const provider of providers) {
       if (provider === 'local') continue;
-      if (this.triggerlessProviders.has(provider)) continue;
+      if (this.eventlessProviders.has(provider)) continue;
       const bucket = BUCKETS[provider];
-      const key = `harness/.trigger-probe-${provider}-${Date.now()}`;
+      const key = `harness/.event-probe-${provider}-${Date.now()}`;
       try {
         await this.callOnce('storage::putObject', {
           bucket,
@@ -354,43 +373,41 @@ export class Runner {
           // ignored
         }
       } catch (e: unknown) {
-        this.triggerlessProviders.add(provider);
+        this.eventlessProviders.add(provider);
         const msg = e instanceof Error ? e.message : String(e);
-        console.error(`[harness] trigger probe failed for ${provider}: ${msg}`);
+        console.error(`[harness] object-event probe failed for ${provider}: ${msg}`);
       }
     }
   }
 
   /**
-   * Unregister all active triggers. Without this, re-running the harness
-   * against the same long-running worker leaves zombie subscribers in the
-   * trigger registry and the next run double-counts events. The 200ms drain
-   * in worker.ts before process.exit() is what gives these unregister
-   * messages time to actually leave the WebSocket buffer.
+   * Dispose every observer and wait for the engine to confirm. Without
+   * this, re-running the harness against the same long-running engine
+   * leaves observers whose targets are about to disappear.
    */
-  private unregisterAllTriggers(): void {
-    for (const t of this.triggers) {
-      try {
-        t.unregister();
-      } catch (e) {
-        console.error(`[harness] unregister trigger failed: ${e}`);
+  private async disposeObservers(): Promise<void> {
+    const results = await Promise.allSettled(this.observers.map((h) => h.dispose()));
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        console.error(`[harness] dispose observer failed: ${r.reason}`);
       }
     }
-    this.triggers = [];
+    this.observers = [];
   }
 
   // ---------------- public entry ----------------
 
   async runAll(): Promise<{ pass: number; fail: number; errored: number; total: number; results: CaseResult[] }> {
     await this.waitForStorageWorker();
-    // Trigger fan-out is constrained to providers that are both selected
-    // (`opts.providers`) AND known to be wired (`opts.triggerProviders`).
-    // The intersection is computed once here and reused below.
+    // Object-event fan-out is constrained to providers that are both
+    // selected (`opts.providers`) AND known to be wired
+    // (`opts.eventProviders`). The intersection is computed once here and
+    // reused below.
     const selected = new Set(this.opts.providers);
-    const triggerProviders = (this.opts.triggerProviders ?? this.opts.providers).filter((p) =>
+    const eventProviders = (this.opts.eventProviders ?? this.opts.providers).filter((p) =>
       selected.has(p),
     );
-    this.registerTriggers(triggerProviders);
+    await this.observeObjectEvents(eventProviders);
 
     const results: CaseResult[] = [];
     const useColor = process.stdout.isTTY === true;
@@ -434,7 +451,7 @@ export class Runner {
     // 1. Schema reset (uncounted; covers every provider).
     const reset = record(await this.runCase(buildSchemaReset(providers)));
     if (reset.status === 'FAIL') {
-      this.unregisterAllTriggers();
+      await this.disposeObservers();
       return this.persist({ results, uncountedCases: ['schema-reset'] });
     }
 
@@ -474,20 +491,20 @@ export class Runner {
       record(await this.runCase(c));
     }
 
-    // 3. Trigger dispatch suite (per-provider). Skip providers whose RPC
-    // probe failed (downProviders) or whose trigger plumbing didn't echo
-    // a probe event (triggerlessProviders). The local provider always
-    // probes successfully because native-local dispatch is in-process.
-    await this.probeTriggerPaths(triggerProviders.filter((p) => !downProviders.has(p)));
-    for (const c of buildTriggerCases(triggerProviders)) {
+    // 3. Object-event suite (per-provider). Skip providers whose RPC probe
+    // failed (downProviders) or whose observers were refused or didn't echo
+    // a probe event (eventlessProviders). The local provider always probes
+    // successfully because native-local dispatch is in-process.
+    await this.probeEventPaths(eventProviders.filter((p) => !downProviders.has(p)));
+    for (const c of buildEventCases(eventProviders)) {
       if (!accept(c)) continue;
       if (c.provider && downProviders.has(c.provider)) { recordSkip(c); continue; }
-      if (c.provider && this.triggerlessProviders.has(c.provider)) {
+      if (c.provider && this.eventlessProviders.has(c.provider)) {
         record({
           case: c.name,
           provider: c.provider,
           status: 'ERROR',
-          error: `provider ${c.provider} trigger path unreachable (probe failed)`,
+          error: `provider ${c.provider} object-event path unreachable (observe or probe failed)`,
           duration_ms: 0,
         });
         continue;
@@ -523,7 +540,7 @@ export class Runner {
       });
     }
 
-    this.unregisterAllTriggers();
+    await this.disposeObservers();
     return this.persist({ results, uncountedCases: ['schema-reset'] });
   }
 

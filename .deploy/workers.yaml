@@ -2407,8 +2407,8 @@ workers:
       - src/cases-concurrency.ts
       - src/cases-edge.ts
       - src/cases-errors.ts
+      - src/cases-events.ts
       - src/cases-provider.ts
-      - src/cases-triggers.ts
       - src/cases.ts
       - src/runner.ts
       - src/worker.ts

@@ -591,8 +591,9 @@ pub(crate) async fn write_with_retry<P: Planned>(
     Ok(plan)
 }
 
-/// Apply the just-written configuration now (the change trigger that follows
-/// finds nothing left to rebuild) and report `name`'s build error, if any.
+/// Apply the just-written configuration now (the `configuration::on-updated`
+/// call that follows finds nothing left to rebuild) and report `name`'s
+/// build error, if any.
 async fn reload(
     state: &AppState,
     runtime: &StorageRuntime,
@@ -616,9 +617,8 @@ async fn reload(
 pub(crate) mod tests {
     use super::*;
     use crate::backend::Backend;
+    use crate::events::dispatcher::EngineDispatcher;
     use crate::secrets::testing::FakeSecrets;
-    use crate::triggers::dispatcher::EngineDispatcher;
-    use crate::triggers::registry::TriggerRegistry;
     use async_trait::async_trait;
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -689,10 +689,9 @@ pub(crate) mod tests {
             expanded: Mutex::new(None),
         });
         let runtime = StorageRuntime::with_store(
-            Arc::new(EngineDispatcher::new(
-                iii_sdk::IIIClient::new("ws://127.0.0.1:1"),
-                Arc::new(TriggerRegistry::new()),
-            )),
+            Arc::new(EngineDispatcher::new(iii_sdk::IIIClient::new(
+                "ws://127.0.0.1:1",
+            ))),
             &state,
             Arc::new(RwLock::new(HashSet::new())),
             Some(store.clone() as Arc<dyn ConfigStore>),

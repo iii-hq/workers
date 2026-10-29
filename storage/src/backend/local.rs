@@ -7,8 +7,8 @@
 
 use super::*;
 use crate::config::{LocalHttpConfig, LocalProviderConfig};
-use crate::triggers::dispatcher::EventDispatcher;
-use crate::triggers::normalize::{EventKind, ObjectEventNormalized};
+use crate::events::dispatcher::EventDispatcher;
+use crate::events::normalize::{EventKind, ObjectEventNormalized};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
@@ -1490,7 +1490,7 @@ fn provider_error(message: impl Into<String>) -> BackendError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::triggers::dispatcher::EventDispatcher;
+    use crate::events::dispatcher::EventDispatcher;
     use std::sync::Mutex as StdMutex;
 
     #[derive(Default)]

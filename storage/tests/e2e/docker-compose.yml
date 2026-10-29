@@ -35,8 +35,8 @@ services:
       retries: 30
     profiles: ["cloud"]
 
-  # Drop-in SQS-compatible broker. The storage worker's S3 trigger source
-  # (storage/src/triggers/pollers/sqs.rs) long-polls a real SQS endpoint;
+  # Drop-in SQS-compatible broker. The storage worker's S3 notifications source
+  # (storage/src/events/pollers/sqs.rs) long-polls a real SQS endpoint;
   # ElasticMQ lets us exercise that path without standing up LocalStack
   # or hitting real AWS. Image is ~30MB.
   elasticmq:

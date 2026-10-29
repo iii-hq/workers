@@ -1,5 +1,7 @@
-// Trigger dispatch assertions. Each case drains buffered events first to
-// avoid contamination from prior puts/deletes that arrived asynchronously.
+// Object event assertions: storage calls storage::on-object-created /
+// storage::on-object-deleted, and the harness observers' targets receive the
+// events. Each case drains buffered events first to avoid contamination from
+// prior puts/deletes that arrived asynchronously.
 //
 // The local backend dispatches events directly after a mutation. The SQS
 // path (S3 backend → MinIO webhook → bridge → ElasticMQ → worker
@@ -19,7 +21,7 @@ async function flush(ctx: { resetEvents: () => void }): Promise<void> {
   ctx.resetEvents();
 }
 
-interface TriggerScenario {
+interface EventScenario {
   name: string;
   run: (ctx: CaseContext) => Promise<void>;
 }
@@ -28,12 +30,12 @@ interface TriggerScenario {
 // scenario once per provider, so keys must be unique-per-case (provider
 // is encoded in `ctx.bucket` but the key namespace is shared across runs
 // against the same backend).
-const SCENARIOS: readonly TriggerScenario[] = [
+const SCENARIOS: readonly EventScenario[] = [
   {
-    name: 'object-created fires on putObject',
+    name: 'putObject calls storage::on-object-created',
     async run(ctx) {
       await flush(ctx);
-      const key = 'harness/triggers/created-target';
+      const key = 'harness/events/created-target';
       await ctx.call('storage::putObject', {
         bucket: ctx.bucket,
         key,
@@ -47,11 +49,11 @@ const SCENARIOS: readonly TriggerScenario[] = [
     },
   },
   {
-    name: 'object-deleted fires on deleteObject',
+    name: 'deleteObject calls storage::on-object-deleted',
     async run(ctx) {
-      const key = 'harness/triggers/deleted-target';
+      const key = 'harness/events/deleted-target';
       // Pre-create the object outside the assertion window so the
-      // resulting object-created dispatch doesn't pollute the buffer
+      // resulting object-created event doesn't pollute the buffer
       // we're about to measure for the deleted event.
       await ctx.call('storage::putObject', {
         bucket: ctx.bucket,
@@ -72,7 +74,7 @@ const SCENARIOS: readonly TriggerScenario[] = [
       // than "==2" so the test stays stable under future event-batching
       // changes.
       await flush(ctx);
-      const key = 'harness/triggers/multi-put';
+      const key = 'harness/events/multi-put';
       for (const body of ['v1', 'v2-larger', 'v3']) {
         await ctx.call('storage::putObject', {
           bucket: ctx.bucket,
@@ -86,9 +88,9 @@ const SCENARIOS: readonly TriggerScenario[] = [
     },
   },
   {
-    name: 'getObject does not produce trigger events',
+    name: 'getObject produces no object events',
     async run(ctx) {
-      const key = 'harness/triggers/silence-probe';
+      const key = 'harness/events/silence-probe';
       // Seed an object so the GETs succeed; do this before flush so its
       // own object-created event is drained out.
       await ctx.call('storage::putObject', {
@@ -110,7 +112,7 @@ const SCENARIOS: readonly TriggerScenario[] = [
     name: 'rapid-fire 10 puts → 10 created events received',
     async run(ctx) {
       await flush(ctx);
-      const baseKey = 'harness/triggers/rapid';
+      const baseKey = 'harness/events/rapid';
       const keys = Array.from({ length: 10 }, (_, i) => `${baseKey}-${i}`);
       // Sequential puts within a tight loop — distinct keys so coalescing
       // doesn't apply. Assert at-least-once delivery for every key.
@@ -127,12 +129,12 @@ const SCENARIOS: readonly TriggerScenario[] = [
 ];
 
 /**
- * Build the full trigger-dispatch suite, fanned out across every provider
- * in `providers`. The runner is responsible for skipping providers whose
- * trigger registration failed (`triggerlessProviders`) — this builder
- * doesn't know which backends have working SQS / webhook plumbing.
+ * Build the full object-event suite, fanned out across every provider in
+ * `providers`. The runner is responsible for skipping providers whose
+ * observers storage refused (`eventlessProviders`) — this builder doesn't
+ * know which backends have working SQS / webhook plumbing.
  */
-export function buildTriggerCases(providers: readonly Provider[]): TestCase[] {
+export function buildEventCases(providers: readonly Provider[]): TestCase[] {
   return providers.flatMap((provider) =>
     SCENARIOS.map((s) => ({
       name: `[${provider}] ${s.name}`,
