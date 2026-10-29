@@ -241,10 +241,10 @@ function FileBrowser({
     const load =
       file.kind === 'agent'
         ? host.iii
-            .trigger<{ raw?: string; system_prompt?: string }>('directory::agents::get', { id: file.id, raw: true })
+            .call<{ raw?: string; system_prompt?: string }>('directory::agents::get', { id: file.id, raw: true })
             .then((o) => o.raw ?? o.system_prompt ?? '')
         : host.iii
-            .trigger<{ raw?: string; body?: string }>('directory::skills::get', { id: file.id, raw: true })
+            .call<{ raw?: string; body?: string }>('directory::skills::get', { id: file.id, raw: true })
             .then((o) => o.raw ?? o.body ?? '')
     load.then(setContent).catch(() => setContent(''))
   }, [host, file])

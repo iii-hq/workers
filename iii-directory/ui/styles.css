@@ -3,7 +3,7 @@
    around injected renders. Tokens only; sans for chrome, mono for machine
    values; shared recipes (`iii-ui-*`) own the primitives. */
 
-/* ── function-trigger cards ─────────────────────────────────────────── */
+/* ── function-call cards ─────────────────────────────────────────── */
 
 [data-iii-ui="iii-directory"] .dir-ui-mono {
   font-family: var(--font-mono);

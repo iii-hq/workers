@@ -39,7 +39,7 @@ describe('isErrorOutput', () => {
 
 describe('parseDiscoverResponse', () => {
   it('parses a flat response and an enveloped one identically', () => {
-    const parsed = { ...response, installable: [], skills: [], triggers: [] }
+    const parsed = { ...response, installable: [], skills: [], observers: [] }
     expect(parseDiscoverResponse(response)).toEqual(parsed)
     expect(
       parseDiscoverResponse({ content: [{ type: 'text', text: 'x' }], details: response }),
@@ -48,7 +48,7 @@ describe('parseDiscoverResponse', () => {
 
   it('keeps empty worker lists (the refine-guidance card)', () => {
     const empty = { guidance: 'No functions matched…', workers: [], latency_ms: 3 }
-    expect(parseDiscoverResponse(empty)).toEqual({ ...empty, installable: [], skills: [], triggers: [] })
+    expect(parseDiscoverResponse(empty)).toEqual({ ...empty, installable: [], skills: [], observers: [] })
   })
 
   it('parses the search mode when present and ignores an unknown one', () => {
@@ -79,42 +79,56 @@ describe('parseDiscoverResponse', () => {
     expect(parsed?.workers).toEqual([])
   })
 
-  it('parses the registered triggers section when present', () => {
+  it('parses the observers section when present', () => {
     const parsed = parseDiscoverResponse({
-      guidance: 'The `triggers` entries are registered trigger bindings…',
+      guidance: 'The `observers` entries are observers that already run a function…',
       workers: [],
-      triggers: [
+      observers: [
         {
-          id: 't-1',
-          trigger_type: 'cron',
-          function_id: 'harness::sweep-pending',
+          id: 'o-1',
+          function_id: 'cron::on-tick',
+          target: 'harness::sweep-pending',
           worker_name: 'harness',
-          config: { expression: '0 0 0 * * *' },
+          args: { expression: '0 0 0 * * *' },
+          filters: {},
         },
-        { id: 't-2', trigger_type: 'configuration', function_id: 'queue::on-config-change' },
+        {
+          id: 'o-2',
+          function_id: 'configuration::on-updated',
+          target: 'queue::on-config-change',
+          filters: { 'input.id': { $eq: 'queue' } },
+        },
       ],
       latency_ms: 7,
     })
-    expect(parsed?.triggers).toEqual([
+    expect(parsed?.observers).toEqual([
       {
-        id: 't-1',
-        triggerType: 'cron',
-        functionId: 'harness::sweep-pending',
+        id: 'o-1',
+        functionId: 'cron::on-tick',
+        target: 'harness::sweep-pending',
         workerName: 'harness',
-        config: { expression: '0 0 0 * * *' },
+        args: { expression: '0 0 0 * * *' },
+        filters: {},
       },
-      { id: 't-2', triggerType: 'configuration', functionId: 'queue::on-config-change', config: {} },
+      {
+        id: 'o-2',
+        functionId: 'configuration::on-updated',
+        target: 'queue::on-config-change',
+        args: {},
+        filters: { 'input.id': { $eq: 'queue' } },
+      },
     ])
   })
 
-  it('rejects a malformed triggers section', () => {
-    for (const triggers of [
+  it('rejects a malformed observers section', () => {
+    for (const observers of [
       {},
-      [{ trigger_type: 'cron', function_id: 'x' }], // no id
-      [{ id: 't', trigger_type: 'cron' }], // no function_id
-      [{ id: 't', trigger_type: 'cron', function_id: 'x', worker_name: 7 }],
+      [{ function_id: 'cron::on-tick', target: 'x' }], // no id
+      [{ id: 'o', target: 'x' }], // no function_id
+      [{ id: 'o', function_id: 'cron::on-tick' }], // no target
+      [{ id: 'o', function_id: 'cron::on-tick', target: 'x', worker_name: 7 }],
     ]) {
-      expect(parseDiscoverResponse({ guidance: 'g', workers: [], triggers, latency_ms: 1 })).toBeNull()
+      expect(parseDiscoverResponse({ guidance: 'g', workers: [], observers, latency_ms: 1 })).toBeNull()
     }
   })
 
@@ -223,7 +237,7 @@ describe('functionCount', () => {
         latency_ms: 1,
         installable: [],
         skills: [],
-        triggers: [],
+        observers: [],
         workers: [
           { namespace: 'a', functions: [candidate, candidate] },
           { namespace: 'b', functions: [candidate] },

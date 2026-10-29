@@ -4,15 +4,15 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `iii-directory/page.js` (`console:script`) — the directory
+//! - `iii-directory/page.js` (a `script` asset) — the directory
 //!   browser/editor page (page `directory`), plus the `directory::*`
-//!   function-trigger renderer and the custom `iii-directory`
+//!   function-call renderer and the custom `iii-directory`
 //!   configuration form its `setup(host)` registers.
-//! - `iii-directory/styles.css` (`console:style`) — the stylesheet, every
+//! - `iii-directory/styles.css` (a `style` asset) — the stylesheet, every
 //!   rule scoped under `[data-iii-ui="iii-directory"]`.
 //!
 //! The registration machinery (content function `iii-directory::ui-content`,
-//! one Message-path trigger per asset, `III_III_DIRECTORY_UI_WATCH`
+//! one `console::ui::asset` observer per asset, `III_III_DIRECTORY_UI_WATCH`
 //! hot-reload watcher) lives in the shared `iii-console-ui` crate
 //! (path-linked from `workers/crates/console-ui`); this module only names
 //! the assets and embeds their bytes.
@@ -22,8 +22,7 @@
 //! embedded at compile time so the worker stays one self-contained binary.
 //! For the dev loop, set `III_III_DIRECTORY_UI_WATCH` to the build output
 //! directory (or `1` for `ui/dist`): the worker polls both files and
-//! re-registers a changed asset's trigger — every open console tab
-//! hot-swaps it.
+//! observes a changed asset again — every open console tab hot-swaps it.
 
 use std::sync::Arc;
 

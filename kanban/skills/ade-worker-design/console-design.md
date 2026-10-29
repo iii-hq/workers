@@ -707,7 +707,7 @@ timestamps, metrics, span labels, filter expressions, and code-like values.
 **Rule:** if a human wrote it, it's sans; if the machine produced it (or a
 machine will parse it), it's mono. Don't add a third family — variety comes
 from weight, scale, case, and letter-spacing, not more fonts. Do not apply
-mono to an entire panel or function-trigger card; technical values inside
+mono to an entire panel or function-call card; technical values inside
 those surfaces opt into mono individually.
 
 Decorative ligatures are explicitly disabled on mono surfaces
@@ -834,7 +834,7 @@ stripe or outline.
 
 `workdir` (Tailwind sky-500, the same value in both themes) has exactly one
 job: the folder glyph in the chat activity trail, beside ƒ (`accent`), the
-trigger bolt (`warn`) and the registration tower (`ok`). Its `-muted` fill
+observer bolt (`warn`) and the registration tower (`ok`). Its `-muted` fill
 tints the glyph tile in the expanded row. Never a border, a body text color,
 or a selection state.
 
@@ -1460,8 +1460,8 @@ export function StatusPanel({
 
 ### Chat system notices (`SystemNotice`)
 
-Every `role: 'system'` transcript entry that is not a compaction marker or a
-trigger fire renders through `components/chat/SystemNotice.tsx`, in one of
+Every `role: 'system'` transcript entry that is not a compaction marker or an
+observer fire renders through `components/chat/SystemNotice.tsx`, in one of
 three presentations chosen by `kind`:
 
 - **One-line notice** (`kind: 'notice'` or unset): the `StatusPanel` recipe —
@@ -1478,7 +1478,7 @@ three presentations chosen by `kind`:
   affordance. Classification lives in `lib/turn-failure.ts`; transient
   failures tint `warn`, everything someone must fix tints `alert`.
 - **Working directory** (`kind: 'working-dir'`): the activity-row grammar
-  shared with function calls and trigger fires — status icon, kind trail
+  shared with function calls and observer fires — status icon, kind trail
   (folder in `workdir`), one truncating line, hover disclosure — expanding to
   the before/after paths on `CardHighlight`.
 
@@ -2260,8 +2260,8 @@ primitives without inventing a new "hero card" shape.
 
 ### API reference panel
 
-For documenting a worker's registered functions and triggers (the "api
-reference" tab on the worker detail page), use a stacked, expanded-by-default
+For documenting a worker's registered functions and the event functions it
+hosts (the "api reference" tab on the worker detail page), use a stacked, expanded-by-default
 "datasheet" composition rather than a sidebar+console pattern. The whole
 surface should read top-to-bottom like a printed engineering spec, with no
 accordions or modals at the row level.
@@ -2270,32 +2270,32 @@ The composition has three nesting levels and uses one tonal step per level:
 
 ```
 section eyebrow (label-caps)                    <- bg page
-  card    bg-panel-raised head + surface body   <- per function/trigger
+  card    bg-panel-raised head + surface body   <- per function/event
     pane    bg-paper-2 head + bg body           <- per schema (request/response)
       tree    flat type-table                   <- per field
 ```
 
-1. **Sections** — two `Section`s (functions, triggers), each with a
+1. **Sections** — two `Section`s (functions, events), each with a
    `label-caps-lg` eyebrow on the left and a small ink-ghost count on the
    right. Same chrome already used by other tabs on the worker page; do not
    wrap the section bodies in an additional border.
-2. **Card** — a `rounded-md bg-surface` `article` per function/trigger. The
+2. **Card** — a `rounded-md bg-surface` `article` per function/event. The
    `bg-panel-raised` head strip carries the name (`title-cell`) on the left,
    any `metadata.tags` rendered as borderless `bg-surface` label-caps-sm
    pills next to it, and the
-   kind label (`FUNCTION` / `TRIGGER`) in label-caps on the right. Function
-   and trigger cards share the exact same head; the only difference is
-   what the name represents. **Triggers do not carry a separate "type"
-   chip** — a trigger card *is* the definition of a trigger type, so the
-   trigger's name (e.g. `http-endpoint`, `cron`, `queue`) is the type. Each
-   card carries a stable `id` (`fn-<name>` / `trigger-<name>`) plus
+   kind label (`FUNCTION` / `EVENT`) in label-caps on the right. Function
+   and event cards share the exact same head; the only difference is what
+   the name represents. **Events do not carry a separate "type" chip** — an
+   event card *is* the definition of an observable event function, so its
+   id (e.g. `http::on-request`, `cron::on-tick`, `queue::on-message`) names
+   it. Each card carries a stable `id` (`fn-<name>` / `event-<name>`) plus
    `scroll-mt-20` so that anchor navigation lands cleanly below the sticky
    site header.
 3. **Pane** — the two schemas inside a card sit in a `@2xl:grid-cols-2`
    grid separated by grid `gap`. Each pane is a
    `rounded-sm` block with a `bg-paper-2` head strip carrying a
    label-caps-sm eyebrow (`request` / `response` for functions,
-   `invocation` / `return` for triggers). The `bg-paper-2` step makes the
+   `args` / `event` for events). The `bg-paper-2` step makes the
    pane read as one tonal level "down" from the card's `bg-panel-raised`
    head.
 4. **Tree** — fields render as a flat type-table inside the pane body, one
@@ -2314,20 +2314,20 @@ as raw JSON dumps. If a schema construct can't be expressed in the table
 
 **Accent rationing (§3).** The required-field marker (`*`) is the only
 accent inside a schema tree. There is no accent on the card head — every
-trigger row stays ink-on-paper, just like a function row.
+event row stays ink-on-paper, just like a function row.
 
-**Empty states.** Use `Cell` for "no functions registered" / "no triggers
+**Empty states.** Use `Cell` for "no functions registered" / "no events
 registered" within a present section, and a `StatusPanel variant="info"`
 when the worker registers neither — same convention as the rest of the
 worker page.
 
 **Sidebar summary.** Pair the panel with an `api` card in the worker
 page's right-hand `aside` (placed between `details` and `author`) listing
-every function and trigger the worker exposes. The card uses the same
+every function and event the worker exposes. The card uses the same
 chrome as the other sidebar cards (`rounded-md bg-surface` block +
 `bg-panel-raised` head + `label-caps-lg` title) and contains two
 sub-sections — `functions` and
-`triggers` — each headed by a `label-caps-sm` eyebrow with a tabular
+`events` — each headed by a `label-caps-sm` eyebrow with a tabular
 count on the right. Each row is a Next.js `Link` whose `href` always
 includes `?tab=api#<anchor>`, where the anchor is the same id stamped on
 the corresponding card. This makes the same link work from any tab:
@@ -2349,7 +2349,7 @@ internally instead of overflowing the viewport. At narrower widths the
 aside stacks below the main column and is not sticky.
 
 **Selection echo.** When a sidebar link is clicked, the corresponding
-function/trigger card lights up with the canonical neutral
+function/event card lights up with the canonical neutral
 `bg-surface-selected` wash (the same recipe used by `WorkerCard` focused
 state in §10 and the `versions` Row's `aria-current` style); the clicked
 sidebar link stays `text-ink` and may use a neutral `edge`. This gives the
@@ -2393,7 +2393,7 @@ Wiring:
   fired `hashchange` yet.
 
 This is also why the sidebar uses a single `SummaryList` client
-component for *both* `functions` and `triggers` sub-sections rather
+component for *both* `functions` and `events` sub-sections rather
 than one client component per section: with the hub providing a single
 source of truth, splitting state would only cause stale highlights when
 the user crossed sub-sections.

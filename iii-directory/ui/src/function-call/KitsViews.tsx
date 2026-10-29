@@ -167,7 +167,7 @@ function CompactReview({ host, plan }: { host?: Host; plan: Plan }) {
     return (
       <p className="dir-ui-empty">
         Review it in the ADE (Directory → Kits) or apply it with{' '}
-        <code>iii trigger directory::kits::apply plan_id={plan.plan_id}</code>.
+        <code>iii call directory::kits::apply plan_id={plan.plan_id}</code>.
       </p>
     )
   }
@@ -312,7 +312,7 @@ export function KitApplyPreview({ input, host }: { input: unknown; host?: Host }
     if (!host || !planId) return
     let cancelled = false
     host.iii
-      .trigger<{ plan: Plan }>('directory::kits::plan', { plan_id: planId })
+      .call<{ plan: Plan }>('directory::kits::plan', { plan_id: planId })
       .then((r) => {
         if (!cancelled) setPlan(r.plan)
       })

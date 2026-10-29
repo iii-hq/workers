@@ -8,7 +8,7 @@
         "oneOf": [
           {
             "enum": [
-              "agent_trigger",
+              "agent_call",
               "native"
             ],
             "type": "string"
@@ -30,7 +30,7 @@
                 "$ref": "#/definitions/ExposeKind"
               }
             ],
-            "description": "How the harness exposes functions to the model for this generation. Absent on harnesses that predate the field, which only ever exposed through agent_trigger by default."
+            "description": "How the harness exposes functions to the model for this generation. Absent on harnesses that predate the field, which exposed functions through the call tool."
           },
           "functions_generation": {
             "format": "uint64",

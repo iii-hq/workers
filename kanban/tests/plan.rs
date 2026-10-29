@@ -1,6 +1,7 @@
 //! Subtasks, projects and releases: the ticket relations and their
 //! invariants, the derived views, shipping, the label conversion, the board
-//! file versions and the trigger filters — engine-free, like `tests/board.rs`.
+//! file versions and the observer args of the event functions — engine-free,
+//! like `tests/board.rs`.
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -13,8 +14,8 @@ use iii_kanban::board::{
 };
 use iii_kanban::config::{Column, KanbanConfig};
 use iii_kanban::events::{
-    ChangeConfig, ChangeEvent, CommentConfig, CommentEvent, matches_change, matches_comment,
-    payloads,
+    ChangeArgs, ChangeEvent, CommentArgs, CommentEvent, change_metadata, matches_change,
+    matches_comment, payloads, wants_change, wants_comment,
 };
 use iii_kanban::functions::{
     self, BoardGetInput, BoardView, LabelConvertInput, ReleaseShipInput, TicketCreateInput,
@@ -25,6 +26,7 @@ use iii_kanban::plan::{
     ReleaseStatus, natural_cmp,
 };
 use iii_kanban::store::{Board, BoardStore, Change, Ticket, read_board, write_board};
+use iii_sdk::Call;
 use serde_json::{Value, json};
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
@@ -2226,7 +2228,7 @@ fn a_dry_run_plans_on_a_shared_borrow_and_the_board_is_not_touched() {
     assert_untouched(&before, &env.board);
 }
 
-/* ── events, the views and the trigger filters ────────────────────────── */
+/* ── events, the views and the observer args ──────────────────────────── */
 
 fn event_of(board: &Board, key: &str) -> ChangeEvent {
     let ticket = find_ticket(board, key).unwrap();
@@ -2311,7 +2313,10 @@ fn a_write_that_touches_two_tickets_announces_both_and_a_no_op_announces_none() 
 
     let same = env.get("KAN-2");
     let none = ticket_outcome(&env.board, &context(), Some(same.clone()), Some(same), &[]);
-    assert!(none.tickets.is_empty(), "nothing changed, nothing fires");
+    assert!(
+        none.tickets.is_empty(),
+        "nothing changed, nothing is called"
+    );
     assert!(none.result.is_some());
 }
 
@@ -2700,7 +2705,7 @@ fn tickets_are_filtered_by_parent_project_and_release_by_key_uuid_or_name() {
 }
 
 #[test]
-fn the_change_trigger_parent_id_fires_for_the_parent_and_each_subtask() {
+fn the_change_parent_id_selects_the_parent_and_each_subtask() {
     let mut env = Env::new();
     for title in ["Parent", "Child", "Stranger"] {
         env.ticket(title);
@@ -2709,17 +2714,17 @@ fn the_change_trigger_parent_id_fires_for_the_parent_and_each_subtask() {
     let parent_id = env.get("KAN-1").id;
 
     for reference in ["KAN-1", "kan-1", parent_id.as_str()] {
-        let config = json!({ "parent_id": reference });
+        let args = json!({ "parent_id": reference });
         assert!(
-            matches_change(&config, &event_of(&env.board, "KAN-1")),
+            matches_change(&args, &event_of(&env.board, "KAN-1")),
             "{reference}: the parent"
         );
         assert!(
-            matches_change(&config, &event_of(&env.board, "KAN-2")),
+            matches_change(&args, &event_of(&env.board, "KAN-2")),
             "{reference}: its subtask"
         );
         assert!(
-            !matches_change(&config, &event_of(&env.board, "KAN-3")),
+            !matches_change(&args, &event_of(&env.board, "KAN-3")),
             "{reference}: a stranger"
         );
     }
@@ -2739,7 +2744,7 @@ fn the_change_trigger_parent_id_fires_for_the_parent_and_each_subtask() {
         "blank is no filter"
     );
 
-    // It combines with the other filters, and a summary payload still knows its parent's uuid.
+    // It combines with the other args, and a summary payload still knows its parent's uuid.
     let child = event_of(&env.board, "KAN-2");
     assert!(!matches_change(
         &json!({ "parent_id": "KAN-1", "events": ["ticket.moved"] }),
@@ -2759,7 +2764,7 @@ fn the_change_trigger_parent_id_fires_for_the_parent_and_each_subtask() {
 }
 
 #[test]
-fn the_change_trigger_release_id_fires_for_tickets_in_the_release_and_those_moved_out() {
+fn the_change_release_id_selects_tickets_in_the_release_and_those_moved_out() {
     let mut env = Env::new();
     env.release("Phase 2", None);
     env.release("Phase 3", None);
@@ -2774,13 +2779,13 @@ fn the_change_trigger_release_id_fires_for_tickets_in_the_release_and_those_move
     // A status change of a ticket that is in the release.
     env.status("KAN-1", "todo");
     for reference in [phase_2.as_str(), "Phase 2", "phase 2"] {
-        let config = json!({ "release_id": reference });
+        let args = json!({ "release_id": reference });
         assert!(
-            matches_change(&config, &event_of(&env.board, "KAN-1")),
+            matches_change(&args, &event_of(&env.board, "KAN-1")),
             "{reference}: in the release"
         );
         assert!(
-            !matches_change(&config, &event_of(&env.board, "KAN-3")),
+            !matches_change(&args, &event_of(&env.board, "KAN-3")),
             "{reference}: outside"
         );
     }
@@ -2848,7 +2853,7 @@ fn the_change_trigger_release_id_fires_for_tickets_in_the_release_and_those_move
 }
 
 #[test]
-fn the_comment_trigger_takes_a_ticket_or_a_parent() {
+fn the_comment_args_take_a_ticket_or_a_parent() {
     let mut env = Env::new();
     for title in ["Parent", "Child", "Stranger"] {
         env.ticket(title);
@@ -2860,10 +2865,10 @@ fn the_comment_trigger_takes_a_ticket_or_a_parent() {
     let on_stranger = comment_event_of(&mut env, "KAN-3", "tech-lead");
 
     for reference in ["KAN-1", "kan-1", parent_id.as_str()] {
-        let config = json!({ "parent_id": reference });
-        assert!(matches_comment(&config, &on_parent), "{reference}");
-        assert!(matches_comment(&config, &on_child), "{reference}");
-        assert!(!matches_comment(&config, &on_stranger), "{reference}");
+        let args = json!({ "parent_id": reference });
+        assert!(matches_comment(&args, &on_parent), "{reference}");
+        assert!(matches_comment(&args, &on_child), "{reference}");
+        assert!(!matches_comment(&args, &on_stranger), "{reference}");
     }
     assert!(!matches_comment(
         &json!({ "parent_id": "KAN-404" }),
@@ -2877,7 +2882,8 @@ fn the_comment_trigger_takes_a_ticket_or_a_parent() {
         &on_child
     ));
 
-    // Neither: never fires. Both: both must hold. The other filters still apply.
+    // Neither: selects nothing (the added hook rejects such an observer). Both:
+    // both must hold. The other args still apply.
     assert!(!matches_comment(&json!({}), &on_child));
     assert!(!matches_comment(
         &json!({ "parent_id": "  ", "ticket_id": "" }),
@@ -2899,6 +2905,96 @@ fn the_comment_trigger_takes_a_ticket_or_a_parent() {
         &json!({ "parent_id": "KAN-1", "author": "tech-lead" }),
         &on_child
     ));
+}
+
+/// A call of the event function as the emitter makes it: the event as input,
+/// a change's releases in the metadata.
+fn call_of<T: serde::Serialize>(event: &T, metadata: Option<Value>) -> Call {
+    Call {
+        input: serde_json::to_value(event).unwrap(),
+        metadata,
+        ..Call::default()
+    }
+}
+
+#[test]
+fn the_match_hooks_choose_what_the_typed_matchers_choose() {
+    let mut env = Env::new();
+    env.release("Phase 2", None);
+    env.release("Phase 3", None);
+    for title in ["Parent", "Child", "Stranger"] {
+        env.ticket(title);
+    }
+    env.update("KAN-2", parent_patch(Some("KAN-1"))).unwrap();
+    env.set("KAN-2", None, Some("Phase 2"));
+    env.set("KAN-2", None, Some("Phase 3"));
+    let parent_id = env.get("KAN-1").id;
+
+    let child = event_of(&env.board, "KAN-2");
+    assert_eq!(child.releases.len(), 2, "in Phase 3, just left Phase 2");
+    let mut summary = child.clone();
+    summary.ticket = child.ticket.summarized();
+    let change_args = [
+        json!({}),
+        json!({ "ticket_id": "KAN-2" }),
+        json!({ "ticket_id": "kan-1" }),
+        json!({ "parent_id": "KAN-1" }),
+        json!({ "parent_id": parent_id }),
+        json!({ "parent_id": "KAN-3" }),
+        json!({ "release_id": "Phase 2" }),
+        json!({ "release_id": "phase 3" }),
+        json!({ "release_id": "ghost" }),
+        json!({ "events": ["ticket.updated"] }),
+        json!({ "events": ["ticket.moved"] }),
+        json!({ "parent_id": "KAN-1", "release_id": "Phase 3", "events": ["ticket.updated"] }),
+    ];
+    for event in [
+        &child,
+        &summary,
+        &event_of(&env.board, "KAN-1"),
+        &event_of(&env.board, "KAN-3"),
+    ] {
+        let call = call_of(event, change_metadata(event));
+        for args in &change_args {
+            assert_eq!(
+                wants_change(args, &call),
+                matches_change(args, event),
+                "{args} on {}",
+                event.ticket_key
+            );
+        }
+    }
+    assert!(
+        change_metadata(&event_of(&env.board, "KAN-3")).is_none(),
+        "a change outside every release carries no metadata"
+    );
+
+    let on_child = comment_event_of(&mut env, "KAN-2", "tech-lead");
+    let mut reply = on_child.clone();
+    reply.comment.parent_id = Some(on_child.comment.id.clone());
+    let on_stranger = comment_event_of(&mut env, "KAN-3", "pm");
+    let comment_args = [
+        json!({}),
+        json!({ "ticket_id": "KAN-2" }),
+        json!({ "parent_id": "kan-1" }),
+        json!({ "parent_id": parent_id }),
+        json!({ "parent_id": "KAN-1", "author": "tech-lead" }),
+        json!({ "parent_id": "KAN-1", "exclude_author": "tech-lead" }),
+        json!({ "ticket_id": "KAN-2", "root_only": true }),
+        json!({ "ticket_id": "KAN-3", "exclude_author": "tech-lead" }),
+    ];
+    for event in [&on_child, &reply, &on_stranger] {
+        let call = call_of(event, None);
+        for args in &comment_args {
+            assert_eq!(
+                wants_comment(args, &call),
+                matches_comment(args, event),
+                "{args} on {} ({})",
+                event.ticket_key,
+                event.author
+            );
+        }
+    }
 }
 
 /* ── the function catalog ─────────────────────────────────────────────── */
@@ -2976,7 +3072,7 @@ fn the_catalog_registers_the_planning_functions_with_typed_inputs() {
 }
 
 #[test]
-fn deliveries_carry_the_view_and_the_trigger_configs_declare_the_new_filters() {
+fn deliveries_carry_the_view_and_the_args_formats_declare_the_selectors() {
     let mut env = Env::new();
     env.release("R", None);
     env.ticket("Parent");
@@ -3009,11 +3105,11 @@ fn deliveries_carry_the_view_and_the_trigger_configs_declare_the_new_filters() {
         json!(env.get("KAN-2").release_id)
     );
 
-    let change = serde_json::to_value(schemars::schema_for!(ChangeConfig)).unwrap();
+    let change = serde_json::to_value(schemars::schema_for!(ChangeArgs)).unwrap();
     for field in ["ticket_id", "parent_id", "release_id", "events"] {
         assert!(change["properties"][field].is_object(), "change.{field}");
     }
-    let comment = serde_json::to_value(schemars::schema_for!(CommentConfig)).unwrap();
+    let comment = serde_json::to_value(schemars::schema_for!(CommentArgs)).unwrap();
     for field in [
         "ticket_id",
         "parent_id",
@@ -3025,9 +3121,9 @@ fn deliveries_carry_the_view_and_the_trigger_configs_declare_the_new_filters() {
     }
     assert!(
         comment.get("required").is_none(),
-        "either ticket_id or parent_id: neither is required"
+        "either ticket_id or parent_id: the added hook rejects neither, the schema requires none"
     );
-    let parsed: CommentConfig = serde_json::from_value(json!({ "parent_id": "KAN-1" })).unwrap();
+    let parsed: CommentArgs = serde_json::from_value(json!({ "parent_id": "KAN-1" })).unwrap();
     assert_eq!(
         (parsed.ticket_id, parsed.parent_id.as_deref()),
         (None, Some("KAN-1"))

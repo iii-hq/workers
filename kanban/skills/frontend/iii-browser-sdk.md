@@ -1,14 +1,14 @@
 ---
 title: iii-browser-sdk
-description: Make a browser app a first-class iii worker with iii-browser-sdk — registerWorker, registerFunction, trigger, registerTrigger, engine state, and streaming channels, wired into React and Vite.
+description: Make a browser app a first-class iii worker with iii-browser-sdk — registerWorker, registerFunction, call, observe, engine state, and streaming channels, wired into React and Vite.
 type: how-to
 ---
 
 # iii-browser-sdk
 
 `iii-browser-sdk` turns the frontend into an iii worker: one WebSocket to the engine instead
-of many HTTP round-trips, backend workers pushing into the UI with `trigger()`, and the same
-primitives used server-side (`registerFunction`, `trigger`, `registerTrigger`). No Node.js
+of many HTTP round-trips, backend workers pushing into the UI with `call()`, and the same
+primitives used server-side (`registerFunction`, `call`, `observe`). No Node.js
 dependencies, no OpenTelemetry — it runs on native `WebSocket`.
 
 Docs <https://iii.dev/docs/tutorials/linkly/frontend> ·
@@ -34,8 +34,8 @@ const iii = registerWorker(import.meta.env.VITE_III_WS_URL) // the public RBAC l
 ```
 
 `registerWorker(address, options?)` is the sole top-level function; everything else hangs off
-the returned `ISdk` — `registerFunction`, `registerTrigger`, `registerTriggerType`,
-`trigger`, `addConnectionStateListener`, `getFatalError`, `shutdown`. Do not destructure
+the returned `ISdk` — `registerFunction`, `call`, `observe`, `addConnectionStateListener`,
+`getFatalError`, `shutdown`. Do not destructure
 these as top-level imports; they are not exported that way.
 
 `InitOptions`: `workerName`, `namespace`, `invocationTimeoutMs` (default 30000),
@@ -61,12 +61,12 @@ ref.unregister()
 - Pass a `description` (plus `request_format` / `response_format` when callers need the
   contract) — that is what `engine::functions::info` shows.
 - Return JSON-serializable data; a thrown error surfaces as the caller's error.
-- A backend worker reaches it by id: `iii.trigger({ function_id: 'ui::show-notification', payload })`.
+- A backend worker reaches it by id: `iii.call({ function_id: 'ui::show-notification', payload })`.
 
 ## Calling backend functions
 
 ```ts
-const users = await iii.trigger<{ limit: number }, User[]>({
+const users = await iii.call<{ limit: number }, User[]>({
   function_id: 'api::get::users',
   payload: { limit: 20 },
   timeoutMs: 5000,
@@ -77,9 +77,9 @@ Three routing modes — choose deliberately:
 
 | Mode | Call | Use when |
 | --- | --- | --- |
-| await (default) | `await iii.trigger({ function_id, payload })` | you need the result |
-| fire-and-forget | `action: TriggerAction.Void()` | telemetry, non-essential side effects |
-| enqueue | `action: TriggerAction.Enqueue({ queue })` | long work; resolves to `{ messageReceiptId }` |
+| await (default) | `await iii.call({ function_id, payload })` | you need the result |
+| fire-and-forget | `action: CallAction.Void()` | telemetry, non-essential side effects |
+| enqueue | `action: CallAction.Enqueue({ queue })` | long work; resolves to `{ messageReceiptId }` |
 
 `namespace` on the request routes the invocation elsewhere; omit it to stay in your own.
 
@@ -95,30 +95,31 @@ iii.registerFunction('ui::update-dashboard', async (m: Metrics) => {
 ```
 
 That is the whole real-time design: a backend worker calls
-`trigger({ function_id: 'ui::update-dashboard', payload })` and the open tab updates. Do not
+`call({ function_id: 'ui::update-dashboard', payload })` and the open tab updates. Do not
 add polling, SSE, or a second socket alongside it.
 
-## Triggers in the browser
+## Observing functions from the browser
 
 ```ts
-const trigger = iii.registerTrigger({
-  type: 'state',
-  function_id: 'ui::refresh', // a function this tab registered
-  config: { scope: 'orders', key: '*' },
-})
-trigger.unregister()
+const observer = iii.observe(
+  { function_id: 'state::on-changed', filters: { 'input.scope': { $eq: 'orders' } }, deliver: 'output' },
+  'ui::refresh', // a function this tab registered
+)
+await observer.dispose()
 ```
 
-`registerTrigger` fills `namespace` from this worker — correct, because the target function is
-one this worker registered. Registering a **trigger type** (`registerTriggerType`) from a
-browser is rarely right: it only makes sense when the browser itself is the event source. The
-RBAC listener also constrains which types a browser session may register.
+`observe` resolves the target in this worker's namespace — correct, because the target function
+is one this tab registered. `state::on-changed` takes no args, so the observer selects changes
+with filters on the event (always with an explicit operator); `deliver: 'output'` hands the
+handler the event itself. Hosting an event function from a browser is rarely right: it only
+makes sense when the browser itself is the event source. The RBAC listener also decides which
+functions a browser session may observe.
 
 ## State, helpers, channels (subpath exports)
 
 - `iii-browser-sdk/state` — the engine's state worker, typed: `get<T>`/`set`/`delete`/`list`/
-  `update`, plus `StateEventType.Created|Updated|Deleted` for the change events the `state`
-  trigger delivers. Use `update` with ordered `ops` when you need an atomic edit instead of a
+  `update`, plus `StateEventType.Created|Updated|Deleted` for the change events
+  `state::on-changed` delivers. Use `update` with ordered `ops` when you need an atomic edit instead of a
   read-modify-write race.
 - `iii-browser-sdk/helpers` — `createChannel(iii, bufferSize?)` returns a `Channel` with
   `writer` / `reader` and *serializable* `writerRef` / `readerRef`, so a ref can be handed to
@@ -135,8 +136,7 @@ RBAC listener also constrains which types a browser session may register.
 - **Auth is RBAC at the listener, not headers.** A browser cannot set headers on a WebSocket
   handshake, so `headers` is ignored: credentials ride as **query parameters or cookies** and
   are judged by the RBAC *auth function* on the upgrade request (`{ headers, query_params,
-  ip_address }` in, `AuthResult` out, scoping namespaces, allowed/forbidden function ids, and
-  allowed trigger types). The engine-owned listener must be a **public, RBAC-protected
+  ip_address }` in, `AuthResult` out, scoping namespaces and allowed/forbidden function ids). The engine-owned listener must be a **public, RBAC-protected
   instance** (e.g. `iii-worker-manager#browser`, or the `rbac-proxy` worker in front of the
   private one); the private listener must never face
   untrusted browser clients.
@@ -203,12 +203,14 @@ Rules that keep this honest:
   (`ui::notification`), never after a component instance. Two tabs registering the same id
   load-balance, so target a *function*; use a `state` key or a channel when you need one
   specific tab.
-- **`trigger()` is an imperative async call, not a render input.** Route it through a query or
-  mutation layer (`queryFn: () => iii.trigger({ ... })`) so caching, retries, and loading
+- **`call()` is an imperative async call, not a render input.** Route it through a query or
+  mutation layer (`queryFn: () => iii.call({ ... })`) so caching, retries, and loading
   states live in one place. Never call it during render.
-- **Server state is not UI state.** Engine state and trigger results belong in the cache, not
+- **Server state is not UI state.** Engine state and call results belong in the cache, not
   mirrored into `useState`.
-- **Errors are values.** A rejected `trigger` should reach an error boundary or an inline
+- **Observers live in an effect, too.** `observe` returns a handle; `dispose()` it in the
+  effect's cleanup, or an unmount or HMR leaves an observer delivering to a dead handler.
+- **Errors are values.** A rejected `call` should reach an error boundary or an inline
   state, not be swallowed in a `.catch(() => {})`.
 
 ## Vite
@@ -233,7 +235,7 @@ VITE_III_WS_URL=ws://localhost:<port rbac-proxy::status answers>
 
 1. `engine::functions::list { prefix: "ui::" }` lists the functions the tab registered.
 2. `engine::functions::info { function_id: "ui::…" }` returns the description you passed.
-3. A real backend `trigger` of that id changes the rendered UI — observed in a live
+3. A real backend `call` of that id changes the rendered UI — observed in a live
    `browser::sessions::start` tab, not assumed from the code.
 4. Stopping the engine flips the UI to `reconnecting`; restarting it restores registration with
    no page reload.

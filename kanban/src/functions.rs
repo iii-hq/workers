@@ -1,6 +1,6 @@
 //! The `kanban::*` function catalog: typed request/response structs and the
-//! handlers that route every mutation through the store and the trigger
-//! fan-out.
+//! handlers that route every mutation through the store and then call the
+//! event functions (`kanban::on-change`, `kanban::on-comment`).
 
 use std::future::Future;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use crate::board::{
 use crate::config::Column;
 use crate::config::KanbanConfig;
 use crate::events::{
-    ChangeEvent, CommentEvent, SubscriberCounts, Subscribers, emit_change, emit_comment,
+    ChangeEvent, CommentEvent, ObserverCounts, emit_change, emit_comment, observer_counts,
 };
 use crate::mentions;
 use crate::plan::{
@@ -69,7 +69,6 @@ pub struct Ctx {
     pub iii: Arc<IIIClient>,
     pub store: BoardStore,
     pub config: ConfigCell,
-    pub subscribers: Subscribers,
 }
 
 /* ── requests ─────────────────────────────────────────────────────────── */
@@ -424,7 +423,7 @@ pub struct LabelConvertInput {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ConfigInfo {
-    /// The worker name, `kanban`: every function id, trigger type and page id starts with it.
+    /// The worker name, `kanban`: every function id and page id starts with it.
     pub worker: String,
     pub configuration_id: String,
     /// Configured path, as written.
@@ -445,7 +444,8 @@ pub struct ConfigInfo {
     pub priorities: Vec<String>,
     pub agents_path: String,
     pub agents_path_resolved: String,
-    pub subscribers: SubscriberCounts,
+    /// How many observers `kanban::on-change` and `kanban::on-comment` have.
+    pub observers: ObserverCounts,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -606,10 +606,10 @@ fn limit(value: Option<u64>) -> Option<usize> {
 /// tickets to announce.
 pub struct Outcome<T> {
     pub result: T,
-    /// The tickets that changed, announced on `kanban:change` one event each:
-    /// the first under the call's own event name, any further one (a parent
-    /// written by an attach, a ticket moved by a ship) as `ticket.updated`.
-    /// Empty fires nothing.
+    /// The tickets that changed, announced on `kanban::on-change` one event
+    /// each: the first under the call's own event name, any further one (a
+    /// parent written by an attach, a ticket moved by a ship) as
+    /// `ticket.updated`. Empty announces nothing.
     pub tickets: Vec<TicketView>,
     pub comment: Option<Comment>,
 }
@@ -625,7 +625,7 @@ impl<T> Outcome<T> {
     }
 }
 
-/// The `kanban:change` events of one write, one per announced ticket: the
+/// The `kanban::on-change` events of one write, one per announced ticket: the
 /// first under the call's own `event` name (carrying the comment, if any), any
 /// further one (a parent written by an attach, a ticket moved by a ship) as
 /// `ticket.updated`. `at` is the write's timestamp.
@@ -652,8 +652,8 @@ pub fn change_events(
         .collect()
 }
 
-/// Run one mutation under the store lock, then fan the result out to the
-/// `kanban:change` (and, for a comment, `kanban:comment`) bindings.
+/// Run one mutation under the store lock, then call `kanban::on-change` (and,
+/// for a comment, `kanban::on-comment`) with the result when they are observed.
 async fn apply<T>(
     ctx: &Ctx,
     event: &str,
@@ -676,12 +676,11 @@ async fn apply<T>(
         .await
         .map_err(Error::Handler)?;
     for event in &events {
-        emit_change(&ctx.iii, &ctx.subscribers, event);
+        emit_change(&ctx.iii, event).await;
     }
     if let (Some(view), Some(comment)) = (outcome.tickets.first(), &outcome.comment) {
         emit_comment(
             &ctx.iii,
-            &ctx.subscribers,
             &CommentEvent {
                 event: "comment.created".to_string(),
                 ticket_id: view.ticket.id.clone(),
@@ -691,7 +690,8 @@ async fn apply<T>(
                 author: comment.author.clone(),
                 at,
             },
-        );
+        )
+        .await;
     }
     Ok(outcome)
 }
@@ -715,10 +715,10 @@ pub fn views<'a>(
 }
 
 /// The outcome of a mutation of one ticket, plus the tickets it wrote besides
-/// (`related`: the old and new parent of an attach). The events fan out only
-/// when the ticket differs from how it was before: a patch, move, delete or
-/// restore that changed nothing fires no trigger (its activity tail would be
-/// stale). The result is the ticket's view on the board after the write.
+/// (`related`: the old and new parent of an attach). The events are called
+/// only when the ticket differs from how it was before: a patch, move, delete
+/// or restore that changed nothing calls no event function (its activity tail
+/// would be stale). The result is the ticket's view on the board after the write.
 pub fn ticket_outcome(
     board: &Board,
     context: &BoardContext,
@@ -772,7 +772,7 @@ async fn config_info(ctx: Arc<Ctx>, _: Empty) -> Result<ConfigInfo, Error> {
         priorities: config.priorities.clone(),
         agents_path: config.agents_path.clone(),
         agents_path_resolved: config.agents_path_resolved().display().to_string(),
-        subscribers: ctx.subscribers.counts(),
+        observers: observer_counts(&ctx.iii),
     })
 }
 
@@ -1506,7 +1506,7 @@ pub fn register_functions(ctx: &Arc<Ctx>) {
     register(
         ctx,
         "kanban::comment::list",
-        "Read a ticket's comments with filtering, mirroring the kanban:comment trigger: by author, excluding an author, roots only, or after a timestamp.",
+        "Read a ticket's comments with filtering, with the args a kanban::on-comment observer takes: by author, excluding an author, roots only, or after a timestamp.",
         comment_list,
     );
     register(

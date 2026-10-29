@@ -1,12 +1,12 @@
 //! `kanban` — a file-backed kanban board for iii: tickets, threaded comments,
-//! agent assignment, the `kanban:change` / `kanban:comment` trigger types and
-//! an injectable console board.
+//! agent assignment, the `kanban::on-change` / `kanban::on-comment` event
+//! functions and an injectable console board.
 //!
 //! - [`config`] — the `kanban` configuration entry and its repair rules.
 //! - [`store`] — the board file and the serialized read/mutate/write path.
 //! - [`board`] — pure ticket/comment/activity operations and the ticket views.
 //! - [`plan`] — projects, releases, shipping and the label conversion.
-//! - [`events`] — the two trigger types and their fan-out.
+//! - [`events`] — the two event functions, their observers and delivery.
 //! - [`functions`] — the typed `kanban::*` function catalog.
 //! - [`agents`] — assignable profiles via iii-directory or the agents folder.
 //! - [`mentions`] — the `@kanban(id=…)` chat mention provider.

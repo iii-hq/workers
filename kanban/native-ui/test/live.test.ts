@@ -1,13 +1,13 @@
 /**
- * Live updates (design §8.4): the card of each `kanban:change` patches the
+ * Live updates (design §8.4): the card of each `kanban::on-change` call patches the
  * board (partial lanes too), the open ticket reads itself again once per
- * burst, `config.updated` reads the board again, and nothing is bound off
+ * burst, `config.updated` reads the board again, and nothing is observed off
  * screen.
  */
 import { describe, expect, it } from 'vitest'
 import { activityOf, callsOf, cards, FakeKanban, itemOf, keysOf, onTop, sample, start, tapLink } from './fake'
 
-describe('the board follows kanban:change', () => {
+describe('the board follows kanban::on-change', () => {
   it('creates, moves, updates, deletes and restores what others do', async () => {
     const { host, fake } = await start()
     const reads = callsOf(host, 'board::get').length
@@ -57,9 +57,9 @@ describe('the board follows kanban:change', () => {
     t.updated_at = fake.stamp()
     const event = (ticket: Record<string, any>) =>
       ({ event: 'ticket.updated', ticket_id: t.id, ticket_key: t.key, ticket, at: ticket.updated_at }) as never
-    await host.emitTrigger('kanban:change', event(fake.summary(t)))
-    await host.emitTrigger('kanban:change', event(stale))
-    await host.emitTrigger('kanban:change', event(fake.summary(t)))
+    await host.emitObserved('kanban::on-change', event(fake.summary(t)))
+    await host.emitObserved('kanban::on-change', event(stale))
+    await host.emitObserved('kanban::on-change', event(fake.summary(t)))
     await host.settle()
     expect(cards(host, 'backlog')[0]).toMatchObject({ title: 'Fresh title' })
     expect(keysOf(host, 'backlog')).toEqual(['KAN-5'])
@@ -68,7 +68,7 @@ describe('the board follows kanban:change', () => {
   it('config.updated reads the board again: new columns appear as lanes', async () => {
     const { host, fake } = await start()
     fake.columns.splice(4, 0, { id: 'qa', label: 'QA' })
-    await host.emitTrigger('kanban:change', { event: 'config.updated', at: new Date().toISOString() })
+    await host.emitObserved('kanban::on-change', { event: 'config.updated', at: new Date().toISOString() })
     await host.settle()
     expect(host.lanes('lanes').titles).toEqual([
       'Backlog',
@@ -263,7 +263,7 @@ describe('counts and order that the review caught drifting', () => {
   })
 })
 
-describe('the open ticket follows kanban:change', () => {
+describe('the open ticket follows kanban::on-change', () => {
   it('reads itself again once per burst of its own events', async () => {
     const { host, fake } = await start()
     await host.itemPress('lane:in_review', 't4')

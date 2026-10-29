@@ -168,12 +168,10 @@ export function RegistryWorkerInfoView({ input, output, running }: ViewProps) {
 
 function ApiReferenceSection({ api }: { api: ApiReferenceShape }) {
   const fns = api.functions ?? []
-  const triggers = api.triggers ?? []
-  if (fns.length === 0 && triggers.length === 0) return null
+  if (fns.length === 0) return null
   return (
-    <Section label={`api · ${fns.length} fns · ${triggers.length} triggers`}>
+    <Section label={`api · ${fns.length} fns`}>
       {renderRefList('functions', fns)}
-      {renderRefList('triggers', triggers)}
     </Section>
   )
 }

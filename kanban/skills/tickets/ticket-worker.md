@@ -1,6 +1,6 @@
 ---
 title: ticket-worker
-description: Work a kanban ticket you were dispatched onto — claim it, arm your own comment wake and its done-watch before reporting, report on the ticket, and reap every binding the moment the ticket lands in done.
+description: Work a kanban ticket you were dispatched onto — claim it, arm your own comment wake and its done-watch before reporting, report on the ticket, and dispose of every observer the moment the ticket lands in done.
 type: how-to
 ---
 
@@ -17,10 +17,11 @@ to land as a ticket comment. Your chat is not a channel.
   them is `done_status`, the key prefix, and the board file path.
 - `engine::functions::info { "function_ids": ["kanban::ticket::get", "kanban::ticket::update",
   "kanban::comment::create", "kanban::comment::list", "kanban::ticket::move",
-  "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"] }` —
-  the exact schemas behind every call below.
+  "kanban::on-comment", "kanban::on-change", "harness::observe", "harness::observers::list",
+  "harness::unobserve"] }` — the exact schemas behind every call below, and the args of the two
+  kanban event functions (`args_format`).
 - `directory::skills::get { "id": "kanban/tickets/kanban-tickets" }` — the deep reference: comment threads,
-  the activity timeline, `kanban:change`, the soft-delete rules. Fetch it when you need any of
+  the activity timeline, `kanban::on-change`, the soft-delete rules. Fetch it when you need any of
   those; skip it otherwise.
 - `kanban::ticket::get { "id": "KAN-8" }` — read the ticket you were dispatched onto, whole,
   its `comments` and `activity` included, before you change anything. The key (`KAN-8`) and the
@@ -31,7 +32,7 @@ to land as a ticket comment. Your chat is not a channel.
 
 Your profile id is the string in your frontmatter (`backend-engineer`, `frontend-engineer`).
 Use it verbatim as `actor` on every write and `author` on every comment — it is also the string
-the wake filters key on, so a typo silently breaks the loop.
+the wake's args key on, so a typo silently breaks the loop.
 
 1. **Check the parent.** If the ticket has a `parent` whose `status` is the `done_status`
    column, the feature it belongs to already closed: do not claim. Comment on **your own ticket** saying the parent is done and that you stopped, and
@@ -56,13 +57,13 @@ the wake filters key on, so a typo silently breaks the loop.
 
 ## The pair: never arm a wake without its done-watch
 
-Two bindings per ticket, registered together. The first is how you hear back; the second is
-what removes the first when the ticket lands.
+Two observers per ticket, armed together. The first is how you hear back; the second is what
+removes the first when the ticket lands.
 
 ```json
-engine::register_trigger {
-  "trigger_type": "kanban:comment",
-  "config": { "ticket_id": "KAN-8", "exclude_author": "backend-engineer", "ticket": "summary" },
+harness::observe {
+  "function_id": "kanban::on-comment",
+  "args": { "ticket_id": "KAN-8", "exclude_author": "backend-engineer", "ticket": "summary" },
   "once": false,
   "label": "KAN-8-wake",
   "lifecycle": { "max_fires": 20, "expires_in_ms": 3600000 }
@@ -70,9 +71,9 @@ engine::register_trigger {
 ```
 
 ```json
-engine::register_trigger {
-  "trigger_type": "kanban:change",
-  "config": { "ticket_id": "KAN-8", "events": ["ticket.moved"], "ticket": "summary" },
+harness::observe {
+  "function_id": "kanban::on-change",
+  "args": { "ticket_id": "KAN-8", "events": ["ticket.moved"], "ticket": "summary" },
   "once": false,
   "label": "KAN-8-teardown",
   "lifecycle": { "max_fires": 50, "expires_in_ms": 86400000 }
@@ -83,16 +84,16 @@ engine::register_trigger {
   re-enters your handler.
 - `"ticket": "summary"` keeps the wake small: you re-read the ticket with `kanban::ticket::get`
   on every wake anyway, so the full thread in the payload is paid twice.
-- Bind on **your own ticket** (`ticket_id`), not on the parent's `parent_id`: a `parent_id`
-  binding would wake you for every sibling's comment and move.
-- **Label every binding `<KEY>-<purpose>`.** The reap below is mechanical only if you can
-  recognise your own bindings by label.
-- **Bound every binding's life.** A session that dies between arming and `done` leaves nothing
+- Observe **your own ticket** (`ticket_id`), not the parent's `parent_id`: a `parent_id`
+  observer would wake you for every sibling's comment and move.
+- **Label every observer `<KEY>-<purpose>`.** The reap below is mechanical only if you can
+  recognise your own observers by label.
+- **Bound every observer's life.** A session that dies between arming and `done` leaves nothing
   to reap but the deadline.
 
 ### The teardown handler
 
-`kanban:change` fires on your own moves too, so the first act is always a status read:
+`kanban::on-change` is called for your own moves too, so the first act is always a status read:
 
 ```json
 kanban::ticket::get { "id": "KAN-8" }
@@ -102,36 +103,34 @@ If `status` is not `done`, stop — you were woken by a move made for another re
 `done`, reap:
 
 ```json
-harness::triggers::list {}
+harness::observers::list {}
 ```
 
-Unregister every binding whose label starts with `KAN-8-` — the wake, the cron backstop, any
-re-armed duplicate — then the teardown binding itself **last**, because it has to stay alive
+Dispose of every observer whose label starts with `KAN-8-` — the wake, the cron backstop, any
+re-armed duplicate — then the teardown observer itself **last**, because it has to stay alive
 while you reap:
 
 ```json
-harness::triggers::unregister { "subscription_id": "sub_..." }
+harness::unobserve { "id": "<observer_id>" }
 ```
 
 Finish by listing again and confirming none of your `KAN-8-*` labels remain. That read-back is
-the proof; the unregister response alone is not.
+the proof; the `removed` answer alone is not.
 
-**Why you reap your own.** `engine::unregister_trigger` removes "a trigger subscription owned
-by the current harness session"; a foreign `session_id` is not honoured (a listing call carrying
-someone else's session id returns your own bindings), and agent wakes do not appear in
-`engine::registered-triggers::list` at all. No dispatcher, reviewer, or reaper can clean up
-after you. Yours are yours to retire, and the `done` event is the moment.
+**Why you reap your own.** `harness::unobserve` removes only observers the current session
+armed. No dispatcher, reviewer, or reaper can clean up after you. Yours are yours to retire, and the `done` event is
+the moment.
 
 ## The backstop: a wake is not a guarantee
 
-The kanban worker delivers only to bindings in its own in-process subscriber map, and that map
-dies with the worker process. A binding it no longer holds **never fires and reports nothing at
-all** — silence indistinguishable from "no news". So never let the wake be your only way back.
+A wake is delivered at most once, fire-and-forget. A dropped delivery, an observer that expired,
+or one left pending in the wrong namespace **never fires and reports nothing at all** — silence
+indistinguishable from "no news". So never let the wake be your only way back.
 
 ```json
-engine::register_trigger {
-  "trigger_type": "cron",
-  "config": { "expression": "0 * * * *" },
+harness::observe {
+  "function_id": "cron::on-tick",
+  "args": { "expression": "0 * * * *" },
   "once": false,
   "label": "KAN-8-check-in"
 }
@@ -149,20 +148,20 @@ kanban::comment::list {
 
 ## Traps
 
-- **The reviewer rejects and nothing happens.** Your turn had already ended and no binding was
+- **The reviewer rejects and nothing happens.** Your turn had already ended and no observer was
   armed on the ticket. Cause: you reported before arming the pair. Fix: arm first, report
   second.
 - **Your own comment wakes you, forever.** The `exclude_author` string is not byte-identical to
   your `author`. Fix: copy the profile id out of your frontmatter; do not retype it from memory.
-- **A binding fires for a ticket that is already closed.** A late, re-armed, or duplicated fire.
+- **An observer fires for a ticket that is already closed.** A late, re-armed, or duplicated fire.
   Fix: re-read the ticket and no-op unless it is still open and assigned to you.
-- **A ticket is `done` and bindings are still armed.** Cause: no done-watch was armed, or the
-  reap stopped after the first unregister. Fix: arm the pair together, unregister every
-  `<KEY>-*` label with the teardown binding last, and read the list back.
-- **You cannot tell your bindings apart while reaping.** Cause: labels like `wake` or `check-in`
+- **A ticket is `done` and observers are still armed.** Cause: no done-watch was armed, or the
+  reap stopped after the first `harness::unobserve`. Fix: arm the pair together, dispose of
+  every `<KEY>-*` label with the teardown observer last, and read the list back.
+- **You cannot tell your observers apart while reaping.** Cause: labels like `wake` or `check-in`
   with no ticket key. Fix: `<KEY>-<purpose>`, always.
 - **The ticket sits in `in_progress` and nobody answers.** Cause: your report was a chat message,
-  or `author` was left at its `user` default so the reviewer's filters did not see it. Fix:
+  or `author` was left at its `user` default so the reviewer's args did not select it. Fix:
   comment on the ticket, and pass `author` every time.
 - **You claimed a subtask of a closed feature.** Symptom: the parent is `done`, and your work
   lands on a ticket nobody is tracking. Cause: step 1 skipped. Fix: read `parent.status` before
@@ -180,14 +179,14 @@ kanban::comment::list {
 - [ ] If the ticket has a `parent`, its `status` was read; a parent in the done column means
       comment on your own ticket and stop, no claim.
 - [ ] Claimed with `assignee`, `status`, and `actor` all set to your profile id.
-- [ ] `kanban:comment` wake armed with `exclude_author` = your `author`, labelled `<KEY>-wake`,
-      bounded by `lifecycle`.
-- [ ] `kanban:change` done-watch armed on the same ticket, labelled `<KEY>-teardown`, before
-      the first report.
-- [ ] A `cron` check-in reading `kanban::comment::list` with the same filters, so the loop
-      cannot fall silent.
+- [ ] `kanban::on-comment` wake armed with `exclude_author` = your `author`, labelled
+      `<KEY>-wake`, bounded by `lifecycle`.
+- [ ] `kanban::on-change` done-watch armed on the same ticket, labelled `<KEY>-teardown`,
+      before the first report.
+- [ ] A `cron::on-tick` check-in reading `kanban::comment::list` with the same filters, so the
+      loop cannot fall silent.
 - [ ] Report posted as a comment on your own ticket (never the parent) naming what you ran and
       what it returned.
 - [ ] Ticket moved to the lane the evidence earned.
-- [ ] On `done`: every `<KEY>-*` binding unregistered, teardown binding last, then
-      `harness::triggers::list` re-read to confirm none remain.
+- [ ] On `done`: every `<KEY>-*` observer disposed with `harness::unobserve`, teardown
+      observer last, then `harness::observers::list` re-read to confirm none remain.

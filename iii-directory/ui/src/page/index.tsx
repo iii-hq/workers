@@ -97,12 +97,12 @@ const skillsAdapter: BrowserAdapter = {
   // Skill ids are slash-separated lowercase segments (ns/skill/…).
   namePattern: /^[a-z0-9_-]+(\/[a-z0-9_-]+)*$/,
   nameHint: 'enter an id of lowercase slash-separated segments (a–z, 0–9, hyphens or underscores)',
-  onChangeType: 'directory::skills::on-change',
+  onChangeFunction: 'directory::skills::on-change',
   emptyTitle: 'Select a skill',
   emptyBody:
     'Choose a skill from the sidebar to view and edit its markdown. New skills arrive through the new-skill button, downloads (directory::skills::download), or direct edits to the skills folder.',
   async list(host) {
-    const out = await host.iii.trigger<{ skills: SkillRow[] }>('directory::skills::list', { include_description: true })
+    const out = await host.iii.call<{ skills: SkillRow[] }>('directory::skills::list', { include_description: true })
     return (out.skills ?? []).map((s) => ({
       key: s.id,
       title: s.title,
@@ -111,7 +111,7 @@ const skillsAdapter: BrowserAdapter = {
     }))
   },
   async load(host, id) {
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>('directory::skills::get', {
+    const out = await host.iii.call<{ body: string; raw?: string | null }>('directory::skills::get', {
       id,
       raw: true,
     })
@@ -120,15 +120,15 @@ const skillsAdapter: BrowserAdapter = {
     return out.raw ?? out.body
   },
   async save(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>('directory::skills::update', { id, content })
+    const out = await host.iii.call<{ id: string }>('directory::skills::update', { id, content })
     return out.id ?? id
   },
   async create(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>('directory::skills::create', { id, content })
+    const out = await host.iii.call<{ id: string }>('directory::skills::create', { id, content })
     return out.id ?? id
   },
   async remove(host, id) {
-    await host.iii.trigger('directory::skills::delete', { id })
+    await host.iii.call('directory::skills::delete', { id })
   },
 }
 
@@ -162,12 +162,12 @@ export const agentsAdapter: BrowserAdapter = {
   customFormOwnsContent: true,
   customFormOwnsWorkspaceHeader: true,
   prominentListItems: true,
-  onChangeType: 'directory::agents::on-change',
+  onChangeFunction: 'directory::agents::on-change',
   emptyTitle: 'Select an agent profile',
   emptyBody:
     'Choose an agent profile from the sidebar to edit its identity, default model, system prompt, skills, and preloaded functions.',
   async list(host) {
-    const out = await host.iii.trigger<{ agents: AgentRow[] }>('directory::agents::list')
+    const out = await host.iii.call<{ agents: AgentRow[] }>('directory::agents::list')
     return (out.agents ?? []).map((a) => ({
       key: a.id,
       // The row glyph is the SAME token glyph the avatar picker and the
@@ -184,22 +184,22 @@ export const agentsAdapter: BrowserAdapter = {
   async load(host, id) {
     // `raw` is the profile's OWN file; `system_prompt` would be the
     // inheritance-resolved prompt, never what the editor should save.
-    const out = await host.iii.trigger<{
+    const out = await host.iii.call<{
       system_prompt: string
       raw?: string | null
     }>('directory::agents::get', { id, raw: true })
     return out.raw ?? out.system_prompt
   },
   async save(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>('directory::agents::update', { id, content })
+    const out = await host.iii.call<{ id: string }>('directory::agents::update', { id, content })
     return out.id ?? id
   },
   async create(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>('directory::agents::create', { id, content })
+    const out = await host.iii.call<{ id: string }>('directory::agents::create', { id, content })
     return out.id ?? id
   },
   async remove(host, id) {
-    await host.iii.trigger('directory::agents::delete', { id })
+    await host.iii.call('directory::agents::delete', { id })
   },
 }
 

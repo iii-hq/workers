@@ -1,7 +1,7 @@
-import type { FunctionTriggerMessage, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { isValidElement } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { createDirectoryTriggerRenderer } from './index'
+import { createDirectoryCallRenderer } from './index'
 import { KitApplyPreview, KitApplyView, KitPlanView, openKits } from './KitsViews'
 import { isDirectoryFunction } from './parsers'
 
@@ -31,8 +31,8 @@ vi.mock('@iii-dev/console-ui', () => {
   }
 })
 
-function message(functionId: string, over: Partial<FunctionTriggerMessage> = {}): FunctionTriggerMessage {
-  return { id: 'm1', role: 'function-trigger', functionId, input: {}, createdAt: 0, ...over }
+function message(functionId: string, over: Partial<FunctionCallMessage> = {}): FunctionCallMessage {
+  return { id: 'm1', role: 'function-call', functionId, input: {}, createdAt: 0, ...over }
 }
 
 const planResponse = {
@@ -76,7 +76,7 @@ describe('kit chat cards', () => {
   })
 
   it('renders the planning card while download-kit runs and the plan card after', () => {
-    const renderer = createDirectoryTriggerRenderer()
+    const renderer = createDirectoryCallRenderer()
     const running = renderer.tryRenderRunning?.(message('directory::download-kit', { input: { kit: 'acme/team' } }))
     expect(isValidElement(running)).toBe(true)
     const done = renderer.tryRender(
@@ -86,7 +86,7 @@ describe('kit chat cards', () => {
   })
 
   it('previews the plan behind a pending apply approval, and nothing else', () => {
-    const renderer = createDirectoryTriggerRenderer()
+    const renderer = createDirectoryCallRenderer()
     const preview = renderer.tryRenderPreview?.(
       message('directory::kits::apply', { pendingApproval: true, input: { plan_id: 'kp_1' } }),
     )
@@ -97,7 +97,7 @@ describe('kit chat cards', () => {
   })
 
   it('renders apply results and leaves error outputs to the console', () => {
-    const renderer = createDirectoryTriggerRenderer()
+    const renderer = createDirectoryCallRenderer()
     const out = renderer.tryRender(
       message('directory::kits::apply', { input: { plan_id: 'kp_1' }, output: { error: 'D512 not_found' } }),
     )

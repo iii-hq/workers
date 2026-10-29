@@ -352,18 +352,8 @@ export const apiReferenceFunctionSchema = z.object({
 })
 export type ApiReferenceFunction = z.infer<typeof apiReferenceFunctionSchema>
 
-export const apiReferenceTriggerSchema = z.object({
-  name: z.string(),
-  description: z.string().nullable().optional(),
-  invocation_schema: z.unknown().nullable().optional(),
-  return_schema: z.unknown().nullable().optional(),
-  metadata: z.unknown().nullable().optional(),
-})
-export type ApiReferenceTrigger = z.infer<typeof apiReferenceTriggerSchema>
-
 export const apiReferenceSchema = z.object({
   functions: z.array(apiReferenceFunctionSchema).optional(),
-  triggers: z.array(apiReferenceTriggerSchema).optional(),
 })
 export type ApiReferenceShape = z.infer<typeof apiReferenceSchema>
 
