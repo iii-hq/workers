@@ -67,11 +67,11 @@ def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]
 def _fetch_function_detail(function_id: str) -> dict[str, object] | None:
     """`engine::functions::info` for one function, or None on any failure.
 
-    Unlike `engine::functions::list` (a `FunctionSummary`: id, worker_name,
-    description and the observe fields), `::info` returns the `FunctionDetail`
-    that carries the typed `request_schema`/`response_schema`. Best-effort: a
-    failed lookup leaves the row schema-less, which the `--assert-typed-schemas`
-    check then flags."""
+    `engine::functions::list` returns a `FunctionSummary` (id, worker_name,
+    description and the observe fields); `::info` returns the `FunctionDetail`,
+    which also carries the typed `request_schema`/`response_schema`.
+    Best-effort: a failed lookup leaves the row schema-less, which the
+    `--assert-typed-schemas` check then flags."""
     try:
         return run_iii("engine::functions::info", {"function_id": function_id})
     except (
