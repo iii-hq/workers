@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: sandbox-code-runner
 tags: [nodejs, python, run, sandbox, microvm]
-description: Run Node.js and Python in iii-sandbox microVMs — run code, register bus functions from working source, and tear down runtimes on demand. Guest code gets the real iii-sdk client as a global `iii`, lazily connected to the engine.
+description: Run Node.js and Python in iii-sandbox microVMs — run code, register bus functions from working source, and tear down runtimes on demand. Guest code gets the real iii-sdk client as a global `iii`, lazily connected to the engine. Observe sandbox-code-runner::on-event (iii 0.25) or bind the sandbox-code-runner::event trigger type for runtime lifecycle events.
 
 dependencies:
   configuration: "latest"

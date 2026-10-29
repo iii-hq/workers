@@ -214,6 +214,26 @@ the same code). The orphaned microVM itself is unaffected by the restart
 and keeps running in the iii-sandbox daemon until its own idle TTL reaps
 it; there is no drain-on-shutdown.
 
+## Lifecycle events
+
+After a runtime lifecycle change the worker fires one fire-and-forget
+event: `runtime_created` (a kept run or a namespace's first registration),
+`run_settled`, `function_registered`, `teardown` (one per destroyed
+runtime, including an expiry), and `fleet` (the full `sandbox::list`
+snapshot, sent when the daemon fleet changes). Payload:
+`{ kind, runtime_id?, lang?, sandbox_id?, function_id?, daemon_absent?, sandboxes? }`,
+never code, source or output.
+
+- **Observe `sandbox-code-runner::on-event` (iii 0.25).** On a 0.25 engine a
+  new consumer observes this owner-delivered function with args `{}` (the
+  trigger type takes no config) and receives exactly the event a binding
+  receives, at the same moments: observers share the trigger type's
+  subscriber set. Events are routed inside the worker; invoking the
+  function directly is refused with `FORBIDDEN`.
+- **Bind the `sandbox-code-runner::event` trigger type.** It stays
+  registered, unchanged, so consumers that bind it (the console page) keep
+  working on 0.24 and 0.25 engines.
+
 ## Configuration
 
 ```yaml

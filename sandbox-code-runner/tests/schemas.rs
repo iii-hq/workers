@@ -66,6 +66,41 @@ fn every_schema_is_typed() {
     }
 }
 
+/// The draft-07 request/response schemas a handler publishes, inferred from
+/// the handler's own signature (mirrors iii-sdk's `json_schema_for`).
+fn handler_schemas<F, Req, Resp, E>(
+    _handler: F,
+) -> (schemars::schema::RootSchema, schemars::schema::RootSchema)
+where
+    F: Fn(Req) -> Result<Resp, E>,
+    Req: schemars::JsonSchema,
+    Resp: schemars::JsonSchema,
+{
+    let settings = schemars::r#gen::SchemaSettings::draft07();
+    (
+        settings
+            .clone()
+            .into_generator()
+            .into_root_schema_for::<Req>(),
+        settings.into_generator().into_root_schema_for::<Resp>(),
+    )
+}
+
+/// The observable `sandbox-code-runner::on-*` functions sit outside
+/// `catalog()` (they refuse every invocation) but still publish request and
+/// response schemas; both must be typed, never AnyValue.
+#[test]
+fn every_on_handler_schema_is_typed() {
+    let on_handlers = [(
+        sandbox_code_runner::events::ON_EVENT,
+        handler_schemas(sandbox_code_runner::events::refuse_on_event),
+    )];
+    for (function_id, (request, response)) in on_handlers {
+        support::assert_typed_schema(&format!("{function_id} request"), &request);
+        support::assert_typed_schema(&format!("{function_id} response"), &response);
+    }
+}
+
 /// The two hand-maintained lists must not drift apart. Compared as ordered
 /// slices so an id appended to one list and inserted into the other fails
 /// in CI, not just at deploy-time via register_all's assert.
