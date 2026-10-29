@@ -104,24 +104,22 @@ fn manifest_lists_function(world: &mut EmailWorld, want: String) {
     );
 }
 
-#[then("the manifest lists exactly 8 functions")]
+#[then("the manifest lists exactly 9 functions")]
 fn manifest_function_count(world: &mut EmailWorld) {
     let m = manifest_value(world);
     let arr = m["functions"].as_array().expect("functions is an array");
-    assert_eq!(arr.len(), 8, "expected 8 functions, got {}", arr.len());
+    assert_eq!(arr.len(), 9, "expected 9 functions, got {}", arr.len());
 }
 
-#[then(regex = r#"^the manifest lists the trigger type "([^"]+)"$"#)]
-fn manifest_lists_trigger_type(world: &mut EmailWorld, want: String) {
+#[then(regex = r#"^the manifest function "([^"]+)" is private$"#)]
+fn manifest_function_is_private(world: &mut EmailWorld, want: String) {
     let m = manifest_value(world);
-    let arr = m["trigger_types"]
-        .as_array()
-        .expect("trigger_types is an array");
-    let names: Vec<&str> = arr.iter().filter_map(|v| v["name"].as_str()).collect();
-    assert!(
-        names.contains(&want.as_str()),
-        "trigger type {want:?} missing; got {names:?}"
-    );
+    let arr = m["functions"].as_array().expect("functions is an array");
+    let entry = arr
+        .iter()
+        .find(|v| v["id"].as_str() == Some(want.as_str()))
+        .unwrap_or_else(|| panic!("function {want:?} missing"));
+    assert_eq!(entry["private"], true, "function {want:?} is not private");
 }
 
 #[then(regex = r#"^the manifest default limits\.([a-z_]+) is (\d+)$"#)]
