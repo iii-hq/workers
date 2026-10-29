@@ -72,6 +72,10 @@ pub struct ChatCall {
     pub thinking_level: Option<Value>,
     #[serde(default)]
     pub max_output_tokens: Option<u64>,
+    /// Maximum retries after the first provider attempt. Omitted uses the router's
+    /// configured limit; zero disables retries. Can only reduce that limit.
+    #[serde(default)]
+    pub retry_max: Option<u32>,
     #[serde(default)]
     pub provider_options: Option<Value>,
     #[allow(dead_code)]
@@ -613,7 +617,11 @@ impl ChatPipeline {
             error: Some(error_shape(code, kind, message, detail)),
         };
 
-        let max_attempts = 1 + settings.retry_max;
+        // Both ceilings belong to this call. The settings snapshot was taken
+        // before admission; configuration changes cannot expand an in-flight turn.
+        let max_attempts = 1 + settings
+            .retry_max
+            .min(call.retry_max.unwrap_or(settings.retry_max));
         for attempt in 1..=max_attempts {
             if inflight.aborted.load(Ordering::SeqCst) {
                 break;
