@@ -15,7 +15,7 @@ def test_opengantry_uses_current_sdk_release() -> None:
         (REPO_ROOT / "opengantry" / "package.json").read_text(encoding="utf-8")
     )
 
-    assert package["dependencies"]["iii-sdk"] == "0.24.6"
+    assert package["dependencies"]["iii-sdk"] == "0.25.0"
 
 
 def test_hermes_uses_current_sdk_release() -> None:
