@@ -117,6 +117,25 @@ conversation tree, a folder or scope mark in a worker's tree — applied through
 `uiClasses.treeItemIcon`. Each holds at least 3:1 against `sidebar`. A tone is never a fill, a
 border, text or a selection/status state; `neutral` means the glyph keeps `ink-ghost`.
 
+### Syntax tones
+
+Token colours for read-only highlighted code only — `CodeHighlight` / `JsonHighlight` in fenced
+Markdown blocks and tool-card payloads (`lib/syntax.tsx`). The GitHub "prettylights" palette,
+each tone at least 4.5:1 against `bg`, the block's background. Never a fill, a border, chrome
+text or a status. The Monaco `CodeEditor` keeps its monochrome theme.
+
+| Token | Light | Dark | Prism kinds |
+| --- | --- | --- | --- |
+| `syntax-keyword` | `#cf222e` | `#ff7b72` | `keyword` |
+| `syntax-function` | `#8250df` | `#d2a8ff` | `function`, `method`, `macro`, diff `coord` |
+| `syntax-constant` | `#0550ae` | `#79c0ff` | `number`, `boolean`, `null`, `constant`, `date` |
+| `syntax-string` | `#0a3069` | `#a5d6ff` | `string`, `char`, `regex`, `attr-value`, `url` |
+| `syntax-type` | `#953800` | `#ffa657` | `class-name`, `builtin`, `tag`, `selector`, TOML `table` |
+| `syntax-attribute` | `#116329` | `#7ee787` | `attribute`, `attr-name`, `decorator`, `lifetime-annotation`, YAML/TOML `key` |
+
+Comments and punctuation use `ink-faint`; diff lines reuse `ok` (added) and `alert-strong`
+(removed); everything else, JSON keys included, is plain `ink`.
+
 ### Fonts — three roles
 
 | Token | Stack | Role |
