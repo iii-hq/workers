@@ -57,8 +57,6 @@ async fn failing_provider(
             let (calls, address, gate) = (observed.clone(), address.clone(), gate.clone());
             async move {
                 let attempt = calls.fetch_add(1, Ordering::SeqCst);
-                // The ceiling belongs to the router, not the provider payload.
-                assert!(input.get("retry_max").is_none());
                 if attempt == 0 {
                     if let Some((entered, release)) = gate {
                         entered.add_permits(1);

@@ -50,8 +50,11 @@ to keep the router's configured retry behavior, or pass `0` when the caller
 must authorize and budget each attempt itself. A caller can only reduce the
 configured limit: the effective ceiling is the smaller of the two, fixed
 for the turn. This bounds router dispatches; it does not change a provider's
-own retry policy or make missing usage a billable cost of zero. Caller
-timeouts still require explicit `router::abort` with the same `request_id`.
+own retry policy or make missing usage a billable cost of zero. If a caller
+may need to abort, it must send its own unique `request_id` with the original
+request: an omitted id is generated internally and is not returned in the
+response. Caller timeouts still require explicit `router::abort` with that
+same caller-supplied `request_id`.
 
 ## Functions
 

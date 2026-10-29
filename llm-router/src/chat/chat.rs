@@ -1470,6 +1470,7 @@ mod tests {
         let call: ChatCall = serde_json::from_value(json!({
             "model": "claude-test",
             "messages": [],
+            "retry_max": 1,
         }))
         .unwrap();
         let writer_ref = json!({ "channel_id": "c", "access_key": "k", "direction": "write" });
@@ -1492,6 +1493,10 @@ mod tests {
         );
 
         let obj = attempt1.as_object().unwrap();
+        assert!(
+            !obj.contains_key("retry_max"),
+            "the caller's retry ceiling belongs to the router, not the provider payload"
+        );
         for absent in [
             "system_prompt",
             "system_sections",
