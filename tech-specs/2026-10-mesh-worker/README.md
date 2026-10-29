@@ -18,8 +18,10 @@ Every worker today acts on the engine's machine or inside a sandbox:
   needs a Tailscale account, and the tailnet holds every device the person
   owns, not just the ones iii should reach.
 - `bridge` joins two engines, not machines, and has no auth.
-- A worker on another machine can already connect with `III_URL`, but the
-  engine has no auth of its own, so it would have to be exposed unprotected.
+- A worker on another machine can connect with `III_URL`. The engine's worker
+  listener has one optional `rbac` block, but it gates every connection on
+  that listener, local workers included. No worker uses it today, and its
+  host defaults to `0.0.0.0`.
 
 Mainplane (MIT, Go) ships the missing shape: one command and an 8-character
 device code make any machine a member of a private mesh. The mesh needs no
@@ -43,7 +45,8 @@ then hands the machines to the bus instead of to a separate agent harness.
    `laptop::coder::read-file`, `gpu::browser::...`. Those workers need no
    change.
 5. **Shared drives.** One directory with one copy, mounted on many nodes.
-6. **Removal in seconds.** A removed machine cannot undo its removal.
+6. **Removal in seconds.** A removed machine cannot undo its removal, even if
+   it kept its state and the code it joined with.
 7. **Usable by agents and people.** Agents discover and use machines through a
    skill. People use functions, and a Console page in phase 2.
 
@@ -61,32 +64,36 @@ then hands the machines to the bus instead of to a separate agent harness.
 - New exec or file primitives in `mesh`. Nodes run `ide`, `browser`,
   `computer`, `tmux`, and the other existing workers for that.
 - Drive servers on macOS or Windows.
+- Sharing the project's `rbac-proxy` with other tenants. In v1, `mesh` owns
+  it (see [mesh.md § Gateway](mesh.md#gateway)).
 
 ## Anti-goals
 
 Any of these makes `mesh` a failure even if everything else works:
 
-- The engine port reachable from anything but loopback, or the gateway
-  reachable from anything but the mesh.
-- A node registering a function outside its own `<node>::` prefix, or
-  shadowing an id that already exists.
+- `mesh` making the engine, or the proxy, reachable from the mesh or the front
+  door. Only the gateway faces the mesh.
+- A node registering a function or trigger type outside its own `<node>::`
+  prefix, binding a trigger type it was not granted, or reading another
+  worker's configuration.
 - Workers on a node running as root or admin.
-- Any phone-home: no Tailscale log upload, no Tailscale DERP or STUN servers,
-  no telemetry.
+- Anything a node runs as root that was fetched over plain HTTP.
+- Any phone-home: no Tailscale log upload, no Tailscale DERP, STUN or DNS
+  fallback servers, no telemetry.
 - Breaking the user's Tailscale, their DNS, or any hosts-file line that `mesh`
   did not write.
-- A device code that can be tested offline, or guessed online more than a few
-  times per window.
+- A device code that can be tested offline, or guessed more than 10 times per
+  address per 10 minutes.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
   subgraph HUB[hub machine]
-    E["iii engine<br/>127.0.0.1:49134"]
-    P["rbac-proxy instance 'mesh-gateway'<br/>127.0.0.1:49201"]
-    M["mesh (hub mode)<br/>front door: control, DERP, join, install<br/>userspace node 'hub', gateway :49135"]
-    M -- "mesh::auth, hooks" --> E
+    E["iii engine<br/>worker listener"]
+    P["rbac-proxy (owned by mesh)<br/>127.0.0.1:49200"]
+    M["mesh (hub mode)<br/>front door: control, DERP, join<br/>userspace node 'hub', gateway :49135"]
+    M -- "mesh::auth, mesh::middleware" --> E
     M -- "upgrade + ticket" --> P
     P --> E
   end
@@ -95,57 +102,67 @@ flowchart LR
     W["ide, browser, ...<br/>run as the operator"]
     S -- supervises --> W
   end
-  W -- "ws://hub:49135 over WireGuard" --> M
-  S -- "control /ts2021, relay /derp" --> F["front door<br/>public_url"]
+  W -- "ws://hub.iii.internal:49135 over WireGuard" --> M
+  S -- "control /ts2021, relay /derp, join" --> F["front door<br/>public_url"]
   F --> M
+  R["GitHub release (HTTPS)<br/>install script, binaries"] -. "install, update" .-> S
 ```
 
 - **Hub** is `mesh` running as an ordinary worker beside the engine. It runs:
   - the coordinator: the Tailscale control protocol, trimmed from headscale
     the way Mainplane trims it;
   - the DERP relay;
-  - the device-code join;
-  - the install scripts.
+  - the device-code join.
 
   It joins its own mesh as a userspace node named `hub`, with no root, and
-  listens on that node for worker connections.
+  listens on that node for worker connections. It serves nothing executable.
 - **Node** is the same binary installed as a system service on another
   machine. It owns a TUN interface, a hosts-file block and the drive mounts,
   and it supervises the iii workers configured for that machine. Those
   workers run as the person who installed the node and dial
-  `ws://hub:49135` across the mesh.
+  `ws://hub.iii.internal:49135` across the mesh.
 - **Gateway.** The hub accepts a connection only from the mesh and learns
   which node it came from from WireGuard itself (the peer's address is bound
-  to its key). It forwards the connection to a dedicated `rbac-proxy`
-  instance with a one-time ticket. The proxy asks `mesh::auth`, which turns
-  the ticket into grants: every function the node registers gets the
-  `<node>::` prefix, and the node may call only its allow list. Nodes never
-  hold an engine credential: membership in the mesh is the credential.
+  to its key). It forwards the connection to the project's `rbac-proxy` with
+  a one-time ticket. The proxy asks `mesh::auth`, which returns that node's
+  grants:
+  - everything the node registers is prefixed with `<node>::`;
+  - the node may call only its allow list, through `mesh::middleware`;
+  - it may bind only the trigger types it was granted.
+
+  Nodes hold no engine credential: membership in the mesh is the credential.
 
 ## Lifecycles
 
 ### Join
 
-1. The operator adds `mesh` and a second `rbac-proxy` instance (config name
-   `mesh-gateway`) to the project and sets `public_url`. On first boot the hub
-   generates its control key, relay key, a random IPv6 ULA /48 and a device
-   code, writes the `mesh-gateway` proxy config if it is absent, and opens
-   the front door.
-2. `mesh::join::code` returns the code and two one-liners:
-   `curl -fsSL <public_url>/install.sh | sh -s -- XXXX-XXXX` and the
-   PowerShell equivalent.
+1. The operator adds `mesh` and `rbac-proxy` to the project and sets
+   `public_url`. On first boot the hub:
+   - generates its identity key, control key, relay key, a random IPv6 ULA
+     /48 and a device code;
+   - takes ownership of the `rbac-proxy` config (see
+     [mesh.md § Gateway](mesh.md#gateway));
+   - opens the front door.
+2. `mesh::join::code` returns the code and two one-liners. Each fetches the
+   install script for the hub's own `mesh` release from GitHub over HTTPS and
+   passes it `<public_url>` and the code. One is for sh, one for PowerShell.
 3. The script downloads the `mesh` binary for the machine's OS and
-   architecture from the release, checks its sha256, and runs
+   architecture from the same release, checks its sha256, and runs
    `mesh join <public_url> <code>` elevated (sudo or UAC asks once).
-4. The node and hub run CPace over `POST /join`. The hub answers with the join
-   secret and its control key, sealed under the shared key. A wrong code
-   learns nothing and costs one try from that address.
+4. The node and hub run CPace over `POST /join`, bound to the hub's identity
+   key, and the hub answers with the join secret, sealed under the shared key.
+   - **A wrong code** learns nothing and costs one try from that address.
+   - **A man in the middle** of a plain-HTTP `public_url` does not know the
+     code either, so it gets one guess and cannot impersonate the hub.
+   - **After joining**, the node pins the hub's identity key and trusts the
+     control key only as signed by it (`GET /id`).
 5. The node registers over `/ts2021` with the join secret. It gets a name (its
    sanitized hostname, made unique) and an address. It then installs itself
    as a service, brings up its TUN and hosts block, and long-polls its map.
 6. The node service connects to the gateway as an iii worker. Its
-   `mesh-node::*` functions appear as `<node>::mesh-node::*`, and the hub
-   applies that node's configured workers and drives through them.
+   `mesh-node::*` functions appear as `<node>::mesh-node::*`. The hub updates
+   the node to its own version if they differ, then applies that node's
+   configured workers and drives.
 7. The workers start and their functions appear as `<node>::...` in
    `engine::functions::list`. From phase 3, `mesh::node-changed` fires
    `joined`, then `online`.
@@ -158,6 +175,11 @@ crosses the gateway connection and WireGuard to `ide` on the laptop. The
 result returns the same way. A node that is offline has no session, so its
 functions are absent, not failing.
 
+The harness never puts its own filesystem scope on a remote call: the hub's
+paths mean nothing on the laptop. It strips any scope the model wrote, so the
+laptop's `ide` applies its own configured roots (see
+[mesh.md § Required changes](mesh.md#required-changes-outside-mesh)).
+
 ### Gateway identity
 
 1. The hub's userspace node accepts a TCP connection on `gateway_port`.
@@ -167,23 +189,25 @@ functions are absent, not failing.
    `x-iii-mesh-ticket`, and any copy of that header the client sent is
    removed first.
 5. The proxy calls `mesh::auth` with the headers. `mesh::auth` consumes the
-   ticket and returns
-   `{function_registration_prefix: <node>, allowed_functions: <allow list>, context: {mesh_node: <node>}}`.
+   ticket and returns the grants for that node.
 
 A missing, used or expired ticket is refused. A process on the hub's loopback
 that dials the proxy directly therefore gets nothing.
 
 ### Removal
 
-1. `mesh::nodes::remove` deletes the node and adds its keys to the refused
-   list.
+1. `mesh::nodes::remove` deletes the node, adds its keys to the refused list,
+   and cycles the device code. Join secrets derive from the code, so a removed
+   machine that kept the code and its state still cannot register new keys.
 2. Map deltas drop it from every peer within seconds.
 3. The gateway closes its connections, so its functions leave the engine, and
    `node-changed` fires `removed`.
 4. The node, on losing its registration, takes down its TUN, its hosts block,
    its mounts and its workers.
 
-The machine comes back only through `mesh leave` and a fresh join.
+The cycled code means one-liners handed out before the removal stop working,
+and `mesh::nodes::remove` returns the new code. The machine comes back only
+through `mesh leave` and a fresh join.
 
 ### Links and drives
 
@@ -197,7 +221,7 @@ Neither change needs a restart.
 
 | Phase | Ships | Acceptance ([mesh.md § Acceptance](mesh.md#acceptance-criteria)) |
 | --- | --- | --- |
-| 1. Core | Tailscale fork, coordinator, relay, device-code join, Linux and macOS nodes (service, TUN, hosts), links, removal, `mesh::status` / `nodes::*` / `join::*`, gateway with `rbac-proxy`, node supervisor running `ide`, skill | 1–7, 9, 10 |
+| 1. Core | Tailscale fork; coordinator, relay, device-code join; Linux and macOS nodes (service, TUN, hosts, self-update); links; removal; `mesh::status` / `nodes::*` / `join::*`; gateway with `rbac-proxy`; node supervisor running `ide`; skill; [required changes](mesh.md#required-changes-outside-mesh) in harness, fp and rbac-proxy | 1–7, 9, 10 |
 | 2. Reach | Windows nodes (wintun, service, hosts), drives (NFS and SMB), Console page | 8, and 1–6 on Windows 11 |
 | 3. Automation | Join tokens and ephemeral nodes, `mesh::node-changed`, `browser` / `computer` / `tmux` on nodes | 11 |
 
@@ -209,19 +233,24 @@ Neither change needs a restart.
   Tailscale account, exposes every device in the tailnet, and gives no
   per-iii isolation. It stays cheap to add later: the gateway, supervisor and
   drives need only a WhoIs lookup from the network beneath them.
+- **The engine's own `rbac` block instead of `rbac-proxy`.** It sits on the
+  engine's single worker listener, so turning it on gates every local worker
+  as well. `mesh` itself would then have to authenticate through
+  `mesh::auth`, an auth function that does not exist until `mesh` connects.
+  `rbac-proxy` gives the mesh its own door and leaves local workers alone.
 - **Expose the engine (or `rbac-proxy`) to the internet with tokens.** This
-  gives no NAT traversal, no machine-to-machine links and no drives. It also
-  puts a credential on every machine, and the Go SDK cannot send one in a
-  header.
+  gives no NAT traversal, no machine-to-machine links and no drives, and it
+  puts a long-lived credential on every machine.
 - **Write the WireGuard layer from scratch.** Rejected: Mainplane's is ~4.1k
   lines, MIT, and already handles the Windows adapter, the MSS clamp and IPv6
-  fragmentation on real hardware. Port it.
+  fragmentation on real hardware. That count is the network and drive code;
+  service install adds ~0.8k. Port it.
 
 ## Spec index
 
 | Document | Covers |
 | --- | --- |
-| [mesh.md](mesh.md) | The worker: modes, code reuse, front door, config, state, join, node, gateway, drives, functions, agent exposure, boundaries, dependencies, testing, acceptance |
+| [mesh.md](mesh.md) | The worker: modes, code reuse, front door, config, state, join, node, gateway, drives, functions, agent exposure, required changes outside `mesh`, boundaries, dependencies, testing, acceptance |
 
 ## Prior art
 
@@ -229,12 +258,12 @@ Neither change needs a restart.
   - `pkg/mesh`: TUN, router, hosts block, MSS clamp, fragmenter.
   - `pkg/coordinator`: from headscale's `hscontrol`, BSD-3, plus drive
     coordination.
-  - `pkg/auth/code.go`: CPace device code via `filippo.io/cpace`.
-  - `pkg/elevate` and `pkg/worker/drives_*`.
-  - The fork `mainplane-ai/tailscale v1.102.4-mainplane.8` (three patches).
+  - `pkg/auth/code.go`: the CPace device code, via `filippo.io/cpace`.
+  - `pkg/elevate`, `pkg/worker/drives_*` and `pkg/worker/install_*`.
+  - The fork `mainplane-ai/tailscale v1.102.4-mainplane.8`.
   - `docs/self-hosting.md`: the mesh and drive behaviour this spec follows.
 - **headscale**: the control protocol server Mainplane's coordinator trims.
 - **Tailscale** `tsnet`, `derpserver`, `wgengine`: the network stack.
-- **This repo**: `rbac-proxy` (auth function, registration prefix, filtered
-  discovery), `ide`'s per-call `target`, `computer`'s remote driver, and
-  `docs/sops/go-binary-worker.md`.
+- **This repo**: `rbac-proxy` (auth function, registration prefix,
+  middleware, filtered discovery), `ide`'s per-call `target`, `computer`'s
+  remote driver, and `docs/sops/go-binary-worker.md`.
