@@ -15,7 +15,7 @@
 //!   atomically. Engines without ensure use a warned, non-atomic raw get/register
 //!   compatibility path; stored non-null values omit initial_value entirely.
 //! - **Reload serialization**: every reload runs under one lock with the
-//!   fetch INSIDE it, so overlapping `configuration:updated` deliveries
+//!   fetch INSIDE it, so overlapping `configuration::on-updated` deliveries
 //!   converge on the latest authoritative value instead of racing
 //!   (docs/sops/configuration.md §6).
 //! - **Control-plane routing**: `configuration::*` is a worker-owned API,
@@ -29,11 +29,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::trigger::Trigger;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 
+/// The configuration worker's change event, observed by [`on_change`].
+const ON_UPDATED_FN: &str = "configuration::on-updated";
 const TIMEOUT_MS: u64 = 5_000;
 const RETRIES: u32 = 3;
 const RETRY_BACKOFF_MS: u64 = 250;
@@ -65,7 +65,7 @@ pub async fn ensure(iii: &IIIClient, spec: &EntrySpec, seed: Option<Value>) -> R
     let mut payload = registration_payload(spec);
     payload["initial_value"] = seed.unwrap_or_else(|| spec.default_value.clone());
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -92,7 +92,7 @@ fn registration_payload(spec: &EntrySpec) -> Value {
 /// error, never read as "nothing stored yet".
 pub async fn fetch(iii: &IIIClient, id: &str) -> Result<Option<Value>, String> {
     let stored = initialization::get_value_with(id, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await?;
     Ok(stored.filter(|v| !v.is_null()))
@@ -122,7 +122,7 @@ fn is_not_found(error: &str) -> bool {
 }
 
 /// Retry transient RPC failures, returning a definitive missing-entry response immediately.
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -130,8 +130,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -174,54 +174,34 @@ async fn trigger_configuration_with_retry(
     ))
 }
 
-/// Best-effort trigger binding: a transient failure must not brick boot or a
-/// reload — it surfaces as a `None` handle (and a warn) and is retried on
-/// the next config event.
-// `register_trigger` is deprecated in iii-sdk 0.25; engines 0.24 and 0.25
-// both serve it.
-#[allow(deprecated)]
-pub fn try_bind(iii: &IIIClient, input: RegisterTriggerInput) -> Option<Trigger> {
-    let (trigger_type, function_id) = (input.trigger_type.clone(), input.function_id.clone());
-    match iii.register_trigger(input) {
-        Ok(handle) => {
-            tracing::info!(trigger_type, function_id, "trigger binding requested");
-            Some(handle)
-        }
-        Err(e) => {
-            tracing::warn!(trigger_type, function_id, error = %e, "trigger binding failed");
-            None
-        }
-    }
-}
-
-/// A live trigger binding that follows a boolean knob (the guidance hooks).
+/// A live observer that follows a boolean knob (the guidance hooks).
 /// The mutex serialises concurrent reconciles; it is sync and never held
 /// across an await.
 #[derive(Clone, Default)]
-pub struct BindingSlot(Arc<Mutex<Option<Trigger>>>);
+pub struct ObserverSlot(Arc<Mutex<Option<ObserverHandle>>>);
 
-impl BindingSlot {
-    /// Reconcile the live binding with `enabled`: on → `bind()` once; off →
-    /// unregister and drop the handle. Idempotent under repeated config
-    /// events, and a failed bind (`None`) retries on the next event.
+impl ObserverSlot {
+    /// Reconcile the live observer with `enabled`: on → `observe()` once;
+    /// off → dispose the observer (on a spawned task) and drop the handle.
+    /// Idempotent under repeated config events. `observe` returns at once:
+    /// the observer stays `pending` until its function registers.
     pub fn reconcile(
         &self,
         enabled: bool,
-        bind: impl FnOnce() -> Option<Trigger>,
+        observe: impl FnOnce() -> ObserverHandle,
         on_msg: &str,
         off_msg: &str,
     ) {
         let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
         match (enabled, slot.is_some()) {
             (true, false) => {
-                *slot = bind();
-                if slot.is_some() {
-                    tracing::info!("{}", on_msg);
-                }
+                let handle = observe();
+                tracing::info!(observer_id = handle.id(), "{}", on_msg);
+                *slot = Some(handle);
             }
             (false, true) => {
                 if let Some(handle) = slot.take() {
-                    handle.unregister();
+                    dispose_in_background(handle);
                 }
                 tracing::info!("{}", off_msg);
             }
@@ -229,15 +209,34 @@ impl BindingSlot {
         }
     }
 
-    /// Whether a binding is currently held (test/introspection helper).
-    pub fn is_bound(&self) -> bool {
+    /// Whether an observer is currently held (test/introspection helper).
+    pub fn is_observing(&self) -> bool {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).is_some()
     }
 }
 
-/// Trigger payload for `<worker>::on-config-change`. Advisory only: handlers
-/// re-fetch the authoritative value and ignore it, so a direct call can
-/// never inject config.
+/// `dispose` waits for the engine's confirmation, so it runs off the
+/// reconcile path, which holds the slot's sync lock.
+fn dispose_in_background(handle: ObserverHandle) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => {
+            runtime.spawn(async move {
+                if let Err(error) = handle.dispose().await {
+                    tracing::warn!(observer_id = handle.id(), %error, "observer dispose failed");
+                }
+            });
+        }
+        Err(_) => tracing::warn!(
+            observer_id = handle.id(),
+            "no tokio runtime to dispose the observer on; it stays active"
+        ),
+    }
+}
+
+/// The `configuration::on-updated` event, delivered as output to
+/// `<worker>::on-config-change`. Advisory only: handlers read `id` and
+/// re-fetch the authoritative value, so a direct call can never inject
+/// config.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
     /// Configuration id that changed.
@@ -272,21 +271,24 @@ impl Reload {
 
 /// Register the internal `fn_id` reload handler (typed, `internal`-tagged —
 /// keep it out of the callable catalog agents browse, and denied to agents
-/// in iii-permissions.yaml) and bind it to `configuration:updated` for
-/// `config_id`. Every delivery runs `reload` through the same serialized
-/// [`Reload`].
+/// in iii-permissions.yaml) and observe `configuration::on-updated` for
+/// `config_id` with it: filters on `input.id` and on
+/// `input.event_type == "configuration:updated"`, the event delivered as
+/// output. Every delivery runs `reload` through the same serialized
+/// [`Reload`]. The observer stays `pending` while the configuration source
+/// is not registered.
 ///
 /// Returns that [`Reload`]: call `.run()` once right after this registration
 /// to close the boot gap — an update landing between the boot-time fetch and
-/// this binding fired into nothing, and without the extra pass it would stay
-/// invisible until the NEXT update or a restart.
+/// the observer becoming active reached no one, and without the extra pass
+/// it would stay invisible until the NEXT update or a restart.
 pub fn on_change<F, Fut>(
     iii: &Arc<IIIClient>,
     config_id: &'static str,
     fn_id: &'static str,
     description: &'static str,
     reload: F,
-) -> Result<Reload, Error>
+) -> Reload
 where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
@@ -310,24 +312,32 @@ where
         .metadata(json!({ "internal": true })),
     );
 
-    // Deprecated in iii-sdk 0.25. The `configuration` trigger type is still
-    // served by 0.25 engines (next to `configuration::on-updated`), so one
-    // binding keeps working on 0.24 and 0.25.
-    #[allow(deprecated)]
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        fn_id.to_string(),
-        json!({ "configuration_id": config_id, "event_types": ["configuration:updated"] }),
-    ))?;
-    Ok(reload)
+    // The observer lives as long as the worker's connection; dropping the
+    // handle does not dispose it.
+    iii.observe(
+        Source::function(ON_UPDATED_FN)
+            .filters(update_filters(config_id))
+            .deliver(Deliver::Output),
+        fn_id,
+    );
+    reload
+}
+
+/// Selects the `configuration:updated` events of one entry.
+fn update_filters(config_id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": config_id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 /// Follow another worker's configuration entry. Its id comes from that
 /// worker's `<worker>::configuration-id` (retried every few seconds until the
 /// worker answers, so start order does not matter); its value (`None` while
 /// the entry does not exist) is published on the returned channel and
-/// refreshed on every `configuration:updated` through `fn_id`, this worker's
-/// internal handler. `Err` when the worker answers without an id.
+/// refreshed on every `configuration::on-updated` update of the entry through
+/// `fn_id`, this worker's internal handler. `Err` when the worker answers
+/// without an id.
 pub async fn follow(
     iii: &Arc<IIIClient>,
     worker: &str,
@@ -337,7 +347,7 @@ pub async fn follow(
     let identity = format!("{worker}::configuration-id");
     let id = loop {
         let reply = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: identity.clone(),
                 payload: json!({}),
                 action: None,
@@ -352,7 +362,7 @@ pub async fn follow(
             Err(_) => tokio::time::sleep(Duration::from_secs(5)).await,
         }
     };
-    // One followed entry per process: its id lives as long as the binding.
+    // One followed entry per process: its id lives as long as the observer.
     let id: &'static str = Box::leak(id.into_boxed_str());
     let (tx, rx) = tokio::sync::watch::channel(fetch(iii, id).await.ok().flatten());
     let tx = Arc::new(tx);
@@ -364,8 +374,7 @@ pub async fn follow(
                 tx.send_replace(value);
             }
         }
-    })
-    .map_err(|error| error.to_string())?;
+    });
     reload.run().await;
     Ok(rx)
 }
@@ -378,6 +387,7 @@ mod tests {
     ));
 
     use super::*;
+    use iii_sdk::ObserverState;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// The shared client's missing-entry classifier: a real `Error::Remote`
@@ -389,9 +399,9 @@ mod tests {
         assert_missing_entry_contract(is_not_found);
     }
 
-    /// `IIIClient::new` only builds local state — no network — and
-    /// `register_trigger` queues locally, so a real `Trigger` handle is
-    /// available engine-free (the same trick the workers' own tests use).
+    /// `IIIClient::new` only builds local state — no network — and `observe`
+    /// files the observer locally until a connection sends it, so a real
+    /// `ObserverHandle` is available engine-free.
     fn client() -> Arc<IIIClient> {
         Arc::new(IIIClient::new("ws://127.0.0.1:1"))
     }
@@ -412,42 +422,64 @@ mod tests {
         assert_eq!(payload["metadata"]["ui_form"], "web");
     }
 
-    fn some_binding(iii: &IIIClient) -> Option<Trigger> {
-        try_bind(
-            iii,
-            RegisterTriggerInput::new(
-                "harness::hook::pre-generate".to_string(),
-                "test::hook".to_string(),
-                json!({ "on_error": "fail_open" }),
-            ),
+    fn some_observer(iii: &IIIClient) -> ObserverHandle {
+        iii.observe(
+            Source::function("harness::hook::on-pre-generate")
+                .args(json!({ "on_error": "fail_open" })),
+            "test::hook",
         )
     }
 
-    #[test]
-    fn binding_slot_reconciles_on_off_and_is_idempotent() {
+    #[tokio::test]
+    async fn observer_slot_reconciles_on_off_and_is_idempotent() {
         let iii = client();
-        let slot = BindingSlot::default();
-        let binds = AtomicUsize::new(0);
+        let slot = ObserverSlot::default();
+        let observes = AtomicUsize::new(0);
+        let observed = Mutex::new(None::<ObserverHandle>);
 
-        let bind = || {
-            binds.fetch_add(1, Ordering::SeqCst);
-            some_binding(&iii)
+        let observe = || {
+            observes.fetch_add(1, Ordering::SeqCst);
+            let handle = some_observer(&iii);
+            *observed.lock().unwrap() = Some(handle.clone());
+            handle
         };
-        slot.reconcile(true, bind, "on", "off");
-        assert!(slot.is_bound());
-        // Repeated `on` events must not re-bind.
-        slot.reconcile(true, bind, "on", "off");
-        assert_eq!(binds.load(Ordering::SeqCst), 1);
+        slot.reconcile(true, observe, "on", "off");
+        assert!(slot.is_observing());
+        // Repeated `on` events must not observe again.
+        slot.reconcile(true, observe, "on", "off");
+        assert_eq!(observes.load(Ordering::SeqCst), 1);
 
-        slot.reconcile(false, bind, "on", "off");
-        assert!(!slot.is_bound());
+        slot.reconcile(false, observe, "on", "off");
+        assert!(!slot.is_observing());
         // Repeated `off` events are a no-op too.
-        slot.reconcile(false, bind, "on", "off");
-        assert_eq!(binds.load(Ordering::SeqCst), 1);
+        slot.reconcile(false, observe, "on", "off");
+        assert_eq!(observes.load(Ordering::SeqCst), 1);
 
-        // A failed bind (None) leaves the slot empty so the next event retries.
-        slot.reconcile(true, || None, "on", "off");
-        assert!(!slot.is_bound());
+        // `off` disposes the dropped observer on a spawned task.
+        let handle = observed.lock().unwrap().take().expect("observed once");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while handle.state() != ObserverState::Disposed {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the observer is disposed");
+
+        // The next `on` observes afresh.
+        slot.reconcile(true, observe, "on", "off");
+        assert!(slot.is_observing());
+        assert_eq!(observes.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn update_filters_select_one_entrys_updates() {
+        assert_eq!(
+            update_filters("fp"),
+            json!({
+                "input.id": { "$eq": "fp" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
     }
 
     #[tokio::test]
@@ -466,8 +498,7 @@ mod tests {
                     ran.fetch_add(1, Ordering::SeqCst);
                 }
             },
-        )
-        .expect("registration succeeds engine-free");
+        );
 
         reload.run().await;
         reload.run().await;
