@@ -1,95 +1,56 @@
-//! Steps for trigger bindings and recorded deliveries (@pure).
+//! Steps for observers of the session event functions and what they
+//! received (@pure).
 //!
-//! Bindings go through the same parse/validate path the engine-routed
-//! `TriggerHandler` uses (`SubscriberSet::add`), and deliveries are
-//! whatever the production `Emitter` matched — so these scenarios pin
-//! the exact filter semantics subscribers get in production.
+//! Observers live in the scenario's recorder, which applies their filters
+//! with iii's filter language to every call the production `Emitter` makes,
+//! so these scenarios pin what an observer of each `session::on-*` function
+//! receives in production.
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
-use iii_sdk::trigger::TriggerConfig;
 
 use session_manager::events::EventKind;
 
 use super::common_steps::{lookup_path, parse_expected};
 use crate::common::world::SessionWorld;
 
-fn add_binding(
+fn assert_event_function(function_id: &str) {
+    assert!(
+        EventKind::from_function_id(function_id).is_some(),
+        "{function_id} is not a session event function"
+    );
+}
+
+#[given(regex = r#"^an observer "([^"]+)" of "([^"]+)" delivering to "([^"]+)" with filters:$"#)]
+async fn observer_with_filters(
     world: &mut SessionWorld,
-    id: &str,
-    trigger_type: &str,
-    function_id: &str,
+    id: String,
+    source: String,
+    target: String,
     step: &Step,
-) -> Result<(), String> {
-    let kind = EventKind::from_trigger_type(trigger_type)
-        .unwrap_or_else(|| panic!("unknown trigger type {trigger_type}"));
+) {
+    assert_event_function(&source);
     let raw = world.substitute(step.docstring.as_deref().unwrap_or("{}"));
-    let config: serde_json::Value = serde_json::from_str(raw.trim())
-        .unwrap_or_else(|e| panic!("binding config docstring must be valid JSON: {e}"));
-    world.emitter.sets().for_kind(kind).add(TriggerConfig {
-        id: id.to_string(),
-        function_id: function_id.to_string(),
-        config,
-        metadata: None,
-        namespace: None,
-    })
+    let filters: serde_json::Value = serde_json::from_str(raw.trim())
+        .unwrap_or_else(|e| panic!("filters docstring must be valid JSON: {e}"));
+    world
+        .recorder
+        .observe(&id, &source, &filters, &target)
+        .unwrap_or_else(|e| panic!("observer `{id}` of {source} has invalid filters: {e}"));
 }
 
-#[given(regex = r#"^a binding "([^"]+)" on "([^"]+)" delivering to "([^"]+)" with config:$"#)]
-async fn binding_with_config(
-    world: &mut SessionWorld,
-    id: String,
-    trigger_type: String,
-    function_id: String,
-    step: &Step,
-) {
-    let result = add_binding(world, &id, &trigger_type, &function_id, step);
-    if let Err(e) = &result {
-        panic!("binding `{id}` on {trigger_type} unexpectedly rejected: {e}");
-    }
-    world.last_binding_result = Some(result);
+#[given(regex = r#"^an observer "([^"]+)" of "([^"]+)" delivering to "([^"]+)"$"#)]
+async fn observer(world: &mut SessionWorld, id: String, source: String, target: String) {
+    assert_event_function(&source);
+    world
+        .recorder
+        .observe(&id, &source, &serde_json::json!({}), &target)
+        .expect("{} matches every call");
 }
 
-#[when(regex = r#"^I try to bind "([^"]+)" on "([^"]+)" delivering to "([^"]+)" with config:$"#)]
-async fn try_bind(
-    world: &mut SessionWorld,
-    id: String,
-    trigger_type: String,
-    function_id: String,
-    step: &Step,
-) {
-    let result = add_binding(world, &id, &trigger_type, &function_id, step);
-    world.last_binding_result = Some(result);
-}
-
-#[then("the binding registration succeeds")]
-async fn binding_succeeds(world: &mut SessionWorld) {
-    match &world.last_binding_result {
-        Some(Ok(())) => {}
-        Some(Err(e)) => panic!("expected binding to register, got rejection: {e}"),
-        None => panic!("no binding registration was attempted"),
-    }
-}
-
-#[then(regex = r#"^the binding registration fails mentioning "([^"]+)"$"#)]
-async fn binding_fails(world: &mut SessionWorld, fragment: String) {
-    match &world.last_binding_result {
-        Some(Err(e)) => assert!(
-            e.contains(&fragment),
-            "rejection `{e}` does not mention `{fragment}`"
-        ),
-        Some(Ok(())) => {
-            panic!("expected binding rejection mentioning `{fragment}`, but it registered")
-        }
-        None => panic!("no binding registration was attempted"),
-    }
-}
-
-#[when(regex = r#"^I unbind "([^"]+)" from "([^"]+)"$"#)]
-async fn unbind(world: &mut SessionWorld, id: String, trigger_type: String) {
-    let kind = EventKind::from_trigger_type(&trigger_type)
-        .unwrap_or_else(|| panic!("unknown trigger type {trigger_type}"));
-    world.emitter.sets().for_kind(kind).remove(&id);
+#[when(regex = r#"^I dispose observer "([^"]+)"$"#)]
+async fn dispose(world: &mut SessionWorld, id: String) {
+    world.recorder.dispose(&id);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,22 +79,22 @@ async fn received_none(world: &mut SessionWorld, function_id: String) {
 }
 
 #[then(regex = r#"^function "([^"]+)" received (\d+) "([^"]+)" deliver(?:y|ies)$"#)]
-async fn received_n_of_type(
+async fn received_n_from(
     world: &mut SessionWorld,
     function_id: String,
     expected: usize,
-    trigger_type: String,
+    source: String,
 ) {
     let got: Vec<_> = world
         .recorder
         .to_function(&function_id)
         .into_iter()
-        .filter(|d| d.trigger_type == trigger_type)
+        .filter(|d| d.source == source)
         .collect();
     assert_eq!(
         got.len(),
         expected,
-        "function {function_id} received {} {trigger_type} deliveries, expected {expected}: {got:#?}",
+        "function {function_id} received {} {source} deliveries, expected {expected}: {got:#?}",
         got.len()
     );
 }
@@ -148,18 +109,40 @@ async fn no_deliveries_at_all(world: &mut SessionWorld) {
     );
 }
 
+/// The emitter's gate: an event function nobody observes is never called.
+#[then(regex = r#"^"([^"]+)" was not called$"#)]
+async fn not_called(world: &mut SessionWorld, function_id: String) {
+    let calls = world.recorder.calls_to(&function_id);
+    assert!(
+        calls.is_empty(),
+        "{function_id} was called {} times: {calls:#?}",
+        calls.len()
+    );
+}
+
+#[then(regex = r#"^"([^"]+)" was called (\d+) times?$"#)]
+async fn called_n(world: &mut SessionWorld, function_id: String, expected: usize) {
+    let calls = world.recorder.calls_to(&function_id);
+    assert_eq!(
+        calls.len(),
+        expected,
+        "{function_id} was called {} times, expected {expected}: {calls:#?}",
+        calls.len()
+    );
+}
+
 #[then(regex = r#"^delivery (\d+) to "([^"]+)" is a "([^"]+)" event$"#)]
-async fn delivery_is_type(
+async fn delivery_is_from(
     world: &mut SessionWorld,
     index: usize,
     function_id: String,
-    trigger_type: String,
+    source: String,
 ) {
     let got = world.recorder.to_function(&function_id);
     let delivery = got
         .get(index)
         .unwrap_or_else(|| panic!("function {function_id} has no delivery {index}: {got:#?}"));
-    assert_eq!(delivery.trigger_type, trigger_type);
+    assert_eq!(delivery.source, source);
 }
 
 #[then(regex = r#"^delivery (\d+) to "([^"]+)" has "([^"]+)" = (.+)$"#)]

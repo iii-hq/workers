@@ -17,10 +17,7 @@ Feature: session::update-message — streaming deltas and edited output
   # last-write-wins reconciliation in consumers breaks and stale
   # snapshots overwrite newer ones.
   Scenario: streaming growth increments the revision each update
-    Given a binding "b1" on "session::message-updated" delivering to "ui::recv" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-message-updated" delivering to "ui::recv"
     When I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001",
@@ -34,7 +31,7 @@ Feature: session::update-message — streaming deltas and edited output
         "content": [{ "type": "text", "text": "Hello world" }] }
       """
     Then the response field "revision" is 2
-    And function "ui::recv" received 2 "session::message-updated" deliveries
+    And function "ui::recv" received 2 "session::on-message-updated" deliveries
     And delivery 0 to "ui::recv" has "revision" = 1
     And delivery 0 to "ui::recv" has "message.content.0.text" = "Hel"
     And delivery 1 to "ui::recv" has "revision" = 2
@@ -84,10 +81,7 @@ Feature: session::update-message — streaming deltas and edited output
   # must not both win; the loser gets updated:false and the current
   # revision, with no event emitted for the failed attempt.
   Scenario: expected_revision mismatch writes nothing and fires nothing
-    Given a binding "b1" on "session::message-updated" delivering to "ui::recv" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-message-updated" delivering to "ui::recv"
     Given I call "session::update-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001",
@@ -101,7 +95,7 @@ Feature: session::update-message — streaming deltas and edited output
     Then the call succeeds
     And the response field "updated" is false
     And the response field "revision" is 1
-    And function "ui::recv" received 1 "session::message-updated" delivery
+    And function "ui::recv" received 1 "session::on-message-updated" delivery
     When I call "session::get-message" with:
       """
       { "session_id": "s_001", "entry_id": "e_001" }

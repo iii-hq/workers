@@ -167,7 +167,7 @@
           },
           "metadata": {
             "additionalProperties": true,
-            "description": "App-defined; the tenancy hook (e.g. `{ \"owner\": \"u_1\" }`) that `session::list` and every trigger config can filter on.",
+            "description": "App-defined; the tenancy hook (e.g. `{ \"owner\": \"u_1\" }`) that `session::list` filters on and every session event carries as `session_metadata`.",
             "type": [
               "object",
               "null"
@@ -219,7 +219,7 @@
     },
     "properties": {
       "created": {
-        "description": "True when this call created the session (and fired `session::created`).",
+        "description": "True when this call created the session (and called `session::on-created`).",
         "type": "boolean"
       },
       "meta": {

@@ -2,7 +2,7 @@
 //!
 //! One engine connection per test binary process via OnceCell — the
 //! cost of each WebSocket handshake dwarfs cucumber's per-scenario
-//! overhead. On success the production surface (trigger types +
+//! overhead. On success the production surface (event functions +
 //! functions) is registered in-process so @engine scenarios drive the
 //! exact code the binary would run.
 
@@ -11,8 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
@@ -35,7 +34,7 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(250)).await;
         let probe = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::workers::list".to_string(),
                 payload: json!({}),
                 action: None,
@@ -71,7 +70,8 @@ pub async fn get_or_init() -> Option<Arc<IIIClient>> {
 }
 
 /// Register an engine-side recorder function that stashes every payload
-/// it receives. Returns the generated function id.
+/// it receives: the target of an engine observer. Returns the generated
+/// function id.
 pub fn register_recorder_function(iii: &Arc<IIIClient>) -> String {
     let function_id = format!("test::session_recv::{}", uuid::Uuid::new_v4().simple());
     {

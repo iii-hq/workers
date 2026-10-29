@@ -17,9 +17,9 @@ Contents: [mental model](#1-mental-model) ·
 
 session-manager is the conversation database plus its change feed. You write
 typed messages into an append-only, branchable log and read them back in
-order; every mutation fires a trigger-type event you can bind to with
-per-binding filters, so UIs render live without polling and without a
-separate publish call. It stores and notifies — nothing else. The driver
+order; every mutation calls an event function (`session::on-created`,
+`session::on-message-added`, ...) you observe with filters, so UIs render
+live without polling and without a separate publish call. It stores and notifies — nothing else. The driver
 (typically the harness) owns the loop: it appends messages, streams updates
 into them, and flips the session status around turns.
 
@@ -27,14 +27,14 @@ Integration is always some subset of the same triangle:
 
 1. **Write** through `session::*` mutations (create/ensure, append, update,
    set_status, ...).
-2. **Render** by binding handlers to the six trigger types and reconciling
-   by `revision` + parent chain.
+2. **Render** by observing the six event functions with your handlers and
+   reconciling by `revision` + parent chain.
 3. **Read back** (`messages`, `get`, `list`) for initial load, recovery, or
    non-streaming consumers.
 
 ## 2. Conventions
 
-- **Invocation**: every function is a sync `iii.trigger({ function_id,
+- **Invocation**: every function is a sync `iii.call({ function_id,
   payload, timeout_ms })` call; responses are the JSON shapes below.
 - **Ids** are opaque strings assigned by the worker (`s_<uuid>`,
   `e_<uuid>`) unless you supply them (`ensure` session ids, `append`
@@ -125,12 +125,12 @@ session-manager` / `get function info`); the shapes below are the contract.
 ### Lifecycle
 
 ```typescript
-// session::create — new session at status "idle". Fires session::created.
+// session::create — new session at status "idle". Calls session::on-created.
 { title?, description?, metadata?, kind? } -> { session_id, meta: SessionMeta }
 //   kind: "user" (default) | "automation" | "e2e"; unknown values are rejected
 
 // session::ensure — idempotently ensure a caller-chosen id exists.
-// Creates (and fires session::created) only when missing; otherwise a pure
+// Creates (and calls session::on-created) only when missing; otherwise a pure
 // read: created=false, title/description/metadata/kind are NOT applied.
 { session_id, title?, description?, metadata?, kind? } -> { session_id, meta, created: boolean }
 
@@ -144,7 +144,7 @@ session-manager` / `get function info`); the shapes below are the contract.
 //   kinds: SessionKind[]; omit for every kind, [] matches nothing
 
 // session::set-meta — supplied fields replace; metadata replaces WHOLESALE.
-// Fires session::meta-updated (all-fields-absent request is a silent no-op).
+// Calls session::on-meta-updated (all-fields-absent request is a silent no-op).
 // Never touches SessionMeta.draft (that is session::set-draft's field) nor
 // SessionMeta.kind (fixed at creation).
 { session_id, title?, description?, metadata? } -> { meta }
@@ -155,12 +155,12 @@ session-manager` / `get function info`); the shapes below are the contract.
 // session::list). Empty / whitespace-only text clears.
 { session_id, draft? } -> { draft: string | null }
 
-// session::set-status — fires session::status-changed; same status AND reason
+// session::set-status — calls session::on-status-changed; same status AND reason
 // is a no-op, while a reason-only change re-emits. reason is retained with
 // working/done/error and cleared with idle.
 { session_id, status, reason? } -> { status, previous_status }
 
-// session::delete — removes meta + entries + leaf. Fires session::deleted.
+// session::delete — removes meta + entries + leaf. Calls session::on-deleted.
 // Unknown id => { deleted: false }, no event. Forks of this session survive.
 { session_id } -> { deleted: boolean }
 ```
@@ -172,13 +172,13 @@ session-manager` / `get function info`); the shapes below are the contract.
 // Parent defaults to the active leaf; appending ALWAYS moves the leaf to the
 // new entry (also with an explicit parent_id — that starts a branch).
 // IDEMPOTENT on entry_id: an existing id returns the existing entry, fires
-// nothing, moves nothing. Fires session::message-added.
+// nothing, moves nothing. Calls session::on-message-added.
 { session_id, message?: AgentMessage, custom?: { custom_type, data },
   parent_id?, entry_id?, origin? }
   -> { entry_id, parent_id: string | null, timestamp }
 
-// session::append-many — ordered batch, chained; one message-added per
-// entry, in order. NOT idempotent. Empty batch => session/empty_batch.
+// session::append-many — ordered batch, chained; one session::on-message-added
+// call per entry, in order. NOT idempotent. Empty batch => session/empty_batch.
 { session_id, messages: AgentMessage[], parent_id?, origin? }
   -> { entry_ids: string[], last_entry_id }
 
@@ -223,9 +223,10 @@ Nothing is removed from storage; every entry stays whole on disk and in
 
 The unit of pagination is the **block**: one entry, or one whole **activity
 run** — a maximal stretch of assistant messages that carry `function_call`
-blocks, the `function_result` messages answering them, and the trigger-wake
-entries (`origin.notification` / `trigger_fired`, or the harness's
-`e_fire_*` / `e_trigfired_*` id family) that woke the agent into them. A
+blocks, the `function_result` messages answering them, and the wake entries
+the harness writes when an agent's observer fires (`origin.notification`,
+an `observer_fired` record — `trigger_fired` in transcripts the 0.25 harness
+wrote — or the harness's `e_fire_*` id family) that woke the agent into them. A
 page never cuts inside a block, so a page can never hold a call without its
 result, or half of what the UI collapses as one group.
 
@@ -243,8 +244,8 @@ type TailItem = { entry_id, message?: AgentMessage, custom?: { custom_type, data
 // function-calling assistant entry, the results answering ITS calls, and the
 // wake entries come back whole; every other entry of the run is
 // `elided: true`: text blocks kept, thinking dropped, function_call keeps
-// id + function_id with arguments: {} (agent_trigger keeps its string
-// function + description label, payload dropped), function_result keeps
+// id + function_id with arguments: {} (the harness's agent_call wrapper keeps
+// its string function + description label, payload dropped), function_result keeps
 // function_call_id + is_error with content: [] and details: null.
 { session_id, limit?, before_entry_id?, until_entry_id?, include_custom?, include_image_data? }
   -> { messages: TailItem[] /* oldest first */, has_more, oldest_entry_id? }
@@ -264,8 +265,8 @@ scroll, `messages-tail { limit: 25, before_entry_id: oldest_entry_id }` while
 `has_more`; on *show all* of a collapsed group, `messages-range` over the
 group's first..last entry ids and replace the placeholders in place (same
 entry ids, same call ids); for a call a renderer must draw even while
-collapsed, `messages-range { entry_ids }`. Live `session::message-added`
-events keep appending at the tail as before.
+collapsed, `messages-range { entry_ids }`. Live `session::on-message-added`
+events keep appending at the tail.
 
 ### Branching
 
@@ -276,7 +277,7 @@ events keep appending at the tail as before.
 // active leaf = the copy of entry_id. The compaction record's
 // tail_start_entry_id and a message_order record's after/moved ids are
 // rewritten to the copied entries' ids. Fully independent
-// afterwards. Fires session::created (with forked_from). title defaults to the source's.
+// afterwards. Calls session::on-created (with forked_from). title defaults to the source's.
 { session_id, entry_id, title? } -> { session_id, meta }
 
 // session::set-active-leaf — branch switch: the active path now ends here;
@@ -341,48 +342,62 @@ copies its original and `delete-attachment` refuses it.
 
 ## 5. Reactive integration
 
-### The six trigger types
+### The six event functions
 
-Bind with the standard two-step pattern — register a handler function, then
-register a trigger of the type with a `config` filter:
+Every mutation calls the event function for what changed. Each one is
+private (only session-manager calls it) and its handler returns the event it
+is called with, so an observer receives the event. Observe one with a handler
+function and filters:
 
 ```typescript
 iii.registerFunction("ui::on-message-updated", async (evt) => render(evt));
-iii.registerTrigger({
-  type: "session::message-updated",
-  function_id: "ui::on-message-updated",
-  config: { session_id: "s_123", roles: ["assistant"] },
-});
+iii.observe(
+  {
+    function_id: "session::on-message-updated",
+    filters: {
+      "input.session_id": { $eq: "s_123" },
+      "input.message.role": { $in: ["assistant"] },
+    },
+    deliver: "output",
+  },
+  "ui::on-message-updated",
+);
 ```
 
-| Trigger type | Fires when | Config filters | Payload |
+The functions take no args: an observer that passes args gets
+`INVALID_ARGS`. session-manager calls a function only while something
+observes it, and iii delivers each call to every observer whose filters
+match.
+
+| Function | Called when | Filter on | Event |
 |---|---|---|---|
-| `session::created` | create / ensure-created / fork | `metadata?` | `{ session_id, title, description, status, forked_from?, created_at }` |
-| `session::message-added` | an entry was appended | `session_id?`, `roles?`, `metadata?` | `{ session_id, entry_id, parent_id, message?, custom?, origin?, timestamp }` |
-| `session::message-updated` | a message's content changed | `session_id?`, `roles?`, `metadata?` | `{ session_id, entry_id, message, revision, origin?, timestamp }` |
-| `session::status-changed` | status actually changed | `session_id?`, `metadata?` | `{ session_id, status, previous_status, status_reason?, timestamp }` |
-| `session::meta-updated` | title/description/metadata changed | `session_id?`, `metadata?` | `{ session_id, title, description, metadata?, timestamp }` |
-| `session::deleted` | session removed | `session_id?`, `metadata?` | `{ session_id, timestamp }` |
+| `session::on-created` | create / ensure-created / fork | `input.session_id`, `input.session_metadata.<key>` | `{ session_id, title, description, status, forked_from?, created_at, session_metadata? }` |
+| `session::on-message-added` | an entry was appended | `input.session_id`, `input.message.role`, `input.session_metadata.<key>` | `{ session_id, entry_id, parent_id, message?, custom?, origin?, timestamp, session_metadata? }` |
+| `session::on-message-updated` | a message's content changed | `input.session_id`, `input.message.role`, `input.session_metadata.<key>` | `{ session_id, entry_id, message, revision, origin?, timestamp, session_metadata? }` |
+| `session::on-status-changed` | status (or its reason) actually changed | `input.session_id`, `input.session_metadata.<key>` | `{ session_id, status, previous_status, status_reason?, timestamp, session_metadata? }` |
+| `session::on-meta-updated` | title/description/metadata changed | `input.session_id`, `input.session_metadata.<key>` | `{ session_id, title, description, metadata?, timestamp, session_metadata? }` |
+| `session::on-deleted` | session removed | `input.session_id`, `input.session_metadata.<key>` | `{ session_id, timestamp, session_metadata? }` |
 
-Filter semantics (all supplied filters must hold — AND):
+Filters (iii's filter language; every clause must hold):
 
-- `session_id` — exact match.
-- `roles` — the event's message role must be in the list. Custom *entries*
-  have no role and never match; `roles: ["custom"]` matches custom
-  *messages* only.
-- `metadata` — subset-equality against the session's `metadata` (deep JSON
-  equality per key). The tenancy filter: bind `{ metadata: { owner: "u_1" } }`
-  and you only ever see that owner's sessions — including `deleted` events
-  (evaluated against the metadata as of deletion) and `meta-updated` events
-  (evaluated against the post-update metadata).
-- **Malformed configs are rejected at registration** (unknown keys, `roles`
-  on status events, `session_id` on `created`, invalid role values). If your
-  binding registered, your filter is live.
+- `input.session_id` — `{ $eq: "s_123" }` for one session.
+- `input.message.role` — `{ $in: ["assistant"] }`: the event's message role
+  must be in the list. Custom *entries* carry `custom` and no `message`, so
+  they never match; `{ $in: ["custom"] }` matches custom *messages* only.
+- `input.session_metadata.<key>` — `session_metadata` is the session's
+  `metadata` as of the mutation, omitted when the session has none. The
+  tenancy filter: observe with `{ "input.session_metadata.owner": { $eq: "u_1" } }`
+  and you only ever see that owner's sessions — including
+  `session::on-deleted` events (the metadata as of deletion) and
+  `session::on-meta-updated` events (the post-update metadata). `$eq` is
+  deep JSON equality; use one clause per key.
+- An observer with no filters receives every event of the function.
 
 ### Delivery semantics — what you must build for
 
-- **At-least-once, unordered, fire-and-forget.** Never rely on arrival
-  order or exactly-once.
+- **Fire-and-forget and unordered.** Never rely on arrival order or
+  exactly-once: an event can be lost, and a store reload replays the
+  current state, so the same entry can arrive again.
 - Reconcile **message content** by `revision`: events carry full message
   snapshots; keep the highest revision per `entry_id`, drop the rest.
 - Reconcile **transcript order** by `parent_id` chains (or just re-fetch
@@ -395,7 +410,7 @@ Filter semantics (all supplied filters must hold — AND):
 
 ## 6. Error contract
 
-| Code | Meaning / typical trigger |
+| Code | Meaning / typical cause |
 |---|---|
 | `session/not_found` | Unknown `session_id` on any mutation or path-read. |
 | `session/entry_not_found` | Unknown `entry_id` (`update_message`, `fork`, `set_active_leaf`, `messages.from_entry_id`). |
@@ -417,28 +432,28 @@ Not errors: `get` / `get_message` return `null` for unknown ids;
 
 ```mermaid
 sequenceDiagram
-  participant UI as consumer (bound once)
+  participant UI as consumer (observes once)
   participant D as driver (harness)
   participant S as session-manager
   D->>S: session::create / ensure
-  S-->>UI: session::created
+  S-->>UI: session::on-created
   D->>S: append (user message, entry_id = idempotency key)
-  S-->>UI: message-added (user)
+  S-->>UI: on-message-added (user)
   D->>S: set_status working
-  S-->>UI: status-changed (working)
+  S-->>UI: on-status-changed (working)
   D->>S: append (assistant message, empty content)
-  S-->>UI: message-added (assistant)
+  S-->>UI: on-message-added (assistant)
   loop tokens arrive (batch/throttle as you like)
     D->>S: update_message (full content so far)
-    S-->>UI: message-updated (revision n)
+    S-->>UI: on-message-updated (revision n)
   end
   D->>S: set_status done
-  S-->>UI: status-changed (done)
+  S-->>UI: on-status-changed (done)
 ```
 
-The consumer renders the growing assistant message from `message-updated`
-snapshots (highest revision wins) and drives its spinner purely from
-`status-changed`.
+The consumer renders the growing assistant message from
+`session::on-message-updated` snapshots (highest revision wins) and drives
+its spinner purely from `session::on-status-changed`.
 
 ### Surviving redelivery (durable writers)
 
@@ -453,8 +468,9 @@ concurrent edits to one entry, use `expected_revision` and treat
 ### Multi-tenancy
 
 Put the tenancy keys in `metadata` at create/ensure time
-(`{ owner, channel, ... }`), filter `session::list` and every trigger
-binding with the same keys, and remember `set_meta` **replaces** metadata —
+(`{ owner, channel, ... }`), filter `session::list` (`metadata`) and every
+observer (`input.session_metadata.<key>`) with the same keys, and remember
+`set_meta` **replaces** metadata —
 writers must send the full object, not a delta.
 
 ### Branching and what-if exploration
@@ -486,21 +502,22 @@ flowchart LR
   appA[consumers on engine A] --> smA["session-manager A (bridge)"]
   appB[consumers on engine B] --> smB["session-manager B (bridge)"]
   appM[consumers on main engine] --> smM["session-manager MAIN (fs)"]
-  smA -->|"session::store::* + publish_events"| smM
-  smB -->|"session::store::* + publish_events"| smM
-  smM -->|"session::store::events feed"| smA
-  smM -->|"session::store::events feed"| smB
+  smA -->|"session::store::* + publish-events"| smM
+  smB -->|"session::store::* + publish-events"| smM
+  smM -->|"observed session::store::on-events"| smA
+  smM -->|"observed session::store::on-events"| smB
 ```
 
 What integrators must know (the API does not change):
 
-- Call your **local** `session::*` functions and bind your **local** trigger
-  types, regardless of topology. Identical surface everywhere.
+- Call your **local** `session::*` functions and observe your **local**
+  `session::on-*` functions, regardless of topology. Identical surface
+  everywhere.
 - The main is the single fan-out point: a mutation made on any instance
-  reaches **every** instance's subscribers (originator included) exactly
-  once, with each instance applying its own binding filters. A bridged
-  originator's own subscribers hear events after the round trip through the
-  main — same at-least-once contract, slightly higher latency.
+  calls **every** instance's event functions (originator included) once,
+  and each engine applies its own observers' filters. A bridged originator's
+  own observers receive events after the round trip through the main — the
+  same delivery contract, slightly higher latency.
 - If the main is unreachable, bridged **mutations fail** with
   `session/storage` (reads too). Treat as retryable.
 - `session::store::*` (the raw protocol the bridge rides on, fs-mode
@@ -541,8 +558,8 @@ The integration the spec was designed around:
 - **Sub-agent linkage** is a metadata convention, not API:
   `metadata: { parent_session_id, parent_turn_id, function_call_id, depth }`
   on the child session; reconstruct the tree with `list { metadata }`
-  filters; render a child live by binding `message-updated` with that
-  metadata filter.
+  filters; render a child live by observing `session::on-message-updated`
+  with a filter on `input.session_metadata.parent_session_id`.
 - **Status is yours**: only the driver flips it; same-status calls are
   no-ops, so blind `set_status working` at turn start is safe.
 - **Agent exposure**: deny all mutations, `session::store::*`, and the

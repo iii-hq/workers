@@ -11,8 +11,8 @@
 //!   url/timeout) rebuilds a fresh [`SessionRuntime`] and swaps it in under a
 //!   write lock; a failed build keeps the previous runtime (last-good) and is
 //!   recorded for `session::config-status`. After a successful swap the new
-//!   store's state is replayed through the trigger fan-out (see
-//!   [`resync`](crate::resync)) so subscribers stay real-time.
+//!   store's state is replayed through the `session::on-*` event functions
+//!   (see [`resync`](crate::resync)) so observers stay real-time.
 //! - The two list limits (`default_list_limit` / `max_list_limit`) are per-call
 //!   tuning knobs. When only they change, the shared [`ConfigCell`] snapshot is
 //!   swapped without rebuilding the runtime; `SessionService` reads it per
@@ -27,8 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
@@ -62,6 +61,9 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "session::on-config-change";
+/// The configuration worker's change event, observed by
+/// [`register_config_observer`].
+const CONFIG_ON_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_STATUS_FN_ID: &str = "session::config-status";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
@@ -69,7 +71,7 @@ const CONFIG_RETRIES: u32 = 3;
 /// number for a linear backoff (250ms, 500ms, …).
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
-/// Shared worker state the function handlers and the config-change trigger read.
+/// Shared worker state the function handlers and the config-change handler read.
 /// `runtime` is the live, swappable storage + event plumbing; the rest is the
 /// machinery to rebuild it on a config change.
 #[derive(Clone)]
@@ -78,7 +80,7 @@ pub struct AppState {
     /// reload path swaps a freshly-built runtime in under the write lock.
     pub runtime: Arc<RwLock<SessionRuntime>>,
     /// Boot-time wiring `build_runtime` reuses on every rebuild (engine handle,
-    /// subscriber sets, bridge registry, shared config snapshot).
+    /// shared config snapshot).
     pub ctx: Arc<SessionBuildContext>,
     /// Serializes reloads: held across the authoritative fetch + build + swap so
     /// an older event's slow build can never clobber a newer applied config.
@@ -177,7 +179,7 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -232,7 +234,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// service/transport failure (`function_not_found`/`statement_not_found`)
 /// propagates as an error instead of seeding over a stored value.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -247,8 +249,9 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
 /// shared snapshot the service reads per call — no store/sink rebuild. When the
 /// adapter changed, builds a new [`SessionRuntime`] (a failed build returns
 /// `Err` and leaves the running runtime untouched), swaps it in, then replays
-/// the new store's state through the trigger fan-out so subscribers stay live;
-/// the previous bridge connection, if any, is shut down afterward.
+/// the new store's state through the `session::on-*` event functions so
+/// observers stay live; the previous bridge relay and connection, if any, are
+/// retired afterward.
 ///
 /// MUST only be called from [`reload_serialized`] (i.e. while holding
 /// `reload_lock`): the build happens before the swap, so an unserialized caller
@@ -295,26 +298,25 @@ pub async fn apply_runtime(state: &AppState, cfg: WorkerConfig) -> Result<(), St
         std::mem::replace(&mut *guard, new_runtime)
     };
 
-    match crate::resync::resync_triggers(&old_metas, new_store.as_ref(), new_emitter.as_ref()).await
+    match crate::resync::resync_observers(&old_metas, new_store.as_ref(), new_emitter.as_ref())
+        .await
     {
         Ok(stats) => tracing::info!(
             sessions = stats.sessions,
             entries = stats.entries,
             deleted = stats.deleted,
             events = stats.events,
-            "adapter hot-reloaded; replayed store state to subscribers"
+            "adapter hot-reloaded; replayed store state to observers"
         ),
         Err(e) => tracing::warn!(
             error = %e,
-            "adapter hot-reloaded but trigger resync failed; subscribers may be stale until the next mutation"
+            "adapter hot-reloaded but the observer resync failed; observers may be stale until the next mutation"
         ),
     }
 
-    // Retire the previous bridge connection (if any) after the resync so any
-    // in-flight reads on it have drained.
-    if let Some(remote) = old_runtime.bridge_remote.clone() {
-        remote.shutdown_async().await;
-    }
+    // Retire the previous bridge relay and connection (if any) after the
+    // resync so any in-flight reads on it have drained.
+    old_runtime.close_bridge().await;
     drop(old_runtime);
     Ok(())
 }
@@ -361,10 +363,11 @@ where
     }
 }
 
-/// Internal `session::on-config-change` trigger payload. The handler re-fetches
-/// the authoritative configuration, so this carries only the (advisory)
-/// configuration id; a struct (not `Value`) keeps the request schema concrete
-/// and unknown fields are ignored.
+/// The `configuration::on-updated` event, delivered to the internal
+/// `session::on-config-change` handler as output. The handler re-fetches the
+/// authoritative configuration, so it reads only the (advisory) configuration
+/// id; a struct (not `Value`) keeps the request schema concrete and unknown
+/// fields are ignored.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
     /// Configuration id that changed (advisory; the handler re-fetches the value).
@@ -384,10 +387,13 @@ pub struct OnConfigChangeResponse {
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigStatusRequest {}
 
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger. On `configuration:updated` the handler rebuilds and swaps the
-/// runtime (or just the list limits) from the authoritative value.
-pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), Error> {
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` with it, filtered to this worker's entry and to
+/// `configuration:updated`. On each update the handler rebuilds and swaps the
+/// runtime (or just the list limits) from the authoritative value. The
+/// observer stays `pending` while the configuration worker's function is not
+/// registered, and lives as long as the worker's connection.
+pub fn register_config_observer(iii: &IIIClient, state: AppState) {
     let st = state.clone();
     iii.register_function(
         CONFIG_FN_ID,
@@ -406,15 +412,17 @@ pub fn register_config_trigger(iii: &IIIClient, state: AppState) -> Result<(), E
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    // `configuration::*` resolves to `default` like a call; dropping the handle
+    // does not dispose the observer.
+    iii.observe(
+        Source::function(CONFIG_ON_UPDATED_FN)
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
 }
 
 /// Register `session::config-status`, reporting the last hot-reload outcome so
@@ -446,7 +454,7 @@ pub fn register_config_status(iii: &IIIClient, state: AppState) {
 
 /// Reload from the AUTHORITATIVE configuration.
 ///
-/// The caller-supplied trigger payload is intentionally ignored:
+/// The delivered event is intentionally ignored:
 /// `session::on-config-change` is a discoverable bus function, so trusting
 /// `payload.new_value` would let any caller inject arbitrary config without
 /// updating persisted state. Re-fetch the stored value via `configuration::get`
@@ -457,7 +465,7 @@ async fn on_config_change(state: &AppState) -> Result<(), String> {
         .map(|_| ())
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -465,8 +473,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -544,7 +552,6 @@ mod tests {
 
     use super::*;
     use crate::config::{BridgeBackendConfig, FsBackendConfig, StorageAdapter};
-    use crate::events::{BridgeSubscribers, TriggerSets};
 
     const TEST_URL: &str = "ws://127.0.0.1:59611";
 
@@ -561,8 +568,6 @@ mod tests {
         let ctx = Arc::new(SessionBuildContext {
             iii,
             local_url: TEST_URL.to_string(),
-            sets: TriggerSets::new(),
-            bridge_subscribers: BridgeSubscribers::new(),
             config_cell,
         });
         let runtime = build_runtime(&cfg, &ctx).expect("build fs runtime");

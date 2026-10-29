@@ -2,8 +2,8 @@
 Feature: session::append-many — append several message entries in order
 
   Contract (session-manager.md § session::append-many): messages are
-  appended in request order, each chained to the previous; one
-  session::message-added fires per entry, in order; the response carries
+  appended in request order, each chained to the previous;
+  session::on-message-added is called once per entry, in order; the response carries
   every entry id plus last_entry_id; the batch is NOT idempotent (use
   session::append with entry_id where redelivery is possible).
 
@@ -13,10 +13,7 @@ Feature: session::append-many — append several message entries in order
   # Prevents: batch order scrambling — a user/assistant exchange written
   # out of order corrupts the conversation for every consumer.
   Scenario: a batch preserves order and chains the parent links
-    Given a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-message-added" delivering to "ui::recv"
     When I call "session::append-many" with:
       """
       { "session_id": "s_001", "messages": [
@@ -29,7 +26,7 @@ Feature: session::append-many — append several message entries in order
     Then the call succeeds
     And the response field "entry_ids" is ["e_001","e_002","e_003"]
     And the response field "last_entry_id" is "e_003"
-    And function "ui::recv" received 3 "session::message-added" deliveries
+    And function "ui::recv" received 3 "session::on-message-added" deliveries
     And delivery 0 to "ui::recv" has "entry_id" = "e_001"
     And delivery 0 to "ui::recv" has "parent_id" = null
     And delivery 1 to "ui::recv" has "entry_id" = "e_002"

@@ -105,7 +105,7 @@ impl Clock for SystemClock {
 type ServiceResult<T> = Result<(T, Vec<EmittableEvent>), SessionError>;
 
 /// Wrap a config value in a fresh, standalone [`ConfigCell`] (not shared with
-/// a configuration-change trigger). Used by the non-production constructors.
+/// the configuration-change handler). Used by the non-production constructors.
 fn new_config_cell(cfg: &WorkerConfig) -> ConfigCell {
     Arc::new(RwLock::new(Arc::new(cfg.clone())))
 }
@@ -115,7 +115,7 @@ pub struct SessionService {
     ids: Arc<dyn IdGen>,
     clock: Arc<dyn Clock>,
     /// Hot-swappable config snapshot shared with the configuration-change
-    /// trigger; `list` / `messages` read the current list limits per call so
+    /// handler; `list` / `messages` read the current list limits per call so
     /// a `configuration::set` of the limits applies without a restart.
     config: ConfigCell,
     /// Per-session mutation locks. Entries are kept for the worker
@@ -130,7 +130,7 @@ impl SessionService {
     }
 
     /// Production constructor: shares the hot-swappable [`ConfigCell`] with the
-    /// configuration-change trigger, so a live `configuration::set` of the
+    /// configuration-change handler, so a live `configuration::set` of the
     /// list limits is picked up without a restart.
     pub fn with_config_cell(store: Arc<dyn SessionStore>, config: ConfigCell) -> Self {
         Self::with_parts_cell(store, Arc::new(UuidIds), Arc::new(SystemClock), config)
@@ -403,7 +403,7 @@ impl SessionService {
 
         // Deliberately no `updated_at` bump and no event: drafts are saved at
         // keystroke cadence, and a save must neither re-order `session::list`
-        // nor spam meta-updated subscribers. Consumers read the draft back
+        // nor spam `session::on-meta-updated` observers. Consumers read the draft back
         // from `session::get` / `session::list`.
         meta.draft = draft;
         meta.draft_attachments = draft_attachments;
@@ -1168,7 +1168,7 @@ impl SessionService {
 
     /// Store original bytes for a session. Event-silent: the attachment
     /// surfaces through the message that embeds the returned `file` block,
-    /// and that append fires `session::message-added` on its own.
+    /// and that append calls `session::on-message-added` on its own.
     pub async fn put_attachment(
         &self,
         req: PutAttachmentRequest,
@@ -1607,7 +1607,7 @@ fn referenced_attachment_ids(path: &[&SessionEntry]) -> Vec<String> {
     ids
 }
 
-/// The `session::created` event for a session's metadata. Shared with the
+/// The `session::on-created` event for a session's metadata. Shared with the
 /// post-reload [`resync`](crate::resync) replay so a swap re-announces sessions
 /// through the exact event shape a real create fires.
 pub(crate) fn created_event(meta: &SessionMeta) -> EmittableEvent {

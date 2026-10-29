@@ -1,37 +1,38 @@
 @pure
-Feature: trigger binding configs — the per-subscriber filter contract
+Feature: observer filters — what each observer of a session event receives
 
-  Contract (session-manager.md § Triggers): the emitting worker
-  evaluates each binding's config — session_id equality, roles
-  membership (message events only), and metadata subset-equality
-  against SessionMeta.metadata (the tenancy hook). Malformed configs
-  are rejected AT REGISTRATION so a typo'd filter fails loudly instead
-  of silently receiving nothing (or everything).
+  Contract (session-manager.md § Reactivity model): the six session::on-*
+  event functions take no args. iii applies each observer's filters to
+  every call: input.session_id, input.message.role (message events) and
+  input.session_metadata.<key>. Every event carries session_metadata, the
+  session's SessionMeta.metadata (the tenancy hook), so a tenant filter
+  needs no lookup. The worker calls an event function only while
+  something observes it.
 
-  These scenarios drive the same SubscriberSet/Emitter code the engine
-  routes registrations through in production.
+  These scenarios drive the production Emitter; the scenario's recorder
+  applies each observer's filters with iii's filter language.
 
   # Prevents: a per-session chat view receiving every other session's
   # messages.
-  Scenario: session_id filters message events to one session
+  Scenario: an input.session_id filter selects one session's message events
     Given a bare session
     And a bare session
-    And a binding "b1" on "session::message-added" delivering to "ui::s1" with config:
+    And an observer "b1" of "session::on-message-added" delivering to "ui::s1" with filters:
       """
-      { "session_id": "s_001" }
+      { "input.session_id": { "$eq": "s_001" } }
       """
     When I append a user message "mine" to "s_001"
     And I append a user message "other" to "s_002"
     Then function "ui::s1" received 1 delivery
     And delivery 0 to "ui::s1" has "session_id" = "s_001"
 
-  # Prevents: a roles=["assistant"] live-render binding receiving user
+  # Prevents: a live-render observer of assistant messages receiving user
   # messages or custom entries.
-  Scenario: roles filters to matching roles and never matches custom entries
+  Scenario: a role filter selects matching roles and never matches custom entries
     Given a bare session
-    And a binding "b1" on "session::message-added" delivering to "ui::assistant" with config:
+    And an observer "b1" of "session::on-message-added" delivering to "ui::assistant" with filters:
       """
-      { "roles": ["assistant"] }
+      { "input.message.role": { "$in": ["assistant"] } }
       """
     When I append a user message "q" to "s_001"
     And I append an empty assistant message to "s_001"
@@ -40,13 +41,13 @@ Feature: trigger binding configs — the per-subscriber filter contract
     And delivery 0 to "ui::assistant" has "message.role" = "assistant"
 
   # Prevents: confusing role:"custom" MESSAGES (transcript items) with
-  # kind:"custom" ENTRIES (bookkeeping) — a roles=["custom"] binding
-  # matches the former, never the latter.
-  Scenario: roles custom matches custom messages but not custom entries
+  # kind:"custom" ENTRIES (bookkeeping) — a role filter on "custom"
+  # matches the former, never the latter (custom entries carry no message).
+  Scenario: a custom role filter matches custom messages but not custom entries
     Given a bare session
-    And a binding "b1" on "session::message-added" delivering to "ui::custom" with config:
+    And an observer "b1" of "session::on-message-added" delivering to "ui::custom" with filters:
       """
-      { "roles": ["custom"] }
+      { "input.message.role": { "$in": ["custom"] } }
       """
     When I call "session::append" with:
       """
@@ -57,10 +58,9 @@ Feature: trigger binding configs — the per-subscriber filter contract
     Then function "ui::custom" received 1 delivery
     And delivery 0 to "ui::custom" has "message.custom_type" = "notice"
 
-  # Prevents: multi-tenant leaks on message events — the metadata filter
-  # must consult the session's metadata, which the payload itself does
-  # not carry.
-  Scenario: metadata filters message events by the session's metadata
+  # Prevents: multi-tenant leaks on message events — the event must carry
+  # the session's metadata for a tenant filter to match on.
+  Scenario: a session_metadata filter selects message events by the session's metadata
     Given a session created with:
       """
       { "metadata": { "owner": "u_1" } }
@@ -69,23 +69,36 @@ Feature: trigger binding configs — the per-subscriber filter contract
       """
       { "metadata": { "owner": "u_2" } }
       """
-    And a binding "b1" on "session::message-added" delivering to "obs::u1" with config:
+    And an observer "b1" of "session::on-message-added" delivering to "obs::u1" with filters:
       """
-      { "metadata": { "owner": "u_1" } }
+      { "input.session_metadata.owner": { "$eq": "u_1" } }
       """
     When I append a user message "mine" to "s_001"
     And I append a user message "other" to "s_002"
     Then function "obs::u1" received 1 delivery
     And delivery 0 to "obs::u1" has "session_id" = "s_001"
+    And delivery 0 to "obs::u1" has "session_metadata.owner" = "u_1"
+
+  # Prevents: a session without metadata delivering a session_metadata
+  # field that a filter could mistake for a match.
+  Scenario: an event of a session without metadata carries no session_metadata
+    Given a bare session
+    And an observer "b1" of "session::on-message-added" delivering to "obs::all"
+    When I append a user message "plain" to "s_001"
+    Then function "obs::all" received 1 delivery
+    And delivery 0 to "obs::all" has no field "session_metadata"
 
   # Prevents: AND-semantics regressions — all supplied filters must hold
   # simultaneously, not any-of.
-  Scenario: combined session_id and roles must both match
+  Scenario: combined session_id and role filters must both match
     Given a bare session
     And a bare session
-    And a binding "b1" on "session::message-added" delivering to "ui::combo" with config:
+    And an observer "b1" of "session::on-message-added" delivering to "ui::combo" with filters:
       """
-      { "session_id": "s_001", "roles": ["assistant"] }
+      {
+        "input.session_id": { "$eq": "s_001" },
+        "input.message.role": { "$in": ["assistant"] }
+      }
       """
     When I append an empty assistant message to "s_002"
     And I append a user message "wrong role" to "s_001"
@@ -93,76 +106,41 @@ Feature: trigger binding configs — the per-subscriber filter contract
     When I append an empty assistant message to "s_001"
     Then function "ui::combo" received 1 delivery
 
-  # Prevents: one matching event fanning out to only one of several
-  # matching bindings (each binding is independent, even to the same
-  # function).
-  Scenario: every matching binding receives its own delivery
+  # Prevents: one matching event reaching only one of several matching
+  # observers (each observer is independent, even with the same target).
+  Scenario: every matching observer receives its own delivery
     Given a bare session
-    And a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
+    And an observer "b1" of "session::on-message-added" delivering to "ui::recv"
+    And an observer "b2" of "session::on-message-added" delivering to "ui::recv" with filters:
       """
-      {}
-      """
-    And a binding "b2" on "session::message-added" delivering to "ui::recv" with config:
-      """
-      { "session_id": "s_001" }
+      { "input.session_id": { "$eq": "s_001" } }
       """
     When I append a user message "fan out" to "s_001"
     Then function "ui::recv" received 2 deliveries
+    And "session::on-message-added" was called 1 time
 
-  # Prevents: unregistered bindings continuing to receive events.
-  Scenario: an unbound subscriber stops receiving
+  # Prevents: disposed observers continuing to receive events.
+  Scenario: a disposed observer stops receiving
     Given a bare session
-    And a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
-      """
-      {}
-      """
+    And an observer "b1" of "session::on-message-added" delivering to "ui::recv"
     Given a user message "before" appended to "s_001"
-    When I unbind "b1" from "session::message-added"
+    When I dispose observer "b1"
     And I append a user message "after" to "s_001"
     Then function "ui::recv" received 1 delivery
 
-  # Prevents: typo'd configs silently registering and then matching
-  # nothing — the classic "why is my UI not updating" failure.
-  Scenario: a config with an unknown field is rejected at registration
-    When I try to bind "bad" on "session::message-added" delivering to "x" with config:
-      """
-      { "sesion_id": "s_001" }
-      """
-    Then the binding registration fails mentioning "unknown field"
+  # Prevents: serializing every streaming delta for nobody — the worker
+  # calls an event function only while something observes it.
+  Scenario: an unobserved event function is never called
+    Given a bare session
+    And an observer "b1" of "session::on-status-changed" delivering to "ui::status"
+    When I append an empty assistant message to "s_001"
+    Then "session::on-message-added" was not called
+    And "session::on-created" was not called
+    And no deliveries were recorded
 
-  # Prevents: roles sneaking onto trigger types that have no role
-  # semantics.
-  Scenario: roles on status_changed is rejected
-    When I try to bind "bad" on "session::status-changed" delivering to "x" with config:
-      """
-      { "roles": ["assistant"] }
-      """
-    Then the binding registration fails mentioning "unknown field"
-
-  # Prevents: per-session filters sneaking onto session::created, which
-  # the spec defines as unfiltered (metadata aside).
-  Scenario: session_id on created is rejected
-    When I try to bind "bad" on "session::created" delivering to "x" with config:
-      """
-      { "session_id": "s_001" }
-      """
-    Then the binding registration fails mentioning "unknown field"
-
-  # Prevents: invalid role values registering as never-matching filters.
-  Scenario: an invalid role value is rejected
-    When I try to bind "bad" on "session::message-updated" delivering to "x" with config:
-      """
-      { "roles": ["robot"] }
-      """
-    Then the binding registration fails mentioning "invalid session::message-updated config"
-
-  # Prevents: null configs (engine default) being treated differently
-  # from {}.
-  Scenario: an empty config receives everything
-    Given a binding "b1" on "session::created" delivering to "obs::all" with config:
-      """
-      {}
-      """
+  # Prevents: an observer without filters missing events.
+  Scenario: an observer without filters receives everything
+    Given an observer "b1" of "session::on-created" delivering to "obs::all"
     When I call "session::create" with "{}"
     And I call "session::create" with:
       """
