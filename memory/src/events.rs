@@ -73,15 +73,43 @@ pub fn refuse_invocation(function_id: &str) -> Error {
     }
 }
 
+/// The event every `memory::on-item-changed` observer receives: exactly the
+/// `memory::item-changed` binding payload, `{event_type, bank, memory, reason?}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ItemChangedEvent {
+    /// `created`, `updated`, `superseded` or `deleted`.
+    pub event_type: String,
+    /// The bank the memory lives in.
+    pub bank: String,
+    /// The memory as it is after the change.
+    pub memory: Memory,
+    /// Why the change happened; present only when it carries one (e.g. a
+    /// consolidation supersede).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The event every `memory::on-bank-changed` observer receives: exactly the
+/// `memory::bank-changed` binding payload, `{event_type, bank}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BankChangedEvent {
+    /// What happened to the bank, e.g. `created` or `trashed`.
+    pub event_type: String,
+    /// The bank's name.
+    pub bank: String,
+}
+
 /// The handler of `memory::on-item-changed`: its events come only from the
-/// [`Emitter`].
-pub fn refuse_on_item_changed(_event: Value) -> Result<(), Error> {
+/// [`Emitter`]. Typed on the delivered event so the function publishes the
+/// event's schema.
+pub fn refuse_on_item_changed(_event: ItemChangedEvent) -> Result<(), Error> {
     Err(refuse_invocation(ON_ITEM_CHANGED))
 }
 
 /// The handler of `memory::on-bank-changed`: its events come only from the
-/// [`Emitter`].
-pub fn refuse_on_bank_changed(_event: Value) -> Result<(), Error> {
+/// [`Emitter`]. Typed on the delivered event so the function publishes the
+/// event's schema.
+pub fn refuse_on_bank_changed(_event: BankChangedEvent) -> Result<(), Error> {
     Err(refuse_invocation(ON_BANK_CHANGED))
 }
 
@@ -431,6 +459,42 @@ impl Emitter {
 mod tests {
     use super::*;
 
+    fn memory_fixture() -> Memory {
+        Memory {
+            id: "fp1".into(),
+            text: "t".into(),
+            entities: vec![],
+            tags: vec![],
+            confidence: crate::types::Confidence::Stated,
+            corroboration: 0,
+            pinned: false,
+            source: None,
+            created_at: 1,
+            updated_at: 1,
+            invalid_at: None,
+            superseded_by: None,
+            revision: 0,
+            stated_at: None,
+        }
+    }
+
+    /// The structs the on-* functions are typed on describe exactly what
+    /// the emitter delivers.
+    #[test]
+    fn delivered_payloads_are_the_typed_events() {
+        let m = memory_fixture();
+        let with = item_payload(ItemEvent::Superseded, "b", &m, Some("same fact"));
+        let event: ItemChangedEvent = serde_json::from_value(with.clone()).unwrap();
+        assert_eq!(event.reason.as_deref(), Some("same fact"));
+        assert_eq!(serde_json::to_value(&event).unwrap(), with);
+        let without = item_payload(ItemEvent::Created, "b", &m, None);
+        let event: ItemChangedEvent = serde_json::from_value(without.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&event).unwrap(), without);
+        let bank = json!({ "event_type": "trashed", "bank": "blog" });
+        let event: BankChangedEvent = serde_json::from_value(bank.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&event).unwrap(), bank);
+    }
+
     #[test]
     fn null_config_is_match_all() {
         assert!(parse_binding_config(&Value::Null).unwrap().bank.is_none());
@@ -463,22 +527,7 @@ mod tests {
 
     #[test]
     fn item_payload_carries_reason_only_when_given() {
-        let m = Memory {
-            id: "fp1".into(),
-            text: "t".into(),
-            entities: vec![],
-            tags: vec![],
-            confidence: crate::types::Confidence::Stated,
-            corroboration: 0,
-            pinned: false,
-            source: None,
-            created_at: 1,
-            updated_at: 1,
-            invalid_at: None,
-            superseded_by: None,
-            revision: 0,
-            stated_at: None,
-        };
+        let m = memory_fixture();
         let with = item_payload(ItemEvent::Superseded, "b", &m, Some("same fact"));
         assert_eq!(with["event_type"], "superseded");
         assert_eq!(with["bank"], "b");
@@ -542,17 +591,19 @@ mod tests {
     fn on_functions_refuse_direct_invocation() {
         assert_eq!(ON_ITEM_CHANGED, "memory::on-item-changed");
         assert_eq!(ON_BANK_CHANGED, "memory::on-bank-changed");
+        let item = ItemChangedEvent {
+            event_type: "created".into(),
+            bank: "b".into(),
+            memory: memory_fixture(),
+            reason: None,
+        };
+        let bank = BankChangedEvent {
+            event_type: "created".into(),
+            bank: "b".into(),
+        };
         for (function_id, refused) in [
-            (ON_ITEM_CHANGED, refuse_on_item_changed(json!({}))),
-            (
-                ON_ITEM_CHANGED,
-                refuse_on_item_changed(json!({ "event_type": "created", "bank": "b" })),
-            ),
-            (ON_BANK_CHANGED, refuse_on_bank_changed(Value::Null)),
-            (
-                ON_BANK_CHANGED,
-                refuse_on_bank_changed(json!({ "event_type": "created", "bank": "b" })),
-            ),
+            (ON_ITEM_CHANGED, refuse_on_item_changed(item)),
+            (ON_BANK_CHANGED, refuse_on_bank_changed(bank)),
         ] {
             let error = refused.unwrap_err();
             assert!(
@@ -637,22 +688,7 @@ mod tests {
         sets.banks
             .add_observer(&Value::Null, recording("banks", &tx))
             .unwrap();
-        let m = Memory {
-            id: "fp1".into(),
-            text: "t".into(),
-            entities: vec![],
-            tags: vec![],
-            confidence: crate::types::Confidence::Stated,
-            corroboration: 0,
-            pinned: false,
-            source: None,
-            created_at: 1,
-            updated_at: 1,
-            invalid_at: None,
-            superseded_by: None,
-            revision: 0,
-            stated_at: None,
-        };
+        let m = memory_fixture();
         emitter
             .item_with(ItemEvent::Superseded, "b", &m, Some("same fact"))
             .await;
