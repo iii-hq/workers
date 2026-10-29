@@ -1,31 +1,48 @@
 # memory-consolidate
 
-Scheduled hygiene sibling of the [`memory`](https://github.com/iii-hq/workers/tree/main/memory) worker. Finds near-duplicate memories in every bank and merges them: the duplicate retires with a `superseded_by` pointer (never a delete), the survivor absorbs the observation as corroboration. Strictly supersede-only through memory's public functions, pinned memories untouchable, every change visible as a `memory::item-changed` event. Install, stop, or remove it without touching stored memory.
+Scheduled hygiene sibling of the [`memory`](https://github.com/iii-hq/workers/tree/main/memory) worker. Finds near-duplicate memories in every bank and merges them: the duplicate retires with a `superseded_by` pointer (never a delete), the survivor absorbs the observation as corroboration. Strictly supersede-only through memory's public functions, pinned memories untouchable, every change visible as a `memory::on-item-changed` event. Install, stop, or remove it without touching stored memory.
 
 ## Install
 
 ```
-iii trigger compose::add worker=memory-consolidate
+iii call compose::add worker=memory-consolidate
 ```
 
-Requires the `memory` worker. Scheduling reuses the engine's cron trigger infrastructure: an hourly heartbeat binds `memory-consolidate::on-tick`, and the tick runs a pass only when `interval_hours` (default 24) have elapsed since the last one — the last completed pass persists in the state worker. **Catch-up-on-boot**: a pass missed while this worker was down runs shortly after boot instead of waiting for the next heartbeat; a slim backstop loop also keeps the schedule alive on rigs with no cron trigger owner.
+Requires the `memory` worker. Scheduling reuses the cron worker: `memory-consolidate::on-tick` observes `cron::on-tick` with args `{ expression: "0 0 * * * *" }`, an hourly heartbeat, and the tick runs a pass only when `interval_hours` (default 24) have elapsed since the last one — the last completed pass persists in the state worker. **Catch-up-on-boot**: a pass missed while this worker was down runs shortly after boot instead of waiting for the next heartbeat; a slim backstop loop also keeps the schedule alive on rigs without the cron worker.
 
 ## Quickstart
 
 Plan without writing, then look at what a pass would do:
 
 ```bash
-iii trigger memory-consolidate::run dry_run=true
-iii trigger memory-consolidate::status
+iii call memory-consolidate::run dry_run=true
+iii call memory-consolidate::status
 ```
 
 Apply for one bank only:
 
 ```bash
-iii trigger memory-consolidate::run bank=blog
+iii call memory-consolidate::run bank=blog
 ```
 
 The report names every group: the surviving memory, the retired duplicates, and anything skipped because it is pinned. The retired records stay on disk and remain queryable with `include_superseded: true`.
+
+## Functions
+
+| Function | Input | What it does |
+|---|---|---|
+| `memory-consolidate::run` | `{ bank?, dry_run? }` | One consolidation pass now, over every configured bank or one bank; returns the per-bank report |
+| `memory-consolidate::status` | `{}` | The schedule and the last pass: `enabled`, `interval_hours`, `last_run`, `due`, the latest per-bank results |
+| `memory-consolidate::on-tick` | the `cron::on-tick` event | Internal: the schedule heartbeat |
+| `memory-consolidate::on-config-change` | the `configuration::on-updated` event | Internal: hot-reloads the configuration |
+
+The worker hosts no observable events of its own: every change it makes is a `memory::on-item-changed` call of the memory worker. It observes:
+
+- `cron::on-tick` with args `{ expression: "0 0 * * * *" }`, target `memory-consolidate::on-tick`;
+- `configuration::on-updated`, filtered on its own entry id and `configuration:updated`, target `memory-consolidate::on-config-change`;
+- `http::on-request` with args `{ method: "POST", path }` for `run` and `status` (`POST /memory-consolidate/run`, `POST /memory-consolidate/status`), so both double as REST routes through the http worker.
+
+Each observer stays `pending` until its function registers, so the cron, configuration and http workers can boot in any order.
 
 ## Configuration
 
@@ -48,7 +65,7 @@ Fail-soft: an unavailable router just skips the tier (named in the report's `not
 - **supersede**: a state change ("moved to", "switched to", a rescheduled date). The outdated record retires in favour of the current one, which is the one stated last.
 - **nothing**: distinct facts on one topic (two allergies, two projects). This is the normal answer.
 
-Every change goes through `memory::supersede` and carries the judge's one-sentence `reason` on memory's `item-changed` events. How it works:
+Every change goes through `memory::supersede` and carries the judge's one-sentence `reason` on memory's `memory::on-item-changed` events. How it works:
 
 - **Candidates.** Neighbours come from the raw lexical and raw semantic `memory::recall` arms, interleaved, because a fused rank buries the near-duplicate.
 - **Targets.** The judge may only pair a memory with one of its *own* candidates, through short per-batch aliases.
@@ -74,6 +91,6 @@ v1 is deterministic and deliberately conservative: two live memories merge only 
 
 ## Boundaries
 
-- Never touches memory's files; every mutation goes through `memory::supersede` (with `reinforce` on merges, so the survivor absorbs the duplicate's observations in the same call) — the same append-only, last-wins contract as everything else. Every change carries a `reason` on its `memory::item-changed` events.
+- Never touches memory's files; every mutation goes through `memory::supersede` (with `reinforce` on merges, so the survivor absorbs the duplicate's observations in the same call) — the same append-only, last-wins contract as everything else. Every change carries a `reason` on its `memory::on-item-changed` events.
 - Pinned memories are never superseded, even inside a duplicate group.
 - Not extraction (the memory worker captures), not recall, not rule management. One job: keep banks clean.

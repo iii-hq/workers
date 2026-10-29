@@ -6,7 +6,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -32,8 +32,8 @@ pub const STATUS_DESC: &str =
 
 pub const TICK_ID: &str = "memory-consolidate::on-tick";
 pub const TICK_DESC: &str =
-    "Internal: schedule heartbeat (cron trigger + boot catch-up backstop). Runs a pass only \
-     when interval_hours have elapsed since the last one.";
+    "Internal: schedule heartbeat (observer of cron::on-tick + boot catch-up backstop). Runs a \
+     pass only when interval_hours have elapsed since the last one.";
 
 const STATE_SCOPE: &str = "memory_consolidate";
 const STATE_LAST_RUN: &str = "last_run";
@@ -122,7 +122,7 @@ pub(crate) async fn state_get(iii: &IIIClient, key: &str) -> Option<Value> {
 /// `state_get` that tells a failed read (`Err`) from an absent value
 /// (`Ok(None)`), for state whose loss must not read as "start over".
 pub(crate) async fn state_try_get(iii: &IIIClient, key: &str) -> Result<Option<Value>, String> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::get".into(),
         payload: json!({ "scope": STATE_SCOPE, "key": key }),
         action: None,
@@ -134,7 +134,7 @@ pub(crate) async fn state_try_get(iii: &IIIClient, key: &str) -> Result<Option<V
 }
 
 pub(crate) async fn state_set(iii: &IIIClient, key: &str, value: Value) -> Result<(), String> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".into(),
         payload: json!({ "scope": STATE_SCOPE, "key": key, "value": value }),
         action: None,
@@ -275,15 +275,13 @@ pub async fn status(deps: &Deps, _req: StatusRequest) -> Result<StatusResponse, 
     })
 }
 
-/// The cron worker's tick payload (all advisory; the handler re-derives
+/// The `cron::on-tick` event (all advisory; the handler re-derives
 /// due-ness from persisted state). Typed so the published interface
 /// carries a real schema.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct TickInput {
     #[serde(default)]
-    pub trigger: Option<String>,
-    #[serde(default)]
-    pub job_id: Option<String>,
+    pub expression: Option<String>,
     #[serde(default)]
     pub scheduled_time: Option<String>,
     #[serde(default)]
@@ -296,7 +294,7 @@ pub struct TickResponse {
     pub ran: bool,
 }
 
-/// Heartbeat body shared by the cron trigger and the backstop loop: run a
+/// Heartbeat body shared by the cron observer and the backstop loop: run a
 /// pass only when due, serialized behind the run gate.
 pub async fn tick(deps: &Deps) -> Result<TickResponse, Error> {
     let cfg = deps.config().await;

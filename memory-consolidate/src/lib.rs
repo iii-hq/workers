@@ -3,7 +3,7 @@
 //! Deterministic near-duplicate dedup over live memories, applied strictly
 //! through the memory worker's public functions (`memory::supersede`, with
 //! `reinforce` on merges): supersede-only, pinned untouchable, audit via
-//! memory's own `memory::item-changed` events (each carrying a `reason`). Self-scheduled with catch-up-on-boot
+//! memory's own `memory::on-item-changed` events (each carrying a `reason`). Self-scheduled with catch-up-on-boot
 //! semantics: the last completed pass is persisted in the state worker, so
 //! a pass missed while the worker was down runs shortly after boot instead
 //! of waiting a full interval.
