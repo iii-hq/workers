@@ -12,7 +12,8 @@ defaults:
 
 # Event feeds are fixed trigger types, not configurable streams: bind
 # `codex::agent-event` (translated AgentEvent frames) or `codex::raw-event`
-# (verbatim Codex thread events) with { session_id }. The retired
+# (verbatim Codex thread events) with { session_id }, or on iii 0.25 observe
+# `codex::on-agent-event` / `codex::on-raw-event` with the same args. The retired
 # events_stream / raw_events_stream keys are ignored if still present.
 
 # Deliver the iii runtime context as Codex developer_instructions: teaches

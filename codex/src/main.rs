@@ -93,8 +93,9 @@ async fn main() -> Result<()> {
     }
     configuration::reconcile(&iii, &cell).await;
 
-    // Own the codex::agent-event / codex::raw-event trigger types before the
-    // first turn can emit.
+    // Own the codex::agent-event / codex::raw-event trigger types and their
+    // observable functions (codex::on-agent-event / codex::on-raw-event)
+    // before the first turn can emit.
     agent_feed::register(&iii);
     register_all(&iii, cell);
     tracing::info!("codex worker registered all functions, ready");

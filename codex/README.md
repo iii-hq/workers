@@ -1,6 +1,6 @@
 # codex
 
-OpenAI Codex as an iii worker: the Codex API exposed as functions and trigger types on the iii bus, nothing else. The worker spawns the same `codex` binary the user runs in their terminal, with the same login (ChatGPT or API key), the same filesystem, and the same sandbox. `codex::run` executes one headless turn and returns the result; the raw Codex thread events are delivered verbatim on the `codex::raw-event` trigger type, and a translated AgentEvent view on `codex::agent-event`, so the acp worker and any sibling worker observe a Codex run exactly like a native harness turn.
+OpenAI Codex as an iii worker: the Codex API exposed as functions and trigger types on the iii bus, nothing else. The worker spawns the same `codex` binary the user runs in their terminal, with the same login (ChatGPT or API key), the same filesystem, and the same sandbox. `codex::run` executes one headless turn and returns the result; the raw Codex thread events are delivered verbatim on the `codex::raw-event` trigger type, and a translated AgentEvent view on `codex::agent-event` (on iii 0.25 both are also observable as `codex::on-raw-event` / `codex::on-agent-event`), so the acp worker and any sibling worker observe a Codex run exactly like a native harness turn.
 
 ## Install
 
@@ -105,7 +105,7 @@ The worker drives the `codex exec --json` CLI, so anything the CLI exposes as a 
 
 Extra writable directories use the named `additional_directories` field (the CLI's `--add-dir`).
 
-And the full output side is available raw: every event Codex emits (`thread.started`, `turn.started`, `item.started/updated/completed` for commands, patches, MCP tool calls, web searches, reasoning, agent messages, `turn.completed` with usage, `turn.failed`) is delivered verbatim on the `codex::raw-event` trigger type. Consumers that want the exact Codex wire format bind `codex::raw-event`; consumers that want harness-shaped frames bind `codex::agent-event`. Same turn, two views.
+And the full output side is available raw: every event Codex emits (`thread.started`, `turn.started`, `item.started/updated/completed` for commands, patches, MCP tool calls, web searches, reasoning, agent messages, `turn.completed` with usage, `turn.failed`) is delivered verbatim on the `codex::raw-event` trigger type (observable as `codex::on-raw-event` on iii 0.25). Consumers that want the exact Codex wire format bind `codex::raw-event`; consumers that want harness-shaped frames bind `codex::agent-event` (or observe `codex::on-agent-event`). Same turn, two views.
 
 ## Event feeds
 
@@ -132,6 +132,21 @@ Your function gets one fire-and-forget call per frame:
 ```
 
 `seq` counts from 0 per feed and session within one `epoch` (a uuid minted per worker process, so a restart starts a new epoch); the two feeds count independently. Deliveries may arrive out of order: order by `(epoch, seq)` and dedup by `event_id`. The feeds are ephemeral: nothing is stored or replayed, and a binding made mid-turn only sees later frames. History lives in the session record (`codex::status`, `codex::sessions::list`) and in the `codex::run` result. A failing consumer never fails the turn. These trigger types replace the former `agent::events` / `codex::events` streams (see the guide "Migrate from iii-stream and pubsub").
+
+### Observable functions (iii 0.25)
+
+On an iii 0.25 engine each feed also has an owner-delivered observable function. A new consumer observes it instead of binding the trigger type:
+
+| Function | Next to | Carries |
+| --- | --- | --- |
+| `codex::on-agent-event` | `codex::agent-event` | translated AgentEvent frames |
+| `codex::on-raw-event` | `codex::raw-event` | every Codex thread event, verbatim |
+
+```js
+iii.observe({ function_id: 'codex::on-agent-event', args: { session_id: 'sess-1' } }, 'my-app::on-frame')
+```
+
+The args are the binding config, with the same rules (`session_id` required, non-empty, at most 512 characters; no other key but `metadata`, which is accepted and unused for observers). An observer is refused with `INVALID_ARGS` when they break them and with `OBSERVER_LIMIT` past 256 observers per function. Each observer of the session receives the payload above, the same `seq` a binding gets for that frame, through `obs.call` after the bindings; observer filters apply. A failing observer never fails the turn. Frames are routed inside the worker: invoking either function directly is refused with `FORBIDDEN`, so nobody can forge a frame. Both trigger types stay registered and unchanged, so existing bindings keep working on 0.24 and 0.25 engines; on a 0.24 engine the functions are plain functions that only refuse calls.
 
 ## Configuration
 

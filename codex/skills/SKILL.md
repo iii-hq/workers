@@ -33,7 +33,9 @@ anything onto this one.
 - Run long jobs without holding the call open: `codex::start` returns
   `{session_id, started}` immediately; bind `codex::raw-event` with
   `{ session_id }` for raw progress or `codex::agent-event` for the rendered
-  view (or poll `codex::status`); interrupt with `codex::stop`.
+  view (on iii 0.25 code can observe `codex::on-raw-event` /
+  `codex::on-agent-event` with the same args instead), or poll
+  `codex::status`; interrupt with `codex::stop`.
 - Act on the whole backend: turns carry the iii runtime context by default
   (delivered as Codex `developer_instructions`), so the agent discovers and
   calls any registered function through the iii CLI
@@ -83,3 +85,7 @@ anything onto this one.
 - `codex::status` — point-in-time session view: live flag, status, turns,
   usage.
 - `codex::sessions::list` — every session this worker has run.
+- `codex::on-agent-event` / `codex::on-raw-event` — observable functions
+  (iii 0.25) next to the two trigger types; observe one with args
+  `{ session_id }` to receive that session's frames (same payload as a
+  binding). Invoking them directly is refused with `FORBIDDEN`.
