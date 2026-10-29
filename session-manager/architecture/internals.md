@@ -23,7 +23,7 @@ in-process.
 | [src/store/fs.rs](../src/store/fs.rs) | Filesystem backend (JSONL per session). |
 | [src/store/bridge.rs](../src/store/bridge.rs) | Bridge backend (defers to a main instance's `session::store::*`). |
 | [src/service.rs](../src/service.rs) | **All domain logic.** Per-session locks, id/clock injection, cursors, active-path walks, fork copying. Returns `(response, Vec<EmittableEvent>)` — never emits itself. |
-| [src/events.rs](../src/events.rs) | The six public trigger types, binding-config parsing + filters, `Emitter`, `EventEnvelope`, `EventSink` (`Emitter` / `RemotePublisher`), the internal `session::store::events` feed, `attach_bridge_relay`. |
+| [src/events.rs](../src/events.rs) | The six public trigger types and their `session::on-*` observable functions (iii 0.25, direct invocation refused with `FORBIDDEN`), binding-config parsing + filters, `Emitter`, `EventEnvelope`, `EventSink` (`Emitter` / `RemotePublisher`), the internal `session::store::events` feed, `attach_bridge_relay`. |
 | [src/functions/mod.rs](../src/functions/mod.rs) | `Deps { service, sink }` built per call from the live `AppState` runtime (so a hot-reload is picked up without re-registering), generic typed registration helper, `register_all` (14 functions). |
 | [src/functions/<verb>.rs](../src/functions) | One file per function: request/response structs (serde + JsonSchema, doc comments become schema descriptions) and a thin `pub async fn handle(deps, req)` = service call + `sink.publish_all(events)`. |
 | [src/functions/store_protocol.rs](../src/functions/store_protocol.rs) | The internal `session::store::*` protocol (11 raw store functions + `publish_events`). Registered unconditionally but mode-gated per call: served only while in fs mode, so it follows adapter hot-reloads (bridge mode rejects). |
@@ -226,7 +226,11 @@ deny them to agents.
 Six public trigger types, registered **before** the functions (handlers
 capture the subscriber sets): `session::created`, `session::message-added`,
 `session::message-updated`, `session::status-changed`,
-`session::meta-updated`, `session::deleted`.
+`session::meta-updated`, `session::deleted`. Next to each, over the same
+`SubscriberSet`, an owner-delivered observable function (`session::on-created`,
+... `session::on-deleted`) whose observers pass the binding config as args and
+are filtered and delivered (`obs.call`) exactly like bindings; invoking one
+directly is refused with `FORBIDDEN`.
 
 Per-binding config structs are typed and `deny_unknown_fields` — a typo'd
 filter key is rejected at registration, never silently ignored:
@@ -468,7 +472,8 @@ cargo test --test bdd -- --tags @engine   # with a running engine
   *deferring* (like bridge). Reuse `persistence.feature`'s restart scenarios as
   the acceptance bar.
 - **New trigger type:** add the const + `EventKind` variant + payload struct
-  + config struct, register it in `register_trigger_types`, extend
+  + config struct, register it and its `session::on-*` observable function in
+  `register_trigger_types`, extend
   `EventEnvelope::to_emittable`, and cover the filter matrix in
   `event_filtering.feature`. Remember envelopes must round-trip it
   (`envelope_roundtrip_preserves_event_and_metadata` test).

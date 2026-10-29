@@ -17,8 +17,9 @@ Contents: [mental model](#1-mental-model) ·
 
 session-manager is the conversation database plus its change feed. You write
 typed messages into an append-only, branchable log and read them back in
-order; every mutation fires a trigger-type event you can bind to with
-per-binding filters, so UIs render live without polling and without a
+order; every mutation fires an event you observe through a `session::on-*`
+function (iii 0.25) or bind to as a trigger type, with per-observer filters,
+so UIs render live without polling and without a
 separate publish call. It stores and notifies — nothing else. The driver
 (typically the harness) owns the loop: it appends messages, streams updates
 into them, and flips the session status around turns.
@@ -27,8 +28,9 @@ Integration is always some subset of the same triangle:
 
 1. **Write** through `session::*` mutations (create/ensure, append, update,
    set_status, ...).
-2. **Render** by binding handlers to the six trigger types and reconciling
-   by `revision` + parent chain.
+2. **Render** by observing the six `session::on-*` functions (or, on older
+   engines, binding the six trigger types) and reconciling by `revision` +
+   parent chain.
 3. **Read back** (`messages`, `get`, `list`) for initial load, recovery, or
    non-streaming consumers.
 
@@ -343,8 +345,10 @@ copies its original and `delete-attachment` refuses it.
 
 ### The six trigger types
 
-Bind with the standard two-step pattern — register a handler function, then
-register a trigger of the type with a `config` filter:
+On an iii 0.25 engine, observe the matching `session::on-*` function instead
+(below). For older engines and consumers, bind with the two-step
+pattern (deprecated in 0.25) — register a handler function, then register a
+trigger of the type with a `config` filter:
 
 ```typescript
 iii.registerFunction("ui::on-message-updated", async (evt) => render(evt));
@@ -381,7 +385,8 @@ iii.observe(
 
 Only session-manager delivers these events: invoking a `session::on-*`
 function directly is refused with `FORBIDDEN`. The trigger types keep
-working for consumers that bind them, on 0.24 and 0.25 engines.
+working for consumers that bind them, on 0.24 and 0.25 engines (binding is
+deprecated in 0.25).
 
 Filter semantics (all supplied filters must hold — AND):
 
@@ -513,8 +518,9 @@ flowchart LR
 
 What integrators must know (the API does not change):
 
-- Call your **local** `session::*` functions and bind your **local** trigger
-  types, regardless of topology. Identical surface everywhere.
+- Call your **local** `session::*` functions and observe your **local**
+  `session::on-*` functions (or bind the local trigger types), regardless of
+  topology. Identical surface everywhere.
 - The main is the single fan-out point: a mutation made on any instance
   reaches **every** instance's subscribers (originator included) exactly
   once, with each instance applying its own binding filters. A bridged
