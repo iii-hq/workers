@@ -194,11 +194,12 @@ pub struct ConfigEvent {
 }
 
 /// What a `kanban:change` binding receives: a ticket event, or a
-/// configuration event. Published as the trigger's call format only.
-#[derive(JsonSchema)]
+/// configuration event. Published as the trigger's call format and as the
+/// request format of `kanban::on-change` (what its observers receive).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 #[allow(dead_code, clippy::large_enum_variant)]
-enum ChangeDelivery {
+pub enum ChangeDelivery {
     Ticket(ChangeEvent),
     Config(ConfigEvent),
 }
@@ -359,13 +360,15 @@ pub fn refuse_invocation(function_id: &str) -> Error {
     }
 }
 
-/// Handler of `kanban::on-change`: always FORBIDDEN.
-pub fn refuse_on_change(_event: Value) -> Result<(), Error> {
+/// Handler of `kanban::on-change`: always FORBIDDEN. Typed with the event
+/// its observers receive, so the function publishes that request schema.
+pub fn refuse_on_change(_event: ChangeDelivery) -> Result<(), Error> {
     Err(refuse_invocation(ON_CHANGE_FN))
 }
 
-/// Handler of `kanban::on-comment`: always FORBIDDEN.
-pub fn refuse_on_comment(_event: Value) -> Result<(), Error> {
+/// Handler of `kanban::on-comment`: always FORBIDDEN. Typed with the event
+/// its observers receive, so the function publishes that request schema.
+pub fn refuse_on_comment(_event: CommentEvent) -> Result<(), Error> {
     Err(refuse_invocation(ON_COMMENT_FN))
 }
 
@@ -750,17 +753,47 @@ mod tests {
     fn on_functions_refuse_direct_invocation() {
         assert_eq!(ON_CHANGE_FN, "kanban::on-change");
         assert_eq!(ON_COMMENT_FN, "kanban::on-comment");
+        let config = ChangeDelivery::Config(ConfigEvent {
+            event: CONFIG_EVENT.to_string(),
+            at: "2025-01-01T00:00:00Z".to_string(),
+        });
+        let moved = ChangeDelivery::Ticket(ChangeEvent {
+            event: "ticket.moved".to_string(),
+            ticket_id: "t1".to_string(),
+            ticket_key: "KAN-1".to_string(),
+            ticket: summary_payload("KAN-1"),
+            comment: None,
+            activity: None,
+            at: "2025-01-01T00:00:00Z".to_string(),
+            releases: Vec::new(),
+        });
+        let comment = CommentEvent {
+            event: "comment.created".to_string(),
+            ticket_id: "t1".to_string(),
+            ticket_key: "KAN-1".to_string(),
+            ticket: summary_payload("KAN-1"),
+            comment: Comment {
+                id: "c1".to_string(),
+                ticket_id: "t1".to_string(),
+                parent_id: None,
+                body: "hi".to_string(),
+                author: "user".to_string(),
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+            },
+            author: "user".to_string(),
+            at: "2025-01-01T00:00:00Z".to_string(),
+        };
+        // A delivered event's wire shape deserializes into the handler's input.
+        let wire: ChangeDelivery =
+            serde_json::from_value(serde_json::to_value(&moved).unwrap()).unwrap();
+        assert!(matches!(wire, ChangeDelivery::Ticket(_)));
+        let wire: ChangeDelivery =
+            serde_json::from_value(json!({ "event": CONFIG_EVENT, "at": "now" })).unwrap();
+        assert!(matches!(wire, ChangeDelivery::Config(_)));
         for (function_id, refused) in [
-            (ON_CHANGE_FN, refuse_on_change(json!({}))),
-            (
-                ON_CHANGE_FN,
-                refuse_on_change(json!({ "event": "ticket.moved" })),
-            ),
-            (ON_COMMENT_FN, refuse_on_comment(Value::Null)),
-            (
-                ON_COMMENT_FN,
-                refuse_on_comment(json!({ "ticket_id": "KAN-1" })),
-            ),
+            (ON_CHANGE_FN, refuse_on_change(config)),
+            (ON_CHANGE_FN, refuse_on_change(moved)),
+            (ON_COMMENT_FN, refuse_on_comment(comment)),
         ] {
             let error = refused.unwrap_err();
             assert!(
@@ -769,6 +802,70 @@ mod tests {
                 "{error:?}"
             );
         }
+    }
+
+    fn summary_payload(key: &str) -> TicketPayload {
+        TicketPayload::Summary(Box::new(TicketSummary {
+            id: "t1".to_string(),
+            key: key.to_string(),
+            title: "title".to_string(),
+            status: "todo".to_string(),
+            priority: "medium".to_string(),
+            assignee: None,
+            labels: Vec::new(),
+            pills: Vec::new(),
+            order: 0,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            updated_at: "2025-01-01T00:00:00Z".to_string(),
+            deleted_at: None,
+            comment_count: 0,
+            parent_id: None,
+            project_id: None,
+            release_id: None,
+        }))
+    }
+
+    /// The request and response schemas `RegisterFunction::new` publishes for
+    /// a sync handler (the SDK derives them from its argument and return types
+    /// with schemars' draft-07 generator).
+    fn published_schemas<T: JsonSchema, R: JsonSchema>(
+        _handler: fn(T) -> Result<R, Error>,
+    ) -> (Value, Value) {
+        let schema = |root| serde_json::to_value(root).unwrap();
+        let generator = || schemars::r#gen::SchemaSettings::draft07().into_generator();
+        (
+            schema(generator().into_root_schema_for::<T>()),
+            schema(generator().into_root_schema_for::<R>()),
+        )
+    }
+
+    fn is_typed(schema: &Value) -> bool {
+        [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+        ]
+        .iter()
+        .any(|key| schema.get(key).is_some())
+    }
+
+    #[test]
+    fn on_functions_publish_typed_request_and_response_schemas() {
+        for (function_id, (request, response)) in [
+            (ON_CHANGE_FN, published_schemas(refuse_on_change)),
+            (ON_COMMENT_FN, published_schemas(refuse_on_comment)),
+        ] {
+            assert!(is_typed(&request), "{function_id} request: {request}");
+            assert!(is_typed(&response), "{function_id} response: {response}");
+        }
+        let (change, _) = published_schemas(refuse_on_change);
+        assert_eq!(change["anyOf"].as_array().map(Vec::len), Some(2));
+        let (comment, _) = published_schemas(refuse_on_comment);
+        assert!(comment["properties"].get("comment").is_some());
     }
 
     #[tokio::test]
