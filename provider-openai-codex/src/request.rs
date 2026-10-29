@@ -190,7 +190,7 @@ mod tests {
         let mut a = args();
         a.reasoning_effort = Some("high".into());
         a.tools = vec![AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "d".into(),
             parameters: json!({ "type": "object" }),
             label: None,
@@ -198,7 +198,7 @@ mod tests {
         }];
         let body = build_body(&a);
         assert_eq!(body["reasoning"]["effort"], "high");
-        assert_eq!(body["tools"][0]["name"], "agent__trigger");
+        assert_eq!(body["tools"][0]["name"], "agent__call");
     }
 
     #[test]
