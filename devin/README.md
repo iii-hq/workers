@@ -1,13 +1,13 @@
 # devin
 
-[Devin](https://docs.devin.ai) as an iii worker: the Devin coding agent exposed as functions and streams on the iii bus. Devin has two distinct products and this worker exposes both. The local [Devin CLI](https://cli.devin.ai/docs) is a SWE-1.6 coding agent that runs on your machine; `devin::run` drives it headless and, with the iii runtime context, lets it discover and operate your engine on its own. The [Devin cloud](https://docs.devin.ai) agent runs in a VM, reached over the REST API: `devin::session::*` wrap the session lifecycle, `devin::pr-review::*` run reviews, and `devin::api` reaches any v1/v3 endpoint the typed wrappers do not cover.
+[Devin](https://docs.devin.ai) as an iii worker: the Devin coding agent exposed as functions on the iii bus. Devin has two distinct products and this worker exposes both. The local [Devin CLI](https://cli.devin.ai/docs) is a SWE-1.6 coding agent that runs on your machine; `devin::run` drives it headless and, with the iii runtime context, lets it discover and operate your engine on its own. The [Devin cloud](https://docs.devin.ai) agent runs in a VM, reached over the REST API: `devin::session::*` wrap the session lifecycle, `devin::pr-review::*` run reviews, and `devin::api` reaches any v1/v3 endpoint the typed wrappers do not cover.
 
 This worker is deliberately thin. It does not re-implement scheduling, sub-agents, or persistence that the engine already provides. Schedule a Devin session with the `cron` worker, fan Devin runs out with `harness::spawn`, and let the engine trace and persist every call. The worker's job is to put Devin on the bus, nothing more.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=devin
+iii call compose::add worker=devin
 ```
 
 For the API surface (`devin::session::*`, `devin::api`), set `DEVIN_API_KEY` in the worker environment. Get a key from the [Devin settings page](https://app.devin.ai/settings/api-keys).
@@ -30,7 +30,7 @@ From zero to a Devin cloud session over the bus:
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 export DEVIN_API_KEY=...       # personal token (v1) or service key (cog_..., v3)
 # service-key users only: also `export DEVIN_ORG_ID=org_...` and set base_url to v3
-iii trigger compose::add worker=devin
+iii call compose::add worker=devin
 iii   # starts the engine + worker
 ```
 
@@ -40,19 +40,19 @@ Start a cloud session and read it back:
 
 ```bash
 # start an autonomous Devin session in the cloud
-iii trigger devin::session::create --timeout-ms 60000 \
+iii call devin::session::create --timeout-ms 60000 \
   --json '{"prompt":"Open a PR that adds a /health endpoint to the api repo","title":"health endpoint"}'
 # { "session_id": "devin-...", "url": "https://app.devin.ai/sessions/...", ... }
 
 # poll its status, output, and messages
-iii trigger devin::session::get session_id=devin-...
+iii call devin::session::get session_id=devin-...
 
 # send a follow-up
-iii trigger devin::session::message \
+iii call devin::session::message \
   --json '{"session_id":"devin-...","message":"Also add a test for it"}'
 
 # list recent sessions
-iii trigger devin::api --json '{"method":"GET","path":"sessions","query":{"limit":10}}'
+iii call devin::api --json '{"method":"GET","path":"sessions","query":{"limit":10}}'
 ```
 
 `devin::session::create` returns a real Devin cloud session over the bus (session id, url, tags):
@@ -66,35 +66,35 @@ The same session runs in the Devin app and replies:
 Run the local CLI as one turn and deliver it on the bus:
 
 ```bash
-iii trigger devin::run --timeout-ms 600000 \
+iii call devin::run --timeout-ms 600000 \
   --json '{"prompt":"summarize what this repo does","cwd":"/path/to/repo"}'
-# raw stdout on devin::raw-event, AgentEvent frames on devin::agent-event
+# raw stdout on devin::on-raw-event, AgentEvent frames on devin::on-agent-event
 ```
 
 Reach any endpoint the typed wrappers do not cover:
 
 ```bash
 # paths are relative to base_url. v1 (personal token) uses flat paths:
-iii trigger devin::api --json '{"method":"GET","path":"sessions","query":{"limit":5}}'
+iii call devin::api --json '{"method":"GET","path":"sessions","query":{"limit":5}}'
 
 # v3 (service key) paths are org-scoped:
-iii trigger devin::api --json '{"method":"GET","path":"organizations/org_.../sessions"}'
+iii call devin::api --json '{"method":"GET","path":"organizations/org_.../sessions"}'
 ```
 
 Ask the engine for any function's contract:
 
 ```bash
-iii trigger devin::session::create --help
+iii call devin::session::create --help
 ```
 
 ## Functions
 
-The worker follows the same base surface as the grok, codex, claude-code, and opencode agent workers (`run` / `start` / `stop` / `status` / `sessions::list` / `events`), then adds the functions unique to Devin's cloud (session lifecycle, PR review, and a passthrough for the rest).
+The worker follows the same base surface as the grok, codex, claude-code, and opencode agent workers (`run` / `start` / `stop` / `status` / `sessions::list` and the `on-agent-event` / `on-raw-event` feeds), then adds the functions unique to Devin's cloud (session lifecycle, PR review, and a passthrough for the rest).
 
 | Function | Surface | Purpose |
 | --- | --- | --- |
 | `devin::run` | CLI | Run one local CLI turn, wait, return the result |
-| `devin::start` | CLI | Start a turn and return immediately; progress on the streams |
+| `devin::start` | CLI | Start a turn and return immediately; progress on the event feeds |
 | `devin::stop` | CLI | Interrupt a live CLI run |
 | `devin::status` | CLI | A recorded run's state: live flag, status, linked Devin session id |
 | `devin::sessions::list` | CLI | Every run this worker has recorded (each linked to its Devin session) |
@@ -104,6 +104,9 @@ The worker follows the same base surface as the grok, codex, claude-code, and op
 | `devin::pr-review::trigger` | Cloud | Start a Devin review for a pull/merge request |
 | `devin::pr-review::status` | Cloud | Latest Devin review for a pull/merge request |
 | `devin::api` | Cloud | Raw authenticated call to any v1/v3 endpoint |
+| `devin::on-agent-event` | CLI | Event feed: terminal AgentEvent frames of one session (args `{ session_id }`, see [Event feeds](#event-feeds)) |
+| `devin::on-raw-event` | CLI | Event feed: CLI stdout lines of one session (args `{ session_id }`) |
+| `devin::on-config-change` | — | Internal: observes `configuration::on-updated` and reloads the configuration |
 
 To list all Devin cloud sessions org-wide, use `devin::api {method: GET, path: sessions}` (v1) or `{path: organizations/{org_id}/sessions}` (v3); `devin::sessions::list` is scoped to the runs this worker made, matching the family convention.
 
@@ -112,7 +115,7 @@ To list all Devin cloud sessions org-wide, use `devin::api {method: GET, path: s
 Because the CLI agent runs locally with the iii runtime context, a plain question makes Devin discover and operate your engine on its own, no commands spelled out:
 
 ```bash
-iii trigger devin::run --json '{"prompt":"What workers are connected to this iii engine and what does each do?","cwd":"/tmp"}' | jq -r '.result'
+iii call devin::run --json '{"prompt":"What workers are connected to this iii engine and what does each do?","cwd":"/tmp"}' | jq -r '.result'
 ```
 
 ![Devin answering a plain question by discovering the live iii worker functionality through the iii CLI](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/iii-discovery.png)
@@ -125,7 +128,7 @@ Or ask it to map the whole engine by capability area, and it groups what it find
 
 ### PR review
 
-`devin::pr-review::trigger` starts a Devin review for a `pr_url`; `devin::pr-review::status` returns the latest review for that PR. Bind a GitHub PR-opened trigger to `devin::pr-review::trigger` for automatic reviews. Devin's other cloud surfaces (knowledge, playbooks, secrets, repos, code scan, org admin) are reachable through `devin::api` when a token has access to them.
+`devin::pr-review::trigger` starts a Devin review for a `pr_url`; `devin::pr-review::status` returns the latest review for that PR. For automatic reviews, observe the github worker's pull-request events (`github::pr::on-event`) from a function that calls `devin::pr-review::trigger` with the PR's URL. Devin's other cloud surfaces (knowledge, playbooks, secrets, repos, code scan, org admin) are reachable through `devin::api` when a token has access to them.
 
 ### The passthrough
 
@@ -135,24 +138,36 @@ Or ask it to map the whole engine by capability area, and it groups what it find
 
 `devin::run` records every turn as a `session-manager` session under its `session_id`, writing the same records a harness turn does: `session::ensure` (title from the prompt and `{ agent: "devin" }` metadata; a run with `parent_session_id` carries it and nests under that parent, a run without one is created as an `automation` session rather than a human chat), the user prompt, an assistant entry streamed with the CLI output as it prints, a `custom` `error` entry when the run fails, and the session status (`working`, then `done`, `done` + `stopped` after `devin::stop`, or `error` with the cause). The run therefore appears in the console's session list and transcript like a harness session, and can be replayed after it ends with `session::messages`. The `--print` CLI output is plain text, so tool calls appear inside that text, not as separate function rows.
 
-It also delivers every stdout line verbatim on the `devin::raw-event` trigger type and the terminal AgentEvent frames on `devin::agent-event` (see Event feeds). Recording is on by default and switched off with `session_recording: false` (config, or per turn). Both are best-effort: when `session-manager` is not installed the worker logs that once, skips those writes, re-checks once a minute, and the run itself is unaffected; a feed with no binding delivers nothing, and a failing consumer never fails the run. The cloud functions return their JSON directly and do not stream; poll `devin::session::get` for progress, or bind a `cron` trigger to poll on a schedule instead of looping.
+It also delivers every stdout line verbatim on `devin::on-raw-event` and the terminal AgentEvent frames on `devin::on-agent-event` (see Event feeds). Recording is on by default and switched off with `session_recording: false` (config, or per turn). Both are best-effort: when `session-manager` is not installed the worker logs that once, skips those writes, re-checks once a minute, and the run itself is unaffected; a feed with no observer delivers nothing, and a failing consumer never fails the run. The cloud functions return their JSON directly and do not stream; poll `devin::session::get` for progress, or observe `cron::on-tick` to poll on a schedule rather than looping.
 
-Every `devin::*` call is a traced invocation on the engine with no extra instrumentation: the input payload, output, duration, and ok/error land in the console's trace explorer, including the `iii trigger` calls a `devin::run` agent makes on its own.
+Every `devin::*` call is a traced invocation on the engine with no extra instrumentation: the input payload, output, duration, and ok/error land in the console's trace explorer, including the `iii call` calls a `devin::run` agent makes on its own.
 
 ![Every devin::run call traced in the iii console, with input prompt and output result](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/traces.png)
 
 ### Event feeds
 
-The worker owns two trigger types. Bind one to a function of your own with `{ session_id }` to receive one session's frames:
+The worker provides two functions that carry one session's frames. Observe one with `{ session_id }` as args to run a function of your own on that session's frames:
 
-| Trigger type | Carries |
-| --- | --- |
-| `devin::agent-event` | the terminal AgentEvent frames of a `devin::run` turn (`turn_end` with the final assistant message, then `agent_end`), what the acp worker renders |
-| `devin::raw-event` | every CLI stdout line, verbatim, as `{ "type": "stdout", "line": "..." }` |
+| Function | Args | Carries |
+| --- | --- | --- |
+| `devin::on-agent-event` | `{ session_id }` | the terminal AgentEvent frames of a `devin::run` turn (`turn_end` with the final assistant message, then `agent_end`), what the acp worker renders |
+| `devin::on-raw-event` | `{ session_id }` | every CLI stdout line, verbatim, as `{ "type": "stdout", "line": "..." }` |
 
-Binding config: `{ "session_id": "<iii session id>", "metadata": { } }`. `session_id` is required (non-empty, at most 512 characters); `metadata` is optional and is handed to your function (it wins over the binding's own metadata). Any other key rejects the binding, and each trigger type accepts at most 256 bindings.
+```ts
+iii.registerFunction('my-app::on-devin-frame', async (frame) => {
+  // frame: { session_id, event_id, seq, epoch, source, event }
+})
 
-Your function gets one fire-and-forget call per frame:
+iii.observe(
+  { function_id: 'devin::on-raw-event', args: { session_id: 'sess-1' }, deliver: 'output' },
+  'my-app::on-devin-frame',
+  { metadata: { conn: 'c1' } }, // optional: reaches your function as its metadata
+)
+```
+
+`session_id` is required (non-empty, at most 512 characters) and is the only arg; the engine rejects any other with `INVALID_ARGS`. Each function accepts at most 256 observers, and one more is rejected with `OBSERVER_LIMIT`. Both functions are private: only this worker calls them, and any worker may observe them.
+
+Each frame is one fire-and-forget call of the function, and the event it returns is what its session's observers observe (with `deliver: 'output'`, your function receives it as its input):
 
 ```json
 {
@@ -165,7 +180,7 @@ Your function gets one fire-and-forget call per frame:
 }
 ```
 
-`seq` counts from 0 per feed and session within one `epoch` (a uuid minted per worker process, so a restart starts a new epoch); the two feeds count independently. Deliveries may arrive out of order: order by `(epoch, seq)` and dedup by `event_id`. The feeds are ephemeral: nothing is stored or replayed, and a binding made mid-turn only sees later frames. History lives in the session-manager transcript (`session::messages` with the run's `session_id`), the session record (`devin::status`, `devin::sessions::list`) and the `devin::run` result. These trigger types replace the former `agent::events` / `devin::events` streams (see the guide "Migrate from iii-stream and pubsub").
+`seq` counts from 0 per feed and session within one `epoch` (a uuid minted per worker process, so a restart starts a new epoch); the two feeds count independently, and a frame of a session nobody observes still takes its `seq`. Deliveries may arrive out of order: order by `(epoch, seq)` and dedup by `event_id`. The feeds are ephemeral: nothing is stored or replayed, and an observer added mid-turn only sees later frames. History lives in the session-manager transcript (`session::messages` with the run's `session_id`), the session record (`devin::status`, `devin::sessions::list`) and the `devin::run` result.
 
 ## Configuration
 
@@ -177,14 +192,14 @@ org_id: "${DEVIN_ORG_ID}"         # empty = v1 personal mode; set = v3 org-scope
 base_url: https://api.devin.ai/v1 # set to .../v3 alongside org_id for a service key
 request_timeout_secs: 120
 devin_executable: ""                          # path to the devin CLI; empty = PATH
-cli_extra_args: ["--permission-mode", "dangerous"]  # before `--print --`; dangerous lets the agent run iii trigger
+cli_extra_args: ["--permission-mode", "dangerous"]  # before `--print --`; dangerous lets the agent run iii call
 iii_context: true                             # prepend iii runtime context to a CLI prompt
 session_recording: true                       # record each CLI turn as a console session
 ```
 
 `api_key` and `org_id` are referenced as `${DEVIN_API_KEY}` and `${DEVIN_ORG_ID}` and expanded from the environment on load (an unset var becomes empty), so neither secret lives in the repo. An empty `api_key` disables the API surface while the CLI surface still works if the local `devin` binary is authenticated. `org_id` selects the API shape: empty uses the flat v1 session paths (personal tokens), set uses the v3 org-scoped paths (service keys) and becomes the required path segment for pr-review.
 
-`iii_context` defaults on: a `devin::run` turn is prepended with the iii runtime context so the local agent discovers and calls engine functions through the `iii` CLI (turn it off per turn with `iii_context: false`). `cli_extra_args` defaults to `--permission-mode dangerous`, which is the only devin CLI mode that auto-approves command execution, so a headless run can actually run `iii trigger` against the engine; the local agent then auto-approves all tools, so drop to `accept-edits` or `auto` to restrict it.
+`iii_context` defaults on: a `devin::run` turn is prepended with the iii runtime context so the local agent discovers and calls engine functions through the `iii` CLI (turn it off per turn with `iii_context: false`). `cli_extra_args` defaults to `--permission-mode dangerous`, which is the only devin CLI mode that auto-approves command execution, so a headless run can actually run `iii call` against the engine; the local agent then auto-approves all tools, so drop to `accept-edits` or `auto` to restrict it.
 
 `session_recording` defaults on: each `devin::run` / `devin::start` turn is recorded as a `session-manager` session (see Sessions, event feeds and observability). Set it to `false` to keep Devin runs out of the console entirely, or override one turn with the `session_recording` payload field.
 
@@ -205,10 +220,10 @@ session_recording: true                       # record each CLI turn as a consol
 | --- | --- |
 | one local `devin --print -- <prompt>` turn (SWE-1.6 agent) | `devin::run` invocation |
 | one `devin::run` session (prompt, output, status) | `session-manager` session, listed in the console |
-| every CLI stdout line, verbatim | `devin::raw-event` delivery |
-| turn end | `turn_end` + `agent_end` frames on `devin::agent-event`, function return value |
+| every CLI stdout line, verbatim | `devin::on-raw-event` call |
+| turn end | `turn_end` + `agent_end` frames on `devin::on-agent-event`, function return value |
 | a Devin cloud session | `devin::session::create` / `::get` / `::message` |
 | a Devin PR review | `devin::pr-review::trigger` / `::status` |
 | any other v1/v3 endpoint | `devin::api` passthrough |
-| scheduling a run | `cron` worker trigger, not a worker feature |
+| scheduling a run | an observer of `cron::on-tick`, not a worker feature |
 | fanning runs out | `harness::spawn`, not a worker feature |
