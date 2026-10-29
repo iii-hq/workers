@@ -2,33 +2,79 @@
  * Purpose-built configuration editor for the storage worker. The Console
  * keeps ownership of dirty tracking, schema validation, save, reset, and the
  * unsaved-change guard; this component only edits the JSON draft.
+ *
+ * A bucket starts from its provider — local, Amazon S3, an S3-compatible
+ * service (with presets), Cloudflare R2 or Google Cloud Storage — then its
+ * icon and colour, its connection and its credentials. Credentials go to
+ * the secrets worker the moment they are saved and the entry keeps
+ * `secret://STORAGE_<BUCKET>_<FIELD>`; "Test bucket" asks the worker to
+ * build the draft and list it. Mirrors BucketConfig (storage/src/config.rs).
  */
 
 import {
   Button,
-  Checkbox,
   Chip,
   type ConfigFormProps,
   Eyebrow,
+  type Host,
   IconButton,
   Input,
   type JsonValue,
   List,
   ListItem,
-  Select,
+  StatusDot,
   StatusPanel,
   useConfirm,
 } from '@iii-dev/console-ui'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
-import { Archive, ChevronLeft, Database, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
+import { ChevronLeft, Database, Plus, Trash2 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { BucketIcon } from '../lib/bucket-icons'
+import { ColorPicker, IconPicker } from './BucketAppearance'
+import {
+  applyPreset,
+  bucketDisplay,
+  bucketNameError,
+  bucketProblems,
+  type CredentialField as CredentialFieldName,
+  detectPreset,
+  fieldValue,
+  type JsonObject,
+  newBucketEntry,
+  nextBucketName,
+  PROVIDER_CHOICES,
+  type PresetId,
+  type ProviderChoice,
+  presetById,
+  providerChoiceOf,
+  providerLabel,
+  providerOf,
+  S3_PRESETS,
+  stageLabel,
+  storeTarget,
+  supportsSecretReferences,
+  switchProvider,
+  testBlocker,
+  withDisplay,
+  withField,
+  withRegion,
+} from './bucket'
+import { CredentialField } from './CredentialField'
+import { CheckField, Field, SelectField, TextField } from './fields'
+import { TestBucketRow, type TestState } from './TestBucketRow'
+import { runBucketTest } from './test-bucket'
 
-type JsonObject = { [key: string]: JsonValue }
-type ProviderName = 'local' | 's3' | 'gcs' | 'r2'
 type Selection = { kind: 'local' } | { kind: 'bucket'; name: string }
 
+/** What the running worker says about a saved bucket (`storage::listBuckets`). */
+interface LiveBucket {
+  error?: string
+  error_stage?: string
+  /** The bucket works but its notification poller does not run. */
+  notifications_error?: string
+}
+
 const CONFIG_NARROW_BELOW = 620
-const PROVIDERS: ProviderName[] = ['local', 's3', 'gcs', 'r2']
 
 function isObject(value: JsonValue | undefined): value is JsonObject {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -50,180 +96,52 @@ function fieldError(errors: ConfigFormProps['errors'], ...segments: string[]) {
   return errors?.get(pointer(...segments))
 }
 
-function providerOf(bucket: JsonObject): ProviderName {
-  const provider = asString(bucket.provider)
-  return PROVIDERS.includes(provider as ProviderName) ? (provider as ProviderName) : 'local'
-}
-
-function providerDefaults(provider: ProviderName): JsonObject {
-  switch (provider) {
-    case 's3':
-      return { provider: 's3', region: 'us-east-1' }
-    case 'gcs':
-      return { provider: 'gcs' }
-    case 'r2':
-      return {
-        provider: 'r2',
-        account_id: '',
-        access_key_id: '',
-        secret_access_key: '',
-      }
-    case 'local':
-      return { provider: 'local' }
-  }
-}
-
-function validBucketName(name: string) {
-  return /^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)
-}
-
-function nextBucketName(buckets: JsonObject) {
-  if (buckets.bucket === undefined) return 'bucket'
-  let suffix = 2
-  while (buckets[`bucket-${suffix}`] !== undefined) suffix += 1
-  return `bucket-${suffix}`
-}
-
-function Field({
-  label,
-  hint,
-  error,
-  className = '',
-  children,
-}: {
-  label: ReactNode
-  hint?: ReactNode
-  error?: string
-  className?: string
-  children: ReactNode
-}) {
-  return (
-    <div className={`storage-cfg-field${className ? ` ${className}` : ''}`}>
-      <div className="storage-cfg-field-label">
-        <span>{label}</span>
-      </div>
-      {children}
-      {error ? <p className="storage-cfg-error" role="alert">{error}</p> : null}
-      {hint ? <p className="storage-cfg-hint">{hint}</p> : null}
-    </div>
-  )
-}
-
-function TextField({
-  id,
-  path,
-  label,
-  value,
-  placeholder,
-  hint,
-  error,
-  type = 'text',
-  onChange,
-}: {
-  id: string
-  path: string
-  label: string
-  value: string
-  placeholder?: string
-  hint?: ReactNode
-  error?: string
-  type?: 'text' | 'password'
-  onChange: (value: string) => void
-}) {
-  const [revealed, setRevealed] = useState(false)
-  const secret = type === 'password'
-  return (
-    <Field label={<label htmlFor={id}>{label}</label>} hint={hint} error={error}>
-      <div className="storage-cfg-input-row">
-        <Input
-          id={id}
-          data-field={path}
-          name={id}
-          type={secret && !revealed ? 'password' : 'text'}
-          value={value}
-          preserveCase
-          spellCheck={false}
-          autoComplete="off"
-          placeholder={placeholder}
-          onChange={onChange}
-        />
-        {secret ? (
-          <IconButton
-            label={`${revealed ? 'Hide' : 'Show'} ${label}`}
-            onClick={() => setRevealed((current) => !current)}
-          >
-            {revealed ? <EyeOff /> : <Eye />}
-          </IconButton>
-        ) : null}
-      </div>
-    </Field>
-  )
-}
-
-function SelectField({
-  id,
-  path,
-  label,
-  value,
-  options,
-  hint,
-  error,
-  onChange,
-}: {
-  id: string
-  path: string
-  label: string
-  value: string
-  options: Array<{ value: string; label: string }>
-  hint?: ReactNode
-  error?: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <Field label={<label htmlFor={id}>{label}</label>} hint={hint} error={error}>
-      <Select id={id} data-field={path} name={id} value={value} options={options} onChange={onChange} />
-    </Field>
-  )
-}
-
-function CheckField({
-  id,
-  path,
-  label,
-  hint,
-  checked,
-  onChange,
-}: {
-  id: string
-  path: string
-  label: string
-  hint?: ReactNode
-  checked: boolean
-  onChange: (checked: boolean) => void
-}) {
-  return (
-    <div className="storage-cfg-check-field">
-      <Checkbox
-        id={id}
-        data-field={path}
-        name={id}
-        label={label}
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-      />
-      {hint ? <p className="storage-cfg-hint">{hint}</p> : null}
-    </div>
-  )
+/** The running worker's view of the saved buckets: which ones it could not build. */
+function useLiveBuckets(host: Host) {
+  const [live, setLive] = useState<Record<string, LiveBucket>>({})
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    let alive = true
+    host.iii
+      .trigger<{
+        buckets?: Array<{ name?: unknown; error?: unknown; error_stage?: unknown; notifications_error?: unknown }>
+      }>('storage::listBuckets', {}, { timeoutMs: 10_000 })
+      .then((response) => {
+        if (!alive) return
+        const next: Record<string, LiveBucket> = {}
+        for (const row of response.buckets ?? []) {
+          if (typeof row.name !== 'string') continue
+          next[row.name] = {
+            error: typeof row.error === 'string' && row.error ? row.error : undefined,
+            error_stage: typeof row.error_stage === 'string' ? row.error_stage : undefined,
+            notifications_error:
+              typeof row.notifications_error === 'string' && row.notifications_error
+                ? row.notifications_error
+                : undefined,
+          }
+        }
+        setLive(next)
+      })
+      .catch(() => {
+        // The form works without it; only the "as saved" notices go missing.
+      })
+    return () => {
+      alive = false
+    }
+  }, [host, tick])
+  return { live, refresh: () => setTick((n) => n + 1) }
 }
 
 function ConfigNav({
   buckets,
+  live,
   selection,
   localHttpEnabled,
   onSelect,
   onAdd,
 }: {
   buckets: JsonObject
+  live: Record<string, LiveBucket>
   selection: Selection
   localHttpEnabled: boolean
   onSelect: (selection: Selection) => void
@@ -233,7 +151,9 @@ function ConfigNav({
   return (
     <nav className="storage-cfg-nav" aria-label="Storage configuration sections">
       <div className="storage-cfg-nav-group">
-        <Eyebrow as="div" className="storage-cfg-nav-label">runtime</Eyebrow>
+        <Eyebrow as="div" className="storage-cfg-nav-label">
+          runtime
+        </Eyebrow>
         <ListItem
           selected={selection.kind === 'local'}
           aria-current={selection.kind === 'local' ? 'page' : undefined}
@@ -245,7 +165,9 @@ function ConfigNav({
       </div>
       <div className="storage-cfg-nav-group buckets">
         <div className="storage-cfg-nav-heading">
-          <Eyebrow as="div" className="storage-cfg-nav-label">buckets</Eyebrow>
+          <Eyebrow as="div" className="storage-cfg-nav-label">
+            buckets
+          </Eyebrow>
           <span>{names.length}</span>
         </div>
         {names.length === 0 ? (
@@ -253,16 +175,23 @@ function ConfigNav({
         ) : (
           <List>
             {names.map((name) => {
-              const provider = providerOf(asObject(buckets[name]))
+              const bucket = asObject(buckets[name])
+              const display = bucketDisplay(bucket)
               const active = selection.kind === 'bucket' && selection.name === name
+              const error = live[name]?.error
               return (
                 <ListItem
                   key={name}
                   selected={active}
                   aria-current={active ? 'page' : undefined}
-                  leading={<Archive />}
+                  leading={<BucketIcon name={display.icon} color={display.color} />}
                   label={name}
-                  description={provider}
+                  description={providerLabel(providerChoiceOf(bucket))}
+                  trailing={
+                    error ? (
+                      <StatusDot tone="alert" title={error} aria-label="The worker could not build it" />
+                    ) : undefined
+                  }
                   onClick={() => onSelect({ kind: 'bucket', name })}
                 />
               )
@@ -271,7 +200,9 @@ function ConfigNav({
         )}
       </div>
       <div className="storage-cfg-nav-action">
-        <Button variant="ghost" size="sm" onClick={onAdd}><Plus /> add bucket</Button>
+        <Button variant="ghost" size="sm" onClick={onAdd}>
+          <Plus /> add bucket
+        </Button>
       </div>
     </nav>
   )
@@ -306,6 +237,31 @@ function EditorHeader({
       </div>
       {actions ? <div className="storage-cfg-editor-actions">{actions}</div> : null}
     </header>
+  )
+}
+
+function Section({
+  title,
+  description,
+  chip,
+  children,
+}: {
+  title: string
+  description: string
+  chip?: string
+  children: ReactNode
+}) {
+  return (
+    <section className="storage-cfg-section">
+      <div className="storage-cfg-section-head">
+        <div>
+          <h4>{title}</h4>
+          <p>{description}</p>
+        </div>
+        {chip ? <Chip>{chip}</Chip> : null}
+      </div>
+      {children}
+    </section>
   )
 }
 
@@ -361,13 +317,7 @@ function LocalEditor({
         onBack={onBack}
       />
       <div className="storage-cfg-editor-scroll">
-        <section className="storage-cfg-section">
-          <div className="storage-cfg-section-head">
-            <div>
-              <h4>Filesystem</h4>
-              <p>Objects and metadata are written directly by this worker.</p>
-            </div>
-          </div>
+        <Section title="Filesystem" description="Objects and metadata are written directly by this worker.">
           <TextField
             id="storage-cfg-local-data-dir"
             path="providers/local/data_dir"
@@ -378,15 +328,12 @@ function LocalEditor({
             error={fieldError(errors, 'providers', 'local', 'data_dir')}
             onChange={(next) => setLocalString('data_dir', next)}
           />
-        </section>
+        </Section>
 
-        <section className="storage-cfg-section">
-          <div className="storage-cfg-section-head">
-            <div>
-              <h4>Direct transfers</h4>
-              <p>Serve signed uploads and downloads without routing file bytes through RPC.</p>
-            </div>
-          </div>
+        <Section
+          title="Direct transfers"
+          description="Serve signed uploads and downloads without routing file bytes through RPC."
+        >
           <CheckField
             id="storage-cfg-local-http"
             path="providers/local/http"
@@ -431,45 +378,89 @@ function LocalEditor({
               Direct transfer is off. Local buckets remain available for genuinely small inline values only.
             </div>
           )}
-        </section>
+        </Section>
       </div>
     </section>
   )
 }
 
-function NotificationFields({
-  name,
-  provider,
-  bucket,
-  errors,
-  onChange,
-}: {
+/** Shared by the bucket editor's sections: one credential field of this bucket. */
+interface CredentialContext {
+  host: Host
   name: string
-  provider: ProviderName
   bucket: JsonObject
+  buckets: JsonObject
   errors: ConfigFormProps['errors']
+  referencesSupported: boolean | null
   onChange: (next: JsonObject) => void
+  /**
+   * One field of the entry as it is when the value arrives: a secret is
+   * stored after an await, and the edits made meanwhile must survive it.
+   */
+  onField: (field: string, value: JsonValue | undefined) => void
+}
+
+function credential(
+  ctx: CredentialContext,
+  field: CredentialFieldName,
+  label: string,
+  options: {
+    hint?: ReactNode
+    mode?: 'secret' | 'identifier' | 'json'
+    preferText?: boolean
+    placeholder?: string
+  } = {},
+) {
+  const value = fieldValue(ctx.bucket, field)
+  const segments = field.split('.')
+  return (
+    <CredentialField
+      key={field}
+      host={ctx.host}
+      id={`storage-cfg-${ctx.name}-${segments.join('-')}`}
+      path={`buckets/${ctx.name}/${segments.join('/')}`}
+      label={label}
+      hint={options.hint}
+      error={fieldError(ctx.errors, 'buckets', ctx.name, ...segments)}
+      value={value}
+      target={storeTarget(ctx.buckets, ctx.name, field, value)}
+      bucket={ctx.name}
+      mode={options.mode}
+      preferText={options.preferText}
+      referencesSupported={ctx.referencesSupported}
+      placeholder={options.placeholder}
+      onChange={(next) => ctx.onField(field, next)}
+    />
+  )
+}
+
+function NotificationFields({
+  ctx,
+  provider,
+  liveError,
+}: {
+  ctx: CredentialContext
+  provider: Exclude<ReturnType<typeof providerOf>, 'local'>
+  /** As saved, why the poller is not running. */
+  liveError?: string
 }) {
-  if (provider === 'local') return null
+  const { name, bucket, errors, onChange } = ctx
   const notificationsEnabled = isObject(bucket.notifications)
   const notifications = asObject(bucket.notifications)
-  const defaults: Record<Exclude<ProviderName, 'local'>, JsonObject> = {
+  const defaults: Record<typeof provider, JsonObject> = {
     s3: { sqs_queue_url: '' },
     gcs: { pubsub_subscription: '' },
-    r2: { queue_id: '', api_token: '' },
+    r2: { queue_id: '' },
   }
   const setNotification = (field: string, raw: string) => {
     onChange({ ...bucket, notifications: { ...notifications, [field]: raw } })
   }
 
   return (
-    <section className="storage-cfg-section">
-      <div className="storage-cfg-section-head">
-        <div>
-          <h4>Object events</h4>
-          <p>Connect provider notifications to object-created and object-deleted triggers.</p>
-        </div>
-      </div>
+    <Section
+      title="Object events"
+      description="Connect provider notifications to object-created and object-deleted triggers."
+    >
       <CheckField
         id={`storage-cfg-${name}-notifications`}
         path={`buckets/${name}/notifications`}
@@ -483,6 +474,11 @@ function NotificationFields({
           onChange(next)
         }}
       />
+      {liveError ? (
+        <div className="storage-cfg-notice" role="note">
+          As saved, the notification poller is not running: {liveError}
+        </div>
+      ) : null}
       {notificationsEnabled && provider === 's3' ? (
         <TextField
           id={`storage-cfg-${name}-sqs`}
@@ -507,7 +503,7 @@ function NotificationFields({
         />
       ) : null}
       {notificationsEnabled && provider === 'r2' ? (
-        <div className="storage-cfg-field-grid">
+        <>
           <TextField
             id={`storage-cfg-${name}-queue-id`}
             path={`buckets/${name}/notifications/queue_id`}
@@ -517,79 +513,105 @@ function NotificationFields({
             error={fieldError(errors, 'buckets', name, 'notifications', 'queue_id')}
             onChange={(next) => setNotification('queue_id', next)}
           />
-          <TextField
-            id={`storage-cfg-${name}-queue-token`}
-            path={`buckets/${name}/notifications/api_token`}
-            label="Queue API token"
-            value={asString(notifications.api_token)}
-            placeholder="${R2_QUEUE_API_TOKEN}"
-            hint="Prefer an environment reference so exports never contain the token."
-            error={fieldError(errors, 'buckets', name, 'notifications', 'api_token')}
-            type="password"
-            onChange={(next) => setNotification('api_token', next)}
-          />
-        </div>
+          {credential(ctx, 'notifications.api_token', 'Queue API token', {
+            hint: 'A Cloudflare API token with Queues read and write access.',
+          })}
+        </>
       ) : null}
-    </section>
+    </Section>
   )
 }
 
 function BucketEditor({
+  host,
   name,
   bucket,
+  buckets,
+  choice,
   nameDraft,
   nameError,
   errors,
   narrow,
+  live,
+  referencesSupported,
+  test,
   onBack,
   onNameDraft,
   onRename,
+  onChoice,
   onChange,
+  onField,
   onRemove,
+  onTest,
 }: {
+  host: Host
   name: string
   bucket: JsonObject
+  buckets: JsonObject
+  choice: ProviderChoice
   nameDraft: string
   nameError?: string
   errors: ConfigFormProps['errors']
   narrow: boolean
+  live?: LiveBucket
+  referencesSupported: boolean | null
+  test: TestState | undefined
   onBack: () => void
   onNameDraft: (value: string) => void
   onRename: () => void
+  onChoice: (choice: ProviderChoice) => void
   onChange: (next: JsonObject) => void
+  onField: (field: string, value: JsonValue | undefined) => void
   onRemove: () => void
+  onTest: () => void
 }) {
   const provider = providerOf(bucket)
-  const setOptional = (field: string, raw: string) => {
-    const next = { ...bucket }
-    if (raw === '') delete next[field]
-    else next[field] = raw
-    onChange(next)
-  }
-  const setRequired = (field: string, raw: string) => onChange({ ...bucket, [field]: raw })
+  const display = bucketDisplay(bucket)
+  const ctx: CredentialContext = { host, name, bucket, buckets, errors, referencesSupported, onChange, onField }
+  const setOptional = (field: string, raw: string) => onChange(withField(bucket, field, raw === '' ? undefined : raw))
+  const preset = presetById(detectPreset(asString(bucket.endpoint_url)))
+  const compatible = choice === 's3-compatible'
+  const choiceInfo = PROVIDER_CHOICES.find((c) => c.value === choice)
+
+  const accessKeys = (idPlaceholder: string, required: boolean) => (
+    <>
+      {credential(ctx, 'access_key_id', 'Access key ID', {
+        mode: 'identifier',
+        placeholder: idPlaceholder,
+        hint: required
+          ? undefined
+          : 'Leave both keys empty to use the engine host’s credentials (environment, profile or instance role).',
+      })}
+      {credential(ctx, 'secret_access_key', 'Secret access key')}
+    </>
+  )
 
   return (
     <section className="storage-cfg-editor" data-section={`buckets/${name}`} tabIndex={-1}>
       <EditorHeader
-        icon={<Archive />}
+        icon={<BucketIcon name={display.icon} color={display.color} />}
         title={name}
-        description={`${provider} bucket exposed to workers as bucket:${name}.`}
+        description={`${providerLabel(choice)} bucket exposed to workers as bucket:${name}.`}
         narrow={narrow}
         onBack={onBack}
-        actions={(
+        actions={
           <Button variant="ghost" size="sm" onClick={onRemove} aria-label={`Remove ${name}`}>
             <Trash2 /> remove
           </Button>
-        )}
+        }
       />
       <div className="storage-cfg-editor-scroll">
-        <section className="storage-cfg-section">
-          <div className="storage-cfg-section-head">
-            <div>
-              <h4>Bucket identity</h4>
-              <p>The worker-facing name and provider determine request routing.</p>
-            </div>
+        {live?.error ? (
+          <div className="storage-cfg-section">
+            <StatusPanel
+              variant="alert"
+              headline="As saved, the worker cannot build this bucket"
+              detail={[stageLabel(live.error_stage), live.error].filter(Boolean).join(' · ')}
+            />
           </div>
+        ) : null}
+
+        <Section title="Bucket identity" description="The worker-facing name and provider determine request routing.">
           <div className="storage-cfg-field-grid">
             <Field
               label={<label htmlFor={`storage-cfg-${name}-name`}>Worker bucket name</label>}
@@ -601,8 +623,8 @@ function BucketEditor({
                 data-field={`buckets/${name}`}
                 name={`storage-cfg-${name}-name`}
                 value={nameDraft}
-                preserveCase
                 spellCheck={false}
+                autoComplete="off"
                 onChange={onNameDraft}
                 onBlur={onRename}
                 onKeyDown={(event) => {
@@ -610,18 +632,15 @@ function BucketEditor({
                 }}
               />
             </Field>
-            <SelectField
+            <SelectField<ProviderChoice>
               id={`storage-cfg-${name}-provider`}
               path={`buckets/${name}/provider`}
               label="Provider"
-              value={provider}
-              options={[
-                { value: 'local', label: 'local — native filesystem' },
-                { value: 's3', label: 's3 — AWS or compatible' },
-                { value: 'gcs', label: 'gcs — Google Cloud Storage' },
-                { value: 'r2', label: 'r2 — Cloudflare R2' },
-              ]}
-              onChange={(next) => onChange(providerDefaults(next as ProviderName))}
+              value={choice}
+              options={PROVIDER_CHOICES.map((c) => ({ value: c.value, label: c.label, description: c.description }))}
+              hint={choiceInfo?.description}
+              error={fieldError(errors, 'buckets', name, 'provider')}
+              onChange={onChoice}
             />
           </div>
           <TextField
@@ -630,171 +649,139 @@ function BucketEditor({
             label="Provider bucket name"
             value={asString(bucket.bucket)}
             placeholder={name}
-            hint="Optional override. Empty uses the worker bucket name."
+            hint={
+              provider === 'local'
+                ? 'Optional override of its folder under the data directory’s buckets/. Empty uses the worker bucket name.'
+                : 'Optional override. Empty uses the worker bucket name.'
+            }
             error={fieldError(errors, 'buckets', name, 'bucket')}
             onChange={(next) => setOptional('bucket', next)}
           />
-        </section>
+        </Section>
+
+        <Section
+          title="Appearance"
+          description="How apps draw this bucket: the iii app and this console use the same icon and colour."
+        >
+          <Field label="Icon">
+            <IconPicker
+              value={display.icon}
+              color={display.color}
+              label={`Icon of ${name}`}
+              onChange={(icon) => onChange(withDisplay(bucket, 'icon', icon))}
+            />
+          </Field>
+          <Field label="Colour" error={fieldError(errors, 'buckets', name, 'display', 'color')}>
+            <ColorPicker
+              value={asString(asObject(bucket.display).color) || undefined}
+              label={`Colour of ${name}`}
+              onChange={(color) => onChange(withDisplay(bucket, 'color', color))}
+            />
+          </Field>
+        </Section>
 
         {provider === 'local' ? (
-          <section className="storage-cfg-section">
-            <div className="storage-cfg-section-head">
-              <div>
-                <h4>Native local bucket</h4>
-                <p>This bucket uses the filesystem and HTTP settings from local storage.</p>
-              </div>
-              <Chip>local</Chip>
-            </div>
+          <Section
+            title="Native local bucket"
+            description="This bucket uses the filesystem and HTTP settings from local storage."
+            chip="local"
+          >
             <div className="storage-cfg-info-note">
-              Direct upload and download URLs are available only when the local HTTP transfer server is enabled in the runtime section.
+              Direct upload and download URLs are available only when the local HTTP transfer server is enabled in the
+              runtime section.
             </div>
-          </section>
+          </Section>
         ) : null}
 
         {provider === 's3' ? (
           <>
-            <section className="storage-cfg-section">
-              <div className="storage-cfg-section-head">
-                <div><h4>Connection</h4><p>AWS defaults apply when endpoint and static credentials are omitted.</p></div>
-                <Chip>s3</Chip>
-              </div>
-              <TextField
-                id={`storage-cfg-${name}-region`}
-                path={`buckets/${name}/region`}
-                label="Region"
-                value={asString(bucket.region)}
-                placeholder="us-east-1"
-                error={fieldError(errors, 'buckets', name, 'region')}
-                onChange={(next) => setRequired('region', next)}
-              />
+            <Section
+              title="Connection"
+              description={
+                compatible
+                  ? 'An S3-compatible service: its endpoint, region and addressing.'
+                  : 'AWS: the bucket’s region. AWS defaults apply when static credentials are omitted.'
+              }
+              chip={compatible ? 's3-compatible' : 's3'}
+            >
+              {compatible ? (
+                <SelectField<PresetId>
+                  id={`storage-cfg-${name}-preset`}
+                  path={`buckets/${name}/endpoint_preset`}
+                  label="Service"
+                  value={preset.id}
+                  options={S3_PRESETS.map((p) => ({ value: p.id, label: p.label }))}
+                  hint="Fills in the endpoint, region and addressing; every field stays editable."
+                  onChange={(id) => onChange(applyPreset(bucket, id))}
+                />
+              ) : null}
               <div className="storage-cfg-field-grid">
                 <TextField
-                  id={`storage-cfg-${name}-access-key`}
-                  path={`buckets/${name}/access_key_id`}
-                  label="Access key ID"
-                  value={asString(bucket.access_key_id)}
-                  placeholder="${AWS_ACCESS_KEY_ID}"
-                  error={fieldError(errors, 'buckets', name, 'access_key_id')}
-                  onChange={(next) => setOptional('access_key_id', next)}
+                  id={`storage-cfg-${name}-region`}
+                  path={`buckets/${name}/region`}
+                  label="Region"
+                  value={asString(bucket.region)}
+                  placeholder={compatible ? preset.region : 'us-east-1'}
+                  hint={compatible ? preset.regionHint : undefined}
+                  error={fieldError(errors, 'buckets', name, 'region')}
+                  onChange={(next) => onChange(compatible ? withRegion(bucket, next) : { ...bucket, region: next })}
                 />
-                <TextField
-                  id={`storage-cfg-${name}-secret-key`}
-                  path={`buckets/${name}/secret_access_key`}
-                  label="Secret access key"
-                  value={asString(bucket.secret_access_key)}
-                  placeholder="${AWS_SECRET_ACCESS_KEY}"
-                  hint="Prefer an environment reference."
-                  error={fieldError(errors, 'buckets', name, 'secret_access_key')}
-                  type="password"
-                  onChange={(next) => setOptional('secret_access_key', next)}
+                {compatible ? (
+                  <TextField
+                    id={`storage-cfg-${name}-endpoint`}
+                    path={`buckets/${name}/endpoint_url`}
+                    label="Endpoint URL"
+                    value={asString(bucket.endpoint_url)}
+                    placeholder={
+                      preset.endpoint ? preset.endpoint.replaceAll('{region}', preset.region) : 'https://s3.example.com'
+                    }
+                    hint="Must be reachable from the engine host. Download links point here too."
+                    error={fieldError(errors, 'buckets', name, 'endpoint_url')}
+                    onChange={(next) => setOptional('endpoint_url', next)}
+                  />
+                ) : null}
+              </div>
+              {compatible ? (
+                <CheckField
+                  id={`storage-cfg-${name}-path-style`}
+                  path={`buckets/${name}/force_path_style`}
+                  label="Force path-style addressing"
+                  hint="Usually required by self-hosted services (MinIO, Ceph, SeaweedFS); hosted ones accept virtual-hosted addressing."
+                  checked={bucket.force_path_style === true}
+                  onChange={(checked) => {
+                    const next = { ...bucket }
+                    if (checked) next.force_path_style = true
+                    else delete next.force_path_style
+                    onChange(next)
+                  }}
                 />
-              </div>
-              <TextField
-                id={`storage-cfg-${name}-session-token`}
-                path={`buckets/${name}/session_token`}
-                label="Session token"
-                value={asString(bucket.session_token)}
-                placeholder="Optional temporary credential"
-                error={fieldError(errors, 'buckets', name, 'session_token')}
-                type="password"
-                onChange={(next) => setOptional('session_token', next)}
-              />
-              <TextField
-                id={`storage-cfg-${name}-endpoint`}
-                path={`buckets/${name}/endpoint_url`}
-                label="Custom endpoint URL"
-                value={asString(bucket.endpoint_url)}
-                placeholder="http://minio:9000"
-                hint="Use for MinIO, Ceph, SeaweedFS, LocalStack, or another S3-compatible service."
-                error={fieldError(errors, 'buckets', name, 'endpoint_url')}
-                onChange={(next) => setOptional('endpoint_url', next)}
-              />
-              <CheckField
-                id={`storage-cfg-${name}-path-style`}
-                path={`buckets/${name}/force_path_style`}
-                label="Force path-style addressing"
-                hint="Usually required by S3-compatible services; AWS normally uses virtual-hosted addressing."
-                checked={bucket.force_path_style === true}
-                onChange={(checked) => {
-                  const next = { ...bucket }
-                  if (checked) next.force_path_style = true
-                  else delete next.force_path_style
-                  onChange(next)
-                }}
-              />
-            </section>
-            <NotificationFields name={name} provider={provider} bucket={bucket} errors={errors} onChange={onChange} />
-          </>
-        ) : null}
-
-        {provider === 'gcs' ? (
-          <>
-            <section className="storage-cfg-section">
-              <div className="storage-cfg-section-head">
-                <div><h4>Connection</h4><p>Application Default Credentials are used when no file is configured.</p></div>
-                <Chip>gcs</Chip>
-              </div>
-              <TextField
-                id={`storage-cfg-${name}-credentials-file`}
-                path={`buckets/${name}/credentials_file`}
-                label="Credentials file"
-                value={asString(bucket.credentials_file)}
-                placeholder="/etc/iii/gcs-service-account.json"
-                error={fieldError(errors, 'buckets', name, 'credentials_file')}
-                onChange={(next) => setOptional('credentials_file', next)}
-              />
-              <TextField
-                id={`storage-cfg-${name}-endpoint`}
-                path={`buckets/${name}/endpoint_url`}
-                label="Custom endpoint URL"
-                value={asString(bucket.endpoint_url)}
-                placeholder="http://fake-gcs:4443"
-                error={fieldError(errors, 'buckets', name, 'endpoint_url')}
-                onChange={(next) => setOptional('endpoint_url', next)}
-              />
-            </section>
-            <NotificationFields name={name} provider={provider} bucket={bucket} errors={errors} onChange={onChange} />
+              ) : null}
+            </Section>
+            <Section
+              title="Credentials"
+              description="Stored in the secrets worker; the configuration keeps a reference."
+            >
+              <div className="storage-cfg-field-grid">{accessKeys(compatible ? 'Access key' : 'AKIA…', false)}</div>
+              {credential(ctx, 'session_token', 'Session token', {
+                hint: 'Only for temporary credentials (STS).',
+              })}
+            </Section>
           </>
         ) : null}
 
         {provider === 'r2' ? (
           <>
-            <section className="storage-cfg-section">
-              <div className="storage-cfg-section-head">
-                <div><h4>Connection</h4><p>The standard endpoint is derived from the Cloudflare account ID.</p></div>
-                <Chip>r2</Chip>
-              </div>
-              <TextField
-                id={`storage-cfg-${name}-account-id`}
-                path={`buckets/${name}/account_id`}
-                label="Account ID"
-                value={asString(bucket.account_id)}
-                placeholder="${R2_ACCOUNT_ID}"
-                error={fieldError(errors, 'buckets', name, 'account_id')}
-                onChange={(next) => setRequired('account_id', next)}
-              />
-              <div className="storage-cfg-field-grid">
-                <TextField
-                  id={`storage-cfg-${name}-access-key`}
-                  path={`buckets/${name}/access_key_id`}
-                  label="Access key ID"
-                  value={asString(bucket.access_key_id)}
-                  placeholder="${R2_ACCESS_KEY_ID}"
-                  error={fieldError(errors, 'buckets', name, 'access_key_id')}
-                  onChange={(next) => setRequired('access_key_id', next)}
-                />
-                <TextField
-                  id={`storage-cfg-${name}-secret-key`}
-                  path={`buckets/${name}/secret_access_key`}
-                  label="Secret access key"
-                  value={asString(bucket.secret_access_key)}
-                  placeholder="${R2_SECRET_ACCESS_KEY}"
-                  hint="Prefer an environment reference."
-                  error={fieldError(errors, 'buckets', name, 'secret_access_key')}
-                  type="password"
-                  onChange={(next) => setRequired('secret_access_key', next)}
-                />
-              </div>
+            <Section
+              title="Connection"
+              description="The standard endpoint is derived from the Cloudflare account ID."
+              chip="r2"
+            >
+              {credential(ctx, 'account_id', 'Account ID', {
+                mode: 'identifier',
+                preferText: true,
+                placeholder: '0123456789abcdef0123456789abcdef',
+                hint: 'Shown in the Cloudflare dashboard; it is part of the bucket’s endpoint, not a secret.',
+              })}
               <TextField
                 id={`storage-cfg-${name}-endpoint`}
                 path={`buckets/${name}/endpoint_url`}
@@ -804,16 +791,72 @@ function BucketEditor({
                 error={fieldError(errors, 'buckets', name, 'endpoint_url')}
                 onChange={(next) => setOptional('endpoint_url', next)}
               />
-            </section>
-            <NotificationFields name={name} provider={provider} bucket={bucket} errors={errors} onChange={onChange} />
+            </Section>
+            <Section title="Credentials" description="An R2 API token’s S3 keys, stored in the secrets worker.">
+              <div className="storage-cfg-field-grid">{accessKeys('R2 access key ID', true)}</div>
+            </Section>
           </>
+        ) : null}
+
+        {provider === 'gcs' ? (
+          <>
+            <Section
+              title="Connection"
+              description="The engine host’s Application Default Credentials apply when no key is set."
+              chip="gcs"
+            >
+              <TextField
+                id={`storage-cfg-${name}-endpoint`}
+                path={`buckets/${name}/endpoint_url`}
+                label="Custom endpoint URL"
+                value={asString(bucket.endpoint_url)}
+                placeholder="http://fake-gcs:4443"
+                hint="Download links cannot be signed for a custom endpoint; files are then read through the worker."
+                error={fieldError(errors, 'buckets', name, 'endpoint_url')}
+                onChange={(next) => setOptional('endpoint_url', next)}
+              />
+            </Section>
+            <Section
+              title="Credentials"
+              description="A service-account key, pasted into the secrets worker or read from a file on the engine host."
+            >
+              {credential(ctx, 'credentials_json', 'Service-account key', {
+                mode: 'json',
+                hint: 'The JSON key file’s contents. A key also lets the worker sign download links.',
+              })}
+              <TextField
+                id={`storage-cfg-${name}-credentials-file`}
+                path={`buckets/${name}/credentials_file`}
+                label="Credentials file"
+                value={asString(bucket.credentials_file)}
+                placeholder="/etc/iii/gcs-service-account.json"
+                hint="A path on the engine host. Set either this or the key above."
+                error={fieldError(errors, 'buckets', name, 'credentials_file')}
+                onChange={(next) => setOptional('credentials_file', next)}
+              />
+            </Section>
+          </>
+        ) : null}
+
+        <Section
+          title="Test"
+          description="Builds this draft in the worker and lists one object at the root; nothing is saved."
+        >
+          <TestBucketRow state={test} blocker={testBlocker(bucketProblems(bucket))} onTest={onTest} />
+        </Section>
+
+        {provider !== 'local' ? (
+          <NotificationFields ctx={ctx} provider={provider} liveError={live?.notifications_error} />
         ) : null}
       </div>
     </section>
   )
 }
 
-export function StorageConfigForm(props: ConfigFormProps) {
+export type StorageConfigFormProps = ConfigFormProps & { host: Host }
+
+export function StorageConfigForm(props: StorageConfigFormProps) {
+  const { host } = props
   const value = asObject(props.value)
   const providers = asObject(value.providers)
   const local = asObject(providers.local)
@@ -824,14 +867,26 @@ export function StorageConfigForm(props: ConfigFormProps) {
   const [narrowPane, setNarrowPane] = useState<'nav' | 'editor'>('nav')
   const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({})
   const [nameErrors, setNameErrors] = useState<Record<string, string>>({})
+  // "S3-compatible" picked while the endpoint is still empty: the entry alone
+  // reads as plain S3, so the choice is remembered per bucket.
+  const [compatible, setCompatible] = useState<Record<string, boolean>>({})
+  const [tests, setTests] = useState<Record<string, TestState>>({})
+  const testTokens = useRef<Record<string, number>>(Object.create(null))
   const domRef = useRef<HTMLDivElement | null>(null)
+  const valueRef = useRef(value)
+  valueRef.current = value
   const focusKey = props.focusField?.join('/') ?? ''
   const { confirm, dialog } = useConfirm()
+  const { live, refresh: refreshLive } = useLiveBuckets(host)
+  const referencesSupported = supportsSecretReferences(props.schema)
 
-  const setRoot = useCallback((node: HTMLDivElement | null) => {
-    rootRef(node)
-    domRef.current = node
-  }, [rootRef])
+  const setRoot = useCallback(
+    (node: HTMLDivElement | null) => {
+      rootRef(node)
+      domRef.current = node
+    },
+    [rootRef],
+  )
 
   const choose = (next: Selection) => {
     setSelection(next)
@@ -857,17 +912,53 @@ export function StorageConfigForm(props: ConfigFormProps) {
 
   useEffect(() => {
     if (!focusKey || !domRef.current) return
-    const target = domRef.current.querySelector<HTMLElement>(`[data-field="${CSS.escape(focusKey)}"]`)
-      ?? domRef.current.querySelector<HTMLElement>(`[data-section="${CSS.escape(focusKey.split('/').slice(0, 2).join('/'))}"]`)
+    const target =
+      domRef.current.querySelector<HTMLElement>(`[data-field="${CSS.escape(focusKey)}"]`) ??
+      domRef.current.querySelector<HTMLElement>(
+        `[data-section="${CSS.escape(focusKey.split('/').slice(0, 2).join('/'))}"]`,
+      )
     target?.focus()
     target?.scrollIntoView({ block: 'center' })
   }, [focusKey, selection.kind, selection.kind === 'bucket' ? selection.name : 'local'])
 
-  const commitBuckets = (nextBuckets: JsonObject) => props.onChange({ ...value, buckets: nextBuckets })
+  // Every edit starts from the draft as it is now: a secret stored after an
+  // await must not undo what was typed meanwhile.
+  const currentBuckets = () => asObject(valueRef.current.buckets)
+  const commitBuckets = (nextBuckets: JsonObject) => {
+    const next = { ...valueRef.current, buckets: nextBuckets }
+    valueRef.current = next
+    props.onChange(next)
+  }
+
+  // A result is dropped on any edit of its bucket — a stale "Connected" next
+  // to a changed key would be a lie. The token discards a test that finishes
+  // after such an edit.
+  const clearTest = (name: string) => {
+    testTokens.current[name] = (testTokens.current[name] ?? 0) + 1
+    setTests((current) => {
+      if (!(name in current)) return current
+      const next = { ...current }
+      delete next[name]
+      return next
+    })
+  }
+
+  const setBucket = (name: string, next: JsonObject) => {
+    clearTest(name)
+    commitBuckets({ ...currentBuckets(), [name]: next })
+  }
+
+  // Applied to the entry as it is now; a bucket renamed or removed while a
+  // secret was being stored is left alone rather than brought back.
+  const setBucketField = (name: string, field: string, next: JsonValue | undefined) => {
+    const current = currentBuckets()[name]
+    if (!isObject(current)) return
+    setBucket(name, withField(current, field, next))
+  }
 
   const addBucket = () => {
     const name = nextBucketName(buckets)
-    commitBuckets({ ...buckets, [name]: providerDefaults('local') })
+    commitBuckets({ ...buckets, [name]: newBucketEntry('local') })
     setNameDrafts((current) => ({ ...current, [name]: name }))
     choose({ kind: 'bucket', name })
   }
@@ -875,10 +966,8 @@ export function StorageConfigForm(props: ConfigFormProps) {
   const renameBucket = (from: string) => {
     const raw = nameDrafts[from] ?? from
     const nextName = raw.trim()
-    let error = ''
-    if (!validBucketName(nextName)) {
-      error = 'Use 1–63 characters: start with a lowercase letter or number, then only a–z, 0–9, _ or -.'
-    } else if (nextName !== from && buckets[nextName] !== undefined) {
+    let error = bucketNameError(nextName) ?? ''
+    if (!error && nextName !== from && buckets[nextName] !== undefined) {
       error = `A bucket named ${nextName} already exists.`
     }
     if (error) {
@@ -891,6 +980,7 @@ export function StorageConfigForm(props: ConfigFormProps) {
       return next
     })
     if (nextName === from) return
+    clearTest(from)
     const nextBuckets: JsonObject = {}
     for (const name of Object.keys(buckets)) {
       nextBuckets[name === from ? nextName : name] = buckets[name]
@@ -901,21 +991,50 @@ export function StorageConfigForm(props: ConfigFormProps) {
       delete next[from]
       return next
     })
+    setCompatible((current) => {
+      const next = { ...current, [nextName]: current[from] === true }
+      delete next[from]
+      return next
+    })
     setSelection({ kind: 'bucket', name: nextName })
   }
 
   const removeBucket = async (name: string) => {
     const ok = await confirm({
       title: `Remove bucket ${name} from the storage configuration?`,
+      description: 'Its objects and its secrets stay where they are.',
       confirmLabel: 'Remove',
       tone: 'danger',
     })
     if (!ok) return
-    const next = { ...buckets }
+    clearTest(name)
+    const next = { ...currentBuckets() }
     delete next[name]
     commitBuckets(next)
     setSelection({ kind: 'local' })
     setNarrowPane(narrow ? 'nav' : 'editor')
+  }
+
+  const choiceOf = (name: string, bucket: JsonObject): ProviderChoice => {
+    const derived = providerChoiceOf(bucket)
+    return derived === 's3' && compatible[name] ? 's3-compatible' : derived
+  }
+
+  const pickChoice = (name: string, next: ProviderChoice) => {
+    const bucket = asObject(currentBuckets()[name])
+    setCompatible((current) => ({ ...current, [name]: next === 's3-compatible' }))
+    setBucket(name, switchProvider(bucket, next))
+  }
+
+  const runTest = async (name: string) => {
+    const bucket = asObject(currentBuckets()[name])
+    const token = (testTokens.current[name] ?? 0) + 1
+    testTokens.current[name] = token
+    setTests((current) => ({ ...current, [name]: { status: 'testing' } }))
+    const result = await runBucketTest(host, name, bucket)
+    if (testTokens.current[name] !== token) return // superseded by an edit
+    setTests((current) => ({ ...current, [name]: result }))
+    refreshLive()
   }
 
   const showNav = !narrow || narrowPane === 'nav'
@@ -929,6 +1048,7 @@ export function StorageConfigForm(props: ConfigFormProps) {
         {showNav ? (
           <ConfigNav
             buckets={buckets}
+            live={live}
             selection={selection}
             localHttpEnabled={isObject(local.http)}
             onSelect={choose}
@@ -936,21 +1056,37 @@ export function StorageConfigForm(props: ConfigFormProps) {
           />
         ) : null}
         {showEditor && selection.kind === 'local' ? (
-          <LocalEditor value={value} errors={props.errors} narrow={narrow} onBack={() => setNarrowPane('nav')} onChange={props.onChange} />
+          <LocalEditor
+            value={value}
+            errors={props.errors}
+            narrow={narrow}
+            onBack={() => setNarrowPane('nav')}
+            onChange={props.onChange}
+          />
         ) : null}
         {showEditor && selection.kind === 'bucket' && selectedBucket ? (
           <BucketEditor
+            key={selection.name}
+            host={host}
             name={selection.name}
             bucket={selectedBucket}
+            buckets={buckets}
+            choice={choiceOf(selection.name, selectedBucket)}
             nameDraft={nameDrafts[selection.name] ?? selection.name}
             nameError={nameErrors[selection.name]}
             errors={props.errors}
             narrow={narrow}
+            live={live[selection.name]}
+            referencesSupported={referencesSupported}
+            test={tests[selection.name]}
             onBack={() => setNarrowPane('nav')}
             onNameDraft={(next) => setNameDrafts((current) => ({ ...current, [selection.name]: next }))}
             onRename={() => renameBucket(selection.name)}
-            onChange={(next) => commitBuckets({ ...buckets, [selection.name]: next })}
-            onRemove={() => removeBucket(selection.name)}
+            onChoice={(next) => pickChoice(selection.name, next)}
+            onChange={(next) => setBucket(selection.name, next)}
+            onField={(field, next) => setBucketField(selection.name, field, next)}
+            onRemove={() => void removeBucket(selection.name)}
+            onTest={() => void runTest(selection.name)}
           />
         ) : null}
       </div>

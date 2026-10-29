@@ -8,11 +8,15 @@ use database::handlers::{
     browse::{self, BrowseTableReq},
     column_stats::{self, ColumnStatsReq},
     commit_transaction::{self, CommitTxReq},
+    connections::{self, DeleteConnectionReq, GetConnectionReq, SaveConnectionReq},
     diagram::{self, SchemaDiagramReq},
+    distinct_values::{self, DistinctValuesReq},
     execute::{self, ExecuteReq},
     execute_batch::{self, ExecuteBatchReq},
     explain::{self, ExplainReq},
+    format_sql::{self, FormatSqlReq},
     health::{self, HealthReq, TerminateReq},
+    insert_row::{self, InsertRowReq},
     list_databases::{self, ListDatabasesReq},
     prepare::{self, PrepareReq},
     query::{self, QueryReq},
@@ -28,8 +32,9 @@ use database::handlers::{
     AppState,
 };
 use database::transaction::TxRegistry;
+use database::triggers::NativeCapture;
 use iii_helpers::observability::{Logger, OtelConfig};
-use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
+use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -57,7 +62,9 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                // russh logs protocol detail at debug; keep it out of the
+                // default output (credentials are never logged either way).
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,russh=warn")),
         )
         .init();
 
@@ -80,7 +87,7 @@ async fn main() -> Result<()> {
     }
     metadata.description = Some(
         "SQL for PostgreSQL, MySQL, and SQLite: queries, statements, interactive \
-         transactions, and database::row-changed triggers (statements or native capture)."
+         transactions, and database::on-row-changed events (statements or native capture)."
             .to_string(),
     );
 
@@ -123,32 +130,50 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("loading database configuration")?;
 
-    let pools = configuration::build_pools(&cfg)
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("building initial connection pools")?;
+    // `secret://` / `env://` values resolve through the secrets worker; the
+    // cache is filled when the configuration is applied below.
+    let runtime = Arc::new(database::runtime::Runtime::new(Arc::new(
+        database::secrets::SecretCache::new(database::secrets::bus_fetch(iii.clone())),
+    )));
 
     let handles = Arc::new(HandleRegistry::new());
     let transactions = TxRegistry::new();
     let log = Logger::new();
-    let row_changes = Arc::new(database::triggers::RowChangeBus::new(
+    // Filled by `apply_config` below: a connection whose pool cannot be built
+    // (unresolvable secret, SSH failure) is reported, not fatal.
+    let pools = Arc::new(RwLock::new(std::collections::HashMap::new()));
+    let live_config = Arc::new(RwLock::new(cfg.clone()));
+    // Native capture and the routing index of `database::on-row-changed`,
+    // driven by its observers and by the old trigger type's bindings.
+    let capture = Arc::new(NativeCapture::new(
         iii.clone(),
+        live_config.clone(),
+        pools.clone(),
         ROW_CHANGE_DISPATCH_TIMEOUT_MS,
     ));
+    let row_changes = Arc::new(database::triggers::RowChangeBus::with_capture(
+        iii.clone(),
+        capture.clone(),
+    ));
     // One LISTEN task per `capture: native` postgres database, live from
-    // startup — external writes must be heard before any binding registers.
+    // startup — external writes must be heard before any observer registers.
     let native_listeners = Arc::new(database::triggers::NativeListeners::new(
         row_changes.clone(),
     ));
-    native_listeners.sync(&cfg);
+    runtime.set_listeners(native_listeners.clone());
     let state = AppState {
-        pools: Arc::new(RwLock::new(pools)),
-        config: Arc::new(RwLock::new(cfg)),
+        pools,
+        config: live_config,
         handles: handles.clone(),
         transactions: transactions.clone(),
         log: log.clone(),
         row_changes: Some(row_changes.clone()),
+        runtime,
     };
+    configuration::apply_config(&state, cfg, Some(&native_listeners))
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("building initial connection pools")?;
 
     let _evictor = handles.spawn_evictor();
     let _tx_watcher = transactions.spawn_timeout_watcher(log.clone(), Some(row_changes.clone()));
@@ -335,17 +360,86 @@ async fn main() -> Result<()> {
         );
     }
     {
+        let st = state.clone();
         iii.register_function(
             "database::testConnection",
-            RegisterFunction::new_async(move |req: TestConnectionReq| async move {
-                test_connection::handle(req)
-                    .await
-                    .map_err(iii_sdk::errors::Error::from)
+            RegisterFunction::new_async(move |req: TestConnectionReq| {
+                let st = st.clone();
+                async move {
+                    test_connection::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
             })
             .description(
-                "Test a candidate database URL (plus optional TLS) with one throwaway \
-                 connection. Configured pools are untouched; reports \
-                 ok/driver/latency/server version; failures are data, not errors.",
+                "Test a candidate connection entry (url or structured form, TLS, SSH tunnel, \
+                 secret:// values) with one throwaway connection. Configured pools are \
+                 untouched; reports ok/driver/latency/server version, the failing stage and \
+                 the SSH host key; failures are data, not errors.",
+            )
+            // Candidate credentials ride these payloads: no observer may
+            // subscribe to them.
+            .observe(iii_sdk::Observe::auto().allow(false)),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::getConnection",
+            RegisterFunction::new_async(move |req: GetConnectionReq| {
+                let st = st.clone();
+                async move {
+                    connections::get(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Read one stored connection entry for editing: references and templates \
+                 intact, literal passwords, passphrases and keys as \"__redacted__\".",
+            )
+            // Candidate credentials ride these payloads: no observer may
+            // subscribe to them.
+            .observe(iii_sdk::Observe::auto().allow(false)),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::saveConnection",
+            RegisterFunction::new_async(move |req: SaveConnectionReq| {
+                let st = st.clone();
+                async move {
+                    connections::save(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Create, update (previous_name = name) or rename (previous_name = old) a \
+                 connection in the database configuration; \"__redacted__\" keeps a stored \
+                 value. Returns after the pools reloaded, with the connection's error if any.",
+            )
+            // Candidate credentials ride these payloads: no observer may
+            // subscribe to them.
+            .observe(iii_sdk::Observe::auto().allow(false)),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::deleteConnection",
+            RegisterFunction::new_async(move |req: DeleteConnectionReq| {
+                let st = st.clone();
+                async move {
+                    connections::delete(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Remove a connection from the database configuration and close its pool. \
+                 The last connection cannot be removed.",
             ),
         );
     }
@@ -434,9 +528,11 @@ async fn main() -> Result<()> {
                 }
             })
             .description(
-                "Save a named query against a database. Stored in the state worker, so \
-                 it survives restarts and an agent can save one for a human to find in \
-                 the console. Saving under an existing name replaces it.",
+                "Save a named snippet to the web console's saved-query list (state \
+                 worker): console-only, not a file. To save a query as a .sql file, write \
+                 it into the connection's queries folder (listDatabases `folder`) with the \
+                 file tools — that is what the apps list. Saving under an existing name \
+                 replaces it.",
             ),
         );
     }
@@ -500,7 +596,7 @@ async fn main() -> Result<()> {
             .description(
                 "List recent queries run against a database, newest first. Best effort \
                  — recording never blocks or fails a query, so it is a convenience, not \
-                 an audit log. For an audit trail bind database::row-changed.",
+                 an audit log. For an audit trail observe database::on-row-changed.",
             ),
         );
     }
@@ -684,38 +780,132 @@ async fn main() -> Result<()> {
         );
     }
 
-    // The worker announces its own writes. Registered AFTER the functions so
-    // the console can attribute the type, and gated on the databases that
-    // actually exist — a binding on a typo'd handle would listen to nothing.
-    let _row_changed = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            database::triggers::ROW_CHANGED_TYPE,
-            "Fires after a row change commits, filtered by `db`, optional `table`, and optional `ops`. \
-             On a `capture: statements` database (the default) it reports only writes made THROUGH \
-             this worker, with the writer's own RETURNING rows as `returning` — a listener that needs \
-             to know WHICH row changed depends on the writer putting `RETURNING <key>` in its SQL. \
-             On a `capture: native` database it reports any client's committed writes, with the \
-             changed rows' primary keys as `returning` (capped; `truncated` flags the rest). \
-             Best-effort delivery, no replay.",
-            database::triggers::RowChangedHandler {
-                bus: row_changes.clone(),
-                config: state.config.clone(),
-                pools: state.pools.clone(),
-            },
-        )
-        .trigger_request_format::<database::triggers::RowChangedConfig>()
-        .call_request_format::<database::triggers::RowChangedEvent>(),
-    );
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::distinctValues",
+            RegisterFunction::new_async(move |req: DistinctValuesReq| {
+                let st = st.clone();
+                async move {
+                    distinct_values::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "List the distinct values of one column, most frequent first, with their row \
+                 counts — for a filter's value picker. `search` narrows by a case-insensitive \
+                 substring of the text form.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::insertRow",
+            RegisterFunction::new_async(move |req: InsertRowReq| {
+                let st = st.clone();
+                async move {
+                    insert_row::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Insert one row from a {column: value} map; values are cast to each column's \
+                 catalog type (numbers and dates as strings, bytea/blob as base64) and the \
+                 inserted row comes back. Columns left out take their default.",
+            ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "database::formatSql",
+            RegisterFunction::new_async(move |req: FormatSqlReq| {
+                let st = st.clone();
+                async move {
+                    format_sql::handle(&st, req)
+                        .await
+                        .map_err(iii_sdk::errors::Error::from)
+                }
+            })
+            .description(
+                "Pretty-print SQL for a driver's dialect: keywords cased, clauses indented, \
+                 statements and comments kept. Pure text; nothing runs.",
+            ),
+        );
+    }
 
-    configuration::register_config_trigger(&iii, state.clone(), Some(native_listeners.clone()))
-        .context("registering configuration change trigger")?;
+    {
+        let st = state.clone();
+        iii.register_function(
+            database::handlers::mentions::SEARCH_FN,
+            RegisterFunction::new_async(move |req: mention_contract::MentionSearchRequest| {
+                let st = st.clone();
+                async move {
+                    Ok::<_, iii_sdk::errors::Error>(
+                        database::handlers::mentions::search(&st, req).await,
+                    )
+                }
+            })
+            .description(
+                "Search the configured connections for the chat @database mention menu, by \
+                 name, driver or host; best match first.",
+            )
+            .metadata(database::handlers::mentions::search_metadata()),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            database::handlers::mentions::GET_FN,
+            RegisterFunction::new_async(move |req: mention_contract::MentionGetRequest| {
+                let st = st.clone();
+                async move {
+                    Ok::<_, iii_sdk::errors::Error>(
+                        database::handlers::mentions::get(&st, req).await,
+                    )
+                }
+            })
+            .description(
+                "Resolve a @database(id=…) chat mention to its pill, preview card and agent \
+                 summary; null for an unknown connection. Declares the database mention provider.",
+            )
+            .metadata(database::handlers::mentions::provider().metadata()),
+        );
+    }
+
+    // The worker announces its own writes through an owner-delivered function
+    // its observers name. Registered AFTER the other functions so the console
+    // can attribute it.
+    database::triggers::capture::register(&iii, &capture);
+
+    // The old trigger type, on every engine: consumers that still bind
+    // `database::row-changed` (`registerTrigger`, `engine::register_trigger`,
+    // harness subscriptions) are served by the worker as before.
+    let _row_changed_type =
+        database::triggers::legacy::register_trigger_type(&iii, capture.clone());
+
+    // The configuration binding follows the engine's observe support, as the
+    // SDK learns it on each connection: an observer with observe, the old
+    // `configuration` trigger without. An engine upgraded or rolled back
+    // under the worker switches without a restart.
+    let config_binding =
+        configuration::register_config_trigger(&iii, state.clone(), Some(native_listeners.clone()));
+    let _engine_follower = iii
+        .on_engine_supports_observe(move |engine_observes| config_binding.follow(engine_observes));
+    configuration::register_secret_trigger(&iii, state.clone(), Some(native_listeners.clone()));
+    let _maintenance =
+        configuration::spawn_maintenance(state.clone(), Some(native_listeners.clone()));
 
     // Injectable console UI (function-trigger renderer) — after the
     // database::* functions so the console can attribute the assets.
     database::ui::register(&iii);
 
     tracing::info!(
-        "database worker registered 29 functions and 1 trigger type, waiting for invocations"
+        engine_observes = ?iii.engine_supports_observe(),
+        "database worker registered 39 functions, waiting for invocations"
     );
     wait_for_shutdown_signal().await?;
     tracing::info!("database worker shutting down");

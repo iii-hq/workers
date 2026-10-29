@@ -104,8 +104,12 @@ impl HookRegistry {
 
     /// `pre_generate`: extend the system prompt and append bounded messages, or
     /// veto. Each hook sees the prompt/messages as mutated by the previous.
+    /// `bindings` is the step's one snapshot of `pre_generate.ordered()`, the
+    /// same one [`with_static_prompts`] applied before assembly.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_pre_generate(
         &self,
+        bindings: &[HookBinding],
         record: &TurnRecord,
         step: u64,
         base_system_prompt: Option<String>,
@@ -116,9 +120,9 @@ impl HookRegistry {
         let mut system_prompt = base_system_prompt;
         let mut appended: Vec<Value> = Vec::new();
         let mut annotations = Map::new();
-        for binding in self.pre_generate.ordered() {
-            if let Some(injected) = binding.inject_prompt.as_deref() {
-                system_prompt = append_prompt(system_prompt, injected);
+        for binding in bindings {
+            // Already in the assembled prompt (`with_static_prompts`).
+            if binding.inject_prompt.is_some() {
                 continue;
             }
             let mut messages = base_messages.to_vec();
@@ -141,7 +145,7 @@ impl HookRegistry {
                     .map(|functions| functions.expose)
                     .unwrap_or_default(),
             });
-            match self.invoke(&binding, input).await {
+            match self.invoke(binding, input).await {
                 HookOutcome::Continue(m) => {
                     if m.system_prompt.is_some() {
                         system_prompt = m.system_prompt;
@@ -449,6 +453,19 @@ fn merge(into: &mut Map<String, Value>, from: Map<String, Value>) {
     for (k, v) in from {
         into.insert(k, v);
     }
+}
+
+/// The prompt with every static `inject_prompt` binding appended in chain
+/// order. The turn loop applies it before `context::assemble`, so the budget,
+/// the compaction gate and the request all count that text.
+pub fn with_static_prompts(
+    bindings: &[HookBinding],
+    system_prompt: Option<String>,
+) -> Option<String> {
+    bindings
+        .iter()
+        .filter_map(|binding| binding.inject_prompt.as_deref())
+        .fold(system_prompt, append_prompt)
 }
 
 fn append_prompt(base: Option<String>, injected: &str) -> Option<String> {

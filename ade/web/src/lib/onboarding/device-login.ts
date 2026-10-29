@@ -1,8 +1,8 @@
 /**
- * Sign-in for a provider that uses a device flow (GitHub Copilot): the
- * worker hands out a code, the person enters it on the provider's page, and
- * the ADE polls the worker until the sign-in lands. The device code stays
- * in memory here; only the user code is shown.
+ * Sign-in for a provider that uses a device flow (GitHub Copilot, Codex):
+ * the worker hands out a code, the person enters it on the provider's page,
+ * and the ADE polls the worker until the sign-in lands. The device code
+ * stays in memory here; only the user code is shown.
  */
 import { getIiiClient } from '@/lib/iii-client'
 import type { StepProgress } from './api'
@@ -15,13 +15,16 @@ export type DevicePollStatus =
   | 'slow_down'
   | 'expired'
   | 'denied'
+  /** The worker ended the sign-in with an error, or another one replaced it. */
+  | 'failed'
 
 export interface DeviceCode {
   user_code: string
   verification_uri: string
+  /** What `loginPoll` follows: the provider's `handle` value. */
   device_code: string
   expires_in?: number
-  /** Seconds GitHub wants between polls. */
+  /** Seconds the provider wants between polls. */
   interval?: number
 }
 
@@ -36,6 +39,7 @@ const TERMINAL: ReadonlySet<DevicePollStatus> = new Set([
   'ok',
   'expired',
   'denied',
+  'failed',
 ])
 
 export interface LoginPoller {
@@ -146,16 +150,31 @@ export async function startDeviceLogin(
   if (!installed.has(provider.worker)) {
     await addWorkersWithProgress([provider.worker], report)
   }
-  report({ note: 'asking GitHub for a code' })
+  report({ note: `asking ${provider.site} for a code` })
   const client = await getIiiClient()
-  const code = await client.trigger<Partial<DeviceCode>>(
-    provider.loginStart,
-    {},
-  )
-  if (!code?.user_code || !code.verification_uri || !code.device_code) {
+  const code = await client.trigger<
+    Partial<Omit<DeviceCode, 'device_code'>> & {
+      device_code?: string
+      login_id?: string
+      /** Unix seconds, where the provider gives a deadline instead. */
+      expires_at?: number
+    }
+  >(provider.loginStart, {})
+  const handle = code?.[provider.handle]
+  if (!code?.user_code || !code.verification_uri || !handle) {
     throw new Error(`${provider.title} did not return a sign-in code.`)
   }
-  return code as DeviceCode
+  return {
+    user_code: code.user_code,
+    verification_uri: code.verification_uri,
+    device_code: handle,
+    expires_in:
+      code.expires_in ??
+      (code.expires_at === undefined
+        ? undefined
+        : code.expires_at - Math.floor(Date.now() / 1_000)),
+    interval: code.interval,
+  }
 }
 
 export async function pollDeviceLogin(
@@ -163,9 +182,19 @@ export async function pollDeviceLogin(
   deviceCode: string,
 ): Promise<DevicePollStatus> {
   const client = await getIiiClient()
-  const reply = await client.trigger<{ status?: DevicePollStatus }>(
-    provider.loginPoll,
-    { device_code: deviceCode },
-  )
-  return reply?.status ?? 'pending'
+  const reply = await client.trigger<{ status?: string }>(provider.loginPoll, {
+    [provider.handle]: deviceCode,
+  })
+  switch (reply?.status) {
+    case 'ok':
+    case 'slow_down':
+    case 'expired':
+    case 'denied':
+      return reply.status
+    case 'error':
+    case 'canceled':
+      return 'failed'
+    default:
+      return 'pending'
+  }
 }

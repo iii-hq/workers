@@ -166,21 +166,21 @@
         {
           "id": "a",
           "columns": 2,
-          "screens": ["chat", "ext:onboarding"],
+          "screens": ["chat", "ext:learn-iii"],
           "paneIds": ["a:pane:0", "a:pane:1"],
           "sizes": [0.6, 0.4]
         }
       ],
       "activeTabId": "a",
       "screen": "traces",
-      "relativeTo": "ext:onboarding",
+      "relativeTo": "ext:learn-iii",
       "expect": {
         "activeTabId": "a",
         "tabs": [
           {
             "id": "a",
             "columns": 3,
-            "screens": ["chat", "ext:onboarding", "traces"],
+            "screens": ["chat", "ext:learn-iii", "traces"],
             "paneIds": ["a:pane:0", "a:pane:1", "pane-new"],
             "sizes": [0.4, 0.2666666666666667, 0.3333333333333333]
           }
@@ -193,14 +193,14 @@
         {
           "id": "a",
           "columns": 2,
-          "screens": ["chat", "ext:onboarding"],
+          "screens": ["chat", "ext:learn-iii"],
           "paneIds": ["a:pane:0", "a:pane:1"],
           "sizes": [0.6, 0.4]
         }
       ],
       "activeTabId": "a",
       "screen": "traces",
-      "relativeTo": "ext:onboarding",
+      "relativeTo": "ext:learn-iii",
       "direction": "left",
       "expect": {
         "activeTabId": "a",
@@ -208,7 +208,7 @@
           {
             "id": "a",
             "columns": 3,
-            "screens": ["chat", "traces", "ext:onboarding"],
+            "screens": ["chat", "traces", "ext:learn-iii"],
             "paneIds": ["a:pane:0", "pane-new", "a:pane:1"],
             "sizes": [0.4, 0.3333333333333333, 0.2666666666666667]
           }
@@ -222,14 +222,14 @@
         {
           "id": "b",
           "columns": 2,
-          "screens": ["chat", "ext:onboarding"],
+          "screens": ["chat", "ext:learn-iii"],
           "paneIds": ["b:pane:0", "b:pane:1"],
           "sizes": [0.5, 0.5]
         }
       ],
       "activeTabId": "a",
       "screen": "traces",
-      "relativeTo": "ext:onboarding",
+      "relativeTo": "ext:learn-iii",
       "expect": {
         "activeTabId": "b",
         "tabs": [
@@ -237,7 +237,7 @@
           {
             "id": "b",
             "columns": 3,
-            "screens": ["chat", "ext:onboarding", "traces"],
+            "screens": ["chat", "ext:learn-iii", "traces"],
             "paneIds": ["b:pane:0", "b:pane:1", "pane-new"],
             "sizes": [
               0.33333333333333337, 0.33333333333333337, 0.3333333333333333

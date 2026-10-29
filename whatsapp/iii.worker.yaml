@@ -17,6 +17,8 @@ config:
     name: whatsapp
     namespace: ''
   data_dir: data/whatsapp-go
+  device_name: ''
+  device_platform: desktop
   max_sessions: 32
   max_media_bytes: 16777216
   max_events: 1000

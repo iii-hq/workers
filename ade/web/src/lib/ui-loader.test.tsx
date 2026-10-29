@@ -91,6 +91,7 @@ function createHarness({
     selectConversation: vi.fn(),
     openDraft: vi.fn(),
     composerModel: vi.fn(() => null),
+    startChat: vi.fn(async () => 'chat-1'),
   },
   importModule = vi.fn(async () => setupForm('default')),
   manifest = Promise.resolve({ disabled: false }),
@@ -389,7 +390,7 @@ describe('host.panels.openScreen', () => {
     })
     harness.emit({
       event: 'sync',
-      assets: [{ path: 'onboarding/page.js', kind: 'script', hash: 'one' }],
+      assets: [{ path: 'learn-iii/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(captured).toBeDefined())
     return { host: captured as Parameters<SetupFn>[0], harness }
@@ -403,7 +404,7 @@ describe('host.panels.openScreen', () => {
 
     const request = {
       screen: 'traces',
-      relativeTo: 'ext:onboarding',
+      relativeTo: 'ext:learn-iii',
       direction: 'right' as const,
       sizes: [0.3, 0.4, 0.3],
     }
@@ -426,7 +427,7 @@ describe('host.panels.openScreen', () => {
     resetPanelContextForTests()
     const opened = vi.fn()
     subscribeScreenOpen(opened)
-    const { host, harness } = await loadHost('#/worker/onboarding/tour')
+    const { host, harness } = await loadHost('#/worker/learn-iii/tour')
 
     host.panels.openScreen({ screen: 'traces' })
     expect(opened).not.toHaveBeenCalled()
@@ -535,9 +536,12 @@ describe('host.chat.compose', () => {
       direction: 'right',
       sizes: [2, 1],
     })
-    // Held for the chat that is opening.
+    // Held for the chat that is opening (drained a microtask after the
+    // composer subscribes, so all of its listeners get it).
     const seen: string[] = []
-    onComposerInsert((insert) => seen.push(insert.text))()
+    const off = onComposerInsert((insert) => seen.push(insert.text))
+    await Promise.resolve()
+    off()
     expect(seen).toEqual(['ref'])
 
     harness.stop()
@@ -552,7 +556,10 @@ describe('host.chat.compose', () => {
 
     host.chat.compose({ text: 'ref', beside: 'ext:ide' })
     expect(opened).not.toHaveBeenCalled()
-    onComposerInsert(() => {})()
+    // Drain what was held so it cannot reach a later test's composer.
+    const off = onComposerInsert(() => {})
+    await Promise.resolve()
+    off()
 
     harness.stop()
     vi.unstubAllGlobals()
@@ -784,6 +791,7 @@ describe('injectable UI conversation adapters', () => {
         openDraft,
         selectConversation,
         composerModel: () => null,
+        startChat: vi.fn(async () => 'chat-1'),
       },
       importModule: async () => ({
         default(host) {
@@ -829,6 +837,7 @@ describe('injectable UI conversation adapters', () => {
         selectConversation: selectA,
         openDraft: vi.fn(),
         composerModel: modelA,
+        startChat: vi.fn(async () => 'chat-a'),
       },
       importModule: async () => moduleFor('session-a'),
     })
@@ -837,6 +846,7 @@ describe('injectable UI conversation adapters', () => {
         selectConversation: selectB,
         openDraft: vi.fn(),
         composerModel: modelB,
+        startChat: vi.fn(async () => 'chat-b'),
       },
       importModule: async () => moduleFor('session-b'),
     })

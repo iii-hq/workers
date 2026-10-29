@@ -432,7 +432,9 @@ export function TabStrip({
     : undefined
 
   return (
-    <div className="flex min-w-0 items-end gap-1">
+    // learn-iii-workspaces: tour anchor (workers/learn-iii) — the tabs and
+    // the + together. Do not remove.
+    <div className="learn-iii-workspaces flex min-w-0 items-end gap-1">
       <div
         ref={stripRef}
         role="tablist"
@@ -444,8 +446,8 @@ export function TabStrip({
         style={
           maskImage ? { maskImage, WebkitMaskImage: maskImage } : undefined
         }
-        /* onboarding-tabs: tour anchor (workers/onboarding). Do not remove. */
-        className="onboarding-tabs workspace-tab-strip flex min-w-0 flex-1 items-end overflow-hidden px-3"
+        /* learn-iii-tabs: tour anchor (workers/learn-iii). Do not remove. */
+        className="learn-iii-tabs workspace-tab-strip flex min-w-0 flex-1 items-end overflow-hidden px-3"
       >
         {tabs.map((tab, index) => {
           const active = tab.id === activeTabId
@@ -708,7 +710,8 @@ export function TabStrip({
               : undefined
           }
           onClick={onCreate}
-          className="icon-host relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+          /* learn-iii-new-tab: tour anchor (workers/learn-iii). Do not remove. */
+          className="learn-iii-new-tab icon-host relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
         >
           <span
             className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"

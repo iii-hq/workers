@@ -50,7 +50,9 @@ pub async fn list_tables(
     timeout_ms: u64,
 ) -> Result<Vec<TableRef>, String> {
     let sql = format!(
-        "SELECT n.nspname AS table_schema, c.relname AS table_name, c.relkind AS kind \
+        "SELECT n.nspname AS table_schema, c.relname AS table_name, c.relkind AS kind, \
+                CASE WHEN c.relkind IN ('r', 'p', 'm') AND c.reltuples >= 0 \
+                     THEN c.reltuples::bigint END AS row_count_estimate \
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
          WHERE c.relkind IN ('r', 'p', 'v', 'm') AND {SKIP_SCHEMAS} \
          ORDER BY n.nspname, c.relname"
@@ -67,6 +69,7 @@ pub async fn list_tables(
                     Some("v") | Some("m") => TableKind::View,
                     _ => TableKind::Table,
                 },
+                row_count_estimate: i64_at(r, "row_count_estimate"),
             })
         })
         .collect())
@@ -85,7 +88,10 @@ pub async fn columns(
                 format_type(a.atttypid, a.atttypmod) AS column_type, \
                 NOT a.attnotnull AS is_nullable, \
                 pg_get_expr(d.adbin, d.adrelid) AS default_value, \
-                a.attnum AS position \
+                a.attnum AS position, \
+                (a.attidentity IN ('a', 'd') \
+                 OR COALESCE(pg_get_expr(d.adbin, d.adrelid), '') LIKE 'nextval(%') AS auto_increment, \
+                (a.attgenerated = 's') AS is_generated \
          FROM pg_attribute a \
          JOIN pg_class c ON c.oid = a.attrelid \
          JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -109,6 +115,8 @@ pub async fn columns(
             primary_key: false,
             position: i64_at(r, "position").unwrap_or(0) as i32,
             foreign_key: None,
+            auto_increment: bool_at(r, "auto_increment"),
+            generated: bool_at(r, "is_generated"),
         });
     }
 

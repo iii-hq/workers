@@ -143,6 +143,7 @@ pub(crate) mod tests {
             transactions: TxRegistry::new(),
             log: Logger::new(),
             row_changes: None,
+            runtime: Default::default(),
         }
     }
 

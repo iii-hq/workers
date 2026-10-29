@@ -11,8 +11,9 @@ Implements the provider protocol from `tech-specs/2026-06-agentic/llm-router.md`
 into a router-owned channel), `provider::openai-codex::refresh_models`
 (fetches and reconciles the authenticated Codex model catalog), and
 `provider::openai-codex::count_tokens` (local prompt token estimation with
-the tiktoken tokenizers behind `router::count_tokens`; never runs the model,
-costs nothing, and needs no network).
+the tiktoken tokenizers behind `router::count_tokens`, over the Responses
+items the stream sends, with each image costed from its dimensions; never
+runs the model, costs nothing, and needs no network).
 
 > ⚠️ **Terms-of-service caveat — local/personal dev only.** This drives a
 > personal ChatGPT subscription through the undocumented
@@ -42,11 +43,23 @@ provider. Logging out does not sign out the Codex CLI or revoke other clients.
 The provider will not silently reconnect using a local or external credential.
 
 One account is shared by this provider's consumers in each engine namespace.
-Run one provider instance per namespace. Its tokens are kept in the private
-`provider-openai-codex-auth` state scope, separate from router registration.
-The state worker's public API and state-change subscriptions cannot expose that
-scope. Keep the state adapter durable to retain sessions across stack restarts;
-a private namespace provides access separation, not encryption at rest.
+Run one provider instance per namespace. Its complete session is encrypted in
+the [`secrets`](../secrets/README.md) vault as
+`secret://PROVIDER_OPENAI_CODEX_SESSION`, readable only by this provider.
+Preserve the secrets data directory and its master key across stack restarts.
+The provider's separate router registration token continues to use `state`.
+
+Existing managed logins migrate automatically from the private
+`provider-openai-codex-auth` state scope. The provider confirms that it can read
+the encrypted session before clearing the old session to `null` and flushing
+the state adapter. Interrupted migrations resume on the next access. If the
+legacy session changes before cleanup, migration copies the current session
+and retries. Logout and expiry are preserved; a completed vault migration is
+never overwritten by an old state session. Once complete, session access no
+longer consults that state scope. Update the `secrets` and `state` workers with
+the provider, and stop the old provider instance before starting the new one.
+Cleanup removes active session data; existing backups and snapshots follow
+their own retention policy.
 
 Managed credentials renew automatically within 60 seconds of expiry. Refresh
 requests are serialized and token rotations are persisted atomically. A
@@ -59,7 +72,12 @@ can still use `auth::get_token` from an external credential vault, then a
 read-only `${CODEX_HOME:-$HOME/.codex}/auth.json` fallback. The vault remains
 responsible for its own refresh. The provider never imports or writes the CLI
 file, and never refreshes the CLI's tokens. The file fallback needs host access
-and does not support an OS keyring-only login.
+and does not support an OS keyring-only login. Once Codex rejects a vault or CLI
+token, requests fail with `auth_expired` and `auth::status` reports `expired`
+until that token is replaced. Signing in with ChatGPT in the provider form works
+in every case. `codex login` rewrites only the CLI file, so it helps only when
+the vault holds no Codex credential; replace a rejected vault credential in the
+vault.
 
 ### Authentication functions
 
@@ -217,7 +235,7 @@ Regenerate the wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
 | `not configured: sign in with ChatGPT …` | no active session | select **Sign in with ChatGPT** in the provider form |
 | `device_login_disabled` | device-code sign-in is disabled | enable it in ChatGPT security settings or ask your workspace administrator |
 | `storage_unavailable` | state worker is down or lacks private namespace support | start/update the state worker and retry; credentials are not replaced by a fallback |
-| `auth_expired` | token was revoked or the CLI fallback expired | sign in again in the provider form |
+| `auth_expired` | token was revoked, or Codex rejected or expired the vault/CLI fallback | sign in again in the provider form; for a CLI fallback with no vault credential, `codex login` also works |
 | `requires a ChatGPT OAuth login … API keys belong on provider-openai` | credential is an API key | this provider is OAuth-only; use `provider-openai` for keys |
 | `missing ChatGPT account id` | token lacks the account claim | sign in again with a ChatGPT account |
 | backend `Unsupported parameter` / shape errors | Codex backend contract drifted | update this worker's request/SSE mapping against the current backend |

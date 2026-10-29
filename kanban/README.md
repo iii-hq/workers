@@ -18,6 +18,7 @@ tickets on this board.
 - [Subtasks, releases and projects](#subtasks-releases-and-projects)
 - [Custom trigger types](#custom-trigger-types)
 - [Console pages](#console-pages)
+- [Native app](#native-app)
 - [Chat mentions](#chat-mentions)
 - [Agent profiles](#agent-profiles)
 - [Skills](#skills)
@@ -95,11 +96,15 @@ inline; `kanban::board::get` returns every configured column with its ticket
 summaries (no description or thread). Both list reads take `updated_since`
 and `compact`, and the board takes `statuses` and a per-column `limit`, so an
 agent reads the active lanes in one small call and the `done` column only for
-what changed:
+what changed. `offset` pages a long column (per column on the board), and the
+board's columns and the list carry `total`, the matches before `offset` and
+`limit`. A board read also says `as_of`, the newest write it holds: a client
+that keeps the board live replays the events stamped after it:
 
 ```bash
 iii trigger kanban::board::get --json '{"statuses":["todo","in_progress","in_review"],"compact":true}'
 iii trigger kanban::ticket::list --json '{"status":"done","updated_since":"2026-09-10T00:00:00.000Z","compact":true}'
+iii trigger kanban::ticket::list --json '{"status":"done","offset":100,"limit":100}'
 ```
 
 The writes (`kanban::ticket::create`, `kanban::ticket::update`,
@@ -173,6 +178,11 @@ column count, but leaves `progress`, project and release totals, and shipping
 never treats it as open. New boards get the Canceled column; a stored board
 without one keeps its columns (add it in the settings form), and a stored board
 that already has a `canceled` column picks it up.
+
+A ticket also carries `pills`: small icon-and-text badges another worker pins
+on it (`[{ "icon": "calendar", "text": "Fri 17:00" }]`, `icon` a lucide icon
+name), set whole on `ticket::create` and `ticket::update` and drawn on the card
+and the ticket page.
 
 `board.json` is now version 2. The first write that upgrades a version 1 file
 keeps the original as `board.v1.json` next to it; going back to an older
@@ -274,7 +284,7 @@ them is a human's call in the console, which `iii-permissions.yaml` enforces
 
 | Trigger type | Config | Fires when | Payload to subscribers |
 |---|---|---|---|
-| `kanban:change` | `{ ticket_id?, parent_id?, release_id?, events?, ticket?, metadata? }` | After every mutation. `ticket_id` (uuid or key) and `events` narrow it; `parent_id` fires for that ticket and any of its children; `release_id` fires for tickets in that release and for the change that moved one out of it; an empty config fires for everything. | `{ event, ticket_id, ticket_key, ticket, comment, activity, at }` — `event` is one of `ticket.created`, `ticket.updated`, `ticket.moved`, `ticket.deleted`, `ticket.restored`, `comment.created`. |
+| `kanban:change` | `{ ticket_id?, parent_id?, release_id?, events?, ticket?, metadata? }` | After every mutation. `ticket_id` (uuid or key) and `events` narrow it; `parent_id` fires for that ticket and any of its children; `release_id` fires for tickets in that release and for the change that moved one out of it; an empty config fires for everything. | `{ event, ticket_id, ticket_key, ticket, comment, activity, at }` — `event` is one of `ticket.created`, `ticket.updated`, `ticket.moved`, `ticket.deleted`, `ticket.restored`, `comment.created`, `config.updated`. The last carries only `{ event, at }`: the configuration (columns, statuses, priorities) was reloaded; a binding with a `ticket_id`, `parent_id` or `release_id` filter never gets it. |
 | `kanban:comment` | `{ ticket_id \| parent_id, author?, exclude_author?, root_only?, ticket? }` | A comment is created on that ticket, or with `parent_id` on that ticket or any of its children. One of the two is required; `author` keeps one author, `exclude_author` drops one (your own id), `root_only` ignores replies. | `{ event: "comment.created", ticket_id, ticket_key, ticket, comment, author, at }` |
 
 `ticket` on either type is `full` (default: the ticket with comments and
@@ -328,10 +338,11 @@ While the worker is connected it injects four pages into the console:
   a warning dot when it is Done with open subtasks. A **List**
   layout shows the same tickets grouped by status, sortable, with bulk
   status, priority, label, assignee and delete edits. Clicking a card opens
-  the ticket beside the board; the card's **Open in this tab** action keeps
-  it in the current pane instead (the console reuses any tab that already
-  shows a ticket pane), and the inline view offers **Open in its own pane**
-  to go the other way.
+  the ticket in place of the board; the card's corner **Open in a pane**
+  action opens it beside the board instead (the console reuses any tab that
+  already shows a ticket pane), and the inline view offers **Open in its own
+  pane** too. The card's status is a picker: pick a column and the card
+  moves there.
 - **Ticket** (page `kanban-ticket`) — one ticket: status, priority,
   assignee (from `kanban::agent::list`), Project, Release, Parent and editable
   labels, a Markdown description with an editor, linked tickets (from
@@ -363,6 +374,36 @@ settings form edits the configuration above. Chat renders `kanban::*`
 results as ticket cards and `kanban:*` trigger activity with the ticket and
 comment it carried. Command palette rows: New ticket, Refresh board, Clear
 filters, Refresh ticket, Edit description, Write a comment, Back to the board.
+
+## Native app
+
+The worker also publishes a native app for the iii app, `kanban::native-ui`:
+a bundle built from [`native-ui/`](native-ui) by `build.rs` (next to the
+console UI), embedded in the binary and served by its hash. It needs
+catalogue 2 of the app's components (an older iii app says it needs a newer
+one). The phone is for following and answering the agents; planning stays
+in the console:
+
+- **The board**: one column at a time under tabs with their counts on a
+  phone, the columns side by side on a wide screen. A card shows what the
+  console card shows (parent, labels, pills, priority, the "changed since
+  your last visit" dot, subtasks, comments, the assignee in the agent's
+  color). Drag a card to another column or place, or long-press it for
+  Move to, Assign, Priority, Copy key and Share. Long columns load a page at
+  a time (`offset`, `total`).
+- **A ticket**: its chips (status, priority, assignee, project, release,
+  labels), the description in Markdown (ticket keys are links), subtasks,
+  linked tickets, and the activity with the comments threaded; comment and
+  reply as `user`, edit the title and description, delete and restore
+  behind a confirmation, and the Done-with-open-subtasks warning.
+- **New ticket**, **filters** (text, assignee, priority, labels, project,
+  release, updated; kept on the device) and the **releases** and
+  **projects** to read, each a tap away from its tickets on the board.
+
+The app follows the board live over one `kanban:change` binding while it is
+on screen. For hot reload, run `pnpm --dir kanban/native-ui watch` and
+start the worker with `III_KANBAN_NATIVE_UI_WATCH=1`. How a worker ships such
+an app is in [`docs/sops/native-ui.md`](../docs/sops/native-ui.md).
 
 ## Chat mentions
 
@@ -478,6 +519,10 @@ Fetch any of them with `directory::skills::get { "id": "kanban/<folder>/<name>" 
 ```bash
 # UI (esbuild; react and @iii-dev/console-ui stay external)
 pnpm --dir kanban/ui build
+# native app (TSX over @iii-dev/native-ui; its tests run the bundle in QuickJS)
+pnpm --dir kanban/native-ui build
+pnpm --dir kanban/native-ui typecheck
+pnpm --dir kanban/native-ui test
 # worker
 cd kanban
 cargo fmt --all -- --check
@@ -485,10 +530,11 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
 ```
 
-`build.rs` runs the UI build when `ui/dist` is missing or stale; set
-`SKIP_UI_BUILD=1` to embed the existing output. For the hot-reload loop run
-`pnpm --dir kanban/ui watch` in one terminal and
+`build.rs` runs both builds when `ui/dist` or `native-ui/dist` is missing or
+stale; set `SKIP_UI_BUILD=1` to embed the existing output. For the
+hot-reload loop run `pnpm --dir kanban/ui watch` in one terminal and
 `III_KANBAN_UI_WATCH=1 cargo run --bin kanban` in another; every open
-console tab swaps the asset on rebuild. The worker connects to `III_URL`
+console tab swaps the asset on rebuild (the native app's loop is the same
+with `kanban/native-ui` and `III_KANBAN_NATIVE_UI_WATCH=1`). The worker connects to `III_URL`
 (default `ws://127.0.0.1:49134`) and resolves `data_path` and `agents_path`
 against `III_COMPOSE_DIR`.

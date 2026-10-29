@@ -8,7 +8,9 @@
 //!   name) fires for a ticket in that release and for one a write just took
 //!   out of it; `events` narrows by event name. An unknown reference matches
 //!   nothing. A write that touches two tickets (attach, detach) fires once
-//!   per ticket.
+//!   per ticket. `config.updated` (`{ event, at }`, no ticket) fires after
+//!   the configuration (columns, statuses, priorities) was reloaded; only a
+//!   binding without a ticket, parent or release filter gets it.
 //! - `kanban:comment` fires once per comment created. Config
 //!   `{ ticket_id?, parent_id?, author?, exclude_author?, root_only? }`: a
 //!   comment on that ticket (`ticket_id`) or on that ticket or any of its
@@ -37,14 +39,19 @@ pub const CHANGE_TRIGGER: &str = "kanban:change";
 pub const COMMENT_TRIGGER: &str = "kanban:comment";
 
 /// Every event name `kanban:change` can carry.
-pub const CHANGE_EVENTS: [&str; 6] = [
+pub const CHANGE_EVENTS: [&str; 7] = [
     "ticket.created",
     "ticket.updated",
     "ticket.moved",
     "ticket.deleted",
     "ticket.restored",
     "comment.created",
+    CONFIG_EVENT,
 ];
+
+/// The one `kanban:change` event that carries no ticket: the configuration
+/// was reloaded, so columns or statuses may have changed.
+pub const CONFIG_EVENT: &str = "config.updated";
 
 /// How much of the ticket a delivery carries. `full` is the ticket with its
 /// comments and activity inline; `summary` is the board-card projection
@@ -74,7 +81,7 @@ pub struct ChangeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket: Option<TicketDetail>,
     /// Event names to fire for (ticket.created, ticket.updated, ticket.moved,
-    /// ticket.deleted, ticket.restored, comment.created). Omit for all.
+    /// ticket.deleted, ticket.restored, comment.created, config.updated). Omit for all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<Vec<String>>,
     /// Metadata attached to every invocation this binding receives.
@@ -154,6 +161,25 @@ pub struct ChangeEvent {
     pub releases: Vec<ReleaseRef>,
 }
 
+/// `config.updated` on `kanban:change`: the board's configuration changed.
+/// It names no ticket.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigEvent {
+    /// Always `config.updated`.
+    pub event: String,
+    pub at: String,
+}
+
+/// What a `kanban:change` binding receives: a ticket event, or a
+/// configuration event. Published as the trigger's call format only.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code, clippy::large_enum_variant)]
+enum ChangeDelivery {
+    Ticket(ChangeEvent),
+    Config(ConfigEvent),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CommentEvent {
     /// Always `comment.created`.
@@ -220,7 +246,7 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
             BindingTable(subscribers.change.clone()),
         )
         .trigger_request_format::<ChangeConfig>()
-        .call_request_format::<ChangeEvent>(),
+        .call_request_format::<ChangeDelivery>(),
     );
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
@@ -280,7 +306,12 @@ pub fn matches_change(config: &Value, event: &ChangeEvent) -> bool {
     {
         return false;
     }
-    let events: Vec<&str> = config
+    let events = event_names(config);
+    events.is_empty() || events.contains(&event.event.as_str())
+}
+
+fn event_names(config: &Value) -> Vec<&str> {
+    config
         .get("events")
         .and_then(Value::as_array)
         .map(|entries| {
@@ -291,8 +322,20 @@ pub fn matches_change(config: &Value, event: &ChangeEvent) -> bool {
                 .filter(|entry| !entry.is_empty())
                 .collect()
         })
-        .unwrap_or_default();
-    events.is_empty() || events.contains(&event.event.as_str())
+        .unwrap_or_default()
+}
+
+/// `config.updated` names no ticket: a binding that filters on one (or a
+/// parent or release) never gets it; `events` still narrows.
+pub fn matches_config(config: &Value) -> bool {
+    if ["ticket_id", "parent_id", "release_id"]
+        .iter()
+        .any(|key| !text(config, key).is_empty())
+    {
+        return false;
+    }
+    let events = event_names(config);
+    events.is_empty() || events.contains(&CONFIG_EVENT)
 }
 
 pub fn matches_comment(config: &Value, event: &CommentEvent) -> bool {
@@ -404,6 +447,21 @@ pub fn emit_change(iii: &Arc<IIIClient>, subscribers: &Subscribers, event: &Chan
     }
 }
 
+/// Tell every unfiltered `kanban:change` binding the configuration changed.
+pub fn emit_config_updated(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
+    let bindings = matching(&subscribers.change, |binding| {
+        matches_config(&binding.config)
+    });
+    let event = ConfigEvent {
+        event: CONFIG_EVENT.to_string(),
+        at: crate::board::now(),
+    };
+    match serde_json::to_value(&event) {
+        Ok(payload) => deliver(iii.clone(), bindings, payload.clone(), payload),
+        Err(error) => tracing::error!(error = %error, "kanban config event failed to serialize"),
+    }
+}
+
 pub fn emit_comment(iii: &Arc<IIIClient>, subscribers: &Subscribers, event: &CommentEvent) {
     let bindings = matching(&subscribers.comment, |binding| {
         matches_comment(&binding.config, event)
@@ -411,5 +469,33 @@ pub fn emit_comment(iii: &Arc<IIIClient>, subscribers: &Subscribers, event: &Com
     match payloads(event, &event.ticket) {
         Ok((full, summary)) => deliver(iii.clone(), bindings, full, summary),
         Err(error) => tracing::error!(error = %error, "kanban comment event failed to serialize"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn change_call_format_admits_the_config_event() {
+        let schema = serde_json::to_value(schemars::schema_for!(ChangeDelivery)).unwrap();
+        let variants = schema["anyOf"]
+            .as_array()
+            .expect("one schema per delivery shape");
+        assert_eq!(variants.len(), 2);
+    }
+
+    #[test]
+    fn config_event_reaches_unfiltered_bindings_only() {
+        assert!(matches_config(&json!({})));
+        assert!(matches_config(
+            &json!({ "events": ["config.updated", "ticket.moved"] })
+        ));
+        assert!(!matches_config(&json!({ "events": ["ticket.moved"] })));
+        assert!(!matches_config(&json!({ "ticket_id": "KAN-1" })));
+        assert!(!matches_config(&json!({ "parent_id": "KAN-1" })));
+        assert!(!matches_config(&json!({ "release_id": "r1" })));
+        assert!(matches_config(&json!({ "ticket_id": "  " })));
     }
 }

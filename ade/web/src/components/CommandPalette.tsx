@@ -70,6 +70,7 @@ import {
   parseQuery,
   readEngine,
 } from '@/lib/palette/sources'
+import { trackCommand } from '@/lib/telemetry'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -539,6 +540,7 @@ export function CommandPalette({
     // A source row is one answer to one query; it has no place in recents.
     if (!entry.id.startsWith('source:')) recordRecent(entry.id)
     onClose()
+    trackCommand(entry)
     entry.run()
   }
 

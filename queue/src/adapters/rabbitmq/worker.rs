@@ -27,7 +27,7 @@ use tokio::{
     task::JoinSet,
 };
 
-use crate::trigger::Invoker;
+use crate::trigger::{Invoker, SubscriberTarget};
 
 use super::consumer::JobParser;
 use super::retry::RetryHandler;
@@ -97,9 +97,7 @@ impl Worker {
         self: Arc<Self>,
         topic: String,
         subscription_id: String,
-        function_id: String,
-        metadata: Option<Value>,
-        namespace: Option<String>,
+        target: SubscriberTarget,
         condition_function_id: Option<String>,
         consumer_tag: String,
         queue_name: String,
@@ -165,9 +163,7 @@ impl Worker {
                                     delivery,
                                     &topic,
                                     &subscription_id,
-                                    &function_id,
-                                    metadata.as_ref(),
-                                    namespace.as_deref(),
+                                    &target,
                                     condition_function_id.as_deref(),
                                 )
                                 .await
@@ -183,9 +179,7 @@ impl Worker {
                             let worker = Arc::clone(&self);
                             let topic_clone = topic.clone();
                             let subscription_id_clone = subscription_id.clone();
-                            let function_id_clone = function_id.clone();
-                            let metadata_clone = metadata.clone();
-                            let namespace_clone = namespace.clone();
+                            let target_clone = target.clone();
                             let condition_function_id_clone = condition_function_id.clone();
                             let semaphore = self.semaphore.as_ref().map(Arc::clone);
                             tasks.spawn(async move {
@@ -200,9 +194,7 @@ impl Worker {
                                         delivery,
                                         &topic_clone,
                                         &subscription_id_clone,
-                                        &function_id_clone,
-                                        metadata_clone.as_ref(),
-                                        namespace_clone.as_deref(),
+                                        &target_clone,
                                         condition_function_id_clone.as_deref(),
                                     )
                                     .await
@@ -240,30 +232,17 @@ impl Worker {
         }
     }
 
-    // Keep the delivery and subscriber routing fields explicit at this broker boundary.
-    #[expect(clippy::too_many_arguments)]
     async fn process_delivery(
         &self,
         delivery: Delivery,
         topic: &str,
         subscription_id: &str,
-        function_id: &str,
-        metadata: Option<&Value>,
-        namespace: Option<&str>,
+        target: &SubscriberTarget,
         condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut job = JobParser::parse_from_delivery(&delivery)?;
 
-        match self
-            .process_job(
-                &job,
-                function_id,
-                metadata,
-                namespace,
-                condition_function_id,
-            )
-            .await
-        {
+        match self.process_job(&job, target, condition_function_id).await {
             Ok(_) => {
                 delivery
                     .ack(BasicAckOptions::default())
@@ -297,9 +276,7 @@ impl Worker {
     async fn process_job(
         &self,
         job: &Job,
-        function_id: &str,
-        metadata: Option<&Value>,
-        namespace: Option<&str>,
+        target: &SubscriberTarget,
         condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let invoker = Arc::clone(&self.invoker);
@@ -310,11 +287,18 @@ impl Worker {
                 condition_function_id = %condition_path,
                 "Checking trigger conditions"
             );
-            match check_condition(invoker.as_ref(), condition_path, data.clone(), namespace).await {
+            match check_condition(
+                invoker.as_ref(),
+                condition_path,
+                data.clone(),
+                target.namespace(),
+            )
+            .await
+            {
                 Ok(true) => {}
                 Ok(false) => {
                     tracing::debug!(
-                        function_id = %function_id,
+                        function_id = %target.function_id(),
                         "Condition check failed, skipping handler"
                     );
                     return Ok(());
@@ -330,10 +314,7 @@ impl Worker {
             }
         }
 
-        match invoker
-            .call_delivery(function_id, data, metadata.cloned(), namespace)
-            .await
-        {
+        match target.deliver(invoker.as_ref(), data).await {
             Ok(_) => {
                 tracing::debug!(job_id = %job.id, "Job processed successfully");
                 Ok(())

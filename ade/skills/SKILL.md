@@ -51,6 +51,25 @@ stack; traces need the engine's OpenTelemetry export.
   a file).
 - You need to know what the operator currently sees: `console::workspace::list`.
 
+## Chat-owned Context tracking
+
+Users can ask in chat to pin release progress, a goal, a status summary or a checklist.
+Use `console::context::list`, `console::context::save` and `console::context::remove`.
+Discover the contracts before calling; Harness stamps the current `session_id`.
+A save stores a structured snapshot, not executable code, an extension or a monitor.
+Default to `conversation`; use `project` only when the user explicitly asks. Project
+identity is the session's canonical `metadata.fs_scope.root`; other conversations
+using that directory see the same project snapshots. List first and use an existing
+id to edit or move scope. Save replaces the whole snapshot: preserve the fields not
+being edited. Include a source label/HTTP(S) URL when available, and read the source
+before saving numeric progress. Update relevant snapshots when consulting their source
+or changing the tracked work. Do not poll or fetch unrelated sources. If refresh fails,
+keep the previous snapshot and tell the user it is stale. Confirm the saved scope.
+Users may edit, change scope, refresh or remove through chat. The Context panel's
+Tracking section shows the saved progress, checklist, source and last-updated time;
+its Update/Remove actions prepare a chat draft, never send or mutate silently.
+Snapshots persist in `<data_dir>/context-tracking.json`, with atomic writes.
+
 ## Boundaries
 
 - The console renders; it does not own domain data. Injected UI acts by

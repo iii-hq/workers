@@ -227,7 +227,7 @@ containers:
     scripts: { run: cargo run --locked --bin ade }
   harness:
     worker: path://../harness
-    start_after: [state, queue, session-manager, llm-router, provider-openai-codex, provider-openai, provider-anthropic, context-manager, iii-directory, cron, ade, ide]
+    start_after: [state, queue, session-manager, llm-router, provider-openai-codex, provider-openai, provider-anthropic, context-manager, iii-directory, cron, ade, ide, fp]
     config_name: harness-minilm-production
     config_override: {}
     scripts: { run: cargo run --locked --bin harness }

@@ -1,6 +1,6 @@
 //! `storage::presignPost` — signed multipart/form-data browser upload.
 
-use super::{err_to_str, AppState};
+use super::{err_to_str, validate_key, AppState};
 use crate::backend::PresignPostReq as BackendPresignPostReq;
 use crate::error::{backend_error_to_storage, StorageError};
 use chrono::{DateTime, Utc};
@@ -39,6 +39,7 @@ pub async fn handle(state: &AppState, req: PresignPostReq) -> Result<PresignPost
             reason: "key and content_type must not be empty".into(),
         }));
     }
+    validate_key(&req.key).map_err(err_to_str)?;
     if !(MIN_EXPIRY..=MAX_EXPIRY).contains(&req.expires_in_seconds) {
         return Err(err_to_str(StorageError::InvalidPresignParams {
             reason: format!(

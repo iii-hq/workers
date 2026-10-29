@@ -4,7 +4,9 @@
 //! bottom lines (`capture-pane`): a waiting pattern (a permission or choice
 //! prompt) wins, then a working pattern (Claude Code prints `esc to
 //! interrupt` only while a turn runs); an agent without working patterns
-//! counts as working while its screen keeps changing.
+//! counts as working while its screen keeps changing. What an agent records
+//! about itself ([`crate::activity`]) adds the work the screen does not show,
+//! such as sub-agents running after the main turn ended.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -186,6 +188,17 @@ pub fn classify(agent: &CompiledAgent, text: &str, changed_recently: bool) -> Ag
     }
 }
 
+/// The screen's state merged with the one the agent reports: either source
+/// asking for the user, then either source at work.
+pub fn combine(screen: AgentState, reported: Option<AgentState>) -> AgentState {
+    use AgentState::{Idle, Waiting, Working};
+    match (screen, reported) {
+        (Waiting, _) | (_, Some(Waiting)) => Waiting,
+        (Working, _) | (_, Some(Working)) => Working,
+        _ => Idle,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Track {
     agent_id: String,
@@ -204,13 +217,16 @@ pub struct AgentTracker {
 }
 
 impl AgentTracker {
-    /// Feed one capture of `pane_id`; returns the state and since when it holds.
+    /// Feed one capture of `pane_id` and the state the agent reports, if
+    /// any; returns the state and since when it holds.
+    #[allow(clippy::too_many_arguments)]
     pub fn observe(
         &mut self,
         pane_id: &str,
         agent: &CompiledAgent,
         pid: u32,
         text: &str,
+        reported: Option<AgentState>,
         now_ms: u64,
         busy_window_ms: u64,
     ) -> (AgentState, u64) {
@@ -231,7 +247,7 @@ impl AgentTracker {
         };
         let changed_recently =
             changed_at_ms != 0 && now_ms.saturating_sub(changed_at_ms) < busy_window_ms;
-        let state = classify(agent, text, changed_recently);
+        let state = combine(classify(agent, text, changed_recently), reported);
         let since_ms = match &previous {
             Some(track) if track.state == state => track.since_ms,
             _ => now_ms,
@@ -265,6 +281,7 @@ mod tests {
     const CLAUDE_WORKING: &str = include_str!("../tests/fixtures/claude-working.txt");
     const CLAUDE_IDLE: &str = include_str!("../tests/fixtures/claude-idle.txt");
     const CLAUDE_PERMISSION: &str = include_str!("../tests/fixtures/claude-permission.txt");
+    const CLAUDE_SUBAGENTS: &str = include_str!("../tests/fixtures/claude-subagents.txt");
 
     fn agents() -> AgentSet {
         AgentSet::compile(&default_agents()).unwrap()
@@ -362,22 +379,66 @@ mod tests {
         let claude = set.get(0).unwrap();
         let mut tracker = AgentTracker::default();
         assert_eq!(
-            tracker.observe("%1", claude, 21, CLAUDE_WORKING, 1_000, 2_000),
+            tracker.observe("%1", claude, 21, CLAUDE_WORKING, None, 1_000, 2_000),
             (AgentState::Working, 1_000)
         );
         assert_eq!(
-            tracker.observe("%1", claude, 21, CLAUDE_WORKING, 2_000, 2_000),
+            tracker.observe("%1", claude, 21, CLAUDE_WORKING, None, 2_000, 2_000),
             (AgentState::Working, 1_000)
         );
         assert_eq!(
-            tracker.observe("%1", claude, 21, CLAUDE_IDLE, 3_000, 2_000),
+            tracker.observe("%1", claude, 21, CLAUDE_IDLE, None, 3_000, 2_000),
             (AgentState::Idle, 3_000)
         );
         // A different agent process in the same pane starts fresh.
         assert_eq!(
-            tracker.observe("%1", claude, 99, CLAUDE_IDLE, 4_000, 2_000),
+            tracker.observe("%1", claude, 99, CLAUDE_IDLE, None, 4_000, 2_000),
             (AgentState::Idle, 4_000)
         );
+    }
+
+    #[test]
+    fn reported_work_outlasts_an_idle_screen() {
+        use AgentState::{Idle, Waiting, Working};
+        let set = agents();
+        let claude = set.get(0).unwrap();
+        // The main turn ended; only the footer row shows the sub-agent.
+        assert_eq!(classify(claude, CLAUDE_SUBAGENTS, false), Idle);
+        let mut tracker = AgentTracker::default();
+        assert_eq!(
+            tracker.observe(
+                "%9",
+                claude,
+                21,
+                CLAUDE_SUBAGENTS,
+                Some(Working),
+                1_000,
+                2_000
+            ),
+            (Working, 1_000)
+        );
+        assert_eq!(
+            tracker.observe("%9", claude, 21, CLAUDE_SUBAGENTS, Some(Idle), 2_000, 2_000),
+            (Idle, 2_000)
+        );
+        // A prompt on screen still asks for the user.
+        assert_eq!(
+            tracker
+                .observe(
+                    "%9",
+                    claude,
+                    21,
+                    CLAUDE_PERMISSION,
+                    Some(Working),
+                    3_000,
+                    2_000
+                )
+                .0,
+            Waiting
+        );
+        assert_eq!(combine(Idle, Some(Waiting)), Waiting);
+        assert_eq!(combine(Working, Some(Idle)), Working);
+        assert_eq!(combine(Idle, None), Idle);
     }
 
     #[test]
@@ -393,19 +454,19 @@ mod tests {
         let aider = set.get(0).unwrap();
         let mut tracker = AgentTracker::default();
         assert_eq!(
-            tracker.observe("%2", aider, 5, "a", 1_000, 2_000).0,
+            tracker.observe("%2", aider, 5, "a", None, 1_000, 2_000).0,
             AgentState::Idle
         );
         assert_eq!(
-            tracker.observe("%2", aider, 5, "b", 2_000, 2_000).0,
+            tracker.observe("%2", aider, 5, "b", None, 2_000, 2_000).0,
             AgentState::Working
         );
         assert_eq!(
-            tracker.observe("%2", aider, 5, "b", 3_500, 2_000).0,
+            tracker.observe("%2", aider, 5, "b", None, 3_500, 2_000).0,
             AgentState::Working
         );
         assert_eq!(
-            tracker.observe("%2", aider, 5, "b", 4_500, 2_000).0,
+            tracker.observe("%2", aider, 5, "b", None, 4_500, 2_000).0,
             AgentState::Idle
         );
     }

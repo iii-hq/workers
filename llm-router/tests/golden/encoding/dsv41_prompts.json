@@ -1,0 +1,188 @@
+{
+ "official": {
+  "tools": [
+   {
+    "function": {
+     "description": "Get the weather for a specific location",
+     "name": "get_weather",
+     "parameters": {
+      "properties": {
+       "location": {
+        "description": "The city name",
+        "type": "string"
+       },
+       "unit": {
+        "description": "Temperature unit",
+        "enum": [
+         "celsius",
+         "fahrenheit"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "location"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   },
+   {
+    "function": {
+     "description": "Search the web for information",
+     "name": "search",
+     "parameters": {
+      "properties": {
+       "num_results": {
+        "description": "Number of results to return",
+        "type": "integer"
+       },
+       "query": {
+        "description": "Search query",
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   }
+  ],
+  "messages": [
+   {
+    "content": "You are a helpful assistant.",
+    "role": "system"
+   },
+   {
+    "content": "What's the weather like in Beijing?",
+    "role": "user"
+   },
+   {
+    "content": "",
+    "reasoning_content": "The user wants the weather in Beijing. I should call get_weather.",
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"location\": \"Beijing\", \"unit\": \"celsius\"}",
+       "name": "get_weather"
+      },
+      "type": "function"
+     }
+    ]
+   },
+   {
+    "content": "{\"temperature\": 22, \"condition\": \"sunny\", \"humidity\": 45}",
+    "role": "tool",
+    "tool_call_id": "call_0"
+   },
+   {
+    "content": "The weather in Beijing is currently sunny with a temperature of 22°C and 45% humidity.",
+    "reasoning_content": "Got the weather data. Let me format a nice response.",
+    "role": "assistant"
+   }
+  ],
+  "prompt": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\nYou are a helpful assistant.\n\n## Tools\n\nYou have access to a set of tools to help answer the user's question. You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"$TOOL_NAME\">\n<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n...\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n...\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\n\nString parameters should be specified as is and set `string=\"true\"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\nOtherwise, output directly after </think> with tool calls or final response.\n\n### Available Tool Schemas\n\n{\"description\": \"Get the weather for a specific location\", \"name\": \"get_weather\", \"parameters\": {\"properties\": {\"location\": {\"description\": \"The city name\", \"type\": \"string\"}, \"unit\": {\"description\": \"Temperature unit\", \"enum\": [\"celsius\", \"fahrenheit\"], \"type\": \"string\"}}, \"required\": [\"location\"], \"type\": \"object\"}}\n{\"description\": \"Search the web for information\", \"name\": \"search\", \"parameters\": {\"properties\": {\"num_results\": {\"description\": \"Number of results to return\", \"type\": \"integer\"}, \"query\": {\"description\": \"Search query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"type\": \"object\"}}\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n<｜User｜>What's the weather like in Beijing?<｜Assistant｜><think>The user wants the weather in Beijing. I should call get_weather.</think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"get_weather\">\n<｜DSML｜ parameter name=\"location\" string=\"true\">Beijing</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"unit\" string=\"true\">celsius</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>{\"temperature\": 22, \"condition\": \"sunny\", \"humidity\": 45}</tool_result><｜Assistant｜><think>Got the weather data. Let me format a nice response.</think>The weather in Beijing is currently sunny with a temperature of 22°C and 45% humidity.<｜end▁of▁sentence｜>"
+ },
+ "agent": {
+  "tools": [
+   {
+    "function": {
+     "description": "Read one segment of the ladder.",
+     "name": "docs__read",
+     "parameters": {
+      "properties": {
+       "segment": {
+        "type": "integer"
+       }
+      },
+      "required": [
+       "segment"
+      ],
+      "type": "object"
+     }
+    },
+    "type": "function"
+   }
+  ],
+  "messages": [
+   {
+    "content": "You are a careful reader.",
+    "role": "system"
+   },
+   {
+    "content": "Read segments 3 and 4.",
+    "role": "user"
+   },
+   {
+    "reasoning_content": "Two reads at once.",
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"segment\":3}",
+       "name": "docs__read"
+      },
+      "id": "c1",
+      "type": "function"
+     },
+     {
+      "function": {
+       "arguments": "{\"deep\":true,\"path\":\"a b\",\"segment\":4,\"tags\":[\"x\",\"y\"]}",
+       "name": "docs__read"
+      },
+      "id": "c2",
+      "type": "function"
+     }
+    ]
+   },
+   {
+    "content": "Marker: CTX-3",
+    "role": "tool",
+    "tool_call_id": "c1"
+   },
+   {
+    "content": "Marker: CTX-4",
+    "role": "tool",
+    "tool_call_id": "c2"
+   },
+   {
+    "content": "Both read.",
+    "role": "assistant"
+   },
+   {
+    "content": "Now segment 5.",
+    "role": "user"
+   },
+   {
+    "content": "Reading.",
+    "reasoning_content": "One more.",
+    "role": "assistant",
+    "tool_calls": [
+     {
+      "function": {
+       "arguments": "{\"segment\":5}",
+       "name": "docs__read"
+      },
+      "id": "c3",
+      "type": "function"
+     }
+    ]
+   },
+   {
+    "content": "Marker: CTX-5",
+    "role": "tool",
+    "tool_call_id": "c3"
+   },
+   {
+    "content": "Keep going.",
+    "role": "user"
+   }
+  ],
+  "prompt": "<｜begin▁of▁sentence｜><｜System｜>Reasoning Effort: 75 (range 1-100, the higher the value, the more thorough the reasoning)\n\nYou are a careful reader.\n\n## Tools\n\nYou have access to a set of tools to help answer the user's question. You can invoke tools by writing a \"<｜DSML｜ calls>\" block like the following:\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"$TOOL_NAME\">\n<｜DSML｜ parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜ parameter>\n...\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"$TOOL_NAME2\">\n...\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\n\nString parameters should be specified as is and set `string=\"true\"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string=\"false\"`.\n\nIf thinking_mode is enabled (triggered by <think>), you MUST output your complete reasoning inside <think>...</think> BEFORE any tool calls or final response.\n\nOtherwise, output directly after </think> with tool calls or final response.\n\n### Available Tool Schemas\n\n{\"description\": \"Read one segment of the ladder.\", \"name\": \"docs__read\", \"parameters\": {\"properties\": {\"segment\": {\"type\": \"integer\"}}, \"required\": [\"segment\"], \"type\": \"object\"}}\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.\n<｜User｜>Read segments 3 and 4.<｜Assistant｜><think>Two reads at once.</think>\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"docs__read\">\n<｜DSML｜ parameter name=\"segment\" string=\"false\">3</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"docs__read\">\n<｜DSML｜ parameter name=\"deep\" string=\"false\">true</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"path\" string=\"true\">a b</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"segment\" string=\"false\">4</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"tags\" string=\"false\">[\"x\", \"y\"]</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>Marker: CTX-3</tool_result>\n\n<tool_result>Marker: CTX-4</tool_result><｜Assistant｜><think></think>Both read.<｜end▁of▁sentence｜><｜User｜>Now segment 5.<｜Assistant｜><think>One more.</think>Reading.\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"docs__read\">\n<｜DSML｜ parameter name=\"segment\" string=\"false\">5</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls><｜end▁of▁sentence｜><｜User｜><tool_result>Marker: CTX-5</tool_result>\n\nKeep going.<｜Assistant｜><think>"
+ }
+}

@@ -781,6 +781,19 @@ export function Composer({
     refocusAfterUnfoldRef.current = false
     requestComposerFocus(composerId)
   }, [collapsed, composerId])
+  // A send that arrived while the composer could not send (a chat pane just
+  // opened again, its session still loading) goes the moment it can.
+  useEffect(() => {
+    if (
+      submitDisabled ||
+      !model ||
+      !pendingSubmitRef.current ||
+      !textRef.current.trim()
+    )
+      return
+    pendingSubmitRef.current = false
+    handleSubmit()
+  }, [submitDisabled, model, handleSubmit])
 
   // The drop zone is the whole chat pane, claimed in the capture phase — see
   // `use-file-drop`. A drop onto the transcript, where people actually let go
@@ -899,7 +912,12 @@ export function Composer({
           // The editor has the inserted text now, so a send that came in
           // with it can go. Out of band: `handleSubmit` clears the editor,
           // which must not run inside its own change.
-          if (pendingSubmitRef.current && text.trim().length > 0) {
+          if (
+            pendingSubmitRef.current &&
+            text.trim().length > 0 &&
+            !submitDisabled &&
+            model
+          ) {
             pendingSubmitRef.current = false
             queueMicrotask(handleSubmit)
           }
@@ -940,7 +958,8 @@ export function Composer({
       onFocusCapture={() => markComposerUsed(composerId)}
       data-composer-streaming={isStreaming ? 'true' : undefined}
       data-composer-compact={compactRow ? 'true' : undefined}
-      className="onboarding-composer composer-shell relative"
+      // learn-iii-composer: tour anchor (workers/learn-iii). Do not remove.
+      className="learn-iii-composer composer-shell relative"
       data-composer-welcome={showSuggestions || undefined}
     >
       <div

@@ -39,7 +39,14 @@ export class Runner {
   constructor(private opts: RunnerOptions) {}
 
   private async call(functionId: string, payload: unknown): Promise<any> {
-    return await this.opts.iii.trigger<unknown, any>({ function_id: functionId, payload });
+    // iii-sandbox is engine-owned and lives in `default`; only its fs
+    // functions are mocked, in this suite's own namespace.
+    const realSandbox = functionId.startsWith('sandbox::') && !functionId.startsWith('sandbox::fs::');
+    return await this.opts.iii.trigger<unknown, any>({
+      function_id: functionId,
+      payload,
+      ...(realSandbox ? { namespace: 'default' } : {}),
+    });
   }
 
   private sleep(ms: number): Promise<void> {

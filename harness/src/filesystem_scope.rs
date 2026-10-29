@@ -15,10 +15,17 @@ use serde_json::{json, Value};
 
 pub const FS_SCOPE_FIELD: &str = "fs_scope";
 pub const FILESYSTEM_ACCESS_WATCH_ID: &str = "approval::filesystem-access-watch";
-/// fp::pipe runs scoped steps under fp's worker authority; the harness stamps
-/// the same trusted scope onto the pipe call and fp forwards it per scoped
-/// step (fp/src/pipe.rs `is_scoped_step` mirrors `is_scoped_function`).
+/// fp::pipe and fp::batch run scoped steps under fp's worker authority; the
+/// harness stamps the same trusted scope onto the carrier call and fp
+/// forwards it per scoped step (fp/src/pipe.rs `is_scoped_step` mirrors
+/// `is_scoped_function`).
 pub const PIPE_FUNCTION_ID: &str = "fp::pipe";
+pub const BATCH_FUNCTION_ID: &str = "fp::batch";
+
+/// True for a call that carries scoped steps inside its payload.
+pub fn carries_scoped_steps(function_id: &str) -> bool {
+    function_id == PIPE_FUNCTION_ID || function_id == BATCH_FUNCTION_ID
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -85,9 +92,9 @@ fn is_scoped_function(function_id: &str) -> bool {
 }
 
 /// Functions that receive the trusted stamp: scoped calls themselves, plus
-/// fp::pipe, which carries the stamp on behalf of its scoped steps.
+/// fp::pipe and fp::batch, which carry the stamp on behalf of their steps.
 fn is_stamped_function(function_id: &str) -> bool {
-    is_scoped_function(function_id) || function_id == PIPE_FUNCTION_ID
+    is_scoped_function(function_id) || carries_scoped_steps(function_id)
 }
 
 /// Stamp the trusted filesystem scope onto a scoped call's arguments.
@@ -217,6 +224,24 @@ mod tests {
             out,
             json!({
                 "through": [{ "function": "coder::search", "payload": { "query": "q" } }],
+                "fs_scope": { "root": "/work/session-7", "grants": [], "boundary": "workspace" }
+            })
+        );
+    }
+
+    #[test]
+    fn stamps_fs_scope_onto_batch_calls_beside_calls() {
+        let out = inject(
+            "fp::batch",
+            json!({ "calls": [{ "function": "coder::read-file", "payload": { "path": "a.ts" } }] }),
+            Some("/work/session-7"),
+            &[],
+            workspace(),
+        );
+        assert_eq!(
+            out,
+            json!({
+                "calls": [{ "function": "coder::read-file", "payload": { "path": "a.ts" } }],
                 "fs_scope": { "root": "/work/session-7", "grants": [], "boundary": "workspace" }
             })
         );

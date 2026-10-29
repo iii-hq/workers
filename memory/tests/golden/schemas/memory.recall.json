@@ -1,5 +1,5 @@
 {
-  "description": "Search a bank's memories relevant to a query (BM25 + entities + corroboration + recency; no LLM). The same scorer the pre-generate hook uses — call it to preview an injection. mode lexical/semantic returns one raw arm (plain BM25, or cosine).",
+  "description": "Search a bank's memories relevant to a query (BM25 + entities + corroboration + recency; no LLM). The same scorer the pre-generate hook uses; the hook injects only the hits with evidence, one line per fact and the newer of a stated change, and memory::preview shows exactly what it injects. mode lexical/semantic returns one raw arm (plain BM25, or cosine).",
   "function_id": "memory::recall",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -16,7 +16,7 @@
     "properties": {
       "bank": {
         "default": null,
-        "description": "Bank to search; omitted: the calling session's bank (with the default bank's memories about the user under one its directory chose, as the hook reads), else the configured default.",
+        "description": "Bank to search; omitted: the calling session's bank (with the default bank's memories about the user under one its directory chose, and its agent profile's bank, as the hook reads), else the configured default.",
         "type": [
           "string",
           "null"
@@ -158,7 +158,7 @@
             ]
           },
           "stated_at": {
-            "description": "When the fact was last STATED (created, re-observed, text edited). Unlike `updated_at`, pin/tag/entity edits never bump it, so consolidation can order \"which statement is current\" by it. Legacy records load as None.",
+            "description": "When the fact was last STATED (said, re-observed, text edited): an extracted memory takes its message's time, not the pass's. Unlike `updated_at`, pin/tag/entity edits never bump it, so recency, the shown date and \"which statement is current\" go by it. Legacy records load as None.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -226,7 +226,7 @@
       "ScoredMemory": {
         "properties": {
           "bank": {
-            "description": "The bank holding it, when not `bank`: the default bank, read under a bank the session's directory chose.",
+            "description": "The bank holding it, when not `bank`: the default bank, read under a bank the session's directory chose, or its agent profile's bank.",
             "type": [
               "string",
               "null"

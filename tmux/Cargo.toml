@@ -2,7 +2,7 @@
 
 [package]
 name = "tmux"
-version = "0.1.1"
+version = "0.1.3"
 edition = "2021"
 publish = false
 description = "tmux worker for iii — sessions and windows as tmux::* functions, agent/compose/port status per pane, and a live console terminal attached as a real tmux client"
@@ -16,7 +16,7 @@ name = "tmux"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
+iii-sdk = "=0.25.0"
 iii-console-ui = { path = "../crates/console-ui" }
 iii-config-client = { path = "../crates/config-client" }
 arc-swap = "1"

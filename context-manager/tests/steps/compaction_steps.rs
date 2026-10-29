@@ -101,23 +101,27 @@ async fn summariser_system_not_contains(world: &mut ContextWorld, needle: String
     );
 }
 
+/// Every fragment the summariser was sent, in order: a long head is split
+/// across calls, and the user prompt is the history it saw.
+fn summariser_user_prompts(world: &ContextWorld) -> String {
+    let calls = world.summarizer.calls();
+    assert!(!calls.is_empty(), "the summariser was never invoked");
+    calls.iter().map(|call| call.user_prompt.as_str()).collect()
+}
+
 #[then(regex = r#"^the summariser user prompt contains "([^"]+)"$"#)]
 async fn summariser_user_contains(world: &mut ContextWorld, needle: String) {
-    let calls = world.summarizer.calls();
-    let last = calls.last().expect("the summariser was never invoked");
+    let prompts = summariser_user_prompts(world);
     assert!(
-        last.user_prompt.contains(&needle),
-        "summariser user prompt does not contain `{needle}`:\n{}",
-        last.user_prompt
+        prompts.contains(&needle),
+        "summariser user prompt does not contain `{needle}`:\n{prompts}"
     );
 }
 
 #[then(regex = r#"^the summariser user prompt does not contain "([^"]+)"$"#)]
 async fn summariser_user_not_contains(world: &mut ContextWorld, needle: String) {
-    let calls = world.summarizer.calls();
-    let last = calls.last().expect("the summariser was never invoked");
     assert!(
-        !last.user_prompt.contains(&needle),
+        !summariser_user_prompts(world).contains(&needle),
         "summariser user prompt unexpectedly contains `{needle}`"
     );
 }

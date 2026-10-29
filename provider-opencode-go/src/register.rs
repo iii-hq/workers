@@ -157,7 +157,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     iii.register_function(
         surface::COUNT_TOKENS_ID,
         RegisterFunction::new_async(|req: crate::count_tokens::CountTokensRequest| async move {
-            crate::count_tokens::handle(req)
+            crate::count_tokens::handle(req).await
         })
         .description(surface::COUNT_TOKENS_DESC)
         .metadata(json!({ "internal": true })),

@@ -5,6 +5,7 @@
 //! `configuration`). The `fp` binary (src/main.rs) wires these onto the
 //! bus; the lib target exists so `tests/` can exercise the public contract.
 
+pub mod batch;
 pub mod condition;
 pub mod config;
 pub mod configuration;

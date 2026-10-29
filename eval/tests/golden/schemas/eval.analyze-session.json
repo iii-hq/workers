@@ -1,0 +1,58 @@
+{
+  "function_id": "eval::analyze-session",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "reanalyze": {
+        "default": false,
+        "description": "Explicitly create another analysis of an already analyzed turn.",
+        "type": "boolean"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "title": "AnalyzeSessionRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "EvalStatusV1": {
+        "enum": [
+          "queued",
+          "collecting",
+          "judging",
+          "investigating",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "evaluation_id": {
+        "type": "string"
+      },
+      "reused": {
+        "description": "True when an existing analysis of the same session turn was returned.",
+        "type": "boolean"
+      },
+      "status": {
+        "$ref": "#/definitions/EvalStatusV1"
+      }
+    },
+    "required": [
+      "evaluation_id",
+      "reused",
+      "status"
+    ],
+    "title": "AnalyzeSessionResponseV1",
+    "type": "object"
+  }
+}

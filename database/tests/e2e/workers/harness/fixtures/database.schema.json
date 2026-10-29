@@ -20,7 +20,24 @@
       ]
     },
     "DatabaseConfig": {
-      "description": "Per-database connection settings. The URL scheme selects the driver; `pool` and `tls` are optional and default when omitted.",
+      "description": "Per-database connection settings: either a connection `url` (whose scheme selects the driver) or the structured form (`driver`, `host`, `port`, `user`, `password`, `database`) — never both. `pool` and `tls` are optional and default when omitted.",
+      "examples": [
+        {
+          "database": "shop",
+          "display": {
+            "color": "#22C55E",
+            "icon": "database"
+          },
+          "driver": "postgres",
+          "host": "db.example.com",
+          "password": "secret://DATABASE_SHOP_PASSWORD",
+          "port": 5432,
+          "tls": {
+            "mode": "verify-full"
+          },
+          "user": "app"
+        }
+      ],
       "properties": {
         "capture": {
           "allOf": [
@@ -28,7 +45,57 @@
               "$ref": "#/definitions/CaptureMode"
             }
           ],
-          "description": "How `database::row-changed` events are captured for this database. `statements` (default) classifies the SQL this worker executes; `native` makes writes from ANY client — psql, other processes — fire too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: a trigger-fed changelog drained on filesystem wake-up. MySQL: the binlog replication stream (needs REPLICATION SLAVE + CLIENT)."
+          "description": "How `database::on-row-changed` events are captured for this database. `statements` (default) classifies the SQL this worker executes; `native` makes writes from ANY client — psql, other processes — fire too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: a trigger-fed changelog drained on filesystem wake-up. MySQL: the binlog replication stream (needs REPLICATION SLAVE + CLIENT)."
+        },
+        "database": {
+          "description": "Structured form: database name (postgres/mysql), or the database file path on the engine host (sqlite; `:memory:` for an in-memory one).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "display": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DisplayConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How clients draw this connection (icon, color). Metadata only."
+        },
+        "driver": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DriverKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Structured form: the driver. Mutually exclusive with `url`."
+        },
+        "folder": {
+          "description": "Absolute path of a folder on the engine host that holds this connection's `.sql` query files. Metadata only: the worker never reads it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host": {
+          "description": "Structured form (postgres/mysql): server host name or IP. Through an `ssh` tunnel, the host as the SSH server resolves it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "password": {
+          "description": "Structured form (postgres/mysql): password — a literal, `secret://NAME` (the secrets worker's vault) or `env://NAME` (an environment variable the secrets worker reads). Resolved through `secrets::resolve`; never echoed back.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "pool": {
           "allOf": [
@@ -41,6 +108,26 @@
             "idle_timeout_ms": 30000,
             "max": 10
           }
+        },
+        "port": {
+          "description": "Structured form (postgres/mysql): server port. Default 5432 / 3306.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ssh": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SshConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reach the server through an SSH tunnel (postgres/mysql)."
         },
         "tls": {
           "allOf": [
@@ -55,47 +142,152 @@
           }
         },
         "url": {
-          "description": "Connection URL. Driver is inferred from the scheme: `sqlite:`, `postgres://` or `postgresql://`, or `mysql://`.",
-          "type": "string"
+          "description": "Connection URL. Driver is inferred from the scheme: `sqlite:`, `postgres://` or `postgresql://`, or `mysql://`. Mutually exclusive with the structured form (`driver` and its fields).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user": {
+          "description": "Structured form (postgres/mysql): user name.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
-      "required": [
-        "url"
-      ],
       "type": "object"
+    },
+    "DisplayConfig": {
+      "description": "How a client draws a connection. The worker only stores it.",
+      "properties": {
+        "color": {
+          "description": "`#RRGGBB`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icon": {
+          "description": "A Lucide icon name (`database`, `server`, `cloud`, …).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "DriverKind": {
+      "enum": [
+        "postgres",
+        "mysql",
+        "sqlite"
+      ],
+      "type": "string"
     },
     "PoolConfig": {
       "properties": {
         "acquire_timeout_ms": {
           "default": 5000,
-          "description": "Fail pool acquisition when no connection is available within this many milliseconds.",
+          "description": "Fail pool acquisition when no connection is available within this many milliseconds (1 ms to 10 min).",
           "format": "uint64",
-          "minimum": 0.0,
+          "maximum": 600000.0,
+          "minimum": 1.0,
           "type": "integer"
         },
         "idle_timeout_ms": {
           "default": 30000,
-          "description": "Close idle connections after this many milliseconds.",
+          "description": "Close idle connections after this many milliseconds (at most 24 h).",
           "format": "uint64",
+          "maximum": 86400000.0,
           "minimum": 0.0,
           "type": "integer"
         },
         "max": {
           "default": 10,
-          "description": "Maximum number of open connections in the pool.",
+          "description": "Maximum number of open connections in the pool (1-500).",
           "format": "uint32",
-          "minimum": 0.0,
+          "maximum": 500.0,
+          "minimum": 1.0,
           "type": "integer"
         }
       },
       "type": "object"
     },
+    "SshConfig": {
+      "description": "SSH tunnel to the database server (postgres/mysql): the worker connects to `host:port` as `user` and forwards each database connection through a `direct-tcpip` channel to the entry's host/port as the SSH server sees them. TLS to the database still verifies the database host name.",
+      "properties": {
+        "host": {
+          "description": "SSH server host name or IP.",
+          "type": "string"
+        },
+        "host_key": {
+          "description": "Pin the server's host key by its OpenSSH SHA-256 fingerprint (`SHA256:…`, as `ssh-keygen -lf` prints it). A different key is refused. When absent, any key is accepted and `testConnection` reports the one it saw so a client can pin it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "passphrase": {
+          "description": "Passphrase of an encrypted `private_key` — a literal, `secret://NAME` or `env://NAME`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "password": {
+          "description": "Password authentication — a literal, `secret://NAME` or `env://NAME`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "default": 22,
+          "description": "SSH server port. Default 22.",
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "private_key": {
+          "description": "Private key authentication: the key itself (OpenSSH or PEM; RSA, ECDSA or Ed25519), a path to it on the engine host, `secret://NAME` or `env://NAME`. Tried before the password when both are set.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user": {
+          "description": "SSH user name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "user"
+      ],
+      "type": "object"
+    },
     "TlsConfig": {
-      "description": "TLS settings for a single database. Applies to postgres and mysql. Sqlite is local-file and ignores this block.\n\nDefault is `mode: require` — TLS handshake required, certificate chain validated against the system trust store, hostname verification skipped (matching libpq's `sslmode=require` semantics). Use `mode: verify-full` to additionally verify the certificate hostname matches the URL host, and `mode: disable` to opt out of TLS entirely (local-dev only).",
+      "description": "TLS settings for a single database. Applies to postgres and mysql. Sqlite is local-file and ignores this block.\n\nDefault is `mode: require` — TLS handshake required, certificate chain validated against the system trust store, hostname verification skipped (matching libpq's `sslmode=require` semantics). Use `mode: verify-full` to additionally verify the certificate hostname matches the server host, and `mode: disable` to opt out of TLS entirely (local-dev only).",
       "properties": {
         "ca_cert": {
           "default": null,
-          "description": "Optional path to a PEM file containing one or more CA certificates. Additive by default — these certs **extend** the system trust store rather than replace it. Set `trust_native: false` for strict-isolation deployments that must only trust the operator-supplied bundle.",
+          "description": "Optional CA certificate(s): a path to a PEM file, the PEM itself, `secret://NAME` or `env://NAME`. Additive by default — these certs **extend** the system trust store rather than replace it. Set `trust_native: false` for strict-isolation deployments that must only trust the operator-supplied bundle.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_cert": {
+          "description": "Client certificate (chain) for mutual TLS: a path, the PEM itself, `secret://NAME` or `env://NAME`. Requires `client_key`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_key": {
+          "description": "Private key of `client_cert` (PEM: PKCS#8, PKCS#1 or SEC1): a path, the PEM itself, `secret://NAME` or `env://NAME`.",
           "type": [
             "string",
             "null"
@@ -108,7 +300,7 @@
             }
           ],
           "default": "require",
-          "description": "TLS mode: `disable` (plaintext), `require` (default), or `verify-full`."
+          "description": "TLS mode: `disable` (plaintext), `prefer` (TLS when the server offers it), `require` (default), `verify-ca`, or `verify-full`."
         },
         "trust_native": {
           "default": true,
@@ -128,6 +320,13 @@
           "type": "string"
         },
         {
+          "description": "TLS when the server offers it (chain validated like `require`); plaintext only when the server does not offer TLS at all. A failed certificate check is an error, never a fallback.",
+          "enum": [
+            "prefer"
+          ],
+          "type": "string"
+        },
+        {
           "description": "TLS handshake required; certificate chain validated; hostname NOT verified. Matches libpq's `sslmode=require`. The default.",
           "enum": [
             "require"
@@ -135,7 +334,14 @@
           "type": "string"
         },
         {
-          "description": "TLS handshake required; certificate chain validated; certificate hostname must match the URL host. Matches libpq's `sslmode=verify-full`.",
+          "description": "Same checks as `require` (chain validated against the trust roots, hostname not checked), named after libpq's `sslmode=verify-ca`.",
+          "enum": [
+            "verify-ca"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "TLS handshake required; certificate chain validated; certificate hostname must match the server host. Matches libpq's `sslmode=verify-full`.",
           "enum": [
             "verify-full"
           ],

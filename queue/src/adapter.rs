@@ -19,6 +19,7 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::store::TopicStats;
 use crate::subscriber_config::SubscriberQueueConfig;
+use crate::trigger::SubscriberTarget;
 
 /// Summary of a known queue topic, returned by [`QueueAdapter::list_topics`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -196,8 +197,22 @@ pub trait QueueAdapter: Send + Sync + 'static {
         baggage: Option<String>,
     );
 
+    /// Register a subscriber (`id`) on `topic` that hands each delivered
+    /// message to `target` ([`SubscriberTarget::deliver`]): a trigger's
+    /// function or a `queue::on-message` observer. The target's result
+    /// drives ack, retry and DLQ the same way for both.
+    async fn subscribe_target(
+        &self,
+        topic: &str,
+        id: &str,
+        target: SubscriberTarget,
+        condition_function_id: Option<String>,
+        queue_config: Option<SubscriberQueueConfig>,
+    );
+
     /// Register a subscriber (`id`) on `topic` that invokes `function_id`
-    /// for each delivered message.
+    /// for each delivered message: [`Self::subscribe_target`] with a
+    /// [`SubscriberTarget::Function`].
     async fn subscribe(
         &self,
         topic: &str,
@@ -207,7 +222,16 @@ pub trait QueueAdapter: Send + Sync + 'static {
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
         namespace: Option<String>,
-    );
+    ) {
+        self.subscribe_target(
+            topic,
+            id,
+            SubscriberTarget::function(function_id, metadata, namespace),
+            condition_function_id,
+            queue_config,
+        )
+        .await;
+    }
 
     /// Remove a previously registered subscriber.
     async fn unsubscribe(&self, topic: &str, id: &str);
@@ -259,6 +283,13 @@ pub trait QueueAdapter: Send + Sync + 'static {
     /// connections). The worker calls this deterministically on shutdown;
     /// the engine builtin instead aborts consumer tasks in place.
     async fn shutdown(&self);
+
+    /// Resolves once this adapter's broker connection is gone for good, so
+    /// the worker must rebuild it (`boot::supervise_connection`). Adapters
+    /// without a long-lived connection never resolve.
+    async fn connection_lost(&self) {
+        std::future::pending::<()>().await
+    }
 
     // -- Function queue transport methods --
     //
@@ -322,6 +353,17 @@ pub trait QueueAdapter: Send + Sync + 'static {
     /// Acknowledge successful processing of a message.
     async fn ack_function_queue(&self, _queue_name: &str, _delivery_id: u64) -> anyhow::Result<()> {
         Ok(()) // no-op by default
+    }
+
+    /// Give a delivery back to the broker unspent (no attempt counted), so another consumer can
+    /// take it: a worker that runs jobs in its own namespace does so with a job whose function is
+    /// not registered there.
+    async fn release_function_queue(
+        &self,
+        _queue_name: &str,
+        _delivery_id: u64,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("this queue adapter cannot give a delivery back")
     }
 
     /// Negative-acknowledge a message. When `attempt < max_retries`, the
@@ -390,27 +432,17 @@ impl QueueAdapter for SwappableAdapter {
             .await;
     }
 
-    async fn subscribe(
+    async fn subscribe_target(
         &self,
         topic: &str,
         id: &str,
-        function_id: &str,
-        metadata: Option<Value>,
+        target: SubscriberTarget,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
-        namespace: Option<String>,
     ) {
         self.current()
             .await
-            .subscribe(
-                topic,
-                id,
-                function_id,
-                metadata,
-                condition_function_id,
-                queue_config,
-                namespace,
-            )
+            .subscribe_target(topic, id, target, condition_function_id, queue_config)
             .await;
     }
 
@@ -530,6 +562,17 @@ impl QueueAdapter for SwappableAdapter {
             .await
     }
 
+    async fn release_function_queue(
+        &self,
+        queue_name: &str,
+        delivery_id: u64,
+    ) -> anyhow::Result<()> {
+        self.current()
+            .await
+            .release_function_queue(queue_name, delivery_id)
+            .await
+    }
+
     async fn nack_function_queue(
         &self,
         queue_name: &str,
@@ -567,15 +610,13 @@ mod tests {
             self.enqueue_calls.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn subscribe(
+        async fn subscribe_target(
             &self,
             _topic: &str,
             _id: &str,
-            _function_id: &str,
-            _metadata: Option<Value>,
+            _target: SubscriberTarget,
             _condition_function_id: Option<String>,
             _queue_config: Option<SubscriberQueueConfig>,
-            _namespace: Option<String>,
         ) {
         }
 

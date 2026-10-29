@@ -46,6 +46,7 @@ pub fn register_all(
         tracing::warn!(%error, "failed to bind Harness working-directory proposal context");
     }
     crate::onboarding::register(iii, workspace.clone());
+    crate::context_tracking::register(iii, workspace.clone());
     workspace::register(iii, workspace);
     subscribe::register(iii);
     crate::conversations::register(iii);

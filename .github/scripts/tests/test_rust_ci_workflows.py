@@ -209,9 +209,19 @@ def test_other_engine_installers_use_the_atomic_configuration_release() -> None:
                     **job.get("env", {}),
                     **step.get("env", {}),
                 }
-                assert effective_env.get("III_RELEASE_TAG") == "iii/v0.24.0-rc.2", (
-                    path.name, job_name, step.get("name"), effective_env.get("III_RELEASE_TAG")
-                )
+                tag = effective_env.get("III_RELEASE_TAG")
+                if tag == "${{ matrix.engine }}":
+                    # A matrix over engines still runs the atomic configuration
+                    # release; its other legs are extra (database-e2e: the
+                    # 0.25 engine, for the observe migration).
+                    engines = job.get("strategy", {}).get("matrix", {}).get("engine", [])
+                    assert "iii/v0.24.0-rc.2" in engines, (
+                        path.name, job_name, step.get("name"), engines
+                    )
+                else:
+                    assert tag == "iii/v0.24.0-rc.2", (
+                        path.name, job_name, step.get("name"), tag
+                    )
                 covered.add(path.name)
     registry_validation = workflow("_worker-e2e.yml")
     assert "III_RELEASE_TAG" not in registry_validation.get("env", {})
@@ -283,7 +293,8 @@ def test_ci_cargo_commands_use_committed_lockfiles() -> None:
 def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None:
     audit = workflow("rust-security-audit.yml")
     assert "workflow_dispatch" not in audit["on"]
-    assert audit["on"]["pull_request"]["paths"] == ["**/Cargo.lock"]
+    # A changed per-lockfile ignore list re-audits its lockfile.
+    assert audit["on"]["pull_request"]["paths"] == ["**/Cargo.lock", "**/.cargo/audit-ignore"]
     assert audit["on"]["schedule"]
 
     steps = audit["jobs"]["audit"]["steps"]
@@ -296,6 +307,10 @@ def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None
     assert "git diff --name-only -z" in run
     assert "find . -name Cargo.lock" in run
     assert "cargo audit --file" in run
+    # Ignores scoped to one lockfile come from <dir>/.cargo/audit-ignore, as
+    # --ignore flags for that lockfile only.
+    assert '/.cargo/audit-ignore"' in run
+    assert "--ignore" in run
     # Every iteration fetches: the yanked check resolves crates against the
     # index entries fetched by its own invocation, so a no-fetch pass only
     # sees whatever the first lockfile happened to warm — each additional

@@ -203,6 +203,8 @@ pub async fn handle(state: &AppState, req: ExplainReq) -> Result<ExplainResp, St
             params: req.params,
             timeout_ms: req.timeout_ms,
             record_history: false,
+            max_rows: None,
+            query_only: false,
         },
     )
     .await?;

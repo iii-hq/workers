@@ -627,3 +627,76 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
     adapter.shutdown().await;
     iii.shutdown_async().await;
 }
+
+/// KAN-285: with both `ring` and `aws-lc-rs` compiled in, rustls cannot pick a
+/// process-level CryptoProvider on its own and the lapin io-loop thread
+/// panicked on the first `amqps://` connect. The adapter must install one.
+#[tokio::test]
+#[serial]
+async fn amqps_connects_with_a_process_default_crypto_provider() {
+    let Some(container) = docker::start_rabbitmq_tls().await else {
+        return; // skip: docker or openssl not available
+    };
+    std::env::set_var("SSL_CERT_DIR", container.ca_dir());
+
+    let invoker: Arc<dyn Invoker> = Arc::new(NoopInvoker);
+    let adapter = tokio::time::timeout(
+        Duration::from_secs(30),
+        RabbitMQAdapter::from_config(Some(&json!({"amqp_url": container.amqps_url()})), invoker),
+    )
+    .await
+    .expect("amqps connect must not hang")
+    .expect("rabbitmq adapter should connect over amqps");
+
+    adapter.shutdown().await;
+}
+
+/// A broker that drops the connection (a restart, say) is noticed by the
+/// adapter, and publishing then fails with one clear error instead of a
+/// channel error per call.
+#[tokio::test]
+#[serial]
+async fn a_dropped_connection_is_noticed_and_publish_fails_clearly_connect_or_skip() {
+    let Some(container) = docker::start_rabbitmq().await else {
+        return; // skip: docker not reachable
+    };
+    let adapter = RabbitMQAdapter::from_config(
+        Some(&json!({"amqp_url": container.amqp_url()})),
+        Arc::new(NoopInvoker),
+    )
+    .await
+    .expect("rabbitmq adapter should connect");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), adapter.connection_lost())
+            .await
+            .is_err(),
+        "a live connection is not reported lost"
+    );
+
+    container.close_all_connections();
+    tokio::time::timeout(Duration::from_secs(20), adapter.connection_lost())
+        .await
+        .expect("the dropped connection should be noticed");
+
+    let error = adapter
+        .publish_to_function_queue(
+            "e2e-lost",
+            "app::fn",
+            json!({}),
+            "m-1",
+            0,
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("publishing on a dropped connection must fail");
+    assert!(
+        error.to_string().contains("connection is down"),
+        "unexpected error: {error}"
+    );
+    adapter.shutdown().await;
+}

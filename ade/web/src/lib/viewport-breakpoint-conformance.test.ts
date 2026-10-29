@@ -46,7 +46,7 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
     max: 94,
     reason: `${SHEET} (the sheet switches at 768px, see mobileSheet)`,
   },
-  'components/chat/EmptyState.tsx': { max: 8, reason: TOUCH },
+  'components/chat/EmptyState.tsx': { max: 11, reason: TOUCH },
   'components/chat/Message.tsx': {
     max: 27,
     reason: 'phone chrome: hover-revealed actions need a pointer; 16px copy',

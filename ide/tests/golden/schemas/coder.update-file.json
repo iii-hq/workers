@@ -285,7 +285,7 @@
             "type": "integer"
           },
           "notice": {
-            "description": "Set when ops were sent without `op` and it was inferred from their keys; send `op` explicitly.",
+            "description": "Set when ops were sent without `op` and it was inferred from their keys, or sent under their op name instead of in `ops`; send each op in `ops` with its `op`.",
             "type": [
               "string",
               "null"

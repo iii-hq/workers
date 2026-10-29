@@ -11,6 +11,7 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, TriggerAction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::clients::router::{ChatError, ChatParams, StreamSink};
 use crate::clients::{LoadedEntry, SessionClient};
@@ -96,9 +97,10 @@ const BUDGET_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
 /// Keep a small fixed reserve in addition to the deterministic JSON estimate.
 const PROVIDER_FRAMING_ALLOWANCE_TOKENS: u64 = 64;
 
-/// Assembly headroom reserved when pre-generate hooks are bound: hook
-/// appends land AFTER assembly fits the context, so without a reservation
-/// any append overflows an exactly-full context and fails the turn.
+/// Assembly headroom reserved when dynamic pre-generate hooks are bound and
+/// the turn has not measured their text yet: hook appends land AFTER
+/// assembly fits the context, so without a reservation any append overflows
+/// an exactly-full context and fails the turn.
 const PRE_GENERATE_HOOK_ALLOWANCE_TOKENS: u64 = 256;
 
 /// Extra margin folded into the one-shot re-assembly after a post-assembly
@@ -242,6 +244,42 @@ fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> V
         obj.insert(k.clone(), v.clone());
     }
     Value::Object(obj)
+}
+
+/// `origin_with` for the assistant entry of a generate step, also naming the
+/// Harness build that ran it (`build`, see build.rs) and fingerprinting the
+/// request it sent (`req`): sha256 hex of the compact JSON (object keys sorted)
+/// of the system prompt, the tools and the messages exactly as handed to the
+/// router, plus the message count (not `thinking_level`, `response_format`,
+/// `max_output_tokens` or `provider_options`). Stamped after the hook
+/// annotations so a hook cannot overwrite them. Written when the step opens
+/// its entry: `session::update-message` never rewrites a stored `origin`, so a
+/// step redelivered after a restart keeps the stamp of the attempt that
+/// opened it.
+fn generate_origin(
+    turn_id: &str,
+    annotations: &serde_json::Map<String, Value>,
+    system_prompt: Option<&str>,
+    tools: &[AgentFunction],
+    messages: &[Value],
+) -> Value {
+    let mut origin = origin_with(turn_id, annotations);
+    origin["build"] = json!(env!("GIT_SHA"));
+    origin["req"] = json!({
+        "system_sha": json_sha(&system_prompt),
+        "tools_sha": json_sha(&serde_json::to_value(tools).unwrap_or(Value::Null)),
+        "messages_sha": json_sha(messages),
+        "n": messages.len(),
+    });
+    origin
+}
+
+fn json_sha<T: Serialize + ?Sized>(value: &T) -> String {
+    let mut hasher = Sha256::new();
+    // Streams the JSON into the hasher (no copy of a multi-MB transcript).
+    // Infallible here: only strings and `Value`s, and a hasher never errors.
+    let _ = serde_json::to_writer(&mut hasher, value);
+    format!("{:x}", hasher.finalize())
 }
 
 /// Whether the running step must finalise as cancelled after generation.
@@ -636,6 +674,13 @@ async fn generate_step(
     };
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
+    // Static hook injections join before assembly, so the budget, the
+    // compaction gate and the request count the same prompt (MOT-5569). One
+    // snapshot for the whole step: a binding registering mid-step must not be
+    // skipped at pre_generate as static yet missing from assembly.
+    let pre_generate = deps.hooks.pre_generate.ordered();
+    let assembly_system_prompt =
+        crate::hooks::runner::with_static_prompts(&pre_generate, assembly_system_prompt);
     // Registry-change notice: if a function this session may call changed or
     // left since it last acknowledged them, tell the model its cached
     // contracts may be stale. First sighting stamps silently, and so does a
@@ -732,15 +777,17 @@ async fn generate_step(
     // full context even a tiny hook append overflows the final check
     // (observed live: a ~20-token guidance injection over a 220k-usable
     // request killed a 13-step turn). Two defenses, composable: when
-    // pre-generate hooks are bound, reserve a small allowance up front;
-    // and if the final count still overflows, re-assemble ONCE with the
-    // measured deficit folded into the overhead so assembly makes room —
-    // failing the turn only when even that is not enough.
-    let mut extra_overhead_tokens: u64 = if deps.hooks.pre_generate.is_empty() {
-        0
-    } else {
-        PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
-    };
+    // dynamic pre-generate hooks are bound, reserve the hook text the
+    // previous step measured up front; and if the final count still
+    // overflows, re-assemble ONCE with the measured deficit folded into the
+    // overhead so assembly makes room — failing the turn only when even that
+    // is not enough.
+    let mut extra_overhead_tokens = pre_generate_allowance(
+        pre_generate
+            .iter()
+            .any(|binding| binding.inject_prompt.is_none()),
+        record.pre_generate_hook_tokens,
+    );
     let mut reassembled = false;
     let (
         gen_system_prompt,
@@ -761,6 +808,7 @@ async fn generate_step(
             ContextAssemblyInputs {
                 system_prompt: assembly_system_prompt.clone(),
                 tools: &tools,
+                response_format: response_format.as_ref(),
                 request_overhead_tokens: request_overhead_tokens
                     .saturating_add(extra_overhead_tokens),
             },
@@ -782,6 +830,7 @@ async fn generate_step(
         let (gen_system_prompt, appended, gen_annotations) = match deps
             .hooks
             .run_pre_generate(
+                &pre_generate,
                 &record,
                 payload.step,
                 assembled.system_prompt.clone(),
@@ -908,7 +957,18 @@ async fn generate_step(
                 .map_err(HarnessError::Dependency)?;
             final_count.tokens.saturating_add(request_overhead_tokens)
         };
+        let growth = post_assembly_growth(
+            final_request_tokens,
+            assembled.token_count,
+            extra_overhead_tokens,
+        );
         if final_request_tokens <= assembled.usable {
+            // Only a prompt-only change measures the hook text alone: notices,
+            // hook appends and orphan patches are in the next step's window,
+            // where assembly already counts them.
+            if !hook_appended && patched == 0 {
+                record.pre_generate_hook_tokens = Some(growth);
+            }
             let max_output_tokens = record
                 .options
                 .max_output_tokens
@@ -920,6 +980,7 @@ async fn generate_step(
                 &assembled,
                 final_request_tokens,
                 request_overhead_tokens,
+                growth,
             );
             record.context_snapshot = Some(snapshot);
             break (
@@ -1024,7 +1085,18 @@ async fn generate_step(
     // repair. Persisted pruning happens with the normal pre-generation write.
     trigger::retain_visible_contract_sources(&mut record.function_contract_ledger, &gen_messages);
 
-    let assistant_origin = origin_with(&record.turn_id, &gen_annotations);
+    // The router client strips file blocks again (hook appends are not covered
+    // by assembly): fingerprint a stripped copy so it is of what it sends,
+    // without changing what the rest of the step sees.
+    let mut sent_messages = gen_messages.clone();
+    crate::clients::router::strip_file_blocks(&mut sent_messages);
+    let assistant_origin = generate_origin(
+        &record.turn_id,
+        &gen_annotations,
+        gen_system_prompt.as_deref(),
+        &tools,
+        &sent_messages,
+    );
 
     // Generate: append an empty assistant under a deterministic id, stream
     // deltas into it, then write the final message.
@@ -1718,6 +1790,7 @@ async fn finish_step(
                     reconciled.as_ref().map(|r| r.changes.as_slice()),
                     &call.function_id,
                     call_args,
+                    crate::reconcile::contract_in_context(&record, &call.function_id),
                 )
                 .await;
                 append_function_result(
@@ -1851,6 +1924,7 @@ async fn finish_step(
                     reconciled.as_ref().map(|r| r.changes.as_slice()),
                     &call.function_id,
                     call_args,
+                    crate::reconcile::contract_in_context(&record, &call.function_id),
                 )
                 .await;
                 append_function_result(
@@ -2034,6 +2108,7 @@ async fn finish_step(
                 reconciled.as_ref().map(|r| r.changes.as_slice()),
                 &call.function_id,
                 call_args,
+                crate::reconcile::contract_in_context(&record, &call.function_id),
             )
             .await;
             let entry_origin = origin_with(&record.turn_id, &annotations);
@@ -3392,6 +3467,7 @@ async fn assemble_context(
         previous_summary: anchor.summary.clone(),
         lease_key: record.session_id.clone(),
         thinking_level: record.options.thinking_level,
+        response_format: inputs.response_format.cloned(),
         tools: inputs.tools.to_vec(),
         request_overhead_tokens: inputs.request_overhead_tokens,
         // Pruning rewrites results the model already reasoned over; on a
@@ -3611,15 +3687,16 @@ fn is_context_overflow_error(error: &str) -> bool {
 }
 
 /// Fold the assembly the loop already performed into the session's context
-/// snapshot. `final_request_tokens >= assembled.token_count` when hooks or
-/// orphan repair grew the request; the difference is the hook_guidance
-/// category. No counting round trips happen here.
+/// snapshot. `post_assembly_tokens` is what hooks or orphan repair grew the
+/// request by: the hook_guidance category. No counting round trips happen
+/// here.
 fn build_context_snapshot(
     record: &TurnRecord,
     step: u64,
     assembled: &Assembled,
     final_request_tokens: u64,
     request_overhead_tokens: u64,
+    post_assembly_tokens: u64,
 ) -> crate::context_snapshot::ContextSnapshotV1 {
     use crate::context_snapshot::{ContextSnapshotV1, SnapshotCategoriesV1};
     // A context-manager that predates the breakdown response reports nothing,
@@ -3644,7 +3721,7 @@ fn build_context_snapshot(
             tools: b.tools_tokens,
             messages: b.by_role.into(),
             overhead: request_overhead_tokens,
-            hook_guidance: final_request_tokens.saturating_sub(assembled.token_count),
+            hook_guidance: post_assembly_tokens,
         },
         compacted: assembled.summarized,
         summarized_head_tokens: assembled.summarized_head_tokens,
@@ -3834,6 +3911,7 @@ struct Assembled {
 struct ContextAssemblyInputs<'a> {
     system_prompt: Option<String>,
     tools: &'a [AgentFunction],
+    response_format: Option<&'a Value>,
     request_overhead_tokens: u64,
 }
 
@@ -3867,6 +3945,30 @@ fn split_prompt_sections<'a>(final_prompt: &'a str, stable: &'a str) -> Option<(
     }
     let rest = final_prompt.strip_prefix(stable)?.strip_prefix("\n\n")?;
     Some((stable, rest))
+}
+
+/// Assembly headroom for what dynamic pre_generate hooks add after assembly:
+/// the hook text the session last measured (MOT-5569: code-runner's guidance
+/// alone is ~930 tokens), never below the flat reserve, which still absorbs a
+/// hook that added nothing on the measured step and text again on this one.
+fn pre_generate_allowance(dynamic_hooks: bool, measured: Option<u64>) -> u64 {
+    if !dynamic_hooks {
+        return 0;
+    }
+    measured
+        .unwrap_or_default()
+        .max(PRE_GENERATE_HOOK_ALLOWANCE_TOKENS)
+}
+
+/// What the final request grew past the request assembly built.
+/// `assembled_token_count` was fit with the reservation folded in, which is
+/// not part of the request.
+fn post_assembly_growth(
+    final_request_tokens: u64,
+    assembled_token_count: u64,
+    extra_overhead_tokens: u64,
+) -> u64 {
+    final_request_tokens.saturating_sub(assembled_token_count.saturating_sub(extra_overhead_tokens))
 }
 
 /// The reservation fold for the one-shot re-assembly: everything the final
@@ -4229,6 +4331,87 @@ mod stack_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_assistant_step_carries_its_build_and_a_fingerprint_of_the_request() {
+        let tools = vec![super::AgentFunction {
+            name: "agent_trigger".into(),
+            description: "Call a function".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            label: None,
+            execution_mode: None,
+        }];
+        let messages = vec![serde_json::json!({ "role": "user", "content": "hi" })];
+        let annotations = serde_json::Map::new();
+        let origin =
+            |system: &str, tools: &[super::AgentFunction], messages: &[serde_json::Value]| {
+                super::generate_origin("t1", &annotations, Some(system), tools, messages)
+            };
+
+        let base = origin("be brief", &tools, &messages);
+        assert_eq!(base["turn_id"], "t1");
+        assert_eq!(base["build"], env!("GIT_SHA"));
+        assert!(!env!("GIT_SHA").is_empty());
+        assert_eq!(base["req"]["n"], 1);
+        for key in ["system_sha", "tools_sha", "messages_sha"] {
+            let sha = base["req"][key].as_str().unwrap();
+            assert!(
+                sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{key}: {sha}"
+            );
+        }
+
+        // Same request, same fingerprint; a different system prompt moves
+        // only its own digest.
+        assert_eq!(base["req"], origin("be brief", &tools, &messages)["req"]);
+        let changed = origin("be verbose", &tools, &messages);
+        assert_ne!(base["req"]["system_sha"], changed["req"]["system_sha"]);
+        for key in ["tools_sha", "messages_sha", "n"] {
+            assert_eq!(base["req"][key], changed["req"][key], "{key}");
+        }
+        let more = [messages[0].clone(), messages[0].clone()];
+        let longer = origin("be brief", &tools, &more);
+        assert_ne!(base["req"]["messages_sha"], longer["req"]["messages_sha"]);
+        assert_eq!(longer["req"]["n"], 2);
+        assert_ne!(
+            base["req"]["tools_sha"],
+            origin("be brief", &[], &messages)["req"]["tools_sha"]
+        );
+    }
+
+    #[test]
+    fn the_request_fingerprint_ignores_key_order_and_resists_hook_annotations() {
+        let forward = serde_json::json!({ "a": 1, "b": { "c": 2, "d": 3 } });
+        let reversed: serde_json::Value =
+            serde_json::from_str(r#"{ "b": { "d": 3, "c": 2 }, "a": 1 }"#).unwrap();
+        assert_eq!(super::json_sha(&forward), super::json_sha(&reversed));
+
+        let mut annotations = serde_json::Map::new();
+        annotations.insert("build".into(), "forged".into());
+        annotations.insert("req".into(), "forged".into());
+        annotations.insert("memory".into(), "bank".into());
+        let origin = super::generate_origin("t1", &annotations, None, &[], &[forward]);
+        assert_eq!(origin["build"], env!("GIT_SHA"));
+        assert!(origin["req"].is_object());
+        assert_eq!(origin["memory"], "bank");
+    }
+
+    #[test]
+    fn the_request_fingerprint_is_the_sha256_of_the_canonical_json() {
+        // The integration runner pins the same vectors when it checks a stamped
+        // entry against the request the router received.
+        let messages = [serde_json::json!({ "role": "user", "content": "hi" })];
+        let origin = super::generate_origin("t1", &serde_json::Map::new(), None, &[], &messages);
+        assert_eq!(
+            origin["req"],
+            serde_json::json!({
+                "system_sha": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+                "tools_sha": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                "messages_sha": "4e79873118cd9be7a1f0308b9cd772950c5410c74ca3fe1ba2626cba009a9237",
+                "n": 1,
+            })
+        );
+    }
+
     fn valid_ask() -> serde_json::Value {
         serde_json::json!({ "questions": [ {
             "header": "Approach",
@@ -5377,6 +5560,41 @@ mod tests {
             &prompt
         ));
         assert!(!super::final_request_unchanged(false, 0, &None, &prompt));
+    }
+
+    #[test]
+    fn pre_generate_allowance_is_the_previous_steps_measured_hook_text() {
+        // Static injections are already in the assembled prompt: nothing to reserve.
+        assert_eq!(super::pre_generate_allowance(false, Some(928)), 0);
+        // Before the turn measured anything, the flat reserve.
+        assert_eq!(
+            super::pre_generate_allowance(true, None),
+            super::PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
+        );
+        // code-runner's guidance (928 DeepSeek tokens) is reserved whole, not 256 of it.
+        assert_eq!(super::pre_generate_allowance(true, Some(928)), 928);
+        // A step whose hooks added nothing (disabled, failed open) keeps the
+        // flat floor for the step where they add text again.
+        assert_eq!(
+            super::pre_generate_allowance(true, Some(0)),
+            super::PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
+        );
+    }
+
+    #[test]
+    fn post_assembly_growth_is_measured_from_the_unreserved_count() {
+        // MOT-5569: assembly counted 92_688 with the 256 reserve, the hook added 928.
+        let assembled = 92_688;
+        let final_request = assembled - 256 + 928;
+        assert_eq!(
+            super::post_assembly_growth(final_request, assembled, 256),
+            928
+        );
+        // An unchanged request's final count drops the unused reserve: no growth.
+        assert_eq!(
+            super::post_assembly_growth(assembled - 256, assembled, 256),
+            0
+        );
     }
 
     #[test]

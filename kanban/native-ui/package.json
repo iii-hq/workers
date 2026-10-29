@@ -1,0 +1,22 @@
+{
+  "name": "@iii-workers/kanban-native-ui",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The kanban worker's native app for the iii app (the board, a ticket and its conversation, filters, releases and projects), built with @iii-dev/native-ui and embedded by src/native_ui.rs.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "watch": "node build.mjs --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@iii-dev/native-ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "solid-js": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

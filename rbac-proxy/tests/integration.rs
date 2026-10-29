@@ -2,18 +2,24 @@
 //! auth function + target functions on the engine, then drive a downstream
 //! worker **through the proxy port** and assert the RBAC contract.
 //!
+//! The engine is the `iii` on `PATH`, or `III_BIN`. It runs from its own
+//! temporary directory on its own port ([`ENGINE_PORT`], not the default
+//! 49134), so the test never reaches an engine a developer has running.
+//!
 //! Self-skips (printing why) when:
-//!   - the `iii` binary is not on `PATH`, or
-//!   - the proxy port is already taken, or
+//!   - there is no `iii` binary, or
+//!   - the engine or proxy port is already taken, or
 //!   - the proxy does not come up within the timeout (e.g. the `configuration`
 //!     worker — a required boot dependency — is not deployed in this engine).
 //!
 //! Covers spec *Testing* (a)–(e): an exposed call succeeds, a forbidden call
 //! rejects with `FORBIDDEN`, a trigger bound to a forbidden function is
 //! rejected at registration, a channel round-trips through `/ws/channels/{id}`,
-//! and `engine::functions::list` returns only exposed ids.
+//! and `engine::functions::list` returns only exposed ids. Also: an exposed id
+//! called in another namespace is `FORBIDDEN`, and `observe` is refused.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -27,21 +33,39 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
 
-const ENGINE_WS: &str = "ws://127.0.0.1:49134";
-const PROXY_PORT: u16 = 49271;
+const ENGINE_PORT: u16 = 49381;
+const ENGINE_WS: &str = "ws://127.0.0.1:49381";
+const PROXY_PORT: u16 = 49382;
 
 struct Harness {
     proxy: Child,
     iii: Child,
     _support: IIIClient,
+    dir: PathBuf,
 }
 
 impl Drop for Harness {
     fn drop(&mut self) {
         let _ = self.proxy.kill();
         let _ = self.proxy.wait();
-        let _ = self.iii.kill();
-        let _ = self.iii.wait();
+        kill_tree(&mut self.iii);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Stop the engine and anything it spawned.
+fn kill_tree(child: &mut Child) {
+    let _ = Command::new("pkill")
+        .args(["-P", &child.id().to_string()])
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn iii_bin() -> Option<PathBuf> {
+    match std::env::var_os("III_BIN").filter(|path| !path.is_empty()) {
+        Some(path) => Some(PathBuf::from(path)),
+        None => which::which("iii").ok(),
     }
 }
 
@@ -92,27 +116,51 @@ fn register_support() -> IIIClient {
 }
 
 async fn boot(seed_path: &str) -> Option<Harness> {
-    let iii_bin = which::which("iii").ok()?;
-
-    if TcpStream::connect(("127.0.0.1", PROXY_PORT)).await.is_ok() {
-        eprintln!("skipping: port {PROXY_PORT} already in use on 127.0.0.1");
+    let Some(iii_bin) = iii_bin() else {
+        eprintln!("skipping: no `iii` binary (set III_BIN or put iii on PATH)");
         return None;
+    };
+
+    for port in [ENGINE_PORT, PROXY_PORT] {
+        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            eprintln!("skipping: port {port} already in use on 127.0.0.1");
+            return None;
+        }
     }
 
-    let iii = Command::new(&iii_bin)
-        .arg("--use-default-config")
+    // The engine keeps its state (configuration entries) under its working
+    // directory: a fresh one per run.
+    let dir = std::env::temp_dir().join(format!("rbac-proxy-itest-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {ENGINE_PORT}\n"
+        ),
+    )
+    .ok()?;
+
+    let spawned = Command::new(&iii_bin)
+        .args(["-c", "config.yaml"])
+        .current_dir(&dir)
+        .env_remove("III_URL")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .spawn();
+    let mut iii = match spawned {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("skipping: could not start {}: {e}", iii_bin.display());
+            let _ = std::fs::remove_dir_all(&dir);
+            return None;
+        }
+    };
 
-    if !wait_for_listen(49134, Duration::from_secs(8)).await {
-        eprintln!("skipping: engine did not come up on :49134");
-        return Some(Harness {
-            proxy: Command::new("true").spawn().ok()?,
-            iii,
-            _support: register_support(),
-        });
+    if !wait_for_listen(ENGINE_PORT, Duration::from_secs(15)).await {
+        eprintln!("skipping: engine did not come up on :{ENGINE_PORT}");
+        kill_tree(&mut iii);
+        let _ = std::fs::remove_dir_all(&dir);
+        return None;
     }
 
     // Register auth + targets, give the engine a moment to index them.
@@ -133,6 +181,7 @@ async fn boot(seed_path: &str) -> Option<Harness> {
     let proxy_bin = env!("CARGO_BIN_EXE_rbac-proxy");
     let proxy = Command::new(proxy_bin)
         .args(["--url", ENGINE_WS, "--config", seed_path])
+        .env_remove("III_URL")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -147,6 +196,7 @@ async fn boot(seed_path: &str) -> Option<Harness> {
             proxy,
             iii,
             _support: support,
+            dir,
         };
         // Ensure the proxy child is reaped by the Drop; signal skip via None.
         let _ = h.proxy.kill();
@@ -158,6 +208,7 @@ async fn boot(seed_path: &str) -> Option<Harness> {
         proxy,
         iii,
         _support: support,
+        dir,
     })
 }
 
@@ -334,5 +385,88 @@ async fn end_to_end_rbac_through_proxy() {
         "forbidden secret::echo must be filtered out of discovery; got {ids:?}"
     );
 
+    // (f) The exposed id, called in another namespace, is not exposed there:
+    //     a rule without a namespace answers in `default` only.
+    {
+        let mut ws = raw_client().await;
+        let reply = request(
+            &mut ws,
+            json!({
+                "type": "invokefunction",
+                "invocation_id": "11111111-1111-4111-8111-111111111111",
+                "function_id": "api::echo",
+                "data": {},
+                "namespace": "orders"
+            }),
+            |v| v["type"] == "invocationresult",
+        )
+        .await;
+        assert_eq!(
+            reply["error"]["code"], "FORBIDDEN",
+            "api::echo in `orders` must be refused; got {reply}"
+        );
+        let _ = ws.close(None).await;
+    }
+
+    // (g) `observe` is refused by the proxy (whatever the engine supports).
+    {
+        let mut ws = raw_client().await;
+        let reply = request(
+            &mut ws,
+            json!({
+                "type": "observe",
+                "id": "5b0c3e1a-8f2d-4c6b-9a7e-1d2f3a4b5c6d",
+                "source": { "function_id": "api::echo" },
+                "target": { "function_id": "api::echo2" }
+            }),
+            |v| v["type"] == "observeresult",
+        )
+        .await;
+        assert_eq!(reply["state"], "error");
+        assert_eq!(reply["error"]["code"], "UNSUPPORTED");
+        let _ = ws.close(None).await;
+    }
+
     let _ = std::fs::remove_file(&seed_path);
+}
+
+type RawClient =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn raw_client() -> RawClient {
+    let url = format!("ws://127.0.0.1:{PROXY_PORT}/");
+    let mut request =
+        tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+            url.as_str(),
+        )
+        .expect("request");
+    request.headers_mut().insert(
+        "authorization",
+        "Bearer test-token".parse().expect("header"),
+    );
+    let (ws, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("raw connect to proxy");
+    ws
+}
+
+/// Send `frame` and return the first text frame `pick` accepts.
+async fn request(ws: &mut RawClient, frame: Value, pick: impl Fn(&Value) -> bool) -> Value {
+    ws.send(Message::Text(frame.to_string()))
+        .await
+        .expect("send frame");
+    timeout(Duration::from_secs(5), async {
+        while let Some(Ok(msg)) = ws.next().await {
+            if let Message::Text(t) = msg {
+                if let Ok(v) = serde_json::from_str::<Value>(t.as_str()) {
+                    if pick(&v) {
+                        return v;
+                    }
+                }
+            }
+        }
+        panic!("connection closed before the reply");
+    })
+    .await
+    .expect("no reply in time")
 }

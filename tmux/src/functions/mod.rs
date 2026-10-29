@@ -3,9 +3,10 @@
 
 pub mod panes;
 pub mod sessions;
+pub mod subagents;
 pub mod windows;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
@@ -15,11 +16,14 @@ use crate::collector::Collector;
 use crate::events::Monitor;
 use crate::model::{PortsSnapshot, SessionsSnapshot, TmuxInfo};
 use crate::tmux_cli::Tmux;
+use crate::transcript::Transcripts;
 
 /// What every handler needs.
 pub struct Ctx {
     pub collector: Arc<Collector>,
     pub monitor: Arc<Monitor>,
+    /// The sub-agent transcripts viewers follow.
+    pub transcripts: Arc<Mutex<Transcripts>>,
 }
 
 impl Ctx {
@@ -111,6 +115,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
     specs.extend(sessions::catalog());
     specs.extend(windows::catalog());
     specs.extend(panes::catalog());
+    specs.extend(subagents::catalog());
     specs.push(spec::<EmptyInput, PortsSnapshot>(
         PORTS_LIST,
         PORTS_LIST_DESC,
@@ -131,6 +136,7 @@ pub fn register_all(iii: &IIIClient, ctx: Arc<Ctx>) {
     sessions::register(iii, &ctx);
     windows::register(iii, &ctx);
     panes::register(iii, &ctx);
+    subagents::register(iii, &ctx);
     register_fn!(
         iii,
         ctx,

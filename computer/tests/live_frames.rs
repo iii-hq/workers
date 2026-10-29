@@ -44,15 +44,15 @@ async fn fake_desktop(port: u16) {
                     let req: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
                     let reply = match req["command"].as_str() {
                         Some("get_screen_size") => {
-                            json!({ "success": true, "size": { "width": 1280, "height": 800 } })
+                            json!({ "success": true, "size": { "width": 320, "height": 200 } })
                         }
                         Some("screenshot") => {
                             n += 1;
                             let shade = (n % 251) as u8;
                             let mut png = Vec::new();
                             image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
-                                1280,
-                                800,
+                                320,
+                                200,
                                 image::Rgb([shade, shade, shade]),
                             ))
                             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)

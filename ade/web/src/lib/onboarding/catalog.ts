@@ -26,6 +26,8 @@ export interface SubscriptionProvider {
   signIn: string
   /** What to do once `signIn` is running, when it is not the whole story. */
   signInNote?: string
+  /** Signs in from the ADE instead, when the provider rejects the CLI's sign-in. */
+  deviceLogin?: DeviceProvider
 }
 
 export const SUBSCRIPTION_PROVIDERS: readonly SubscriptionProvider[] = [
@@ -47,22 +49,36 @@ export const SUBSCRIPTION_PROVIDERS: readonly SubscriptionProvider[] = [
     plan: 'your ChatGPT plan',
     install: 'npm install -g @openai/codex',
     signIn: 'codex login',
+    deviceLogin: {
+      providerId: 'openai-codex',
+      worker: 'provider-openai-codex',
+      title: 'Codex',
+      plan: 'your ChatGPT plan',
+      site: 'ChatGPT',
+      loginStart: 'provider::openai-codex::login::start',
+      loginPoll: 'provider::openai-codex::login::poll',
+      handle: 'login_id',
+    },
   },
 ]
 
 /**
  * A provider that signs in with a device flow from the ADE: the worker hands
- * out a code, the person enters it on `provider`'s page, the ADE polls.
+ * out a code, the person enters it on `site`'s page, the ADE polls.
  */
 export interface DeviceProvider {
   providerId: string
   worker: string
   title: string
   plan: string
-  /** Returns `{ user_code, verification_uri, device_code }`. */
+  /** Where the code is entered, in the person's words. */
+  site: string
+  /** Returns `{ user_code, verification_uri }` and the `handle`. */
   loginStart: string
-  /** Takes `{ device_code }`, returns `{ status }`. */
+  /** Takes `{ [handle] }`, returns `{ status }`. */
   loginPoll: string
+  /** What `loginStart` names the sign-in that `loginPoll` follows. */
+  handle: 'device_code' | 'login_id'
 }
 
 export const DEVICE_PROVIDERS: readonly DeviceProvider[] = [
@@ -71,8 +87,10 @@ export const DEVICE_PROVIDERS: readonly DeviceProvider[] = [
     worker: 'provider-github-copilot',
     title: 'GitHub Copilot',
     plan: 'your GitHub Copilot plan',
+    site: 'GitHub',
     loginStart: 'provider::github-copilot::login::start',
     loginPoll: 'provider::github-copilot::login::poll',
+    handle: 'device_code',
   },
 ]
 
@@ -287,12 +305,12 @@ export const PILLARS: readonly Pillar[] = [
 ]
 
 /**
- * The guided tour that follows setup: the `onboarding` worker's page walks
- * through the ADE stage by stage, with the models just connected. The Ready
- * step adds the worker when the tour is accepted, then opens its page.
+ * The guided tour that follows setup: the `learn-iii` worker's card walks
+ * through the ADE stage by stage, with the models just connected. The tour
+ * gate adds the worker when the tour comes due, then opens it.
  */
 export const TOUR_WORKER = 'onboarding'
-export const TOUR_PAGE = 'onboarding'
+export const TOUR_PAGE = 'learn-iii'
 
 /** The console configuration key that overrides worker sources (development). */
 export const WORKER_SOURCES_KEY = 'onboarding'

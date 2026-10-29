@@ -352,7 +352,10 @@ pub fn start_http(prepared: &mut PreparedLocalService) -> Option<LocalHttpHandle
 
 fn local_http_router(state: LocalHttpState) -> Router {
     Router::new()
-        .route("/v1/objects/download", get(download_handler))
+        .route(
+            "/v1/objects/download",
+            get(download_handler).head(download_handler),
+        )
         .route(
             "/v1/objects/upload",
             put(put_upload_handler).post(post_upload_handler),
@@ -364,9 +367,17 @@ fn local_http_router(state: LocalHttpState) -> Router {
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
-                .allow_methods([Method::GET, Method::PUT, Method::POST])
-                .allow_headers([header::CONTENT_TYPE])
-                .expose_headers([header::CONTENT_LENGTH, header::CONTENT_TYPE, header::ETAG]),
+                .allow_methods([Method::GET, Method::HEAD, Method::PUT, Method::POST])
+                .allow_headers([header::CONTENT_TYPE, header::RANGE, header::IF_RANGE])
+                .expose_headers([
+                    header::CONTENT_LENGTH,
+                    header::CONTENT_TYPE,
+                    header::ETAG,
+                    header::ACCEPT_RANGES,
+                    header::CONTENT_RANGE,
+                    header::CONTENT_DISPOSITION,
+                    header::LAST_MODIFIED,
+                ]),
         )
         .with_state(state)
 }
@@ -833,31 +844,48 @@ impl Backend for LocalBackend {
     }
 
     async fn get(&self, req: GetReq) -> Result<GetResp, BackendError> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
         reject_version(req.version_id.as_deref())?;
         // Keep an overwrite from retiring the referenced data file between
-        // reading its metadata and reading its bytes.
-        let _guard = self.store.commit_lock.lock().await;
-        let metadata = self.metadata(&req.key).await?;
-        if req.max_inline_bytes.is_some_and(|cap| metadata.size > cap) {
-            return Err(BackendError::ObjectTooLarge {
-                actual_size: metadata.size,
-                cap: req.max_inline_bytes.unwrap_or_default(),
-            });
+        // reading its metadata and opening its bytes.
+        let (metadata, file) = {
+            let _guard = self.store.commit_lock.lock().await;
+            let metadata = self.metadata(&req.key).await?;
+            let (start, end) = match req.range {
+                Some(range) => range.span(metadata.size)?,
+                None => (0, metadata.size),
+            };
+            ByteRange::check_cap(start, end, req.max_inline_bytes)?;
+            let data_path = self.store.data_path(&metadata.data_file);
+            let file = File::open(&data_path).await.map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    BackendError::NotFound
+                } else {
+                    provider_error(format!("read object {}: {error}", data_path.display()))
+                }
+            })?;
+            (metadata, (file, start, end))
+        };
+        // Once open, the descriptor keeps this version readable even if an
+        // overwrite retires its directory entry.
+        let (mut file, start, end) = file;
+        if start > 0 {
+            file.seek(std::io::SeekFrom::Start(start))
+                .await
+                .map_err(|error| provider_error(format!("seek local object: {error}")))?;
         }
-        let data_path = self.store.data_path(&metadata.data_file);
-        let body = tokio::fs::read(&data_path).await.map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                BackendError::NotFound
-            } else {
-                provider_error(format!("read object {}: {error}", data_path.display()))
-            }
-        })?;
+        let mut body = Vec::with_capacity((end - start) as usize);
+        file.take(end - start)
+            .read_to_end(&mut body)
+            .await
+            .map_err(|error| provider_error(format!("read local object: {error}")))?;
         Ok(GetResp {
             body,
             content_type: metadata.content_type,
             etag: metadata.etag,
             last_modified: metadata.last_modified,
             size: metadata.size,
+            offset: start,
         })
     }
 
@@ -1040,7 +1068,10 @@ struct TokenQuery {
 async fn download_handler(
     State(state): State<LocalHttpState>,
     Query(query): Query<TokenQuery>,
+    method: Method,
+    headers: HeaderMap,
 ) -> Response {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
     let Some(service) = active_service(&state).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -1075,21 +1106,146 @@ async fn download_handler(
         .response_content_type
         .as_deref()
         .unwrap_or(&metadata.content_type);
+    let last_modified = metadata.last_modified.to_rfc2822();
+
+    // `If-Range` only lets the range through when it names this version.
+    let range_header = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok());
+    let if_range_matches = headers
+        .get(header::IF_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .is_none_or(|value| {
+            let value = value.trim();
+            value == metadata.etag || value == last_modified
+        });
+    let range = match range_header.filter(|_| if_range_matches) {
+        Some(value) => parse_range_header(value, metadata.size),
+        None => RangeRequest::Full,
+    };
+    let (status, start, length) = match range {
+        RangeRequest::Full => (StatusCode::OK, 0, metadata.size),
+        RangeRequest::Partial { start, end } => {
+            (StatusCode::PARTIAL_CONTENT, start, end - start + 1)
+        }
+        RangeRequest::Unsatisfiable => {
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::CONTENT_RANGE, format!("bytes */{}", metadata.size))
+                .header(header::ACCEPT_RANGES, "bytes")
+                .body(Body::empty())
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        }
+    };
+
     let mut response = Response::builder()
-        .status(StatusCode::OK)
+        .status(status)
         .header(header::CONTENT_TYPE, content_type)
-        .header(header::CONTENT_LENGTH, metadata.size.to_string())
-        .header(header::ETAG, metadata.etag)
-        .header(header::LAST_MODIFIED, metadata.last_modified.to_rfc2822());
+        .header(header::CONTENT_LENGTH, length.to_string())
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::ETAG, metadata.etag.clone())
+        .header(header::LAST_MODIFIED, last_modified)
+        // Objects are data, never pages of the listener's origin: no type
+        // sniffing, and anything a browser renders runs sandboxed.
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::CONTENT_SECURITY_POLICY, "sandbox");
+    if status == StatusCode::PARTIAL_CONTENT {
+        response = response.header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{}/{}", start + length - 1, metadata.size),
+        );
+    }
     if let Some(disposition) = operation.response_content_disposition {
         let Ok(value) = HeaderValue::from_str(&disposition) else {
             return StatusCode::BAD_REQUEST.into_response();
         };
         response = response.header(header::CONTENT_DISPOSITION, value);
     }
+    if method == Method::HEAD {
+        return response
+            .body(Body::empty())
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    let mut file = file;
+    if start > 0 && file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     response
-        .body(Body::from_stream(ReaderStream::new(file)))
+        .body(Body::from_stream(ReaderStream::new(file.take(length))))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// What a `Range` request header asks of an object of a given size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RangeRequest {
+    /// No usable range: answer 200 with the whole object. Also for a
+    /// malformed header, another unit, and several ranges (`bytes=0-1,5-6`):
+    /// RFC 9110 lets a server ignore Range, and players never ask for more
+    /// than one.
+    Full,
+    /// `start..=end`, clamped to the object.
+    Partial { start: u64, end: u64 },
+    /// 416 with `Content-Range: bytes */size`: the range starts at or past
+    /// the end, or is the empty suffix `bytes=-0` (any range of an empty
+    /// object).
+    Unsatisfiable,
+}
+
+/// Parse `bytes=a-b`, `bytes=a-` and `bytes=-n` against `size`.
+pub fn parse_range_header(value: &str, size: u64) -> RangeRequest {
+    let Some((unit, spec)) = value.trim().split_once('=') else {
+        return RangeRequest::Full;
+    };
+    if !unit.trim().eq_ignore_ascii_case("bytes") {
+        return RangeRequest::Full;
+    }
+    let spec = spec.trim();
+    if spec.contains(',') {
+        return RangeRequest::Full;
+    }
+    let Some((first, last)) = spec.split_once('-') else {
+        return RangeRequest::Full;
+    };
+    let (first, last) = (first.trim(), last.trim());
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    match (first.is_empty(), last.is_empty()) {
+        // `-n`: the last n bytes.
+        (true, false) => {
+            let Some(n) = digits(last).then(|| last.parse::<u64>().ok()).flatten() else {
+                return RangeRequest::Full;
+            };
+            if n == 0 || size == 0 {
+                return RangeRequest::Unsatisfiable;
+            }
+            RangeRequest::Partial {
+                start: size.saturating_sub(n),
+                end: size - 1,
+            }
+        }
+        // `a-` or `a-b`.
+        (false, _) => {
+            let Some(start) = digits(first).then(|| first.parse::<u64>().ok()).flatten() else {
+                return RangeRequest::Full;
+            };
+            let end = if last.is_empty() {
+                None
+            } else {
+                match digits(last).then(|| last.parse::<u64>().ok()).flatten() {
+                    Some(end) if end >= start => Some(end),
+                    // `b < a` or garbage: an invalid range set is ignored.
+                    _ => return RangeRequest::Full,
+                }
+            };
+            if start >= size {
+                return RangeRequest::Unsatisfiable;
+            }
+            RangeRequest::Partial {
+                start,
+                end: end.map_or(size - 1, |end| end.min(size - 1)),
+            }
+        }
+        (true, true) => RangeRequest::Full,
+    }
 }
 
 async fn put_upload_handler(
@@ -1464,6 +1620,261 @@ mod tests {
             .unwrap();
         assert_eq!(&bytes[..], b"streamed");
         handle.shutdown();
+    }
+
+    #[test]
+    fn range_headers_parse_with_their_edge_cases() {
+        use RangeRequest::*;
+        assert_eq!(
+            parse_range_header("bytes=0-9", 100),
+            Partial { start: 0, end: 9 }
+        );
+        assert_eq!(
+            parse_range_header("bytes=90-", 100),
+            Partial { start: 90, end: 99 }
+        );
+        assert_eq!(
+            parse_range_header("bytes=-10", 100),
+            Partial { start: 90, end: 99 }
+        );
+        assert_eq!(
+            parse_range_header("bytes=-1000", 100),
+            Partial { start: 0, end: 99 }
+        );
+        assert_eq!(
+            parse_range_header("bytes=50-1000", 100),
+            Partial { start: 50, end: 99 }
+        );
+        assert_eq!(
+            parse_range_header("bytes=99-99", 100),
+            Partial { start: 99, end: 99 }
+        );
+        assert_eq!(
+            parse_range_header(" Bytes = 1 - 2 ", 100),
+            Partial { start: 1, end: 2 }
+        );
+        // Unsatisfiable: the empty suffix, a start at or past the end, any
+        // range of an empty object.
+        assert_eq!(parse_range_header("bytes=-0", 100), Unsatisfiable);
+        assert_eq!(parse_range_header("bytes=100-", 100), Unsatisfiable);
+        assert_eq!(parse_range_header("bytes=100-200", 100), Unsatisfiable);
+        assert_eq!(parse_range_header("bytes=0-", 0), Unsatisfiable);
+        assert_eq!(parse_range_header("bytes=-5", 0), Unsatisfiable);
+        // Ignored (the whole object): several ranges, another unit, junk,
+        // an end before the start.
+        assert_eq!(parse_range_header("bytes=0-1,5-6", 100), Full);
+        assert_eq!(parse_range_header("items=0-1", 100), Full);
+        assert_eq!(parse_range_header("bytes=a-b", 100), Full);
+        assert_eq!(parse_range_header("bytes=5-2", 100), Full);
+        assert_eq!(parse_range_header("bytes=-", 100), Full);
+        assert_eq!(parse_range_header("bytes=+1-2", 100), Full);
+        assert_eq!(parse_range_header("bytes", 100), Full);
+        assert_eq!(
+            parse_range_header("bytes=99999999999999999999-", 100),
+            Full,
+            "an unparseable number is junk"
+        );
+    }
+
+    async fn put_text(backend: &Arc<dyn Backend>, key: &str, body: &[u8]) {
+        backend
+            .put(PutReq {
+                key: key.into(),
+                body: body.to_vec(),
+                content_type: "video/mp4".into(),
+                cache_control: None,
+                metadata: HashMap::new(),
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn download_url(backend: &Arc<dyn Backend>, key: &str) -> String {
+        backend
+            .presign(PresignReq {
+                key: key.into(),
+                method: PresignMethod::Get,
+                content_type: None,
+                expires_in_seconds: 60,
+                response_content_disposition: Some("attachment; filename=\"v.mp4\"".into()),
+                response_content_type: None,
+            })
+            .await
+            .unwrap()
+            .url
+    }
+
+    #[tokio::test]
+    async fn signed_downloads_serve_ranges_and_head() {
+        let (_temp, backend, mut prepared) = backend(true).await;
+        let handle = start_http(&mut prepared).unwrap();
+        put_text(&backend, "v.mp4", b"0123456789").await;
+        let url = download_url(&backend, "v.mp4").await;
+        let client = reqwest::Client::new();
+
+        let full = client.get(&url).send().await.unwrap();
+        assert_eq!(full.status(), StatusCode::OK);
+        assert_eq!(full.headers()[header::ACCEPT_RANGES], "bytes");
+        assert_eq!(&full.bytes().await.unwrap()[..], b"0123456789");
+
+        let part = client
+            .get(&url)
+            .header(header::RANGE, "bytes=2-5")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(part.headers()[header::CONTENT_RANGE], "bytes 2-5/10");
+        assert_eq!(part.headers()[header::CONTENT_LENGTH], "4");
+        assert_eq!(
+            part.headers()[header::CONTENT_DISPOSITION],
+            "attachment; filename=\"v.mp4\""
+        );
+        assert_eq!(&part.bytes().await.unwrap()[..], b"2345");
+
+        let tail = client
+            .get(&url)
+            .header(header::RANGE, "bytes=-3")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(tail.headers()[header::CONTENT_RANGE], "bytes 7-9/10");
+        assert_eq!(&tail.bytes().await.unwrap()[..], b"789");
+
+        let open = client
+            .get(&url)
+            .header(header::RANGE, "bytes=8-")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(&open.bytes().await.unwrap()[..], b"89");
+
+        let past = client
+            .get(&url)
+            .header(header::RANGE, "bytes=10-")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(past.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(past.headers()[header::CONTENT_RANGE], "bytes */10");
+
+        let multi = client
+            .get(&url)
+            .header(header::RANGE, "bytes=0-1,4-5")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            multi.status(),
+            StatusCode::OK,
+            "several ranges get the whole object"
+        );
+        assert_eq!(multi.bytes().await.unwrap().len(), 10);
+
+        // If-Range with another version's ETag: the whole (current) object.
+        let stale = client
+            .get(&url)
+            .header(header::RANGE, "bytes=0-1")
+            .header(header::IF_RANGE, "\"not-this-version\"")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), StatusCode::OK);
+        let etag = stale.headers()[header::ETAG].to_str().unwrap().to_string();
+        let fresh = client
+            .get(&url)
+            .header(header::RANGE, "bytes=0-1")
+            .header(header::IF_RANGE, etag)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(fresh.status(), StatusCode::PARTIAL_CONTENT);
+
+        let head = client.head(&url).send().await.unwrap();
+        assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(head.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(head.headers()[header::CONTENT_SECURITY_POLICY], "sandbox");
+        assert_eq!(head.headers()[header::CONTENT_LENGTH], "10");
+        assert_eq!(head.headers()[header::ACCEPT_RANGES], "bytes");
+        assert!(head.bytes().await.unwrap().is_empty());
+        let head_part = client
+            .head(&url)
+            .header(header::RANGE, "bytes=0-0")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(head_part.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(head_part.headers()[header::CONTENT_RANGE], "bytes 0-0/10");
+
+        // An empty object: whole reads work, every range is unsatisfiable.
+        put_text(&backend, "empty", b"").await;
+        let url = download_url(&backend, "empty").await;
+        let whole = client.get(&url).send().await.unwrap();
+        assert_eq!(whole.status(), StatusCode::OK);
+        let ranged = client
+            .get(&url)
+            .header(header::RANGE, "bytes=0-")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ranged.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(ranged.headers()[header::CONTENT_RANGE], "bytes */0");
+
+        // A CORS preflight may ask for Range.
+        let preflight = client
+            .request(Method::OPTIONS, &url)
+            .header(header::ORIGIN, "http://127.0.0.1:3113")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "range")
+            .send()
+            .await
+            .unwrap();
+        assert!(preflight.status().is_success());
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn ranged_gets_seek_and_respect_bounds() {
+        let (_temp, backend, _prepared) = backend(false).await;
+        put_text(&backend, "k", b"0123456789").await;
+        let read = |offset: u64, length: Option<u64>, cap: Option<u64>| {
+            let backend = backend.clone();
+            async move {
+                backend
+                    .get(GetReq {
+                        key: "k".into(),
+                        version_id: None,
+                        max_inline_bytes: cap,
+                        range: Some(ByteRange { offset, length }),
+                    })
+                    .await
+            }
+        };
+        let got = read(3, Some(4), None).await.unwrap();
+        assert_eq!(
+            (got.body.as_slice(), got.offset, got.size),
+            (&b"3456"[..], 3, 10)
+        );
+        assert_eq!(read(8, Some(50), None).await.unwrap().body, b"89");
+        assert_eq!(read(6, None, None).await.unwrap().body, b"6789");
+        assert!(read(10, None, None).await.unwrap().body.is_empty());
+        assert!(read(4, Some(0), None).await.unwrap().body.is_empty());
+        assert!(matches!(
+            read(11, None, None).await,
+            Err(BackendError::InvalidRange {
+                offset: 11,
+                size: 10
+            })
+        ));
+        // The cap is on the bytes returned.
+        assert_eq!(read(0, Some(4), Some(4)).await.unwrap().body, b"0123");
+        assert!(matches!(
+            read(0, None, Some(4)).await,
+            Err(BackendError::ObjectTooLarge {
+                actual_size: 10,
+                cap: 4
+            })
+        ));
     }
 
     #[tokio::test]

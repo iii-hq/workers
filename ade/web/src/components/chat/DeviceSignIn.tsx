@@ -25,12 +25,28 @@ import { cn } from '@/lib/utils'
 
 type Phase = 'idle' | 'fetching' | 'code' | 'waiting' | 'connected' | 'stopped'
 
-const MESSAGES: Partial<Record<DevicePollStatus, string>> = {
-  pending: 'Waiting for you to enter the code on GitHub.',
-  slow_down: 'Waiting for you to enter the code on GitHub.',
-  expired: 'The code expired. Retry for a new one.',
-  denied: 'GitHub sign-in was denied. Retry to start again.',
+function pollMessage(status: DevicePollStatus, site: string): string | null {
+  switch (status) {
+    case 'pending':
+    case 'slow_down':
+      return `Waiting for you to enter the code on ${site}.`
+    case 'expired':
+      return 'The code expired. Retry for a new one.'
+    case 'denied':
+      return `${site} sign-in was denied. Retry to start again.`
+    case 'failed':
+      return `The ${site} sign-in did not finish. Retry to start again.`
+    default:
+      return null
+  }
 }
+
+/** A finished check that needs a new code: Retry fetches one. */
+const STOPPED: ReadonlySet<DevicePollStatus> = new Set([
+  'expired',
+  'denied',
+  'failed',
+])
 
 /** How long a copy shows as done. */
 const COPIED_MS = 2_000
@@ -45,7 +61,7 @@ function pageLabel(uri: string): string {
   }
 }
 
-/** A code GitHub has not used yet is replaced this long before it expires. */
+/** A code nobody used yet is replaced this long before it expires. */
 const RENEW_MARGIN_MS = 30_000
 
 /**
@@ -62,16 +78,16 @@ function liveCode(providerId: string): DeviceCode | null {
 }
 
 /**
- * The device-flow sign-in (GitHub Copilot). The one-time code shows first —
- * at once when the worker runs, after Get code (which adds the worker) when
- * it does not — so the person has it before GitHub's page opens. The code is
- * kept until it expires, and an unused one is replaced before that.
- * Authenticate copies it, opens the page, and the ADE checks for the
- * sign-in 8 s later and then every 5 s, five tries; a return to this tab or
- * Retry starts a new round of five, 5 s apart. A spinner turns while checks
- * are due, and the status counts the tries that failed. Only an expired or
- * denied code gets a new one from Retry. The reload icon beside the code
- * gets a new code at any time.
+ * The device-flow sign-in (GitHub Copilot, Codex). The one-time code shows
+ * first — at once when the worker runs, after Get code (which adds the
+ * worker) when it does not — so the person has it before the provider's page
+ * opens. The code is kept until it expires, and an unused one is replaced
+ * before that. Authenticate copies it, opens the page, and the ADE checks for
+ * the sign-in 8 s later and then every 5 s, five tries; a return to this tab
+ * or Retry starts a new round of five, 5 s apart. A spinner turns while
+ * checks are due, and the status counts the tries that failed. Only an
+ * expired, denied or failed sign-in gets a new code from Retry. The reload
+ * icon beside the code gets a new code at any time.
  */
 export function DeviceSignIn({
   provider,
@@ -148,7 +164,7 @@ export function DeviceSignIn({
     }
   }, [installed, fetchCode, provider.providerId])
 
-  // An unused code is replaced before GitHub expires it.
+  // An unused code is replaced before the provider expires it.
   useEffect(() => {
     if (phase !== 'code' || !code?.expires_in) return
     const timer = setTimeout(
@@ -182,7 +198,7 @@ export function DeviceSignIn({
   const watch = (current: DeviceCode) => {
     poller.current?.stop()
     setPhase('waiting')
-    setMessage(MESSAGES.pending ?? null)
+    setMessage(pollMessage('pending', provider.site))
     setChecking(true)
     setFailed(0)
     const next = createLoginPoller({
@@ -200,8 +216,8 @@ export function DeviceSignIn({
           setMessage(null)
           onConnectedRef.current?.()
         } else {
-          setMessage(MESSAGES[result] ?? null)
-          if (result === 'expired' || result === 'denied') {
+          setMessage(pollMessage(result, provider.site))
+          if (STOPPED.has(result)) {
             issued.delete(provider.providerId)
             setChecking(false)
             setPhase('stopped')
@@ -235,7 +251,7 @@ export function DeviceSignIn({
   }
 
   /**
-   * Check again at once with the same code. A code GitHub expired or
+   * Check again at once with the same code. A code the provider expired or
    * refused cannot be checked again: that one is replaced, and Authenticate
    * opens the page with the new one.
    */
@@ -249,7 +265,7 @@ export function DeviceSignIn({
     code !== null && phase !== 'connected' && phase !== 'fetching'
   const intro =
     phase === 'idle'
-      ? `Uses ${provider.plan}, no API key. Get code adds ${provider.worker} and shows a one-time code for GitHub.`
+      ? `Uses ${provider.plan}, no API key. Get code adds ${provider.worker} and shows a one-time code for ${provider.site}.`
       : phase === 'connected'
         ? `Signed in — uses ${provider.plan}. Its models appear in a few seconds.`
         : heading
@@ -263,7 +279,7 @@ export function DeviceSignIn({
       {heading || phase === 'connected' ? (
         <header className="flex items-center justify-between gap-2">
           <span className="font-sans text-[13px] font-medium text-ink">
-            Sign in with GitHub
+            Sign in with {provider.site}
           </span>
           {phase === 'connected' ? <Chip tone="success">Signed in</Chip> : null}
         </header>
@@ -359,7 +375,7 @@ export function DeviceSignIn({
           ) : null}
           {phase === 'code' && code ? (
             <Button size="sm" onClick={() => authenticate(code)}>
-              Copy code &amp; open GitHub
+              Copy code &amp; open {provider.site}
               <ExternalLink aria-hidden />
             </Button>
           ) : null}
@@ -371,7 +387,7 @@ export function DeviceSignIn({
                 rel="noopener noreferrer"
               >
                 <ExternalLink aria-hidden />
-                Open GitHub
+                Open {provider.site}
               </a>
             </Button>
           ) : null}

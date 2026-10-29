@@ -101,7 +101,7 @@ impl EvalEvents {
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 COMPLETED,
-                "An evaluation reached a terminal status.",
+                "A session-monitor analysis reached a terminal status (completed, failed or cancelled). Completion describes the monitor, not a validated improvement.",
                 CompletedTriggerHandler {
                     set: completed.clone(),
                 },
@@ -114,20 +114,21 @@ impl EvalEvents {
         }
     }
 
-    pub async fn emit_completed(
-        &self,
-        evaluation_id: &str,
-        status: EvalStatusV1,
-        eligible: Option<bool>,
-    ) {
-        let mut payload = json!({
+    /// Events that reach no subscriber, for tools that share the engine with
+    /// a running `eval` and must not take over its trigger type.
+    pub fn detached(iii: &Arc<IIIClient>) -> Self {
+        Self {
+            iii: iii.clone(),
+            completed: SubscriberSet::default(),
+        }
+    }
+
+    pub async fn emit_completed(&self, evaluation_id: &str, status: EvalStatusV1) {
+        let payload = json!({
             "evaluation_id": evaluation_id,
             "status": status,
             "timestamp": crate::ids::now_ms(),
         });
-        if let Some(eligible) = eligible {
-            payload["eligible"] = Value::Bool(eligible);
-        }
         for binding in self.completed.snapshot() {
             if binding
                 .evaluation_id

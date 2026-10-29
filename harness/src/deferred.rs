@@ -265,6 +265,7 @@ pub async fn resolve(
                     checkpoint.reconciled.as_deref(),
                     &function_id,
                     &arguments,
+                    crate::reconcile::contract_in_context(&record, &function_id),
                 )
                 .await;
                 let entry_id =
@@ -429,6 +430,7 @@ pub async fn resolve(
                 checkpoint.reconciled.as_deref(),
                 &function_id,
                 &unstamped,
+                crate::reconcile::contract_in_context(&record, &function_id),
             )
             .await;
             let message = AgentMessage::FunctionResult(FunctionResultMessage {

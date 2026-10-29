@@ -1,4 +1,5 @@
-//! Boot sequence: builtin guard, lock backend, scheduler, trigger type.
+//! Boot sequence: builtin guard, lock backend, scheduler, trigger type and
+//! `cron::on-tick`.
 
 use std::sync::Arc;
 
@@ -90,10 +91,17 @@ pub async fn start(iii: Arc<IIIClient>, config: CronConfig) -> anyhow::Result<Bo
     let scheduler_cell: SchedulerCell = Arc::new(tokio::sync::RwLock::new(scheduler.clone()));
     let handler = CronTriggerHandler::new(scheduler_cell.clone());
 
+    // Kept until the trigger type is retired; old consumers bind it on 0.24
+    // and 0.25 engines.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(TRIGGER_TYPE, "Cron-based scheduled triggers", handler)
             .trigger_request_format::<CronTriggerSpec>(),
     );
+    // The observable function next to it, on the same scheduler. On an engine
+    // without observe it registers as a plain function and its hooks never
+    // run.
+    crate::on_tick::register(&iii, scheduler_cell.clone());
 
     crate::ui::register(&iii);
 

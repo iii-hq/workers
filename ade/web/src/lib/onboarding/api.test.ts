@@ -5,6 +5,7 @@ import {
   judgeFunctionsSignature,
   projectFileFor,
   runStep,
+  SignInRequiredError,
   type StepProgress,
 } from './api'
 import type { PlanStep } from './plan'
@@ -513,6 +514,8 @@ describe('runStep wait-models', () => {
   let models: number
   let refreshCount: number
   let configured: boolean
+  /** What Codex's `refresh_models` rejects with, when set. */
+  let codexRefusal: { code: string; message: string } | null = null
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -527,10 +530,24 @@ describe('runStep wait-models', () => {
       }
       if (fn === 'router::provider::list') {
         return {
-          providers: [{ id: 'deepseek', configured, available: true }],
+          providers: [
+            {
+              id: 'deepseek',
+              configured,
+              available: true,
+              credential_env_var: 'DEEPSEEK_API_KEY',
+            },
+            // Signs in by itself: the router never holds a key for it.
+            { id: 'openai-codex', configured: false, available: true },
+          ],
         }
       }
       if (fn === 'provider::deepseek::refresh_models') {
+        models = refreshCount
+        return { count: refreshCount }
+      }
+      if (fn === 'provider::openai-codex::refresh_models') {
+        if (codexRefusal) throw codexRefusal
         models = refreshCount
         return { count: refreshCount }
       }
@@ -540,6 +557,7 @@ describe('runStep wait-models', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    codexRefusal = null
   })
 
   const step: PlanStep = {
@@ -547,6 +565,46 @@ describe('runStep wait-models', () => {
     providerId: 'deepseek',
     title: 'DeepSeek',
   }
+  const codex: PlanStep = {
+    kind: 'wait-models',
+    providerId: 'openai-codex',
+    title: 'Codex',
+  }
+
+  it('asks a provider that signs in by itself without waiting for a key', async () => {
+    refreshCount = 3
+    await expect(runStep(codex, context)).resolves.toEqual({ note: '3 models' })
+  })
+
+  it('fails at once when that provider needs a sign-in', async () => {
+    codexRefusal = {
+      code: 'provider/auth_expired',
+      message:
+        'Codex rejected the current session. Sign in with ChatGPT again.',
+    }
+    const error = await runStep(codex, context).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(SignInRequiredError)
+    expect(error).toMatchObject({
+      providerId: 'openai-codex',
+      message:
+        'Codex rejected the current session. Sign in with ChatGPT again.',
+    })
+    expect(calls('provider::openai-codex::refresh_models')).toBe(1)
+  })
+
+  it('reports any other refusal by its own message after a second ask', async () => {
+    codexRefusal = {
+      code: 'provider/models_fetch_failed',
+      message: 'connection reset',
+    }
+    const done = runStep(codex, context).catch((e: unknown) => e)
+    await settle()
+    expect(calls('provider::openai-codex::refresh_models')).toBe(1)
+    emit('router::provider::changed', { provider: 'openai-codex' })
+    const error = await done
+    expect(error).not.toBeInstanceOf(SignInRequiredError)
+    expect(error).toMatchObject({ message: 'connection reset' })
+  })
 
   it('counts the models a refresh with the new key brings in', async () => {
     refreshCount = 4

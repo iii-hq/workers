@@ -4,6 +4,7 @@
  *  - `directory::system-prompts::*` — the new-session identity picker.
  *  - `directory::skills::*` — listed by the session ID filter and offered as
  *    `/skill:<id>` slash commands (only the manual command resolves a body).
+ *  - `directory::kits::list` — kit updates offered on the new-session screen.
  *
  * Neither family is authored from here. Skills are authored in the
  * iii-directory worker's own page; system prompts have no console surface at
@@ -130,6 +131,8 @@ export interface AgentEntry {
    * profile-local (never inherited) and absent on older Directory workers.
    */
   composer_placeholder?: string | null
+  /** Where the file came from (`kit` names the owning kit); absent on older Directory workers. */
+  source?: { kind: string; kit?: string | null } | null
   modified_at: string
 }
 
@@ -140,4 +143,38 @@ export async function listAgents(client: IiiClient): Promise<AgentEntry[]> {
     { timeoutMs: FETCH_TIMEOUT_MS },
   )
   return res.agents
+}
+
+/** An installed kit with a newer release that is not ignored. */
+export interface KitUpdateEntry {
+  kit: string
+  current: string
+  available: string
+  /** Crosses a major version: the Directory review flags it too. */
+  major: boolean
+}
+
+/** Reads the Directory's own update-check cache; never asks the registry. */
+export async function listKitUpdates(
+  client: IiiClient,
+): Promise<KitUpdateEntry[]> {
+  const res = await client.trigger<{
+    kits?: {
+      kit: string
+      version: string
+      update?: { available?: string | null; major?: boolean } | null
+    }[]
+  }>('directory::kits::list', {}, { timeoutMs: FETCH_TIMEOUT_MS })
+  return (res?.kits ?? []).flatMap(({ kit, version, update }) =>
+    update?.available
+      ? [
+          {
+            kit,
+            current: version,
+            available: update.available,
+            major: update.major === true,
+          },
+        ]
+      : [],
+  )
 }

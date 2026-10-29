@@ -23,10 +23,19 @@ async fn r2_round_trip() {
         secret_access_key: sk,
         endpoint_url: None,
         notifications: None,
+        display: None,
     });
-    let backend = factory::build("e2e", &cfg, &ProvidersConfig::default(), None)
-        .await
-        .expect("backend build");
+    let material = storage::material::Material::literal(&cfg).expect("literal credentials");
+    let backend = factory::build(
+        "e2e",
+        &cfg,
+        &ProvidersConfig::default(),
+        None,
+        &material,
+        factory::Purpose::Live,
+    )
+    .await
+    .expect("backend build");
     let key = format!(
         "e2e/storage/{}.bin",
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)

@@ -246,6 +246,60 @@ impl Scanner {
 
 pub const PORTS_SUPPORTED: bool = cfg!(any(target_os = "linux", target_os = "macos"));
 
+/// Paths `pids` hold open that `keep` accepts (only this user's processes
+/// are readable). Blocking.
+#[cfg(target_os = "linux")]
+pub fn open_files(
+    pids: &[u32],
+    keep: impl Fn(&std::path::Path) -> bool,
+) -> Vec<std::path::PathBuf> {
+    linux::open_files(pids, keep)
+}
+
+#[cfg(target_os = "macos")]
+pub fn open_files(
+    pids: &[u32],
+    keep: impl Fn(&std::path::Path) -> bool,
+) -> Vec<std::path::PathBuf> {
+    macos::open_files(pids, keep)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn open_files(
+    _pids: &[u32],
+    _keep: impl Fn(&std::path::Path) -> bool,
+) -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
+
+/// One environment variable of `pid`, when this user may read it. Linux
+/// only; elsewhere `None`. Blocking.
+pub fn environ_var(pid: u32, key: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::environ_var(pid, key)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pid, key);
+        None
+    }
+}
+
+/// When `pid` started, in clock ticks since boot (field 22 of
+/// `/proc/<pid>/stat`). Linux only; elsewhere `None`. Blocking.
+pub fn start_ticks(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::start_ticks(pid)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

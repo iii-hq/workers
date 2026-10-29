@@ -143,6 +143,7 @@ fn pipe_contract_validates_and_refuses() {
         "router::chat",
         "session::append",
         "fp::pipe",
+        "fp::batch",
     ] {
         let req: pipe::PipeRequest =
             serde_json::from_value(json!({ "through": [{ "function": forbidden }] })).unwrap();

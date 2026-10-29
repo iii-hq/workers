@@ -196,12 +196,12 @@ export function WorkspaceHeader({
         onOpenPalette={onOpenPalette}
       />
 
-      {/* onboarding-menu-bar: tour anchor (workers/onboarding) — a selector,
+      {/* learn-iii-menu-bar: tour anchor (workers/learn-iii) — a selector,
           not styling. Do not remove. */}
       {/* The bar is the browser's frame: a step darker than the canvas, so
           the active tab (canvas-coloured, flared at its feet) reads as the
           sheet the workspace is drawn on. */}
-      <header className="onboarding-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 bg-neutral-200 px-3 font-inter text-neutral-900 sm:grid dark:bg-neutral-900 dark:text-neutral-50">
+      <header className="learn-iii-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 bg-neutral-200 px-3 font-inter text-neutral-900 sm:grid dark:bg-neutral-900 dark:text-neutral-50">
         <div className="flex h-full min-w-0 items-end gap-1">
           <span className="flex size-8 shrink-0 items-center justify-center self-center">
             {/* 20% under the 24px mark it replaced: 19.2px. */}
@@ -232,8 +232,8 @@ export function WorkspaceHeader({
             onClick={onOpenPalette}
             aria-label={paletteTitle}
             title={paletteTitle}
-            /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
-            className="onboarding-palette icon-host inline-flex h-8 w-[16.2rem] max-w-full items-center gap-2 rounded-xl bg-white pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 gap-4"
+            /* learn-iii-palette: tour anchor (workers/learn-iii). Do not remove. */
+            className="learn-iii-palette icon-host inline-flex h-8 w-[16.2rem] max-w-full items-center gap-2 rounded-xl bg-white pr-1.5 pl-3 text-[13px] font-medium text-neutral-500 transition-[background-color,color,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-50 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:scale-[0.98] dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 gap-4"
           >
             <Search
               className="icon-motion icon-motion--search size-4 shrink-0"

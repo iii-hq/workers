@@ -68,6 +68,8 @@ export interface ColumnInfo {
   fk?: ForeignKeyRef
   /** Display-only rendering of `fk`. */
   fkTarget?: string
+  /** The column's default as the catalog spells it, when it has one. */
+  defaultValue?: string | null
 }
 
 export interface IndexInfo {
@@ -91,7 +93,12 @@ export interface TablePage {
 export interface AdhocResult {
   /** Grid to draw. For writes, synthesized from the RETURNING rows. */
   result: QueryResponse
+  /** Round trip as the browser saw it. */
   durationMs: number
+  /** Execution time the worker measured (`elapsed_ms`), when it reports one. */
+  serverMs?: number
+  /** A read stopped at `maxRows`; the cap it stopped at. */
+  truncatedAt?: number
   /**
    * Present when the statement ran through `database::execute`. `echo` is the
    * human account of a schema change ("dropped table x") — the row count is
@@ -101,6 +108,10 @@ export interface AdhocResult {
 }
 
 /** Split a schema-qualified name for the worker, which takes them apart. */
+export function splitTableRef(table: string): { schema: string | null; name: string } {
+  return splitRef(table)
+}
+
 function splitRef(table: string): { schema: string | null; name: string } {
   if (!table.includes('.')) return { schema: null, name: table }
   const [schema, ...rest] = table.split('.')
@@ -148,7 +159,20 @@ export async function tableColumns(host: Host, db: string, _driver: DbDriver, ta
     fkTarget: c.foreign_key
       ? `${qualify(c.foreign_key.schema, c.foreign_key.table)}.${c.foreign_key.column}`
       : undefined,
+    defaultValue: c.default_value ?? null,
   }))
+}
+
+/** A column's frequent values, for the filter bar's suggestions. */
+export async function distinctValuesRef(
+  host: Host,
+  db: string,
+  table: string,
+  column: string,
+  opts: { search?: string; limit?: number } = {},
+): Promise<rpc.DistinctValues> {
+  const { schema, name } = splitRef(table)
+  return rpc.distinctValues(host, db, name, schema, column, opts)
 }
 
 export async function tableIndexes(host: Host, db: string, _driver: DbDriver, table: string): Promise<IndexInfo[]> {
@@ -237,14 +261,26 @@ export function isReadOnlySql(sql: string): boolean {
  * engine policy that narrows an agent to reads narrows this panel the same
  * way, and writes land in the `database::row-changed` feed like any other.
  */
-export async function runAdhocSql(host: Host, db: string, sql: string): Promise<AdhocResult> {
+export async function runAdhocSql(
+  host: Host,
+  db: string,
+  sql: string,
+  opts: { maxRows?: number | null } = {},
+): Promise<AdhocResult> {
   // People type SQL with a trailing `;`; the drivers' prepared paths don't
   // all accept one. Strip it here instead of teaching that per driver.
   const statement = sql.trim().replace(/;+\s*$/, '')
   const started = performance.now()
   if (isReadOnlySql(statement)) {
-    const result = await rpc.runSql(host, db, statement)
-    return { result, durationMs: Math.round(performance.now() - started) }
+    // The row limit applies to reads only: a write's RETURNING rows are what
+    // it changed, and capping them would misreport the write.
+    const result = await rpc.runSql(host, db, statement, { maxRows: opts.maxRows })
+    return {
+      result,
+      durationMs: Math.round(performance.now() - started),
+      serverMs: result.elapsed_ms,
+      truncatedAt: result.truncated && opts.maxRows ? opts.maxRows : undefined,
+    }
   }
   const res = await rpc.execSql(host, db, statement)
   const rows = res.returned_rows ?? []
@@ -256,12 +292,29 @@ export async function runAdhocSql(host: Host, db: string, sql: string): Promise<
       columns: Object.keys(rows[0] ?? {}).map((name) => ({ name })),
     },
     durationMs: Math.round(performance.now() - started),
+    serverMs: res.elapsed_ms,
     write: {
       affectedRows: res.affected_rows,
       lastInsertId: res.last_insert_id ?? null,
       echo: ddl ? ddl.past : null,
     },
   }
+}
+
+/** `12 rows in 4 ms · truncated at 100`, or the write's own account. */
+export function resultSummary(outcome: AdhocResult): string {
+  const ms = outcome.serverMs ?? outcome.durationMs
+  if (outcome.write) {
+    const what =
+      outcome.write.echo ??
+      `${outcome.write.affectedRows} affected${
+        outcome.write.lastInsertId !== null ? ` · id ${outcome.write.lastInsertId}` : ''
+      }`
+    return `${what} in ${ms} ms`
+  }
+  const n = outcome.result.row_count
+  const rows = `${n.toLocaleString()} row${n === 1 ? '' : 's'} in ${ms} ms`
+  return outcome.truncatedAt ? `${rows} · truncated at ${outcome.truncatedAt.toLocaleString()}` : rows
 }
 
 /** Verb pairs for the statements that reshape the schema itself. */

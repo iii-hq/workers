@@ -12,9 +12,44 @@ managed per-database connection pool. Every callable surface lives under
 the `database::*` namespace. The driver is chosen from each database URL
 scheme (`sqlite:`, `postgres://`, `postgresql://`, `mysql://`).
 
-Runtime settings live in the `configuration` worker under id `database`;
-pools hot-reload when the value changes. SQLite is the recommended starting
-point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
+Runtime settings live in the `configuration` worker under id `database` (or
+the `config_id` that `database::listDatabases` reports); pools hot-reload when
+the value changes. SQLite is the recommended starting point. Placeholder
+syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
+
+## Querying a connection
+
+Each configured connection has a name; pass it as `db` on every call.
+
+1. `database::listDatabases` — the connections: `name`, `driver`, `host`,
+   `database`, `folder` (where its saved `.sql` files live, if any) and
+   `error` when it is unavailable (unresolvable secret, SSH failure). An
+   unavailable connection fails its calls with `CONFIG_ERROR` saying why;
+   tell the person rather than retrying.
+2. `database::listTables {db}` / `database::describeTable {db, table}` — the
+   schema, one shape on every driver.
+3. `database::query {db, sql, params?, max_rows?}` — reads. Pass `max_rows`
+   (e.g. 100) for exploratory queries: the result says `truncated: true` when
+   more rows existed, and the SQL is never rewritten. `elapsed_ms` is the
+   statement's time.
+4. `database::execute {db, sql, params?}` — writes.
+
+A chat may mention a connection as `@database(id="shop")`: that is the
+connection named `shop`; use `db: "shop"`.
+
+### Saving a query
+
+"Save a query" means a `.sql` file in the connection's queries folder — the
+`folder` from `database::listDatabases` (or the mention's summary). Write the
+file there with the file tools (format it first with `database::formatSql`);
+that folder is what the apps list as the connection's queries. A connection
+without a `folder` has nowhere to save one: say so. `database::saveQuery` is
+something else — a console-only snippet list in the `state` worker, not a
+file — so never answer "saved as t3_status.sql" after calling it.
+
+Connections are managed by people (the console, the iii app): agents cannot
+read a stored entry (`getConnection`), save, delete or test one. Never ask for or
+handle database passwords; connections reference them as `secret://NAME`.
 
 ## When to Use
 
@@ -33,7 +68,7 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
 ## Boundaries
 
 - Not a migration tool, ORM, or schema designer — pass raw SQL only.
-- Not a general pub/sub bus. `database::row-changed` reports what THIS
+- Not a general pub/sub bus. `database::on-row-changed` reports what THIS
   worker wrote, on commit (`capture: statements`, the default) or, on a
   `capture: native` database, any client's committed writes.
 - `database::query` is read-oriented; use `database::execute` for writes.
@@ -76,9 +111,12 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
   transaction.
 - `database::rollbackTransaction` — roll back and finalize an interactive
   transaction.
-- `database::listDatabases` — every configured database with its driver,
-  credential-redacted URL, pool settings and TLS mode. Config only; use
-  `database::health` for live state.
+- `database::listDatabases` — every configured connection with its driver,
+  host, database, folder, credential-redacted URL, pool settings, TLS mode and
+  `error` when unavailable. Config only; use `database::health` for live state.
+- `database::testConnection` — probe a candidate connection entry without
+  saving it (people only: agents are denied it, like the connection editor
+  functions).
 
 Interactive transactions auto-roll back when `timeout_ms` elapses (default
 30 s, max 5 min). Prepared handles default to a 1 h TTL (max 24 h) with no
@@ -89,10 +127,13 @@ explicit release call — let them expire or stop using them when done.
 One shape across all three drivers — prefer these over hand-writing
 `sqlite_master` / `information_schema` / `PRAGMA`.
 
-- `database::listTables` — tables and views, with kind and (postgres) schema.
+- `database::listTables` — tables and views, with kind, (postgres) schema and
+  a `row_count_estimate` where the catalog has one (postgres, mysql).
 - `database::describeTable` — columns with type, nullability, default, primary
-  key and a structured `foreign_key` of `{ schema, table, column }`; plus
-  indexes and a planner row estimate.
+  key, a structured `foreign_key` of `{ schema, table, column }`,
+  `auto_increment` (identity / serial / AUTO_INCREMENT / sqlite rowid — leave it
+  out of `insertRow`) and `generated` (computed, never written); plus indexes
+  and a planner row estimate.
 - `database::describeSchema` — the same for every table in one pass. Use this
   rather than looping `describeTable`.
 - `database::schemaDiagram` — positioned nodes, routed foreign-key edges, hub
@@ -102,14 +143,37 @@ One shape across all three drivers — prefer these over hand-writing
 ### Reading data
 
 - `database::browseTable` — paged, sorted, filtered reads with no SQL. Filters
-  are `{ column, op, value }` and `total` honours them. Follow a foreign key
-  with an equality filter at `page_size: 1`.
+  are `{ column, op, value }` and `total` honours them; values compare as the
+  column's type (on postgres `{column: "total", op: "gt", value: "100"}` is a
+  numeric comparison; dates, uuids, enums and int8 as strings work too). Follow a foreign key
+  with an equality filter at `page_size: 1`. A filter may be
+  `{ raw: "price > 10 AND name LIKE 'a%'" }` — one boolean expression (no `;`,
+  comments or placeholders), run read-only.
+- `database::distinctValues` — a column's values by frequency (`search` to
+  narrow), e.g. to learn the statuses a table actually uses.
 - `database::explain` — the plan as a tree with costs and warnings. `analyze`
   **runs** the statement, so it defaults to false and is refused for anything
   that is not a single read.
 - `database::columnStats` — planner statistics by default (approximate,
   labelled `source: planner`); `exact: true` scans. To profile rows you already
   hold, use the `fp` worker on a `browseTable` result instead.
+
+### Writing rows and formatting SQL
+
+- `database::insertRow {db, table, values}` — insert one row from a
+  `{column: value}` map; values are cast to each column's type (numbers and
+  dates may be strings, bytea/blob take base64) and the inserted row comes
+  back. Prefer it over hand-built INSERTs when you have a record in hand.
+- `database::formatSql {sql, db}` (or `driver`) — pretty-print SQL for the connection's
+  dialect, comments kept. Use it before writing a `.sql` file into a
+  connection's `folder`.
+
+### Values
+
+Rows are JSON objects. Postgres `bigint`/`numeric` and every `decimal` come
+back as strings (exact), `json` columns as JSON values, binary columns as
+base64, dates as `YYYY-MM-DD`, timestamps as RFC 3339 with `Z`, postgres
+arrays as JSON arrays. When writing them back, pass the same forms.
 
 ### Operations and reuse
 
@@ -119,29 +183,48 @@ One shape across all three drivers — prefer these over hand-writing
 - `database::terminateQuery` — end a session, or cancel its statement with
   `cancel_only`. Takes an id from `database::health`.
 - `database::saveQuery`, `database::listSavedQueries`,
-  `database::deleteSavedQuery` — named queries per database, kept in the
-  `state` worker.
+  `database::deleteSavedQuery` — the web console's snippet list per database,
+  kept in the `state` worker: console-only, not files. To save a query for
+  the person, write a `.sql` file into the connection's `folder` (see
+  "Saving a query").
 - `database::history` — recent queries, newest first. Best effort, not an audit
-  log; bind `database::row-changed` for that.
+  log; observe `database::on-row-changed` for that.
 
 ## Reacting to writes
 
-Register a `database::row-changed` trigger to be told when this worker commits
-a change, instead of polling:
+`database::on-row-changed` announces each committed write statement, instead
+of polling. Code observes it (iii 0.25) with args naming the database, and
+optionally the table and operations, plus filters on what changed:
+
+```json
+{
+  "function_id": "database::on-row-changed",
+  "args": { "db": "primary", "table": "orders", "ops": ["update"] },
+  "filters": { "input.returning": { "$any": { "@.status": { "$eq": "paid" } } } }
+}
+```
+
+`table` is the bare lowercase name (`orders`, not `public.Orders`); anything
+else is refused with the name to use. The event is
+`{ db, schema, table, op, affected_rows, returning?, truncated?, at }`, and
+`caller.parent` names the function that made the write. Nothing can invoke
+the function: only the database worker emits its events.
+
+In a session, subscribe with a `database::row-changed` trigger (served on
+0.24 and 0.25 engines; the event has no `schema`):
 
 ```json
 { "trigger_type": "database::row-changed", "config": { "db": "primary", "table": "orders", "ops": ["insert"] } }
 ```
 
-The event is `{ db, table, op, affected_rows, returning?, truncated?, at }`. It
-fires on commit — an interactive transaction's writes are announced by
-`commitTransaction`, and a rollback announces nothing. `returning` says which
-rows: on a `capture: statements` database it is the writer's own `RETURNING`
-projection, so write `RETURNING <primary key>` into the SQL when a listener
-needs row identity; on a `capture: native` database (which also hears other
-clients' writes) it is the changed rows' primary keys, capped at 100 with
-`truncated: true` past that. `table` is null when the statement's table cannot
-be read off the SQL (a CTE-wrapped write), and `runStatement` does not fire on
-the statements path because it has no affected-row count to report. Delivery is
-best-effort: it is not durable with the commit and has no replay or
-exactly-once guarantee.
+Either way it fires on commit — an interactive transaction's writes are
+announced by `commitTransaction`, and a rollback announces nothing.
+`returning` says which rows: on a `capture: statements` database it is the
+writer's own `RETURNING` projection, so write `RETURNING <primary key>` into
+the SQL when a listener needs row identity; on a `capture: native` database
+(which also hears other clients' writes, and needs a `table`) it is the
+changed rows' primary keys, capped at 100 with `truncated: true` past that.
+`table` is null when the statement's table cannot be read off the SQL (a
+CTE-wrapped write), and `runStatement` does not fire on the statements path
+because it has no affected-row count to report. Delivery is best-effort: it
+is not durable with the commit and has no replay or exactly-once guarantee.

@@ -8,6 +8,7 @@
 //! live cached owner.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use super::{parse_proc_net_tcp, ProcTable, SocketListener};
 use crate::model::AddressFamily;
@@ -33,6 +34,35 @@ fn socket_inodes(pid: u32) -> Vec<u64> {
                 .ok()
         })
         .collect()
+}
+
+pub fn open_files(pids: &[u32], keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = pids
+        .iter()
+        .filter_map(|pid| std::fs::read_dir(format!("/proc/{pid}/fd")).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter_map(|entry| std::fs::read_link(entry.path()).ok())
+        .filter(|target| target.is_absolute() && keep(target))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+pub fn environ_var(pid: u32, key: &str) -> Option<String> {
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    environ.split(|byte| *byte == 0).find_map(|entry| {
+        let value = entry.strip_prefix(key.as_bytes())?.strip_prefix(b"=")?;
+        Some(String::from_utf8_lossy(value).into_owned())
+    })
+}
+
+pub fn start_ticks(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `pid (comm) state ppid …`: comm may hold spaces and parentheses, so
+    // count fields after its closing parenthesis; starttime is field 22.
+    let (_, rest) = stat.rsplit_once(')')?;
+    rest.split_whitespace().nth(19)?.parse().ok()
 }
 
 pub fn listeners(
@@ -112,5 +142,26 @@ mod tests {
         // A second scan reuses the cached owners.
         let again = listeners(&table, &mut owners).unwrap();
         assert!(again.iter().any(|listener| listener.port == port));
+    }
+
+    #[test]
+    fn reads_this_process_files_environment_and_start() {
+        let path =
+            std::env::temp_dir().join(format!("tmux-open-files-{}.jsonl", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        let found = open_files(&[std::process::id()], |p| p == path.as_path());
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(found, vec![path]);
+
+        assert_eq!(
+            environ_var(std::process::id(), "PATH"),
+            std::env::var("PATH").ok()
+        );
+        assert_eq!(
+            environ_var(std::process::id(), "TMUX_WORKER_NO_SUCH_VAR"),
+            None
+        );
+        assert!(start_ticks(std::process::id()).is_some_and(|ticks| ticks > 0));
     }
 }

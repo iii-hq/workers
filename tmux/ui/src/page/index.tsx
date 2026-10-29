@@ -1,7 +1,8 @@
 /**
  * The tmux page (a Terminal/instrument archetype): the session tree on the
  * side, one live tmux client in the main column, and the machine's
- * listening ports — `iii compose` stacks first — one tab away.
+ * listening ports — `iii compose` stacks first — one tab away. A sub-agent
+ * picked in the tree opens its transcript in a third tab.
  *
  * The page's terminal is an ordinary tmux client. Choosing a window of the
  * session it is on runs `select-window`, so every client of that session —
@@ -30,7 +31,7 @@ import {
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
-import { Network, Plus, RefreshCw, SquareTerminal } from 'lucide-react'
+import { Bot, Network, Plus, RefreshCw, SquareTerminal } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createApi } from '../lib/api'
 import { useTmuxOverview } from '../lib/live'
@@ -41,6 +42,7 @@ import {
   findSession,
   pickInitialSession,
   type SessionRow,
+  type SubagentRow,
   type WindowRow,
   windowLabel,
 } from '../lib/model'
@@ -49,6 +51,7 @@ import type { PaneRef } from '../lib/types'
 import { NewSessionDialog, NewWindowDialog, RenameDialog } from './dialogs'
 import { PortsView } from './PortsView'
 import { SessionTree } from './SessionTree'
+import { SubagentView } from './SubagentView'
 import { TerminalView } from './TerminalView'
 import { useTmuxTerminal } from './use-terminal'
 
@@ -59,7 +62,7 @@ type DialogState =
   | { kind: 'rename-window'; session: SessionRow; window: WindowRow }
   | null
 
-type View = 'terminal' | 'ports'
+type View = 'terminal' | 'ports' | 'subagent'
 
 export function TmuxPage({
   host,
@@ -77,6 +80,8 @@ export function TmuxPage({
   const [remembered, setRemembered] = usePaneState<string | null>(`iii::tmux-ui::session::${paneKey}`, null)
   const [view, setView] = usePaneState<View>(`iii::tmux-ui::view::${paneKey}`, 'terminal')
   const [dialog, setDialog] = useState<DialogState>(null)
+  // The sub-agent shown in the third tab; kept after it finishes and leaves the tree.
+  const [subagent, setSubagent] = useState<SubagentRow | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
   const announceSeq = useRef(0)
@@ -140,6 +145,19 @@ export function TmuxPage({
     },
     [showTerminal, terminal],
   )
+
+  const selectSubagent = useCallback(
+    (sub: SubagentRow) => {
+      setSubagent(sub)
+      setView('subagent')
+    },
+    [setView],
+  )
+
+  const closeSubagent = useCallback(() => {
+    setSubagent(null)
+    showTerminal()
+  }, [showTerminal])
 
   const selectLocation = useCallback(
     (location: PaneRef) => selectWindow(location.session_id, location.window_id),
@@ -295,6 +313,8 @@ export function TmuxPage({
                   narrow={narrow}
                   onSelectSession={selectSession}
                   onSelectWindow={(session, row) => selectWindow(session.session.id, row.window.id)}
+                  selectedSubagent={view === 'subagent' ? (subagent?.key ?? null) : null}
+                  onSelectSubagent={selectSubagent}
                   onNewWindow={(session) => setDialog({ kind: 'new-window', session })}
                   onRenameSession={(session) => setDialog({ kind: 'rename-session', session })}
                   onKillSession={(session) => void killSession(session)}
@@ -318,7 +338,11 @@ export function TmuxPage({
               }
             />
           ) : null}
-          <Tabs className="tmux-tabs" value={view} onValueChange={(next) => setView(next as View)}>
+          <Tabs
+            className="tmux-tabs"
+            value={view === 'subagent' && !subagent ? 'terminal' : view}
+            onValueChange={(next) => setView(next as View)}
+          >
             <TabsList variant="line" aria-label="tmux views">
               <TabsTrigger value="terminal" icon={<SquareTerminal aria-hidden />}>
                 Terminal
@@ -326,6 +350,11 @@ export function TmuxPage({
               <TabsTrigger value="ports" icon={<Network aria-hidden />}>
                 Ports
               </TabsTrigger>
+              {subagent ? (
+                <TabsTrigger value="subagent" icon={<Bot aria-hidden />}>
+                  Sub-agent
+                </TabsTrigger>
+              ) : null}
             </TabsList>
             <TabsContent value="terminal" forceMount className="tmux-tab">
               <TerminalView
@@ -340,6 +369,11 @@ export function TmuxPage({
             <TabsContent value="ports" className="tmux-tab tmux-tab-scroll">
               <PortsView ports={overview.ports} loading={overview.loading} onSelectLocation={selectLocation} />
             </TabsContent>
+            {subagent ? (
+              <TabsContent value="subagent" className="tmux-tab">
+                <SubagentView api={api} subagent={subagent} onClose={closeSubagent} />
+              </TabsContent>
+            ) : null}
           </Tabs>
         </PageMain>
       </PageBody>

@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
-use crate::request::build_headers;
+use crate::request::{build_headers, drop_trailing_prefill};
 use crate::state;
 use crate::wire::cache::build_system_field;
 use crate::wire::messages::to_wire_messages;
@@ -68,6 +68,21 @@ struct WireCountResponse {
     input_tokens: u64,
 }
 
+/// Wire messages to count: the same mapping and prefill drop as the send.
+/// Dumb pipe: an empty request, or one with nothing left after the drop, is
+/// a caller bug (the endpoint 400s on `messages: []`), never padded into a
+/// countable one with placeholder messages.
+fn count_messages(messages: &[AgentMessage]) -> Result<Vec<Value>, Error> {
+    let mut wire_messages = to_wire_messages(messages);
+    drop_trailing_prefill(&mut wire_messages);
+    if wire_messages.is_empty() {
+        return Err(Error::Handler(
+            "invalid_input: messages must not be empty".into(),
+        ));
+    }
+    Ok(wire_messages)
+}
+
 /// The count body: `{model, system?, tools?, messages}` — no `max_tokens`,
 /// no `stream`, and no cache markers (`cache_enabled=false`), because a count
 /// must never write a cache entry.
@@ -75,11 +90,11 @@ fn build_count_body(
     model: &str,
     system_prompt: &str,
     tools: &[AgentFunction],
-    messages: &[AgentMessage],
+    messages: Vec<Value>,
 ) -> Value {
     let mut body = json!({
         "model": model,
-        "messages": to_wire_messages(messages),
+        "messages": messages,
     });
     let wire_tools = functions_to_wire(tools);
     if !wire_tools.is_empty() {
@@ -97,13 +112,7 @@ pub async fn handle(
     cache: &ScaffoldCache,
     req: CountTokensRequest,
 ) -> Result<CountTokensResponse, Error> {
-    // Dumb pipe: an empty request is a caller bug, never padded into a
-    // countable one with placeholder messages.
-    if req.messages.is_empty() {
-        return Err(Error::Handler(
-            "invalid_input: messages must not be empty".into(),
-        ));
-    }
+    let messages = count_messages(&req.messages)?;
 
     // Token + resolve are cached (ScaffoldCache): zero engine round trips
     // on the hot path within the TTL. An auth-classified resolve failure
@@ -134,7 +143,7 @@ pub async fn handle(
         &cfg.model,
         req.system_prompt.as_deref().unwrap_or(""),
         req.tools.as_deref().unwrap_or(&[]),
-        &req.messages,
+        messages,
     );
     let mut request = http
         .post(count_tokens_url(&cfg.api_url))
@@ -196,7 +205,12 @@ mod tests {
 
     #[test]
     fn body_has_no_max_tokens_and_no_stream() {
-        let body = build_count_body("claude-sonnet-4-6", "be brief", &[], &[user("hi")]);
+        let body = build_count_body(
+            "claude-sonnet-4-6",
+            "be brief",
+            &[],
+            count_messages(&[user("hi")]).unwrap(),
+        );
         assert_eq!(body["model"], "claude-sonnet-4-6");
         assert_eq!(body["system"], "be brief");
         assert_eq!(body["messages"][0]["role"], "user");
@@ -214,9 +228,45 @@ mod tests {
             label: None,
             execution_mode: None,
         }];
-        let body = build_count_body("m", "", &tools, &[user("hi")]);
+        let body = build_count_body("m", "", &tools, count_messages(&[user("hi")]).unwrap());
         assert!(body.get("system").is_none());
         assert_eq!(body["tools"][0]["name"], "agent__trigger");
+    }
+
+    fn partial(text: &str) -> AgentMessage {
+        use llm_router::types::events::StopReason;
+        use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
+        AgentMessage::Assistant(AssistantMessage {
+            role: AssistantRoleTag::Assistant,
+            content: vec![ContentBlock::Text { text: text.into() }],
+            stop_reason: StopReason::End,
+            native_stop_reason: None,
+            error_message: None,
+            error_kind: None,
+            warnings: None,
+            usage: None,
+            model: "m".into(),
+            provider: "anthropic".into(),
+            timestamp: 2,
+        })
+    }
+
+    #[test]
+    fn trailing_call_less_assistant_is_dropped_like_the_send() {
+        // build_body drops the dead partial an aborted stream left behind, so
+        // counting it would over-count what the next turn actually bills.
+        let messages = count_messages(&[user("hi"), partial("the answer is")]).unwrap();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert_eq!(messages[0]["role"], "user");
+    }
+
+    #[test]
+    fn nothing_left_after_the_prefill_drop_is_invalid_input() {
+        // The endpoint 400s on `messages: []`; fail as the caller bug it is.
+        for messages in [vec![], vec![partial("a"), partial("b")]] {
+            let err = count_messages(&messages).unwrap_err().to_string();
+            assert!(err.contains("invalid_input"), "{err}");
+        }
     }
 
     #[test]

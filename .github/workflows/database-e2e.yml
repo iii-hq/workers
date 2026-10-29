@@ -25,14 +25,26 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Keep integration on the engine release that provides configuration::ensure.
-  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
 
 jobs:
   e2e:
-    name: Harness (sqlite + postgres + mysql)
+    name: Harness (sqlite + postgres + mysql) · ${{ matrix.engine }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # The worker serves old consumers through its fallback trigger type
+        # on an engine without observe (0.24) and through the engine's legacy
+        # shim on 0.25. Legs: the oldest supported engine (the atomic
+        # configuration release, configuration::ensure), the latest 0.24, and
+        # the 0.25 release candidate until 0.25.0 is released.
+        engine:
+          - 'iii/v0.24.0-rc.2'
+          - 'iii/v0.24.6'
+          - 'iii/v0.25.0-rc.4'
+    env:
+      III_RELEASE_TAG: ${{ matrix.engine }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -99,7 +111,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: database-e2e-report
+          name: database-e2e-report-${{ strategy.job-index }}
           path: |
             database/tests/e2e/reports/
           retention-days: 7

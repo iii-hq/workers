@@ -18,6 +18,9 @@
 //!    registers is a live-update delivery target for that page, never a
 //!    discoverable API, and stamping here (not just in the SPA) means
 //!    stale/cached bundles can't pollute `engine::functions::list` either.
+//!    Their `observe.legacy_trigger_type` (iii 0.25) is removed on the way:
+//!    it makes the function the stand-in for that trigger type whenever no
+//!    provider of the type is live, the same takeover as exception 3.
 //! 3. `registertriggertype` frames are dropped (see
 //!    [`is_trigger_type_registration`]). Trigger-type ownership is
 //!    last-writer-wins engine-wide — a hostile page could re-register
@@ -260,9 +263,10 @@ pub(crate) fn is_trigger_type_registration(text: &str) -> bool {
 }
 
 /// If `text` is a wire `registerfunction` message, return a copy with
-/// `metadata.internal = true` merged in; `None` means "forward the
-/// original untouched" (not a registration, unparseable, or a metadata
-/// shape we don't understand).
+/// `metadata.internal = true` merged in and any
+/// `observe.legacy_trigger_type` removed; `None` means "forward the
+/// original untouched" (not a registration, unparseable, or nothing to
+/// change — a metadata shape we don't understand is left as it is).
 pub(crate) fn stamp_internal_registration(text: &str) -> Option<String> {
     // Fast path: skip the JSON parse for the overwhelming majority of
     // frames (invocations, results, stream sends).
@@ -274,15 +278,28 @@ pub(crate) fn stamp_internal_registration(text: &str) -> Option<String> {
         return None;
     }
     let obj = msg.as_object_mut()?;
+    let mut changed = false;
     match obj.get_mut("metadata") {
         Some(serde_json::Value::Object(meta)) => {
             meta.insert("internal".into(), serde_json::Value::Bool(true));
+            changed = true;
         }
         // Unexpected metadata shape — don't rewrite what we don't understand.
-        Some(_) => return None,
+        Some(_) => {}
         None => {
             obj.insert("metadata".into(), serde_json::json!({ "internal": true }));
+            changed = true;
         }
+    }
+    // A page must not stand in for a trigger type (iii 0.25's legacy shim
+    // routes old `registertrigger`s of a type nobody provides to a function
+    // declaring it). The rest of the descriptor only concerns the page's own
+    // function.
+    if let Some(serde_json::Value::Object(observe)) = obj.get_mut("observe") {
+        changed |= observe.remove("legacy_trigger_type").is_some();
+    }
+    if !changed {
+        return None;
     }
     serde_json::to_string(&msg).ok()
 }
@@ -487,6 +504,24 @@ mod tests {
             r#"{"type":"registerfunction","id":"x","metadata":"weird"}"#
         )
         .is_none());
+    }
+
+    #[test]
+    fn stamp_removes_a_legacy_trigger_type_stand_in() {
+        let wire = r#"{"type":"registerfunction","id":"x","observe":{"delivery":"owner","legacy_trigger_type":"console:script","allow":true}}"#;
+        let out = stamp_internal_registration(wire).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(v["observe"].get("legacy_trigger_type").is_none());
+        assert_eq!(v["observe"]["delivery"], "owner");
+        assert_eq!(v["observe"]["allow"], true);
+        assert_eq!(v["metadata"]["internal"], serde_json::json!(true));
+
+        // Removed even when the metadata is a shape left alone.
+        let weird = r#"{"type":"registerfunction","id":"x","metadata":"weird","observe":{"legacy_trigger_type":"cron"}}"#;
+        let out = stamp_internal_registration(weird).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["metadata"], "weird");
+        assert_eq!(v["observe"], serde_json::json!({}));
     }
 
     #[test]

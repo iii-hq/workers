@@ -1315,8 +1315,8 @@ fn board_view_narrows_columns_limits_rows_and_can_go_compact() {
     let row = serde_json::to_value(&narrowed.columns[0].tickets[0]).unwrap();
     assert_eq!(row["key"], "KAN-1");
     assert!(
-        row.get("id").is_none() && row.get("labels").is_none(),
-        "compact rows drop the heavy fields"
+        row.get("id").is_some() && row.get("labels").is_none(),
+        "compact rows keep the uuid and drop the heavy fields"
     );
     assert_eq!(row["comment_count"], 0);
     assert_eq!(narrowed.ticket_count, 4, "ticket_count stays board-wide");
@@ -1518,6 +1518,7 @@ fn ticket_writes_answer_with_the_compact_row_only_when_asked() {
         [
             "assignee",
             "comment_count",
+            "id",
             "key",
             "priority",
             "status",

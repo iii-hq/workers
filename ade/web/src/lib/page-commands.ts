@@ -142,7 +142,8 @@ export function paneCommands(paneId: string): readonly RegisteredPageCommand[] {
   )
 }
 
-function subscribe(listener: () => void): () => void {
+/** Hear every registration change; returns the remover. */
+export function subscribePageCommands(listener: () => void): () => void {
   listeners.add(listener)
   return () => {
     listeners.delete(listener)
@@ -152,7 +153,11 @@ function subscribe(listener: () => void): () => void {
 const EMPTY: readonly RegisteredPageCommand[] = []
 
 export function usePageCommands(): readonly RegisteredPageCommand[] {
-  return useSyncExternalStore(subscribe, getPageCommands, () => EMPTY)
+  return useSyncExternalStore(
+    subscribePageCommands,
+    getPageCommands,
+    () => EMPTY,
+  )
 }
 
 /** Tests only. */

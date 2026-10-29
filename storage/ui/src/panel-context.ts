@@ -9,21 +9,15 @@ export interface StoragePanelContext {
 }
 
 function asRecord(value: JsonValue): Record<string, JsonValue> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value
-    : null
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null
 }
 
-export function parseStoragePanelContext(
-  value: JsonValue,
-): StoragePanelContext | null {
+export function parseStoragePanelContext(value: JsonValue): StoragePanelContext | null {
   const record = asRecord(value)
-  if (!record || typeof record.bucket !== 'string' || record.bucket === '')
-    return null
+  if (!record || typeof record.bucket !== 'string' || record.bucket === '') return null
   return {
     bucket: record.bucket,
     prefix: typeof record.prefix === 'string' ? record.prefix : undefined,
-    objectKey:
-      typeof record.objectKey === 'string' ? record.objectKey : undefined,
+    objectKey: typeof record.objectKey === 'string' ? record.objectKey : undefined,
   }
 }

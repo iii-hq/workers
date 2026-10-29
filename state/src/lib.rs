@@ -12,6 +12,7 @@ pub mod configuration;
 pub mod events;
 pub mod functions;
 pub mod manifest;
+pub mod on_changed;
 pub mod store;
 pub mod structs;
 pub mod trigger;

@@ -177,6 +177,9 @@ async fn trigger_configuration_with_retry(
 /// Best-effort trigger binding: a transient failure must not brick boot or a
 /// reload — it surfaces as a `None` handle (and a warn) and is retried on
 /// the next config event.
+// `register_trigger` is deprecated in iii-sdk 0.25; engines 0.24 and 0.25
+// both serve it.
+#[allow(deprecated)]
 pub fn try_bind(iii: &IIIClient, input: RegisterTriggerInput) -> Option<Trigger> {
     let (trigger_type, function_id) = (input.trigger_type.clone(), input.function_id.clone());
     match iii.register_trigger(input) {
@@ -307,6 +310,10 @@ where
         .metadata(json!({ "internal": true })),
     );
 
+    // Deprecated in iii-sdk 0.25. The `configuration` trigger type is still
+    // served by 0.25 engines (next to `configuration::on-updated`), so one
+    // binding keeps working on 0.24 and 0.25.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         fn_id.to_string(),

@@ -243,6 +243,12 @@ pub fn origin_label(raw_url: &str) -> String {
     }
 }
 
+/// `frame_density` out of the box: twice the CSS pixels, what a phone's view
+/// needs for legible text (measured against 1: the same tap-to-frame time
+/// and frame rate, about 2.5x the bytes while the page changes, 10-15% more
+/// Chromium memory).
+pub const DEFAULT_FRAME_DENSITY: f64 = 2.0;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WorkerConfig {
@@ -288,14 +294,20 @@ pub struct WorkerConfig {
     pub inactive_after_ms: u64,
     /// JPEG quality for `browser::screenshot` (1-100).
     pub screenshot_quality: u64,
-    /// Pixel density the console's live view is drawn at (1-3). At 2 a
-    /// retina screen shows text and edges as sharp as a local Chrome; 1
-    /// sends a quarter of the pixels and looks soft on a high-DPI screen.
-    /// Pages still see `devicePixelRatio` 1, so layout, screenshots and
-    /// click coordinates do not change. Headless only; applies the next
-    /// time the browser process launches.
-    pub live_view_scale: f64,
-    /// JPEG quality of the console's live view frames (1-100).
+    /// Pixel density of the live view, 1-3. The default, 2, keeps text
+    /// sharp in a phone's view. Every tab renders at this density, so expect
+    /// about 10-15% more Chromium memory; on a small host running many agent
+    /// tabs, set 1. Screenshots, PDFs, picks and `act` coordinates stay in
+    /// CSS pixels. Applies when the browser next launches.
+    // Above 1 Chromium launches with `--force-device-scale-factor`, and a
+    // viewer asking for a sharper picture (`browser::screencast::start` with
+    // `viewer_id` and `scale`) gets frames up to this many pixels per CSS
+    // pixel (the console, no scale, still gets CSS-sized frames).
+    #[schemars(range(min = 1, max = 3))]
+    pub frame_density: f64,
+    /// JPEG quality of the live view's frames (1-100). Separate from
+    /// `screenshot_quality`: agents' screenshots stay small, the view people
+    /// watch stays sharp.
     pub live_view_quality: u64,
     /// URL schemes `browser::navigate` accepts.
     ///
@@ -354,7 +366,7 @@ impl Default for WorkerConfig {
             max_timeout_ms: 120_000,
             inactive_after_ms: 1_800_000,
             screenshot_quality: 60,
-            live_view_scale: 2.0,
+            frame_density: DEFAULT_FRAME_DENSITY,
             live_view_quality: 85,
             allowed_schemes: vec!["http".to_string(), "https".to_string(), "file".to_string()],
             max_snapshot_nodes: 2_000,
@@ -416,13 +428,12 @@ impl WorkerConfig {
         self.max_bulk_concurrency = self.scrapling.max_bulk_concurrency;
     }
 
-    /// `live_view_scale` as the launch flag takes it: a stray value can't
-    /// ask Chromium for a 0x or 10x window.
-    pub fn live_view_scale(&self) -> f64 {
-        if self.live_view_scale.is_finite() {
-            self.live_view_scale.clamp(1.0, 3.0)
+    /// `frame_density` held to 1..3; anything unusable (NaN) is the default.
+    pub fn frame_density(&self) -> f64 {
+        if self.frame_density.is_finite() {
+            self.frame_density.clamp(1.0, 3.0)
         } else {
-            1.0
+            DEFAULT_FRAME_DENSITY
         }
     }
 
@@ -455,12 +466,12 @@ mod tests {
         assert_eq!(c.network_buffer, 500);
         assert_eq!(c.viewport_width, 1280);
         assert_eq!(c.viewport_height, 800);
-        assert_eq!(c.live_view_scale(), 2.0);
         assert_eq!(c.live_view_quality(), 85);
         assert_eq!(c.default_timeout_ms, 30_000);
         assert_eq!(c.max_timeout_ms, 120_000);
         assert_eq!(c.inactive_after_ms, 1_800_000);
         assert_eq!(c.screenshot_quality, 60);
+        assert_eq!(c.frame_density, 2.0);
         assert_eq!(c.allowed_schemes, vec!["http", "https", "file"]);
         assert_eq!(c.max_snapshot_nodes, 2_000);
         assert!(c.default_origin_policy.is_none());
@@ -668,6 +679,25 @@ mod tests {
     }
 
     #[test]
+    fn frame_density_parses_and_is_held_to_one_through_three() {
+        let c = WorkerConfig::from_json(&serde_json::json!({ "frame_density": 2 })).unwrap();
+        assert_eq!(c.frame_density(), 2.0);
+        let c = WorkerConfig::from_json(&serde_json::json!({ "frame_density": 9.5 })).unwrap();
+        assert_eq!(c.frame_density(), 3.0);
+        let c = WorkerConfig::from_json(&serde_json::json!({ "frame_density": 0.25 })).unwrap();
+        assert_eq!(c.frame_density(), 1.0);
+        let c = WorkerConfig::from_json(&serde_json::json!({ "frame_density": 1 })).unwrap();
+        assert_eq!(c.frame_density(), 1.0);
+        let c = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
+        assert_eq!(c.frame_density(), 2.0);
+        let c = WorkerConfig {
+            frame_density: f64::NAN,
+            ..WorkerConfig::default()
+        };
+        assert_eq!(c.frame_density(), 2.0);
+    }
+
+    #[test]
     fn clamp_timeout_defaults_and_ceils() {
         let c = WorkerConfig::default();
         assert_eq!(c.clamp_timeout(None), 30_000);
@@ -808,6 +838,12 @@ mod tests {
         assert!(props.get("engine").is_some());
         assert!(props.get("executable").is_some());
         assert!(props.get("headless").is_some());
+        assert_eq!(props["frame_density"]["minimum"], 1.0);
+        assert_eq!(props["frame_density"]["maximum"], 3.0);
+        assert_eq!(props["frame_density"]["default"], 2.0);
+        assert!(props["frame_density"]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("set 1")));
         assert!(props.get("allowed_schemes").is_some());
         assert!(props.get("default_origin_policy").is_some());
         assert!(props.get("origin_policies").is_some());

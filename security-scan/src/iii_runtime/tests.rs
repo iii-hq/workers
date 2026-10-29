@@ -159,6 +159,7 @@ mod tests {
         );
         assert!(!plan.unattended);
         let request = harness_request(&plan);
+        assert!(request["session"].get("kind").is_none());
         assert!(request["options"]["metadata"]
             .as_object()
             .expect("metadata object")
@@ -218,6 +219,7 @@ mod tests {
                 "security_scan_run_id": "sec_123",
             })
         );
+        assert_eq!(request["session"]["kind"], "automation");
         assert_eq!(
             request["options"]["metadata"]["fs_scope"]["root"],
             "/isolated/repo"

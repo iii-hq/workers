@@ -72,6 +72,14 @@
             ],
             "description": "What the agent is doing."
           },
+          "subagents": {
+            "default": [],
+            "description": "Sub-agents working right now, oldest first. Their work keeps `state` at `working` after the agent's own turn ended. Claude Code and Codex report them; other agents always list none.",
+            "items": {
+              "$ref": "#/definitions/SubagentStatus"
+            },
+            "type": "array"
+          },
           "title": {
             "default": null,
             "description": "The agent's session title: the pane title without the agent's status glyph (Claude Code's ✳ or spinner). Null when the pane only shows tmux's default title (the host name) or nothing.",
@@ -396,6 +404,45 @@
           "id",
           "name",
           "windows"
+        ],
+        "type": "object"
+      },
+      "SubagentStatus": {
+        "description": "A sub-agent at work under an agent CLI.",
+        "properties": {
+          "depth": {
+            "description": "1 for a sub-agent of the main agent, 2 for one of its sub-agents, ….",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "description": {
+            "description": "What it was asked to do: Claude Code's task description, Codex's task path under the main agent (`review/tests`).",
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable within the agent's session: Claude Code's agent id, Codex's thread id.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Claude Code's agent type (`general-purpose`, `Explore`, `fork`) or Codex's agent role; null when the agent names none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since_ms": {
+            "description": "When it started its current task.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "depth",
+          "description",
+          "id",
+          "since_ms"
         ],
         "type": "object"
       },

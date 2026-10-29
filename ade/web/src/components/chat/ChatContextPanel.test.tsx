@@ -41,6 +41,7 @@ const GIT: Record<string, string> = {
 }
 
 function respond(fn: string, payload: Record<string, unknown> = {}) {
+  if (fn === 'console::context::list') return Promise.resolve({ items: [] })
   if (fn === 'shell::exec') {
     const args = payload.args as string[]
     const verb = args.find((arg) => arg in GIT) ?? ''
@@ -441,7 +442,11 @@ describe('ChatContextPanel', () => {
         'iii-context-order',
         JSON.stringify(['links', 'project']),
       )
-      expect(labels(await render(withLinks))).toEqual(['Links', 'Project'])
+      expect(labels(await render(withLinks))).toEqual([
+        'Links',
+        'Tracking',
+        'Project',
+      ])
 
       act(() => root?.unmount())
       container?.remove()
@@ -450,12 +455,12 @@ describe('ChatContextPanel', () => {
         'iii-context-hidden',
         JSON.stringify(['project']),
       )
-      expect(labels(await render(withLinks))).toEqual(['Links'])
+      expect(labels(await render(withLinks))).toEqual(['Links', 'Tracking'])
     })
 
     it('moves a section with its handle and keeps the move', async () => {
       const view = await render(withLinks)
-      expect(labels(view)).toEqual(['Project', 'Links'])
+      expect(labels(view)).toEqual(['Project', 'Links', 'Tracking'])
       const handle = view.querySelector(
         'button[aria-label="Move Links"]',
       ) as HTMLButtonElement
@@ -464,7 +469,7 @@ describe('ChatContextPanel', () => {
           new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
         )
       })
-      expect(labels(view)).toEqual(['Links', 'Project'])
+      expect(labels(view)).toEqual(['Links', 'Project', 'Tracking'])
       const kept: string[] = JSON.parse(
         window.localStorage.getItem('iii-context-order') ?? '[]',
       )
@@ -486,7 +491,12 @@ describe('ChatContextPanel', () => {
       })
       try {
         const view = await render(withLinks)
-        expect(labels(view)).toEqual(['Sentinel', 'Project', 'Links'])
+        expect(labels(view)).toEqual([
+          'Sentinel',
+          'Project',
+          'Links',
+          'Tracking',
+        ])
         const section = () =>
           view.querySelector('section[aria-label="Sentinel"]') as HTMLElement
         expect(section().textContent).toContain('sentinel')
@@ -508,7 +518,7 @@ describe('ChatContextPanel', () => {
 
         act(() => report({ empty: true }))
         expect(section().hidden).toBe(true)
-        expect(labels(view)).toEqual(['Project', 'Links'])
+        expect(labels(view)).toEqual(['Project', 'Links', 'Tracking'])
       } finally {
         dispose()
       }
@@ -524,7 +534,7 @@ describe('ChatContextPanel', () => {
       })
       try {
         const view = await render(withLinks)
-        expect(labels(view)).toEqual(['Project', 'Links'])
+        expect(labels(view)).toEqual(['Project', 'Links', 'Tracking'])
         expect(view.textContent).not.toContain('rogue body')
         expect(warn).toHaveBeenCalled()
       } finally {
@@ -812,6 +822,9 @@ describe('ChatContextPanel', () => {
   it('asks for a folder when the chat has none', async () => {
     const view = await render(chat('main'))
     expect(view.textContent).toContain('No project folder')
-    expect(mocks.trigger).not.toHaveBeenCalled()
+    expect(mocks.trigger).toHaveBeenCalledExactlyOnceWith(
+      'console::context::list',
+      { session_id: 'main' },
+    )
   })
 })

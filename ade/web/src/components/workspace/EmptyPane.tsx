@@ -324,6 +324,9 @@ export function EmptyPane({
                         role="option"
                         tabIndex={-1}
                         aria-selected={active}
+                        // The screen this option attaches: the onboarding
+                        // tour points at `[data-screen="traces"]`.
+                        data-screen={option.value}
                         // Pointer motion, not enter: rows the arrow keys
                         // scroll under a resting cursor keep the keyboard's
                         // highlight.

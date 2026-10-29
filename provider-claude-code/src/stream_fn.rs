@@ -5,7 +5,7 @@
 //! worker / auth-credentials vault — this provider only *triggers* a refresh
 //! when the token is near expiry.
 use crate::config::build_config;
-use crate::errors::classify_bus_error;
+use crate::errors::{classify_bus_error, SIGN_IN_EXPIRED};
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::thinking::build_thinking_config;
@@ -105,6 +105,13 @@ async fn run_stream_call(
     };
 
     let credential = auth::fetch_fresh_credential(iii).await;
+    if credential.as_ref().is_some_and(auth::expired) {
+        let _ = send_event(
+            sink,
+            &synthetic_error_event(SIGN_IN_EXPIRED, &model, ErrorKind::AuthExpired),
+        );
+        return;
+    }
     let cfg = match build_config(
         &model,
         input.max_output_tokens,

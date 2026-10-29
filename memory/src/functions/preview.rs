@@ -2,7 +2,7 @@
 //! ranks memories, preview composes the ENTIRE memory payload a turn on
 //! this bank would receive: the rules section exactly as it lands in the
 //! system prompt (same budget, same truncation markers, same on/off
-//! switches), the recalled memories AFTER the ambient floor and token
+//! switches), the recalled memories AFTER the relevance cut and token
 //! budget, and the appended `<memory>` message verbatim. Built by the
 //! pre-generate hook's own [`hooks::injection`] — it cannot drift.
 
@@ -18,7 +18,8 @@ use crate::types::Memory;
 pub struct PreviewRequest {
     /// Bank to preview; a directory's bank (`<name>-<6 hex>`) reads
     /// `default_bank` under it, as its turns do. Omitted: the calling
-    /// session's bank, else the configured default.
+    /// session's bank with its layers (its agent profile's bank too), else
+    /// the configured default.
     #[serde(default)]
     pub bank: Option<String>,
     /// The hypothetical user message (what someone would type in chat).
@@ -28,10 +29,10 @@ pub struct PreviewRequest {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PreviewMemory {
     pub memory: Memory,
-    /// Recall score; 0.0 for memories added by the ambient floor.
+    /// Recall score.
     pub score: f32,
     /// The bank holding it, when not `bank`: the default bank, read under
-    /// a bank the session's directory chose.
+    /// a bank the session's directory chose, or its agent profile's bank.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bank: Option<String>,
 }
@@ -45,7 +46,7 @@ pub struct PreviewResponse {
     /// Rules included, and whether any were cut by `max_rule_chars`.
     pub rules: usize,
     pub rules_truncated: bool,
-    /// Memories the turn would be handed, post ambient floor and token
+    /// Memories the turn would be handed, past the relevance cut and token
     /// budget, in injection order.
     pub memories: Vec<PreviewMemory>,
     /// The appended `<memory>` message body, verbatim; absent when no
@@ -76,8 +77,8 @@ pub async fn preview(deps: &Deps, req: PreviewRequest) -> Result<PreviewResponse
     } else {
         // A hypothetical message has no window: nothing was injected yet.
         let seen = std::collections::HashSet::new();
-        let layer = scope.layer(&cfg.default_bank);
-        hooks::injection(deps, &cfg, bank_name, layer, Some(&req.query), &seen).await
+        let layers = scope.layers(&cfg.default_bank);
+        hooks::injection(deps, &cfg, bank_name, &layers, Some(&req.query), &seen).await
     };
     Ok(PreviewResponse {
         bank: bank_name.to_string(),

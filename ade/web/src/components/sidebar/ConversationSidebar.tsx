@@ -458,9 +458,9 @@ export function ConversationSidebar({
               window.location.hash = hashForSettingsLanding(narrow)
             }}
             aria-label="ADE settings"
-            // onboarding-settings: tour anchor (workers/onboarding). Do not remove.
+            // learn-iii-settings: tour anchor (workers/learn-iii). Do not remove.
             className={cn(
-              'onboarding-settings',
+              'learn-iii-settings',
               QUIET_ACTION,
               narrow ? 'size-12' : 'size-8',
             )}

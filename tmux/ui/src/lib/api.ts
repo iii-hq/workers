@@ -9,6 +9,7 @@ import type {
   CreateWindowResponse,
   PortsSnapshot,
   SessionsSnapshot,
+  SubagentTranscript,
   TerminalOpenResponse,
   TerminalReplayResponse,
 } from './types'
@@ -33,6 +34,8 @@ export function createApi(iii: ExtensionIii) {
   return {
     listSessions: () => call<SessionsSnapshot>('tmux::sessions::list', {}, READ_TIMEOUT_MS),
     listPorts: () => call<PortsSnapshot>('tmux::ports::list', {}, READ_TIMEOUT_MS),
+    subagentTranscript: (pane: string, subagent: string) =>
+      call<SubagentTranscript>('tmux::subagents::transcript', { pane, subagent }, READ_TIMEOUT_MS),
 
     createSession: (request: Record<string, unknown>) =>
       call<CreateSessionResponse>('tmux::sessions::create', request, MUTATION_TIMEOUT_MS),

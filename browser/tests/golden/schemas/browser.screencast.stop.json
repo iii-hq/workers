@@ -10,7 +10,7 @@
     ],
     "properties": {
       "preview": {
-        "description": "Must match the `preview` the start was made with.",
+        "description": "Must match the `preview` the start was made with (anonymous viewers only; a named viewer remembers its own).",
         "default": null,
         "type": [
           "boolean",
@@ -20,6 +20,14 @@
       "session_id": {
         "description": "Stopping the screencast on an unknown session succeeds.",
         "type": "string"
+      },
+      "viewer_id": {
+        "description": "The viewer to release, as passed to `browser::screencast::start`. An unknown or already-lapsed id succeeds and releases nothing.",
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
       }
     }
   },

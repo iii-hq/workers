@@ -50,18 +50,12 @@ impl Drop for Harness {
     }
 }
 
+/// Whether the worker would find a Chromium to launch. Its own resolver
+/// decides (the install locations and `PATH` names this list used to
+/// hard-code, plus the managed download and Playwright/Puppeteer copies), so
+/// a lane skips exactly when sessions could not start.
 fn chromium_present() -> bool {
-    let known = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-    ];
-    known.iter().any(|p| std::path::Path::new(p).exists())
-        || which::which("google-chrome").is_ok()
-        || which::which("chromium").is_ok()
-        || which::which("chromium-browser").is_ok()
+    browser::chromium::resolve_executable(&browser::config::WorkerConfig::default()).is_some()
 }
 
 /// Which engine a lane boots the worker on. `Lightpanda` needs the binary

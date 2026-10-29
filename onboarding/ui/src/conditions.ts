@@ -29,7 +29,7 @@ export function bindCondition(
   condition: Condition,
   onFire: (fired: Fired) => void,
 ): () => void {
-  const localId = `onboarding::condition::${key}`
+  const localId = `learn-iii::condition::${key}`
   // The handler is registered before the trigger, so a throw from
   // `registerTrigger` must take it back down. A live handler with no trigger
   // behind it would fire alongside the next successful bind.
@@ -52,5 +52,26 @@ export function bindCondition(
     // waiting and rebinds on the next mount.
     offHandler()
     return () => {}
+  }
+}
+
+/**
+ * What a condition waits on, read once: the fired event when it has already
+ * happened, else `null`. Only a `state` condition can be read back — its key
+ * stays written — so a step the agent reported done while nothing was
+ * listening still closes. Event-only conditions (a harness turn) leave no
+ * trace to read; the console reports those itself when it has one
+ * (`learn-iii::steps::observe`).
+ */
+export async function reconcileCondition(host: Host, condition: Condition): Promise<Fired | null> {
+  if (condition.type !== 'state') return null
+  const { scope, key } = condition.config as { scope?: unknown; key?: unknown }
+  if (typeof scope !== 'string' || typeof key !== 'string') return null
+  try {
+    const value = await host.iii.trigger<unknown>('state::get', { scope, key })
+    if (value === null || value === undefined) return null
+    return { trigger_type: 'state', payload: { scope, key, value, read_back: true }, at: Date.now() }
+  } catch {
+    return null
   }
 }

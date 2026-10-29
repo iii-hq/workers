@@ -205,6 +205,8 @@ async fn main() -> Result<()> {
     // Injectable console UI — after the browser::* functions so the console
     // can attribute the assets.
     browser::ui::register(&iii);
+    // Native app for the iii app (browser::native-ui); the handle lives as long as the worker.
+    let _native_ui = browser::native_ui::register(&iii);
 
     tracing::info!(
         "browser ready: browser::* sessions + console capture + pick, browser::* parsing"

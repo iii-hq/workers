@@ -114,6 +114,82 @@ starting with a letter or digit. Tooling/baseline names (`agents`, `config`,
 `data`, `scripts`, `skills`, `tests`, `upstream`) are reserved to avoid overwriting
 tracked files.
 
+## Fresh project with `iii project init`
+
+`init.sh` gives `template/<name>/` exactly what a user gets from
+`iii project init`, every time:
+
+```bash
+cd template
+./init.sh --help        # examples, behavior and environment variables
+./init.sh --list        # every template, with its description
+./init.sh quickstart
+./init.sh harness
+```
+
+Before Compose takes over the terminal, the run prints a summary like this:
+
+```text
+  harness: fresh `iii project init` in harness
+  ade     http://127.0.0.1:3114
+  http    port 3111, used if http is added later
+  engine  ws://127.0.0.1:49335
+  local   12 workers from this checkout: queue, state, session-manager, ...
+
+  Run `iii trigger ...` from harness. Ctrl+C stops the stack.
+```
+
+It replaces `template/<name>/` with a new `iii project init -t <name>`, so each
+start is a first run: `data/`, `.iii/`, `.env` and any Compose edits are lost. If
+that folder's stack is still running, it changes nothing and asks you to stop it
+first. An unknown name lists the templates (and suggests the closest one)
+before anything runs, and init runs in a staging folder, so a failed fetch or
+init keeps the previous folder.
+
+Templates come from [`iii-hq/templates`](https://github.com/iii-hq/templates)
+`main`, just as a user gets them; no local checkout is needed. `init.sh` clones
+them once, the way the CLI does, and hands the CLI that copy. The CLI's own
+`III_TEMPLATE_URL_BRANCH` (and `III_TEMPLATE_URL`) pick another branch or
+repository. To try uncommitted template changes, point `TEMPLATES_REPO` at a
+local templates checkout:
+
+```bash
+TEMPLATES_REPO=../../templates ./init.sh harness
+```
+
+`engine=` runs init and the whole stack on another `iii` binary, such as a local
+build; the default is `iii` from `PATH`:
+
+```bash
+./init.sh harness engine=../../iii/target/debug/iii
+```
+
+Like sync, it rewrites `package://` workers found in this checkout to `path://`.
+`iii compose --up` stays in the foreground (Ctrl+C stops it).
+
+Each run gets its own ports, so the root stack and other templates keep running:
+
+| Listener | Default | Sandbox |
+| --- | --- | --- |
+| engine | 49134 | first free from 49334, written to `worker-compose.yaml` |
+| ADE (`ade`) | 3113 | 3113 when free, else the next free one, seeded in `config/default-ade.yaml` |
+| `http` | 3111 | 3111 when free, else the next free one, seeded in `config/default-http.yaml` |
+
+A port is skipped when something listens on it or another `template/*/` sandbox
+claims it, even a stopped one. ADE and `http` read the seed only when their
+configuration entry is empty, so it also moves an `http` that the tutorial or an
+agent adds later with `compose::add`. Open the ADE at the summary's URL, and use
+its `http` port wherever the tutorial says 3111; they differ only when 3111 is taken.
+
+The quickstart tutorial adds `state` and `http` from the registry. To use this
+repository's workers instead, run these in place of those two steps, from
+`template/quickstart/`:
+
+```bash
+iii trigger compose::add --json '{"workers":[{"worker":"../../state","scripts":{"run":"cargo run --bin state"}}]}'
+iii trigger compose::add --json '{"workers":[{"worker":"../../http","scripts":{"run":"cargo run --bin http"}}]}'
+```
+
 ## Requirements and tests
 
 Downloading requires Bash, Git, Python 3.11+ and `ruamel.yaml`. The script tries

@@ -1,6 +1,6 @@
 //! Owns the provider's session, refresh serialization, and cancellable device
 //! login. The UI sees ceremony/status data only, never OAuth credentials.
-use crate::credential_store::{PrivateStateStore, SessionRecord, SessionStore};
+use crate::credential_store::{SecretsSessionStore, SessionRecord, SessionStore};
 use crate::oauth::{Credential, DeviceCode, OAuthClient, OAuthError, PollOutcome};
 use futures::future::BoxFuture;
 use iii_sdk::{errors::Error, IIIClient};
@@ -25,7 +25,7 @@ impl SessionError {
     pub fn storage() -> Self {
         Self::new(
             "storage_unavailable",
-            "Could not read or save the Codex session. Check the state worker and retry.",
+            "Could not read or save the Codex session. Check credential storage and retry.",
         )
     }
     fn expired() -> Self {
@@ -34,7 +34,13 @@ impl SessionError {
             "Your Codex session has expired. Sign in with ChatGPT again.",
         )
     }
-    fn changed() -> Self {
+    fn rejected() -> Self {
+        Self::new(
+            "auth_expired",
+            "Codex rejected the current session. Sign in with ChatGPT again.",
+        )
+    }
+    pub(crate) fn changed() -> Self {
         Self::new(
             "session_changed",
             "The Codex session changed. Retry the operation.",
@@ -215,12 +221,15 @@ pub struct AuthManager {
     refresh: Mutex<Option<PendingRefresh>>,
     attempt: StdMutex<Option<Attempt>>,
     changes: watch::Sender<u64>,
+    // Vault and CLI credentials are never refreshed here: once Codex rejects
+    // one, it reads as expired until a different token replaces it.
+    rejected_legacy: StdMutex<Option<String>>,
 }
 
 impl AuthManager {
     pub fn new(iii: IIIClient, http: reqwest::Client) -> Arc<Self> {
         Self::with_dependencies(
-            Arc::new(PrivateStateStore::new(iii.clone())),
+            Arc::new(SecretsSessionStore::new(iii.clone())),
             Arc::new(OAuthClient::new(http)),
             Arc::new(LegacyCredentials(iii)),
         )
@@ -240,6 +249,7 @@ impl AuthManager {
             refresh: Mutex::new(None),
             attempt: StdMutex::new(None),
             changes,
+            rejected_legacy: StdMutex::new(None),
         })
     }
 
@@ -315,6 +325,14 @@ impl AuthManager {
                         .is_some_and(|exp| exp <= now_seconds())
                     {
                         return Err(SessionError::expired());
+                    }
+                    let token = crate::config::extract_access_token(&resolved.value);
+                    let mut rejected = self.rejected_legacy.lock().expect("rejected mutex");
+                    if token.is_some() && rejected_token == token.as_deref() {
+                        rejected.clone_from(&token);
+                    }
+                    if token.is_some() && *rejected == token {
+                        return Err(SessionError::rejected());
                     }
                 }
                 return Ok(legacy);

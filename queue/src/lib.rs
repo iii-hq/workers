@@ -11,6 +11,7 @@ pub mod configuration;
 pub mod functions;
 pub mod manifest;
 pub mod observability;
+pub mod on_message;
 pub mod runtime;
 pub mod store;
 pub mod subscriber_config;

@@ -86,6 +86,9 @@ fn register_subscriber_with_config(
     if let Some(qc) = queue_config {
         config["queue_config"] = qc;
     }
+    // The old consumer path: `durable:subscriber` stays served on 0.24 and
+    // 0.25 engines.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         TRIGGER_TYPE.to_string(),
         function_id.to_string(),
@@ -303,7 +306,7 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
     let registrations = boot.trigger_handler.registrations().await;
     assert_eq!(registrations.len(), 1);
     assert_eq!(
-        registrations[0].namespace.as_deref(),
+        registrations[0].target.namespace(),
         Some(namespace.as_str())
     );
 

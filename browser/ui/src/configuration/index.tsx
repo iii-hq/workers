@@ -56,7 +56,7 @@ const BROWSER_OWNED_TOP_LEVEL_FIELDS = [
   'max_timeout_ms',
   'inactive_after_ms',
   'screenshot_quality',
-  'live_view_scale',
+  'frame_density',
   'live_view_quality',
   'allowed_schemes',
   'max_snapshot_nodes',
@@ -84,7 +84,7 @@ const DEFAULTS = {
   max_timeout_ms: 120_000,
   inactive_after_ms: 1_800_000,
   screenshot_quality: 60,
-  live_view_scale: 2,
+  frame_density: 2,
   live_view_quality: 85,
   allowed_schemes: ['http', 'https', 'file'],
   max_snapshot_nodes: 2_000,
@@ -111,6 +111,10 @@ const DEFAULTS = {
   },
 } as const
 
+/** The worker's own description of `frame_density` (config.rs). */
+const FRAME_DENSITY_HINT =
+  "Pixel density of the live view, 1-3. The default, 2, keeps text sharp in a phone's view. Every tab renders at this density, so expect about 10-15% more Chromium memory; on a small host running many agent tabs, set 1. Screenshots, PDFs, picks and act coordinates stay in CSS pixels. Applies when the browser next launches."
+
 const FIELD_SECTION: Record<string, SectionId> = {
   engine: 'launch',
   executable: 'launch',
@@ -121,7 +125,7 @@ const FIELD_SECTION: Record<string, SectionId> = {
   viewport_width: 'viewport',
   viewport_height: 'viewport',
   screenshot_quality: 'viewport',
-  live_view_scale: 'viewport',
+  frame_density: 'viewport',
   live_view_quality: 'viewport',
   console_buffer: 'limits',
   network_buffer: 'limits',
@@ -210,6 +214,19 @@ function pointer(field: FieldPath) {
   return `/${pathParts(field)
     .map((part) => part.replaceAll('~', '~0').replaceAll('/', '~1'))
     .join('/')}`
+}
+
+/**
+ * What a number field's text stores: a non-negative number (an integer
+ * unless `decimals`), or the text itself when it is not one, so an
+ * environment template such as `${FRAME_DENSITY:2}` survives the round trip.
+ * Empty clears the field.
+ */
+export function numberFromInput(raw: string, decimals = false): JsonValue | undefined {
+  if (raw.trim() === '') return undefined
+  const parsed = Number(raw)
+  const usable = Number.isFinite(parsed) && parsed >= 0 && (decimals || Number.isInteger(parsed))
+  return usable ? parsed : raw
 }
 
 function fieldError(errors: ConfigFormProps['errors'], field: FieldPath) {
@@ -370,6 +387,7 @@ function NumberField({
   placeholder,
   min = 0,
   max,
+  step,
   hint,
   error,
   onChange,
@@ -380,6 +398,8 @@ function NumberField({
   placeholder: number
   min?: number
   max?: number
+  /** A fractional step (0.5) lets the field take decimals. */
+  step?: number
   hint?: ReactNode
   error?: string
   onChange: (raw: string) => void
@@ -415,7 +435,8 @@ function NumberField({
           type="number"
           min={min}
           max={max}
-          inputMode="numeric"
+          step={step}
+          inputMode={step !== undefined && !Number.isInteger(step) ? 'decimal' : 'numeric'}
           value={typeof value === 'number' ? String(value) : ''}
           preserveCase
           placeholder={String(placeholder)}
@@ -1009,13 +1030,11 @@ export function BrowserConfigEditor({
     onChange(next)
   }
 
-  const setNumber = (field: string, raw: string) => {
+  const setNumber = (field: string, raw: string, decimals = false) => {
     const next = { ...value }
-    if (raw.trim() === '') delete next[field]
-    else {
-      const parsed = Number(raw)
-      next[field] = Number.isInteger(parsed) && parsed >= 0 ? parsed : raw
-    }
+    const parsed = numberFromInput(raw, decimals)
+    if (parsed === undefined) delete next[field]
+    else next[field] = parsed
     onChange(next)
   }
 
@@ -1230,19 +1249,20 @@ export function BrowserConfigEditor({
             </ConfigSection>
             <ConfigSection
               title="Live view"
-              description="How sharp the page looks in the browser pane, against the bandwidth each frame costs."
+              description="How sharp the streamed page is in the browser pane and the iii app's Browser, against the bandwidth each frame costs."
             >
               <SettingsList className="br-cfg-section-list">
                 <NumberField
-                  field="live_view_scale"
-                  label="Pixel density"
-                  value={value.live_view_scale}
-                  placeholder={DEFAULTS.live_view_scale}
+                  field="frame_density"
+                  label="Frame density"
+                  value={value.frame_density}
+                  placeholder={DEFAULTS.frame_density}
                   min={1}
                   max={3}
-                  hint="2 is as sharp as Chrome on a retina screen; 1 sends a quarter of the pixels and looks soft there. Pages still see a device pixel ratio of 1. Applies when the browser next launches."
-                  error={fieldError(errors, 'live_view_scale')}
-                  onChange={(next) => setNumber('live_view_scale', next)}
+                  step={0.5}
+                  hint={FRAME_DENSITY_HINT}
+                  error={fieldError(errors, 'frame_density')}
+                  onChange={(next) => setNumber('frame_density', next, true)}
                 />
                 <NumberField
                   field="live_view_quality"

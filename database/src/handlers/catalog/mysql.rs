@@ -37,7 +37,8 @@ pub async fn list_tables(
     db: &str,
     timeout_ms: u64,
 ) -> Result<Vec<TableRef>, String> {
-    let sql = "SELECT TABLE_NAME AS table_name, TABLE_TYPE AS kind \
+    let sql =
+        "SELECT TABLE_NAME AS table_name, TABLE_TYPE AS kind, TABLE_ROWS AS row_count_estimate \
                FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() \
                ORDER BY TABLE_TYPE, TABLE_NAME";
     let rows = run(state, db, sql, vec![], timeout_ms).await?;
@@ -51,6 +52,7 @@ pub async fn list_tables(
                     Some("VIEW") => TableKind::View,
                     _ => TableKind::Table,
                 },
+                row_count_estimate: i64_at(r, "row_count_estimate"),
             })
         })
         .collect())
@@ -67,7 +69,7 @@ pub async fn columns(
         "SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, \
                 COLUMN_TYPE AS column_type, IS_NULLABLE AS is_nullable, \
                 COLUMN_DEFAULT AS default_value, ORDINAL_POSITION AS position, \
-                COLUMN_KEY AS column_key \
+                COLUMN_KEY AS column_key, EXTRA AS extra \
          FROM information_schema.COLUMNS \
          WHERE TABLE_SCHEMA = DATABASE(){clause} \
          ORDER BY TABLE_NAME, ORDINAL_POSITION"
@@ -90,6 +92,14 @@ pub async fn columns(
             primary_key: str_at(r, "column_key").as_deref() == Some("PRI"),
             position: i64_at(r, "position").unwrap_or(0) as i32,
             foreign_key: None,
+            auto_increment: str_at(r, "extra")
+                .is_some_and(|e| e.to_ascii_lowercase().contains("auto_increment")),
+            // `VIRTUAL GENERATED` / `STORED GENERATED`; mysql 8 also says
+            // `DEFAULT_GENERATED` for an expression default, which is not.
+            generated: str_at(r, "extra").is_some_and(|e| {
+                let e = e.to_ascii_uppercase();
+                e.contains("VIRTUAL GENERATED") || e.contains("STORED GENERATED")
+            }),
         });
     }
 

@@ -101,7 +101,18 @@ the step — only a DIRECT call offers the access-grant prompt.
 Session READS (`session::get-attachment`, `session::messages-tail`, …) ride a pipe too — the way
 to move an attachment's bytes somewhere without them passing through you.
 Trigger-control, session-write/approval, credential/config, LLM-routing, and
-turn-control steps are excluded — call those directly."#;
+turn-control steps are excluded — call those directly.
+
+## Several independent calls at once
+
+Calls that do not need each other's results go in ONE `fp::batch { calls: [{ id?, function,
+payload?, timeout_ms? }] }` instead of one call per turn — a status read beside a log tail
+beside a function info. Every call runs (at once, or `concurrency` at a time) and answers in
+place: `results: [{ id, function, status: "ok", result, chars } | { id, function, status:
+"error", code, message }]`, `ok` false when any failed. Defaults: 10 s per call, 16 KB per
+result (a bigger one comes back cut as text with `truncated: true` — use a pipe to move it),
+12 calls (more runs but warns: the whole response must still fit through the chat). Nothing is
+threaded between calls; a chain is a pipe. The same step exclusions apply."#;
 
 /// The `pre_generate` hook envelope slice we read; the generation context is nested
 /// under `generate`.

@@ -6,7 +6,6 @@ use crate::driver::{
 use crate::error::DbError;
 use crate::pool::PostgresPool;
 use crate::value::{JsonParam, RowValue};
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use postgres_types::{ToSql, Type};
 use serde_json::Value as JsonValue;
 use std::time::Duration;
@@ -16,9 +15,11 @@ pub async fn query(
     pool: &PostgresPool,
     sql: &str,
     params: &[JsonParam],
-    timeout_ms: u64,
+    opts: crate::driver::ReadOptions,
 ) -> Result<QueryResult, DbError> {
+    let timeout_ms = opts.timeout_ms;
     let mut client = pool.acquire().await?;
+    let started = std::time::Instant::now();
     let bound = bind_params(params);
     let bound_refs: Vec<&(dyn ToSql + Sync)> =
         bound.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
@@ -26,8 +27,10 @@ pub async fn query(
     // `database::query` is the READ surface a narrowed agent policy grants;
     // a read-only transaction makes the server enforce it (writes fail with
     // 25006 read_only_sql_transaction) — this also catches data-modifying
-    // CTEs (`WITH ... INSERT`) that keyword classification misses. Dropped
-    // on timeout (implicit rollback); committed after rows are collected.
+    // CTEs (`WITH ... INSERT`) and writing functions (`nextval`) that keyword
+    // classification misses. The extended protocol also refuses a second
+    // statement (`; DELETE …`). Dropped on timeout (implicit rollback);
+    // committed after rows are collected.
     let work = async {
         let tx = client
             .build_transaction()
@@ -35,35 +38,39 @@ pub async fn query(
             .start()
             .await
             .map_err(map_err)?;
-        let rows = tx
-            .query(sql, bound_refs.as_slice())
-            .await
-            .map_err(map_err)?;
+        let stmt = tx.prepare(sql).await.map_err(map_err)?;
+        let (rows, truncated) = match opts.max_rows {
+            None => (
+                tx.query(&stmt, bound_refs.as_slice())
+                    .await
+                    .map_err(map_err)?,
+                false,
+            ),
+            Some(max) => {
+                // A portal asks the server for max+1 rows and no more: the
+                // rest of the result is never computed or sent, and the SQL
+                // is never rewritten.
+                let portal = tx
+                    .bind(&stmt, bound_refs.as_slice())
+                    .await
+                    .map_err(map_err)?;
+                let fetch = i32::try_from(max.saturating_add(1)).unwrap_or(i32::MAX);
+                let mut rows = tx.query_portal(&portal, fetch).await.map_err(map_err)?;
+                let truncated = rows.len() as u64 > max;
+                rows.truncate(max as usize);
+                (rows, truncated)
+            }
+        };
         tx.commit().await.map_err(map_err)?;
-        Ok::<_, DbError>(rows)
+        Ok::<_, DbError>((column_meta(stmt.columns()), rows, truncated))
     };
-    let rows = tokio::time::timeout(Duration::from_millis(timeout_ms), work)
+    let (columns, rows, truncated) = tokio::time::timeout(Duration::from_millis(timeout_ms), work)
         .await
         .map_err(|_| DbError::QueryTimeout {
             db: "(pg)".into(),
             timeout_ms,
         })??;
-
-    if rows.is_empty() {
-        return Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-        });
-    }
-
-    let columns: Vec<ColumnMeta> = rows[0]
-        .columns()
-        .iter()
-        .map(|c| ColumnMeta {
-            name: c.name().to_string(),
-            ty: c.type_().name().to_string(),
-        })
-        .collect();
+    let elapsed_ms = started.elapsed().as_millis() as u64;
 
     let mut out_rows: Vec<Row> = Vec::with_capacity(rows.len());
     for row in rows {
@@ -76,6 +83,8 @@ pub async fn query(
     Ok(QueryResult {
         columns,
         rows: out_rows,
+        truncated,
+        elapsed_ms,
     })
 }
 
@@ -142,6 +151,12 @@ impl ToSql for PgBind {
                 _ => f.to_sql(ty, out),
             },
             PgBind::Text(s) => s.to_sql(ty, out),
+            // A JSON array for an array parameter (`$1::int[]`) is the array
+            // itself, not a json document.
+            PgBind::Json(v @ JsonValue::Array(_)) => match ty.kind() {
+                postgres_types::Kind::Array(member) => encode_pg_array(member, v, out),
+                _ => v.to_sql(ty, out),
+            },
             PgBind::Json(v) => v.to_sql(ty, out),
         }
     }
@@ -153,133 +168,99 @@ impl ToSql for PgBind {
     postgres_types::to_sql_checked!();
 }
 
+/// Decode one cell. Never fails the query: every type has a decoding (see
+/// `pg_decode`), and a cell that cannot even be read comes back NULL with a
+/// warning rather than taking the result set down.
+/// The binary array format: `ndim, has_null, element oid, (len, lower
+/// bound)*, (len, bytes)*`, each element bound like a top-level parameter of
+/// the member type. Nested JSON arrays are dimensions and must be
+/// rectangular.
+fn encode_pg_array(
+    member: &Type,
+    value: &JsonValue,
+    out: &mut bytes::BytesMut,
+) -> Result<postgres_types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+    use bytes::BufMut;
+    let mut dims = Vec::new();
+    let mut cur = value;
+    while let JsonValue::Array(items) = cur {
+        dims.push(items.len());
+        match items.first() {
+            Some(first @ JsonValue::Array(_)) => cur = first,
+            _ => break,
+        }
+    }
+    fn flatten<'a>(
+        v: &'a JsonValue,
+        depth: usize,
+        dims: &[usize],
+        out: &mut Vec<&'a JsonValue>,
+    ) -> Result<(), String> {
+        if depth == dims.len() {
+            out.push(v);
+            return Ok(());
+        }
+        match v {
+            JsonValue::Array(items) if items.len() == dims[depth] => {
+                for item in items {
+                    flatten(item, depth + 1, dims, out)?;
+                }
+                Ok(())
+            }
+            _ => Err("array parameter is not rectangular".into()),
+        }
+    }
+    if dims.contains(&0) {
+        out.put_i32(0);
+        out.put_i32(0);
+        out.put_u32(member.oid());
+        return Ok(postgres_types::IsNull::No);
+    }
+    let mut leaves = Vec::new();
+    flatten(value, 0, &dims, &mut leaves)?;
+    let text_member = matches!(
+        *member,
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME
+    );
+    out.put_i32(dims.len() as i32);
+    out.put_i32(i32::from(leaves.iter().any(|v| v.is_null())));
+    out.put_u32(member.oid());
+    for d in &dims {
+        out.put_i32(*d as i32);
+        out.put_i32(1);
+    }
+    for leaf in leaves {
+        if leaf.is_null() {
+            out.put_i32(-1);
+            continue;
+        }
+        let bind = match leaf {
+            JsonValue::Number(_) | JsonValue::Bool(_) if text_member => {
+                PgBind::Text(leaf.to_string())
+            }
+            other => PgBind::from_param(&JsonParam::from_json(other).map_err(
+                |e| -> Box<dyn std::error::Error + Sync + Send> { e.to_string().into() },
+            )?),
+        };
+        let mut buf = bytes::BytesMut::new();
+        bind.to_sql(member, &mut buf)?;
+        out.put_i32(buf.len() as i32);
+        out.extend_from_slice(&buf);
+    }
+    Ok(postgres_types::IsNull::No)
+}
+
 fn pg_cell_to_row_value(
     row: &tokio_postgres::Row,
     idx: usize,
     ty: &Type,
 ) -> Result<RowValue, DbError> {
-    macro_rules! get {
-        ($t:ty) => {{
-            let v: Option<$t> = row.try_get(idx).map_err(map_err)?;
-            v
-        }};
-    }
-    use tokio_postgres::types::Type as T;
-    Ok(match *ty {
-        T::BOOL => match get!(bool) {
-            Some(b) => RowValue::Bool(b),
-            None => RowValue::Null,
-        },
-        T::INT2 => match get!(i16) {
-            Some(i) => RowValue::Int(i as i64),
-            None => RowValue::Null,
-        },
-        T::INT4 => match get!(i32) {
-            Some(i) => RowValue::Int(i as i64),
-            None => RowValue::Null,
-        },
-        T::INT8 => match get!(i64) {
-            Some(i) => RowValue::BigInt(i),
-            None => RowValue::Null,
-        },
-        T::FLOAT4 => match get!(f32) {
-            Some(f) => RowValue::Float(f as f64),
-            None => RowValue::Null,
-        },
-        T::FLOAT8 => match get!(f64) {
-            Some(f) => RowValue::Float(f),
-            None => RowValue::Null,
-        },
-        T::TEXT | T::VARCHAR | T::BPCHAR | T::NAME => match get!(String) {
-            Some(s) => RowValue::Text(s),
-            None => RowValue::Null,
-        },
-        // `String: FromSql` accepts only the text-family OIDs
-        // (postgres-types-0.2/src/lib.rs:729), so decoding a uuid cell as
-        // String failed with WrongType and took the whole query down — the
-        // same class as the `"char"` and NUMERIC arms in this function.
-        // Decode as Uuid and surface the canonical lowercase-hyphenated text.
-        T::UUID => match get!(uuid::Uuid) {
-            Some(u) => RowValue::Text(u.to_string()),
-            None => RowValue::Null,
-        },
-        // The internal one-byte "char" (OID 18) — what pg_catalog uses for
-        // relkind/contype/attidentity. It is NOT text-family: `String`'s
-        // FromSql rejects it (so the `_` fallback below fails with "error
-        // deserializing column N"), and tokio-postgres decodes it as i8.
-        T::CHAR => match get!(i8) {
-            Some(c) => RowValue::Text(((c as u8) as char).to_string()),
-            None => RowValue::Null,
-        },
-        T::BYTEA => match get!(Vec<u8>) {
-            Some(b) => RowValue::Bytes(b),
-            None => RowValue::Null,
-        },
-        // postgres-types' chrono FromSql impls bind by exact OID:
-        // `DateTime<Utc>` declares `accepts!(TIMESTAMPTZ)` and `NaiveDateTime`
-        // declares `accepts!(TIMESTAMP)`. Decoding TIMESTAMP (no tz) as
-        // `DateTime<Utc>` fails at runtime with WrongType. Split the arms:
-        // TIMESTAMP → NaiveDateTime, then assume UTC for the wire envelope
-        // so RowValue::Timestamp keeps its DateTime<Utc> shape.
-        T::TIMESTAMPTZ => match get!(DateTime<Utc>) {
-            Some(t) => RowValue::Timestamp(t),
-            None => RowValue::Null,
-        },
-        T::TIMESTAMP => match get!(NaiveDateTime) {
-            Some(n) => RowValue::Timestamp(Utc.from_utc_datetime(&n)),
-            None => RowValue::Null,
-        },
-        T::JSON | T::JSONB => match get!(JsonValue) {
-            Some(v) => RowValue::Json(v),
-            None => RowValue::Null,
-        },
-        T::NUMERIC => {
-            // Layered decode:
-            //   1. rust_decimal::Decimal — fast, well-tested, handles 99% of
-            //      real-world NUMERIC values (96-bit / ~28 sig digits).
-            //   2. Custom binary parser fallback — for values rust_decimal
-            //      rejects: NaN, ±Infinity, and arbitrary-precision NUMERIC
-            //      beyond 96 bits (rust_decimal-1.41/src/postgres/driver.rs:91
-            //      returns `Err(ConversionTo)` for special signs and line 109
-            //      returns `Err(ExceedsMaximumPossibleValue)` for overflow).
-            //   3. Null on parse failure.
-            //
-            // The reviewer originally suggested `get!(String)` as the
-            // fallback, but `String: FromSql::accepts` is gated to TEXT-
-            // family OIDs (postgres-types-0.2/src/lib.rs:729) and rejects
-            // NUMERIC at runtime — confirmed earlier in this branch. The
-            // custom parser sidesteps that by accepting NUMERIC directly
-            // and stringifying the binary digits.
-            match row.try_get::<_, Option<rust_decimal::Decimal>>(idx) {
-                Ok(Some(d)) => RowValue::Decimal(d.to_string()),
-                Ok(None) => RowValue::Null,
-                Err(e) => {
-                    tracing::debug!(
-                        column = idx,
-                        error = %e,
-                        "NUMERIC outside rust_decimal range; falling back to binary parser"
-                    );
-                    match row.try_get::<_, Option<PgNumericText>>(idx) {
-                        Ok(Some(t)) => RowValue::Decimal(t.0),
-                        Ok(None) => RowValue::Null,
-                        Err(e) => {
-                            tracing::warn!(
-                                column = idx,
-                                error = %e,
-                                "NUMERIC binary parser also failed; surfacing Null"
-                            );
-                            RowValue::Null
-                        }
-                    }
-                }
-            }
-        }
-        _ => {
-            // Unknown / unmapped type — fall back to text representation.
-            match row.try_get::<_, Option<String>>(idx).map_err(map_err)? {
-                Some(s) => RowValue::Text(s),
-                None => RowValue::Null,
-            }
+    Ok(match row.try_get::<_, Option<super::pg_decode::Raw>>(idx) {
+        Ok(Some(raw)) => super::pg_decode::decode(ty, raw.0),
+        Ok(None) => RowValue::Null,
+        Err(e) => {
+            tracing::warn!(column = idx, r#type = %ty.name(), error = %e, "postgres cell unreadable; returning NULL");
+            RowValue::Null
         }
     })
 }
@@ -289,9 +270,45 @@ pub(crate) fn map_err(e: tokio_postgres::Error) -> DbError {
     DbError::DriverError {
         driver: "postgres".into(),
         code,
-        message: e.to_string(),
+        message: pg_error_text(&e),
         failed_index: None,
     }
+}
+
+/// The server's own words for a database error — message, detail, hint and
+/// the object it concerns — instead of tokio-postgres' bare "db error".
+/// Only what the server reports; bound parameter values are never added.
+pub(crate) fn pg_error_text(e: &tokio_postgres::Error) -> String {
+    let Some(db) = e.as_db_error() else {
+        return e.to_string();
+    };
+    let mut out = db.message().to_string();
+    if let Some(detail) = db.detail() {
+        out.push_str(&format!("; detail: {detail}"));
+    }
+    if let Some(hint) = db.hint() {
+        out.push_str(&format!("; hint: {hint}"));
+    }
+    let mut about: Vec<String> = Vec::new();
+    if let Some(schema) = db.schema() {
+        about.push(format!("schema {schema}"));
+    }
+    if let Some(table) = db.table() {
+        about.push(format!("table {table}"));
+    }
+    if let Some(column) = db.column() {
+        about.push(format!("column {column}"));
+    }
+    if let Some(constraint) = db.constraint() {
+        about.push(format!("constraint {constraint}"));
+    }
+    if let Some(datatype) = db.datatype() {
+        about.push(format!("type {datatype}"));
+    }
+    if !about.is_empty() {
+        out.push_str(&format!(" ({})", about.join(", ")));
+    }
+    out
 }
 
 /// True when the SQL statement is an INSERT — the only statement whose first
@@ -375,8 +392,7 @@ async fn run_write(
         return Ok(ExecuteResult {
             affected_rows: n,
             last_insert_id: None,
-            returned_rows: vec![],
-            returned_columns: vec![],
+            ..Default::default()
         });
     }
 
@@ -419,6 +435,7 @@ async fn run_write(
         last_insert_id,
         returned_rows: returned,
         returned_columns: column_meta(stmt.columns()),
+        elapsed_ms: 0,
     })
 }
 
@@ -445,13 +462,16 @@ pub async fn execute(
 ) -> Result<ExecuteResult, DbError> {
     warn_returning_option_ignored(returning);
     let client = pool.acquire().await?;
+    let started = std::time::Instant::now();
     // Prepare explicitly — not deadpool's `prepare_cached`: a cached plan
     // outlives the call, and a later statement that recreates a table with
     // a different shape would hit `0A000 cached plan must not change result
     // type`. `client.query(&str)` prepares internally anyway, so this is one
     // round trip fewer, not one more.
     let stmt = client.prepare(sql).await.map_err(map_err)?;
-    run_write(&client, &stmt, sql, params).await
+    let mut result = run_write(&client, &stmt, sql, params).await?;
+    result.elapsed_ms = started.elapsed().as_millis() as u64;
+    Ok(result)
 }
 
 pub async fn transaction(
@@ -589,28 +609,9 @@ pub async fn run_prepared(
     Ok(QueryResult {
         columns,
         rows: out_rows,
+        truncated: false,
+        elapsed_ms: 0,
     })
-}
-
-/// Fallback NUMERIC decoder used when `rust_decimal` rejects a value
-/// (NaN, ±Infinity, or precision beyond 96 bits). Captures the raw
-/// Postgres binary numeric format and stringifies it directly so the
-/// caller sees a precision-preserving decimal/special-value string.
-struct PgNumericText(String);
-
-impl<'a> postgres_types::FromSql<'a> for PgNumericText {
-    fn from_sql(
-        _ty: &Type,
-        raw: &'a [u8],
-    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
-        stringify_pg_numeric_binary(raw)
-            .map(PgNumericText)
-            .map_err(|e| -> Box<dyn std::error::Error + Sync + Send> { e.into() })
-    }
-
-    fn accepts(ty: &Type) -> bool {
-        *ty == Type::NUMERIC
-    }
 }
 
 /// Postgres binary NUMERIC layout (network byte order, all 16-bit fields):
@@ -625,7 +626,7 @@ impl<'a> postgres_types::FromSql<'a> for PgNumericText {
 /// back from, which uses the same layout) and the Postgres source at
 /// `src/backend/utils/adt/numeric.c`. The custom stringifier handles every
 /// shape rust_decimal rejects so callers see a value rather than an error.
-fn stringify_pg_numeric_binary(raw: &[u8]) -> Result<String, &'static str> {
+pub(crate) fn stringify_pg_numeric_binary(raw: &[u8]) -> Result<String, &'static str> {
     if raw.len() < 8 {
         return Err("numeric: header too short");
     }
@@ -744,7 +745,10 @@ mod tests {
             &p,
             "SELECT 1::int AS a, 'x'::text AS b, true AS c, NULL::int AS d",
             &[],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -762,7 +766,10 @@ mod tests {
             &p,
             "SELECT $1::int + $2::int AS sum",
             &[JsonParam::Int(2), JsonParam::Int(3)],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -772,9 +779,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn pg_query_jsonb_round_trips_as_value() {
         let Some(p) = fresh_pool().await else { return };
-        let r = query(&p, "SELECT '{\"k\":1}'::jsonb AS j", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT '{\"k\":1}'::jsonb AS j",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         match &r.rows[0].0[0] {
             RowValue::Json(v) => assert_eq!(v["k"], 1),
             other => panic!("expected Json, got {other:?}"),
@@ -784,9 +799,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn pg_query_bigint_returns_string() {
         let Some(p) = fresh_pool().await else { return };
-        let r = query(&p, "SELECT 9007199254740993::bigint AS big", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT 9007199254740993::bigint AS big",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             &r.rows[0].0[0],
             RowValue::BigInt(9_007_199_254_740_993)
@@ -811,7 +834,10 @@ mod tests {
                     -0.001::numeric          AS negf, \
                     0::numeric               AS zero",
             &[],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -852,7 +878,10 @@ mod tests {
                     '-Infinity'::numeric                           AS ninf, \
                     100000000000000000000000000000::numeric        AS big",
             &[],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -993,7 +1022,10 @@ mod tests {
                 '2026-04-29 12:00:00'::timestamp        AS naive, \
                 '2026-04-29 12:00:00+00'::timestamptz   AS with_tz",
             &[],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -1025,7 +1057,10 @@ mod tests {
             &p,
             "SELECT '550E8400-E29B-41D4-A716-446655440000'::uuid AS u, NULL::uuid AS none",
             &[],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -1130,9 +1165,17 @@ mod tests {
             assert!(r.last_insert_id.is_some(), "{sql}");
         }
         // Exactly three rows landed — each statement ran once.
-        let q = query(&p, "SELECT COUNT(*) FROM db_w_ml", &[], 30_000)
-            .await
-            .unwrap();
+        let q = query(
+            &p,
+            "SELECT COUNT(*) FROM db_w_ml",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(&q.rows[0].0[0], RowValue::BigInt(3)));
     }
 
@@ -1284,9 +1327,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Conversion failure: an int[] cell has no RowValue mapping and the
-        // text fallback rejects the OID, so decoding errors after the
-        // statement ran.
+        // Execution failure after a successful prepare (cell decoding can no
+        // longer fail — every type has a decoding — so a runtime error is
+        // what reaches the same position in the loop).
         let err = transaction(
             &p,
             vec![
@@ -1295,7 +1338,8 @@ mod tests {
                     params: vec![],
                 },
                 TxStatement {
-                    sql: "SELECT ARRAY[1, 2] AS cells".into(),
+                    sql: "SELECT 1 / (SELECT COUNT(*) FROM db_w_poison WHERE n < 0) AS cells"
+                        .into(),
                     params: vec![],
                 },
             ],
@@ -1337,9 +1381,17 @@ mod tests {
 
         // The single pooled connection is not stuck in an aborted
         // transaction, and both first steps were rolled back.
-        let q = query(&p, "SELECT COUNT(*) FROM db_w_poison", &[], 30_000)
-            .await
-            .unwrap();
+        let q = query(
+            &p,
+            "SELECT COUNT(*) FROM db_w_poison",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(&q.rows[0].0[0], RowValue::BigInt(0)), "{q:?}");
         let _ = execute(&p, "DROP TABLE db_w_poison", &[], &[]).await;
     }
@@ -1417,9 +1469,17 @@ mod tests {
         ];
         let err = transaction(&p, stmts, None).await.unwrap_err();
         assert!(matches!(err, DbError::DriverError { .. }));
-        let r = query(&p, "SELECT COUNT(*) FROM db_w_tx2", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT COUNT(*) FROM db_w_tx2",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(&r.rows[0].0[0], RowValue::BigInt(0)));
     }
 
@@ -1459,9 +1519,17 @@ mod tests {
         tx_rollback(&mut client).await.unwrap();
         drop(client);
 
-        let rows = query(&p, "SELECT COUNT(*) FROM db_w_aborted_tx", &[], 30_000)
-            .await
-            .unwrap();
+        let rows = query(
+            &p,
+            "SELECT COUNT(*) FROM db_w_aborted_tx",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(&rows.rows[0].0[0], RowValue::BigInt(0)));
     }
 

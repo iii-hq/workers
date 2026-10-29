@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 use crate::adapters::{CompareAndSetOutcome, StateAdapter};
 use crate::config::StateConfig;
 use crate::events::{Invoker, fan_out_lazy};
+use crate::on_changed::{ChangeEmitter, emit_lazy};
 use crate::structs::{
     StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput, StateGetInput,
     StateListGroupsInput, StateListGroupsResult, StateListKeysResult, StateSetInput,
@@ -32,11 +33,11 @@ pub type ConfigCell = Arc<RwLock<Arc<StateConfig>>>;
 /// compare-and-set}`).
 ///
 /// This worker knows nothing about WHO claims, and needs no configuration:
-/// a claim is authorized by the engine-stamped `_caller_worker_id` (the
-/// engine OVERWRITES it on every dispatch, so it cannot be forged), and a
-/// worker may only claim the namespace matching its own worker NAME. That is
-/// exactly the function-id namespace it already owns — only the worker named
-/// `harness` can own `harness::state::*`.
+/// a claim is authorized by the engine-stamped caller worker id (see
+/// `caller_worker_id`; the engine OVERWRITES it on every dispatch, so it
+/// cannot be forged), and a worker may only claim the namespace matching its
+/// own worker NAME. That is exactly the function-id namespace it already
+/// owns — only the worker named `harness` can own `harness::state::*`.
 ///
 /// Claims persist in [`CLAIMS_SCOPE`] and are re-registered at boot, so a
 /// state restart restores the accessors without the tenant lifting a finger.
@@ -251,6 +252,62 @@ pub struct CompareAndSetResult {
     pub current: Option<Value>,
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PrivateCompareAndSetInput {
+    #[serde(flatten)]
+    pub update: CompareAndSetInput,
+    /// Flush the adapter before acknowledging, including an unmatched retry.
+    #[serde(default)]
+    pub durable: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PrivateCompareAndSetResult {
+    pub swapped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<Value>,
+    /// Explicitly acknowledge the requested flush; older workers omit this field.
+    pub durable: bool,
+}
+
+async fn private_compare_and_set(
+    ctx: &StateCtx,
+    prefix: &str,
+    input: PrivateCompareAndSetInput,
+) -> Result<PrivateCompareAndSetResult, Error> {
+    let update = input.update;
+    require_owned_scope(&ctx.private.owned_scopes(prefix), prefix, &update.scope)?;
+    let outcome = ctx
+        .adapter
+        .compare_and_set(
+            &update.scope,
+            &update.key,
+            update.expected.as_ref(),
+            update.value,
+        )
+        .await
+        .map_err(|_| Error::Handler("CAS_ERROR: private state update failed".into()))?;
+    if input.durable {
+        // A previous attempt may have cleared memory but failed to persist it.
+        // Flush even when this retry's expected value no longer matches.
+        ctx.adapter.flush().await.map_err(|_| {
+            Error::Handler("FLUSH_ERROR: private state could not be persisted".into())
+        })?;
+    }
+    Ok(match outcome {
+        CompareAndSetOutcome::Swapped { .. } => PrivateCompareAndSetResult {
+            swapped: true,
+            current: None,
+            durable: input.durable,
+        },
+        CompareAndSetOutcome::NotSwapped { current } => PrivateCompareAndSetResult {
+            swapped: false,
+            current: Some(current),
+            durable: input.durable,
+        },
+    })
+}
+
 /// The condition-contract envelope. `event` is the fired event; the rest of
 /// the envelope (binding, context) is accepted and ignored so the same
 /// function works as a condition and as a direct call.
@@ -267,6 +324,8 @@ pub struct StateCtx {
     pub triggers: TriggerTable,
     pub config: ConfigCell,
     pub invoker: Arc<dyn Invoker>,
+    /// `state::on-changed`, the observable function next to the trigger type.
+    pub on_changed: Arc<dyn ChangeEmitter>,
     /// Boot-time private-namespace snapshot (see [`PrivateNamespaces`]).
     pub private: Arc<PrivateNamespaces>,
 }
@@ -288,23 +347,27 @@ impl StateCtx {
             return;
         }
         let enabled = self.snapshot().await.triggers_enabled.unwrap_or(true);
+        let build = || {
+            event(
+                kind.clone(),
+                scope.to_owned(),
+                key.to_owned(),
+                old_value.cloned(),
+                new_value.clone(),
+            )
+        };
         fan_out_lazy(
             self.invoker.clone(),
             &self.triggers,
             enabled,
             scope,
             key,
-            || {
-                event(
-                    kind,
-                    scope.to_owned(),
-                    key.to_owned(),
-                    old_value.cloned(),
-                    new_value.clone(),
-                )
-            },
+            build,
         )
         .await;
+        // Additive: the trigger deliveries are already handed to their own
+        // task above. A local call, and a no-op unless someone observes it.
+        emit_lazy(self.on_changed.as_ref(), enabled, build).await;
     }
 }
 
@@ -660,10 +723,10 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
     }
 }
 
-/// Input for [`CLAIM_NAMESPACE_ID`]. `_caller_worker_id` is engine-stamped
-/// (overwritten on every dispatch, so a caller cannot forge it); the handler
-/// resolves it to the caller's worker NAME and requires it to equal
-/// `functions_prefix`.
+/// Input for [`CLAIM_NAMESPACE_ID`]. The handler resolves the caller (see
+/// `caller_worker_id`) to its worker NAME and requires it to equal
+/// `functions_prefix`. `_caller_worker_id` is kept for 0.24 engines, which
+/// identify the caller only there, and is read only on such an engine.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ClaimNamespaceInput {
     /// Must equal the calling worker's name.
@@ -682,6 +745,33 @@ pub struct ClaimNamespaceResult {
     pub scopes: Vec<String>,
     /// The accessor ids now serving this namespace.
     pub functions: Vec<String>,
+}
+
+/// The engine-stamped id of the worker that made the current invocation:
+/// `current_invocation().caller.worker_id`, else `None` and the caller fails
+/// closed. The payload's `_caller_worker_id` is read only when
+/// `engine_observes` is `Some(false)`: a 0.24 engine sends nothing else,
+/// while an engine with observe stamps the caller on the invocation itself,
+/// so there the payload field is never trusted (nor while the engine's
+/// support is unknown). Reads the task-local invocation, so call it from the
+/// handler's own future.
+///
+/// Observer activations are never trusted for caller identity: the engine
+/// invokes the target on an observer's behalf, so there is no calling worker,
+/// and the payload was not stamped for this call. An activation fails closed
+/// before the payload fallback.
+fn caller_worker_id(stamped: Option<&str>, engine_observes: Option<bool>) -> Option<String> {
+    let ctx = iii_sdk::current_invocation();
+    if ctx.as_ref().is_some_and(|ctx| ctx.activation.is_some()) {
+        return None;
+    }
+    ctx.and_then(|ctx| ctx.caller)
+        .and_then(|caller| caller.worker_id)
+        .or_else(|| {
+            stamped
+                .filter(|_| engine_observes == Some(false))
+                .map(str::to_string)
+        })
 }
 
 /// Resolve the engine-stamped caller worker id to its registered NAME.
@@ -745,9 +835,13 @@ fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
                         "RESERVED_SCOPE: `{scope}` is state worker bookkeeping"
                     )));
                 }
-                let caller_worker_id = input.caller_worker_id.clone().ok_or_else(|| {
+                let caller_worker_id = caller_worker_id(
+                    input.caller_worker_id.as_deref(),
+                    client.engine_supports_observe(),
+                )
+                .ok_or_else(|| {
                     Error::Handler(
-                        "UNKNOWN_CALLER: the engine did not stamp _caller_worker_id".to_string(),
+                        "UNKNOWN_CALLER: the engine did not identify the caller".to_string(),
                     )
                 })?;
                 let caller = caller_worker_name(&client, &caller_worker_id).await?;
@@ -974,32 +1068,10 @@ fn register_private_namespace_functions(
         let ctx = ctx.clone();
         iii.register_function(
             &cas_id,
-            RegisterFunction::new_async(move |input: CompareAndSetInput| {
+            RegisterFunction::new_async(move |input: PrivateCompareAndSetInput| {
                 let ctx = ctx.clone();
                 let prefix = prefix.clone();
-                async move {
-                    require_owned_scope(&ctx.private.owned_scopes(&prefix), &prefix, &input.scope)?;
-                    let swapped = ctx
-                        .adapter
-                        .compare_and_set(
-                            &input.scope,
-                            &input.key,
-                            input.expected.as_ref(),
-                            input.value,
-                        )
-                        .await
-                        .map_err(|e| Error::Handler(format!("CAS_ERROR: {e}")))?;
-                    Ok(match swapped {
-                        CompareAndSetOutcome::Swapped { .. } => CompareAndSetResult {
-                            swapped: true,
-                            current: None,
-                        },
-                        CompareAndSetOutcome::NotSwapped { current } => CompareAndSetResult {
-                            swapped: false,
-                            current: Some(current),
-                        },
-                    })
-                }
+                async move { private_compare_and_set(&ctx, &prefix, input).await }
             })
             .description(format!(
                 "Internal: atomically update private `{}` bookkeeping state",
@@ -1014,6 +1086,57 @@ fn register_private_namespace_functions(
 mod private_namespace_tests {
     use super::*;
 
+    #[test]
+    fn durable_private_cas_is_opt_in() {
+        let input: PrivateCompareAndSetInput = serde_json::from_value(serde_json::json!({
+            "scope":"provider-openai-codex-auth", "key":"session", "value":null
+        }))
+        .unwrap();
+        assert!(!input.durable);
+    }
+
+    #[tokio::test]
+    async fn durable_private_cas_flushes_cleanup_before_a_reload() {
+        let dir =
+            std::env::temp_dir().join(format!("codex-state-cleanup-{}", uuid::Uuid::new_v4()));
+        let config = serde_json::json!({
+            "store_method":"file_based", "file_path":dir, "save_interval_ms":3_600_000
+        });
+        let adapter = Arc::new(crate::adapters::KvStoreAdapter::new(Some(config.clone())));
+        let scope = "provider-openai-codex-auth";
+        let old = serde_json::json!({"credential":{"access_token":"synthetic-token"}});
+        adapter.set(scope, "session", old.clone()).await.unwrap();
+        adapter.flush().await.unwrap();
+        let ctx = test_ctx(adapter.clone());
+        ctx.private.claim("provider-openai-codex", &[scope.into()]);
+        let input = serde_json::from_value(serde_json::json!({
+            "scope":scope, "key":"session", "expected":old, "value":null, "durable":true
+        }))
+        .unwrap();
+        assert!(
+            private_compare_and_set(&ctx, "provider-openai-codex", input)
+                .await
+                .unwrap()
+                .swapped
+        );
+        let reopened = crate::adapters::KvStoreAdapter::new(Some(config));
+        assert_eq!(
+            reopened.get(scope, "session").await.unwrap().as_deref(),
+            Some(&Value::Null)
+        );
+        for file in std::fs::read_dir(&dir).unwrap().flatten() {
+            assert!(
+                !std::fs::read(file.path())
+                    .unwrap()
+                    .windows(b"synthetic-token".len())
+                    .any(|part| part == b"synthetic-token")
+            );
+        }
+        adapter.destroy().await.unwrap();
+        reopened.destroy().await.unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn scopes(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
     }
@@ -1024,6 +1147,9 @@ mod private_namespace_tests {
     #[derive(Default)]
     struct FailFirstAdapter {
         failed: std::sync::atomic::AtomicBool,
+        cas_value: tokio::sync::Mutex<Option<Value>>,
+        flush_calls: std::sync::atomic::AtomicUsize,
+        fail_flush: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -1064,10 +1190,30 @@ mod private_namespace_tests {
             &self,
             _: &str,
             _: &str,
-            _: Option<&Value>,
-            _: Value,
+            expected: Option<&Value>,
+            value: Value,
         ) -> anyhow::Result<CompareAndSetOutcome> {
-            unreachable!()
+            let mut current = self.cas_value.lock().await;
+            if crate::adapters::cas_matches(expected, current.as_ref()) {
+                Ok(CompareAndSetOutcome::Swapped {
+                    old_value: current.replace(value),
+                })
+            } else {
+                Ok(CompareAndSetOutcome::NotSwapped {
+                    current: current.clone().unwrap_or(Value::Null),
+                })
+            }
+        }
+        async fn flush(&self) -> anyhow::Result<()> {
+            self.flush_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .fail_flush
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                anyhow::bail!("test flush failure");
+            }
+            Ok(())
         }
         async fn barrier_arrive(
             &self,
@@ -1106,14 +1252,331 @@ mod private_namespace_tests {
         }
     }
 
+    /// Records trigger handler calls (condition calls are not made here).
+    #[derive(Default)]
+    struct RecordingInvoker {
+        calls: tokio::sync::Mutex<Vec<(String, Value)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Invoker for RecordingInvoker {
+        async fn call(
+            &self,
+            function_id: &str,
+            payload: Value,
+            _metadata: Option<Value>,
+        ) -> Result<Value, String> {
+            self.calls
+                .lock()
+                .await
+                .push((function_id.to_string(), payload));
+            Ok(Value::Null)
+        }
+    }
+
+    /// `state::on-changed` with a switchable observer count.
+    #[derive(Default)]
+    struct RecordingEmitter {
+        observed: std::sync::atomic::AtomicBool,
+        emitted: tokio::sync::Mutex<Vec<Value>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ChangeEmitter for RecordingEmitter {
+        fn is_observed(&self) -> bool {
+            self.observed.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        async fn emit(&self, event: Value) {
+            self.emitted.lock().await.push(event);
+        }
+    }
+
     fn test_ctx(adapter: Arc<dyn StateAdapter>) -> Arc<StateCtx> {
+        ctx_with(adapter, Arc::new(NullInvoker), Arc::default())
+    }
+
+    #[tokio::test]
+    async fn durable_private_cas_retries_flush_after_cleanup_in_memory() {
+        use std::sync::atomic::Ordering;
+        let adapter = Arc::new(FailFirstAdapter::default());
+        let old = serde_json::json!({"credential":"synthetic-token"});
+        *adapter.cas_value.lock().await = Some(old.clone());
+        adapter.fail_flush.store(true, Ordering::SeqCst);
+        let ctx = test_ctx(adapter.clone());
+        ctx.private.claim("provider-openai-codex", &["auth".into()]);
+        let request = || {
+            serde_json::from_value(serde_json::json!({
+                "scope":"auth", "key":"session", "expected":old, "value":null, "durable":true
+            }))
+            .unwrap()
+        };
+        assert!(
+            private_compare_and_set(&ctx, "provider-openai-codex", request())
+                .await
+                .is_err()
+        );
+        assert_eq!(*adapter.cas_value.lock().await, Some(Value::Null));
+        let retried = private_compare_and_set(&ctx, "provider-openai-codex", request())
+            .await
+            .unwrap();
+        assert!(retried.durable);
+        assert!(!retried.swapped);
+        assert_eq!(retried.current, Some(Value::Null));
+        assert_eq!(adapter.flush_calls.load(Ordering::SeqCst), 2);
+        assert!(
+            private_compare_and_set(&ctx, "intruder", request())
+                .await
+                .is_err()
+        );
+        assert_eq!(adapter.flush_calls.load(Ordering::SeqCst), 2);
+        let nondurable = serde_json::from_value(serde_json::json!({
+            "scope":"auth", "key":"session", "value":"next"
+        }))
+        .unwrap();
+        assert!(
+            private_compare_and_set(&ctx, "provider-openai-codex", nondurable)
+                .await
+                .unwrap()
+                .swapped
+        );
+        assert_eq!(adapter.flush_calls.load(Ordering::SeqCst), 2);
+    }
+
+    fn ctx_with(
+        adapter: Arc<dyn StateAdapter>,
+        invoker: Arc<dyn Invoker>,
+        on_changed: Arc<RecordingEmitter>,
+    ) -> Arc<StateCtx> {
         Arc::new(StateCtx {
             adapter,
             triggers: crate::trigger::StateTriggerHandler::new().triggers,
             config: Arc::new(RwLock::new(Arc::new(StateConfig::default()))),
-            invoker: Arc::new(NullInvoker),
+            invoker,
+            on_changed,
             private: Arc::new(PrivateNamespaces::default()),
         })
+    }
+
+    async fn bind(ctx: &StateCtx, scope: Option<&str>) {
+        ctx.triggers.write().await.insert(
+            "t1".to_string(),
+            crate::trigger::StateTriggerEntry {
+                config: crate::trigger::StateTriggerSpec {
+                    scope: scope.map(String::from),
+                    key: None,
+                    condition_function_id: None,
+                },
+                function_id: "orders::on-change".to_string(),
+                metadata: None,
+            },
+        );
+    }
+
+    async fn settle() {
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    }
+
+    #[tokio::test]
+    async fn observers_get_the_document_trigger_handlers_get() {
+        let invoker = Arc::new(RecordingInvoker::default());
+        let emitter = Arc::new(RecordingEmitter::default());
+        emitter
+            .observed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let ctx = ctx_with(
+            Arc::new(FailFirstAdapter::default()),
+            invoker.clone(),
+            emitter.clone(),
+        );
+        bind(&ctx, Some("orders")).await;
+        let old = serde_json::json!({"status": "pending"});
+        let new = serde_json::json!({"status": "shipped"});
+        ctx.emit_change(StateEventType::Updated, "orders", "o1", Some(&old), &new)
+            .await;
+        ctx.emit_change(StateEventType::Deleted, "orders", "o2", None, &Value::Null)
+            .await;
+        settle().await;
+
+        let delivered = invoker.calls.lock().await;
+        let emitted = emitter.emitted.lock().await;
+        assert_eq!(delivered.len(), 2);
+        assert_eq!(
+            delivered.iter().map(|(_, p)| p.clone()).collect::<Vec<_>>(),
+            *emitted,
+            "one document per change, the same on both paths"
+        );
+        assert_eq!(emitted[0]["event_type"], "state:updated");
+        assert_eq!(emitted[0]["old_value"], old);
+        assert_eq!(emitted[1]["event_type"], "state:deleted");
+        assert_eq!(emitted[1]["new_value"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn every_change_is_emitted_whatever_the_bindings() {
+        // Observers filter for themselves: a scope no binding matches is
+        // still emitted, and bindings fire whether observed or not.
+        let invoker = Arc::new(RecordingInvoker::default());
+        let emitter = Arc::new(RecordingEmitter::default());
+        let ctx = ctx_with(
+            Arc::new(FailFirstAdapter::default()),
+            invoker.clone(),
+            emitter.clone(),
+        );
+        bind(&ctx, Some("orders")).await;
+        let v = serde_json::json!(1);
+        ctx.emit_change(StateEventType::Created, "orders", "a", None, &v)
+            .await;
+        emitter
+            .observed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        ctx.emit_change(StateEventType::Created, "users", "b", None, &v)
+            .await;
+        settle().await;
+        assert_eq!(invoker.calls.lock().await.len(), 1, "orders only");
+        let emitted = emitter.emitted.lock().await;
+        assert_eq!(emitted.len(), 1, "unobserved write emitted nothing");
+        assert_eq!(emitted[0]["scope"], "users");
+    }
+
+    #[tokio::test]
+    async fn private_scopes_and_the_live_gate_silence_observers_too() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        emitter
+            .observed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let ctx = ctx_with(
+            Arc::new(FailFirstAdapter::default()),
+            Arc::new(NullInvoker),
+            emitter.clone(),
+        );
+        ctx.private.claim("acme", &scopes(&["acme_ledger"]));
+        let v = serde_json::json!(1);
+        ctx.emit_change(StateEventType::Created, "acme_ledger", "k", None, &v)
+            .await;
+        ctx.emit_change(StateEventType::Created, CLAIMS_SCOPE, "k", None, &v)
+            .await;
+        *ctx.config.write().await = Arc::new(StateConfig {
+            triggers_enabled: Some(false),
+            ..StateConfig::default()
+        });
+        ctx.emit_change(StateEventType::Created, "orders", "k", None, &v)
+            .await;
+        assert!(emitter.emitted.lock().await.is_empty());
+    }
+
+    fn invocation(caller_worker_id: Option<&str>) -> iii_sdk::InvocationCtx {
+        iii_sdk::InvocationCtx {
+            function_id: CLAIM_NAMESPACE_ID.to_string(),
+            invocation_id: "inv-1".to_string(),
+            caller: Some(iii_sdk::protocol::Caller {
+                worker_id: caller_worker_id.map(String::from),
+                worker_name: Some("harness".to_string()),
+                ..Default::default()
+            }),
+            activation: None,
+            observe_depth: 0,
+            metadata: None,
+            traceparent: None,
+            baggage: None,
+        }
+    }
+
+    /// With observe, without it (0.24), and not known yet.
+    const ENGINES: [Option<bool>; 3] = [Some(true), Some(false), None];
+
+    #[tokio::test]
+    async fn the_invocation_caller_wins_over_the_payload_stamp() {
+        for engine in ENGINES {
+            let resolved = iii_sdk::scope(invocation(Some("from-ctx")), async {
+                caller_worker_id(Some("from-payload"), engine)
+            })
+            .await;
+            assert_eq!(resolved.as_deref(), Some("from-ctx"));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_payload_stamp_serves_engines_without_observe() {
+        // 0.24: no caller on the invocation (or no worker id in it).
+        let no_worker_id = iii_sdk::scope(invocation(None), async {
+            caller_worker_id(Some("from-payload"), Some(false))
+        })
+        .await;
+        assert_eq!(no_worker_id.as_deref(), Some("from-payload"));
+        let mut no_caller = invocation(None);
+        no_caller.caller = None;
+        let resolved = iii_sdk::scope(no_caller, async {
+            caller_worker_id(Some("from-payload"), Some(false))
+        })
+        .await;
+        assert_eq!(resolved.as_deref(), Some("from-payload"));
+        // Outside any invocation.
+        assert_eq!(
+            caller_worker_id(Some("from-payload"), Some(false)).as_deref(),
+            Some("from-payload")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_payload_stamp_is_never_read_unless_the_engine_lacks_observe() {
+        // An engine with observe stamps the caller on the invocation; until
+        // the engine's support is known, nothing is trusted either.
+        for engine in [Some(true), None] {
+            let no_worker_id = iii_sdk::scope(invocation(None), async {
+                caller_worker_id(Some("from-payload"), engine)
+            })
+            .await;
+            assert_eq!(no_worker_id, None);
+            let mut no_caller = invocation(None);
+            no_caller.caller = None;
+            let resolved = iii_sdk::scope(no_caller, async {
+                caller_worker_id(Some("from-payload"), engine)
+            })
+            .await;
+            assert_eq!(resolved, None);
+            assert_eq!(caller_worker_id(Some("from-payload"), engine), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_observer_activation_never_falls_back_to_the_payload() {
+        // Defense in depth: identity never comes from an activation, whatever
+        // its payload carries.
+        let mut activation = invocation(None);
+        activation.caller = Some(iii_sdk::protocol::Caller {
+            worker_name: Some("iii-engine".to_string()),
+            ..Default::default()
+        });
+        activation.activation = Some(iii_sdk::protocol::Activation {
+            observer_id: "obs-1".to_string(),
+            activation_id: Some("act-1".to_string()),
+        });
+        for engine in ENGINES {
+            let resolved = iii_sdk::scope(activation.clone(), async {
+                caller_worker_id(Some("from-payload"), engine)
+            })
+            .await;
+            assert_eq!(resolved, None);
+        }
+        // Even with a worker id on the activation's caller.
+        activation.caller.as_mut().unwrap().worker_id = Some("engine-id".to_string());
+        for engine in ENGINES {
+            let resolved = iii_sdk::scope(activation.clone(), async {
+                caller_worker_id(Some("from-payload"), engine)
+            })
+            .await;
+            assert_eq!(resolved, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn no_stamp_at_all_fails_closed() {
+        for engine in ENGINES {
+            assert_eq!(caller_worker_id(None, engine), None);
+            let resolved =
+                iii_sdk::scope(invocation(None), async { caller_worker_id(None, engine) }).await;
+            assert_eq!(resolved, None);
+        }
     }
 
     #[tokio::test]

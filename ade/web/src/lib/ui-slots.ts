@@ -89,6 +89,7 @@ export const CONTEXT_PANEL_GROUPS = [
   'subagents',
   'triggers',
   'links',
+  'tracking',
 ] as const
 
 export interface RegisteredComposerAction extends ComposerActionRegistration {

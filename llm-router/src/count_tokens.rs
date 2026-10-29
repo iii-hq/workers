@@ -15,7 +15,7 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::catalog::queries::effective_model_ref;
 use crate::catalog::store::CatalogStore;
@@ -24,7 +24,8 @@ use crate::registry::store::RegistryStore;
 use crate::routing::{decide, DecideInput};
 use crate::types::errors::{is_function_not_found, RouterCode, RouterError};
 use crate::types::messages::AgentMessage;
-use crate::types::model::AgentFunction;
+use crate::types::model::{AgentFunction, ThinkingLevel};
+use crate::types::router::ResponseFormat;
 
 /// Counting is bounded and non-streaming, like `router::embed`.
 const COUNT_TOKENS_TIMEOUT_MS: u64 = 30_000;
@@ -49,6 +50,15 @@ pub struct RouterCountTokensRequest {
     /// Wire agent messages, the same shape `router::chat` accepts. Must be
     /// non-empty.
     pub messages: Vec<AgentMessage>,
+    /// The turn's `router::chat` thinking level (optional). Providers whose
+    /// prompt template depends on it (a reasoning-effort line, a chat vs
+    /// thinking transition) count the prompt that level renders.
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
+    /// The turn's `router::chat` response format (optional), for providers
+    /// that render it into the prompt they bill.
+    #[serde(default)]
+    pub response_format: Option<ResponseFormat>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -94,7 +104,7 @@ pub fn make_count_tokens(
                 )
                 .into());
             }
-            let model = req.model.unwrap_or_default();
+            let model = req.model.clone().unwrap_or_default();
             if model.is_empty() && req.provider.is_none() {
                 return Err(RouterError::new(
                     RouterCode::InvalidRequest,
@@ -143,12 +153,7 @@ pub fn make_count_tokens(
             let reply = iii
                 .trigger(TriggerRequest {
                     function_id: format!("provider::{provider}::count_tokens"),
-                    payload: json!({
-                        "model": model,
-                        "system_prompt": req.system_prompt,
-                        "tools": req.tools,
-                        "messages": req.messages,
-                    }),
+                    payload: provider_payload(&model, &req),
                     action: None,
                     timeout_ms: Some(COUNT_TOKENS_TIMEOUT_MS),
                 })
@@ -178,5 +183,60 @@ pub fn make_count_tokens(
     }
 }
 
+/// What `provider::<id>::count_tokens` receives: the split model id and the
+/// request's prompt fields. The two turn knobs ride only when set, so a
+/// provider that predates them never sees a key it does not know.
+fn provider_payload(model: &str, req: &RouterCountTokensRequest) -> Value {
+    let mut payload = json!({
+        "model": model,
+        "system_prompt": req.system_prompt,
+        "tools": req.tools,
+        "messages": req.messages,
+    });
+    if let Some(level) = req.thinking_level {
+        payload["thinking_level"] = json!(level);
+    }
+    if let Some(format) = &req.response_format {
+        payload["response_format"] = json!(format);
+    }
+    payload
+}
+
 type BoxedCountTokensFuture =
     std::pin::Pin<Box<dyn Future<Output = Result<RouterCountTokensResponse, Error>> + Send>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(extra: Value) -> RouterCountTokensRequest {
+        let mut req = json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 1}],
+        });
+        req.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(req).unwrap()
+    }
+
+    #[test]
+    fn the_turn_knobs_reach_the_provider_only_when_set() {
+        let payload = provider_payload(
+            "m",
+            &request(json!({
+                "thinking_level": "off",
+                "response_format": {"type": "json", "schema": {"type": "object"}},
+            })),
+        );
+        assert_eq!(payload["thinking_level"], "off");
+        assert_eq!(
+            payload["response_format"],
+            json!({"type": "json", "schema": {"type": "object"}})
+        );
+
+        let payload = provider_payload("m", &request(json!({})));
+        assert!(payload.get("thinking_level").is_none(), "{payload}");
+        assert!(payload.get("response_format").is_none(), "{payload}");
+    }
+}

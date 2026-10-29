@@ -21,6 +21,16 @@ pub struct QueryReq {
     pub params: Vec<Value>,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+    /// Return at most this many rows; `truncated` says whether more existed.
+    /// The worker stops reading after `max_rows + 1` rows (a postgres portal
+    /// fetch, mysql's `sql_select_limit`, sqlite's lazy stepping) and never
+    /// rewrites the SQL. Absent: every row.
+    #[serde(default)]
+    pub max_rows: Option<u64>,
+    /// SQLite: run with `PRAGMA query_only` on (raw browse filters).
+    // Internal only — never deserialized.
+    #[serde(skip)]
+    pub query_only: bool,
     /// Whether this run belongs in `database::history`.
     // Internal only — never deserialized, so a statement arriving over the
     // wire always records. The catalog reads behind `describeSchema`,
@@ -41,6 +51,11 @@ pub struct QueryResp {
     pub rows: Vec<serde_json::Map<String, Value>>,
     pub row_count: usize,
     pub columns: Vec<ColumnMeta>,
+    /// More rows existed past `max_rows` (always false without it).
+    pub truncated: bool,
+    /// Time the database spent running the statement and returning its
+    /// rows (pool acquisition excluded), in milliseconds.
+    pub elapsed_ms: u64,
 }
 
 fn default_timeout() -> u64 {
@@ -66,13 +81,19 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
     // A `query("BEGIN")` is just as pool-poisoning as an execute — sqlite
     // happily starts the transaction and returns zero rows.
     crate::handlers::reject_tx_control_sql(&req.sql).map_err(err_to_str)?;
+    crate::handlers::reject_session_prepared_sql(&req.sql).map_err(err_to_str)?;
     let params = JsonParam::from_json_slice(&req.params).map_err(err_to_str)?;
 
     let started = std::time::Instant::now();
+    let opts = driver::ReadOptions {
+        timeout_ms: req.timeout_ms,
+        max_rows: req.max_rows,
+        query_only: req.query_only,
+    };
     let result = match &pool {
-        Pool::Sqlite(p) => driver::sqlite::query(p, &req.sql, &params, req.timeout_ms).await,
-        Pool::Postgres(p) => driver::postgres::query(p, &req.sql, &params, req.timeout_ms).await,
-        Pool::Mysql(p) => driver::mysql::query(p, &req.sql, &params, req.timeout_ms).await,
+        Pool::Sqlite(p) => driver::sqlite::query(p, &req.sql, &params, opts).await,
+        Pool::Postgres(p) => driver::postgres::query(p, &req.sql, &params, opts).await,
+        Pool::Mysql(p) => driver::mysql::query(p, &req.sql, &params, opts).await,
     }
     .map_err(err_to_str)?;
 
@@ -95,6 +116,8 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
         rows,
         row_count,
         columns: result.columns,
+        truncated: result.truncated,
+        elapsed_ms: result.elapsed_ms,
     })
 }
 
@@ -152,6 +175,7 @@ mod tests {
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
             row_changes: None,
+            runtime: Default::default(),
         }
     }
 

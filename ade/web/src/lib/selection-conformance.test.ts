@@ -39,9 +39,15 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   ['browser/ui/styles.css', '.br-cfg-nav-row.active'],
   ['github/ui/styles.css', '.gh-ui-node-selected'],
   ['github/ui/styles.css', '.gh-ui-graph-row.selected'],
-  ['eval/ui/styles.css', '.eval-ui-history-row.active'],
-  ['eval/ui/styles.css', '.eval-ui-session-option.selected'],
-  ['eval/ui/styles.css', '.eval-ui-run-card.selected'],
+  // The monitor rebuild (a8ed4889f) split eval/ui/styles.css into imports and
+  // dropped the history rows, session options and run cards; its rows are
+  // console-ui ListItems, and these are its own selected states now.
+  [
+    'eval/ui/src/styles/shell.css',
+    '.eval-ui-status-actions [aria-pressed="true"]',
+  ],
+  ['eval/ui/src/styles/shell.css', '.eval-ui-oa-compare[aria-pressed="true"]'],
+  ['eval/ui/src/styles/validation.css', '.eval-ui-rv-option[data-checked]'],
   ['ide/ui/styles.css', '.shui-etab.active'],
   // The terminal tabs mark the open one with an attribute since the tab-row
   // redesign.

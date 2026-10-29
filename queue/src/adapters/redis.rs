@@ -46,7 +46,7 @@ use tokio::time::timeout;
 
 use crate::adapter::{QueueAdapter, QueueMessage, TopicInfo};
 use crate::subscriber_config::SubscriberQueueConfig;
-use crate::trigger::Invoker;
+use crate::trigger::{Invoker, SubscriberTarget};
 
 /// `engine/src/workers/redis.rs:9`.
 const DEFAULT_REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -188,19 +188,17 @@ impl QueueAdapter for RedisAdapter {
         }
     }
 
-    async fn subscribe(
+    async fn subscribe_target(
         &self,
         topic: &str,
         id: &str,
-        function_id: &str,
-        metadata: Option<Value>,
+        target: SubscriberTarget,
         condition_function_id: Option<String>,
         _queue_config: Option<SubscriberQueueConfig>,
-        namespace: Option<String>,
     ) {
         let topic = topic.to_string();
         let id = id.to_string();
-        let function_id = function_id.to_string();
+        let function_id = target.function_id().to_string();
         let subscriber = Arc::clone(&self.subscriber);
         let invoker = Arc::clone(&self.invoker);
         let subscriptions = Arc::clone(&self.subscriptions);
@@ -221,8 +219,7 @@ impl QueueAdapter for RedisAdapter {
         let topic_for_task = topic.clone();
         let id_for_task = id.clone();
         let function_id_for_task = function_id.clone();
-        let metadata_for_task = metadata.clone();
-        let namespace_for_task = namespace.clone();
+        let target_for_task = target.clone();
         let condition_function_id_for_task = condition_function_id.clone();
 
         tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_id = %function_id_for_task, "Subscribing to Redis channel");
@@ -307,7 +304,7 @@ impl QueueAdapter for RedisAdapter {
                         invoker.as_ref(),
                         condition_id,
                         data.clone(),
-                        namespace_for_task.as_deref(),
+                        target_for_task.namespace(),
                     )
                     .await
                     {
@@ -332,15 +329,11 @@ impl QueueAdapter for RedisAdapter {
 
                 let invoker = Arc::clone(&invoker);
                 let function_id = function_id_for_task.clone();
-                let metadata = metadata_for_task.clone();
-                let namespace = namespace_for_task.clone();
+                let target = target_for_task.clone();
                 let topic_for_call = topic_for_task.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = invoker
-                        .call_delivery(&function_id, data, metadata, namespace.as_deref())
-                        .await
-                    {
+                    if let Err(e) = target.deliver(invoker.as_ref(), data).await {
                         tracing::error!(
                             error = %e,
                             function_id = %function_id,

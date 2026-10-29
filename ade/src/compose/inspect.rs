@@ -143,7 +143,15 @@ async fn checkouts(dir: &Path) -> Vec<Checkout> {
     let Some(top) = git(dir, &["rev-parse", "--show-toplevel"]).await else {
         return Vec::new();
     };
-    let Ok(subdir) = dir.strip_prefix(top.trim()) else {
+    // `--show-toplevel` is resolved (symlinks, macOS `/var`), so strip it from the resolved dir;
+    // it is resolved too, as only a canonical Windows path has the `\\?\` prefix.
+    let resolved = tokio::fs::canonicalize(dir)
+        .await
+        .unwrap_or_else(|_| dir.to_path_buf());
+    let top = tokio::fs::canonicalize(top.trim())
+        .await
+        .unwrap_or_else(|_| top.trim().into());
+    let Ok(subdir) = resolved.strip_prefix(&top) else {
         return Vec::new();
     };
     let Some(list) = git(dir, &["worktree", "list", "--porcelain"]).await else {
@@ -343,6 +351,12 @@ mod tests {
         )
         .unwrap();
 
+        // A canonical Windows path is `\\?\C:\...`; git reports the top level as `C:/...`.
+        #[cfg(windows)]
+        assert!(std::fs::canonicalize(&worker)
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(r"\\?\"));
         let found = inspect(&InspectInput {
             path: worker.to_string_lossy().into_owned(),
             run: None,
@@ -356,9 +370,23 @@ mod tests {
         let feature = &found.checkouts[1];
         assert_eq!(feature.branch.as_deref(), Some("feat/x"));
         assert_eq!(feature.dirty, Some(false));
-        assert!(feature.path.ends_with("wt/web"));
+        assert!(Path::new(&feature.path).ends_with("wt/web"));
+
+        // Through a symlink git still reports the resolved top level.
+        #[cfg(unix)]
+        {
+            let link = root.path().join("link");
+            std::os::unix::fs::symlink(&repo, &link).unwrap();
+            let linked = inspect(&InspectInput {
+                path: link.join("web").to_string_lossy().into_owned(),
+                run: None,
+            })
+            .await;
+            assert_eq!(linked.checkouts.len(), 2);
+        }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn describing_a_checkout_runs_no_configured_filter() {
         let root = tempfile::tempdir().unwrap();

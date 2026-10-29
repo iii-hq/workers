@@ -15,19 +15,17 @@ use iii_sdk::IIIClient;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::types::events::ErrorKind;
 use llm_router::types::messages::AgentMessage;
-use llm_router::types::model::AgentFunction;
+use llm_router::types::model::{AgentFunction, Model, ThinkingLevel};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::config::{build_config, ClaudeCodeConfig};
 use crate::errors::{classify_bus_error, invalid_request};
-use crate::request::build_headers;
+use crate::request::{build_body, build_headers, BodyArgs};
 use crate::stream_fn::default_resolve;
-use crate::wire::cache::build_system_field;
-use crate::wire::messages::to_wire_messages;
-use crate::wire::tools::functions_to_wire;
-use crate::{auth, state};
+use crate::thinking::build_thinking_config;
+use crate::{auth, router_client, state};
 
 /// A count is bounded and non-streaming; a tight budget keeps this inside
 /// the router's 30s count_tokens bus timeout.
@@ -57,6 +55,11 @@ pub struct CountTokensRequest {
     /// Function invocation schemas; mapped to the wire `tools` array.
     #[serde(default)]
     pub tools: Option<Vec<AgentFunction>>,
+    /// Reasoning level the turn would stream with; mapped to the same
+    /// `thinking` / `output_config.effort` fields, which Anthropic renders
+    /// into the prompt. Absent behaves like the stream's absent level.
+    #[serde(default)]
+    pub thinking_level: Option<ThinkingLevel>,
     /// Wire agent messages, the same shape `provider::claude-code::stream`
     /// accepts. Must be non-empty.
     pub messages: Vec<AgentMessage>,
@@ -77,25 +80,48 @@ struct WireCountResponse {
     input_tokens: u64,
 }
 
-/// The count body: `{model, system, tools?, messages}` — no `max_tokens`, no
-/// `stream`, and no cache markers (`cache_enabled=false`), because a count
-/// must never write a cache entry. `system` is always present: block 0 is the
-/// Claude Code identity line the subscription backend requires, exactly as on
-/// the stream path.
+/// The count body is the stream body (`request::build_body`: thinking config,
+/// effort, the trailing-assistant drop, the Claude Code identity block first
+/// in `system`) minus `stream` and `max_tokens`, with cache markers off
+/// because a count must never write a cache entry. Anthropic renders the
+/// thinking config and effort into the prompt, so leaving them out would
+/// meter a different prompt than the turn bills. The level is mapped here,
+/// with the stream's `build_thinking_config`, so `handle` cannot skip it:
+/// with no level, adaptive thinking is still sent on thinking models.
 fn build_count_body(
-    model: &str,
-    system_prompt: &str,
-    tools: &[AgentFunction],
-    messages: &[AgentMessage],
+    model: String,
+    system_prompt: String,
+    tools: Vec<AgentFunction>,
+    messages: Vec<AgentMessage>,
+    thinking_level: Option<ThinkingLevel>,
+    model_meta: Option<&Model>,
 ) -> Value {
-    let mut body = json!({
-        "model": model,
-        "messages": to_wire_messages(messages),
-        "system": build_system_field(system_prompt, false),
-    });
-    let wire_tools = functions_to_wire(tools);
-    if !wire_tools.is_empty() {
-        body["tools"] = Value::Array(wire_tools);
+    let thinking = build_thinking_config(thinking_level, model_meta);
+    let mut body = build_body(
+        &BodyArgs {
+            model,
+            max_tokens: 0,
+            system_prompt,
+            system_sections: None,
+            messages,
+            tools,
+            thinking: thinking.config,
+            effort: thinking.effort,
+            cache_enabled: false,
+            cache_ttl: None,
+        },
+        // The stream reports these on the turn; a count has no channel for them.
+        &mut Vec::new(),
+    );
+    let obj = body.as_object_mut().expect("build_body returns an object");
+    obj.remove("stream");
+    obj.remove("max_tokens");
+    if obj
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty)
+    {
+        obj.remove("tools");
     }
     body
 }
@@ -168,11 +194,15 @@ pub async fn handle(
     let cfg = build_config(&req.model, None, &resolved, credential.as_ref())
         .map_err(|e| Error::Handler(e.to_string()))?;
 
+    // Same model_meta lookup as the stream feeds its thinking mapping.
+    let model_meta = router_client::models_get(iii, &req.model).await;
     let body = build_count_body(
-        &cfg.model,
-        req.system_prompt.as_deref().unwrap_or(""),
-        req.tools.as_deref().unwrap_or(&[]),
-        &req.messages,
+        cfg.model.clone(),
+        req.system_prompt.unwrap_or_default(),
+        req.tools.unwrap_or_default(),
+        req.messages,
+        req.thinking_level,
+        model_meta.as_ref(),
     );
     let tokens = post_count(http, &cfg, &body).await?;
 
@@ -190,6 +220,7 @@ mod tests {
     use crate::wire::cache::{CACHE_MIN_CHARS, CLAUDE_CODE_SYSTEM};
     use llm_router::types::content::ContentBlock;
     use llm_router::types::messages::{UserMessage, UserRoleTag};
+    use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn user(text: &str) -> AgentMessage {
@@ -248,7 +279,14 @@ mod tests {
 
     #[test]
     fn body_has_no_max_tokens_no_stream_and_the_identity_block_first() {
-        let body = build_count_body("claude-sonnet-4-6", "be brief", &[], &[user("hi")]);
+        let body = build_count_body(
+            "claude-sonnet-4-6".into(),
+            "be brief".into(),
+            vec![],
+            vec![user("hi")],
+            None,
+            None,
+        );
         assert_eq!(body["model"], "claude-sonnet-4-6");
         assert_eq!(body["messages"][0]["role"], "user");
         let system = body["system"].as_array().expect("system is an array");
@@ -261,7 +299,14 @@ mod tests {
 
     #[test]
     fn empty_system_prompt_keeps_only_the_identity_block_and_tools_map_to_wire() {
-        let body = build_count_body("m", "", &[tool()], &[user("hi")]);
+        let body = build_count_body(
+            "m".into(),
+            String::new(),
+            vec![tool()],
+            vec![user("hi")],
+            None,
+            None,
+        );
         let system = body["system"].as_array().expect("system is an array");
         assert_eq!(system.len(), 1);
         assert_eq!(system[0]["text"], CLAUDE_CODE_SYSTEM);
@@ -271,11 +316,188 @@ mod tests {
     #[test]
     fn body_never_carries_cache_markers() {
         let long = "p".repeat(CACHE_MIN_CHARS * 2);
-        let body = build_count_body("m", &long, &[tool()], &[user(&long)]);
+        let body = build_count_body(
+            "m".into(),
+            long.clone(),
+            vec![tool()],
+            vec![user(&long)],
+            None,
+            None,
+        );
         assert!(
             !body.to_string().contains("cache_control"),
             "a count must never write a cache entry: {body}"
         );
+    }
+
+    fn assistant(content: Vec<ContentBlock>) -> AgentMessage {
+        use llm_router::types::events::StopReason;
+        use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
+        AgentMessage::Assistant(AssistantMessage {
+            role: AssistantRoleTag::Assistant,
+            content,
+            stop_reason: StopReason::End,
+            native_stop_reason: None,
+            error_message: None,
+            error_kind: None,
+            warnings: None,
+            usage: None,
+            model: "m".into(),
+            provider: "claude-code".into(),
+            timestamp: 2,
+        })
+    }
+
+    #[test]
+    fn body_carries_the_streams_thinking_config_and_effort() {
+        // Anthropic renders the thinking config and effort into the prompt,
+        // so a count without them meters a different prompt than the turn.
+        let body = build_count_body(
+            "claude-sonnet-4-6".into(),
+            String::new(),
+            vec![],
+            vec![user("hi")],
+            Some(ThinkingLevel::High),
+            None,
+        );
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
+        assert_eq!(body["output_config"]["effort"], "high");
+    }
+
+    #[test]
+    fn body_drops_a_trailing_assistant_like_the_stream() {
+        let body = build_count_body(
+            "claude-sonnet-4-6".into(),
+            String::new(),
+            vec![],
+            vec![
+                user("hi"),
+                assistant(vec![ContentBlock::Text {
+                    text: "the answer is".into(),
+                }]),
+            ],
+            None,
+            None,
+        );
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "{body}");
+        assert_eq!(messages[0]["role"], "user");
+    }
+
+    fn thinking_model() -> Model {
+        Model {
+            id: "claude-sonnet-4-6".into(),
+            provider: "claude-code".into(),
+            display_name: None,
+            context_window: 200_000,
+            max_output_tokens: 64_000,
+            input_limit: None,
+            supports_thinking: Some(true),
+            supports_xhigh: Some(false),
+            supports_thinking_off: None,
+            reasoning_efforts: None,
+            supports_tools: Some(true),
+            supports_vision: Some(true),
+            supports_cache: Some(true),
+            supports_structured_output: Some(false),
+            thinking_budgets: None,
+            pricing: None,
+            speech: None,
+        }
+    }
+
+    #[test]
+    fn body_is_the_stream_body_minus_stream_max_tokens_and_cache_markers() {
+        let messages = vec![
+            user("hi"),
+            assistant(vec![
+                ContentBlock::Thinking {
+                    text: "plan".into(),
+                    signature: Some("sig".into()),
+                },
+                ContentBlock::FunctionCall {
+                    id: "t1".into(),
+                    function_id: "shell::exec".into(),
+                    arguments: json!({ "cmd": "ls" }),
+                },
+            ]),
+            user("go on"),
+            assistant(vec![ContentBlock::Text {
+                text: "partial".into(),
+            }]),
+        ];
+        let meta = thinking_model();
+        let levels = [
+            None,
+            Some(ThinkingLevel::Off),
+            Some(ThinkingLevel::Low),
+            Some(ThinkingLevel::High),
+            Some(ThinkingLevel::Xhigh),
+        ];
+        for model_meta in [None, Some(&meta)] {
+            for level in levels {
+                let thinking = build_thinking_config(level, model_meta);
+                let mut stream = build_body(
+                    &BodyArgs {
+                        model: "claude-sonnet-4-6".into(),
+                        max_tokens: 4096,
+                        system_prompt: "be brief".into(),
+                        system_sections: None,
+                        messages: messages.clone(),
+                        tools: vec![tool()],
+                        thinking: thinking.config,
+                        effort: thinking.effort,
+                        cache_enabled: false,
+                        cache_ttl: None,
+                    },
+                    &mut Vec::new(),
+                );
+                let obj = stream.as_object_mut().unwrap();
+                obj.remove("stream");
+                obj.remove("max_tokens");
+                let count = build_count_body(
+                    "claude-sonnet-4-6".into(),
+                    "be brief".into(),
+                    vec![tool()],
+                    messages.clone(),
+                    level,
+                    model_meta,
+                );
+                assert_eq!(
+                    count,
+                    stream,
+                    "level {level:?}, meta {}",
+                    model_meta.is_some()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn absent_level_on_a_thinking_model_counts_adaptive_thinking() {
+        // The reachable router case: no level forwarded, catalog says thinking.
+        let body = build_count_body(
+            "claude-sonnet-4-6".into(),
+            String::new(),
+            vec![],
+            vec![user("hi")],
+            None,
+            Some(&thinking_model()),
+        );
+        assert_eq!(body["thinking"]["type"], "adaptive", "{body}");
+        assert!(body.get("output_config").is_none(), "{body}");
+    }
+
+    #[test]
+    fn request_accepts_a_thinking_level() {
+        let req: CountTokensRequest = serde_json::from_value(json!({
+            "model": "claude-code/claude-sonnet-4-6",
+            "thinking_level": "high",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 1}],
+        }))
+        .unwrap();
+        assert_eq!(req.thinking_level, Some(ThinkingLevel::High));
     }
 
     #[test]
@@ -290,7 +512,14 @@ mod tests {
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 20\r\nconnection: close\r\n\r\n{\"input_tokens\":42}\n",
         )
         .await;
-        let body = build_count_body("claude-sonnet-4-6", "", &[], &[user("hi")]);
+        let body = build_count_body(
+            "claude-sonnet-4-6".into(),
+            String::new(),
+            vec![],
+            vec![user("hi")],
+            None,
+            None,
+        );
         let tokens = post_count(&reqwest::Client::new(), &cfg(url), &body)
             .await
             .expect("count succeeds");
@@ -319,7 +548,14 @@ mod tests {
             "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: 50\r\nconnection: close\r\n\r\n{\"type\":\"error\",\"error\":{\"type\":\"authentication\"}}",
         )
         .await;
-        let body = build_count_body("claude-sonnet-4-6", "", &[], &[user("hi")]);
+        let body = build_count_body(
+            "claude-sonnet-4-6".into(),
+            String::new(),
+            vec![],
+            vec![user("hi")],
+            None,
+            None,
+        );
         let err = post_count(&reqwest::Client::new(), &cfg(url), &body)
             .await
             .expect_err("401 is an error");

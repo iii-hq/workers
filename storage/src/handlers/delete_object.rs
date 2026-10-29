@@ -1,8 +1,8 @@
 //! `storage::deleteObject` — idempotent delete.
 
-use super::{err_to_str, AppState};
+use super::{err_to_str, validate_key, AppState};
 use crate::backend::DeleteReq as BackendDeleteReq;
-use crate::error::{backend_error_to_storage, StorageError};
+use crate::error::backend_error_to_storage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -19,11 +19,7 @@ pub struct DeleteResp {
 }
 
 pub async fn handle(state: &AppState, req: DeleteReq) -> Result<DeleteResp, String> {
-    if req.key.is_empty() {
-        return Err(err_to_str(StorageError::ConfigError {
-            message: "key must not be empty".into(),
-        }));
-    }
+    validate_key(&req.key).map_err(err_to_str)?;
     let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
     let r = backend
         .delete(BackendDeleteReq {

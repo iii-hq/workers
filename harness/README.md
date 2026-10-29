@@ -5,7 +5,7 @@
 **A thin, durable turn loop that turns a model plus a few iii workers into an agent.**
 
 <p>
-  <a href="#install"><img alt="Install: iii trigger compose::add worker=harness" src="https://img.shields.io/badge/install-iii%20trigger%20compose%3A%3Aadd%20worker%3Dharness-0a84ff?style=flat-square"></a>
+  <a href="#quickstart"><img alt="Install: iii trigger compose::add worker=harness" src="https://img.shields.io/badge/install-iii%20trigger%20compose%3A%3Aadd%20worker%3Dharness-0a84ff?style=flat-square"></a>
   <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
   <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://workers.iii.dev/workers/harness"><img alt="harness on the workers registry" src="https://workers.iii.dev/workers/harness/badge.svg"></a>
@@ -88,7 +88,7 @@ schema) lives in the code and `iii worker info harness`.
 Building a consumer — a chat UI, a Telegram/WhatsApp bridge, a cron worker, or
 any event-driven loop on top of the harness? Start with the integration
 contract in
-[`architecture/integration.md`](architecture/integration.md): the functions to
+`architecture/integration.md`: the functions to
 trigger, the triggers to bind, and the canonical consumer patterns.
 
 ## Local development
@@ -231,9 +231,13 @@ message. Three moments report:
   messages, sub-agents included) counted across every session in the state
   store. Model calls move several at a time, so a report goes out at the
   highest milestone passed. It carries `model_calls_total`, tool call and tool
-  call error totals, token totals, `cost_usd`, `user_turns_total` and
-  `sessions_total`, all across the state store, and `by_model`: model calls,
-  tool calls, tokens and cost per provider and model that generated them.
+  call error totals, token totals, `cost_usd`, `user_turns_total`,
+  `sessions_total` and `subagents_total`, all across the state store, and
+  `by_model`: model calls, tool calls, tokens and cost per provider and model
+  that generated them. `subagents_total` counts each sub-agent session one
+  time, when it is first seen in its root's session tree.
+  `subagent_max_depth` is the deepest sub-agent level that any session tree
+  reached. It has no `*_delta`.
 
 Every counter on both events, in total and in each `by_model` entry, has a
 matching `*_delta` (for example `tool_calls_delta`, `cost_usd_delta`): the
@@ -442,7 +446,7 @@ so default-identity sessions keep sharing their stable prefix. Its digests join
 the preloaded-contract stale notice.
 
 The harness ships one profile of its own, `worker-builder`
-([`agents/worker-builder.md`](agents/worker-builder.md)): an identity that
+(`agents/worker-builder.md`): an identity that
 extends the bundled `iii` base and takes a new worker for this repository from
 scope to scaffold, CI gates, live verification on the bus, pull request, and an
 experimental registry release, asking before every irreversible step. It is
@@ -635,7 +639,7 @@ plug into in-path. Bind with the standard two-step pattern.
 | `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. Worker-bindable only, same as above. |
 | `harness::compaction` | async event | An explicit compaction (`/compact`, `harness::compact`) started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids` it wrote). Payload also carries `session_id`, `compaction_id`, `timestamp`. Worker-bindable only, same as above. |
 | `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |
-| `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. A static-only hook may publish its exact contribution as trigger metadata `inject_prompt`; the harness appends it directly and skips the compatibility handler. |
+| `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. A static-only hook may publish its exact contribution as trigger metadata `inject_prompt`; the harness appends it before context assembly, so the budget and compaction count it, and skips the compatibility handler. |
 | `harness::hook::post-generate` | sync hook | After the final assistant message. Observe only. |
 | `harness::hook::pre-trigger` | sync hook | After the allow/deny policy passes, before the target runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. |
 | `harness::hook::post-trigger` | sync hook | After the target returns, before the result is persisted. May rewrite the result. |

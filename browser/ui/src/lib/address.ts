@@ -42,14 +42,12 @@ export function toUrl(draft: string): string {
  * query, hash) dimmed; a bare root `/` is dropped. Other schemes (file:,
  * data:, about:) read whole, all dimmed. */
 export function displayUrl(url: string): { host: string; rest: string } {
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return { host: '', rest: url }
-    const tail = `${parsed.pathname}${parsed.search}${parsed.hash}`
-    return { host: parsed.host, rest: tail === '/' ? '' : tail }
-  } catch {
-    return { host: '', rest: url }
-  }
+  // Plain string parsing (no `URL`): the iii app's native viewer shares this
+  // file and has no DOM library.
+  const match = /^https?:\/\/([^/?#]+)(.*)$/i.exec(url)
+  if (!match) return { host: '', rest: url }
+  const tail = match[2] ?? ''
+  return { host: match[1] ?? '', rest: tail === '/' ? '' : tail }
 }
 
 /** What the bar's site icon says about a page: https is secure, http is
@@ -59,13 +57,13 @@ export type SiteSecurity = 'secure' | 'insecure' | 'local' | 'file' | 'none'
 
 export function siteSecurity(url: string): SiteSecurity {
   if (!url || url === 'about:blank') return 'none'
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol === 'https:') return 'secure'
-    if (parsed.protocol === 'http:') return isLocalHost(parsed.hostname) ? 'local' : 'insecure'
-    if (parsed.protocol === 'file:') return 'file'
-    return 'none'
-  } catch {
-    return 'none'
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1]?.toLowerCase()
+  if (scheme === 'https') return 'secure'
+  if (scheme === 'http') {
+    const authority = /^http:\/\/([^/?#]+)/i.exec(url)?.[1] ?? ''
+    const host = authority.replace(/^[^@]*@/, '').replace(/:\d+$/, '')
+    return isLocalHost(host) ? 'local' : 'insecure'
   }
+  if (scheme === 'file') return 'file'
+  return 'none'
 }

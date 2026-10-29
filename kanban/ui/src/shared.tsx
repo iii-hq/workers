@@ -1,9 +1,13 @@
-import { Chip, type ExtensionIii } from '@iii-dev/console-ui'
-import { ChartPie, Circle, CircleCheck, CircleDashed, CircleX, Contrast, type LucideIcon } from 'lucide-react'
-import { useSyncExternalStore } from 'react'
+import { Chip, type ExtensionIii, Select } from '@iii-dev/console-ui'
+import * as lucide from 'lucide-react'
+import { ChartPie, Circle, CircleCheck, CircleDashed, CircleX, Contrast, type LucideIcon, Tag } from 'lucide-react'
+import { type SyntheticEvent, useSyncExternalStore } from 'react'
 import { type StatusStep, statusStep } from './board-state'
 
 export type Column = { id: string; label: string }
+
+/** A badge another worker pins on a ticket: a lucide icon name and a short text. */
+export type Pill = { icon: string; text: string }
 
 export type TicketSummary = {
   id: string
@@ -13,6 +17,7 @@ export type TicketSummary = {
   priority: string
   assignee: string | null
   labels: string[]
+  pills: Pill[]
   order: number
   created_at: string
   updated_at: string
@@ -135,6 +140,7 @@ export type Ticket = {
   priority: string
   assignee: string | null
   labels: string[]
+  pills?: Pill[]
   order: number
   created_at: string
   updated_at: string
@@ -161,7 +167,7 @@ export type AgentProfile = {
   model: string | null
 }
 
-/** `kanban::ticket::links`: tickets this one mentions by key, and tickets whose text mentions it. */
+/** 'kanban::ticket::links': tickets this one mentions by key, and tickets whose text mentions it. */
 export type TicketLinks = { mentions: TicketSummary[]; mentioned_by: TicketSummary[] }
 
 export type ConfigInfo = {
@@ -182,12 +188,16 @@ export type ConfigInfo = {
 
 export type ChangeEvent = {
   event: string
-  ticket_id: string
-  ticket_key: string
-  ticket: Ticket
-  comment: Comment | null
+  ticket_id?: string
+  ticket_key?: string
+  /** Absent on `config.updated`: the columns or statuses changed, read again. */
+  ticket?: Ticket | null
+  comment?: Comment | null
   at: string
 }
+
+/** The 'kanban:change' event that names no ticket: the configuration was reloaded. */
+export const CONFIG_EVENT = 'config.updated'
 
 export const COLUMNS_CONFIGURATION_ID = 'kanban'
 export const BOARD_PAGE_ID = 'kanban-board'
@@ -196,7 +206,7 @@ export const RELEASES_PAGE_ID = 'kanban-releases'
 export const PROJECTS_PAGE_ID = 'kanban-projects'
 
 /**
- * Project and release writes fire no `kanban:change` event. Pages that make one dispatch this window event
+ * Project and release writes fire no 'kanban:change' event. Pages that make one dispatch this window event
  * (same tab) so open boards and pickers read the plan again; other tabs catch up on their next read.
  */
 export const PLAN_CHANGED_EVENT = 'kanban:plan-changed'
@@ -328,6 +338,7 @@ export function summarizeTicket(ticket: Ticket): TicketSummary {
     priority: ticket.priority,
     assignee: ticket.assignee,
     labels: ticket.labels ?? [],
+    pills: ticket.pills ?? [],
     order: ticket.order,
     created_at: ticket.created_at,
     updated_at: ticket.updated_at,
@@ -412,5 +423,101 @@ export function PriorityChip({ priority, priorities }: { priority: string; prior
       <span aria-hidden="true" className="kanban-priority__dot" />
       {priorityLabel(priority)}
     </Chip>
+  )
+}
+
+const swallow = (event: SyntheticEvent) => event.stopPropagation()
+
+/**
+ * The status as a picker: the glyph, then an inline Select over the columns. Clicks and keys stay inside it, so a
+ * card around it does not open (the menu is a portal, but React still bubbles through it).
+ */
+export function StatusPicker({
+  columns,
+  status,
+  doneStatus,
+  canceledStatus,
+  disabled,
+  onChange,
+}: {
+  columns: Column[]
+  status: string
+  doneStatus: string
+  canceledStatus: string | null
+  disabled?: boolean
+  onChange: (status: string) => void
+}) {
+  return (
+    <span className="kanban-pick kanban-pick--status" onClick={swallow} onKeyDown={swallow} title="Status">
+      <StatusGlyph canceledStatus={canceledStatus} columns={columns} doneStatus={doneStatus} status={status} />
+      <Select
+        appearance="inline"
+        aria-label="Status"
+        disabled={disabled}
+        onChange={onChange}
+        options={columns.map((column) => ({ value: column.id, label: column.label }))}
+        value={status}
+      />
+    </span>
+  )
+}
+
+/** The priority as a picker: the tone dot, then an inline Select over the configured priorities. */
+export function PriorityPicker({
+  priority,
+  priorities,
+  disabled,
+  onChange,
+}: {
+  priority: string
+  priorities: string[]
+  disabled?: boolean
+  onChange: (priority: string) => void
+}) {
+  const index = priorities.indexOf(priority)
+  const fromTop = index < 0 ? -1 : priorities.length - 1 - index
+  const tone = fromTop === 0 ? 'alert' : fromTop === 1 ? 'warn' : 'neutral'
+  const values = index < 0 && priority ? [...priorities, priority] : priorities
+  return (
+    <span className="kanban-pick kanban-priority" data-tone={tone} onClick={swallow} onKeyDown={swallow} title="Priority">
+      <span aria-hidden="true" className="kanban-priority__dot" />
+      <Select
+        appearance="inline"
+        aria-label="Priority"
+        disabled={disabled}
+        onChange={onChange}
+        options={values.map((value) => ({ value, label: priorityLabel(value) }))}
+        value={priority}
+      />
+    </span>
+  )
+}
+
+/** The lucide icon a pill names (`alarm-clock` is `AlarmClock`); a tag when the name is unknown. */
+export function pillIcon(name: string): LucideIcon {
+  const pascal = name
+    .trim()
+    .split(/[^a-z0-9]+/i)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('')
+  const icon = (lucide as unknown as Record<string, LucideIcon | undefined>)[pascal]
+  return icon && (typeof icon === 'function' || typeof icon === 'object') ? icon : Tag
+}
+
+/** The pills of a ticket as chips, on the card and the ticket page. Nothing when there are none. */
+export function Pills({ pills }: { pills: Pill[] | undefined }) {
+  if (!pills?.length) return null
+  return (
+    <span className="kanban-pills">
+      {pills.map((pill, index) => {
+        const Icon = pillIcon(pill.icon)
+        return (
+          <Chip className="kanban-pill" key={`${pill.icon}:${pill.text}:${index}`}>
+            <Icon size={16} />
+            {pill.text}
+          </Chip>
+        )
+      })}
+    </span>
   )
 }

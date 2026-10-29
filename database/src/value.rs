@@ -31,6 +31,10 @@ impl JsonParam {
             Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     JsonParam::Int(i)
+                } else if let Some(u) = n.as_u64() {
+                    // Above i64::MAX (a mysql `bigint unsigned`): as exact
+                    // text, never through f64 — which would round it.
+                    JsonParam::Text(u.to_string())
                 } else if let Some(f) = n.as_f64() {
                     JsonParam::Float(f)
                 } else {
@@ -94,7 +98,7 @@ impl RowValue {
             RowValue::Text(s) => Value::String(s.clone()),
             RowValue::Bytes(b) => Value::String(B64.encode(b)),
             RowValue::Timestamp(t) => {
-                Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
             }
             RowValue::Decimal(s) => Value::String(s.clone()),
             RowValue::Json(v) => v.clone(),
@@ -116,7 +120,7 @@ impl RowValue {
             RowValue::Text(s) => Value::String(s),
             RowValue::Bytes(b) => Value::String(B64.encode(&b)),
             RowValue::Timestamp(t) => {
-                Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                Value::String(t.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
             }
             RowValue::Decimal(s) => Value::String(s),
             RowValue::Json(v) => v,
@@ -147,6 +151,18 @@ mod tests {
         assert_eq!(
             JsonParam::from_json(&json!(-7)).unwrap(),
             JsonParam::Int(-7)
+        );
+    }
+
+    #[test]
+    fn integers_beyond_i64_stay_exact_as_text() {
+        assert_eq!(
+            JsonParam::from_json(&json!(18446744073709551615u64)).unwrap(),
+            JsonParam::Text("18446744073709551615".into())
+        );
+        assert_eq!(
+            JsonParam::from_json(&json!(9007199254740993i64)).unwrap(),
+            JsonParam::Int(9007199254740993)
         );
     }
 

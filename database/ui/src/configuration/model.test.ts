@@ -19,17 +19,36 @@ describe('database configuration model', () => {
   it('tracks every persisted path from the Rust schema', () => {
     expect(DATABASE_CONFIG_FIELD_PATHS).toEqual([
       'databases.{name}.url',
+      'databases.{name}.driver',
+      'databases.{name}.host',
+      'databases.{name}.port',
+      'databases.{name}.user',
+      'databases.{name}.password',
+      'databases.{name}.database',
       'databases.{name}.capture',
       'databases.{name}.tls.mode',
       'databases.{name}.tls.ca_cert',
+      'databases.{name}.tls.client_cert',
+      'databases.{name}.tls.client_key',
       'databases.{name}.tls.trust_native',
+      'databases.{name}.ssh.host',
+      'databases.{name}.ssh.port',
+      'databases.{name}.ssh.user',
+      'databases.{name}.ssh.password',
+      'databases.{name}.ssh.private_key',
+      'databases.{name}.ssh.passphrase',
+      'databases.{name}.ssh.host_key',
+      'databases.{name}.display.icon',
+      'databases.{name}.display.color',
+      'databases.{name}.folder',
       'databases.{name}.pool.max',
       'databases.{name}.pool.idle_timeout_ms',
       'databases.{name}.pool.acquire_timeout_ms',
       'history_max_entries',
       'history_max_bytes',
     ])
-    expect(DATABASE_CONFIG_FIELD_PATHS).not.toContain('databases.{name}.driver')
+    // The driver is stored only by structured entries; a legacy url still infers it.
+    expect(DATABASE_CONFIG_FIELD_PATHS).not.toContain('databases.{name}.handle')
   })
 
   it('mirrors the worker driver inference, including case-insensitive schemes', () => {

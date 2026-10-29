@@ -11,11 +11,12 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
+use context_manager::core::estimate::{Estimator, HeuristicEstimator};
 use context_manager::ports::{
     Clock, LeaseRecord, LeaseStore, ModelBudget, ModelResolver, SummarizeError, SummarizeRequest,
-    Summarizer,
+    Summarizer, TurnKnobs,
 };
-use context_manager::types::Model;
+use context_manager::types::{AgentFunction, AgentMessage, Model, ThinkingLevel};
 
 // ---------------------------------------------------------------------------
 // Clock
@@ -59,6 +60,13 @@ pub struct FakeModelResolver {
     pub unavailable: AtomicBool,
     /// Recorded `(provider, id)` lookups.
     pub calls: Mutex<Vec<(Option<String>, String)>>,
+    /// The provider bills this many times the heuristic estimate; `None`
+    /// answers `count_prompt_tokens` with no counter.
+    pub billed_per_estimate: Mutex<Option<f64>>,
+    /// How many times `count_prompt_tokens` was asked.
+    pub counts: AtomicI64,
+    /// The turn knobs each count carried, in order.
+    pub knobs: Mutex<Vec<(Option<ThinkingLevel>, Option<serde_json::Value>)>>,
 }
 
 impl FakeModelResolver {
@@ -67,7 +75,21 @@ impl FakeModelResolver {
             models: Mutex::new(HashMap::new()),
             unavailable: AtomicBool::new(false),
             calls: Mutex::new(Vec::new()),
+            billed_per_estimate: Mutex::new(None),
+            counts: AtomicI64::new(0),
+            knobs: Mutex::new(Vec::new()),
         }
+    }
+
+    /// A provider that bills `ratio` times the chars/4 estimate.
+    #[allow(dead_code)] // used by assemble_billed_estimate, not every test crate
+    pub fn billing(ratio: f64) -> Self {
+        let resolver = Self::new();
+        *resolver
+            .billed_per_estimate
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(ratio);
+        resolver
     }
 
     pub fn insert(&self, model: Model) {
@@ -102,6 +124,32 @@ impl ModelResolver for FakeModelResolver {
                 effective_max_output_tokens: model.max_output_tokens,
                 model,
             }))
+    }
+
+    async fn count_prompt_tokens(
+        &self,
+        _provider: Option<&str>,
+        _id: &str,
+        system_prompt: &str,
+        tools: &[AgentFunction],
+        messages: &[AgentMessage],
+        knobs: TurnKnobs<'_>,
+    ) -> Result<u64, String> {
+        self.counts.fetch_add(1, Ordering::SeqCst);
+        self.knobs
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push((knobs.thinking_level, knobs.response_format.cloned()));
+        let ratio = (*self
+            .billed_per_estimate
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()))
+        .ok_or_else(|| "no prompt token counter".to_string())?;
+        let estimator = HeuristicEstimator;
+        let estimate = messages.iter().map(|m| estimator.message(m)).sum::<u64>()
+            + estimator.text(system_prompt)
+            + tools.iter().map(|t| estimator.function(t)).sum::<u64>();
+        Ok((estimate as f64 * ratio) as u64)
     }
 }
 

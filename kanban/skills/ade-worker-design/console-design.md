@@ -2366,7 +2366,7 @@ must drive the highlight from JS instead.
 
 **Shared hash hub.** Both the sidebar links and the cards subscribe to
 a single client-side hash hub
-([`use-active-hash.ts`](app/src/components/api-reference/use-active-hash.ts)) — a module-level
+(`app/src/components/api-reference/use-active-hash.ts`) — a module-level
 `Set<Subscriber>` plus one global pair of `hashchange` + `popstate`
 listeners that broadcast the latest `window.location.hash` to every
 mounted subscriber. The hub also exports `setActiveHash(hash)` so click
@@ -2379,13 +2379,13 @@ without any context provider crossing that distance.
 Wiring:
 
 - **Cards** wrap their `<article>` in a tiny client component
-  ([`hash-card.tsx`](app/src/components/api-reference/hash-card.tsx))
+  (`app/src/components/api-reference/hash-card.tsx`)
   that calls `useActiveHash()` and conditionally adds
   `bg-surface-selected` when the hash matches its `id`. The card
   body (header, description, schema panes) is still a server-rendered
   React tree passed in as `children`, so the only JS that runs in the
   browser is the wrapper.
-- **Sidebar links** ([`summary-list.tsx`](app/src/components/api-reference/summary-list.tsx))
+- **Sidebar links** (`app/src/components/api-reference/summary-list.tsx`)
   call `useActiveHash()` for their visual state and
   `setActiveHash(target)` from `onClick`, which broadcasts to the
   card subscribers immediately so the tint and the link light up in

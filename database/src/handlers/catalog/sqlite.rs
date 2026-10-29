@@ -47,6 +47,7 @@ pub async fn list_tables(
                     Some("view") => TableKind::View,
                     _ => TableKind::Table,
                 },
+                row_count_estimate: None,
             })
         })
         .collect())
@@ -64,14 +65,16 @@ pub async fn columns(
     let sql = format!(
         "SELECT m.name AS table_name, p.cid AS cid, p.name AS column_name, \
                 p.type AS column_type, p.\"notnull\" AS not_null, \
-                p.dflt_value AS default_value, p.pk AS pk_ord \
-         FROM sqlite_master m JOIN pragma_table_info(m.name) p \
-         WHERE m.type IN ('table', 'view') AND {NOT_INTERNAL}{clause} \
+                p.dflt_value AS default_value, p.pk AS pk_ord, p.hidden AS hidden, \
+                instr(upper(m.sql), 'WITHOUT ROWID') > 0 AS without_rowid \
+         FROM sqlite_master m JOIN pragma_table_xinfo(m.name) p \
+         WHERE m.type IN ('table', 'view') AND p.hidden <> 1 AND {NOT_INTERNAL}{clause} \
          ORDER BY m.name, p.cid"
     );
     let rows = run(state, db, sql, params, timeout_ms).await?;
 
     let mut out: HashMap<TableKey, Vec<ColumnDesc>> = HashMap::new();
+    let mut without_rowid: std::collections::HashSet<String> = std::collections::HashSet::new();
     for r in &rows {
         let Some(table) = str_at(r, "table_name") else {
             continue;
@@ -89,7 +92,29 @@ pub async fn columns(
             primary_key: i64_at(r, "pk_ord").unwrap_or(0) > 0,
             position: i64_at(r, "cid").unwrap_or(0) as i32 + 1,
             foreign_key: None,
+            // Settled below, once the whole primary key is known.
+            auto_increment: false,
+            // `hidden` 2 / 3: a generated (virtual / stored) column.
+            generated: matches!(i64_at(r, "hidden"), Some(2) | Some(3)),
         });
+        if bool_at(r, "without_rowid") {
+            without_rowid.insert(str_at(r, "table_name").unwrap_or_default());
+        }
+    }
+    // A lone `INTEGER PRIMARY KEY` is the rowid itself — filled in by sqlite
+    // — except in a WITHOUT ROWID table.
+    for ((_, table), cols) in out.iter_mut() {
+        let pk: Vec<usize> = cols
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.primary_key)
+            .map(|(i, _)| i)
+            .collect();
+        if let [only] = pk.as_slice() {
+            if cols[*only].ty.eq_ignore_ascii_case("INTEGER") && !without_rowid.contains(table) {
+                cols[*only].auto_increment = true;
+            }
+        }
     }
 
     merge_foreign_keys(state, db, filter, timeout_ms, &mut out).await?;

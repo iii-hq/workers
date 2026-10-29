@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, TopicInfo};
 use crate::store::{InMemoryStore, TopicStats};
 use crate::subscriber_config::SubscriberQueueConfig;
-use crate::trigger::Invoker;
+use crate::trigger::{Invoker, SubscriberTarget};
 
 use super::builtin::BuiltinAdapter;
 
@@ -55,26 +55,16 @@ impl QueueAdapter for MemoryAdapter {
         self.inner.enqueue(topic, data, traceparent, baggage).await;
     }
 
-    async fn subscribe(
+    async fn subscribe_target(
         &self,
         topic: &str,
         id: &str,
-        function_id: &str,
-        metadata: Option<Value>,
+        target: SubscriberTarget,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
-        namespace: Option<String>,
     ) {
         self.inner
-            .subscribe(
-                topic,
-                id,
-                function_id,
-                metadata,
-                condition_function_id,
-                queue_config,
-                namespace,
-            )
+            .subscribe_target(topic, id, target, condition_function_id, queue_config)
             .await;
     }
 

@@ -58,6 +58,14 @@ impl IIIEngine {
     }
 }
 
+/// iii-sandbox is engine-owned: its `sandbox::*` functions exist only in
+/// `default`, whatever namespace this worker runs in (a Compose project's,
+/// say). Every other id keeps the SDK's routing, which already sends
+/// `engine::*` to `default`.
+fn call_namespace(fn_id: &str) -> Option<&'static str> {
+    fn_id.starts_with("sandbox::").then_some("default")
+}
+
 impl Engine for IIIEngine {
     fn call(
         &self,
@@ -67,13 +75,17 @@ impl Engine for IIIEngine {
     ) -> BoxFuture<'static, CallResult> {
         let iii = self.iii.clone();
         Box::pin(async move {
-            iii.trigger(TriggerRequest {
+            let namespace = call_namespace(&fn_id);
+            let request = TriggerRequest {
                 function_id: fn_id,
                 payload,
                 action: None,
                 timeout_ms: Some(timeout_ms),
-            })
-            .await
+            };
+            match namespace {
+                Some(namespace) => iii.trigger(request.namespace(namespace)).await,
+                None => iii.trigger(request).await,
+            }
             .map_err(|e| e.to_string())
         })
     }
@@ -274,6 +286,27 @@ impl Engine for FakeEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_calls_resolve_in_default_and_nothing_else_is_pinned() {
+        for fn_id in [
+            "sandbox::create",
+            "sandbox::exec",
+            "sandbox::fs::write",
+            "sandbox::list",
+        ] {
+            assert_eq!(call_namespace(fn_id), Some("default"), "{fn_id}");
+        }
+        // The SDK already sends engine::* to default; this worker's own
+        // functions and lookalikes stay in the worker's namespace.
+        for fn_id in [
+            "engine::functions::info",
+            "sandbox-code-runner::run",
+            "app::greet",
+        ] {
+            assert_eq!(call_namespace(fn_id), None, "{fn_id}");
+        }
+    }
     use serde_json::json;
 
     #[tokio::test]

@@ -1,0 +1,31 @@
+{
+  "name": "text",
+  "description": "Design §5.7, text: TextField 20 is the root of page 1; the person types \"a\" then \"ab\" in one turn (one text entry with count 2) and the script normalizes it to \"https://ab\", written with that count.",
+  "catalog": 1,
+  "encoding": "json-v0",
+  "app": "conformance/apps/text.tsx",
+  "ns": "demo",
+  "toVm": [
+    "[[1,{\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"host\":\"android 0.1.0\",\"engine\":\"quickjs-ng 0.17.0\",\"app\":{\"key\":\"worker:demo\",\"ns\":\"demo\"},\"env\":{\"windowClass\":\"compact\",\"posture\":\"flat\",\"platform\":\"android\",\"visible\":true,\"theme\":\"dark\",\"locale\":\"en-US\",\"online\":true}}],[6,1,\"root\",{}]]",
+    "[[4,20,2,\"ab\"]]"
+  ],
+  "fromVm": [
+    "[[23,{\"sdk\":\"0.1.0\",\"catalog\":1,\"features\":[\"ops.json.v0\",\"list.splice.v1\",\"text.handshake.v1\",\"remote-screen.v1\"],\"pages\":[{\"name\":\"root\",\"modal\":false,\"fullScreen\":false}]}]]",
+    "[[1,20,22],[2,20,21,1],[2,20,22,1],[2,20,2,8],[7,1,20]]",
+    "[[2,20,16,[\"https://ab\",2]]]"
+  ],
+  "order": ["fromVm", "toVm", "fromVm", "toVm", "fromVm"],
+  "tree": {
+    "1": {
+      "type": "TextField",
+      "id": 20,
+      "props": {
+        "events": ["change"],
+        "keyboard": "url",
+        "imeAction": "go",
+        "value": "https://ab"
+      }
+    }
+  },
+  "designExamples": ["text.edit", "text.write"]
+}

@@ -1133,6 +1133,7 @@ mod tests {
             skill_ack: None,
             skills_started: false,
             context_snapshot: None,
+            pre_generate_hook_tokens: None,
             result: None,
             result_error: None,
             stop_reason: None,

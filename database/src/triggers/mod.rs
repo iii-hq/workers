@@ -1,4 +1,4 @@
-//! `database::row-changed` — the worker announcing its own writes.
+//! `database::on-row-changed` — the worker announcing its own writes.
 //!
 //! The database is often the state machine of a run: workers write rows and
 //! something else needs to know. Until now nothing emitted database change
@@ -25,12 +25,15 @@
 //! their own schedule.
 
 pub mod bus;
-pub mod handler;
+pub mod capture;
+pub mod legacy;
 pub mod mysql_binlog;
 pub mod native;
 pub mod sql;
 pub mod sqlite_watch;
 
-pub use bus::{RowChangeBus, RowChangedConfig, RowChangedEvent, ROW_CHANGED_TYPE};
-pub use handler::RowChangedHandler;
+pub use bus::{
+    LegacyRowChangedEvent, RowChangeBus, RowChangedArgs, RowChangedEvent, ROW_CHANGED_TYPE,
+};
+pub use capture::{NativeCapture, ROW_CHANGED_DESCRIPTION, ROW_CHANGED_FN};
 pub use native::NativeListeners;

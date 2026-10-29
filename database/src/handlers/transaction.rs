@@ -25,7 +25,7 @@ pub struct TxReq {
 pub struct TxStmtReq {
     /// One statement. A `RETURNING` clause in the SQL (SQLite, Postgres)
     /// puts the rows in this step's `results[].rows` and on the
-    /// `database::row-changed` event fired for it after commit.
+    /// `database::on-row-changed` event fired for it after commit.
     #[serde(alias = "query")]
     pub sql: String,
     #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
@@ -101,6 +101,7 @@ pub async fn handle(state: &AppState, req: TxReq) -> Result<TxResp, String> {
                     .into(),
             }));
         }
+        crate::handlers::reject_session_prepared_at(i, &s.sql).map_err(err_to_str)?;
         let params = JsonParam::from_json_slice(&s.params).map_err(err_to_str)?;
         stmts.push(TxStatement { sql: s.sql, params });
     }
@@ -185,6 +186,7 @@ mod tests {
             transactions: crate::transaction::TxRegistry::new(),
             log: iii_helpers::observability::Logger::new(),
             row_changes: None,
+            runtime: Default::default(),
         }
     }
 

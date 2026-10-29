@@ -394,6 +394,7 @@ pub(crate) fn run_watcher(
                     let has_keys = !run.keys.is_empty();
                     let event = RowChangedEvent {
                         db: db_name.to_string(),
+                        schema: None,
                         table: Some(run.table),
                         op: run.op,
                         affected_rows: run.n,

@@ -502,9 +502,9 @@ export function ChatPanel({
       >
         {showList ? (
           <PageSidebar
-            // onboarding-conversations: tour anchor (workers/onboarding). Do not remove.
+            // learn-iii-conversations: tour anchor (workers/learn-iii). Do not remove.
             className={cn(
-              'onboarding-conversations bg-white dark:bg-neutral-950',
+              'learn-iii-conversations bg-white dark:bg-neutral-950',
               /* Dark: a neutral-900 edge where the list meets the chat. */
               'dark:border-neutral-900',
               panelSide === 'right' ? 'dark:border-l' : 'dark:border-r',

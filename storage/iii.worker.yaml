@@ -7,3 +7,10 @@ license: Apache-2.0
 bin: storage
 tags: [s3, object-storage, gcs, r2, blob]
 description: Object storage across AWS S3, GCS, Cloudflare R2, and a native local filesystem backend. Streamed uploads, signed URLs, and object change triggers.
+
+dependencies:
+  # The storage configuration entry lives in the configuration worker.
+  configuration: "latest"
+  # Bucket credentials are referenced as secret://NAME (encrypted vault) or
+  # env://NAME and resolved through it.
+  secrets: "latest"

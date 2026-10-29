@@ -44,7 +44,10 @@ async fn wait_for_cors(config: &configuration::ConfigCell) {
 #[tokio::test]
 #[serial]
 async fn global_middleware_added_via_config_set_blocks_without_restart() {
-    let Some(iii) = engine::get_or_init().await else {
+    // A dedicated client, closed at the end: a 0.25 engine keeps
+    // `http::on-config-change` owned by a live connection, so the other reload
+    // tests could not register it while a shared client still holds it.
+    let Some(iii) = engine::connect_fresh().await else {
         return;
     };
 
@@ -104,6 +107,7 @@ async fn global_middleware_added_via_config_set_blocks_without_restart() {
     assert_eq!(body, json!({ "denied": true }));
 
     boot.shutdown().await;
+    iii.shutdown_async().await;
 }
 
 /// CORS hot-reload via the swappable [`iii_http::server::HotRouter`]: boot

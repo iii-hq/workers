@@ -188,6 +188,30 @@ pub struct HttpTriggerConfig {
     pub middleware_function_ids: Vec<String>,
 }
 
+/// Args of an `http::on-request` observer: [`HttpTriggerConfig`] with iii
+/// lang's names (`http_method` → `method`, `api_path` → `path`). `method` and
+/// `path` are required and unknown fields are refused, so the engine answers
+/// a typo with `INVALID_ARGS`; `path` is normalized like `api_path`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HttpRouteArgs {
+    /// HTTP method of the route (`GET`, `POST`, …), case insensitive.
+    pub method: String,
+    /// Route template, e.g. `/users/:id` or `/users/{id}`.
+    #[serde(deserialize_with = "deserialize_api_path")]
+    pub path: String,
+    /// Also expose this route on the restricted webhook listener.
+    #[serde(default)]
+    pub public_webhook: bool,
+    /// Functions run before the target, as for an `http` trigger.
+    #[serde(default)]
+    pub middleware_function_ids: Vec<String>,
+    /// Deprecated: prefer observer filters, evaluated in-process. Kept for
+    /// parity with the `http` trigger config.
+    #[serde(default)]
+    pub condition_function_id: Option<String>,
+}
+
 /// Out-of-band control messages a function can send on the response channel
 /// to influence the in-flight HTTP response (status/headers) before the body
 /// is finalized.
@@ -396,6 +420,65 @@ mod tests {
         let cfg: HttpTriggerConfig =
             serde_json::from_value(json!({"api_path": "tasks/{tid}"})).unwrap();
         assert_eq!(cfg.api_path, "tasks/:tid");
+    }
+
+    // =========================================================================
+    // HttpRouteArgs
+    // =========================================================================
+
+    #[test]
+    fn http_route_args_require_method_and_path() {
+        for args in [json!({}), json!({"path": "/a"}), json!({"method": "GET"})] {
+            assert!(serde_json::from_value::<HttpRouteArgs>(args).is_err());
+        }
+        let args: HttpRouteArgs =
+            serde_json::from_value(json!({"method": "GET", "path": "/a"})).unwrap();
+        assert_eq!(args.method, "GET");
+        assert_eq!(args.path, "/a");
+        assert!(!args.public_webhook);
+        assert!(args.middleware_function_ids.is_empty());
+        assert!(args.condition_function_id.is_none());
+    }
+
+    #[test]
+    fn http_route_args_refuse_unknown_fields_and_trigger_config_names() {
+        for args in [
+            json!({"method": "GET", "path": "/a", "typo": true}),
+            json!({"http_method": "GET", "api_path": "/a"}),
+        ] {
+            assert!(serde_json::from_value::<HttpRouteArgs>(args).is_err());
+        }
+    }
+
+    #[test]
+    fn http_route_args_parse_all_fields_and_normalize_the_path() {
+        let args: HttpRouteArgs = serde_json::from_value(json!({
+            "method": "post",
+            "path": "/users/{userId}/tasks/{tid}",
+            "public_webhook": true,
+            "middleware_function_ids": ["mw-1"],
+            "condition_function_id": "cond-1",
+        }))
+        .unwrap();
+        assert_eq!(args.method, "post");
+        assert_eq!(args.path, "/users/:userId/tasks/:tid");
+        assert!(args.public_webhook);
+        assert_eq!(args.middleware_function_ids, vec!["mw-1"]);
+        assert_eq!(args.condition_function_id.as_deref(), Some("cond-1"));
+    }
+
+    #[test]
+    fn http_route_args_schema_is_strict_for_the_engine() {
+        let schema = serde_json::to_value(schemars::schema_for!(HttpRouteArgs)).unwrap();
+        let mut required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        required.sort_unstable();
+        assert_eq!(required, vec!["method", "path"]);
+        assert_eq!(schema["additionalProperties"], false);
     }
 
     // =========================================================================

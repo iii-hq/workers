@@ -71,7 +71,7 @@ impl std::fmt::Display for ConfigError {
 
 /// The vault may return `{ type:"oauth", access_token, provider_extra:{...} }`
 /// or a nested `{ credential: { access_token, ... } }`; tolerate both.
-fn extract_access_token(cred: &Value) -> Option<String> {
+pub(crate) fn extract_access_token(cred: &Value) -> Option<String> {
     cred.get("access_token")
         .and_then(Value::as_str)
         .or_else(|| {

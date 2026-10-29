@@ -35,6 +35,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "tmux::windows::kill",
             "tmux::panes::select",
             "tmux::panes::capture",
+            "tmux::subagents::transcript",
             "tmux::ports::list",
         ]
     );

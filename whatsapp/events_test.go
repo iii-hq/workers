@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -74,6 +75,135 @@ func TestNativeEphemeralExpiryUsesMessageTimeAndHistoryBounds(t *testing.T) {
 		view = nativeMessageView(event, "history")
 		if view.Kind != "ephemeral" || view.Text != "" {
 			t.Fatalf("unknown expiry retained content: %#v", view)
+		}
+	}
+}
+
+func TestNativeMessageEventContext(t *testing.T) {
+	type quoted struct {
+		ID          string `json:"id"`
+		Participant string `json:"participant"`
+		IsMe        bool   `json:"is_me"`
+		Kind        string `json:"kind"`
+		Text        string `json:"text"`
+		FileName    string `json:"file_name"`
+	}
+	type contextEvent struct {
+		Info struct {
+			ID          string `json:"id"`
+			TimestampMS int64  `json:"timestamp_ms"`
+			PushName    string `json:"push_name"`
+			Edited      bool   `json:"edited"`
+			Source      struct {
+				Chat           string  `json:"chat"`
+				Sender         string  `json:"sender"`
+				SenderAlt      *string `json:"sender_alt"`
+				IsFromMe       bool    `json:"is_from_me"`
+				IsGroup        bool    `json:"is_group"`
+				AddressingMode *string `json:"addressing_mode"`
+			} `json:"source"`
+		} `json:"info"`
+		Message struct {
+			Conversation    string   `json:"conversation"`
+			MentionedJIDs   []string `json:"mentioned_jids"`
+			MentionsMe      bool     `json:"mentions_me"`
+			MentionedMeJIDs []string `json:"mentioned_me_jids"`
+			FileName        string   `json:"file_name"`
+			Quoted          *quoted  `json:"quoted"`
+		} `json:"message"`
+		Kind string `json:"kind"`
+	}
+	own := types.NewJID("5511999990000", types.DefaultUserServer)
+	ownLID := types.NewJID("123456789", types.HiddenUserServer)
+	question := "@123456789 qual o prazo da ação 3?"
+	caption := "*Laudo técnico — Padaria Sol*\nVisita LT-2026-1008-001, realizada em 08/10/2026."
+	report := &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{Caption: proto.String(caption), FileName: proto.String("LT-2026-1008-001.pdf")}}
+	for _, tc := range []struct {
+		name         string
+		context      *waE2E.ContextInfo
+		conversation string
+		mentioned    []string
+		mentionsMe   bool
+		mentionedMe  []string
+		quoted       *quoted
+	}{
+		{"mention of our LID and quote of our PDF", &waE2E.ContextInfo{MentionedJID: []string{"123456789@lid"}, StanzaID: proto.String("3EB0ABC"), Participant: proto.String("123456789@lid"), QuotedMessage: report}, question, []string{"123456789@lid"}, true, []string{"123456789@lid"}, &quoted{"3EB0ABC", "123456789@lid", true, "document", caption, "LT-2026-1008-001.pdf"}},
+		{"mention of our phone with a device suffix", &waE2E.ContextInfo{MentionedJID: []string{"5511999990000:12@s.whatsapp.net"}}, question, []string{"5511999990000:12@s.whatsapp.net"}, true, []string{"5511999990000:12@s.whatsapp.net"}, nil},
+		{"mention of our LID and someone else", &waE2E.ContextInfo{MentionedJID: []string{"5511977776666@s.whatsapp.net", "123456789@lid"}}, question, []string{"5511977776666@s.whatsapp.net", "123456789@lid"}, true, []string{"123456789@lid"}, nil},
+		{"mention of someone else", &waE2E.ContextInfo{MentionedJID: []string{"5511977776666@s.whatsapp.net"}}, question, []string{"5511977776666@s.whatsapp.net"}, false, []string{}, nil},
+		{"no context", nil, question, []string{}, false, []string{}, nil},
+		{"disappearing message", &waE2E.ContextInfo{Expiration: proto.Uint32(86400), MentionedJID: []string{"123456789@lid"}, StanzaID: proto.String("3EB0ABC"), Participant: proto.String("123456789@lid"), QuotedMessage: report}, "", []string{}, false, []string{}, nil},
+		{"quote of a disappearing message", &waE2E.ContextInfo{StanzaID: proto.String("3EB0OLD"), Participant: proto.String("5511977776666@s.whatsapp.net"), QuotedMessage: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("temporary"), ContextInfo: &waE2E.ContextInfo{Expiration: proto.Uint32(86400)}}}}, question, []string{}, false, []string{}, &quoted{"3EB0OLD", "5511977776666@s.whatsapp.net", false, "text", "", ""}},
+		{"quote of a disappearing document", &waE2E.ContextInfo{StanzaID: proto.String("3EB0OLD"), Participant: proto.String("5511977776666@s.whatsapp.net"), QuotedMessage: &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{FileName: proto.String("private.pdf"), ContextInfo: &waE2E.ContextInfo{Expiration: proto.Uint32(86400)}}}}, question, []string{}, false, []string{}, &quoted{"3EB0OLD", "5511977776666@s.whatsapp.net", false, "document", "", ""}},
+		{"quote of a captioned document sent from a phone", &waE2E.ContextInfo{StanzaID: proto.String("3EB0DOC"), Participant: proto.String("5511977776666@s.whatsapp.net"), QuotedMessage: &waE2E.Message{DocumentWithCaptionMessage: &waE2E.FutureProofMessage{Message: report}}}, question, []string{}, false, []string{}, &quoted{"3EB0DOC", "5511977776666@s.whatsapp.net", false, "document", caption, "LT-2026-1008-001.pdf"}},
+		{"quote of a view-once image", &waE2E.ContextInfo{StanzaID: proto.String("3EB0ONCE"), Participant: proto.String("5511977776666@s.whatsapp.net"), QuotedMessage: &waE2E.Message{ViewOnceMessageV2: &waE2E.FutureProofMessage{Message: &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Caption: proto.String("private caption")}}}}}, question, []string{}, false, []string{}, &quoted{"3EB0ONCE", "5511977776666@s.whatsapp.net", false, "view_once", "", ""}},
+		{"quote that carries no message", &waE2E.ContextInfo{StanzaID: proto.String("3EB0GONE"), Participant: proto.String("5511977776666@s.whatsapp.net")}, question, []string{}, false, []string{}, &quoted{"3EB0GONE", "5511977776666@s.whatsapp.net", false, "unknown", "", ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got contextEvent
+			e := &events.Message{Info: types.MessageInfo{MessageSource: types.MessageSource{Chat: types.NewJID("120363000000000001", types.GroupServer), Sender: types.NewJID("987654321", types.HiddenUserServer), IsGroup: true, AddressingMode: types.AddressingModeLID, SenderAlt: types.JID{User: "5511988887777", Device: 7, Server: types.DefaultUserServer}}, ID: "3EB0QUESTION", PushName: "Ana", Timestamp: time.Now()}, Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(question), ContextInfo: tc.context}}}
+			raw, err := json.Marshal(nativeMessageEvent(e, nativeMessageView(e, "live"), own, ownLID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			info, src, msg := got.Info, got.Info.Source, got.Message
+			if info.ID != "3EB0QUESTION" || info.TimestampMS != e.Info.Timestamp.UnixMilli() || info.PushName != "Ana" || info.Edited || got.Kind != "text" {
+				t.Fatalf("info: %s", raw)
+			}
+			if src.Chat != "120363000000000001@g.us" || src.Sender != "987654321@lid" || src.SenderAlt == nil || *src.SenderAlt != "5511988887777@s.whatsapp.net" || src.IsFromMe || !src.IsGroup || src.AddressingMode == nil || *src.AddressingMode != "lid" {
+				t.Fatalf("source: %s", raw)
+			}
+			if msg.Conversation != tc.conversation || msg.MentionedJIDs == nil || !slices.Equal(msg.MentionedJIDs, tc.mentioned) || msg.MentionsMe != tc.mentionsMe || msg.MentionedMeJIDs == nil || !slices.Equal(msg.MentionedMeJIDs, tc.mentionedMe) || msg.FileName != "" {
+				t.Fatalf("message: %s", raw)
+			}
+			if (msg.Quoted == nil) != (tc.quoted == nil) || (msg.Quoted != nil && *msg.Quoted != *tc.quoted) {
+				t.Fatalf("quoted: %s", raw)
+			}
+		})
+	}
+	var got contextEvent
+	e := testNativeMessage("direct")
+	raw, _ := json.Marshal(nativeMessageEvent(e, nativeMessageView(e, "live"), types.EmptyJID, types.EmptyJID))
+	if err := json.Unmarshal(raw, &got); err != nil || got.Info.Source.SenderAlt != nil || got.Info.Source.AddressingMode != nil || got.Message.Quoted != nil {
+		t.Fatalf("empty source fields not null: %s", raw)
+	}
+	doc := testNativeMessage("")
+	doc.Message = &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{FileName: proto.String("LT-2026-1008-001.pdf")}}
+	got = contextEvent{}
+	raw, _ = json.Marshal(nativeMessageEvent(doc, nativeMessageView(doc, "live"), own, ownLID))
+	if err := json.Unmarshal(raw, &got); err != nil || got.Kind != "document" || got.Message.Conversation != "LT-2026-1008-001.pdf" || got.Message.FileName != "LT-2026-1008-001.pdf" {
+		t.Fatalf("caption-less document: %s", raw)
+	}
+	doc.Message.DocumentMessage.ContextInfo = &waE2E.ContextInfo{Expiration: proto.Uint32(86400)}
+	got = contextEvent{}
+	raw, _ = json.Marshal(nativeMessageEvent(doc, nativeMessageView(doc, "live"), own, ownLID))
+	if err := json.Unmarshal(raw, &got); err != nil || got.Message.Conversation != "" || got.Message.FileName != "" {
+		t.Fatalf("disappearing document: %s", raw)
+	}
+	// A live edit stays a ProtocolMessage envelope after whatsmeow's unwrap.
+	edit := testNativeMessage("")
+	edit.IsEdit = true
+	edit.Message = &waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{Type: waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(), Key: &waCommon.MessageKey{ID: proto.String("3EB0SENT")}, EditedMessage: &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{Caption: proto.String("new caption"), FileName: proto.String("LT-2026-1008-001.pdf")}}}}
+	got = contextEvent{}
+	raw, _ = json.Marshal(nativeMessageEvent(edit, nativeMessageView(edit, "live"), own, ownLID))
+	if err := json.Unmarshal(raw, &got); err != nil || got.Info.ID != "3EB0SENT" || !got.Info.Edited || got.Kind != "document" || got.Message.Conversation != "new caption" || got.Message.FileName != "LT-2026-1008-001.pdf" {
+		t.Fatalf("edited document: %s", raw)
+	}
+	for _, tc := range []struct {
+		name, author string
+		keepsActor   bool
+	}{{"admin revoke", "555555555@lid", false}, {"own revoke", "987654321@lid", true}} {
+		revoke := testNativeMessage("")
+		revoke.Info.MessageSource = types.MessageSource{Chat: types.NewJID("120363000000000001", types.GroupServer), Sender: types.NewJID("987654321", types.HiddenUserServer), SenderAlt: types.NewJID("5511988887777", types.DefaultUserServer), IsGroup: true}
+		revoke.Info.PushName = "Ana"
+		revoke.Message = &waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{Type: waE2E.ProtocolMessage_REVOKE.Enum(), Key: &waCommon.MessageKey{ID: proto.String("3EB0GONE"), Participant: proto.String(tc.author)}}}
+		got = contextEvent{}
+		raw, _ = json.Marshal(nativeMessageEvent(revoke, nativeMessageView(revoke, "live"), own, ownLID))
+		if err := json.Unmarshal(raw, &got); err != nil || got.Kind != "deleted" || got.Info.Source.Sender != tc.author || (got.Info.Source.SenderAlt != nil) != tc.keepsActor || (got.Info.PushName == "Ana") != tc.keepsActor {
+			t.Fatalf("%s: %s", tc.name, raw)
 		}
 	}
 }

@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket};
 use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
@@ -82,24 +83,28 @@ async fn handle_connection(
     };
 
     // 2. Dial the upstream engine listener.
-    let (engine, _resp) = match tokio_tungstenite::connect_async(cfg.engine_url.as_str()).await {
-        Ok(pair) => pair,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                engine_url = %crate::redact_url(&cfg.engine_url),
-                "failed to dial upstream engine; closing downstream"
-            );
-            let mut client = client;
-            let _ = client
-                .send(AxumMessage::Close(Some(AxumCloseFrame {
-                    code: 1011, // internal error
-                    reason: "engine WS dial failed".into(),
-                })))
-                .await;
-            return;
-        }
-    };
+    // Nagle off toward the engine too (small frames, see server.rs).
+    let (engine, _resp) =
+        match tokio_tungstenite::connect_async_with_config(cfg.engine_url.as_str(), None, true)
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    engine_url = %crate::redact_url(&cfg.engine_url),
+                    "failed to dial upstream engine; closing downstream"
+                );
+                let mut client = client;
+                let _ = client
+                    .send(AxumMessage::Close(Some(AxumCloseFrame {
+                        code: 1011, // internal error
+                        reason: "engine WS dial failed".into(),
+                    })))
+                    .await;
+                return;
+            }
+        };
 
     state.active.fetch_add(1, Ordering::Relaxed);
     let _guard = ActiveGuard(state.active.clone());
@@ -124,9 +129,12 @@ async fn handle_connection(
     let (client_out, mut client_out_rx) = mpsc::channel::<AxumMessage>(128);
     let (engine_out, mut engine_out_rx) = mpsc::channel::<TungMessage>(128);
 
-    let client_writer = tokio::spawn(async move {
+    // The writer stops after a Close, so the proxy-initiated close below can
+    // wait for it to flush what was queued before it.
+    let mut client_writer = tokio::spawn(async move {
         while let Some(m) = client_out_rx.recv().await {
-            if client_sink.send(m).await.is_err() {
+            let is_close = matches!(m, AxumMessage::Close(_));
+            if client_sink.send(m).await.is_err() || is_close {
                 break;
             }
         }
@@ -156,6 +164,7 @@ async fn handle_connection(
     });
 
     // Direction A: downstream worker → engine (intercept Text frames).
+    // Resolves to `true` when the proxy itself closed the connection.
     let a_int = interceptor.clone();
     let a_client_out = client_out.clone();
     let a_engine_out = engine_out.clone();
@@ -176,9 +185,18 @@ async fn handle_connection(
                         }
                     }
                     DownstreamAction::Drop => {}
+                    DownstreamAction::Close(replies) => {
+                        for reply in replies {
+                            if a_client_out.send(AxumMessage::Text(reply)).await.is_err() {
+                                break;
+                            }
+                        }
+                        let _ = a_client_out.send(AxumMessage::Close(None)).await;
+                        return true;
+                    }
                 },
                 other => {
-                    if let Some(out) = axum_to_tungstenite(other) {
+                    if let Some(out) = client_frame_to_engine(other) {
                         if a_engine_out.send(out).await.is_err() {
                             break;
                         }
@@ -189,6 +207,7 @@ async fn handle_connection(
                 break;
             }
         }
+        false
     };
 
     // Direction B: engine → downstream worker (rewrite Text frames).
@@ -199,12 +218,14 @@ async fn handle_connection(
             let Ok(msg) = msg else { break };
             let is_close = matches!(msg, TungMessage::Close(_));
             match msg {
-                TungMessage::Text(t) => {
-                    let UpstreamAction::Forward(out) = b_int.handle_upstream(t.as_str()).await;
-                    if b_client_out.send(AxumMessage::Text(out)).await.is_err() {
-                        break;
+                TungMessage::Text(t) => match b_int.handle_upstream(t.as_str()).await {
+                    UpstreamAction::Forward(out) => {
+                        if b_client_out.send(AxumMessage::Text(out)).await.is_err() {
+                            break;
+                        }
                     }
-                }
+                    UpstreamAction::Drop => {}
+                },
                 other => {
                     if let Some(out) = tungstenite_to_axum(other) {
                         if b_client_out.send(out).await.is_err() {
@@ -219,9 +240,15 @@ async fn handle_connection(
         }
     };
 
-    tokio::select! {
-        _ = client_to_engine => {}
-        _ = engine_to_client => {}
+    let closed_by_proxy = tokio::select! {
+        closed = client_to_engine => closed,
+        _ = engine_to_client => false,
+    };
+
+    // A proxy-initiated close queued its answer and a Close: let the writer
+    // flush them (bounded) before the sockets are dropped.
+    if closed_by_proxy {
+        let _ = tokio::time::timeout(Duration::from_secs(2), &mut client_writer).await;
     }
 
     // One side closed: tear the connection down promptly. Aborting the writers
@@ -272,6 +299,18 @@ fn query_to_multi_map(query: Option<&str>) -> HashMap<String, Vec<String>> {
         }
     }
     map
+}
+
+/// A non-text frame from the downstream worker, as it may reach the engine.
+/// Binary is dropped: only text frames pass the interceptor, and the engine
+/// decodes a binary frame as a protocol message, so one would reach the
+/// trusted listener with no RBAC and no middleware.
+pub(crate) fn client_frame_to_engine(msg: AxumMessage) -> Option<TungMessage> {
+    if matches!(msg, AxumMessage::Binary(_)) {
+        tracing::warn!("dropping a binary frame from the downstream worker");
+        return None;
+    }
+    axum_to_tungstenite(msg)
 }
 
 /// Convert an axum `Message` into a tungstenite `Message` (verbatim from
@@ -329,6 +368,14 @@ mod tests {
         assert!(matches!(&tung, TungMessage::Text(s) if s.as_str() == "hello"));
         let back = tungstenite_to_axum(tung).unwrap();
         assert!(matches!(&back, AxumMessage::Text(s) if s.as_str() == "hello"));
+    }
+
+    #[test]
+    fn client_binary_never_reaches_the_engine() {
+        let frame = br#"{"type":"invokefunction","invocation_id":"x","function_id":"engine::functions::list","data":{}}"#;
+        assert!(client_frame_to_engine(AxumMessage::Binary(frame.to_vec())).is_none());
+        let ping = client_frame_to_engine(AxumMessage::Ping(vec![1])).unwrap();
+        assert!(matches!(ping, TungMessage::Ping(_)));
     }
 
     #[test]

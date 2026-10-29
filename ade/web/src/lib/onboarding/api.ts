@@ -713,6 +713,29 @@ async function countProviderModels(providerId: string): Promise<number> {
 }
 
 /**
+ * A provider that signs in by itself answered that its session has to be
+ * signed in again (rejected, expired, or none): waiting cannot fix that, so
+ * the step fails at once and setup offers the sign-in.
+ */
+export class SignInRequiredError extends Error {
+  readonly providerId: string
+
+  constructor(providerId: string, message: string) {
+    super(message)
+    this.name = 'SignInRequiredError'
+    this.providerId = providerId
+  }
+}
+
+/** `provider/auth_expired`, `provider/models_auth_expired`, `provider/models_not_configured`. */
+const SIGN_IN_CODE = /^provider\/(models_)?(auth_expired|not_configured)$/
+
+function needsSignIn(error: unknown): boolean {
+  const code = asString(asRecord(error)?.code)
+  return code !== undefined && SIGN_IN_CODE.test(code)
+}
+
+/**
  * Wait for the provider's chat models to reach the router: re-read once per
  * `router::models::changed` / `router::provider::changed` event about it (a
  * catalog reconciled, the provider registered or came back).
@@ -738,7 +761,9 @@ async function waitForModels(
         (provider) => provider.id === providerId,
       )
       if (state?.credentialError) throw new Error(state.credentialError)
-      if (!state?.configured) {
+      // The router holds no key for a provider that signs in by itself, so
+      // it never reads as configured: that one is asked once registered.
+      if (!state?.configured && !state?.ownsAuthentication) {
         report({
           note: state
             ? `Waiting for ${title} to list its models`
@@ -751,20 +776,31 @@ async function waitForModels(
       // now beats a timeout a minute and a half later. The answer also
       // arrives as a `router::models::changed` event, which asks once more.
       report({ note: `Waiting on response from ${title}` })
-      const refreshed = await client
-        .trigger<{ count?: number }>(
+      const signsIn = state?.ownsAuthentication === true
+      let refreshed: { count?: number } | null = null
+      let refusal: string | undefined
+      try {
+        refreshed = await client.trigger<{ count?: number }>(
           `provider::${providerId}::refresh_models`,
           {},
           { timeoutMs: 30_000 },
         )
-        .catch(() => null)
+      } catch (error) {
+        if (signsIn && needsSignIn(error)) {
+          throw new SignInRequiredError(providerId, readableError(error))
+        }
+        refusal = readableError(error)
+      }
       asked++
       if ((refreshed?.count ?? 0) > 0) {
         const listed = await countProviderModels(providerId)
         if (listed > 0) return found(listed)
       } else if (asked >= 2) {
         throw new Error(
-          `${title} returned no models for this key. Check that the key is valid and has API access, then connect again — or paste a different key.`,
+          signsIn
+            ? (refusal ??
+                `${title} returned no models. Check its sign-in in the model picker.`)
+            : `${title} returned no models for this key. Check that the key is valid and has API access, then connect again — or paste a different key.`,
         )
       }
       return null

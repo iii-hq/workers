@@ -160,25 +160,28 @@ async fn summarise(
     }
 
     let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
-    let summary = match summarize_head(deps, model, head, input_budget, steering).await {
-        Ok(summary) => summary,
-        // `empty` means "nothing to compact"; a blank summary is the
-        // summariser failing on a non-empty head.
-        Err(SummarizeError::Empty) => {
-            tracing::error!("summariser produced an empty summary");
-            return CompactResponse::Overflow;
-        }
-        Err(err @ SummarizeError::Unavailable(_)) => {
-            // Spec: without llm-router, compact returns overflow with a
-            // permanent error_kind in the worker log.
-            tracing::error!(error = %err, error_kind = "permanent", "compaction unavailable");
-            return CompactResponse::Overflow;
-        }
-        Err(err) => {
-            tracing::error!(error = %err, "summariser failed");
-            return CompactResponse::Overflow;
-        }
-    };
+    // A direct compaction takes no per-request cap: the configured one.
+    let max_result_tokens = deps.config().await.max_result_tokens;
+    let summary =
+        match summarize_head(deps, model, head, input_budget, max_result_tokens, steering).await {
+            Ok(summary) => summary,
+            // `empty` means "nothing to compact"; a blank summary is the
+            // summariser failing on a non-empty head.
+            Err(SummarizeError::Empty) => {
+                tracing::error!("summariser produced an empty summary");
+                return CompactResponse::Overflow;
+            }
+            Err(err @ SummarizeError::Unavailable(_)) => {
+                // Spec: without llm-router, compact returns overflow with a
+                // permanent error_kind in the worker log.
+                tracing::error!(error = %err, error_kind = "permanent", "compaction unavailable");
+                return CompactResponse::Overflow;
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "summariser failed");
+                return CompactResponse::Overflow;
+            }
+        };
 
     let tokens_after = estimator.text(&summary) + sizes[selection.head_len..].iter().sum::<u64>();
 

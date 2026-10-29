@@ -10,7 +10,7 @@ use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 
-use fp::{condition, configuration, guidance, pipe, util};
+use fp::{batch, condition, configuration, guidance, pipe, util};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -104,6 +104,15 @@ fn register_functions(iii: &Arc<IIIClient>) {
             async move { pipe::run(&iii, req).await.map_err(Error::Handler) }
         })
         .description(pipe::PIPE_DESC),
+    );
+    let engine = iii.clone();
+    iii.register_function(
+        batch::BATCH_ID,
+        RegisterFunction::new_async(move |req: batch::BatchRequest| {
+            let iii = engine.clone();
+            async move { batch::run(iii, req).await.map_err(Error::Handler) }
+        })
+        .description(batch::BATCH_DESC),
     );
 
     register_util(iii, util::GET_ID, util::GET_DESC, |r: util::GetRequest| {

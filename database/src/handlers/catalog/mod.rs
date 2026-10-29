@@ -42,6 +42,11 @@ pub struct TableRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
     pub kind: TableKind,
+    /// The planner's row estimate where the catalog keeps one cheaply
+    /// (postgres `reltuples`, mysql `TABLE_ROWS`); absent for sqlite, views
+    /// and never-analyzed tables. An estimate, never a count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_count_estimate: Option<i64>,
 }
 
 /// Where a foreign key points. Structured rather than a `"table.column"`
@@ -68,6 +73,12 @@ pub struct ColumnDesc {
     pub position: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub foreign_key: Option<ForeignKeyRef>,
+    /// The database fills it in: postgres identity or `nextval` default,
+    /// mysql `AUTO_INCREMENT`, sqlite `INTEGER PRIMARY KEY` (the rowid).
+    pub auto_increment: bool,
+    /// Computed from other columns (`GENERATED ALWAYS AS …`); cannot be
+    /// written.
+    pub generated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -126,6 +137,8 @@ pub async fn run(
             timeout_ms,
             // Catalog reads are the page's plumbing, not the user's queries.
             record_history: false,
+            max_rows: None,
+            query_only: false,
         },
     )
     .await?;

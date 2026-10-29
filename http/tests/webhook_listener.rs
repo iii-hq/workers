@@ -90,6 +90,7 @@ async fn bind(
     if let Some(public) = public {
         config["public_webhook"] = json!(public);
     }
+    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
     let trigger = engine
         .iii
         .register_trigger(RegisterTriggerInput::new("http", id, config))
@@ -451,6 +452,7 @@ async fn brace_parameter_route_serves_and_extracts_path_params() {
         "api_path": "/users/{userId}/tasks/{tid}",
         "http_method": "GET",
     });
+    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
     let _trigger = engine
         .iii
         .register_trigger(RegisterTriggerInput::new("http", id, trigger_config))

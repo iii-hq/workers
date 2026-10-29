@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleArrowUp,
   Lock,
   Settings2,
   SlidersHorizontal,
@@ -11,6 +12,7 @@ import {
 import {
   type ReactNode,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -21,7 +23,13 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from '@/components/shadcn/popover'
-import { type AgentEntry, listAgents } from '@/lib/backend/directory-prompts'
+import {
+  type AgentEntry,
+  type KitUpdateEntry,
+  listAgents,
+  listKitUpdates,
+} from '@/lib/backend/directory-prompts'
+import { serialRefresh } from '@/lib/backend/serial-refresh'
 import { getIiiClient } from '@/lib/iii-client'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { cn } from '@/lib/utils'
@@ -48,6 +56,8 @@ export interface AgentProfilePickerProps {
     options?: AgentProfileChangeOptions,
   ) => void
   preselectDefaultAgent?: boolean
+  /** Deterministic kit updates for stories/tests; omitted reads the Directory. */
+  kitUpdates?: KitUpdateEntry[]
   /** An established conversation keeps its frozen profile; details remain accessible. */
   selectionLocked?: boolean
   details?: ReactNode
@@ -77,6 +87,61 @@ function AgentGlyph({
   )
 }
 
+const KITS_ON_CHANGE = 'directory::kits::on-change'
+
+/**
+ * Installed kits with a newer release, for the profiles they own. Read
+ * again whenever the Directory applies a kit or its update check changes
+ * the set, so an update applied from the panel this picker opened clears.
+ */
+function useKitUpdates(provided: KitUpdateEntry[] | undefined) {
+  const [loaded, setLoaded] = useState<KitUpdateEntry[]>([])
+  const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
+
+  useEffect(() => {
+    if (provided !== undefined) return
+    let cancelled = false
+    const offs: Array<() => void> = []
+    void getIiiClient()
+      .then((client) => {
+        if (cancelled) return
+        // One read in flight, so an older list never lands after a newer one.
+        // A failed read (no kits support in this Directory) changes nothing.
+        const { refresh: read, reset } = serialRefresh(
+          () => listKitUpdates(client),
+          setLoaded,
+        )
+        offs.push(reset)
+        // Per-mount id: the route chat and the dock can both show a picker.
+        const fnId = `console::kit-updates::${instanceId}`
+        try {
+          offs.push(
+            client.on<{ op?: unknown }>(fnId, (change) => {
+              if (change?.op === 'apply' || change?.op === 'updates') read()
+            }),
+          )
+          offs.push(
+            client.registerTrigger({
+              type: KITS_ON_CHANGE,
+              function_id: `${fnId}::${client.browserId}`,
+              config: {},
+            }),
+          )
+        } catch {
+          // No kit events from this Directory: the first read stands.
+        }
+        read()
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      for (const off of offs) off()
+    }
+  }, [provided, instanceId])
+
+  return provided ?? loaded
+}
+
 export function AgentProfilePicker({
   systemPrompt,
   onSystemPromptChange,
@@ -84,10 +149,17 @@ export function AgentProfilePicker({
   agentProfile,
   onAgentProfileChange,
   preselectDefaultAgent = false,
+  kitUpdates,
   selectionLocked = false,
   details,
 }: AgentProfilePickerProps) {
   const [open, setOpen] = useState(false)
+  const updates = useKitUpdates(kitUpdates)
+  const markerBase = useId()
+  const updateFor = (entry: AgentEntry | undefined) =>
+    entry?.source?.kit
+      ? updates.find((update) => update.kit === entry.source?.kit)
+      : undefined
   const detailsRef = useRef<HTMLDivElement>(null)
   const [entries, setEntries] = useState<AgentEntry[] | null>(null)
   const [error, setError] = useState(false)
@@ -134,6 +206,8 @@ export function AgentProfilePicker({
 
   const activeId = selectedId ?? preselect?.id
   const selected = agents.find((entry) => entry.id === activeId)
+  // A kit with several profiles offers one action: on the chosen profile.
+  const selectedUpdate = updateFor(selected)
   const label =
     agentProfile?.name ||
     selected?.name ||
@@ -170,6 +244,15 @@ export function AgentProfilePicker({
       >
         <Bot aria-hidden className="size-4 shrink-0" />
         <span className="max-w-32 truncate">{label}</span>
+        {selectedUpdate ? (
+          <span
+            aria-hidden
+            className={cn(
+              'size-1.5 shrink-0 rounded-full',
+              selectedUpdate.major ? 'bg-warn' : 'bg-accent',
+            )}
+          />
+        ) : null}
         <ChevronDown aria-hidden className="size-4 shrink-0" />
       </PopoverTrigger>
       <PopoverContent
@@ -223,12 +306,15 @@ export function AgentProfilePicker({
         >
           {agents.map((entry) => {
             const active = entry.id === activeId
+            const update = active ? undefined : updateFor(entry)
+            const markerId = `${markerBase}-${entry.id}`
             return (
               <button
                 key={entry.id}
                 type="button"
                 aria-label={`Use ${entry.name.trim() || entry.id} agent profile`}
                 aria-pressed={active}
+                aria-describedby={update ? markerId : undefined}
                 disabled={selectionLocked}
                 className={cn(
                   'group/agent flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors duration-100 focus-visible:outline-2 focus-visible:outline-rule-focus disabled:cursor-default',
@@ -251,6 +337,25 @@ export function AgentProfilePicker({
                       {entry.description}
                     </span>
                   ) : null}
+                  {update ? (
+                    <span
+                      id={markerId}
+                      className="mt-1 flex items-center gap-1.5 text-xs text-ink-faint"
+                    >
+                      <CircleArrowUp
+                        aria-hidden
+                        className={cn(
+                          'size-4 shrink-0',
+                          update.major ? 'text-warn' : 'text-accent',
+                        )}
+                      />
+                      <span>
+                        {update.major ? 'Major update' : 'Update'}{' '}
+                        <span className="tabular-nums">{update.available}</span>
+                        <span className="sr-only"> available</span>
+                      </span>
+                    </span>
+                  ) : null}
                 </span>
                 <Check
                   aria-hidden
@@ -263,6 +368,41 @@ export function AgentProfilePicker({
             )
           })}
         </fieldset>
+        {selectedUpdate ? (
+          <button
+            type="button"
+            title={`${selectedUpdate.kit} ${selectedUpdate.current} → ${selectedUpdate.available} · opens in Directory`}
+            className="mt-0.5 flex h-9 w-full shrink-0 items-center gap-3 rounded-lg px-2.5 text-left text-sm text-ink transition-colors duration-100 hover:bg-surface-hover/60 focus-visible:outline-2 focus-visible:outline-rule-focus"
+            onClick={() => {
+              setOpen(false)
+              requestPanelOpen({
+                pageId: 'directory',
+                context: { collection: 'kits', kit: selectedUpdate.kit },
+              })
+            }}
+          >
+            <CircleArrowUp
+              aria-hidden
+              className={cn(
+                'size-4 shrink-0',
+                selectedUpdate.major ? 'text-warn' : 'text-accent',
+              )}
+            />
+            <span className="min-w-0 flex-1 truncate">
+              {selectedUpdate.major ? (
+                'Review major update'
+              ) : (
+                <>
+                  Review update{' '}
+                  <span className="tabular-nums">
+                    {selectedUpdate.available}
+                  </span>
+                </>
+              )}
+              <span className="sr-only">, {selectedUpdate.kit} kit</span>
+            </span>
+          </button>
+        ) : null}
         <div aria-hidden className="mx-1 my-1.5 h-px shrink-0 bg-edge" />
         <button
           type="button"

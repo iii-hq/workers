@@ -14,23 +14,37 @@ pub async fn query(
     pool: &MysqlPool,
     sql: &str,
     params: &[JsonParam],
-    timeout_ms: u64,
+    opts: crate::driver::ReadOptions,
 ) -> Result<QueryResult, DbError> {
+    let timeout_ms = opts.timeout_ms;
     let mut conn = pool.acquire().await?;
+    let started = std::time::Instant::now();
     let bound = bind_params(params);
 
     // mysql_async's `exec_iter` resolves once the server returns column
-    // metadata; row payloads are streamed lazily by `collect()`. Wrapping
-    // only `exec_iter` would leave row collection unbounded — a slow-row
-    // query (e.g., per-row SLEEP, or a slow scan) would silently bypass
-    // `timeout_ms`. Wrap the whole prepare→stream pipeline.
+    // metadata; row payloads are streamed lazily. Wrapping only `exec_iter`
+    // would leave row collection unbounded — a slow-row query (e.g.,
+    // per-row SLEEP, or a slow scan) would silently bypass `timeout_ms`.
+    // Wrap the whole prepare→stream pipeline.
     let work = async {
+        if let Some(max) = opts.max_rows {
+            // The server stops a top-level SELECT after max+1 rows without
+            // the SQL being rewritten (an explicit LIMIT in it still wins;
+            // the client cap below covers that). Session-scoped; the pool
+            // resets the connection when it comes back.
+            conn.query_drop(format!(
+                "SET SESSION sql_select_limit = {}",
+                max.saturating_add(1)
+            ))
+            .await
+            .map_err(map_err)?;
+        }
         // `database::query` is the READ surface a narrowed agent policy
         // grants; the server enforces it: SET TRANSACTION READ ONLY applies
         // to the statement's implicit transaction, so a write fails with
         // ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION instead of landing. The
         // flag is consumed by that transaction — the pooled conn reverts to
-        // normal afterwards.
+        // normal afterwards. A prepared statement is always one statement.
         conn.query_drop("SET TRANSACTION READ ONLY")
             .await
             .map_err(map_err)?;
@@ -43,15 +57,44 @@ pub async fn query(
                 ty: sql_type_name(c),
             })
             .collect();
-        let raw_rows: Vec<mysql_async::Row> = result.collect().await.map_err(map_err)?;
-        Ok::<_, DbError>((cols, raw_rows))
+        let (raw_rows, truncated) = match opts.max_rows {
+            None => (
+                result
+                    .collect::<mysql_async::Row>()
+                    .await
+                    .map_err(map_err)?,
+                false,
+            ),
+            Some(max) => {
+                let mut rows = Vec::new();
+                let mut truncated = false;
+                while let Some(row) = result.next().await.map_err(map_err)? {
+                    if rows.len() as u64 >= max {
+                        truncated = true;
+                        break;
+                    }
+                    rows.push(row);
+                }
+                // Whatever the server still sends is read off the wire and
+                // dropped, never materialized.
+                drop(result);
+                (rows, truncated)
+            }
+        };
+        if opts.max_rows.is_some() {
+            let _ = conn
+                .query_drop("SET SESSION sql_select_limit = DEFAULT")
+                .await;
+        }
+        Ok::<_, DbError>((cols, raw_rows, truncated))
     };
-    let (cols, raw_rows) = tokio::time::timeout(Duration::from_millis(timeout_ms), work)
+    let (cols, raw_rows, truncated) = tokio::time::timeout(Duration::from_millis(timeout_ms), work)
         .await
         .map_err(|_| DbError::QueryTimeout {
             db: "(mysql)".into(),
             timeout_ms,
         })??;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
 
     let mut out_rows: Vec<Row> = Vec::with_capacity(raw_rows.len());
     for row in raw_rows {
@@ -61,6 +104,8 @@ pub async fn query(
     Ok(QueryResult {
         columns: cols,
         rows: out_rows,
+        truncated,
+        elapsed_ms,
     })
 }
 
@@ -81,6 +126,13 @@ fn sql_type_name(col: &mysql_async::Column) -> String {
     use mysql_async::consts::{ColumnFlags, ColumnType::*};
 
     let binary = col.character_set() == BINARY_CHARSET;
+    // ENUM and SET travel as strings; only the flags tell them apart.
+    if col.flags().contains(ColumnFlags::ENUM_FLAG) {
+        return "enum".into();
+    }
+    if col.flags().contains(ColumnFlags::SET_FLAG) {
+        return "set".into();
+    }
     let name = match col.column_type() {
         MYSQL_TYPE_TINY => "tinyint",
         MYSQL_TYPE_SHORT => "smallint",
@@ -168,16 +220,107 @@ fn json_param_to_my(p: &JsonParam) -> MyValue {
 }
 
 fn row_cells(row: &mysql_async::Row) -> Vec<RowValue> {
-    let mut cells = Vec::with_capacity(row.columns_ref().len());
-    for i in 0..row.columns_ref().len() {
+    let columns = row.columns_ref();
+    let mut cells = Vec::with_capacity(columns.len());
+    for (i, col) in columns.iter().enumerate() {
         let v: MyValue = row.as_ref(i).cloned().unwrap_or(MyValue::NULL);
-        cells.push(my_to_row_value(v));
+        cells.push(my_cell(col, v));
     }
     cells
 }
 
-/// Also the binlog capture path's encoder, so a primary key in a
-/// `row-changed` event reads exactly like the same column in `database::query`.
+/// A result cell, typed by its column (the binary protocol alone cannot
+/// tell `binary(4)` from text, a `date` from a `datetime`, or `json` from a
+/// string):
+///
+/// | column | JSON |
+/// |---|---|
+/// | integers, `year` | number (`bigint unsigned`: string, it may exceed i64) |
+/// | `decimal` | string |
+/// | `float`, `double` | number |
+/// | `date` | `"YYYY-MM-DD"` |
+/// | `datetime`, `timestamp` | RFC 3339 with `Z`, fraction when non-zero (read as UTC, the shape postgres `timestamp` has) |
+/// | `time` | `"[-]HH:MM:SS[.ffffff]"`, hours past 24 as MySQL prints them |
+/// | `json` | the JSON value |
+/// | `bit(n)` | string of n `0`/`1` |
+/// | `binary`, `varbinary`, `blob`, `geometry` | base64 |
+/// | `char`, `varchar`, `text`, `enum`, `set` | string (`set` as `a,b`) |
+fn my_cell(col: &mysql_async::Column, v: MyValue) -> RowValue {
+    use mysql_async::consts::{ColumnFlags, ColumnType::*};
+    if matches!(v, MyValue::NULL) {
+        return RowValue::Null;
+    }
+    let binary = col.character_set() == BINARY_CHARSET;
+    let unsigned = col.flags().contains(ColumnFlags::UNSIGNED_FLAG);
+    match col.column_type() {
+        MYSQL_TYPE_LONGLONG if unsigned => match v {
+            MyValue::UInt(u) => RowValue::Decimal(u.to_string()),
+            MyValue::Int(i) => RowValue::Decimal(i.to_string()),
+            other => my_to_row_value(other),
+        },
+        MYSQL_TYPE_DECIMAL | MYSQL_TYPE_NEWDECIMAL => match v {
+            MyValue::Bytes(b) => RowValue::Decimal(String::from_utf8_lossy(&b).into_owned()),
+            other => my_to_row_value(other),
+        },
+        MYSQL_TYPE_DATE | MYSQL_TYPE_NEWDATE => match v {
+            MyValue::Date(y, mo, d, ..) => RowValue::Text(format!("{y:04}-{mo:02}-{d:02}")),
+            other => my_to_row_value(other),
+        },
+        MYSQL_TYPE_DATETIME
+        | MYSQL_TYPE_DATETIME2
+        | MYSQL_TYPE_TIMESTAMP
+        | MYSQL_TYPE_TIMESTAMP2 => my_to_row_value(v),
+        MYSQL_TYPE_JSON => match v {
+            MyValue::Bytes(b) => match serde_json::from_slice(&b) {
+                Ok(json) => RowValue::Json(json),
+                Err(_) => RowValue::Text(String::from_utf8_lossy(&b).into_owned()),
+            },
+            other => my_to_row_value(other),
+        },
+        MYSQL_TYPE_BIT => match v {
+            MyValue::Bytes(b) => {
+                let n = (col.column_length() as usize).clamp(1, b.len() * 8);
+                let all: String = b.iter().map(|byte| format!("{byte:08b}")).collect();
+                RowValue::Text(all[all.len() - n..].to_string())
+            }
+            MyValue::UInt(u) => RowValue::Text(format!("{u:b}")),
+            MyValue::Int(i) => RowValue::Text(format!("{i:b}")),
+            other => my_to_row_value(other),
+        },
+        MYSQL_TYPE_STRING
+        | MYSQL_TYPE_VAR_STRING
+        | MYSQL_TYPE_VARCHAR
+        | MYSQL_TYPE_TINY_BLOB
+        | MYSQL_TYPE_MEDIUM_BLOB
+        | MYSQL_TYPE_LONG_BLOB
+        | MYSQL_TYPE_BLOB
+        | MYSQL_TYPE_GEOMETRY
+            if binary =>
+        {
+            match v {
+                MyValue::Bytes(b) => RowValue::Bytes(b),
+                other => my_to_row_value(other),
+            }
+        }
+        _ => my_to_row_value(v),
+    }
+}
+
+/// `[-]HH:MM:SS[.ffffff]` — a MySQL TIME is a duration (−838:59:59 to
+/// 838:59:59), printed the way MySQL prints it.
+fn my_time(neg: bool, days: u32, h: u8, m: u8, s: u8, us: u32) -> String {
+    let hours = u64::from(days) * 24 + u64::from(h);
+    let mut out = format!("{}{hours:02}:{m:02}:{s:02}", if neg { "-" } else { "" });
+    if us > 0 {
+        out.push('.');
+        out.push_str(format!("{us:06}").trim_end_matches('0'));
+    }
+    out
+}
+
+/// Also the binlog capture path's encoder (which has no column metadata),
+/// so a primary key in a `row-changed` event reads like the same column in
+/// `database::query` wherever the value alone decides.
 pub(crate) fn my_to_row_value(v: MyValue) -> RowValue {
     match v {
         MyValue::NULL => RowValue::Null,
@@ -191,19 +334,22 @@ pub(crate) fn my_to_row_value(v: MyValue) -> RowValue {
         }
         MyValue::Float(f) => RowValue::Float(f as f64),
         MyValue::Double(f) => RowValue::Float(f),
-        MyValue::Bytes(b) => match std::str::from_utf8(&b) {
-            Ok(s) => RowValue::Text(s.to_string()),
-            Err(_) => RowValue::Bytes(b),
+        MyValue::Bytes(b) => match String::from_utf8(b) {
+            Ok(s) => RowValue::Text(s),
+            Err(e) => RowValue::Bytes(e.into_bytes()),
         },
-        MyValue::Date(y, mo, d, h, mi, s, _us) => {
-            use chrono::{TimeZone, Utc};
-            match Utc.with_ymd_and_hms(y as i32, mo as u32, d as u32, h as u32, mi as u32, s as u32)
+        MyValue::Date(y, mo, d, h, mi, s, us) => {
+            use chrono::{NaiveDate, TimeZone, Utc};
+            match NaiveDate::from_ymd_opt(y.into(), mo.into(), d.into())
+                .and_then(|date| date.and_hms_micro_opt(h.into(), mi.into(), s.into(), us))
             {
-                chrono::LocalResult::Single(t) => RowValue::Timestamp(t),
-                _ => RowValue::Null,
+                Some(naive) => RowValue::Timestamp(Utc.from_utc_datetime(&naive)),
+                // Zero dates (`0000-00-00 …`) have no calendar value: as
+                // MySQL prints them.
+                None => RowValue::Text(format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}")),
             }
         }
-        MyValue::Time(_, _, _, _, _, _) => RowValue::Text(format!("{v:?}")),
+        MyValue::Time(neg, days, h, m, s, us) => RowValue::Text(my_time(neg, days, h, m, s, us)),
     }
 }
 
@@ -233,8 +379,10 @@ pub async fn execute(
         );
     }
     let mut conn = pool.acquire().await?;
+    let started = std::time::Instant::now();
     let bound = bind_params(params);
     conn.exec_drop(sql, bound).await.map_err(map_err)?;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
     let affected = conn.affected_rows();
     // mysql_async's last_insert_id() is sticky per-connection: an UPDATE on
     // a pool-reused connection that previously ran an INSERT will still
@@ -250,6 +398,7 @@ pub async fn execute(
         last_insert_id,
         returned_rows: vec![],
         returned_columns: vec![],
+        elapsed_ms,
     })
 }
 
@@ -405,8 +554,7 @@ pub async fn tx_execute(
     Ok(ExecuteResult {
         affected_rows: affected,
         last_insert_id,
-        returned_rows: vec![],
-        returned_columns: vec![],
+        ..Default::default()
     })
 }
 
@@ -430,6 +578,8 @@ pub async fn run_prepared(
     Ok(QueryResult {
         columns: cols,
         rows: out_rows,
+        truncated: false,
+        elapsed_ms: 0,
     })
 }
 
@@ -455,9 +605,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn my_query_returns_int_text_null() {
         let Some(p) = pool().await else { return };
-        let r = query(&p, "SELECT 1 AS a, 'x' AS b, NULL AS c", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT 1 AS a, 'x' AS b, NULL AS c",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(r.columns.len(), 3);
         assert!(matches!(
             &r.rows[0].0[0],
@@ -474,7 +632,10 @@ mod tests {
             &p,
             "SELECT ? + ? AS sum",
             &[JsonParam::Int(40), JsonParam::Int(2)],
-            30_000,
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
@@ -581,9 +742,17 @@ mod tests {
         ];
         let err = transaction(&p, stmts, None).await.unwrap_err();
         assert!(matches!(err, DbError::DriverError { .. }));
-        let r = query(&p, "SELECT COUNT(*) AS c FROM db_w_tx2", &[], 30_000)
-            .await
-            .unwrap();
+        let r = query(
+            &p,
+            "SELECT COUNT(*) AS c FROM db_w_tx2",
+            &[],
+            crate::driver::ReadOptions {
+                timeout_ms: 30_000,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             &r.rows[0].0[0],
             RowValue::Int(0) | RowValue::BigInt(0)
@@ -608,7 +777,10 @@ mod tests {
             &p,
             "SELECT SLEEP(2), n FROM (SELECT 1 AS n UNION SELECT 2 UNION SELECT 3) AS t",
             &[],
-            500,
+            crate::driver::ReadOptions {
+                timeout_ms: 500,
+                ..Default::default()
+            },
         )
         .await;
         let elapsed = start.elapsed();

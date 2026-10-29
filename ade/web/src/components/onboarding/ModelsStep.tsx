@@ -63,7 +63,8 @@ export function ModelsStep({
   onBack: () => void
   onNext: () => void
 }) {
-  const { snapshot, scanning, refresh, activity, running, run } = onboarding
+  const { snapshot, scanning, refresh, activity, running, run, signInNeeded } =
+    onboarding
   const [registry, setRegistry] = useState<RegistryProviderRow[]>([])
   const [drafts, setDrafts] = useState<ReadonlyMap<string, Draft>>(new Map())
 
@@ -158,7 +159,9 @@ export function ModelsStep({
   const selections: ProviderSelection[] = all
     .filter(
       (choice) =>
-        !choice.ready && draftFor(choice).selected && !awaitingSignIn(choice),
+        !choice.ready &&
+        draftFor(choice).selected &&
+        !awaitingSignIn(choice, signInNeeded),
     )
     .map((choice) => ({ choice, key: draftFor(choice).key }))
   const removals = all.filter(
@@ -174,6 +177,8 @@ export function ModelsStep({
     removals,
   )
   const log = activity.filter((entry) => entry.group === 'models')
+  // A failed Connect leaves a way on: retrying is not the only choice.
+  const failed = log.at(-1)?.status === 'failed'
   const busy = running !== null
   const anyReady = all.some((choice) => choice.ready)
   const changes = selections.length + removals.length
@@ -188,6 +193,16 @@ export function ModelsStep({
     setDrafts(draftsAfterConnect(drafts))
     onNext()
   }
+
+  /** A sign-in from here landed: wait for its models, as Connect would. */
+  const waitForSignedIn = (choice: ProviderChoice) =>
+    void run('models', [
+      {
+        kind: 'wait-models',
+        providerId: choice.providerId,
+        title: choice.title,
+      },
+    ])
 
   const renderTile = (choice: ProviderChoice) => (
     <ProviderTile
@@ -207,9 +222,9 @@ export function ModelsStep({
             Back
           </Button>
           <span className="flex items-center gap-2">
-            {changes === 0 && !anyReady ? (
+            {(changes === 0 && !anyReady) || (failed && changes > 0) ? (
               <Button variant="ghost" onClick={onNext} disabled={busy}>
-                Skip for now
+                {anyReady ? 'Continue' : 'Skip for now'}
               </Button>
             ) : null}
             {changes === 0 && anyReady ? (
@@ -282,6 +297,8 @@ export function ModelsStep({
                     onToggle={(selected) => update(choice, { selected })}
                     scanning={scanning}
                     onScan={() => void refresh()}
+                    rejected={signInNeeded.has(choice.providerId)}
+                    onSignedIn={() => waitForSignedIn(choice)}
                   />
                 ) : null,
               )}
@@ -302,15 +319,7 @@ export function ModelsStep({
                       selected={draftFor(choice).selected}
                       disabled={busy}
                       onToggle={(selected) => update(choice, { selected })}
-                      onConnected={() =>
-                        void run('models', [
-                          {
-                            kind: 'wait-models',
-                            providerId: choice.providerId,
-                            title: choice.title,
-                          },
-                        ])
-                      }
+                      onConnected={() => waitForSignedIn(choice)}
                     />
                   ) : null,
                 )}
@@ -505,9 +514,12 @@ function connectLabel(adds: number, removes: number): string {
 function ChoiceStatus({
   choice,
   selected,
+  rejected = false,
 }: {
   choice: ProviderChoice
   selected: boolean
+  /** The provider turned down the sign-in this machine has. */
+  rejected?: boolean
 }) {
   if (choice.ready) {
     return selected ? (
@@ -519,6 +531,7 @@ function ChoiceStatus({
     )
   }
   if (choice.kind === 'subscription') {
+    if (rejected) return <StatusChip tone="warn">Sign-in rejected</StatusChip>
     if (choice.usable) return <StatusChip tone="neutral">Signed in</StatusChip>
     return choice.tool?.installed ? (
       <StatusChip tone="warn">Not signed in</StatusChip>
@@ -582,7 +595,8 @@ function ProviderTile({
 
 /**
  * A coding agent: what it pays with, and — until it is signed in on this
- * machine — the exact commands that get it there.
+ * machine — the exact commands that get it there. When the provider turned
+ * that sign-in down, and can sign in from here, its sign-in comes first.
  */
 function SubscriptionRow({
   choice,
@@ -591,6 +605,8 @@ function SubscriptionRow({
   onToggle,
   scanning,
   onScan,
+  rejected: signInRejected,
+  onSignedIn,
 }: {
   choice: SubscriptionChoice
   selected: boolean
@@ -598,10 +614,16 @@ function SubscriptionRow({
   onToggle: (selected: boolean) => void
   scanning: boolean
   onScan: () => void
+  /** A run found the provider rejecting this machine's sign-in. */
+  rejected: boolean
+  /** The sign-in from here landed. */
+  onSignedIn: () => void
 }) {
   const { tool, provider } = choice
   const id = useId()
-  const needsSetup = !choice.ready && !choice.usable
+  const rejected = signInRejected && !choice.ready
+  const needsSetup = !choice.ready && (!choice.usable || rejected)
+  const deviceLogin = rejected ? provider.deviceLogin : undefined
   return (
     <div
       className={cn(
@@ -626,7 +648,7 @@ function SubscriptionRow({
             {choice.title}
           </span>
           <span className="text-pretty font-sans text-[13px] leading-5 text-neutral-600 dark:text-neutral-400">
-            {subscriptionLine(choice)}
+            {subscriptionLine(choice, rejected)}
           </span>
           {tool?.signed_in && tool.credentials_path ? (
             <span className="sr-only">
@@ -636,7 +658,11 @@ function SubscriptionRow({
           ) : null}
         </label>
         <span className="flex h-5 items-center gap-3">
-          <ChoiceStatus choice={choice} selected={selected} />
+          <ChoiceStatus
+            choice={choice}
+            selected={selected}
+            rejected={rejected}
+          />
           <Checkbox
             id={id}
             aria-label={`Connect ${choice.title}`}
@@ -649,6 +675,14 @@ function SubscriptionRow({
       {/* Ticked but not signed in: the commands that get it there. */}
       {needsSetup && selected ? (
         <div className="mt-1.5 flex flex-col gap-1.5 pl-7">
+          {deviceLogin ? (
+            <DeviceSignIn
+              provider={deviceLogin}
+              installed={choice.installed}
+              heading={false}
+              onConnected={onSignedIn}
+            />
+          ) : null}
           <Terminal>
             {!tool?.installed ? (
               <CommandLine command={provider.install} />
@@ -657,8 +691,9 @@ function SubscriptionRow({
           </Terminal>
           <span className="flex min-h-7 flex-wrap items-center justify-between gap-x-3 gap-y-1 pl-1">
             <span className="font-sans text-[13px] text-neutral-500 dark:text-neutral-400">
-              Run {tool?.installed ? 'this' : 'these'} in a terminal, then scan
-              again. {choice.title} connects once it is signed in.
+              {deviceLogin
+                ? 'Or run this in a terminal, then scan again.'
+                : `Run ${tool?.installed ? 'this' : 'these'} in a terminal, then scan again. ${choice.title} connects once it is signed in.`}
             </span>
             <ScanButton scanning={scanning} onScan={onScan} />
           </span>
@@ -668,8 +703,14 @@ function SubscriptionRow({
   )
 }
 
-function subscriptionLine(choice: SubscriptionChoice): React.ReactNode {
+function subscriptionLine(
+  choice: SubscriptionChoice,
+  rejected: boolean,
+): React.ReactNode {
   const { tool, provider } = choice
+  if (rejected) {
+    return `${choice.title} rejected the sign-in on this machine. Sign in again to use ${provider.plan}.`
+  }
   if (choice.ready || choice.usable) return `Uses ${provider.plan}.`
   if (!tool?.installed) {
     return `Not on this machine yet. Install it and sign in to use ${provider.plan}.`
@@ -701,12 +742,19 @@ function catalogOrder(choices: ProviderChoice[]): ProviderChoice[] {
 
 /**
  * Ticked, but nothing to connect yet: a coding agent not signed in on this
- * machine, or a device sign-in that has not landed.
+ * machine (or whose sign-in its provider rejected), or a device sign-in that
+ * has not landed.
  */
-function awaitingSignIn(choice: ProviderChoice): boolean {
+function awaitingSignIn(
+  choice: ProviderChoice,
+  signInNeeded: ReadonlySet<string>,
+): boolean {
   if (choice.ready) return false
   if (choice.kind === 'device') return true
-  return choice.kind === 'subscription' && !choice.usable
+  return (
+    choice.kind === 'subscription' &&
+    (!choice.usable || signInNeeded.has(choice.providerId))
+  )
 }
 
 /** A subscription provider needs its CLI signed in on this machine. */

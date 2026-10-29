@@ -4,14 +4,20 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PlanStep, ProviderState, ToolScan } from '@/lib/onboarding/plan'
 import { ModelsStep } from './ModelsStep'
-import type { MachineSnapshot, OnboardingController } from './use-onboarding'
+import type {
+  ActivityEntry,
+  MachineSnapshot,
+  OnboardingController,
+} from './use-onboarding'
 
 vi.mock('@/lib/workers-registry', () => ({
   fetchRegistryProviders: () => Promise.resolve([]),
 }))
 // The sign-in talks to the engine; here it only has to stand in its place.
 vi.mock('@/components/chat/DeviceSignIn', () => ({
-  DeviceSignIn: () => <div data-testid="device-sign-in" />,
+  DeviceSignIn: ({ provider }: { provider: { providerId: string } }) => (
+    <div data-testid="device-sign-in" data-provider={provider.providerId} />
+  ),
 }))
 
 const CLAUDE: ToolScan = {
@@ -41,6 +47,7 @@ const COPILOT: ProviderState = {
 function controller(
   snapshot: Partial<MachineSnapshot>,
   run: OnboardingController['run'] = async () => true,
+  extra: Partial<Omit<OnboardingController, 'snapshot' | 'run'>> = {},
 ): OnboardingController {
   return {
     snapshot: {
@@ -62,11 +69,13 @@ function controller(
     activity: [],
     running: null,
     run,
+    signInNeeded: new Set(),
     skipStep: () => undefined,
     judgeInstalled: false,
     checkChromium: async () => null,
     installChromium: async () => ({ ok: true as const }),
     chromiumProgress: null,
+    ...extra,
   }
 }
 
@@ -291,5 +300,86 @@ describe('ModelsStep while a connected provider blinks out', () => {
     act(() => checkbox('Claude Code').click())
     render([{ ...CLAUDE_SERVING, available: false, modelCount: 0 }])
     expect(checkbox('Claude Code').checked).toBe(false)
+  })
+})
+
+describe('ModelsStep after Connect failed', () => {
+  beforeEach(() => {
+    // jsdom lays nothing out, so it has no scrollIntoView for the log.
+    Element.prototype.scrollIntoView = vi.fn()
+  })
+
+  const FAILED: ActivityEntry = {
+    id: 1,
+    group: 'models',
+    title: 'Check that Codex models are ready',
+    status: 'failed',
+    note: 'Codex rejected the current session. Sign in with ChatGPT again.',
+  }
+
+  it('offers a skip beside Connect, so setup can move on', async () => {
+    const onNext = vi.fn()
+    act(() =>
+      root.render(
+        <ModelsStep
+          onboarding={controller({ tools: [CODEX] }, undefined, {
+            activity: [FAILED],
+          })}
+          onBack={() => undefined}
+          onNext={onNext}
+        />,
+      ),
+    )
+    expect(button(/^Connect/).disabled).toBe(false)
+    await act(async () => button(/^Skip for now$/).click())
+    expect(onNext).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers the Codex sign-in from here once Codex rejected the local one', async () => {
+    const run = vi.fn(
+      async (_group: string, _steps: readonly PlanStep[]) => true,
+    )
+    act(() =>
+      root.render(
+        <ModelsStep
+          onboarding={controller({}, run, {
+            activity: [FAILED],
+            signInNeeded: new Set(['openai-codex']),
+          })}
+          onBack={() => undefined}
+          onNext={() => undefined}
+        />,
+      ),
+    )
+    expect(checkbox('Codex').checked).toBe(true)
+    expect(container.textContent).toContain('Sign-in rejected')
+    expect(
+      container
+        .querySelector('[data-testid="device-sign-in"]')
+        ?.getAttribute('data-provider'),
+    ).toBe('openai-codex')
+    expect(container.textContent).toContain('codex login')
+
+    // Connect sets up Claude Code only: Codex waits on its sign-in.
+    await act(async () => button(/^Connect/).click())
+    const steps = run.mock.calls[0]?.[1] ?? []
+    expect(JSON.stringify(steps)).not.toContain('openai-codex')
+  })
+
+  it('leaves a provider that cannot sign in from here to its CLI', () => {
+    act(() =>
+      root.render(
+        <ModelsStep
+          onboarding={controller({}, undefined, {
+            signInNeeded: new Set(['claude-code']),
+          })}
+          onBack={() => undefined}
+          onNext={() => undefined}
+        />,
+      ),
+    )
+    expect(container.textContent).toContain('Sign-in rejected')
+    expect(container.querySelector('[data-testid="device-sign-in"]')).toBeNull()
+    expect(container.textContent).toContain('then type /login')
   })
 })

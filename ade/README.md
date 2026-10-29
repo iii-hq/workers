@@ -176,7 +176,7 @@ Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::
 
 ### Worktrees
 
-The human window into the [`worktree`](https://github.com/iii-hq/workers/tree/main/worktree) worker: parallel agent checkouts, ownership, and land outcomes. Lives in [`web/src/pages/Worktrees/`](web/src/pages/Worktrees) and [`web/src/components/chat/`](web/src/components/chat). The whole surface is presence-gated: it appears only while the worktree worker is connected to the engine (the nav entry and picker tab hide; a direct `#/worktrees` hit lands on an install notice).
+The human window into the [`worktree`](https://github.com/iii-hq/workers/tree/main/worktree) worker: parallel agent checkouts, ownership, and land outcomes. Lives in `web/src/pages/Worktrees/` and [`web/src/components/chat/`](web/src/components/chat). The whole surface is presence-gated: it appears only while the worktree worker is connected to the engine (the nav entry and picker tab hide; a direct `#/worktrees` hit lands on an install notice).
 
 - **Graph page** (`#/worktrees`) — repo, worktree, and owning-session nodes from `worktree::list { include_status: true }`, refreshed live off all six `worktree::*` lifecycle trigger types (poll fallback while bindings are unavailable), with a per-worktree detail panel: branch, base, advisory dev port, clean / ahead / behind, diffstat, and the integrated marker for squash- or rebase-landed branches
 - **Picker tab** — the chat working-directory picker grows a **worktrees** tab next to directory browsing: picking a managed worktree validates the path and claims it for the conversation's session; the console-made claim auto-releases when the conversation points elsewhere (best-effort; the worker's prune sweep is the durable backstop). Worktrees with a land in progress are listed but not retargetable
@@ -185,13 +185,13 @@ The human window into the [`worktree`](https://github.com/iii-hq/workers/tree/ma
 
 ### Memory
 
-The human window into the [`memory`](https://github.com/iii-hq/workers/tree/main/memory) worker: named banks of always-injected markdown rules and auto-extracted memories. Lives in [`web/src/pages/Memory/`](web/src/pages/Memory). Presence-gated like Worktrees: the page appears only while the memory worker is connected (a direct `#/memory` hit lands on an install notice).
+The human window into the [`memory`](https://github.com/iii-hq/workers/tree/main/memory) worker: named banks of always-injected markdown rules and auto-extracted memories. Lives in `web/src/pages/Memory/`. Presence-gated like Worktrees: the page appears only while the memory worker is connected (a direct `#/memory` hit lands on an install notice).
 
 - **Bank rail** — every bank with live memory / pinned / rule counts and inline create
 - **Rules tab (first)** — the bank's markdown rules as in-place editors (save appears only on edit; delete asks to confirm); the agent appends learned standing instructions to the auto-managed `learned` rule as you correct it in chat
 - **Memories tab** — server-paged newest-first list with pin / edit-in-place / tombstone delete, a show-history toggle, and search that runs `memory::recall` (the ranked scorer, not a client filter)
 - **Graph tab** — entity hubs with memories as spokes: level-of-detail for large banks, draggable nodes, wheel zoom/pan, click a node for an inspect card
-- **Preview tab** — the whole turn before it happens: `memory::preview` composes the exact system-prompt rules section and the appended memories (ambient floor + budgets applied) for a hypothetical question, with clickable example questions from the bank's own content
+- **Preview tab** — the whole turn before it happens: `memory::preview` composes the exact system-prompt rules section and the appended memories (relevance cut + budgets applied) for a hypothetical question, with clickable example questions from the bank's own content
 - **Live** — the page re-reads off `memory::item-changed` / `memory::bank-changed` (poll fallback), so memories appear the moment they're learned
 - **In chat** — a bank picker in the composer (session metadata `memory_bank`) and a memory chip on each assistant reply naming the bank, how many rules and memories fed the turn, and whether recall ran semantic; click it to expand the exact records
 
@@ -311,7 +311,7 @@ removes it from the entry.
 |---|---|
 | `GET /` | Embedded `index.html` (SPA shell, hash-routed client-side). `Cache-Control: no-cache, must-revalidate` |
 | `GET /assets/*` | Embedded JS / CSS, content-hashed filenames. `Cache-Control: public, max-age=31536000, immutable` |
-| `GET /runtime` | Runtime connection settings for the SPA, including the console worker namespace. `Cache-Control: no-store` |
+| `GET /runtime` | Runtime settings for the SPA: the console worker namespace and the [usage reporting](#anonymous-usage-reporting) settings. `Cache-Control: no-store` |
 | `GET /ui` | Injected-asset manifest JSON (same shape as `console::ui-manifest`). `no-cache` |
 | `GET /ui/*` | Current bytes for a registered injected UI asset. `no-cache` + `ETag: "<hash>"` (304 on `If-None-Match`) |
 | `GET /vendor/*` | Shared-dep ESM shims for injected scripts (react, `@iii-dev/console-ui`), generated at web build time. `no-cache` |
@@ -319,6 +319,52 @@ removes it from the entry.
 | anything else | `404 Not Found` |
 
 The SPA bundle is embedded into the binary at compile time via [`rust-embed`](https://docs.rs/rust-embed) — the released `console` has no separate `dist/` directory, no side-car asset server, and no runtime filesystem dependency for the UI.
+
+## Anonymous usage reporting
+
+The console sends anonymous product events from the browser to PostHog. It
+sends these events:
+
+- `$pageview`, when the screens of the active workspace change. It carries the
+  screen kinds, for example `chat` and `traces`.
+- `ade_usage`, a batched report. It carries the last 25 command palette
+  commands and, for each screen kind, how many times it opened and how long it
+  was visible. A visit reports at 15, 30, 45 and 60 minutes, then one time each
+  hour, and one time when the page closes. Right after setup completes on a
+  device, the reports go at 30 seconds, 1, 5, 30 and 60 minutes, then one time
+  each hour. Each report carries only the data since the report before it. An
+  empty report is not sent.
+
+The setup wizard steps do not use this path. The browser publishes them on
+the `onboarding:steps:complete` topic, and the engine sends them as
+`onboarding_step` events.
+
+The events carry no text that a user wrote. A palette command that can hold a
+file path, a chat or a function id is reported by its kind only, and a chat
+screen is reported as `chat`. URLs are sent without their hash or query
+string, and the referrer is not sent. Session replay masks all text and inputs
+and blocks images and other media. An exception is sent with its error type and
+stack frames only, not its message. Autocapture, rage clicks, dead clicks
+and surveys are off. Heatmaps, web vitals and exceptions are on.
+
+The engine decides whether the console reports. On each page load the
+console calls the engine function `iii-telemetry::settings`, which returns the
+result of the engine's own opt-out check and the engine's device id, PostHog
+key and host. So the console reports only when the engine reports, and its
+events join the same PostHog person as the engine and harness events.
+
+To stop the reports, turn off the engine's telemetry: set
+`III_TELEMETRY_ENABLED=false` in the engine's environment, or set
+`enabled: false` on the engine's telemetry worker. The engine also stops in a
+CI environment, with `III_TELEMETRY_DEV=true`, or when
+`~/.iii/telemetry_dev_optout` exists.
+
+An engine that does not have `iii-telemetry::settings` gets a local check
+instead: the console reads the same environment variables and files in its
+own process, and its device id from `~/.iii/telemetry.yaml`. This check cannot
+see the engine's config, and `POSTHOG_PROJECT_API_KEY` (or `POSTHOG_API_KEY`)
+and `POSTHOG_HOST` in the console's environment change the PostHog project and
+host.
 
 ## Injectable UI
 

@@ -295,7 +295,7 @@ impl HookRegistry {
     fn register_type(&self, iii: &Arc<IIIClient>, point: HookPoint, set: HookSet) {
         let description = match point {
             HookPoint::PreTurn => "Synchronous hook: first step of a turn, before any model spend. May veto.",
-            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Static-only bindings may declare their exact contribution as metadata.inject_prompt.",
+            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Static-only bindings may declare their exact contribution as metadata.inject_prompt; it joins the prompt before assembly.",
             HookPoint::PostGenerate => "Synchronous hook: after the final assistant message update. Observe only.",
             HookPoint::PreTrigger => "Synchronous hook: after the allow/deny policy passes, before the target is invoked. May deny, hold, or rewrite arguments.",
             HookPoint::PostTrigger => "Synchronous hook: after the target returns, before the result is appended. May rewrite content/details/is_error.",
@@ -366,16 +366,16 @@ impl HookRegistry {
         &self,
         target_function_id: &str,
     ) -> crate::filesystem_scope::FilesystemBoundary {
-        // fp::pipe is stamped on behalf of its scoped steps: give it the
-        // boundary a direct scoped call would get, or a pipe step would run
-        // under a WIDER jail than the same call made directly. shell::exec
-        // represents the watch's fixed shell::*/coder::* binding set.
-        let target_function_id = if target_function_id == crate::filesystem_scope::PIPE_FUNCTION_ID
-        {
-            "shell::exec"
-        } else {
-            target_function_id
-        };
+        // fp::pipe and fp::batch are stamped on behalf of their scoped steps:
+        // give them the boundary a direct scoped call would get, or a step
+        // would run under a WIDER jail than the same call made directly.
+        // shell::exec represents the watch's fixed shell::*/coder::* binding set.
+        let target_function_id =
+            if crate::filesystem_scope::carries_scoped_steps(target_function_id) {
+                "shell::exec"
+            } else {
+                target_function_id
+            };
         if self.post_trigger.has_function_binding(
             crate::filesystem_scope::FILESYSTEM_ACCESS_WATCH_ID,
             target_function_id,
@@ -458,6 +458,56 @@ mod tests {
             .is_none());
     }
 
+    #[tokio::test]
+    async fn static_prompts_join_before_assembly_and_never_again_at_pre_generate() {
+        let registry = HookRegistry {
+            iii: Arc::new(IIIClient::new("ws://127.0.0.1:0")),
+            pre_turn: HookSet::default(),
+            pre_generate: HookSet::default(),
+            post_generate: HookSet::default(),
+            pre_trigger: HookSet::default(),
+            post_trigger: HookSet::default(),
+            post_turn: HookSet::default(),
+            owned: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let base = || Some("base".to_string());
+        let with_static =
+            |prompt| runner::with_static_prompts(&registry.pre_generate.ordered(), prompt);
+        assert_eq!(with_static(base()), base());
+
+        for (id, prompt, priority) in [("b", "second", 2), ("a", "first", 1)] {
+            let mut config = cfg(id, &format!("{id}::hook"), json!({ "priority": priority }));
+            config.metadata = Some(json!({ "inject_prompt": prompt }));
+            registry
+                .pre_generate
+                .add(HookPoint::PreGenerate, config)
+                .unwrap();
+        }
+        let assembled = with_static(base());
+        assert_eq!(assembled.as_deref(), Some("base\n\nfirst\n\nsecond"));
+        assert_eq!(with_static(None).as_deref(), Some("first\n\nsecond"));
+
+        // Assembly already carried them: pre_generate must not append them twice.
+        let record = crate::types::turn::tests::record();
+        match registry
+            .run_pre_generate(
+                &registry.pre_generate.ordered(),
+                &record,
+                0,
+                assembled.clone(),
+                &[],
+                0,
+                &[],
+            )
+            .await
+        {
+            runner::PreGenerateOutcome::Continue { system_prompt, .. } => {
+                assert_eq!(system_prompt, assembled)
+            }
+            runner::PreGenerateOutcome::Deny(reason) => panic!("unexpected deny: {reason}"),
+        }
+    }
+
     #[test]
     fn filesystem_boundary_tracks_the_live_access_watch_binding() {
         let set = HookSet::default();
@@ -527,6 +577,10 @@ mod tests {
         );
         assert_eq!(
             registry.filesystem_boundary("fp::pipe"),
+            FilesystemBoundary::Workspace
+        );
+        assert_eq!(
+            registry.filesystem_boundary("fp::batch"),
             FilesystemBoundary::Workspace
         );
         assert_eq!(

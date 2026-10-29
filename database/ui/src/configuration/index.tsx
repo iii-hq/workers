@@ -3,16 +3,22 @@
  * registered through `host.configForms` as the worker-owned editor.
  *
  * The overview lists query-history limits and connection resources. Opening
- * a connection pushes a dedicated deck level with its URL, driver-aware
- * capture, TLS, and pool settings. The form edits the working draft via
- * `onChange`; dirty tracking, save/reset, validation and the SaveBar stay
- * host-owned. Mirrors DatabaseConfig (database/src/config.rs).
+ * a connection pushes a dedicated deck level with its endpoint (a legacy URL
+ * or the structured driver/host/port/user/database fields), display, TLS,
+ * SSH tunnel, capture and pool settings. Credentials go to the secrets
+ * worker and the entry keeps `secret://NAME`. The form edits the working
+ * draft via `onChange`; dirty tracking, save/reset, validation and the
+ * SaveBar stay host-owned. Mirrors DatabaseConfig (database/src/config.rs).
  */
 
 import {
   Button,
   Chip,
   type ConfigFormProps,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
   type Host,
   Input,
   type JsonValue,
@@ -20,6 +26,7 @@ import {
   ListItem,
   Panel,
   RawValueInput,
+  SegmentedControl,
   Select,
   SettingsDeck,
   SettingsField,
@@ -29,9 +36,39 @@ import {
   SettingsSection,
   Switch,
 } from '@iii-dev/console-ui'
-import { ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { probe } from '../lib/capabilities'
+import { ConnectionIcon } from '../lib/connection-icons'
 import { errText } from '../lib/errors'
+import { DB, type DbInfo, listDbs, testConnection } from '../lib/rpc'
+import { storeSecret } from '../lib/secrets'
+import { ColorPicker, IconPicker } from './ConnectionAppearance'
+import {
+  CONNECTION_DRIVERS,
+  type ConnectionDriver,
+  connectionDisplay,
+  connectionDriver,
+  connectionNameError,
+  connectionProblems,
+  connectionShape,
+  connectionSummary,
+  DEFAULT_PORTS,
+  DEFAULT_SSH_PORT,
+  isNetworkDriver,
+  newConnectionEntry,
+  parseConnectionUrl,
+  type SensitiveField,
+  secretNameFor,
+  secretNamesInUse,
+  supportsStructuredConnections,
+  switchDriver,
+  testConnectionPayload,
+  testOutcomeText,
+  uniqueSecretName,
+  urlEntryToFields,
+  valueKind,
+} from './connection'
 import {
   booleanLiteralForRawValue,
   DEFAULT_HISTORY_MAX_BYTES,
@@ -39,14 +76,17 @@ import {
   type Driver,
   databaseFocusRequest,
   databaseHandleError,
-  driverOfConfiguredUrl,
   isEnvironmentValue,
   isRawTypedValue,
+  LEGACY_TLS_MODES,
   numberLiteralForRawValue,
   selectLiteralForRawValue,
   shouldMaskConfiguredUrl,
   shouldShowTlsForUrl,
+  TLS_MODES,
 } from './model'
+import { PemValueField } from './PemValueField'
+import { SecretValueField } from './SecretValueField'
 
 type JsonObject = { [key: string]: JsonValue }
 
@@ -83,9 +123,9 @@ function fieldError(errors: ConfigFormProps['errors'], parts: readonly string[])
 
 const CAPTURE_HINTS: Record<Driver, string> = {
   postgres:
-    'Native: any client’s committed writes fire database::row-changed via triggers + LISTEN/NOTIFY, carrying the changed rows’ primary keys (not their contents). The role needs DDL rights on watched tables; bindings must name a table.',
+    'Native: any client’s committed writes fire database::on-row-changed via triggers + LISTEN/NOTIFY, carrying the changed rows’ primary keys (not their contents). The role needs DDL rights on watched tables; observers must name a table.',
   sqlite:
-    'Native: triggers + changelog table + filesystem watch hear every process writing the file, carrying the changed rows’ primary keys. Writers need libsqlite ≥ 3.38 (JSON built in). Bindings must name a table.',
+    'Native: triggers + changelog table + filesystem watch hear every process writing the file, carrying the changed rows’ primary keys. Writers need libsqlite ≥ 3.38 (JSON built in). Observers must name a table.',
   mysql:
     'Native: streams the binlog as a replica — nothing installed in the schema, but the user needs GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.*; primary keys ride the events only with binlog_row_metadata=FULL.',
   unknown: 'Set a URL first — capture support depends on the driver.',
@@ -119,16 +159,15 @@ const DRIVER_LABELS: Readonly<Record<Driver, string>> = {
   unknown: 'Unknown',
 }
 
-/** Wire shape of `database::testConnection`. */
-interface TestConnectionResp {
-  ok: boolean
-  driver: string
-  latency_ms: number
-  server_version?: string
-  message?: string
-}
-
-type TestResult = { status: 'testing' } | { status: 'done'; ok: boolean; text: string }
+type TestResult =
+  | { status: 'testing' }
+  | {
+      status: 'done'
+      ok: boolean
+      text: string
+      /** The SSH server's key, when the probe got that far — offered for pinning. */
+      hostKey?: { algorithm: string; fingerprint: string }
+    }
 
 function RawTypedValue({
   id,
@@ -302,7 +341,7 @@ function DatabaseSelectInput({
   label: string
   value: JsonValue | undefined
   fallback: string
-  options: readonly { value: string; label: string }[]
+  options: readonly { value: string; label: string; description?: string }[]
   onChange(next: string): void
 }) {
   const current = typeof value === 'string' ? value : fallback
@@ -460,6 +499,45 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
   const databasesOpaque = databasesValue !== undefined && !isObjectValue(databasesValue)
   const databases = asObject(databasesValue)
   const names = Object.keys(databases)
+  // Whether this worker takes structured entries (driver/host/…, ssh,
+  // display, folder). An older worker keeps the url-only form. The schema
+  // says so when there is one; without it, the engine's function list does
+  // (database::saveConnection shipped with the structured shape), and until
+  // that answers, entries already stored in the structured shape do.
+  const fromSchema = supportsStructuredConnections(props.schema)
+  const [probed, setProbed] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (fromSchema !== null) return
+    let alive = true
+    probe(props.host).then((caps) => {
+      if (alive) setProbed(caps.has(DB.saveConnection))
+    })
+    return () => {
+      alive = false
+    }
+  }, [fromSchema, props.host])
+  const structured =
+    fromSchema ??
+    probed ??
+    names.some((name) => isObjectValue(databases[name]) && asObject(databases[name]).driver !== undefined)
+  // Async completions (a secret stored, a url converted) must apply to the
+  // draft as it is when they land, not as it was when they started.
+  const valueRef = useRef(value)
+  valueRef.current = value
+  // What the running worker reports per connection — the `error` of a pool
+  // it could not build (an unresolvable secret, say). Best-effort.
+  const [live, setLive] = useState<Record<string, DbInfo>>({})
+  useEffect(() => {
+    let alive = true
+    listDbs(props.host)
+      .then((list) => {
+        if (alive) setLive(Object.fromEntries(list.map((db) => [db.name, db])))
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [props.host])
   const initialFocusRequest = databaseFocusRequest(names, props.focusField)
   const [selectedName, setSelectedName] = useState<string | null>(() => {
     const requested = initialFocusRequest?.databaseName
@@ -476,7 +554,8 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
   const testTokens = useRef<Record<string, number>>(Object.create(null))
   const pendingHandleFocusRef = useRef('')
 
-  const commit = (nextDatabases: JsonObject) => props.onChange({ ...value, databases: nextDatabases })
+  const commit = (nextDatabases: JsonObject) => props.onChange({ ...valueRef.current, databases: nextDatabases })
+  const currentDatabases = () => asObject(valueRef.current.databases)
 
   const clearTest = (name: string) => {
     testTokens.current[name] = (testTokens.current[name] ?? 0) + 1
@@ -489,7 +568,7 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
 
   const setDb = (name: string, next: JsonValue) => {
     clearTest(name)
-    commit({ ...databases, [name]: next })
+    commit({ ...currentDatabases(), [name]: next })
   }
 
   const runTest = async (name: string) => {
@@ -499,17 +578,12 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
     setTestResults((r) => ({ ...r, [name]: { status: 'testing' } }))
     let result: TestResult
     try {
-      const resp = await props.host.iii.trigger<TestConnectionResp>(
-        'database::testConnection',
-        { url: asString(db.url), tls: db.tls ?? undefined, timeout_ms: 8000 },
-        { timeoutMs: 10_000 },
-      )
+      const resp = await testConnection(props.host, testConnectionPayload(name, db, structured))
       result = {
         status: 'done',
         ok: resp.ok,
-        text: resp.ok
-          ? `Connected · ${resp.server_version ?? resp.driver} · ${resp.latency_ms}ms`
-          : (resp.message ?? 'Connection failed'),
+        text: testOutcomeText(resp),
+        hostKey: resp.ssh_host_key ?? undefined,
       }
     } catch (e) {
       result = { status: 'done', ok: false, text: errText(e) }
@@ -520,18 +594,46 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
 
   const removeDb = (name: string) => {
     clearTest(name)
-    const next = { ...databases }
+    const next = { ...currentDatabases() }
     delete next[name]
     commit(next)
   }
 
-  const addDb = () => {
+  const addDb = (driver?: ConnectionDriver) => {
     let i = names.length + 1
     let name = names.length === 0 ? 'primary' : `db${i}`
     while (Object.hasOwn(databases, name)) name = `db${++i}`
     setSelectedName(name)
-    commit({ ...databases, [name]: { url: `sqlite:./data/${name}.db` } })
+    commit({
+      ...databases,
+      [name]: driver ? newConnectionEntry(driver, name) : { url: `sqlite:./data/${name}.db` },
+    })
   }
+
+  // With structured entries, adding starts by picking the driver — the one
+  // choice every other field depends on.
+  const addAction = (attrs: Record<string, string>, variant?: 'ghost') =>
+    structured ? (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" variant={variant} size="sm" {...attrs}>
+            Add database
+            <ChevronDown size={16} aria-hidden />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {CONNECTION_DRIVERS.map((d) => (
+            <DropdownMenuItem key={d.value} onSelect={() => addDb(d.value)}>
+              {d.label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ) : (
+      <Button type="button" variant={variant} size="sm" {...attrs} onClick={() => addDb()}>
+        Add database
+      </Button>
+    )
 
   const renameDb = (from: string, to: string) => {
     if (to === from || Object.hasOwn(databases, to)) return
@@ -614,11 +716,9 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
         title="Connections"
         description="Each handle identifies a connection pool used by database functions."
         action={
-          !databasesOpaque && names.length > 0 ? (
-            <Button type="button" variant="ghost" size="sm" data-settings-deck-fallback onClick={addDb}>
-              Add database
-            </Button>
-          ) : undefined
+          !databasesOpaque && names.length > 0
+            ? addAction({ 'data-settings-deck-fallback': 'true' }, 'ghost')
+            : undefined
         }
       >
         {databasesOpaque ? (
@@ -639,9 +739,7 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
           <div className="db-cfg-empty">
             <strong>No databases configured</strong>
             <p>The worker needs at least one connection before it can start.</p>
-            <Button type="button" size="sm" data-settings-deck-fallback data-settings-narrow-action onClick={addDb}>
-              Add database
-            </Button>
+            {addAction({ 'data-settings-deck-fallback': 'true', 'data-settings-narrow-action': 'true' })}
           </div>
         ) : (
           <Panel className="db-cfg-connection-panel">
@@ -650,25 +748,38 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
                 const databaseValue = databases[name]
                 const opaque = !isObjectValue(databaseValue)
                 const db = asObject(databaseValue)
-                const driver = driverOfConfiguredUrl(asString(db.url))
+                const driver = connectionDriver(db)
                 const capture = asString(db.capture) || 'statements'
                 const driverLabel =
                   driver === 'unknown' && asString(db.url).includes('${') ? 'From environment' : DRIVER_LABELS[driver]
+                const display = connectionDisplay(db)
+                const summary = connectionSummary(db)
+                const failure = live[name]?.error
                 return (
                   <ListItem
                     key={name}
                     data-field={`db-${name}`}
                     aria-label={`Configure database ${name}`}
+                    leading={
+                      <span className="db-cfg-conn-tile" data-tinted={display.color ? 'true' : undefined}>
+                        <ConnectionIcon name={display.icon} color={display.color} />
+                      </span>
+                    }
                     label={name}
                     description={
-                      opaque
-                        ? 'Custom configuration preserved'
-                        : capture === 'native'
-                          ? 'Native row capture'
-                          : 'Worker statement capture'
+                      opaque ? (
+                        'Custom configuration preserved'
+                      ) : failure ? (
+                        <span className="db-cfg-warn">{failure}</span>
+                      ) : (
+                        [summary, capture === 'native' ? 'Native row capture' : 'Worker statement capture']
+                          .filter(Boolean)
+                          .join(' · ')
+                      )
                     }
                     trailing={
                       <span className="db-cfg-connection-meta">
+                        {failure ? <Chip tone="danger">Unavailable</Chip> : null}
                         <Chip tone={opaque || driver === 'unknown' ? 'warning' : 'accent'}>
                           {opaque ? 'Custom value' : driverLabel}
                         </Chip>
@@ -700,6 +811,10 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
           activeName !== null ? (
             <DatabaseDetail
               key={activeName}
+              host={props.host}
+              structured={structured}
+              databases={databases}
+              liveError={live[activeName]?.error}
               name={activeName}
               names={names}
               value={databases[activeName]}
@@ -734,6 +849,13 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
 }
 
 interface DatabaseDetailProps {
+  host: Host
+  /** The worker takes structured entries (see `supportsStructuredConnections`). */
+  structured: boolean
+  /** The whole draft collection — for secret names other entries already use. */
+  databases: JsonObject
+  /** Why the running worker could not build this pool, if it could not. */
+  liveError?: string
   name: string
   names: readonly string[]
   value: JsonValue
@@ -793,32 +915,58 @@ function DatabaseDetail(card: DatabaseDetailProps) {
 
 function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }) {
   const { name, db } = card
+  const shape = connectionShape(db)
   const url = asString(db.url)
-  const driver = driverOfConfiguredUrl(url)
+  const driver = connectionDriver(db)
+  const network = isNetworkDriver(driver)
   const environmentUrl = url.includes('${')
-  const showTls = shouldShowTlsForUrl(url)
-  const maskUrl = shouldMaskConfiguredUrl(url)
+  const showTls = shape === 'url' ? shouldShowTlsForUrl(url) : network
+  const maskUrl = shape === 'url' && shouldMaskConfiguredUrl(url)
   const captureValue = db.capture
   const capture = asString(captureValue) || 'statements'
   const tlsValue = db.tls
   const tlsOpaque = tlsValue !== undefined && !isObjectValue(tlsValue)
   const tls = asObject(tlsValue)
+  const sshValue = db.ssh
+  const sshOpaque = sshValue !== undefined && !isObjectValue(sshValue)
+  const ssh = asObject(sshValue)
+  const sshOn = sshValue !== undefined
   const poolValue = db.pool
   const poolOpaque = poolValue !== undefined && !isObjectValue(poolValue)
   const pool = asObject(poolValue)
+  const display = asObject(db.display)
   const trustNativeRaw = isRawTypedValue(tls.trust_native) ? tls.trust_native : undefined
-  const isMemorySqlite = driver === 'sqlite' && url.includes(':memory:')
+  const isMemorySqlite = driver === 'sqlite' && (shape === 'url' ? url : asString(db.database)).includes(':memory:')
   const [showUrl, setShowUrl] = useState(false)
   const [handleDraft, setHandleDraft] = useState(name)
   const [handleError, setHandleError] = useState<string | undefined>()
-  const urlError = fieldError(card.errors, ['databases', name, 'url'])
-  const captureError = fieldError(card.errors, ['databases', name, 'capture'])
+  const [converting, setConverting] = useState(false)
+  const [convertNote, setConvertNote] = useState<string | null>(null)
+  // Network keys set aside by a switch to SQLite, restored on the way back.
+  const driverStash = useRef<JsonObject>({})
+  // The ssh block while the tunnel is switched off, restored when it is back on.
+  const sshStash = useRef<JsonObject | null>(null)
+  const latest = useRef(db)
+  latest.current = db
+  // What the worker's validation will refuse, said where it can be fixed:
+  // host-reported errors first, then the checks this form can make itself.
+  const problems = card.structured ? connectionProblems(db) : []
+  const problemAt = (field: string) => problems.find((p) => p.field === field)?.message
+  const errorAt = (...parts: string[]) =>
+    fieldError(card.errors, ['databases', name, ...parts]) ?? problemAt(parts.join('.'))
+  const handleErrorFor = (draft: string) =>
+    databaseHandleError(name, card.names, draft) ??
+    (card.structured && draft.trim() !== name ? connectionNameError(draft.trim()) : undefined)
+  const urlError = errorAt('url')
+  const captureError = errorAt('capture')
   const tlsBlockError = fieldError(card.errors, ['databases', name, 'tls'])
-  const poolBlockError = fieldError(card.errors, ['databases', name, 'pool'])
-  const tlsModeError = fieldError(card.errors, ['databases', name, 'tls', 'mode'])
-  const tlsCaError = fieldError(card.errors, ['databases', name, 'tls', 'ca_cert'])
-  const tlsTrustError = fieldError(card.errors, ['databases', name, 'tls', 'trust_native'])
+  const sshBlockError = fieldError(card.errors, ['databases', name, 'ssh'])
+  const poolBlockError = errorAt('pool')
+  const tlsModeError = errorAt('tls', 'mode')
+  const tlsTrustError = errorAt('tls', 'trust_native')
   const fieldId = (field: string) => `db-cfg-${field}-${name}`
+  const urlParse = shape === 'url' ? parseConnectionUrl(url) : null
+  const test = card.test
 
   useEffect(() => {
     setHandleDraft(name)
@@ -826,23 +974,46 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
     setShowUrl(false)
   }, [name])
 
+  // Every edit starts from the entry as it is now: a secret stored or a url
+  // converted after an await must not undo what was typed meanwhile.
   const set = (mutate: (next: JsonObject) => void) => {
-    const next = { ...db }
+    const next = { ...latest.current }
     mutate(next)
+    latest.current = next
     card.onChange(next)
   }
 
-  const setBlock = (key: 'tls' | 'pool', mutate: (block: JsonObject) => void) =>
+  const setBlock = (key: 'tls' | 'pool' | 'ssh' | 'display', mutate: (block: JsonObject) => void) =>
     set((next) => {
       const block = asObject(next[key])
       mutate(block)
-      if (Object.keys(block).length > 0) next[key] = block
+      if (Object.keys(block).length > 0 || key === 'ssh') next[key] = block
       else delete next[key]
     })
 
+  /** Write one key (dotted for a block) or drop it when the value is empty. */
+  const setField = (field: string, value: JsonValue | undefined) => {
+    const [head, key] = field.split('.')
+    const empty = value === undefined || value === ''
+    if (key === undefined) {
+      set((next) => {
+        if (empty) delete next[head]
+        else next[head] = value as JsonValue
+      })
+      return
+    }
+    setBlock(head as 'tls' | 'ssh' | 'display', (block) => {
+      if (empty) delete block[key]
+      else block[key] = value as JsonValue
+    })
+  }
+
+  const secretName = (field: SensitiveField) =>
+    uniqueSecretName(secretNameFor(name, field), secretNamesInUse(card.databases, { connection: name, field }))
+
   const commitHandle = () => {
     const nextName = handleDraft.trim()
-    const nextError = databaseHandleError(name, card.names, nextName)
+    const nextError = handleErrorFor(nextName)
     if (nextError) {
       setHandleError(nextError)
       return false
@@ -853,8 +1024,142 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
     return true
   }
 
+  /** Legacy url → fields; a password the url carried goes to the secrets worker. */
+  const convert = async () => {
+    const entry = urlEntryToFields(latest.current)
+    if (!entry) return
+    setConverting(true)
+    setConvertNote(null)
+    try {
+      if (valueKind(entry.password) === 'literal') {
+        try {
+          entry.password = await storeSecret(card.host, {
+            name: secretName('password'),
+            value: String(entry.password),
+            description: `Password for database connection “${name}”, stored from the console`,
+          })
+        } catch (cause) {
+          setConvertNote(`The password stayed in configuration: ${errText(cause)}`)
+        }
+      }
+      latest.current = entry
+      card.onChange(entry)
+    } finally {
+      setConverting(false)
+    }
+  }
+
+  const testButton = (
+    <Button
+      type="button"
+      size="sm"
+      disabled={test?.status === 'testing' || (shape === 'url' && url.trim() === '')}
+      onClick={card.onTest}
+    >
+      {test?.status === 'testing' ? 'Testing…' : 'Test connection'}
+    </Button>
+  )
+  const testStatus =
+    test?.status === 'done' ? (
+      <span className={test.ok ? 'db-cfg-test-ok' : 'db-cfg-test-fail'} role="status">
+        {test.text}
+      </span>
+    ) : undefined
+
+  const textField = (
+    field: string,
+    label: string,
+    description: string,
+    placeholder: string,
+    value: JsonValue | undefined,
+  ) => (
+    <SettingsField
+      id={fieldId(field.replace('.', '-'))}
+      field={`databases.${name}.${field}`}
+      label={label}
+      description={description}
+      error={errorAt(...field.split('.'))}
+      renderControl={(controlProps) =>
+        typeof value === 'string' && isEnvironmentValue(value) ? (
+          <RawTypedValue
+            {...controlProps}
+            label={label}
+            value={value}
+            replacementLabel="an empty value"
+            onChange={(next) => setField(field, next)}
+            onUseLiteral={() => setField(field, undefined)}
+          />
+        ) : (
+          <Input
+            {...controlProps}
+            className="db-cfg-technical"
+            type="text"
+            value={asString(value)}
+            placeholder={placeholder}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(next) => setField(field, next)}
+          />
+        )
+      }
+    />
+  )
+
+  const portField = (field: 'port' | 'ssh.port', label: string, fallback: number, value: JsonValue | undefined) => (
+    <SettingsField
+      id={fieldId(field.replace('.', '-'))}
+      field={`databases.${name}.${field}`}
+      label={label}
+      description={`${fallback} when empty.`}
+      error={errorAt(...field.split('.'))}
+      controlSize="compact"
+      renderControl={(controlProps) => (
+        <DatabaseNumberInput
+          {...controlProps}
+          label={label}
+          value={value}
+          fallback={fallback}
+          onChange={(raw) => {
+            if (raw.trim() === '') return setField(field, undefined)
+            const parsed = Number(raw)
+            setField(field, Number.isInteger(parsed) && parsed > 0 ? parsed : raw)
+          }}
+        />
+      )}
+    />
+  )
+
+  const secretField = (field: SensitiveField, label: string, description: string, multiline = false) => {
+    const [head, key] = field.split('.')
+    const value = key === undefined ? db[head] : asObject(db[head])[key]
+    return (
+      <SecretValueField
+        host={card.host}
+        id={fieldId(field.replace('.', '-'))}
+        field={`databases.${name}.${field}`}
+        label={label}
+        description={description}
+        error={errorAt(...field.split('.'))}
+        value={value}
+        secretName={secretName(field)}
+        connection={name}
+        multiline={multiline}
+        onChange={(next) => setField(field, next)}
+      />
+    )
+  }
+
+  const pinned = asString(ssh.host_key)
+  const presented = test?.status === 'done' ? test.hostKey : undefined
+  const tlsModes = card.structured ? TLS_MODES : TLS_MODES.filter((m) => LEGACY_TLS_MODES.includes(m.value))
+
   return (
     <div className="db-cfg-detail" data-field={`db-${name}`}>
+      {card.liveError ? (
+        <div className="db-cfg-notice" role="alert">
+          The worker could not open this connection: {card.liveError}
+        </div>
+      ) : null}
       <SettingsSection
         className="db-cfg-detail-section"
         title="Connection"
@@ -893,7 +1198,7 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
                   autoComplete="off"
                   onChange={(next) => {
                     setHandleDraft(next)
-                    setHandleError(databaseHandleError(name, card.names, next))
+                    setHandleError(handleErrorFor(next))
                   }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') {
@@ -918,72 +1223,184 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
               </div>
             )}
           />
-          <SettingsRow
-            label="Driver"
-            description="Inferred from the connection URL and not stored separately."
-            control={
-              <Chip tone={driver === 'unknown' ? 'warning' : 'accent'} data-field={`databases.${name}.driver`}>
-                {driver === 'unknown' && environmentUrl ? 'From environment' : DRIVER_LABELS[driver]}
-              </Chip>
-            }
-          />
-          <SettingsField
-            layout="stacked"
-            id={fieldId('url')}
-            field={`databases.${name}.url`}
-            label="Connection URL"
-            description="PostgreSQL, MySQL, and SQLite URLs are supported. Credentials stay masked for network URLs."
-            meta={
-              card.test?.status === 'done' ? (
-                <span className={card.test.ok ? 'db-cfg-test-ok' : 'db-cfg-test-fail'} role="status">
-                  {card.test.text}
-                </span>
-              ) : undefined
-            }
-            error={urlError}
-            controlSize="full"
-            renderControl={(controlProps) => (
-              <div className="db-cfg-url-row">
-                <Input
-                  {...controlProps}
-                  className="db-cfg-technical db-cfg-grow"
-                  type={!maskUrl || showUrl ? 'text' : 'password'}
-                  value={url}
-                  placeholder="postgres://user:pass@host:5432/db · mysql://… · sqlite:./data/app.db"
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(nextValue) => set((next) => (next.url = nextValue))}
+          {shape === 'url' ? (
+            <>
+              <SettingsRow
+                label="Driver"
+                description="Inferred from the connection URL and not stored separately."
+                control={
+                  <Chip tone={driver === 'unknown' ? 'warning' : 'accent'} data-field={`databases.${name}.driver`}>
+                    {driver === 'unknown' && environmentUrl ? 'From environment' : DRIVER_LABELS[driver]}
+                  </Chip>
+                }
+              />
+              <SettingsField
+                layout="stacked"
+                id={fieldId('url')}
+                field={`databases.${name}.url`}
+                label="Connection URL"
+                description="PostgreSQL, MySQL, and SQLite URLs are supported. Credentials stay masked for network URLs."
+                meta={testStatus}
+                error={urlError}
+                controlSize="full"
+                renderControl={(controlProps) => (
+                  <div className="db-cfg-url-row">
+                    <Input
+                      {...controlProps}
+                      className="db-cfg-technical db-cfg-grow"
+                      type={!maskUrl || showUrl ? 'text' : 'password'}
+                      value={url}
+                      placeholder="postgres://user:pass@host:5432/db · mysql://… · sqlite:./data/app.db"
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(nextValue) => set((next) => (next.url = nextValue))}
+                    />
+                    {maskUrl ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={showUrl ? 'Hide connection URL' : 'Show connection URL'}
+                        aria-pressed={showUrl}
+                        onClick={() => setShowUrl((current) => !current)}
+                      >
+                        {showUrl ? 'Hide' : 'Show'}
+                      </Button>
+                    ) : null}
+                    {testButton}
+                  </div>
+                )}
+              />
+              {card.structured ? (
+                <SettingsRow
+                  label="Connection fields"
+                  description={
+                    urlParse?.ok
+                      ? 'Split this URL into driver, host, port, user, password and database fields. A password moves to the secrets worker.'
+                      : `This URL stays a URL: ${urlParse && !urlParse.ok ? urlParse.reason : ''}`
+                  }
+                  meta={convertNote ? <span className="db-cfg-warn">{convertNote}</span> : undefined}
+                  control={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      data-field={`databases.${name}.convert`}
+                      disabled={!urlParse?.ok || converting}
+                      onClick={() => void convert()}
+                    >
+                      {converting ? 'Converting…' : 'Convert to fields'}
+                    </Button>
+                  }
                 />
-                {maskUrl ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-label={showUrl ? 'Hide connection URL' : 'Show connection URL'}
-                    aria-pressed={showUrl}
-                    onClick={() => setShowUrl((current) => !current)}
-                  >
-                    {showUrl ? 'Hide' : 'Show'}
-                  </Button>
-                ) : null}
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={card.test?.status === 'testing' || url.trim() === ''}
-                  onClick={card.onTest}
-                >
-                  {card.test?.status === 'testing' ? 'Testing…' : 'Test connection'}
-                </Button>
-              </div>
-            )}
-          />
+              ) : null}
+            </>
+          ) : (
+            <>
+              <SettingsField
+                id={fieldId('driver')}
+                field={`databases.${name}.driver`}
+                label="Driver"
+                description="The database server this connection talks to."
+                error={errorAt('driver')}
+                controlSize="full"
+                renderControl={() => (
+                  <SegmentedControl<ConnectionDriver>
+                    variant="radio"
+                    aria-label="Driver"
+                    value={driver === 'unknown' ? 'postgres' : driver}
+                    options={CONNECTION_DRIVERS.map((d) => ({ value: d.value, label: d.label, icon: false }))}
+                    onChange={(next) => {
+                      if (next === driver) return
+                      const switched = switchDriver(latest.current, next, driverStash.current)
+                      driverStash.current = switched.stash
+                      latest.current = switched.entry
+                      card.onChange(switched.entry)
+                    }}
+                  />
+                )}
+              />
+              {network ? (
+                <>
+                  {textField('host', 'Host', 'Name or address of the database server.', 'db.example.com', db.host)}
+                  {portField('port', 'Port', DEFAULT_PORTS[driver === 'mysql' ? 'mysql' : 'postgres'], db.port)}
+                  {textField('user', 'User', 'The role or account to log in as.', 'app', db.user)}
+                  {secretField('password', 'Password', 'Kept by the secrets worker; configuration holds a reference.')}
+                  {textField('database', 'Database', 'The database to open on the server.', 'app', db.database)}
+                </>
+              ) : (
+                textField(
+                  'database',
+                  'Database file',
+                  'Path of the SQLite file on the engine host, or :memory: for a throwaway database.',
+                  './data/app.db',
+                  db.database,
+                )
+              )}
+              <SettingsRow
+                label="Test connection"
+                description="Opens one throwaway connection with these settings — secrets resolved, through the tunnel when one is set."
+                meta={testStatus}
+                control={testButton}
+              />
+            </>
+          )}
         </SettingsList>
       </SettingsSection>
+
+      {card.structured ? (
+        <SettingsSection
+          className="db-cfg-detail-section"
+          title="Display"
+          description="How apps show this connection, and where its query files live."
+        >
+          <SettingsList>
+            <SettingsField
+              id={fieldId('icon')}
+              field={`databases.${name}.display.icon`}
+              label="Icon"
+              layout="stacked"
+              controlSize="full"
+              error={errorAt('display', 'icon')}
+              renderControl={() => (
+                <IconPicker
+                  label="Icon"
+                  value={asString(display.icon) || undefined}
+                  color={connectionDisplay(db).color}
+                  onChange={(icon) => setField('display.icon', icon)}
+                />
+              )}
+            />
+            <SettingsField
+              id={fieldId('color')}
+              field={`databases.${name}.display.color`}
+              label="Color"
+              layout="stacked"
+              controlSize="full"
+              error={errorAt('display', 'color')}
+              renderControl={() => (
+                <ColorPicker
+                  label="Color"
+                  value={asString(display.color) || undefined}
+                  onChange={(color) => setField('display.color', color)}
+                />
+              )}
+            />
+            {textField(
+              'folder',
+              'Queries folder',
+              'Absolute path on the engine host that holds this connection’s .sql files. Optional.',
+              '/home/me/project/queries',
+              db.folder,
+            )}
+          </SettingsList>
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection
         className="db-cfg-detail-section"
         title="Change capture"
-        description="Choose which writes can emit database::row-changed events."
+        description="Choose which writes can emit database::on-row-changed events."
       >
         <SettingsList>
           <SettingsField
@@ -1060,7 +1477,10 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
                   id={`db-cfg-tls-${name}`}
                   field={`databases.${name}.tls.mode`}
                   label="TLS mode"
-                  description="Control encryption and hostname verification for network connections."
+                  description={
+                    tlsModes.find((m) => m.value === (asString(tls.mode) || 'require'))?.description ??
+                    'Control encryption and hostname verification for network connections.'
+                  }
                   error={tlsModeError}
                   renderControl={(controlProps) => (
                     <DatabaseSelectInput
@@ -1068,14 +1488,7 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
                       label="TLS mode"
                       value={tls.mode}
                       fallback="require"
-                      options={[
-                        { value: 'disable', label: 'Disable — plaintext' },
-                        { value: 'require', label: 'Require — validate chain' },
-                        {
-                          value: 'verify-full',
-                          label: 'Verify full — validate hostname',
-                        },
-                      ]}
+                      options={tlsModes.map((m) => ({ value: m.value, label: m.label, description: m.description }))}
                       onChange={(nextValue) =>
                         setBlock('tls', (block) => {
                           if (nextValue === 'require') delete block.mode
@@ -1085,30 +1498,56 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
                     />
                   )}
                 />
-                <SettingsField
-                  id={`db-cfg-ca-${name}`}
-                  field={`databases.${name}.tls.ca_cert`}
-                  label="Extra CA bundle"
-                  description="Optional path to a PEM bundle for private certificate authorities."
-                  error={tlsCaError}
-                  renderControl={(controlProps) => (
-                    <Input
-                      {...controlProps}
-                      className="db-cfg-technical"
-                      type="text"
-                      value={asString(tls.ca_cert)}
-                      placeholder="/etc/ssl/private-ca.pem"
-                      spellCheck={false}
-                      autoComplete="off"
-                      onChange={(nextValue) =>
-                        setBlock('tls', (block) => {
-                          if (nextValue === '') delete block.ca_cert
-                          else block.ca_cert = nextValue
-                        })
-                      }
+                {card.structured ? (
+                  <>
+                    <PemValueField
+                      id={`db-cfg-ca-${name}`}
+                      field={`databases.${name}.tls.ca_cert`}
+                      label="CA certificate"
+                      description="Optional bundle for private certificate authorities: a path on the engine host, or paste / upload the PEM."
+                      error={errorAt('tls', 'ca_cert')}
+                      value={tls.ca_cert}
+                      pathPlaceholder="/etc/ssl/private-ca.pem"
+                      onChange={(next) => setField('tls.ca_cert', next)}
                     />
-                  )}
-                />
+                    <PemValueField
+                      id={`db-cfg-client-cert-${name}`}
+                      field={`databases.${name}.tls.client_cert`}
+                      label="Client certificate"
+                      description="For servers that require mutual TLS. A path on the engine host, or paste / upload the PEM."
+                      error={errorAt('tls', 'client_cert')}
+                      value={tls.client_cert}
+                      pathPlaceholder="/etc/ssl/client.crt"
+                      onChange={(next) => setField('tls.client_cert', next)}
+                    />
+                    {secretField(
+                      'tls.client_key',
+                      'Client key',
+                      'The client certificate’s private key, kept by the secrets worker.',
+                      true,
+                    )}
+                  </>
+                ) : (
+                  <SettingsField
+                    id={`db-cfg-ca-${name}`}
+                    field={`databases.${name}.tls.ca_cert`}
+                    label="Extra CA bundle"
+                    description="Optional path to a PEM bundle for private certificate authorities."
+                    error={errorAt('tls', 'ca_cert')}
+                    renderControl={(controlProps) => (
+                      <Input
+                        {...controlProps}
+                        className="db-cfg-technical"
+                        type="text"
+                        value={asString(tls.ca_cert)}
+                        placeholder="/etc/ssl/private-ca.pem"
+                        spellCheck={false}
+                        autoComplete="off"
+                        onChange={(nextValue) => setField('tls.ca_cert', nextValue)}
+                      />
+                    )}
+                  />
+                )}
                 <SettingsField
                   id={`db-cfg-trust-native-${name}`}
                   field={`databases.${name}.tls.trust_native`}
@@ -1158,12 +1597,156 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
               </>
             )}
           </SettingsList>
+          {!tlsOpaque && problemAt('tls') ? (
+            <div className="db-cfg-notice" role="alert">
+              {problemAt('tls')}
+            </div>
+          ) : null}
           {!tlsOpaque &&
           driver === 'postgres' &&
           !asBoolean(tls.trust_native, true) &&
           asString(tls.ca_cert).trim() === '' ? (
             <div className="db-cfg-notice" role="alert">
               Add a CA bundle before disabling the system trust store, or the PostgreSQL pool cannot establish trust.
+            </div>
+          ) : null}
+        </SettingsSection>
+      ) : null}
+
+      {card.structured && (network || sshOn) ? (
+        <SettingsSection
+          className="db-cfg-detail-section"
+          title="SSH tunnel"
+          description="Reach a database that only a bastion host can see. TLS still verifies the database host, not the tunnel."
+        >
+          <SettingsList>
+            {sshOpaque ? (
+              <OpaqueSetting
+                id={`db-cfg-ssh-${name}`}
+                field={`databases.${name}.ssh`}
+                label="SSH configuration"
+                description="This connection supplies the entire SSH block as an opaque value."
+                value={sshValue}
+                error={sshBlockError}
+                replacementLabel="no tunnel"
+                onChange={(raw) =>
+                  set((next) => {
+                    next.ssh = raw
+                  })
+                }
+                onUseLiteral={() =>
+                  set((next) => {
+                    delete next.ssh
+                  })
+                }
+              />
+            ) : (
+              <>
+                <SettingsField
+                  id={fieldId('ssh-enabled')}
+                  field={`databases.${name}.ssh`}
+                  label="Connect through an SSH tunnel"
+                  description="The worker opens the tunnel and connects to the database host and port from the bastion."
+                  error={sshBlockError}
+                  controlSize="fit"
+                  renderControl={(controlProps) => (
+                    <Switch
+                      {...controlProps}
+                      aria-label="Connect through an SSH tunnel"
+                      checked={sshOn}
+                      onChange={(event) =>
+                        set((next) => {
+                          if (event.target.checked) {
+                            next.ssh = sshStash.current ?? { host: '', user: '' }
+                          } else {
+                            sshStash.current = asObject(next.ssh)
+                            delete next.ssh
+                          }
+                        })
+                      }
+                    />
+                  )}
+                />
+                {sshOn ? (
+                  <>
+                    {textField('ssh.host', 'SSH host', 'The bastion’s name or address.', '203.0.113.7', ssh.host)}
+                    {portField('ssh.port', 'SSH port', DEFAULT_SSH_PORT, ssh.port)}
+                    {textField('ssh.user', 'SSH user', 'The account to log in to the bastion as.', 'ubuntu', ssh.user)}
+                    {secretField('ssh.password', 'SSH password', 'Optional when a private key is set.')}
+                    {secretField(
+                      'ssh.private_key',
+                      'Private key',
+                      'OpenSSH or PEM (RSA, ECDSA, Ed25519): paste it or upload the file.',
+                      true,
+                    )}
+                    {secretField('ssh.passphrase', 'Key passphrase', 'Only for an encrypted private key.')}
+                    <SettingsField
+                      id={fieldId('ssh-host-key')}
+                      field={`databases.${name}.ssh.host_key`}
+                      label="Pinned host key"
+                      description="The bastion must present this key. Empty accepts whichever key it presents."
+                      error={errorAt('ssh', 'host_key')}
+                      layout="stacked"
+                      controlSize="full"
+                      meta={
+                        presented ? (
+                          pinned === presented.fingerprint ? (
+                            <span className="db-cfg-test-ok">Matches the key the server presented</span>
+                          ) : pinned ? (
+                            // A pinned key that no longer matches is what a
+                            // man in the middle looks like: say so, and make
+                            // re-pinning a deliberate act.
+                            <span className="db-cfg-hostkey mismatch" role="alert">
+                              <span className="db-cfg-technical">
+                                The server presented a different key: {presented.algorithm} {presented.fingerprint}.
+                                Replace the pin only if the server’s key was rotated on purpose.
+                              </span>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setField('ssh.host_key', presented.fingerprint)}
+                              >
+                                Replace pin
+                              </Button>
+                            </span>
+                          ) : (
+                            <span className="db-cfg-hostkey">
+                              <span className="db-cfg-technical">
+                                Server presented {presented.algorithm} {presented.fingerprint}
+                              </span>
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={() => setField('ssh.host_key', presented.fingerprint)}
+                              >
+                                Trust
+                              </Button>
+                            </span>
+                          )
+                        ) : undefined
+                      }
+                      renderControl={(controlProps) => (
+                        <Input
+                          {...controlProps}
+                          className="db-cfg-technical"
+                          type="text"
+                          value={pinned}
+                          placeholder="SHA256:… — run Test connection to see the server’s key"
+                          spellCheck={false}
+                          autoComplete="off"
+                          onChange={(next) => setField('ssh.host_key', next)}
+                        />
+                      )}
+                    />
+                  </>
+                ) : null}
+              </>
+            )}
+          </SettingsList>
+          {sshOn && !sshOpaque && problemAt('ssh') ? (
+            <div className="db-cfg-notice" role="alert">
+              {problemAt('ssh')}
             </div>
           ) : null}
         </SettingsSection>

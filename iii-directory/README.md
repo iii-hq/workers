@@ -61,7 +61,6 @@ registry view also surfaces publication metadata (`type`, `config`,
 8. [Function search & pre-generate hint](#function-search--pre-generate-hint)
 9. [Custom trigger types](#custom-trigger-types)
 10. [Local development & testing](#local-development--testing)
-11. [Migration from skills v0.2.x](#migration-from-skills-v02x)
 
 ---
 
@@ -747,8 +746,8 @@ The native ids:
 Both `directory::registry::*` responses are cached in-process for
 `registry_cache_ttl_ms` (default 60s).
 
-There is **no** `directory::skills::register` — see
-[Migration](#migration-from-skills-v02x) below.
+There is **no** `directory::skills::register` — skills are the files described
+in [On-disk layout](#on-disk-layout).
 
 ### Local embeddings — `provider::minilm::embed`
 

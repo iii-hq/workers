@@ -13,12 +13,21 @@ use tokio::sync::RwLock;
 
 use crate::config::WorkerConfig;
 use crate::configuration::ConfigCell;
-use crate::types::Model;
+use crate::types::{AgentFunction, AgentMessage, Model, ThinkingLevel};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelBudget {
     pub model: Model,
     pub effective_max_output_tokens: u64,
+}
+
+/// The turn's `router::chat` knobs that change the prompt a provider bills
+/// (a reasoning-effort line, a chat vs thinking template, a rendered
+/// response format), forwarded to `router::count_tokens` as sent.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TurnKnobs<'a> {
+    pub thinking_level: Option<ThinkingLevel>,
+    pub response_format: Option<&'a serde_json::Value>,
 }
 
 /// Resolves a model id to its router catalog record.
@@ -32,6 +41,20 @@ pub trait ModelResolver: Send + Sync {
         provider: Option<&str>,
         id: &str,
     ) -> Result<Option<ModelBudget>, String>;
+
+    /// The prompt tokens the model's provider counts for this request
+    /// (`router::count_tokens`). `Err` when nothing can count it; callers
+    /// keep their own estimate. No default: a decorator that forgot to
+    /// forward it silently kept the estimate in production.
+    async fn count_prompt_tokens(
+        &self,
+        provider: Option<&str>,
+        id: &str,
+        system_prompt: &str,
+        tools: &[AgentFunction],
+        messages: &[AgentMessage],
+        knobs: TurnKnobs<'_>,
+    ) -> Result<u64, String>;
 }
 
 /// One summariser call. The core renders the prompts (template,

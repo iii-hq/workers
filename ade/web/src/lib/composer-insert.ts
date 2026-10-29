@@ -53,7 +53,12 @@ export function composerTarget(): string | null {
  * The buffer is bounded: with no listener the oldest entries fall off, so
  * a page publishing into a never-opened composer cannot grow memory. A
  * value addressed to one composer reaches only that composer's listeners;
- * one published while no composer is mounted goes to whoever comes next. */
+ * one published while no composer is mounted goes to whoever comes next.
+ *
+ * The drain waits a microtask, so every listener a mounting composer adds
+ * in the same effect flush (the editor shell's and the composer's own) gets
+ * what was held; drained to the first one alone, a held send request would
+ * reach the editor as text and never reach the composer that sends it. */
 const PENDING_CAP = 16
 
 interface BusListener<T> {
@@ -84,9 +89,20 @@ function bufferedBus<T>() {
       const listener = { composerId, receive }
       listeners.add(listener)
       if (pending.length > 0) {
-        const drained = pending
-        pending = []
-        for (const value of drained) receive(value)
+        queueMicrotask(() => {
+          if (!listeners.has(listener) || pending.length === 0) return
+          const drained = pending
+          pending = []
+          // The mounting composer's listeners (and any unaddressed ones).
+          const receivers = [...listeners].filter(
+            (each) =>
+              each.composerId === undefined ||
+              composerId === undefined ||
+              each.composerId === composerId,
+          )
+          for (const value of drained)
+            for (const each of receivers) each.receive(value)
+        })
       }
       return () => {
         listeners.delete(listener)

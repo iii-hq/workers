@@ -48,7 +48,8 @@ pub struct BrowseTableReq {
     /// Applied in order; sort priority is position in the list.
     #[serde(default)]
     pub sort: Vec<SortSpec>,
-    /// Combined with AND.
+    /// Combined with AND. A filter with `raw` is a SQL boolean expression
+    /// (see `FilterSpec::raw`), ANDed in its own parentheses.
     #[serde(default)]
     pub filters: Vec<FilterSpec>,
     /// A filtered `COUNT(*)` is a second query and can be expensive on a
@@ -70,6 +71,9 @@ pub struct BrowseTableResp {
     /// Total matching the same filters. Absent when not requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<i64>,
+    /// Time the database spent on the page (and the count, when asked),
+    /// in milliseconds.
+    pub elapsed_ms: u64,
 }
 
 async fn driver_of(state: &AppState, db: &str) -> Result<DriverKind, String> {
@@ -94,7 +98,37 @@ pub async fn handle(state: &AppState, req: BrowseTableReq) -> Result<BrowseTable
     let offset = (req.page as u64) * (page_size as u64);
 
     let target = filter::quote_table(driver, req.schema.as_deref(), &req.table);
-    let where_clause = filter::compile_where(driver, &req.filters, 1).map_err(err_to_str)?;
+    // Postgres binds each value as text cast to its column's type, so the
+    // filter needs the catalog's types (one catalog read, only with filters).
+    let column_types = if driver == DriverKind::Postgres
+        && req.filters.iter().any(|f| !f.disabled && f.raw.is_none())
+    {
+        let described = super::schema::describe_table(
+            state,
+            super::schema::DescribeTableReq {
+                db: Some(db.clone()),
+                table: req.table.clone(),
+                schema: req.schema.clone(),
+                timeout_ms: req.timeout_ms,
+            },
+        )
+        .await?;
+        Some(
+            described
+                .columns
+                .into_iter()
+                .map(|c| (c.name, c.ty))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+    } else {
+        None
+    };
+    let where_clause = filter::compile_where_typed(driver, &req.filters, 1, column_types.as_ref())
+        .map_err(err_to_str)?;
+    // Caller-written SQL rides in the WHERE: on sqlite run it under
+    // `query_only` too (postgres and mysql reads are read-only transactions
+    // already).
+    let has_raw = req.filters.iter().any(|f| !f.disabled && f.raw.is_some());
     let predicate = if where_clause.sql.is_empty() {
         String::new()
     } else {
@@ -121,9 +155,12 @@ pub async fn handle(state: &AppState, req: BrowseTableReq) -> Result<BrowseTable
             params: where_clause.params.clone(),
             timeout_ms: req.timeout_ms,
             record_history: false,
+            max_rows: None,
+            query_only: has_raw,
         },
     )
     .await?;
+    let mut elapsed_ms = resp.elapsed_ms;
 
     let has_more = resp.rows.len() as u64 > page_size as u64;
     resp.rows.truncate(page_size as usize);
@@ -138,9 +175,12 @@ pub async fn handle(state: &AppState, req: BrowseTableReq) -> Result<BrowseTable
                 params: where_clause.params,
                 timeout_ms: req.timeout_ms,
                 record_history: false,
+                max_rows: None,
+                query_only: has_raw,
             },
         )
         .await?;
+        elapsed_ms += counted.elapsed_ms;
         counted
             .rows
             .first()
@@ -161,5 +201,6 @@ pub async fn handle(state: &AppState, req: BrowseTableReq) -> Result<BrowseTable
         page_size,
         has_more,
         total,
+        elapsed_ms,
     })
 }

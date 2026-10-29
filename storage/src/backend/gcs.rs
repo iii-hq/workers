@@ -30,9 +30,19 @@ pub struct GcsBackend {
     /// can't reach the override; we fail closed to avoid silently handing
     /// out unusable links.
     endpoint_overridden: bool,
+    /// The client can sign URLs: a service-account key, or the metadata
+    /// server's identity on Google Cloud.
+    can_sign: bool,
+    /// Authenticates with a `credentials_file` of the engine host: its token
+    /// failures all read as [`UNUSABLE_KEY_FILE`], never as the auth
+    /// library's own words about the file.
+    host_key_file: bool,
 }
 
 pub struct GcsBackendOpts {
+    /// The service-account JSON itself (resolved `credentials_json`).
+    /// Takes precedence over `credentials_file`.
+    pub credentials_json: Option<String>,
     /// Path to a service-account JSON. When `None`, defers to ADC chain.
     pub credentials_file: Option<String>,
     /// Custom storage endpoint. `None` → default GCS host. The actual
@@ -43,19 +53,41 @@ pub struct GcsBackendOpts {
 
 impl GcsBackend {
     pub async fn build(opts: GcsBackendOpts, bucket: String) -> Result<Self, BackendError> {
-        let mut config = if let Some(path) = opts.credentials_file {
-            // Load the SA file directly instead of mutating GOOGLE_APPLICATION_CREDENTIALS,
-            // which would race across multiple GCS buckets and leak into unrelated
-            // SDK clients or child processes.
-            let creds = gcloud_auth::credentials::CredentialsFile::new_from_file(path.clone())
+        let uses_host_key_file = opts.credentials_json.is_none() && opts.credentials_file.is_some();
+        let mut config = if let Some(json) = opts.credentials_json.as_deref() {
+            // The parse error never quotes the input (it may be a key).
+            let creds = gcloud_auth::credentials::CredentialsFile::new_from_str(json)
                 .await
-                .map_err(|e| {
-                    BackendError::AuthFailed(format!("gcs read credentials_file `{path}`: {e}"))
+                .map_err(|_| {
+                    BackendError::AuthFailed(
+                        "gcs `credentials_json` is not a valid service-account or ADC credentials JSON"
+                            .into(),
+                    )
                 })?;
             ClientConfig::default()
                 .with_credentials(creds)
                 .await
-                .map_err(|e| BackendError::AuthFailed(format!("gcs auth (explicit): {e}")))?
+                .map_err(|e| {
+                    BackendError::AuthFailed(format!("gcs auth (credentials_json): {e}"))
+                })?
+        } else if let Some(path) = opts.credentials_file {
+            // Load the SA file directly instead of mutating GOOGLE_APPLICATION_CREDENTIALS,
+            // which would race across multiple GCS buckets and leak into unrelated
+            // SDK clients or child processes.
+            // A file of the engine host: read here, bounded, never a FIFO or
+            // a device (a reload must not block), and only a key whose token
+            // endpoint is Google's (the signed assertion goes there). Every
+            // failure reads the same, so the message does not tell whether a
+            // host path exists or what it holds.
+            let creds = tokio::task::spawn_blocking(move || host_key_file(&path))
+                .await
+                .map_err(|_| unusable_key_file())??;
+            // Building fetches a first token (from Google: the token_uri was
+            // checked); a key that does not sign reads like any other.
+            ClientConfig::default()
+                .with_credentials(creds)
+                .await
+                .map_err(|_| unusable_key_file())?
         } else {
             ClientConfig::default()
                 .with_auth()
@@ -69,11 +101,13 @@ impl GcsBackend {
         // (sign.rs) generates URLs against storage.googleapis.com regardless;
         // fake-gcs accepts unsigned/anonymous URLs so this is fine for tests.
         let endpoint_overridden = opts.endpoint_url.is_some();
+        let can_sign =
+            config.default_google_access_id.is_some() && config.default_sign_by.is_some();
         if let Some(url) = opts.endpoint_url.as_deref() {
             config.storage_endpoint = url.to_string();
             tracing::info!(
                 target = "storage::gcs",
-                endpoint = %url,
+                endpoint = %crate::config::redact_url(url),
                 "GCS backend using custom storage_endpoint override",
             );
         }
@@ -82,6 +116,8 @@ impl GcsBackend {
             client,
             bucket,
             endpoint_overridden,
+            can_sign,
+            host_key_file: uses_host_key_file,
         })
     }
 }
@@ -126,7 +162,7 @@ impl Backend for GcsBackend {
                 &upload,
             )
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(|e| self.map_error(e))?;
         Ok(PutResp {
             etag: object.etag,
             size,
@@ -149,31 +185,35 @@ impl Backend for GcsBackend {
             .client
             .get_object(&get_req)
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(|e| self.map_error(e))?;
         let size = if object.size < 0 {
             0
         } else {
             object.size as u64
         };
-        // Reject oversized objects BEFORE the download call buffers anything.
-        if let Some(cap) = req.max_inline_bytes {
-            if size > cap {
-                return Err(BackendError::ObjectTooLarge {
-                    actual_size: size,
-                    cap,
-                });
-            }
-        }
+        let (start, end) = match req.range {
+            Some(range) => range.span(size)?,
+            None => (0, size),
+        };
+        // Reject oversized reads BEFORE the download call buffers anything.
+        ByteRange::check_cap(start, end, req.max_inline_bytes)?;
         // Pin the body download to the exact generation we just read so a
         // concurrent overwrite returns 412 instead of silently mismatching the
         // returned etag/body.
         let mut download_req = get_req.clone();
         download_req.if_generation_match = Some(object.generation);
-        let body = self
-            .client
-            .download_object(&download_req, &Range::default())
-            .await
-            .map_err(map_gcs_error)?;
+        let body = if start == end && req.range.is_some() {
+            Vec::new()
+        } else {
+            let range = match req.range {
+                Some(_) => Range(Some(start), Some(end - 1)),
+                None => Range::default(),
+            };
+            self.client
+                .download_object(&download_req, &range)
+                .await
+                .map_err(|e| self.map_error(e))?
+        };
         let last_modified = object
             .updated
             .and_then(|t| chrono::Utc.timestamp_opt(t.unix_timestamp(), 0).single())
@@ -187,6 +227,7 @@ impl Backend for GcsBackend {
             etag: object.etag,
             last_modified,
             size,
+            offset: start,
         })
     }
 
@@ -203,7 +244,7 @@ impl Backend for GcsBackend {
             .client
             .get_object(&get_req)
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(|e| self.map_error(e))?;
         let size = if object.size < 0 {
             0
         } else {
@@ -235,7 +276,7 @@ impl Backend for GcsBackend {
         }
         match self.client.delete_object(&del_req).await {
             Ok(()) => Ok(DeleteResp { deleted: true }),
-            Err(e) => match map_gcs_error(e) {
+            Err(e) => match self.map_error(e) {
                 BackendError::NotFound => Ok(DeleteResp { deleted: false }),
                 other => Err(other),
             },
@@ -254,7 +295,7 @@ impl Backend for GcsBackend {
                 ..Default::default()
             })
             .await
-            .map_err(map_gcs_error)?;
+            .map_err(|e| self.map_error(e))?;
         let objects = resp
             .items
             .unwrap_or_default()
@@ -318,6 +359,128 @@ impl Backend for GcsBackend {
     fn provider(&self) -> &'static str {
         "gcs"
     }
+
+    fn direct_downloads(&self) -> bool {
+        !self.endpoint_overridden && self.can_sign
+    }
+
+    async fn probe(&self) -> Result<(), ProbeFailure> {
+        use crate::material::Stage;
+        let result = self
+            .client
+            .list_objects(&ListObjectsRequest {
+                bucket: self.bucket.clone(),
+                prefix: Some(String::new()),
+                delimiter: Some("/".into()),
+                max_results: Some(1),
+                ..Default::default()
+            })
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(GcsHttpError::Response(ErrorResponse { code, message, .. })) => Err(match code {
+                404 => ProbeFailure::missing(message),
+                401 | 403 => ProbeFailure::new(Stage::Auth, message),
+                _ => ProbeFailure::new(Stage::List, format!("HTTP {code}: {message}")),
+            }),
+            Err(GcsHttpError::TokenSource(_)) if self.host_key_file => {
+                Err(ProbeFailure::new(Stage::Auth, UNUSABLE_KEY_FILE))
+            }
+            Err(GcsHttpError::TokenSource(e)) => Err(ProbeFailure::new(
+                Stage::Auth,
+                format!("token source failed: {e}"),
+            )),
+            Err(GcsHttpError::HttpClient(e))
+                if e.is_connect() || e.is_timeout() || e.is_request() =>
+            {
+                Err(ProbeFailure::new(Stage::Endpoint, error_chain(&e)))
+            }
+            Err(other) => Err(ProbeFailure::new(Stage::List, error_chain(&other))),
+        }
+    }
+}
+
+/// The largest `credentials_file` read (a service-account key is ~2.4 KiB).
+pub const KEY_FILE_CAP: u64 = 64 * 1024;
+
+/// The one answer for any host `credentials_file` that cannot be used.
+pub const UNUSABLE_KEY_FILE: &str = "`credentials_file` cannot be used as a service-account key \
+     file (a readable regular JSON key file of at most 64 KiB whose token_uri is Google's)";
+
+fn unusable_key_file() -> BackendError {
+    BackendError::Provider {
+        inner_code: Some("CONFIG".into()),
+        message: UNUSABLE_KEY_FILE.into(),
+    }
+}
+
+impl GcsBackend {
+    /// [`map_gcs_error`], with a host key file's token failures as
+    /// [`UNUSABLE_KEY_FILE`].
+    fn map_error(&self, err: GcsHttpError) -> BackendError {
+        if self.host_key_file && matches!(err, GcsHttpError::TokenSource(_)) {
+            return BackendError::AuthFailed(UNUSABLE_KEY_FILE.into());
+        }
+        map_gcs_error(err)
+    }
+}
+
+/// A token endpoint of Google's.
+fn google_token_uri(raw: &str) -> bool {
+    url::Url::parse(raw).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.port().is_none_or(|port| port == 443)
+            && url.host_str().is_some_and(|host| {
+                host == "oauth2.googleapis.com"
+                    || host == "accounts.google.com"
+                    || host.ends_with(".googleapis.com")
+            })
+    })
+}
+
+/// Read and check a host `credentials_file`: a regular, non-empty file of at
+/// most [`KEY_FILE_CAP`] bytes (checked before and after opening it without
+/// blocking), a `service_account` or `authorized_user` JSON whose
+/// `token_uri`, if any, is Google's.
+fn host_key_file(path: &str) -> Result<gcloud_auth::credentials::CredentialsFile, BackendError> {
+    use std::io::Read;
+    let regular =
+        |meta: &std::fs::Metadata| meta.is_file() && meta.len() > 0 && meta.len() <= KEY_FILE_CAP;
+    let meta = std::fs::metadata(path).map_err(|_| unusable_key_file())?;
+    if !regular(&meta) {
+        return Err(unusable_key_file());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Swapped for a FIFO after the check: opening must not wait for a writer.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|_| unusable_key_file())?;
+    if !file.metadata().is_ok_and(|meta| regular(&meta)) {
+        return Err(unusable_key_file());
+    }
+    let mut bytes = Vec::new();
+    file.take(KEY_FILE_CAP + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unusable_key_file())?;
+    if bytes.len() as u64 > KEY_FILE_CAP {
+        return Err(unusable_key_file());
+    }
+    let json: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| unusable_key_file())?;
+    let kind = json.get("type").and_then(serde_json::Value::as_str);
+    let token_uri_ok = match json.get("token_uri") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(uri)) => google_token_uri(uri),
+        Some(_) => false,
+    };
+    if !matches!(kind, Some("service_account" | "authorized_user")) || !token_uri_ok {
+        return Err(unusable_key_file());
+    }
+    serde_json::from_value(json).map_err(|_| unusable_key_file())
 }
 
 /// Map a `gcloud_storage::http::Error` into our `BackendError`. 404 / NotFound
@@ -353,6 +516,7 @@ mod tests {
     async fn gcs_construction_with_missing_creds_returns_auth_error() {
         let r = GcsBackend::build(
             GcsBackendOpts {
+                credentials_json: None,
                 credentials_file: Some("/nonexistent/path/to/sa.json".into()),
                 endpoint_url: None,
             },
@@ -368,6 +532,7 @@ mod tests {
     async fn gcs_build_with_endpoint_url_does_not_panic() {
         let r = GcsBackend::build(
             GcsBackendOpts {
+                credentials_json: None,
                 credentials_file: None,
                 endpoint_url: Some("http://127.0.0.1:4443".into()),
             },
@@ -381,5 +546,122 @@ mod tests {
         // touch config.storage_endpoint. The test guards against the field
         // assignment itself panicking, e.g., from a typo in the field name.
         let _ = r;
+    }
+
+    async fn build_with_file(path: &str) -> Result<GcsBackend, BackendError> {
+        GcsBackend::build(
+            GcsBackendOpts {
+                credentials_json: None,
+                credentials_file: Some(path.into()),
+                endpoint_url: None,
+            },
+            "b".into(),
+        )
+        .await
+    }
+
+    fn message(result: Result<GcsBackend, BackendError>) -> String {
+        match result {
+            Err(BackendError::Provider { message, .. }) => message,
+            Err(other) => panic!("expected a config error, got {other}"),
+            Ok(_) => panic!("expected a refusal"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unusable_credentials_file_fails_fast_with_one_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let expected = message(build_with_file("/nonexistent/secret-dir/sa.json").await);
+        assert!(
+            expected.contains("cannot be used as a service-account key file"),
+            "{expected}"
+        );
+        assert!(!expected.contains("secret-dir"));
+        let write = |name: &str, body: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        let sa = |token_uri: &str| {
+            format!(
+                "{{\"type\":\"service_account\",\"client_email\":\"a@b\",\"private_key\":\"LEAKME\",\"token_uri\":\"{token_uri}\"}}"
+            )
+        };
+        let cases = vec![
+            write("malformed.json", b"{\"private_key\": \"LEAKME\""),
+            write("empty.json", b""),
+            write("big.json", &vec![b' '; (KEY_FILE_CAP + 1) as usize]),
+            write(
+                "external.json",
+                b"{\"type\":\"external_account\",\"audience\":\"x\"}",
+            ),
+            write(
+                "evil-token.json",
+                sa("http://127.0.0.1:49262/token").as_bytes(),
+            ),
+            write(
+                "evil-host.json",
+                sa("https://oauth2.googleapis.com.evil.example/token").as_bytes(),
+            ),
+            dir.path().to_string_lossy().to_string(),
+            "/dev/zero".to_string(),
+        ];
+        for path in cases {
+            assert_eq!(message(build_with_file(&path).await), expected, "{path}");
+        }
+        // Shaped like a key, but the auth library refuses it: same answer.
+        for (name, key) in [
+            ("bad-key.json", ",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\nnot-a-key\\n-----END PRIVATE KEY-----\\n\""),
+            ("no-key.json", ""),
+        ] {
+            let body = format!(
+                "{{\"type\":\"service_account\",\"client_email\":\"a@b.iam.gserviceaccount.com\",\"token_uri\":\"https://oauth2.googleapis.com/token\"{key}}}"
+            );
+            let path = write(name, body.as_bytes());
+            assert_eq!(message(build_with_file(&path).await), expected, "{name}");
+        }
+        // A FIFO is refused at once, without waiting for a writer.
+        let fifo = dir.path().join("fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let started = std::time::Instant::now();
+        assert_eq!(
+            message(build_with_file(&fifo.to_string_lossy()).await),
+            expected
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        // Google's token endpoint is accepted (the key itself is fake, so
+        // the client may still refuse it later, but not as unusable).
+        assert!(google_token_uri("https://oauth2.googleapis.com/token"));
+        assert!(google_token_uri(
+            "https://accounts.google.com/o/oauth2/token"
+        ));
+        assert!(!google_token_uri(
+            "https://oauth2.googleapis.com:8443/token"
+        ));
+        assert!(!google_token_uri("http://oauth2.googleapis.com/token"));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_credentials_json_is_an_auth_error_that_never_quotes_it() {
+        let r = GcsBackend::build(
+            GcsBackendOpts {
+                credentials_json: Some("{\"private_key\": \"LEAKME\"".into()),
+                credentials_file: None,
+                endpoint_url: None,
+            },
+            "bucket".into(),
+        )
+        .await;
+        match r {
+            Err(BackendError::AuthFailed(message)) => {
+                assert!(!message.contains("LEAKME"), "{message}")
+            }
+            Err(other) => panic!("expected AuthFailed, got {other}"),
+            Ok(_) => panic!("a malformed credentials JSON must not build"),
+        }
     }
 }

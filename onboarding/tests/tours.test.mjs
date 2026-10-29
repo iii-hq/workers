@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { TOURS, findStep, getTour, listTours } from '../src/tours.mjs'
+import { TOUR_AGENT, TOURS, findStep, getTour, listTours } from '../src/tours.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -46,7 +46,7 @@ test('every step anchors on a console class that still exists', () => {
     for (const step of tour.steps) {
       if (!step.anchors) continue
       assert.ok(step.anchors.length > 0, `${step.id}: empty anchors`)
-      assert.match(step.anchors[0], /^\.onboarding-[a-z-]+$/, `${step.id}: odd first anchor`)
+      assert.match(step.anchors[0], /^\.learn-iii-[a-z-]+$/, `${step.id}: odd first anchor`)
       if (!consoleSrc) continue // packaged worker: no sibling checkout
       const hits = execFileSync('grep', ['-rl', step.anchors[0].slice(1), consoleSrc], {
         encoding: 'utf8',
@@ -71,12 +71,12 @@ test('every condition is a complete trigger binding', () => {
 
 test('the injected page ships the box it draws', () => {
   const css = readFileSync(join(root, 'ui', 'styles.css'), 'utf8')
-  assert.match(css, /\.onboarding-spotlight/)
+  assert.match(css, /\.learn-iii-spotlight/)
 })
 
 /**
- * A step's button either sends a prompt, performs a console move, or opens a
- * screen. Whichever it is, the page needs the fields to render it.
+ * A step's button either sends a prompt or closes the step. When it sends,
+ * the page needs the fields to render it.
  */
 test('every ask carries a prompt and a button label', () => {
   for (const tour of TOURS) {
@@ -88,31 +88,50 @@ test('every ask carries a prompt and a button label', () => {
   }
 })
 
-/** The page carries out actions by name, so an unknown one would do nothing. */
+/** A `to_close` step names the screen the tour closes for the operator. */
+test('every to_close step names a screen', () => {
+  for (const tour of TOURS) {
+    for (const step of tour.steps) {
+      if (!step.to_close) continue
+      assert.ok(step.to_close.screen, `${step.id}: to_close has no screen`)
+    }
+  }
+})
+
 /**
- * An `on_closed` anchor cannot use the `onboarding-*` rule above: it points at
- * a console control the console publishes no tour class for, so it rides that
- * control's own aria-label. That label is the fragile part — this is the check
- * that fails when someone renames it.
+ * A `to_open` step points at where its screen opens, and the operator opens
+ * it. Its anchors are console hooks the tour does not own outright — the
+ * new-tab button's class and the page picker's `data-screen` — so this is
+ * the check that fails when either is dropped. The page never opens the
+ * screen itself any more, so a step carrying the old `screen` field would
+ * render a button that does nothing.
  */
-test('every on_closed step carries a body and a label the console still uses', () => {
+test('every to_open step names its screen, a body, and anchors the console still has', () => {
   const consoleSrc = consoleWebSrc()
   for (const tour of TOURS) {
     for (const step of tour.steps) {
-      if (!step.on_closed) continue
-      const { screen, body, anchors } = step.on_closed
-      assert.ok(screen, `${step.id}: on_closed has no screen to watch`)
-      assert.ok(body, `${step.id}: on_closed has no body to show`)
-      assert.ok(anchors?.length, `${step.id}: on_closed has no anchor`)
+      assert.equal(step.screen, undefined, `${step.id}: the page no longer opens screens; use to_open`)
+      if (!step.to_open) continue
+      const { screen, body, anchors } = step.to_open
+      assert.ok(screen, `${step.id}: to_open has no screen to watch`)
+      assert.ok(body, `${step.id}: to_open has no body to show`)
+      assert.ok(anchors?.length, `${step.id}: to_open has no anchor`)
+      assert.ok(step.anchors?.length, `${step.id}: nothing to frame once the screen is open`)
+      if (step.to_open.elsewhere !== undefined) {
+        assert.ok(step.to_open.elsewhere.trim(), `${step.id}: to_open.elsewhere is empty`)
+      }
       if (!consoleSrc) continue // packaged worker: no sibling checkout
       for (const anchor of anchors) {
-        const label = /\[aria-label="([^"]+)"\]/.exec(anchor)?.[1]
-        if (!label) continue
-        const hits = execFileSync('grep', ['-rl', label, consoleSrc], {
+        const needle =
+          /^\.(learn-iii-[a-z-]+)$/.exec(anchor)?.[1] ??
+          /\[aria-label="([^"]+)"\]/.exec(anchor)?.[1] ??
+          (/\[data-screen=/.test(anchor) ? 'data-screen=' : null)
+        assert.ok(needle, `${step.id}: odd to_open anchor ${anchor}`)
+        const hits = execFileSync('grep', ['-rl', needle, consoleSrc], {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'ignore'],
         })
-        assert.ok(hits.trim().length > 0, `aria-label "${label}" is in no console file`)
+        assert.ok(hits.trim().length > 0, `${needle} is in no console file`)
       }
     }
   }
@@ -120,7 +139,7 @@ test('every on_closed step carries a body and a label the console still uses', (
 
 /**
  * A step the agent finishes, rather than the operator, reports itself done by
- * writing one key into the onboarding state scope. Two halves have to agree
+ * writing one key into the learn-iii state scope. Two halves have to agree
  * or the step never closes: the sentence the prompt ends with, and the
  * `state` trigger the page binds. This is the check that fails when one of
  * them moves.
@@ -130,11 +149,11 @@ test('every agent-finished step names the state key its trigger waits on', () =>
     for (const step of tour.steps) {
       if (step.condition?.type !== 'state') continue
       const key = `step_${step.id}_completed`
-      assert.equal(step.condition.config.scope, 'onboarding', `${step.id}: wrong state scope`)
+      assert.equal(step.condition.config.scope, 'learn-iii', `${step.id}: wrong state scope`)
       assert.equal(step.condition.config.key, key, `${step.id}: trigger waits on the wrong key`)
       assert.ok(step.ask?.text.includes(key), `${step.id}: the prompt never asks for ${key}`)
       assert.ok(
-        step.ask.text.includes('onboarding'),
+        step.ask.text.includes('learn-iii'),
         `${step.id}: the prompt never names the state scope`,
       )
     }
@@ -145,7 +164,7 @@ test('every agent-finished step names the state key its trigger waits on', () =>
 test('every step that asks the agent to build waits for it to report done', () => {
   const agentSteps = ['composability', 'discoverability', 'extensibility', 'reactivity']
   for (const id of agentSteps) {
-    const step = getTour('console-basics').steps.find((entry) => entry.id === id)
+    const step = getTour('learn-iii').steps.find((entry) => entry.id === id)
     assert.ok(step, `${id} is no longer a step`)
     assert.equal(step.condition?.type, 'state', `${id}: does not wait on a state write`)
   }
@@ -153,7 +172,7 @@ test('every step that asks the agent to build waits for it to report done', () =
 
 /** The tour names the five CODER properties; `Discover` is not one of them. */
 test('the discoverability step is titled Discoverability', () => {
-  const step = getTour('console-basics').steps.find((entry) => entry.id === 'discoverability')
+  const step = getTour('learn-iii').steps.find((entry) => entry.id === 'discoverability')
   assert.equal(step.title, 'Discoverability')
 })
 
@@ -168,4 +187,25 @@ test('findStep numbers steps from 1 in tour order', () => {
   }
   assert.equal(findStep('no-such-tour', 'message'), undefined)
   assert.equal(findStep(TOURS[0].id, 'no-such-step'), undefined)
+})
+
+/**
+ * The first step starts the tour's chat under the Onboarding profile, the
+ * way a setup example prompt does; every later prompt goes to the chat the
+ * operator is in. A `to_open` step offers a button that opens its screen.
+ */
+test('the first step opens a chat under the tour agent, and screens come with a button', () => {
+  const message = findStep('learn-iii', 'message').step
+  assert.equal(message.ask.agent, TOUR_AGENT)
+  for (const tour of TOURS) {
+    for (const step of tour.steps) {
+      if (step.id !== 'message') assert.equal(step.ask?.agent, undefined, `${step.id}: starts a second chat`)
+      if (step.to_open) {
+        assert.ok(step.to_open.screen, `${step.id}: to_open has no screen`)
+        assert.ok(step.to_open.label?.trim(), `${step.id}: to_open has no button label`)
+        assert.ok(step.to_open.body, `${step.id}: to_open has no body`)
+        assert.ok(step.to_open.anchors?.length, `${step.id}: to_open has no anchors`)
+      }
+    }
+  }
 })

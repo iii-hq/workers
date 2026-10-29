@@ -8,17 +8,13 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
+import { parseBucketList } from './lib/objects'
 import { leafName, parentPrefix } from './widgets'
 
 const ROWS = 30
 /** Objects scanned per bucket — a flat, undelimited listing, so this is a
     best-effort search over the first page of each bucket, not every key. */
 const SCAN_LIMIT = 200
-
-interface BucketSummary {
-  name: string
-  provider: string
-}
 
 interface StorageObject {
   key: string
@@ -38,14 +34,13 @@ export function registerStoragePalette(host: Host): void {
     minQuery: 2,
     async search(query, { signal }) {
       const needle = query.trim().toLowerCase()
-      const { buckets } = await host.iii.trigger<{ buckets: BucketSummary[] }>(
-        'storage::listBuckets',
-        {},
-      )
+      const buckets = parseBucketList(await host.iii.trigger<unknown>('storage::listBuckets', {}))
       if (signal.aborted) return []
       const out: { bucket: string; key: string }[] = []
       for (const bucket of buckets) {
         if (signal.aborted) return []
+        // Listed but not built: listing it would only fail.
+        if (bucket.error) continue
         const listing = await host.iii
           .trigger<Listing>('storage::listObjects', {
             bucket: bucket.name,

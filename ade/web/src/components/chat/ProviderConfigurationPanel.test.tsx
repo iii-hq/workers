@@ -352,7 +352,7 @@ describe('ProviderConfigurationPanel value boundaries', () => {
   it('also supports the literal llm-router id without inventing an alias', async () => {
     configure({ id: 'llm-router' })
     const view = mount()
-    await flush()
+    await waitForText('Provider settings')
     expect(view.textContent).toContain('Provider settings')
     expect(callsFor('configuration::schema').at(-1)?.[1]).toEqual({
       id: 'llm-router',
@@ -368,7 +368,7 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
   it('hydrates null without an automatic set', async () => {
     configure({ value: null })
     const view = mount()
-    await flush()
+    await waitForText('Provider settings')
     expect(view.querySelector('input[inputmode="url"]')).not.toBeNull()
     expect(callsFor('configuration::set')).toHaveLength(0)
   })
@@ -376,7 +376,7 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
   it('does not read or save when the family is missing or ambiguous', async () => {
     transport.entries = []
     const missing = mount()
-    await flush()
+    await waitForText('No live router configuration')
     expect(missing.textContent).toContain('No live router configuration')
     expect(callsFor('configuration::schema')).toHaveLength(0)
     expect(callsFor('configuration::get')).toHaveLength(0)
@@ -392,7 +392,7 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
     ]
     queryClient.removeQueries({ queryKey: configurationKeys.list() })
     act(() => root?.render(<Harness />))
-    await flush()
+    await waitForText('Open Settings')
     expect(container.textContent).toContain('Open Settings')
     expect(container.textContent).toContain('router-a, router-b')
     expect(callsFor('configuration::schema')).toHaveLength(0)
@@ -485,8 +485,7 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
     transport.schemaErrors.delete('team-blue-router')
     transport.valueErrors.delete('team-blue-router')
     await clickButton('Retry')
-    await flush()
-    await flush()
+    await waitForText('Provider settings')
     expect(
       view.querySelector<HTMLInputElement>('input[inputmode="url"]')?.value,
     ).toBe('https://server.example')
@@ -538,7 +537,7 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
       },
     })
     const view = mount('openai-codex')
-    await flush()
+    await waitForText('Provider settings')
     const input = view.querySelector<HTMLInputElement>('input[inputmode="url"]')
     expect(input).not.toBeNull()
     if (!input) return
@@ -576,7 +575,7 @@ describe('ProviderConfigurationPanel lifecycle with real QueryClient hooks', () 
       },
     })
     const view = mount('openai-codex')
-    await flush()
+    await waitForText('Provider settings')
     const input = view.querySelector<HTMLInputElement>('input[inputmode="url"]')
     expect(input).not.toBeNull()
     if (!input) return

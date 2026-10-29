@@ -312,11 +312,13 @@ impl ComposeScope {
     }
 }
 
+/// Engine-owned functions (`configuration::*`, iii-sandbox's `sandbox::*`)
+/// exist only in `default`, whatever namespace the harness runs in.
 fn dispatch_namespace<'a>(
     function_id: &str,
     prepared_namespace: Option<&'a str>,
 ) -> Option<&'a str> {
-    if function_id.starts_with("configuration::") {
+    if function_id.starts_with("configuration::") || function_id.starts_with("sandbox::") {
         Some("default")
     } else {
         prepared_namespace
@@ -685,6 +687,21 @@ mod tests {
     #[test]
     fn configuration_prefix_match_is_exact() {
         assert_eq!(dispatch_namespace("configuration-extra::get", None), None);
+    }
+
+    #[test]
+    fn sandbox_calls_are_routed_to_default_but_not_their_lookalikes() {
+        for function_id in ["sandbox::create", "sandbox::exec", "sandbox::fs::write"] {
+            assert_eq!(
+                dispatch_namespace(function_id, Some("my-project")),
+                Some("default")
+            );
+        }
+        // sandbox-code-runner is an ordinary worker in the project namespace.
+        assert_eq!(
+            dispatch_namespace("sandbox-code-runner::run", Some("my-project")),
+            Some("my-project")
+        );
     }
 
     #[test]

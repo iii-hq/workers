@@ -81,7 +81,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, TopicInfo};
 use crate::store::{Job, QueueStore, TopicStats};
 use crate::subscriber_config::SubscriberQueueConfig;
-use crate::trigger::Invoker;
+use crate::trigger::{Invoker, SubscriberTarget};
 
 /// `engine/src/builtins/queue.rs` `QueueConfig::default()` (max_attempts).
 const DEFAULT_MAX_RETRIES: u32 = 3;
@@ -103,11 +103,9 @@ struct PollerConfig {
     /// `format!("{topic}::{id}")`, not the bare topic name (see
     /// the module doc's fan-out model).
     queue_name: String,
-    function_id: String,
-    /// The trigger's stored metadata, delivered with every message (the
-    /// harness's `__binding` pointer — see `trigger.rs::RegisteredSubscriber`).
-    metadata: Option<Value>,
-    namespace: Option<String>,
+    /// Who each message goes to: a trigger's function (with its stored
+    /// metadata, the harness's `__binding` pointer) or an observer.
+    target: SubscriberTarget,
     condition_function_id: Option<String>,
     max_retries: u32,
     backoff_ms: u64,
@@ -224,15 +222,13 @@ impl QueueAdapter for BuiltinAdapter {
         }
     }
 
-    async fn subscribe(
+    async fn subscribe_target(
         &self,
         topic: &str,
         id: &str,
-        function_id: &str,
-        metadata: Option<Value>,
+        target: SubscriberTarget,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
-        namespace: Option<String>,
     ) {
         let key = (topic.to_string(), id.to_string());
         let mut subs = self.subscriptions.lock().await;
@@ -269,11 +265,10 @@ impl QueueAdapter for BuiltinAdapter {
             .or_default()
             .insert(id.to_string());
 
+        let function_id = target.function_id().to_string();
         let cfg = PollerConfig {
             queue_name,
-            function_id: function_id.to_string(),
-            metadata,
-            namespace,
+            target,
             condition_function_id,
             max_retries,
             backoff_ms,
@@ -1003,9 +998,7 @@ async fn process_job(
 ) {
     let result = invoke(
         invoker.as_ref(),
-        &cfg.function_id,
-        cfg.metadata.clone(),
-        cfg.namespace.as_deref(),
+        &cfg.target,
         cfg.condition_function_id.as_deref(),
         job.payload.clone(),
     )
@@ -1028,15 +1021,13 @@ async fn process_job(
 /// job (nacks).
 async fn invoke(
     invoker: &dyn Invoker,
-    function_id: &str,
-    metadata: Option<Value>,
-    namespace: Option<&str>,
+    target: &SubscriberTarget,
     condition_function_id: Option<&str>,
     payload: Value,
 ) -> Result<(), String> {
     if let Some(condition_id) = condition_function_id {
         match invoker
-            .call_in_namespace(condition_id, payload.clone(), namespace)
+            .call_in_namespace(condition_id, payload.clone(), target.namespace())
             .await
         {
             Ok(Some(Value::Bool(false))) => return Ok(()),
@@ -1044,10 +1035,7 @@ async fn invoke(
             Err(err) => return Err(err),
         }
     }
-    invoker
-        .call_delivery(function_id, payload, metadata, namespace)
-        .await
-        .map(|_| ())
+    target.deliver(invoker, payload).await.map(|_| ())
 }
 
 #[cfg(test)]
@@ -1790,9 +1778,7 @@ mod tests {
                 invoker.clone(),
                 PollerConfig {
                     queue_name: "shared".to_string(),
-                    function_id: "backend".to_string(),
-                    metadata: None,
-                    namespace: None,
+                    target: SubscriberTarget::function("backend", None, None),
                     condition_function_id: None,
                     max_retries: 3,
                     backoff_ms: 1,
