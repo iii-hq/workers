@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use futures::future::BoxFuture;
-use iii_node_core::engine::{CallResult, Engine, ProxyHandler, UnregisterFn};
+use iii_node_core::engine::{CallResult, Engine, GuestFunctionOptions, ProxyHandler, UnregisterFn};
 use iii_node_core::manager::RuntimeManager;
 use iii_python_core::manager::Manager as PythonManager;
 
@@ -50,7 +50,7 @@ pub struct Manager {
     /// The bus. Node reaches it through `RuntimeManager`, which owns its own
     /// handle; python registrations are published from HERE, because the
     /// python guest has no `iii.registerFunction` to publish them from — its
-    /// `iii` is `trigger` and `namespace` only.
+    /// `iii` is `call` and `namespace` only.
     engine: Arc<dyn Engine>,
     /// Canonical namespace (`"app::"`) → its interpreter and registrations.
     py_ns: Mutex<HashMap<String, PyNamespace>>,
@@ -314,7 +314,7 @@ impl Manager {
     /// guest publishes itself: the evaluated source calls
     /// `iii.registerFunction`, which reaches the bus through an op. Python's
     /// guest cannot — `python.wasm` imports one module and exports `_start`,
-    /// so its `iii` is `trigger` and `namespace` only. The host publishes on
+    /// so its `iii` is `call` and `namespace` only. The host publishes on
     /// its behalf and dispatches each invocation back in as one turn on the
     /// namespace's pinned interpreter.
     async fn register_python(
@@ -453,6 +453,7 @@ impl Manager {
             req.description.clone(),
             req.request_format.clone(),
             req.response_format.clone(),
+            GuestFunctionOptions::default(),
             handler,
         );
         let stale = {
@@ -897,12 +898,22 @@ mod router_tests {
         ) -> futures::future::BoxFuture<'static, iii_node_core::engine::CallResult> {
             Box::pin(async { Err("no bus in tests".to_string()) })
         }
+        fn call_observer(
+            &self,
+            _: String,
+            _: serde_json::Value,
+            _: u64,
+            _: Option<String>,
+        ) -> futures::future::BoxFuture<'static, iii_node_core::engine::CallResult> {
+            Box::pin(async { Err("no bus in tests".to_string()) })
+        }
         fn register(
             &self,
             fn_id: String,
             _: Option<String>,
             request_format: Option<serde_json::Value>,
             response_format: Option<serde_json::Value>,
+            _: GuestFunctionOptions,
             handler: iii_node_core::engine::ProxyHandler,
         ) -> iii_node_core::engine::UnregisterFn {
             self.formats
@@ -923,25 +934,19 @@ mod router_tests {
                 retired.lock().unwrap().push(fn_id.clone());
             })
         }
-        fn register_trigger(
+        fn on_observer_added(&self, _: String, _: Option<iii_node_core::engine::ProxyHandler>) {}
+        fn on_observer_removed(&self, _: String, _: Option<iii_node_core::engine::ProxyHandler>) {}
+        fn observe(
             &self,
             _: serde_json::Value,
         ) -> futures::future::BoxFuture<'static, Result<String, String>> {
-            Box::pin(async { Ok("trig-test".to_string()) })
+            Box::pin(async { Ok("observer-test".to_string()) })
         }
-        fn unregister_trigger(
+        fn dispose_observer(
             &self,
             _: String,
         ) -> futures::future::BoxFuture<'static, Result<(), String>> {
             Box::pin(async { Ok(()) })
-        }
-        fn register_trigger_type(
-            &self,
-            _: String,
-            _: Option<String>,
-            _: iii_node_core::engine::ProxyHandler,
-        ) -> iii_node_core::engine::UnregisterFn {
-            Box::new(|| {})
         }
     }
 

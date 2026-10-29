@@ -11,13 +11,13 @@ that worker needs no changes — but no microVM, no daemon, and **no
 to WebAssembly inside wasmtime.
 
 ```bash
-iii trigger compose::add worker=code-runner
+iii call compose::add worker=code-runner
 ```
 
 ## Quickstart
 
 ```bash
-iii trigger code-runner::run lang=node code='console.log("hi"); return 2 + 2'
+iii call code-runner::run lang=node code='console.log("hi"); return 2 + 2'
 ```
 
 ```json
@@ -65,7 +65,7 @@ aggregate in code, or write it to iii.files and return a summary>
 For example, `for (i=0;i<100000;i++) result.push(i); return result` returns
 `result` as `<omitted: result was ~575 KB (100000 array elements); ...>`
 instead of the 100,000-element array. This is deliberate: `result` is often
-consumed by code (an `fp::pipe` step, another `iii.trigger` call), so a step
+consumed by code (an `fp::pipe` step, another `iii.call`), so a step
 that receives a string where it expected an array fails loudly with the
 marker text in the error — the teaching failure you want, not data quietly
 gone missing.
@@ -93,39 +93,90 @@ data to `iii.files` and return a short summary.
 
 Code you run gets a global `iii`:
 
-- `await iii.trigger({ function_id, payload })` — invoke any bus function.
+- `await iii.call({ function_id, payload, action?, timeout_ms? })` — invoke
+  any bus function. `action: { type: 'void' }` is fire-and-forget, and
+  `timeout_ms` is clamped to the deployment's `max_timeout_ms`. `iii.trigger`
+  is the same function.
 - `iii.registerFunction(id, handler, opts?)` — publish one for the life of
   this runtime. For one that outlives it, use `code-runner::register_function`.
-  `opts` takes `description`, and `request_format` / `response_format` — JSON
-  Schema objects `engine::functions::info` shows callers in place of "any".
+  `opts` takes `description`; `request_format` / `response_format`, JSON
+  Schema objects `engine::functions::info` shows callers in place of "any";
+  `args_format`, the JSON Schema an observer's `args` must match (a function
+  without it takes no args); and `private: true`, which lets only this worker
+  call the function while any worker may observe it.
+- `await iii.observe(source, target, opts?)` — run the registered function
+  `target` on every call of `source` that matches. `source` is a function id,
+  or `{ function_id, namespace?, args?, filters?, deliver? }`: `args` are read
+  by the worker that hosts `source`, `filters` select calls by `input`,
+  `output`, `error`, `caller` and `metadata`, and `deliver` is what `target`
+  receives (`'envelope'`, the default, `'input'` or `'output'`). `opts` takes
+  `id` (inside this runtime's namespace), `metadata`, `max_fires`,
+  `expires_in_ms` and `max_in_flight`. Resolves to `{ id, dispose() }`; the
+  observer stays pending until `source` is registered and accepts it.
+- `iii.onObserverAdded(id, hook)` / `iii.onObserverRemoved(id, hook)` — run
+  `hook(observer)` when an observer of your function `id` arrives or leaves.
+  `observer` is `{ id, function_id, args, filters, target }`. A throw in the
+  added hook rejects the observer with the thrown error's `code`, or
+  `OBSERVE_REJECTED`; `null` removes a hook. `await iii.call({ observer,
+  payload })` runs that observer's target with `payload`.
 - `iii.files` — a **private scratch directory** that lives exactly as long as
   the runtime: `write(name, contents)`, `read(name)`, `readText(name)`,
   `list()`, `remove(name)`. Names are one file each — no paths, no
   subdirectories — and the directory is bounded by `scratch_mb`/`scratch_files`.
 - `iii.namespace` — the prefix this runtime may register under.
 
-Python's `iii` is narrower: `iii.trigger({...})` and `iii.namespace`, and it
-is **synchronous** — the call blocks until the answer comes back. Registration
-from inside guest Python is not available; use `code-runner::register_function`
-(node) or trigger a worker that registers for you. A guest timeout is clamped
-to what is left of the run's own budget, so `iii.trigger` inside a 5s run
-cannot ask for 30s and take the whole run down with it.
+A function's return value is what its observers observe, so an event source
+returns the event it is called with, and calling it delivers the event to
+every observer whose filters match:
+
+```js
+iii.registerFunction('app::on-order', (order) => order, {
+  private: true,
+  args_format: { type: 'object', properties: { region: { type: 'string' } } },
+})
+iii.onObserverAdded('app::on-order', (obs) => {
+  if (obs.args.region === 'mars') {
+    throw Object.assign(new Error('no such region'), { code: 'UNKNOWN_REGION' })
+  }
+})
+
+// elsewhere, observe it: every order whose total is at least 500
+await iii.observe(
+  { function_id: 'app::on-order', filters: { 'input.total': { $gte: 500 } }, deliver: 'output' },
+  'app::alert',
+)
+
+// and emit
+await iii.call({ function_id: 'app::on-order', payload: { id: 'o-1', total: 900 }, action: { type: 'void' } })
+```
+
+Python's `iii` is narrower: `iii.call({...})` (with `iii.trigger` as the same
+function) and `iii.namespace`, and it is **synchronous** — the call blocks
+until the answer comes back. Registration from inside guest Python is not
+available; use `code-runner::register_function` (node) or call a worker that
+registers for you. A guest timeout is clamped to what is left of the run's own
+budget, so `iii.call` inside a 5s run cannot ask for 30s and take the whole run
+down with it.
 
 ```python
-answer = iii.trigger({"function_id": "state::get", "payload": {"key": "k"}})
+answer = iii.call({"function_id": "state::get", "payload": {"key": "k"}})
 result = answer["value"]
 ```
 
 ## What this cannot do
 
 The in-process Node and Python bus bridges refuse `state::claim-namespace`,
-`harness::state::*`, `provider-openai-codex::state::*`, and
-`provider::openai-codex::{login,auth}::*`. The checks apply before dispatch,
-including queued/fire-and-forget calls and trigger-registration targets.
-Trigger bindings cannot target another trigger registration, which would
-otherwise install an unchecked second binding. Ordinary bus calls keep their
-existing behavior and authority; these checks are not a general sandbox for
-arbitrary code or for other workers' capabilities.
+`harness::state::*`, `provider-openai-codex::state::*`,
+`provider::openai-codex::{login,auth}::*` and `engine::observers::dispose`.
+The checks apply before dispatch, including queued and fire-and-forget calls,
+calls through an observer to its target, and observers: an observer can
+neither observe nor target one of them. Guests share this worker's one engine
+connection, so a runtime names observers only inside its own namespace, sets
+observer hooks only on ids it holds, calls through only the observers its own
+hooks received, and disposes its observers through the handle `iii.observe`
+returned. Ordinary bus calls keep their existing behavior and authority; these
+checks are not a general sandbox for arbitrary code or for other workers'
+capabilities.
 
 `sandbox-code-runner` has a different boundary: its microVM guests connect
 directly to the engine using the real SDK. They do not pass through these host
@@ -257,7 +308,8 @@ asset.
 | `keep` / `runtime_id` | yes | **yes** |
 | what a kept runtime persists | globals **and** files | globals **and** files |
 | `register_function` | yes | **yes** |
-| `iii.trigger` from guest code | yes | **yes** |
+| `iii.call` from guest code | yes | **yes** |
+| `iii.observe` and observer hooks from guest code | yes | no |
 | `iii.registerFunction` from guest code | yes | no |
 | `iii.files` | yes | use `/work` |
 

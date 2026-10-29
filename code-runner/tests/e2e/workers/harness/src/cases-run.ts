@@ -96,13 +96,13 @@ export const RUN_CASES: TestCase[] = [
   },
 
   {
-    name: 'python guest code can call back into the bus through iii.trigger',
+    name: 'python guest code can call back into the bus through iii.call',
     async run(ctx) {
       const r = await ctx.call('code-runner::run', {
         lang: 'python',
         code: [
-          "answer = iii.trigger({'function_id': 'code-runner::run',",
-          "                      'payload': {'lang': 'node', 'code': 'return 40 + 2'}})",
+          "answer = iii.call({'function_id': 'code-runner::run',",
+          "                   'payload': {'lang': 'node', 'code': 'return 40 + 2'}})",
           'result = answer["result"]',
         ].join('\n'),
       })

@@ -31,7 +31,7 @@ Exits 0 on PASS, 1 on any failure.
 
 | group | what it covers |
 |---|---|
-| `run` | one-shot runs in both languages, the shared response shape, non-ASCII round-trips, and guest `iii.trigger` reaching the bus |
+| `run` | one-shot runs in both languages, the shared response shape, non-ASCII round-trips, and guest `iii.call` reaching the bus |
 | `keep` | `keep: true` → `runtime_id` → `teardown`, and that an id routes to its own engine without being told the language |
 | `register` | handlers published on the real bus and invoked through it, in both languages, plus namespace teardown |
 | `errors` | the taxonomy: which failures are responses and which are errors |
@@ -41,7 +41,7 @@ Exits 0 on PASS, 1 on any failure.
 Three things only a live engine can show:
 
 - **A registered function actually reaches the catalog** and answers a
-  trigger. A unit test can prove the router called `Engine::register`; it
+  call. A unit test can prove the router called `Engine::register`; it
   cannot prove a caller can then invoke the id.
 - **The response shape is identical across engines** once it has been through
   serde, the wire, and the SDK's decoder — the whole promise of this worker is

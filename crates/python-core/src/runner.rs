@@ -408,7 +408,7 @@ pub const MAX_FUNCTION_ID_BYTES: usize = 512;
 ///
 /// One method, deliberately. This crate is bus-free and must stay so; the
 /// hosting worker implements this against its own connection, exactly as
-/// node-core's `Engine` trait works. Registration, triggers and shutdown are
+/// node-core's `Engine` trait works. Registration, observers and shutdown are
 /// NOT here — see the README for why.
 pub trait GuestBridge: Send + Sync + 'static {
     fn call(
@@ -552,7 +552,7 @@ impl FramingSink {
     /// The tail exists so a marker split across two writes is still found, but
     /// it also means the LAST bytes a guest writes are held back waiting for a
     /// write that never comes. Without this, a `print` after the guest's final
-    /// `iii.trigger` vanishes — which is exactly what
+    /// `iii.call` vanishes — which is exactly what
     /// `tenant_output_and_request_frames_do_not_contaminate_each_other`
     /// caught.
     ///
@@ -726,7 +726,7 @@ async fn answer_guest_call(
         );
     }
     // Clamped to what is LEFT of this run's budget, not just to a ceiling.
-    // Unclamped, an `iii.trigger(timeout=30000)` inside a 5s run would blow
+    // Unclamped, an `iii.call(timeout_ms=30000)` inside a 5s run would blow
     // the run's own deadline every time and the tenant would never see the
     // bus error it could have handled. The margin is what leaves room for
     // that error to surface as a Python exception.
@@ -1411,7 +1411,7 @@ impl Runner {
                                 });
                             }
                         } else {
-                            // An `iii.trigger`. Awaiting it inline stops
+                            // An `iii.call`. Awaiting it inline stops
                             // polling `call`, which is exactly right: the
                             // guest is blocked on `fd_read` for this answer
                             // and has nothing to make progress on.

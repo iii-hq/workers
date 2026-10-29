@@ -1,19 +1,20 @@
 "use strict";
 ((globalThis) => {
   const handlers = new Map();
-  // Trigger-type handlers, keyed by the type id — the guest-side half of
-  // `iii.registerTriggerType`. Looked up FRESH on every `invoke()` call, the
-  // same as `handlers` is for functions, so a re-registration under the same
-  // id (prelude-side `.set()`, no new bus write — see `op_iii_register_trigger_type`)
-  // is picked up by whichever engine-side proxy is already routing there.
-  const triggerTypes = new Map();
-  // The only two method names `invoke()` may ever look up on a trigger-type
-  // handler object. `target[method]` would otherwise be an unguarded
-  // property lookup on tenant-shaped data driven by an engine-supplied
-  // string — not reachable today (the adapter only ever sends one of these
-  // two literals), but "constructor"/"valueOf"/etc. would resolve through
-  // `Object.prototype` and pass the `typeof fn === "function"` gate below.
-  const TRIGGER_TYPE_METHODS = new Set(["registerTrigger", "unregisterTrigger"]);
+  // Observer hooks, keyed by function id: `{ observerAdded, observerRemoved }`
+  // — the guest-side half of `iii.onObserverAdded` / `iii.onObserverRemoved`.
+  // Looked up FRESH on every `invoke()` call, the same as `handlers` is for
+  // functions, so setting a hook again under the same id (prelude-side
+  // assignment, no new engine write — see `op_iii_set_observer_hooks`) is
+  // picked up by the engine-side proxy already routing there.
+  const observerHooks = new Map();
+  // The only two method names `invoke()` may ever look up on a hooks
+  // object. `hooks[method]` would otherwise be an unguarded property lookup
+  // driven by an engine-supplied string — not reachable today (the proxy
+  // only ever sends one of these two literals), but "constructor"/"valueOf"/
+  // etc. would resolve through `Object.prototype` and pass the
+  // `typeof fn === "function"` gate below.
+  const HOOK_METHODS = new Set(["observerAdded", "observerRemoved"]);
 
   function formatError(e) {
     if (e instanceof Error) {
@@ -91,8 +92,8 @@
   }
 
   // `id` resolves against `handlers` for a plain function invocation, or
-  // against `triggerTypes` (picking one of its two methods by name) when
-  // `method` is given — the same envelope-producing path now serves both
+  // against `observerHooks` (picking one of its two hooks by name) when
+  // `method` is given — the same envelope-producing path serves both
   // directions the engine calls INTO the isolate.
   //
   // Returns a promise/value for `wrap_invoke`'s OWN `settle(...)` to consume
@@ -117,25 +118,72 @@
   // `resolvePromise`/`thenPromise` are captured above to prevent, and the
   // reason those three are named specifically in that block's comment.
   function invoke(id, payloadJson, method) {
-    const target = method ? triggerTypes.get(id) : handlers.get(id);
-    const fn = !method ? target : TRIGGER_TYPE_METHODS.has(method) ? target && target[method] : undefined;
+    if (method) return invokeHook(id, payloadJson, method);
+    const fn = handlers.get(id);
     if (typeof fn !== "function") {
       return thenPromise(resolvePromise(undefined), () => {
-        throw definitionError(`no handler registered for ${id}${method ? `.${method}` : ""}`);
+        throw definitionError(`no handler registered for ${id}`);
       });
     }
     return thenPromise(resolvePromise(JSON.parse(payloadJson)), (p) => fn(p));
   }
 
+  // An observer hook, called with the observer. The engine-side proxy is set
+  // for BOTH hooks whenever the guest set either one, so a callback with no
+  // guest hook behind it is normal: it resolves the way iii does by default
+  // — accept the observer, nothing to tear down.
+  //
+  // A hook that throws RESOLVES to `{ rejected: { code, message } }` instead
+  // of rejecting. The thrown value's `code` is what the observer's creator
+  // reads back from `ready()`, and only JavaScript can read it: an error
+  // crosses `settle` as one formatted string. The host reads this shape with
+  // `engine::hook_outcome`.
+  function invokeHook(id, payloadJson, method) {
+    if (!HOOK_METHODS.has(method)) {
+      return thenPromise(resolvePromise(undefined), () => {
+        throw definitionError(`no observer hook ${method}`);
+      });
+    }
+    const hooks = observerHooks.get(id);
+    const fn = hooks ? hooks[method] : undefined;
+    if (typeof fn !== "function") return resolvePromise(null);
+    return thenPromise(
+      thenPromise(resolvePromise(JSON.parse(payloadJson)), (observer) => fn(observer)),
+      () => null,
+      (e) => ({ rejected: { code: rejectionCode(e), message: rejectionMessage(e) } }),
+    );
+  }
+
+  // The `code` a hook's thrown value carries, or null. Read defensively: the
+  // value is tenant-made, and a throwing `code` getter must not turn a
+  // rejection into a hook failure with a different message.
+  function rejectionCode(e) {
+    try {
+      const code = e !== null && (typeof e === "object" || typeof e === "function") ? e.code : undefined;
+      return typeof code === "string" ? code : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function rejectionMessage(e) {
+    try {
+      return e instanceof Error ? String(e.message) : String(e);
+    } catch {
+      return "unstringifiable thrown value";
+    }
+  }
+
   const {
     op_iii_log,
     op_iii_call,
+    op_iii_call_observer,
     op_iii_register,
     op_iii_unregister,
-    op_iii_register_trigger,
-    op_iii_unregister_trigger,
-    op_iii_register_trigger_type,
-    op_iii_unregister_trigger_type,
+    op_iii_set_observer_hooks,
+    op_iii_clear_observer_hooks,
+    op_iii_observe,
+    op_iii_dispose_observer,
     op_iii_fs_write,
     op_iii_fs_read,
     op_iii_fs_list,
@@ -174,39 +222,52 @@
     trace: emit("warn"),
   };
 
-  // The SDK's request-object form: `iii.trigger({function_id, payload})`.
-  // `action` routes the call (omit for request/response); `timeout` is a
-  // per-call millisecond budget clamped by the host.
-  async function trigger(request) {
+  // The SDK's request-object form: `iii.call({ function_id, payload })`, or
+  // `iii.call({ observer, payload })` to run an observer's own target.
+  // `action` routes the call (omit for request/response; `{ type: 'void' }`
+  // is fire-and-forget); `timeout_ms` is a per-call millisecond budget
+  // clamped by the host. `iii.trigger` is this same function.
+  async function call(request) {
     if (request === null || typeof request !== "object") {
-      throw new TypeError("trigger(request): request must be an object");
+      throw new TypeError("call(request): request must be an object");
     }
-    const { function_id, payload, action, timeout } = request;
-    if (typeof function_id !== "string" || function_id.length === 0) {
-      throw new TypeError("trigger(request): function_id must be a non-empty string");
+    const { function_id, observer, payload, action, timeout_ms } = request;
+    if (observer !== undefined) {
+      if (function_id !== undefined) {
+        throw new TypeError("call(request): pass function_id or observer, not both");
+      }
+      if (observer === null || typeof observer !== "object" || typeof observer.id !== "string" || observer.id.length === 0) {
+        throw new TypeError("call(request): observer must be an observer an onObserverAdded hook received");
+      }
+    } else if (typeof function_id !== "string" || function_id.length === 0) {
+      throw new TypeError("call(request): function_id must be a non-empty string");
     }
-    if (action !== undefined && typeof action !== "string") {
-      throw new TypeError("trigger(request): action must be a string when given");
+    if (action !== undefined && (action === null || typeof action !== "object" || typeof action.type !== "string")) {
+      throw new TypeError("call(request): action must be an object such as { type: 'void' } when given");
     }
-    if (timeout !== undefined && typeof timeout !== "number") {
-      throw new TypeError("trigger(request): timeout must be a number when given");
+    if (timeout_ms !== undefined && typeof timeout_ms !== "number") {
+      throw new TypeError("call(request): timeout_ms must be a number when given");
     }
     // `stringify` is the pre-captured `JSON.stringify` — see the block above
-    // where it is captured, before any tenant code can run. This value
-    // crosses into Rust, so the global (tenant-replaceable) one is never
-    // safe to use here.
-    const text = await op_iii_call(
-      function_id,
-      stringify(payload === undefined ? {} : payload),
-      action === undefined ? "" : action,
-      timeout === undefined ? 0 : timeout,
-    );
+    // where it is captured, before any tenant code can run. These values
+    // cross into Rust, so the global (tenant-replaceable) one is never safe
+    // to use here.
+    const body = stringify(payload === undefined ? {} : payload);
+    const routed = action === undefined ? "" : stringify(action);
+    const timeout = timeout_ms === undefined ? 0 : timeout_ms;
+    const text =
+      observer !== undefined
+        ? await op_iii_call_observer(observer.id, body, routed, timeout)
+        : await op_iii_call(function_id, body, routed, timeout);
     return JSON.parse(text);
   }
 
   // SDK signature: (functionId, handler, options?). `options.description` is
   // what `engine::functions::info` shows a caller; omitted sends "", which
   // Rust reads as "not supplied" and replaces with a generic default.
+  // `options.args_format` is the JSON Schema observers' `args` are validated
+  // against, and `options.private` limits calls to this worker while anyone
+  // may still observe the function.
   function registerFunction(functionId, handler, options) {
     if (typeof functionId !== "string" || functionId.length === 0) {
       throw new TypeError(
@@ -231,13 +292,20 @@
         "registerFunction(functionId, handler, options?): options.description must be a string",
       );
     }
+    const isPrivate = options === undefined ? undefined : options.private;
+    if (isPrivate !== undefined && typeof isPrivate !== "boolean") {
+      throw new TypeError(
+        "registerFunction(functionId, handler, options?): options.private must be a boolean",
+      );
+    }
     // `request_format`/`response_format` are JSON Schemas for the catalog —
     // engine::functions::info shows them to the next caller in place of
-    // "any". Checked here as plain objects for a good error early; the op
+    // "any" — and `args_format` is the schema the engine holds observers'
+    // args to. Checked here as plain objects for a good error early; the op
     // re-validates either way (this check runs on tenant-replaceable
     // builtins, the op's does not).
     const formats = [];
-    for (const name of ["request_format", "response_format"]) {
+    for (const name of ["request_format", "response_format", "args_format"]) {
       const value = options === undefined ? undefined : options[name];
       if (value !== undefined && (value === null || typeof value !== "object" || Array.isArray(value))) {
         throw new TypeError(
@@ -252,7 +320,14 @@
       }
       formats.push(encoded);
     }
-    op_iii_register(functionId, description === undefined ? "" : description, formats[0], formats[1]);
+    op_iii_register(
+      functionId,
+      description === undefined ? "" : description,
+      formats[0],
+      formats[1],
+      formats[2],
+      isPrivate === true,
+    );
     handlers.set(functionId, handler);
     return {
       unregister() {
@@ -262,72 +337,85 @@
     };
   }
 
-  // Bind a trigger to a registered function. Returns a ref whose
-  // `unregister()` removes it — the SDK shape, mirroring `registerFunction`.
-  async function registerTrigger(input) {
-    if (input === null || typeof input !== "object") {
-      throw new TypeError("registerTrigger(input): input must be an object");
+  // Set (or, with `null`, remove) one of a function's two observer hooks.
+  // The ENGINE calls back into these: `onObserverAdded`'s hook runs before
+  // an observer of `functionId` is accepted, and throwing rejects it (with
+  // the thrown error's `code`, or OBSERVE_REJECTED); `onObserverRemoved`'s
+  // runs once an accepted one leaves. The proxy built on the Rust side
+  // (`op_iii_set_observer_hooks`) dispatches back in through `__iii.invoke`,
+  // the same path a registered function's handler uses.
+  //
+  // The op runs before the map changes, so a refusal (another namespace, an
+  // id another runtime holds) leaves this runtime's hooks as they were.
+  function setObserverHook(name, method, functionId, hook) {
+    if (typeof functionId !== "string" || functionId.length === 0) {
+      throw new TypeError(`${name}(functionId, hook): functionId must be a non-empty string`);
     }
-    if (typeof input.type !== "string" || input.type.length === 0) {
-      throw new TypeError("registerTrigger(input): input.type must be a non-empty string");
+    if (hook !== null && typeof hook !== "function") {
+      throw new TypeError(`${name}(functionId, hook): hook must be a function, or null to remove it`);
     }
-    if (typeof input.function_id !== "string" || input.function_id.length === 0) {
-      throw new TypeError("registerTrigger(input): input.function_id must be a non-empty string");
+    const hooks = observerHooks.get(functionId);
+    if (hook === null) {
+      if (hooks === undefined) return;
+      const other = method === "observerAdded" ? "observerRemoved" : "observerAdded";
+      if (hooks[other] === undefined) {
+        op_iii_clear_observer_hooks(functionId);
+        observerHooks.delete(functionId);
+      } else {
+        hooks[method] = undefined;
+      }
+      return;
     }
-    // Pre-captured `stringify` — see the block above where it, `resolvePromise`,
-    // and `thenPromise` are captured before any tenant code can run. This
-    // value crosses into Rust, so the global (tenant-replaceable) one is
-    // never safe to use here.
-    const triggerId = await op_iii_register_trigger(stringify(input));
-    return {
-      unregister() {
-        op_iii_unregister_trigger(triggerId);
-      },
-    };
+    if (hooks === undefined) {
+      op_iii_set_observer_hooks(functionId);
+      const fresh = { observerAdded: undefined, observerRemoved: undefined };
+      fresh[method] = hook;
+      observerHooks.set(functionId, fresh);
+    } else {
+      hooks[method] = hook;
+    }
   }
 
-  // Publish a trigger TYPE. `handler` is an object the ENGINE calls back
-  // into: `handler.registerTrigger(config)` / `handler.unregisterTrigger(config)`
-  // run whenever a trigger of this type is registered or removed anywhere on
-  // the bus. This is the one direction that isn't isolate -> host: the proxy
-  // built on the Rust side (`op_iii_register_trigger_type`) dispatches back
-  // in through `__iii.invoke`, the same path a registered function's handler
-  // already uses.
-  function registerTriggerType(triggerType, handler) {
-    if (triggerType === null || typeof triggerType !== "object") {
-      throw new TypeError("registerTriggerType(triggerType, handler): triggerType must be an object");
-    }
-    if (typeof triggerType.id !== "string" || triggerType.id.length === 0) {
-      throw new TypeError("registerTriggerType(triggerType, handler): triggerType.id must be a non-empty string");
-    }
-    if (handler === null || typeof handler !== "object") {
-      throw new TypeError("registerTriggerType(triggerType, handler): handler must be an object");
-    }
-    if (typeof handler.registerTrigger !== "function" || typeof handler.unregisterTrigger !== "function") {
+  function onObserverAdded(functionId, hook) {
+    setObserverHook("onObserverAdded", "observerAdded", functionId, hook);
+  }
+
+  function onObserverRemoved(functionId, hook) {
+    setObserverHook("onObserverRemoved", "observerRemoved", functionId, hook);
+  }
+
+  // Observe `source` (a function id, or `{ function_id, namespace?, args?,
+  // filters?, deliver? }`) with `target`, a registered function. Resolves to
+  // a handle whose `dispose()` removes the observer; the observer itself
+  // stays pending until its function is registered and accepts it.
+  async function observe(source, target, options) {
+    const normalized = typeof source === "string" ? { function_id: source } : source;
+    if (normalized === null || typeof normalized !== "object" || Array.isArray(normalized)) {
       throw new TypeError(
-        "registerTriggerType(triggerType, handler): handler must have registerTrigger and unregisterTrigger methods",
+        "observe(source, target, options?): source must be a function id or an object with function_id",
       );
     }
-    op_iii_register_trigger_type(
-      triggerType.id,
-      typeof triggerType.description === "string" ? triggerType.description : "",
-    );
-    triggerTypes.set(triggerType.id, handler);
+    if (typeof normalized.function_id !== "string" || normalized.function_id.length === 0) {
+      throw new TypeError("observe(source, target, options?): source.function_id must be a non-empty string");
+    }
+    if (typeof target !== "string" || target.length === 0) {
+      throw new TypeError("observe(source, target, options?): target must be a non-empty function id");
+    }
+    if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) {
+      throw new TypeError("observe(source, target, options?): options must be an object when given");
+    }
+    // Pre-captured `stringify`, for the same reason as `call`'s.
+    const request = stringify({ source: normalized, target, options: options === undefined ? {} : options });
+    if (typeof request !== "string") {
+      throw new TypeError("observe(source, target, options?): the request did not survive JSON encoding");
+    }
+    const id = await op_iii_observe(request);
     return {
-      unregister() {
-        op_iii_unregister_trigger_type(triggerType.id);
-        triggerTypes.delete(triggerType.id);
+      id,
+      dispose() {
+        return op_iii_dispose_observer(id);
       },
     };
-  }
-
-  function unregisterTriggerType(triggerType) {
-    const id = typeof triggerType === "string" ? triggerType : triggerType && triggerType.id;
-    if (typeof id !== "string" || id.length === 0) {
-      throw new TypeError("unregisterTriggerType(triggerType): pass the type id or the type object");
-    }
-    op_iii_unregister_trigger_type(id);
-    triggerTypes.delete(id);
   }
 
   // A real property, not a missing one: the iii-sdk client this shim mirrors
@@ -350,9 +438,10 @@
   // worked out what the global even was. `String(iii)` and Node's inspect
   // both answer with this instead.
   const HINT =
-    "[iii: code-runner host client. e.g. await iii.trigger({ function_id: 'worker::fn', " +
-    "payload: {} }); registerFunction(id, handler, opts?); iii.namespace is the prefix this " +
-    "runtime may register under. iii.files is a private scratch directory " +
+    "[iii: code-runner host client. e.g. await iii.call({ function_id: 'worker::fn', " +
+    "payload: {} }); registerFunction(id, handler, opts?); observe(source, target, opts?); " +
+    "onObserverAdded(id, hook) / onObserverRemoved(id, hook); iii.namespace is the prefix " +
+    "this runtime may register under. iii.files is a private scratch directory " +
     "(write/read/readText/list/remove) that lives as long as this runtime. " +
     "docs <https://iii.dev/docs/reference/sdk-node>]";
 
@@ -399,12 +488,21 @@
     },
   });
 
-  globalThis.iii = { trigger, registerFunction, registerTrigger, registerTriggerType, unregisterTriggerType, shutdown, files };
+  globalThis.iii = {
+    call,
+    trigger: call,
+    registerFunction,
+    onObserverAdded,
+    onObserverRemoved,
+    observe,
+    shutdown,
+    files,
+  };
 
   // Non-enumerable: a `toString` STRING key set via an object literal or a
   // bare `defineProperty` call defaults to enumerable and would show up in
-  // `Object.keys(iii)` — the pinned golden counts six SDK methods plus
-  // `namespace`, not this hint, as the guest-visible surface. The Symbol key
+  // `Object.keys(iii)` — the pinned golden counts the SDK methods, `files`
+  // and `namespace`, not this hint, as the guest-visible surface. The Symbol key
   // is never enumerable regardless (`Object.keys`/`for...in` only ever see
   // string keys), so this only matters for `toString`.
   Object.defineProperties(globalThis.iii, {
