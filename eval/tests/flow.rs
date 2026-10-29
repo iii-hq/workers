@@ -188,6 +188,15 @@ impl World {
                 let test_id = data["test_id"].as_str().unwrap_or_default();
                 match self.histories.get(test_id) {
                     Some(Value::Null) => return Some(Err(format!("unknown test '{test_id}'"))),
+                    // `{"pages": [...]}`: one history per cursor.
+                    Some(history) if history["pages"].is_array() => {
+                        let at = data["cursor"].as_str().map_or(0, |at| at.parse().unwrap());
+                        let mut page = history["pages"][at].clone();
+                        if at + 1 < history["pages"].as_array().unwrap().len() {
+                            page["next_cursor"] = json!((at + 1).to_string());
+                        }
+                        page
+                    }
                     Some(history) => history.clone(),
                     None => json!({"observations": []}),
                 }
@@ -1648,17 +1657,18 @@ async fn with_history_days_the_cycle_measures_the_github_runs_already_made_and_d
     ci["manifest"]["executions"][0]["id"] = json!("proof-1");
     ci["manifest"]["executions"][0]["idempotency_key"] = json!("cycle_0f:candidate-1");
     world.executions.insert("proof-1".into(), ci);
+    // The proof's runs, newest, fill the first page of the test's history.
     world.histories.insert(
         "context_pressure".into(),
-        json!({"observations": [{"subject_model": "m", "plan_execution_id": "ci-1",
+        json!({"pages": [{"observations": [{"subject_model": "m", "plan_execution_id": "proof-1",
+            "execution_id": "native-2", "runs": [{"run_id": "r2", "attempt_id": "a2",
+            "status": "passed", "function_call_errors": 50.0}]}]},
+            {"observations": [{"subject_model": "m", "plan_execution_id": "ci-1",
             "execution_id": "native-1", "runs": [{"run_id": "r1", "attempt_id": "a1",
             "status": "passed", "function_call_errors": 5.0}]},
-            {"subject_model": "m", "plan_execution_id": "proof-1",
-            "execution_id": "native-2", "runs": [{"run_id": "r2", "attempt_id": "a2",
-            "status": "passed", "function_call_errors": 50.0}]},
             {"subject_model": "m", "plan_execution_id": "ci-2",
             "execution_id": "native-3", "runs": [{"run_id": "r3", "attempt_id": "a3",
-            "status": "passed", "function_call_errors": 5.0}]}]}),
+            "status": "passed", "function_call_errors": 5.0}]}]}]}),
     );
     let edit = (
         "coder::update-file",

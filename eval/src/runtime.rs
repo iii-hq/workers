@@ -849,25 +849,16 @@ async fn coverage_stage(
             ) {
                 for test_id in rows.iter().filter_map(|row| row["test_id"].as_str()) {
                     // One unreadable history leaves that test out, not the objective.
-                    match call::<_, Value>(
-                        deps,
-                        "e2e::dashboard::test-history-get",
-                        json!({"test_id": test_id, "subject_model": model, "limit": 100}),
-                        BUS_TIMEOUT_MS,
-                    )
-                    .await
-                    {
-                        Ok(mut history) => {
+                    match test_history(deps, test_id, model).await {
+                        Ok(mut observations) => {
                             if let Some(window) = &window {
-                                if let Some(observations) = history["observations"].as_array_mut()
-                                {
-                                    observations.retain(|observation| {
-                                        observation["plan_execution_id"]
-                                            .as_str()
-                                            .is_some_and(|id| window.contains(id))
-                                    });
-                                }
+                                observations.retain(|observation| {
+                                    observation["plan_execution_id"]
+                                        .as_str()
+                                        .is_some_and(|id| window.contains(id))
+                                });
                             }
+                            let history = json!({ "observations": observations });
                             observed
                                 .insert(test_id.to_string(), coverage::observed_errors(&history));
                         }
@@ -1259,6 +1250,29 @@ const MAX_HISTORY_RUNS: usize = 40;
 /// is stored as one evidence, which must pass the bus frame (16 MiB).
 const MAX_HISTORY_BYTES: usize = 8 << 20;
 
+/// Every recorded observation of `test_id` run by `model`, newest first, page
+/// by page: the cycles' own runs, which the callers leave out, can fill the
+/// first page.
+async fn test_history(deps: &Deps, test_id: &str, model: &str) -> Result<Vec<Value>, EvalError> {
+    let mut observations = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let page: Value = call(
+            deps,
+            "e2e::dashboard::test-history-get",
+            json!({"test_id": test_id, "subject_model": model, "limit": 100, "cursor": cursor}),
+            BUS_TIMEOUT_MS,
+        )
+        .await?;
+        observations.extend(page["observations"].as_array().cloned().unwrap_or_default());
+        cursor = page["next_cursor"].as_str().map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(observations)
+}
+
 /// The past E2E runs the loop reads instead of dispatching: finished GitHub
 /// executions (the release-control campaigns) of `model`, completed in the
 /// last `days`, newest first, each with the scenarios it ran.
@@ -1348,15 +1362,9 @@ async fn history_stage(
     let mut read = std::collections::BTreeSet::new();
     let (mut runs_read, mut bytes) = (0, 0);
     for scenario_id in &plan.parameters.scenarios {
-        let history: Value = call(
-            deps,
-            "e2e::dashboard::test-history-get",
-            json!({"test_id": scenario_id, "subject_model": plan.parameters.model, "limit": 100}),
-            BUS_TIMEOUT_MS,
-        )
-        .await?;
+        let observations = test_history(deps, scenario_id, &plan.parameters.model).await?;
         let mut runs = Vec::new();
-        for observation in history["observations"].as_array().into_iter().flatten() {
+        for observation in &observations {
             let plan_execution = observation["plan_execution_id"]
                 .as_str()
                 .unwrap_or_default();
