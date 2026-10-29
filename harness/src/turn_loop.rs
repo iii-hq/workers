@@ -672,7 +672,12 @@ async fn generate_step(
         }
     };
     let (stable_prompt, assembly_system_prompt) =
-        with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
+        with_runtime_context(
+            deps.hooks
+                .with_static_prompts(record.options.system_prompt.clone()),
+            &record,
+            &runtime_aid,
+        );
     // Registry-change notice: if a function this session may call changed or
     // left since it last acknowledged them, tell the model its cached
     // contracts may be stale. First sighting stamps silently, and so does a

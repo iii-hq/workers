@@ -102,6 +102,17 @@ impl HookRegistry {
         Ok(())
     }
 
+    /// Append every `pre_generate` binding's static `inject_prompt`, in chain
+    /// order. Applied to the profile prompt before the per-session runtime
+    /// aid, so the text lands in the provider-cached stable prefix.
+    pub fn with_static_prompts(&self, base: Option<String>) -> Option<String> {
+        self.pre_generate
+            .ordered()
+            .iter()
+            .filter_map(|binding| binding.inject_prompt.as_deref())
+            .fold(base, append_prompt)
+    }
+
     /// `pre_generate`: extend the system prompt and append bounded messages, or
     /// veto. Each hook sees the prompt/messages as mutated by the previous.
     pub async fn run_pre_generate(
@@ -117,8 +128,9 @@ impl HookRegistry {
         let mut appended: Vec<Value> = Vec::new();
         let mut annotations = Map::new();
         for binding in self.pre_generate.ordered() {
-            if let Some(injected) = binding.inject_prompt.as_deref() {
-                system_prompt = append_prompt(system_prompt, injected);
+            // Static texts were folded into the stable prefix by
+            // `with_static_prompts`, before the per-session aid.
+            if binding.inject_prompt.is_some() {
                 continue;
             }
             let mut messages = base_messages.to_vec();
