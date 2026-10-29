@@ -13,8 +13,19 @@
 //! The worker owns the binding tables: filters are validated at registration,
 //! the tables are capped per trigger type and per target function, and each
 //! matching binding receives one fire-and-forget (`TriggerAction::Void`) send
-//! carrying the binding's namespace and metadata. Nothing is spawned per event
-//! and nothing is queued in this worker.
+//! carrying the binding's namespace and metadata. Nothing is queued in this
+//! worker.
+//!
+//! On an iii 0.25 engine a consumer can instead observe the owner-delivered
+//! function next to each trigger type (`security-scan::on-run-changed`,
+//! `security-scan::on-reconciliation-changed`,
+//! `security-scan::on-action-changed`) with the same filter as its args.
+//! Observers are filed in the trigger type's own table, so an observer
+//! receives exactly the payload a matching binding receives, at the same
+//! moment, handed over with `Observer::call` without blocking the write path.
+//! Changes are routed in-process: invoking one of these functions directly is
+//! refused with `FORBIDDEN`, so no caller can make this worker hand observers
+//! a forged change. The trigger types stay registered, unchanged.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -23,7 +34,10 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
+    RegisterTriggerType, TriggerAction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,7 +48,21 @@ pub const RUN_CHANGED: &str = "security-scan::run-changed";
 pub const RECONCILIATION_CHANGED: &str = "security-scan::reconciliation-changed";
 pub const ACTION_CHANGED: &str = "security-scan::action-changed";
 
-/// Bindings accepted per trigger type.
+/// The observable function next to each trigger type (iii 0.25).
+pub const ON_RUN_CHANGED: &str = "security-scan::on-run-changed";
+pub const ON_RECONCILIATION_CHANGED: &str = "security-scan::on-reconciliation-changed";
+pub const ON_ACTION_CHANGED: &str = "security-scan::on-action-changed";
+
+/// Codes the `on-*` functions answer with: a direct invocation is refused
+/// with `FORBIDDEN`; an observer is rejected with `INVALID_ARGS` for a filter
+/// the trigger type would refuse, and `TOO_MANY_SUBSCRIBERS` past the cap.
+pub mod codes {
+    pub const FORBIDDEN: &str = "FORBIDDEN";
+    pub const INVALID_ARGS: &str = "INVALID_ARGS";
+    pub const TOO_MANY_SUBSCRIBERS: &str = "TOO_MANY_SUBSCRIBERS";
+}
+
+/// Bindings and observers accepted per trigger type.
 pub const MAX_BINDINGS_PER_TYPE: usize = 256;
 /// Bindings accepted per trigger type for one target function id.
 pub const MAX_BINDINGS_PER_FUNCTION: usize = 16;
@@ -63,6 +91,15 @@ impl ChangeKind {
         }
     }
 
+    /// The owner-delivered function observed in place of [`Self::trigger_type`].
+    pub fn function_id(self) -> &'static str {
+        match self {
+            ChangeKind::Run => ON_RUN_CHANGED,
+            ChangeKind::Reconciliation => ON_RECONCILIATION_CHANGED,
+            ChangeKind::Action => ON_ACTION_CHANGED,
+        }
+    }
+
     fn description(self) -> &'static str {
         match self {
             ChangeKind::Run => {
@@ -79,6 +116,32 @@ impl ChangeKind {
                 "A finding action (issue or fix) was created or changed. Payload { action_id, \
                  run_id, repository, status, updated_at }; re-read security-scan::action-read. \
                  Optional filter { repository, run_id }."
+            }
+        }
+    }
+
+    pub fn function_description(self) -> &'static str {
+        match self {
+            ChangeKind::Run => {
+                "Fires when a security scan run is created or changed. Observe it with args \
+                 { repository?, run_id? } (equality filters, as security-scan::run-changed \
+                 bindings); each event is { run_id, repository, status, attempt, updated_at, \
+                 completed_at }: re-read security-scan::list or security-scan::read. Only the \
+                 security-scan worker fires it: invoking it directly is refused (FORBIDDEN)."
+            }
+            ChangeKind::Reconciliation => {
+                "Fires when a run's GitHub alert reconciliation snapshot is saved. Observe it \
+                 with args { repository?, run_id? } (equality filters, as \
+                 security-scan::reconciliation-changed bindings); each event is { run_id, \
+                 repository }: re-read security-scan::reconciliation. Only the security-scan \
+                 worker fires it: invoking it directly is refused (FORBIDDEN)."
+            }
+            ChangeKind::Action => {
+                "Fires when a finding action (issue or fix) is created or changed. Observe it \
+                 with args { repository?, run_id? } (equality filters, as \
+                 security-scan::action-changed bindings); each event is { action_id, run_id, \
+                 repository, status, updated_at }: re-read security-scan::action-read. Only the \
+                 security-scan worker fires it: invoking it directly is refused (FORBIDDEN)."
             }
         }
     }
@@ -241,6 +304,50 @@ impl ChangeDeliverer for IiiChangeDeliverer {
     }
 }
 
+/// One observer of an `on-*` function as a subscriber of its trigger type's
+/// table. Production hands the payload to the SDK observer; tests record.
+#[async_trait]
+pub trait ChangeObserver: Send + Sync + 'static {
+    /// The observer's id (stable across replays).
+    fn id(&self) -> &str;
+
+    /// Hands one payload to the observer's target. Runs on the write path,
+    /// so it must not wait for the target.
+    async fn deliver(&self, payload: Value) -> Result<(), String>;
+}
+
+/// Delivery to an SDK observer with `Observer::call`, on its own task so the
+/// write path never waits for the target (as a binding's `Void` send).
+pub struct IiiChangeObserver {
+    observer: Observer,
+}
+
+impl IiiChangeObserver {
+    pub fn new(observer: Observer) -> Self {
+        Self { observer }
+    }
+}
+
+#[async_trait]
+impl ChangeObserver for IiiChangeObserver {
+    fn id(&self) -> &str {
+        self.observer.id()
+    }
+
+    async fn deliver(&self, payload: Value) -> Result<(), String> {
+        if !self.observer.is_active() {
+            return Err(format!("observer {} is not active", self.observer.id()));
+        }
+        let observer = self.observer.clone();
+        tokio::spawn(async move {
+            if let Err(error) = observer.call::<Value>(payload).await {
+                tracing::debug!(observer = %observer.id(), %error, "security scan change observer delivery failed");
+            }
+        });
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Binding {
     function_id: String,
@@ -249,9 +356,34 @@ struct Binding {
     filter: ChangeFilterV1,
 }
 
-type BindingTables = HashMap<ChangeKind, HashMap<String, Binding>>;
+/// One entry of a trigger type's table: a binding of the trigger type or an
+/// observer of the `on-*` function next to it.
+#[derive(Clone)]
+enum Subscriber {
+    Binding(Binding),
+    Observer {
+        filter: ChangeFilterV1,
+        observer: Arc<dyn ChangeObserver>,
+    },
+}
 
-/// Binding tables for the three trigger types plus the emitter.
+impl Subscriber {
+    fn filter(&self) -> &ChangeFilterV1 {
+        match self {
+            Subscriber::Binding(binding) => &binding.filter,
+            Subscriber::Observer { filter, .. } => filter,
+        }
+    }
+}
+
+type BindingTables = HashMap<ChangeKind, HashMap<String, Subscriber>>;
+
+/// The table key of an observer, apart from every binding id.
+fn observer_key(id: &str) -> String {
+    format!("observer:{id}")
+}
+
+/// Subscriber tables for the three trigger types plus the emitter.
 pub struct ChangeFeed {
     tables: Mutex<BindingTables>,
     deliverer: Arc<dyn ChangeDeliverer>,
@@ -275,35 +407,54 @@ impl ChangeFeed {
                 kind.trigger_type()
             ));
         }
+        let binding = Binding {
+            function_id: config.function_id,
+            namespace: config.namespace,
+            metadata: config.metadata,
+            filter,
+        };
+        self.insert(kind, config.id, Subscriber::Binding(binding))
+    }
+
+    /// Files an observer of `kind`'s `on-*` function in the trigger type's
+    /// table, under the per-type cap. Re-adding the same observer id (an
+    /// engine replay) replaces it in place.
+    pub fn add_observer(
+        &self,
+        kind: ChangeKind,
+        filter: ChangeFilterV1,
+        observer: Arc<dyn ChangeObserver>,
+    ) -> Result<(), String> {
+        let key = observer_key(observer.id());
+        self.insert(kind, key, Subscriber::Observer { filter, observer })
+    }
+
+    fn insert(&self, kind: ChangeKind, key: String, subscriber: Subscriber) -> Result<(), String> {
         let mut tables = self.lock();
         let table = tables.entry(kind).or_default();
-        if !table.contains_key(&config.id) {
+        if !table.contains_key(&key) {
             if table.len() >= MAX_BINDINGS_PER_TYPE {
                 return Err(format!(
                     "{} accepts at most {MAX_BINDINGS_PER_TYPE} bindings",
                     kind.trigger_type()
                 ));
             }
-            let per_function = table
-                .values()
-                .filter(|binding| binding.function_id == config.function_id)
-                .count();
-            if per_function >= MAX_BINDINGS_PER_FUNCTION {
-                return Err(format!(
-                    "{} accepts at most {MAX_BINDINGS_PER_FUNCTION} bindings per function",
-                    kind.trigger_type()
-                ));
+            if let Subscriber::Binding(binding) = &subscriber {
+                let per_function = table
+                    .values()
+                    .filter(|existing| {
+                        matches!(existing, Subscriber::Binding(other) if other.function_id == binding.function_id)
+                    })
+                    .count();
+                if per_function >= MAX_BINDINGS_PER_FUNCTION {
+                    return Err(format!(
+                        "{} accepts at most {MAX_BINDINGS_PER_FUNCTION} bindings per function",
+                        kind.trigger_type()
+                    ));
+                }
             }
         }
-        table.insert(
-            config.id,
-            Binding {
-                function_id: config.function_id,
-                namespace: config.namespace,
-                metadata: config.metadata,
-                filter,
-            },
-        );
+        table.insert(key, subscriber);
         Ok(())
     }
 
@@ -313,13 +464,20 @@ impl ChangeFeed {
             .is_some_and(|table| table.remove(id).is_some())
     }
 
+    /// Takes out the observer `id` of `kind`'s `on-*` function.
+    pub fn remove_observer(&self, kind: ChangeKind, id: &str) -> bool {
+        self.remove(kind, &observer_key(id))
+    }
+
+    /// Bindings and observers filed for `kind`.
     pub fn binding_count(&self, kind: ChangeKind) -> usize {
         self.lock().get(&kind).map_or(0, HashMap::len)
     }
 
-    /// Sends `event` to every binding of `kind` whose filter matches. Call
-    /// only after the change is committed. Returns how many sends were
-    /// accepted; failures are logged and never fail the caller's write.
+    /// Sends `event` to every binding and observer of `kind` whose filter
+    /// matches. Call only after the change is committed. Returns how many
+    /// sends were accepted; failures are logged and never fail the caller's
+    /// write.
     pub async fn emit<T: Serialize>(
         &self,
         kind: ChangeKind,
@@ -328,14 +486,14 @@ impl ChangeFeed {
         event: &T,
     ) -> usize {
         // Snapshot so the lock is never held across an await.
-        let matched: Vec<(String, Binding)> = self
+        let matched: Vec<(String, Subscriber)> = self
             .lock()
             .get(&kind)
             .map(|table| {
                 table
                     .iter()
-                    .filter(|(_, binding)| binding.filter.matches(repository, run_id))
-                    .map(|(id, binding)| (id.clone(), binding.clone()))
+                    .filter(|(_, subscriber)| subscriber.filter().matches(repository, run_id))
+                    .map(|(key, subscriber)| (key.clone(), subscriber.clone()))
                     .collect()
             })
             .unwrap_or_default();
@@ -350,21 +508,27 @@ impl ChangeFeed {
             }
         };
         let mut delivered = 0;
-        for (binding_id, binding) in matched {
-            let delivery = Delivery {
-                trigger_type: kind.trigger_type(),
-                binding_id,
-                function_id: binding.function_id,
-                namespace: binding.namespace,
-                metadata: binding.metadata,
-                payload: payload.clone(),
+        for (key, subscriber) in matched {
+            let result = match subscriber {
+                Subscriber::Binding(binding) => {
+                    self.deliverer
+                        .deliver(Delivery {
+                            trigger_type: kind.trigger_type(),
+                            binding_id: key.clone(),
+                            function_id: binding.function_id,
+                            namespace: binding.namespace,
+                            metadata: binding.metadata,
+                            payload: payload.clone(),
+                        })
+                        .await
+                }
+                Subscriber::Observer { observer, .. } => observer.deliver(payload.clone()).await,
             };
-            let binding_id = delivery.binding_id.clone();
-            match self.deliverer.deliver(delivery).await {
+            match result {
                 Ok(()) => delivered += 1,
                 Err(error) => tracing::warn!(
                     trigger_type = kind.trigger_type(),
-                    %binding_id,
+                    binding_id = %key,
                     %error,
                     "security scan change notification failed"
                 ),
@@ -408,10 +572,98 @@ impl TriggerHandler for ChangeTriggerHandler {
     }
 }
 
-/// Registers the three trigger types. Call before functions and UI so
-/// consumers registering early resolve against them.
+/// Observers of one `on-*` function, filed in its trigger type's table.
+pub struct ChangeObserveHandler {
+    kind: ChangeKind,
+    feed: Arc<ChangeFeed>,
+}
+
+impl ChangeObserveHandler {
+    pub fn new(kind: ChangeKind, feed: Arc<ChangeFeed>) -> Self {
+        Self { kind, feed }
+    }
+
+    /// Files `observer` with `args` as its filter. The trigger type's parser
+    /// and caps decide, so an observer and a binding accept the same configs.
+    pub fn admit(
+        &self,
+        args: &Value,
+        observer: Arc<dyn ChangeObserver>,
+    ) -> Result<(), ObserveRejection> {
+        let filter = ChangeFilterV1::parse(self.kind, args)
+            .map_err(|error| ObserveRejection::new(codes::INVALID_ARGS, error))?;
+        self.feed
+            .add_observer(self.kind, filter, observer)
+            .map_err(|error| ObserveRejection::new(codes::TOO_MANY_SUBSCRIBERS, error))
+    }
+}
+
+#[async_trait]
+impl ObserveHandler for ChangeObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        self.admit(
+            obs.args_value(),
+            Arc::new(IiiChangeObserver::new(obs.clone())),
+        )?;
+        tracing::info!(function_id = self.kind.function_id(), observer = %obs.id(), target = %obs.target(), "change observer added");
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.feed.remove_observer(self.kind, obs.id());
+        tracing::info!(function_id = self.kind.function_id(), observer = %obs.id(), "change observer removed");
+    }
+}
+
+/// What every direct invocation of an `on-*` function is answered with:
+/// changes come only from this worker's committed writes.
+pub fn refuse_invocation(kind: ChangeKind) -> Error {
+    let function_id = kind.function_id();
+    Error::Remote {
+        code: codes::FORBIDDEN.to_string(),
+        message: format!(
+            "{function_id} is an event source: observe it \
+             (iii.observe({{ function_id: '{function_id}', args: {{ repository?, run_id? }} }}, target)); \
+             only the security-scan worker fires its changes"
+        ),
+        stacktrace: None,
+    }
+}
+
+/// The handler of `kind`'s `on-*` function: refuses every invocation, so no
+/// caller can make this worker hand observers a forged change. `E` is the
+/// event payload observers of `kind` receive (e.g. [`RunChangedEventV1`]), so
+/// the function publishes that typed request schema, never `AnyValue`.
+pub fn refuse_observable_call<E>(kind: ChangeKind, _change: E) -> Result<(), Error> {
+    Err(refuse_invocation(kind))
+}
+
+/// Registers `kind`'s owner-delivered `on-*` function over the trigger type's
+/// table, typed with the event payload `E` its observers receive.
+fn register_observable<E>(iii: &IIIClient, feed: &Arc<ChangeFeed>, kind: ChangeKind)
+where
+    E: serde::de::DeserializeOwned + JsonSchema + Send + 'static,
+{
+    let _ = iii.register_function(
+        kind.function_id(),
+        RegisterFunction::new(move |change: E| refuse_observable_call(kind, change))
+            .description(kind.function_description())
+            .observe(
+                Observe::owner()
+                    .args_format::<ChangeFilterV1>()
+                    .handler(ChangeObserveHandler::new(kind, feed.clone())),
+            ),
+    );
+}
+
+/// Registers the three trigger types and, next to each, its owner-delivered
+/// `on-*` function sharing the trigger type's table. Call before functions
+/// and UI so consumers registering early resolve against them.
 pub fn register_trigger_types(iii: &IIIClient, feed: &Arc<ChangeFeed>) {
     for kind in ChangeKind::ALL {
+        // Deprecated in 0.25 and still served by 0.24 and 0.25 engines: kept
+        // for consumers that bind the trigger types.
+        #[allow(deprecated)]
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 kind.trigger_type(),
@@ -420,10 +672,18 @@ pub fn register_trigger_types(iii: &IIIClient, feed: &Arc<ChangeFeed>) {
             )
             .trigger_request_format::<ChangeFilterV1>(),
         );
+        match kind {
+            ChangeKind::Run => register_observable::<RunChangedEventV1>(iii, feed, kind),
+            ChangeKind::Reconciliation => {
+                register_observable::<ReconciliationChangedEventV1>(iii, feed, kind)
+            }
+            ChangeKind::Action => register_observable::<ActionChangedEventV1>(iii, feed, kind),
+        }
     }
 }
 
 /// Unregisters the three trigger types; call on shutdown.
+#[allow(deprecated)] // still served by 0.24 and 0.25 engines
 pub fn unregister_trigger_types(iii: &IIIClient) {
     for kind in ChangeKind::ALL {
         iii.unregister_trigger_type(kind.trigger_type());
@@ -670,5 +930,165 @@ mod tests {
                 "security-scan::action-changed",
             ]
         );
+    }
+
+    /// Stands in for the SDK observer: records what `Observer::call` would
+    /// carry to its target.
+    struct ObserverRecorder {
+        id: String,
+        seen: Mutex<Vec<Value>>,
+    }
+
+    impl ObserverRecorder {
+        fn new(id: &str) -> Arc<Self> {
+            Arc::new(Self {
+                id: id.into(),
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn seen(&self) -> Vec<Value> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl ChangeObserver for ObserverRecorder {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn deliver(&self, payload: Value) -> Result<(), String> {
+            self.seen.lock().unwrap().push(payload);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn each_on_function_refuses_direct_invocation() {
+        for kind in ChangeKind::ALL {
+            match refuse_observable_call(kind, event()) {
+                Err(Error::Remote { code, message, .. }) => {
+                    assert_eq!(code, codes::FORBIDDEN);
+                    assert_eq!(code, iii_sdk::protocol::observe_codes::FORBIDDEN);
+                    assert!(message.contains(kind.function_id()), "{message}");
+                }
+                other => panic!("expected FORBIDDEN, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn function_ids_sit_next_to_their_trigger_types() {
+        assert_eq!(
+            ChangeKind::ALL.map(ChangeKind::function_id),
+            [
+                "security-scan::on-run-changed",
+                "security-scan::on-reconciliation-changed",
+                "security-scan::on-action-changed",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_receives_the_change_a_binding_receives() {
+        for kind in ChangeKind::ALL {
+            let recorder = Arc::new(Recorder::default());
+            let feed = Arc::new(ChangeFeed::new(recorder.clone()));
+            let config = json!({ "repository": "iii" });
+            feed.add(kind, binding("b1", "ui::changes", config.clone()))
+                .unwrap();
+            let matching = ObserverRecorder::new("o-iii");
+            let other = ObserverRecorder::new("o-other");
+            let handler = ChangeObserveHandler::new(kind, feed.clone());
+            handler.admit(&config, matching.clone()).unwrap();
+            handler
+                .admit(&json!({ "repository": "other" }), other.clone())
+                .unwrap();
+
+            let sent = feed.emit(kind, "iii", "sec_1", &event()).await;
+
+            assert_eq!(sent, 2, "{kind:?}: the binding and the matching observer");
+            let bound = recorder.seen.lock().unwrap().clone();
+            assert_eq!(bound.len(), 1);
+            assert_eq!(matching.seen(), vec![bound[0].payload.clone()]);
+            assert!(other.seen().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn removed_observer_stops_receiving_and_bindings_stay() {
+        let recorder = Arc::new(Recorder::default());
+        let feed = Arc::new(ChangeFeed::new(recorder.clone()));
+        feed.add(ChangeKind::Run, binding("b1", "ui::runs", json!({})))
+            .unwrap();
+        let observer = ObserverRecorder::new("o1");
+        ChangeObserveHandler::new(ChangeKind::Run, feed.clone())
+            .admit(&Value::Null, observer.clone())
+            .unwrap();
+        assert_eq!(feed.binding_count(ChangeKind::Run), 2);
+        // Observer keys never collide with binding ids.
+        assert!(!feed.remove_observer(ChangeKind::Run, "b1"));
+        assert!(feed.remove_observer(ChangeKind::Run, "o1"));
+        assert!(!feed.remove_observer(ChangeKind::Run, "o1"));
+
+        assert_eq!(
+            feed.emit(ChangeKind::Run, "iii", "sec_1", &event()).await,
+            1
+        );
+        assert!(observer.seen().is_empty());
+        assert_eq!(recorder.seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn observer_args_are_checked_like_a_binding_config() {
+        let feed = Arc::new(ChangeFeed::new(Arc::new(Recorder::default())));
+        let handler = ChangeObserveHandler::new(ChangeKind::Action, feed.clone());
+        for bad in [
+            json!({ "repo": "iii" }),
+            json!({ "repository": 7 }),
+            json!({ "run_id": "" }),
+            json!("iii"),
+        ] {
+            let rejection = handler
+                .admit(&bad, ObserverRecorder::new("o1"))
+                .unwrap_err();
+            assert_eq!(rejection.code, codes::INVALID_ARGS, "{bad}");
+            assert!(feed
+                .add(ChangeKind::Action, binding("b1", "ui::a", bad))
+                .is_err());
+        }
+        assert_eq!(feed.binding_count(ChangeKind::Action), 0);
+    }
+
+    #[test]
+    fn observers_share_the_per_type_cap_and_replays_replace_in_place() {
+        let feed = Arc::new(ChangeFeed::new(Arc::new(Recorder::default())));
+        let handler = ChangeObserveHandler::new(ChangeKind::Run, feed.clone());
+        // Observers are not capped per target function, only per type.
+        for index in 0..MAX_BINDINGS_PER_TYPE - 1 {
+            handler
+                .admit(&json!({}), ObserverRecorder::new(&format!("o{index}")))
+                .unwrap();
+        }
+        feed.add(ChangeKind::Run, binding("b-last", "ui::runs", json!({})))
+            .unwrap();
+        // A replay of a known observer id replaces it without growing.
+        handler
+            .admit(&json!({ "run_id": "sec_1" }), ObserverRecorder::new("o0"))
+            .unwrap();
+        assert_eq!(feed.binding_count(ChangeKind::Run), MAX_BINDINGS_PER_TYPE);
+
+        let rejection = handler
+            .admit(&json!({}), ObserverRecorder::new("o-over"))
+            .unwrap_err();
+        assert_eq!(rejection.code, codes::TOO_MANY_SUBSCRIBERS);
+        assert!(feed
+            .add(ChangeKind::Run, binding("b-over", "ui::fresh", json!({})))
+            .is_err());
+        // The cap is per trigger type.
+        ChangeObserveHandler::new(ChangeKind::Action, feed.clone())
+            .admit(&json!({}), ObserverRecorder::new("o-over"))
+            .unwrap();
     }
 }

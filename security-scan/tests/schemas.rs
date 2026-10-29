@@ -1,6 +1,6 @@
 mod support;
 
-use security_scan::functions::catalog;
+use security_scan::functions::{catalog, observable_catalog};
 
 fn golden_file_name(function_id: &str) -> String {
     format!("schemas/{}.json", function_id.replace("::", "."))
@@ -55,4 +55,34 @@ fn schemas_are_typed_and_match_goldens() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn observable_functions_have_typed_schemas() {
+    let specs = observable_catalog();
+    let ids: Vec<_> = specs.iter().map(|spec| spec.function_id).collect();
+    assert_eq!(
+        ids,
+        [
+            "security-scan::on-run-changed",
+            "security-scan::on-reconciliation-changed",
+            "security-scan::on-action-changed",
+        ]
+    );
+    for spec in specs {
+        support::assert_typed_schema(
+            &format!("{} request", spec.function_id),
+            &spec.request_schema,
+        );
+        support::assert_typed_schema(
+            &format!("{} response", spec.function_id),
+            &spec.response_schema,
+        );
+        let request = serde_json::to_value(&spec.request_schema).expect("schema serializes");
+        assert!(
+            request.get("properties").is_some(),
+            "{} request must document the delivered event: {request}",
+            spec.function_id
+        );
+    }
 }

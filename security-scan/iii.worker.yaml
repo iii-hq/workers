@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: security-scan
 tags: [security, scanning, code-review, supply-chain, git]
-description: Report-only security reviews of operator-configured repositories at immutable Git commits, dispatched through a read-only Harness policy.
+description: Report-only security reviews of operator-configured repositories at immutable Git commits, dispatched through a read-only Harness policy. Observe security-scan::on-run-changed, on-reconciliation-changed and on-action-changed (iii 0.25) or bind their security-scan::*-changed trigger types.
 
 config:
   repositories: []
