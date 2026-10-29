@@ -455,7 +455,7 @@
     }
   ],
   "remoteScreen": {
-    "doc": "The wire prop: function ids and argument templates. Every fn and trigger must be in the app's own namespace. In args, a string value equal to a placeholder is replaced by the typed value; any other value is copied as is; a placeholder whose value is absent drops its key.",
+    "doc": "The wire prop: function ids and argument templates. frames is {fn, args}: the host observes fn with those args (deliver output, max_in_flight 1, so a slow view drops frames) and paints each event; the other keys name the functions the host calls. Every fn must be in the app's own namespace. In args, a string value equal to a placeholder is replaced by the typed value; any other value is copied as is; a placeholder whose value is absent drops its key.",
     "wireKeys": ["frames", "seed", "start", "stop", "resize", "input"],
     "placeholders": {
       "$session": "string: the session prop",
@@ -504,11 +504,11 @@
       { "code": 6, "name": "mount", "fields": [["page", "int"], ["name", "string"], ["params", "json"]], "doc": "page: a host-allocated page instance id, stable across VM restarts." },
       { "code": 7, "name": "unmount", "fields": [["page", "int"]] },
       { "code": 8, "name": "response", "fields": [["reqId", "int"], ["ok", "int"], ["value", "json"]], "doc": "ok 1: value is the result; ok 0: value is {code, message}." },
-      { "code": 9, "name": "trigger", "fields": [["sub", "int"], ["payload", "json"]] }
+      { "code": 9, "name": "observed", "fields": [["sub", "int"], ["payload", "json"]], "doc": "A call of the function observed under sub: payload is its output (the event)." }
     ],
     "requests": [
       { "method": 1, "name": "call", "args": { "fn": "string", "payload": "json?", "timeoutMs": "int?" }, "result": "json (the function's result)" },
-      { "method": 2, "name": "on", "args": { "sub": "int", "trigger": "string", "config": "json" }, "result": "null once bound" },
+      { "method": 2, "name": "on", "args": { "sub": "int", "fn": "string", "args": "json", "filters": "json" }, "result": "null once the observer is active", "doc": "The host observes fn (a function of the app's namespace) with args and filters, deliver output, and sends each output as observed [9, sub, payload]; off disposes it." },
       { "method": 3, "name": "off", "args": { "sub": "int" }, "result": "null" },
       { "method": 10, "name": "navPush", "args": { "page": "string", "params": "json?" }, "result": "{result: json|null} when the pushed card leaves" },
       { "method": 11, "name": "navPop", "args": { "page": "int", "result": "json?" }, "result": "null" },

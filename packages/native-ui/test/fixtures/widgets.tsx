@@ -16,7 +16,7 @@ import {
 } from '@iii-dev/native-ui'
 
 const WIRE = {
-  frames: { trigger: 'demo::frame-event', config: { session_id: '$session' } },
+  frames: { fn: 'demo::on-frame-event', args: { session_id: '$session' } },
   start: { fn: 'demo::screencast::start', args: { session_id: '$session', viewer_id: '$viewer' }, renewMs: 6000 },
 }
 
