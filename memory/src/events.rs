@@ -214,9 +214,13 @@ mod tests {
     #[test]
     fn item_event_carries_reason_only_when_given() {
         let m = memory();
-        let with =
-            serde_json::to_value(item_event(ItemEvent::Superseded, "b", &m, Some("same fact")))
-                .unwrap();
+        let with = serde_json::to_value(item_event(
+            ItemEvent::Superseded,
+            "b",
+            &m,
+            Some("same fact"),
+        ))
+        .unwrap();
         assert_eq!(with["event_type"], "superseded");
         assert_eq!(with["bank"], "b");
         assert_eq!(with["memory"]["id"], "fp1");

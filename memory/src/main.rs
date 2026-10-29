@@ -80,9 +80,8 @@ const HTTP_ON_REQUEST_FN: &str = "http::on-request";
 fn seam_observers() -> Vec<(Source, &'static str)> {
     vec![
         (
-            Source::function("harness::hook::on-pre-generate").args(
-                json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" }),
-            ),
+            Source::function("harness::hook::on-pre-generate")
+                .args(json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" })),
             hooks::PRE_GENERATE_FN,
         ),
         (
@@ -348,8 +347,14 @@ mod tests {
         assert_eq!(
             observed,
             vec![
-                ("harness::hook::on-pre-generate".to_string(), hooks::PRE_GENERATE_FN),
-                ("harness::on-turn-completed".to_string(), hooks::TURN_COMPLETED_FN),
+                (
+                    "harness::hook::on-pre-generate".to_string(),
+                    hooks::PRE_GENERATE_FN
+                ),
+                (
+                    "harness::on-turn-completed".to_string(),
+                    hooks::TURN_COMPLETED_FN
+                ),
                 ("session::on-deleted".to_string(), hooks::SESSION_DELETED_FN),
                 ("queue::on-message".to_string(), hooks::EXTRACT_JOB_FN),
             ]
