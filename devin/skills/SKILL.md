@@ -15,10 +15,10 @@ two distinct surfaces.
 The **CLI surface** drives the local [Devin CLI](https://cli.devin.ai/docs) (the
 SWE-1.6 coding agent that runs in your terminal on your files). `devin::run`
 executes one headless turn (`devin --permission-mode dangerous --print -- <prompt>`)
-and delivers stdout on the `devin::raw-event` trigger type with the terminal
-AgentEvent frames on `devin::agent-event`. Because the agent runs locally with the iii runtime context
+and delivers stdout on `devin::on-raw-event` with the terminal AgentEvent
+frames on `devin::on-agent-event`. Because the agent runs locally with the iii runtime context
 prepended, a plain-language prompt makes Devin discover and operate your engine
-on its own: it runs `iii trigger engine::functions::list`, calls any registered
+on its own: it runs `iii call engine::functions::list`, calls any registered
 function, and reports back, reaching the engine at `localhost` with no exposure.
 
 The **cloud surface** calls the Devin REST API: `devin::session::create` starts
@@ -35,7 +35,8 @@ Devin itself, add another iii worker to the bus instead of bolting it on.
 
 - Delegate a coding task to the local agent in a chosen directory: `devin::run`
   with `prompt` and `cwd`; follow the session transcript (`session::messages`)
-  or bind `devin::agent-event` / `devin::raw-event` with `{ session_id }`;
+  or observe `devin::on-agent-event` / `devin::on-raw-event` with args
+  `{ session_id }`;
   interrupt with `devin::stop`.
 - Have Devin operate your iii workers: with `iii_context` on (default), ask a plain
   question ("what workers are connected and what does each do?") and Devin
@@ -44,19 +45,20 @@ Devin itself, add another iii worker to the bus instead of bolting it on.
   `devin::session::create`, then poll `devin::session::get` and steer with
   `devin::session::message`.
 - Review a pull request: `devin::pr-review::trigger` with a `pr_url`, then
-  `devin::pr-review::status`; bind a GitHub PR-opened trigger for auto-review.
+  `devin::pr-review::status`; for auto-review, observe `github::pr::on-event`
+  from a function that calls `devin::pr-review::trigger`.
 - Reach any other Devin capability with no typed wrapper (knowledge, playbooks,
   secrets, repos, code scan, org admin): `devin::api` with
   `{ method, path, query?, body? }`.
-- Schedule or fan out: bind a `cron` trigger to `devin::session::create`, or
-  spawn multiple runs with `harness::spawn`. The worker does not re-implement
-  scheduling or sub-agents.
+- Schedule or fan out: observe `cron::on-tick` from a function that calls
+  `devin::session::create`, or spawn multiple runs with `harness::spawn`. The
+  worker does not re-implement scheduling or sub-agents.
 
 ## Boundaries
 
 - `devin::run` / `devin::start` spawn the local Devin CLI headless with
   `--permission-mode dangerous` by default, so the agent auto-approves all local
-  tools (needed to run `iii trigger` without blocking). Drop to `accept-edits`
+  tools (needed to run `iii call` without blocking). Drop to `accept-edits`
   or `auto` via `cli_extra_args` to restrict it.
 - `devin::run` needs the official Devin CLI installed and `devin auth login`; it
   is not available inside a bare container without it.
@@ -96,3 +98,8 @@ Devin itself, add another iii worker to the bus instead of bolting it on.
 - `devin::pr-review::status` — latest review for a `pr_url` (optional `commit_sha`).
 - `devin::api` — raw authenticated call to any v1/v3 endpoint:
   `{ method, path, query?, body? }`.
+- `devin::on-agent-event` — observable event feed of one session's terminal
+  AgentEvent frames: args `{ session_id }`, event
+  `{session_id, event_id, seq, epoch, source, event}`. Private: observe it,
+  never call it. At most 256 observers.
+- `devin::on-raw-event` — the same for the CLI stdout lines.

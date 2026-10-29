@@ -86,15 +86,13 @@ async fn main() -> Result<()> {
 
     let cell: configuration::ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
-    // Bind the config-change trigger and reconcile so a value that landed
-    // during boot is applied before the first turn. Best-effort.
-    if let Err(e) = configuration::register_config_trigger(&iii, cell.clone()) {
-        tracing::warn!(error = %e, "configuration change trigger registration failed");
-    }
+    // Observe configuration changes and reconcile so a value that landed
+    // during boot is applied before the first turn.
+    configuration::observe_config_changes(&iii, cell.clone());
     configuration::reconcile(&iii, &cell).await;
 
-    // Own the grok::agent-event / grok::raw-event trigger types before the
-    // first turn can emit.
+    // Register the grok::on-agent-event / grok::on-raw-event functions
+    // before the first turn can emit.
     agent_feed::register(&iii);
     register_all(&iii, cell);
     tracing::info!("grok worker registered all functions, ready");

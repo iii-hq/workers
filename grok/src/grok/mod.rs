@@ -1,6 +1,6 @@
 //! The Grok turn: spawn `grok --single <prompt> --output-format streaming-json`,
 //! parse the streaming-json event stream, deliver it verbatim on
-//! `grok::raw-event`, translate it onto `grok::agent-event`, and persist the
+//! `grok::on-raw-event`, translate it onto `grok::on-agent-event`, and persist the
 //! session record.
 
 pub mod args;

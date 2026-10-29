@@ -2,7 +2,7 @@ use serde_json::json;
 
 // These tests exercise the JSON-RPC envelope shape and ACP method
 // dispatch contract without bringing up an iii engine. Anything
-// touching state::* or iii.trigger lives in handler.rs and runs
+// touching state::* or iii.call lives in handler.rs and runs
 // against a real engine in CI integration runs.
 
 #[test]

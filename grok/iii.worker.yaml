@@ -6,4 +6,4 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: grok
 tags: [coding-agent, grok, xai, cli, headless]
-description: xAI Grok CLI as an iii worker; grok::run/start/stop/status/sessions::list spawn the grok CLI for headless turns, deliver raw streaming-json events on the grok::raw-event trigger type and AgentEvent frames on grok::agent-event.
+description: xAI Grok CLI as an iii worker; grok::run/start/stop/status/sessions::list spawn the grok CLI for headless turns, deliver raw streaming-json events on grok::on-raw-event and AgentEvent frames on grok::on-agent-event, observed per session.

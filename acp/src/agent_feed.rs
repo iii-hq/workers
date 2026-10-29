@@ -1,19 +1,21 @@
-//! Consumer side of the agent event feeds (`<namespace>::agent-event`).
+//! Consumer side of the agent event feeds (`<namespace>::on-agent-event`).
 //!
 //! Every agent worker (claude-code, pi, opencode, cursor, codex, grok, devin,
-//! hermes, or any brain that follows the same contract) owns a trigger type
-//! `<namespace>::agent-event`. A binding is `{ session_id }` and each delivery
-//! is
+//! hermes, or any brain that follows the same contract) hosts a private
+//! function `<namespace>::on-agent-event`. acp observes it once per owned
+//! session with args `{ session_id }` and `deliver: output`, so its target
+//! receives each frame the function returns:
 //!
 //! ```json
 //! { "session_id": "sess_..", "event_id": "..", "seq": 7, "epoch": "..",
 //!   "source": "claude", "event": { "type": "message_complete", .. } }
 //! ```
 //!
-//! `seq` is contiguous per `(session_id, epoch)` and starts at 0. Deliveries
-//! are fire-and-forget and the SDK runs handlers concurrently, so frames can
-//! arrive out of order or twice; [`Sequencer`] restores the order per
-//! `(session_id, source, epoch)` with a bounded reorder window.
+//! `seq` is contiguous per `(session_id, epoch)` and starts at 0. iii's
+//! delivery is at-most-once and does not wait for targets, and the SDK runs
+//! handlers concurrently, so frames can arrive out of order or twice;
+//! [`Sequencer`] restores the order per `(session_id, source, epoch)` with a
+//! bounded reorder window.
 //!
 //! The feed is ephemeral: nothing is replayed. acp's own history (state scope
 //! `acp-v0.3`) and the brain's synchronous response stay the source of truth.
@@ -28,10 +30,10 @@ pub const REORDER_WINDOW_MS: u64 = 250;
 /// Upper bound on buffered out-of-order frames per stream; overflow releases
 /// the buffer in order instead of growing it.
 pub const MAX_PENDING_PER_STREAM: usize = 256;
-/// Suffix of every producer's normalized feed trigger type.
-pub const AGENT_EVENT_SUFFIX: &str = "agent-event";
+/// Last segment of every producer's agent event feed function.
+pub const AGENT_EVENT_SUFFIX: &str = "on-agent-event";
 
-/// One delivery from a `<namespace>::agent-event` trigger.
+/// One frame of a `<namespace>::on-agent-event` feed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeedEvent {
     pub session_id: String,
@@ -75,14 +77,14 @@ pub fn parse_feed_payload(payload: &Value) -> Option<FeedEvent> {
     })
 }
 
-/// The binding config acp registers per owned session.
-pub fn binding_config(session_id: &str) -> Value {
+/// The args acp observes a feed with, per owned session.
+pub fn observer_args(session_id: &str) -> Value {
     json!({ "session_id": session_id })
 }
 
 /// The feed a brain function's worker provides: `claude::run` ->
-/// `claude::agent-event`. `None` for an id without a namespace.
-pub fn default_events_trigger_type(brain_fn: &str) -> Option<String> {
+/// `claude::on-agent-event`. `None` for an id without a namespace.
+pub fn default_events_function(brain_fn: &str) -> Option<String> {
     let (namespace, rest) = brain_fn.split_once("::")?;
     if namespace.is_empty() || rest.is_empty() {
         return None;
@@ -90,9 +92,9 @@ pub fn default_events_trigger_type(brain_fn: &str) -> Option<String> {
     Some(format!("{namespace}::{AGENT_EVENT_SUFFIX}"))
 }
 
-/// Resolve the trigger types acp binds: the explicit list when given
+/// Resolve the feed functions acp observes: the explicit list when given
 /// (trimmed, empty entries dropped, deduplicated), else the brain's default.
-pub fn resolve_events_trigger_types(explicit: &[String], brain_fn: Option<&str>) -> Vec<String> {
+pub fn resolve_events_functions(explicit: &[String], brain_fn: Option<&str>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for entry in explicit {
         let entry = entry.trim();
@@ -101,7 +103,7 @@ pub fn resolve_events_trigger_types(explicit: &[String], brain_fn: Option<&str>)
         }
     }
     if out.is_empty()
-        && let Some(default) = brain_fn.and_then(default_events_trigger_type)
+        && let Some(default) = brain_fn.and_then(default_events_function)
     {
         out.push(default);
     }
@@ -109,10 +111,10 @@ pub fn resolve_events_trigger_types(explicit: &[String], brain_fn: Option<&str>)
 }
 
 /// Why an external brain cannot run yet, or `None` when the event feed is
-/// ready. `missing` lists trigger types the engine does not know.
+/// ready. `missing` lists feed functions the engine does not know.
 pub fn readiness_error(
     function_registered: bool,
-    trigger_types: &[String],
+    events_functions: &[String],
     missing: &[String],
 ) -> Option<String> {
     if !function_registered {
@@ -122,10 +124,10 @@ pub fn readiness_error(
                 .to_string(),
         );
     }
-    if trigger_types.is_empty() {
+    if events_functions.is_empty() {
         return Some(
-            "iii-acp: no agent event trigger type is configured for the external brain; set \
-             --events-trigger-type (IIIACP_EVENTS_TRIGGER_TYPE), e.g. claude::agent-event."
+            "iii-acp: no agent event function is configured for the external brain; set \
+             --events-function (IIIACP_EVENTS_FUNCTION), e.g. claude::on-agent-event."
                 .to_string(),
         );
     }
@@ -140,14 +142,14 @@ pub fn readiness_error(
         })
         .collect();
     Some(format!(
-        "iii-acp: agent event trigger type {} is not registered with the engine; external \
+        "iii-acp: agent event function {} is not registered with the engine; external \
          brain updates would not reach the editor. Start the agent worker that provides it \
          before retrying.",
         workers.join(", ")
     ))
 }
 
-/// True when an engine error means "this trigger type does not exist".
+/// True when an engine error means "this function does not exist".
 pub fn is_not_found_error(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("not_found") || message.contains("not found")
@@ -414,9 +416,9 @@ mod tests {
     }
 
     #[test]
-    fn a_late_bind_waits_the_window_then_follows_the_stream() {
+    fn a_late_observer_waits_the_window_then_follows_the_stream() {
         let mut s = Sequencer::new();
-        // Bound mid-epoch: seq 40 first. It waits for the window, then flows.
+        // Observed mid-epoch: seq 40 first. It waits for the window, then flows.
         assert!(s.offer(ev("a", "e", 40), 0).is_empty());
         assert_eq!(seqs(&s.flush("a", 0, true)), vec![40]);
         assert_eq!(seqs(&s.offer(ev("a", "e", 41), 1)), vec![41]);
@@ -450,41 +452,42 @@ mod tests {
     }
 
     #[test]
-    fn trigger_type_defaults_follow_the_brain_namespace() {
+    fn events_function_defaults_follow_the_brain_namespace() {
         assert_eq!(
-            default_events_trigger_type("claude::run").as_deref(),
-            Some("claude::agent-event")
+            default_events_function("claude::run").as_deref(),
+            Some("claude::on-agent-event")
         );
         assert_eq!(
-            default_events_trigger_type("run::start_and_wait").as_deref(),
-            Some("run::agent-event")
+            default_events_function("run::start_and_wait").as_deref(),
+            Some("run::on-agent-event")
         );
-        assert_eq!(default_events_trigger_type("plain"), None);
+        assert_eq!(default_events_function("plain"), None);
         assert_eq!(
-            resolve_events_trigger_types(&[], Some("codex::run")),
-            vec!["codex::agent-event"]
+            resolve_events_functions(&[], Some("codex::run")),
+            vec!["codex::on-agent-event"]
         );
         assert_eq!(
-            resolve_events_trigger_types(
+            resolve_events_functions(
                 &[
-                    " pi::agent-event ".into(),
+                    " pi::on-agent-event ".into(),
                     "".into(),
-                    "pi::agent-event".into(),
-                    "x::agent-event".into()
+                    "pi::on-agent-event".into(),
+                    "x::on-agent-event".into()
                 ],
                 Some("codex::run")
             ),
-            vec!["pi::agent-event", "x::agent-event"]
+            vec!["pi::on-agent-event", "x::on-agent-event"]
         );
-        assert!(resolve_events_trigger_types(&[], None).is_empty());
+        assert!(resolve_events_functions(&[], None).is_empty());
+        assert_eq!(observer_args("s1"), json!({ "session_id": "s1" }));
     }
 
     #[test]
     fn readiness_names_the_missing_provider_and_never_iii_stream() {
-        let types = vec!["claude::agent-event".to_string()];
+        let types = vec!["claude::on-agent-event".to_string()];
         assert_eq!(readiness_error(true, &types, &[]), None);
         let missing = readiness_error(true, &types, &types).unwrap();
-        assert!(missing.contains("`claude::agent-event`"));
+        assert!(missing.contains("`claude::on-agent-event`"));
         assert!(missing.contains("`claude` agent worker"));
         assert!(readiness_error(false, &types, &[]).is_some());
         assert!(readiness_error(true, &[], &[]).is_some());
@@ -496,7 +499,9 @@ mod tests {
             assert!(!message.contains("iii-stream"), "{message}");
             assert!(!message.contains("stream"), "{message}");
         }
-        assert!(is_not_found_error("Remote error NOT_FOUND: trigger type x"));
+        assert!(is_not_found_error(
+            "remote error (NOT_FOUND): Function 'x::on-agent-event' is not registered."
+        ));
         assert!(!is_not_found_error("FORBIDDEN"));
     }
 

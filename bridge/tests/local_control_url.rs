@@ -8,8 +8,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
 use serde_json::{json, Value};
 
 struct Engine {
@@ -63,9 +62,9 @@ fn free_non_default_port() -> u16 {
     }
 }
 
-async fn trigger_workers_list(client: &IIIClient) -> Option<Value> {
+async fn call_workers_list(client: &IIIClient) -> Option<Value> {
     client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::workers::list".to_string(),
             payload: json!({}),
             action: None,
@@ -121,7 +120,7 @@ async fn spawn_engine() -> Option<Engine> {
     let probe = register_worker(&engine.url, InitOptions::default());
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        if trigger_workers_list(&probe).await.is_some() {
+        if call_workers_list(&probe).await.is_some() {
             probe.shutdown_async().await;
             return Some(engine);
         }
@@ -173,7 +172,7 @@ async fn bridge_registers_on_non_default_local_engine_from_iii_url() {
         if let Some(status) = worker.0.try_wait().expect("query bridge process") {
             panic!("bridge exited before registration with status {status}");
         }
-        if let Some(workers) = trigger_workers_list(&probe).await {
+        if let Some(workers) = call_workers_list(&probe).await {
             if bridge_is_registered(&workers) {
                 probe.shutdown_async().await;
                 return;

@@ -1,4 +1,4 @@
-//! Wire types emitted onto `devin::agent-event` (an AgentEvent subset) and the
+//! Wire types emitted onto `devin::on-agent-event` (an AgentEvent subset) and the
 //! persisted session record. Mirrors the harness AgentEvent shape so the
 //! console and acp worker render devin::run turns like any other agent worker.
 //!

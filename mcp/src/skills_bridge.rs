@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient};
+use iii_sdk::{errors::Error, CallRequest, IIIClient};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
@@ -44,7 +44,7 @@ fn normalize_delegate_payload(payload: Value) -> Value {
     }
 }
 
-/// Trigger `function_id` and return the result as a JSON object. If the
+/// Call `function_id` and return the result as a JSON object. If the
 /// engine reports the function as missing, swap in `empty` so MCP clients see
 /// an empty list instead of an error. Other errors propagate.
 async fn delegate_or_empty(
@@ -58,7 +58,7 @@ async fn delegate_or_empty(
     // which would silently turn populated MCP resources/prompts lists empty.
     let payload = normalize_delegate_payload(payload);
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,

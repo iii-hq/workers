@@ -1,6 +1,6 @@
 //! The Codex turn: spawn `codex exec --json`, write the prompt to stdin, parse
-//! the JSONL event stream, deliver it verbatim on `codex::raw-event`, translate
-//! it onto `codex::agent-event`, and persist the session record.
+//! the JSONL event stream, deliver it verbatim on `codex::on-raw-event`, translate
+//! it onto `codex::on-agent-event`, and persist the session record.
 
 pub mod args;
 pub mod events_types;

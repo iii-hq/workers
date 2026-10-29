@@ -1,17 +1,16 @@
 //! `mcp` binary entry. Connects to the iii engine, registers the
-//! [`mcp::handler`](mcp::functions::FUNCTION_ID) function plus an HTTP
-//! trigger at the configured `api_path`, then sleeps on Ctrl+C.
+//! [`mcp::handler`](mcp::functions::FUNCTION_ID) function, observes
+//! `http::on-request` with it for `POST <api_path>`, then sleeps on Ctrl+C.
 //!
 //! All real logic lives under [`mcp`]; tests under `tests/` reuse the
 //! same modules to drive the bridge in-process.
 
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
-use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 
 use iii_mcp::{config, functions, manifest};
@@ -78,27 +77,30 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &cfg);
 
+    // The route lives as long as the connection; dropping the handle keeps
+    // it. Report whether it became active without blocking startup.
+    let route = functions::observe_route(&iii, &cfg.api_path);
     let api_path = cfg.api_path.clone();
-    match iii.register_trigger(RegisterTriggerInput::new(
-        "http".to_string(),
-        functions::FUNCTION_ID.to_string(),
-        json!({
-            "api_path": api_path,
-            "http_method": "POST",
-        }),
-    )) {
-        Ok(_) => tracing::info!(
-            function_id = functions::FUNCTION_ID,
-            api_path = %api_path,
-            "http trigger registered"
-        ),
-        Err(e) => tracing::warn!(
-            error = %e,
-            function_id = functions::FUNCTION_ID,
-            api_path = %api_path,
-            "failed to register http trigger"
-        ),
-    }
+    tokio::spawn(async move {
+        match tokio::time::timeout(Duration::from_secs(30), route.ready()).await {
+            Ok(Ok(())) => tracing::info!(
+                function_id = functions::FUNCTION_ID,
+                api_path = %api_path,
+                "http::on-request route active"
+            ),
+            Ok(Err(e)) => tracing::warn!(
+                error = %e,
+                function_id = functions::FUNCTION_ID,
+                api_path = %api_path,
+                "http::on-request route rejected"
+            ),
+            Err(_) => tracing::warn!(
+                function_id = functions::FUNCTION_ID,
+                api_path = %api_path,
+                "http::on-request route still pending after 30s; is the http worker running?"
+            ),
+        }
+    });
 
     tracing::info!("mcp ready, waiting for invocations");
     tokio::signal::ctrl_c().await?;

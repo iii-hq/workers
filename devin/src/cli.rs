@@ -1,7 +1,7 @@
 //! The `devin::run` turn: spawn the local Devin CLI (the SWE-1.6 coding agent)
 //! in non-interactive mode (`devin [extra args] --print -- "<prompt>"`), deliver
-//! its stdout verbatim on `devin::raw-event`, deliver the terminal AgentEvent
-//! frames on `devin::agent-event` so consumers (acp) render the turn like any
+//! its stdout verbatim on `devin::on-raw-event`, deliver the terminal AgentEvent
+//! frames on `devin::on-agent-event` so consumers (acp) render the turn like any
 //! other agent worker, and record the Devin session id it prints. The turn is also written
 //! to `session-manager` (see `session_link`) so it is listed and replayable in
 //! the console like a harness session.
@@ -286,12 +286,12 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     })
 }
 
-/// The `devin::raw-event` frame for one CLI stdout line.
+/// The `devin::on-raw-event` frame for one CLI stdout line.
 pub fn stdout_frame(line: &str) -> Value {
     json!({ "type": "stdout", "line": line })
 }
 
-/// The terminal `devin::agent-event` frames of a turn, in order: `turn_end`
+/// The terminal `devin::on-agent-event` frames of a turn, in order: `turn_end`
 /// with the final assistant message, then `agent_end`.
 pub fn terminal_frames(result_text: &str, model: &str, stop_reason: &str) -> [Value; 2] {
     let final_msg = assistant_message(
