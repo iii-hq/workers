@@ -143,15 +143,16 @@ export function useCopyFlash(text, ms = 1400) {
 }
 
 /**
- * Live worker data: `fetch()` once, re-fetch on every one of `triggers`
- * (a type, or `{ type, config }` for a stream/filtered binding; each bound
- * to one tab-scoped handler `handlerId::<browserId>`). There is no timer:
- * while a binding is missing (`live: false`), the data is re-read when the
- * tab becomes visible or focused again, and on `refresh()`. Stale responses
- * are dropped by a monotonic token; everything unbinds on cleanup.
+ * Live worker data: `fetch()` once, re-fetch on every call of the observed
+ * `sources` (a function id, or `{ function_id, args?, filters? }` for one
+ * that takes args or a filtered feed; each observed with the one tab-scoped
+ * handler `handlerId::<browserId>` as target). There is no timer: while the
+ * observers are missing (`live: false`), the data is re-read when the tab
+ * becomes visible or focused again, and on `refresh()`. Stale responses are
+ * dropped by a monotonic token; every observer is disposed on cleanup.
  * `pollMs` is accepted for compatibility and ignored.
  */
-export function useWorkerLive({ iii, triggers, fetch, handlerId }) {
+export function useWorkerLive({ iii, sources, fetch, handlerId }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -163,26 +164,18 @@ export function useWorkerLive({ iii, triggers, fetch, handlerId }) {
   fetchRef.current = fetch
   const refresh = useCallback(() => setToken((t) => t + 1), [])
 
-  // Keyed on the trigger list's contents so an inline array literal does
-  // not rebind every render.
-  const triggerKey = triggers.map((t) => (typeof t === 'string' ? t : JSON.stringify(t))).join('\u0000')
+  // Keyed on the source list's contents so an inline array literal does
+  // not observe again every render.
+  const sourceKey = sources.map((s) => (typeof s === 'string' ? s : JSON.stringify(s))).join('\u0000')
   useEffect(() => {
     const offs = []
-    let ok = triggers.length > 0
+    let ok = sources.length > 0
     try {
       offs.push(iii.on(handlerId, refresh))
-      for (const t of triggers) {
-        const { type, config = {} } = typeof t === 'string' ? { type: t } : t
-        offs.push(
-          iii.registerTrigger({
-            type,
-            function_id: `${handlerId}::${iii.browserId}`,
-            config,
-          }),
-        )
-      }
+      const target = `${handlerId}::${iii.browserId}`
+      for (const source of sources) offs.push(iii.observe(source, target))
     } catch {
-      // Worker absent or trigger type unregistered — re-read on tab focus.
+      // The client refused to observe — re-read on tab focus.
       ok = false
     }
     setLive(ok)
@@ -196,8 +189,8 @@ export function useWorkerLive({ iii, triggers, fetch, handlerId }) {
         }
       }
     }
-    // biome-ignore lint/correctness/useExhaustiveDependencies: triggerKey stands in for the array's contents
-  }, [iii, handlerId, triggerKey, refresh])
+    // biome-ignore lint/correctness/useExhaustiveDependencies: sourceKey stands in for the array's contents
+  }, [iii, handlerId, sourceKey, refresh])
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: token is a re-run token (events, poll, manual refresh)
   useEffect(() => {
@@ -221,7 +214,7 @@ export function useWorkerLive({ iii, triggers, fetch, handlerId }) {
       })
   }, [iii, token])
 
-  // Without a live binding, catch up when the person comes back to the tab
+  // Without live observers, catch up when the person comes back to the tab
   // instead of re-reading on a timer.
   useEffect(() => {
     if (live || typeof window === 'undefined') return

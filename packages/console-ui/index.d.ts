@@ -27,18 +27,53 @@ import type * as React from 'react'
 export interface ExtensionIii {
   /** `console-<uuid>`, per tab. */
   browserId: string
-  trigger<T = unknown>(
+  /** Calls a function and resolves to its result. */
+  call<T = unknown>(
     functionId: string,
     payload?: Record<string, unknown>,
     options?: { timeoutMs?: number },
   ): Promise<T>
+  /** @deprecated the same function as `call` */
+  trigger: ExtensionIii['call']
   /**
-   * Subscribe a browser-local handler. Handlers are namespaced per tab
-   * (`<functionId>::<browserId>`) and default `metadata.internal = true`.
+   * Registers a browser-local handler as `<functionId>::<browserId>`
+   * (`metadata.internal = true`): handlers are namespaced per tab. Returns
+   * its unregister function.
    */
   on<P = unknown>(functionId: string, handler: (payload: P) => void | Promise<void>): () => void
-  registerTrigger(input: { type: string; function_id: string; config: Record<string, unknown> }): () => void
+  /**
+   * Observes `source` with `target` (a function registered with `on`, by its
+   * full id `<functionId>::<browserId>`). `deliver` defaults to `'output'`,
+   * so the handler receives the event the observed function returned.
+   * Returns its disposer.
+   */
+  observe(source: string | ObserveSource, target: string, options?: ObserverOptions): () => void
   addConnectionStateListener(handler: (state: unknown) => void): () => void
+}
+
+/** The function an extension observes, with its args and filters. */
+export interface ObserveSource {
+  function_id: string
+  /** Unset, the namespace resolves as for a call. */
+  namespace?: string
+  /** For a function that takes args; its worker's README lists them. */
+  args?: Record<string, unknown>
+  /**
+   * Select calls by `input`, `output`, `error`, `caller` and `metadata`,
+   * each with an explicit operator: `{ 'input.session_id': { $eq: id } }`.
+   */
+  filters?: Record<string, unknown>
+  /** What the target receives: the event (`'output'`, the default), the call's `'input'`, or the `'envelope'`. */
+  deliver?: 'envelope' | 'input' | 'output'
+}
+
+/** Observer options: an explicit id, the metadata sidecar the target receives, and the policy. */
+export interface ObserverOptions {
+  id?: string
+  metadata?: Record<string, unknown>
+  max_fires?: number
+  expires_in_ms?: number
+  max_in_flight?: number
 }
 
 /* ── slot contracts ─────────────────────────────────────────────────── */
@@ -208,14 +243,14 @@ export interface PageRegistration {
 }
 
 /**
- * A function-trigger message as renderers receive it (the fields a worker
+ * A function-call message as renderers receive it (the fields a worker
  * renderer should rely on; the console may carry more).
  */
-export interface FunctionTriggerMessage {
+export interface FunctionCallMessage {
   id: string
-  role: 'function-trigger'
+  role: 'function-call'
   functionId: string
-  /** Short user-facing action supplied by the agent_trigger wrapper. */
+  /** Short user-facing action supplied by the agent_call wrapper. */
   description?: string
   input: unknown
   output?: unknown
@@ -226,19 +261,19 @@ export interface FunctionTriggerMessage {
 }
 
 /**
- * A function-trigger renderer. Injected renderers dispatch before the
+ * A function-call renderer. Injected renderers dispatch before the
  * first-party families; `null` always means "fall through".
  */
-export interface FunctionTriggerRenderer {
+export interface FunctionCallRenderer {
   /** e.g. `state/page.js#renderer` */
   id: string
   /** The host calls `tryRender*` only for function ids claimed here. */
   isMatch(functionId: string): boolean
-  tryRender(message: FunctionTriggerMessage): React.ReactNode | null
-  tryRenderRunning?(message: FunctionTriggerMessage): React.ReactNode | null
-  tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
+  tryRender(message: FunctionCallMessage): React.ReactNode | null
+  tryRenderRunning?(message: FunctionCallMessage): React.ReactNode | null
+  tryRenderPreview?(message: FunctionCallMessage): React.ReactNode | null
   /** Compact settled-state surface shown directly in the chat feed. */
-  tryRenderDisplay?(message: FunctionTriggerMessage): React.ReactNode | null
+  tryRenderDisplay?(message: FunctionCallMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
   primaryTabLabel?: string
   /**
@@ -273,32 +308,35 @@ export interface FunctionTriggerRenderer {
 }
 
 /**
- * A host-normalized trigger activity. The host owns the surrounding message
- * chrome, raw details, and lifecycle controls; trigger renderers receive this
- * common shape only to render the source-specific section.
+ * A host-normalized observer activity: an observer registered, fired, or
+ * retired. The host owns the surrounding message chrome, raw details, and
+ * lifecycle controls; observer renderers receive this common shape only to
+ * render the source-specific section.
  */
-export interface TriggerActivityMessage {
+export interface ObserverActivityMessage {
   /** Stable activity/message id. */
   id: string
   kind: 'registration' | 'fired' | 'retirement'
-  /** e.g. `cron`, `state`, or a worker-defined trigger source. */
-  triggerType: string
-  config?: unknown
+  /** The observed function, e.g. `cron::on-tick`, `state::on-changed`, or a worker's own event source. */
+  functionId: string
+  /** The observer's args (`{ expression }` for `cron::on-tick`). */
+  args?: Record<string, unknown>
+  /** The observer's filters (`{ 'input.scope': { $eq: 'orders' } }`). */
+  filters?: Record<string, unknown>
   label?: string
   /** What this event means in user-facing prose (`metadata.action`). */
   action?: string
   conditions?: readonly unknown[]
   delivery: { kind: 'notify' } | { kind: 'call'; functionId: string }
   lifecycle: {
-    /** Whether the binding remains usable after this activity. */
+    /** Whether the observer remains usable after this activity. */
     state: 'active' | 'retired'
     once: boolean
     maxFires?: number
     expiresAt?: number
     fires: number
   }
-  subscriptionId?: string
-  triggerId?: string
+  observerId?: string
   payload?: unknown
   firedAt?: number
   note?: string
@@ -306,20 +344,21 @@ export interface TriggerActivityMessage {
   retirementReason?: 'once_consumed' | 'max_fires' | 'expired' | 'unregistered' | 'invalidated' | 'exhausted'
 }
 
-/** Worker-owned presentation hooks for one trigger type. The base `tryRender`
- * remains the source-section hook for compatibility. Optional detail and
- * display hooks replace the expanded Terminal surface and compact timeline
- * content while the host keeps disclosure and raw-data access. */
-export interface TriggerActivityRenderer {
-  /** e.g. `cron/page.js#trigger-activity` */
+/** Worker-owned presentation hooks for the observers of one function. The
+ * base `tryRender` is the source-section hook. Optional detail and display
+ * hooks replace the expanded Terminal surface and compact timeline content
+ * while the host keeps disclosure and raw-data access. */
+export interface ObserverActivityRenderer {
+  /** e.g. `cron/page.js#observer-activity` */
   id: string
-  isMatch(triggerType: string): boolean
+  /** The observed function id (`cron::on-tick`). */
+  isMatch(functionId: string): boolean
   /** Source-specific content used by the host's generic detail view. */
-  tryRender(activity: TriggerActivityMessage): React.ReactNode | null
+  tryRender(activity: ObserverActivityMessage): React.ReactNode | null
   /** Complete expanded Terminal tab. `null` keeps the generic detail view. */
-  tryRenderDetails?(activity: TriggerActivityMessage): React.ReactNode | null
+  tryRenderDetails?(activity: ObserverActivityMessage): React.ReactNode | null
   /** Compact clickable timeline content. Do not return interactive children. */
-  tryRenderDisplay?(activity: TriggerActivityMessage): React.ReactNode | null
+  tryRenderDisplay?(activity: ObserverActivityMessage): React.ReactNode | null
   /** Redact registration/fire raw values before display or copy. */
   redactRaw?(value: unknown): unknown
 }
@@ -651,15 +690,15 @@ export interface Host {
     registerSource(source: PaletteSource): () => void
     open(options?: PaletteOpenOptions): void
   }
-  functionTriggers: {
-    register(renderer: FunctionTriggerRenderer): () => void
+  functionCalls: {
+    register(renderer: FunctionCallRenderer): () => void
   }
   /**
-   * Optional on consoles that predate source-specific trigger activity UI.
+   * Optional on consoles that predate source-specific observer activity UI.
    * Feature-detect before registering when a worker supports older consoles.
    */
-  triggerRenderers?: {
-    register(renderer: TriggerActivityRenderer): () => void
+  observerRenderers?: {
+    register(renderer: ObserverActivityRenderer): () => void
   }
   /**
    * Optional on older consoles. Feature-detect before opening contextual
@@ -2093,7 +2132,7 @@ export interface MetaRowProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Label/value pairs, values in mono; free-form children (chips) follow. */
   items?: readonly MetaRowItem[]
 }
-/** The wrapping metadata strip a function-trigger card opens with. */
+/** The wrapping metadata strip a function-call card opens with. */
 export declare const MetaRow: React.ComponentType<MetaRowProps>
 export interface ActionLineProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Leading 16 px icon (a Lucide element). */
