@@ -5,11 +5,11 @@ use crate::stream_fn::make_stream;
 use crate::surface;
 use crate::{PROVIDER_ID, STATE_SCOPE};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::provider_scaffold::router_client::observe_router_ready;
 use llm_router::provider_scaffold::{router_client, state};
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
@@ -158,11 +158,9 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .metadata(json!({ "internal": true })),
         );
     }
-    let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
-        surface::ON_ROUTER_READY_ID,
-        json!({}),
-    ));
+    // The observer outlives router restarts: it waits `pending` while
+    // llm-router is down, and every router start's ready event reaches it.
+    observe_router_ready(&iii, surface::ON_ROUTER_READY_ID);
     tokio::spawn(declare_and_refresh(iii, http));
     Ok(())
 }
