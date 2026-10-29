@@ -10,7 +10,7 @@ export const PAYOFF_METRICS = [
 export const PAYOFF_SOLVES = [
   {
     problem: 'gated workers still enumerate what they cannot call',
-    answer: 'all eight discovery results rewritten to the caller',
+    answer: 'all six discovery results rewritten to the caller',
     detail: 'the same is_function_allowed gates discovery and invocation, so the two can never disagree.',
   },
   {

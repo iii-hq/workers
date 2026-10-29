@@ -31,11 +31,10 @@ Two consequences:
 
 1. The proxy must **derive and hold each downstream connection's boundaries
    itself** — run the auth function, keep the resulting
-   allowed/forbidden/expose/prefix/context/trigger-permissions for the life of
-   the connection.
+   allowed/forbidden/expose/prefix/context for the life of the connection.
 2. The proxy must **enforce every decision and rewrite every response
    client-side.** It cannot delegate filtering to the engine for *any* of the
-   eight discovery functions — not even the two that are session-aware
+   six discovery functions — not even the ones that are session-aware
    in-process. This is why [engine-overrides.md](engine-overrides.md) exists.
 
 The per-connection session the proxy holds mirrors the engine's `Session`
@@ -49,9 +48,7 @@ struct ProxySession {
     namespaces: HashMap<String, Vec<String>>,     // scoped grants; keys = declarable namespaces
     allowed_functions: Vec<String>,               // apply in `default` only
     forbidden_functions: Vec<String>,
-    allowed_trigger_types: Option<Vec<String>>, // None = all allowed
-    allow_trigger_type_registration: bool,        // default false
-    allow_function_registration: bool,            // default true
+    allow_function_registration: bool,            // default true; event sources are functions
     context: Value,                               // forwarded to middleware + hooks
     function_registration_prefix: Option<String>, // private namespace
 }
@@ -71,7 +68,7 @@ sequenceDiagram
   participant A as auth function (engine)
   W->>P: GET / Upgrade: websocket<br/>headers, ?query, src ip
   P->>P: AuthInput { headers, query_params, ip_address }
-  P->>A: iii.trigger(auth_function_id, AuthInput)  [control connection]
+  P->>A: iii.call(auth_function_id, AuthInput)  [control connection]
   alt throws or empty result
     P-->>W: error frame + Close (never opens upstream)
   else AuthResult
@@ -89,14 +86,13 @@ sequenceDiagram
 
 If `auth_function_id` is **unset**, the connection is allowed with a permissive
 default session (`allowed_functions: []`, `forbidden_functions: []`,
-`allow_trigger_type_registration: true`, `allow_function_registration: true`,
-`context: {}`, no prefix) and `expose_functions` alone gates access — identical
+`allow_function_registration: true`, `context: {}`, no prefix) and `expose_functions` alone gates access — identical
 to the engine default. A proxy facing an untrusted network **must** set
 `auth_function_id`; see [Security](#security).
 
 **Fail closed on a configured-but-unresolvable function.** "Unset" (permissive
 default) is distinct from "set but the function can't be reached" (a typo, a
-not-yet-registered or removed function, or an `iii.trigger` error). The latter is
+not-yet-registered or removed function, or an `iii.call` error). The latter is
 treated as a failure, never as "allow":
 
 - **Auth** unresolvable/errors → **reject the upgrade** (error frame + Close), as
@@ -187,10 +183,9 @@ engine::workers::register   engine::log::warn    engine::baggage::set
 ```
 
 These ten ids keep connection setup, channel creation, logging, and context
-propagation working regardless of the operator's `expose_functions`. The **eight
+propagation working regardless of the operator's `expose_functions`. The **six
 discovery** functions (`engine::functions::list/info`, `engine::workers::list/info`,
-`engine::triggers::list/info`, `engine::registered-triggers::list/info`) are
-**not** in the carve-out — they are gated by `expose_functions` like any other
+`engine::observers::list/get`) are **not** in the carve-out — they are gated by `expose_functions` like any other
 function, and when reachable their results are rewritten to the caller's
 boundaries (see [engine-overrides.md](engine-overrides.md)).
 
@@ -230,7 +225,7 @@ becomes the `InvocationResult`** the downstream caller receives.
 > across the engine code and docs): the middleware function receives
 > `MiddlewareFunctionInput`; whatever it returns is returned to the caller as the
 > result. **If the middleware wants the target function to actually run, it must
-> invoke it itself** (`iii.trigger(function_id, payload)`). `engine::*` calls
+> invoke it itself** (`iii.call({ function_id, payload })`). `engine::*` calls
 > **bypass middleware entirely** (so connection setup, channel creation, and the
 > discovery overrides are never wrapped). This matches the engine
 > (`engine/mod.rs:940-981`).
@@ -243,8 +238,8 @@ sequenceDiagram
   participant T as target fn (engine)
   W->>P: InvokeFunction{ fn=api::users::list, data }
   P->>P: allowed? yes. engine::? no. middleware set? yes.
-  P->>M: iii.trigger(middleware_id, { function_id, payload, action, context, namespace })
-  M->>T: iii.trigger(api::users::list, enrichedPayload)   %% middleware's choice
+  P->>M: iii.call(middleware_id, { function_id, payload, action, context, namespace })
+  M->>T: iii.call(api::users::list, enrichedPayload)   %% middleware's choice
   T-->>M: result
   M-->>P: result (becomes the InvocationResult)
   P-->>W: InvocationResult{ invocation_id, result }
@@ -256,61 +251,68 @@ sequenceDiagram
 |---|---|---|
 | `function_id` | string | The function the worker wants to invoke. |
 | `payload` | object | The payload the worker sent. |
-| `action` | TriggerAction or omitted | Routing action (`enqueue`, `void`), if any. |
+| `action` | CallAction or omitted | Routing action (`enqueue`, `void`), if any. |
 | `context` | object | `AuthResult.context` for this session (`{}` when no auth fn). |
 | `namespace` | string | The namespace the call was made in (`default` when it named none). |
 
-The middleware runs on the proxy's **control connection** (`iii.trigger`),
+The middleware runs on the proxy's **control connection** (`iii.call`),
 exactly as the engine runs it via `engine.call`: resolved in the caller's
 namespace, and given the call's metadata sidecar. Keep middleware idempotent —
 retries must not double-charge or double-log.
 
-## Trigger registration RBAC
+Two kinds of call never reach the middleware: a call through an observer
+(the host delivering a call, as an activation does), and the connection's
+call of its own private function (only its host may call it, and the
+middleware runs on the control connection). For the same reason
+`local-dispatch.v1` is kept only when no middleware is configured: a call
+that runs in-process never reaches it.
 
-Workers connecting through the proxy may register trigger types and triggers,
-subject to access control.
+## Observer registration RBAC
 
-### Trigger type registration (`RegisterTriggerType`)
+Workers connecting through the proxy may observe functions:
+`iii.observe(source, target)` creates an observer that runs `target` with
+each call of `source`. That activation is **engine-internal** — it does not
+pass back through the proxy's `InvokeFunction` gate — and an observer reads
+every call of the function it observes (input, output, caller). So the proxy
+gates an observer at registration, like a call of both functions.
 
-Two `AuthResult` fields gate new trigger types:
+After the optional `on_observer_registration` hook (which sees the
+worker-supplied bare ids), the proxy:
 
-- **`allowed_trigger_types`** — trigger type ids the worker may bind triggers
-  for. Omitted ⇒ all allowed.
-- **`allow_trigger_type_registration`** — whether the worker may register *new*
-  trigger types. Default `false`.
+1. **Resolves the engine ids** of the source and the target using the same
+   own-vs-foreign [prefix resolution](protocol-interception.md#prefix-resolution)
+   as `InvokeFunction`, each in the namespace it names — not the blind
+   `{prefix}::{id}` prepend used for `RegisterFunction`.
+2. **Refuses what no proxied session may observe:** an `engine::*` target (an
+   observer's target runs with no session behind it), and as the source the
+   infrastructure carve-out, the discovery functions, `engine::observers::*`,
+   and the engine events whose calls list functions, workers or observers
+   (`engine::on-functions-changed`, `engine::on-workers-changed`,
+   `engine::on-observers-changed`): their calls carry what the
+   [discovery overrides](engine-overrides.md) filter.
+3. **Checks access to both functions:**
+   - a function this session registered on this connection → **allow**
+     (observing its own function, or targeting its own handler);
+   - else run [access resolution](#access-resolution-order) on the resolved id
+     → **allow** or **deny**.
+4. On **deny**, reply `ObserveResult{ id, state: "error", error: { code:
+   "FORBIDDEN", message } }` with the same remediation wording as an invoke
+   deny (`"function '<id>' not allowed (add to rbac.expose_functions)"`
+   unless rule 1 forbids it). On **allow**, forward `Observe` with both ids set
+   to their engine ids.
 
-The proxy enforces both before forwarding `RegisterTriggerType`, then runs the
-optional `on_trigger_type_registration` hook.
+The registration hook remains the place for additional policy (audit,
+narrower allowlists, stamping args such as a tenant). The access check is
+**always on** — it is not optional and does not require configuring
+`on_observer_registration`.
 
-### Trigger instance registration (`RegisterTrigger`)
-
-Binding a trigger tells the engine to invoke `function_id` when the trigger
-fires. That dispatch is **engine-internal** — it does not pass back through the
-proxy's `InvokeFunction` gate — so the proxy must verify at registration time
-that the session is permitted to cause that invocation.
-
-After `allowed_trigger_types` and the optional `on_trigger_registration` hook
-(both see the worker-supplied bare ids), the proxy:
-
-1. **Resolves the engine target** using the same own-vs-foreign
-   [prefix resolution](protocol-interception.md#prefix-resolution) as
-   `InvokeFunction` — not the blind `{prefix}::{id}` prepend used for
-   `RegisterFunction`.
-2. **Checks target access:**
-   - if the resolved id is a function this session registered on this
-     connection → **allow** (binding a trigger to the worker's own handler);
-   - else run [access resolution](#access-resolution-order) on the resolved id →
-     **allow** or **deny**.
-3. On **deny**, reply `TriggerRegistrationResult{ error: { code:
-   "REGISTRATION_DENIED", message } }` with the same remediation wording as an
-   invoke deny (`"function '<id>' not allowed (add to rbac.expose_functions)"`
-   unless rule 1 forbids it). On **allow**, forward `RegisterTrigger` with
-   `function_id` set to the resolved engine id.
-
-The registration hook remains the place for additional policy (audit, narrower
-allowlists, config validation). The target-function access check is **always
-on** — it is not optional and does not require configuring
-`on_trigger_registration`.
+Hosting observable functions is gated too: the frames a host exchanges about
+the observers of its functions, and the calls it makes through them, pass
+only for the functions the connection registered
+([protocol-interception.md § Observers](protocol-interception.md#observers)).
+Registering an event source is registering a function, so
+`allow_function_registration` and the `on_function_registration` hook gate it;
+the hook sees and may replace `private`, `observable` and `args_format`.
 
 ## Registration hooks
 
@@ -323,31 +325,31 @@ to deny. Omitted result fields keep the original value.
 rbac:
   auth_function_id: my-project::auth-function
   on_function_registration_function_id: my-project::on-function-reg
-  on_trigger_registration_function_id: my-project::on-trigger-reg
-  on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+  on_observer_registration_function_id: my-project::on-observer-reg
   expose_functions:
     - match("api::*")
 ```
 
 | Hook | Fires on | Input | Result (omitted ⇒ unchanged) |
 |---|---|---|---|
-| `on_function_registration_function_id` | `RegisterFunction` | `{ function_id, description?, metadata?, context }` | `{ function_id?, description?, metadata? }` |
-| `on_trigger_registration_function_id` | `RegisterTrigger` | `{ trigger_id, trigger_type, function_id, config, context }` | `{ trigger_id?, trigger_type?, function_id?, config? }` |
-| `on_trigger_type_registration_function_id` | `RegisterTriggerType` | `{ trigger_type_id, description, context }` | `{ trigger_type_id?, description? }` |
+| `on_function_registration_function_id` | `RegisterFunction` | `{ function_id, description?, metadata?, namespace, private, observable, args_format?, context }` | `{ function_id?, description?, metadata?, private?, observable?, args_format? }` |
+| `on_observer_registration_function_id` | `Observe` | `{ observer_id, function_id, namespace, args, filters, target_function_id, target_namespace, metadata, context }` | `{ function_id?, target_function_id?, args?, filters?, metadata? }` |
+
+`rbac` keys an earlier proxy read are ignored with one `warn` each at load,
+naming what replaces them, so a stored entry that sets one still loads (the
+engine's own list).
 
 The TypeScript/Python/Rust hook examples in
 [`worker-rbac.mdx` §6](../../../iii/docs/0-11-0/how-to/worker-rbac.mdx) port over
 unchanged.
 
 **Failure semantics** (matching the engine, `engine/mod.rs:663-867,1216-1355`):
-a hook that throws or returns a non-object **denies** the registration. The proxy
-must decide whether to surface that denial to the worker as a
-`TriggerRegistrationResult{ error }` (for trigger/trigger-type registrations) or
-mirror the engine's occasionally-silent drop. **Recommendation:** always send a
-`TriggerRegistrationResult{ error: { code: "REGISTRATION_DENIED", message } }`
-for trigger and trigger-type registrations (it is strictly more informative and
-the SDK already handles that frame), and drop denied `RegisterFunction` frames
-silently as the engine does (there is no ack frame for function registration).
+a hook that throws or returns a non-object **denies** the registration. A
+denied `RegisterFunction` is dropped silently, as the engine drops it (there
+is no ack frame for function registration). A denied `Observe` is answered as
+the engine answers it, `ObserveResult{ state: "error", error: { code:
+"FORBIDDEN", message } }`. In an observer hook's answer, `args: null` means no
+args (`{}`), and `filters: null` or `metadata: null` removes them.
 
 The interaction with `function_registration_prefix` and the exact wire rewrites
 live in
@@ -360,12 +362,12 @@ namespace. Because the proxy — not the engine's internal listener — is the R
 boundary here, **the proxy owns the prefix**:
 
 - On a `RegisterFunction` from the worker, the proxy rewrites
-  `id` → `{prefix}::{id}` before forwarding to the engine. On a `RegisterTrigger`,
-  it resolves the referenced `function_id` with the same own-vs-foreign rules as
-  `InvokeFunction` (see [Trigger registration RBAC](#trigger-registration-rbac)),
+  `id` → `{prefix}::{id}` before forwarding to the engine. On an `Observe`, it
+  resolves the source and the target with the same own-vs-foreign rules as
+  `InvokeFunction` (see [Observer registration RBAC](#observer-registration-rbac)),
   not the blind prepend used for `RegisterFunction`.
 - When the engine dispatches an `InvokeFunction` **back down** to the worker
-  (a trigger fired, or another caller invoked the worker's function), the proxy
+  (an observer's activation, or another caller invoked the worker's function), the proxy
   strips `{prefix}::` from `function_id` before forwarding, so the worker SDK
   finds its locally-registered (bare) handler. The worker never sees the prefix.
 
@@ -405,8 +407,7 @@ middleware_function_id: my-project::middleware-function
 rbac:
   auth_function_id: my-project::auth-function
   on_function_registration_function_id: my-project::on-function-reg
-  on_trigger_registration_function_id: my-project::on-trigger-reg
-  on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+  on_observer_registration_function_id: my-project::on-observer-reg
   expose_functions:
     - match("api::*")
     - match("*::public")
@@ -439,11 +440,12 @@ them.
 | `namespaces` | `Record<string, string[]>` | `{}` | Grants scoped to a namespace (`{ "orders": ["svc::*"] }`); the keys are the namespaces the connection may declare. Empty: declare any. |
 | `allowed_functions` | `string[]` | `[]` | Allow beyond `expose_functions`, in `default` only. |
 | `forbidden_functions` | `string[]` | `[]` | Deny even if exposed. Highest precedence. |
-| `allowed_trigger_types` | `string[]` or omitted | omitted (all) | Trigger types the worker may bind. |
-| `allow_trigger_type_registration` | `boolean` | `false` | May register new trigger types. |
-| `allow_function_registration` | `boolean` | `true` | May register new functions. |
+| `allow_function_registration` | `boolean` | `true` | May register new functions, event sources included. |
 | `function_registration_prefix` | `string` or omitted | omitted | Private namespace prefix. |
 | `context` | `object` | `{}` | Forwarded to middleware + hooks. |
+
+A result that sets a field an earlier proxy read still parses; the field is
+ignored with one `warn` per process (the engine's `REMOVED_FIELDS`).
 
 ### MiddlewareFunctionInput
 
@@ -451,20 +453,17 @@ them.
 |---|---|---|
 | `function_id` | `string` | Function being invoked. |
 | `payload` | `object` | Caller payload. |
-| `action` | TriggerAction or omitted | `enqueue` / `void`, if any. |
+| `action` | CallAction or omitted | `enqueue` / `void`, if any. |
 | `context` | `object` | Session auth context. |
 | `namespace` | `string` | The caller's namespace. |
 
 ### Registration hook I/O
 
-`OnFunctionRegistrationInput` `{ function_id, description?, metadata?, context }`
-→ `OnFunctionRegistrationResult` `{ function_id?, description?, metadata? }`.
+`OnFunctionRegistrationInput` `{ function_id, description?, metadata?, namespace, private, observable, args_format?, context }`
+→ `OnFunctionRegistrationResult` `{ function_id?, description?, metadata?, private?, observable?, args_format? }`.
 
-`OnTriggerRegistrationInput` `{ trigger_id, trigger_type, function_id, config, context }`
-→ `OnTriggerRegistrationResult` `{ trigger_id?, trigger_type?, function_id?, config? }`.
-
-`OnTriggerTypeRegistrationInput` `{ trigger_type_id, description, context }`
-→ `OnTriggerTypeRegistrationResult` `{ trigger_type_id?, description? }`.
+`OnObserverRegistrationInput` `{ observer_id, function_id, namespace, args, filters, target_function_id, target_namespace, metadata, context }`
+→ `OnObserverRegistrationResult` `{ function_id?, target_function_id?, args?, filters?, metadata? }`.
 
 All result fields are optional; omitting one keeps the original value. Throwing
 denies the registration.
@@ -480,8 +479,9 @@ strict parity can turn it off.
 |---|---|---|---|
 | **Self-invoke under a prefix** | A prefixed worker invoking its own bare-named `foo` gets `NOT_FOUND` — the engine never re-prefixes invocation targets ([protocol-interception.md § Prefix resolution](protocol-interception.md#prefix-resolution)). | The proxy resolves the bare id to the session's own `{prefix}::foo` so the call succeeds. | A worker should be able to call what it registered. Opt-out: disable own-id re-prefixing for strict parity. |
 | **Denied-discovery error code** | `engine::functions::info` distinguishes `FORBIDDEN` (denied) from `NOT_FOUND` (missing), leaking existence. | Defaults to engine parity (`FORBIDDEN`); a deployment may opt into collapsing denied → `NOT_FOUND` to also hide existence ([engine-overrides.md](engine-overrides.md)). | Hardening for hostile multi-tenant discovery. |
-| **Registration-denial frame** | On an RBAC/hook denial of a trigger or trigger-type registration the engine returns **silently** (no `TriggerRegistrationResult`). | The proxy replies `TriggerRegistrationResult{ error: { code: "REGISTRATION_DENIED", … } }` so the worker learns *why* ([Registration hooks](#registration-hooks)). | A silent drop is hard to debug; the SDK already handles this frame. Opt-out: drop silently for strict parity. |
-| **Trigger target access** | `RegisterTrigger` is gated only by trigger-type permissions and the optional hook; the engine does not verify the worker may invoke the bound `function_id`. | Before forwarding, the proxy resolves the target id and runs [access resolution](#access-resolution-order) (own registered functions exempt). | Trigger firing bypasses the invoke gate; without this check a worker could bind a trigger to a function it cannot call directly. |
+| **Observer targets and sources** | The engine checks a session's access to an observer's function and target. | The proxy runs the same checks and also refuses `engine::*` targets and the sources whose calls carry what discovery filters ([Observer registration RBAC](#observer-registration-rbac)). | A proxied connection has no engine session: an `engine::*` target would run unrestricted, and those sources would deliver the unfiltered discovery view. |
+| **Call-chain claims** | The engine keeps the `caller` an SDK sets on a call or a report. | The proxy keeps it only when it names a call the engine routed to that connection and it has not answered, and writes it from that call ([protocol-interception.md § Downstream](protocol-interception.md#downstream--engine-frames-the-worker-sends)). | Observers filter on `caller`; a worker must not place its calls in another worker's call chain. |
+| **In-process calls** | `local-dispatch.v1` is negotiated per connection. | Kept only when no middleware is configured; `FunctionRegistered` then says `local_dispatch: false`. | An in-process call never reaches the middleware. |
 
 Everything else — the access-resolution order, the carve-out, `AuthResult`
 semantics, the middleware contract, the prefix apply/strip on `RegisterFunction`
@@ -503,11 +503,15 @@ code.
   operator's `expose_functions` cannot override.
 - The middleware is the place for request validation, rate limiting, and audit
   logging.
-- `RegisterTrigger` always verifies the bound `function_id` against the session's
-  access boundaries (see [Trigger registration RBAC](#trigger-registration-rbac)).
-  Do not rely on the optional registration hook alone to block trigger-to-privileged
-  bindings.
-- Triggers and functions registered through a proxied connection are scoped to
+- `Observe` always verifies the observed function and the target against the
+  session's access boundaries (see [Observer registration RBAC](#observer-registration-rbac)).
+  Do not rely on the optional registration hook alone to block observers of
+  privileged functions.
+- Every function is observable unless registered `observable: false`. The auth
+  function receives the upgrade's headers (bearer tokens included), and the
+  middleware and hooks receive payloads and session context: register them
+  with `observable: false`.
+- Functions and observers registered through a proxied connection are scoped to
   that engine connection and cleaned up when the downstream worker disconnects —
   the proxy closes the upstream WS on downstream close, and the engine's existing
   per-connection cleanup does the rest.

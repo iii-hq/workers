@@ -28,7 +28,7 @@ async function waitForAuthFn(support: ReturnType<typeof registerWorker>): Promis
   // indexed before `down` connects.
   for (let i = 0; i < 40; i++) {
     try {
-      const d: Json = await support.trigger({
+      const d: Json = await support.call({
         function_id: 'engine::functions::info',
         payload: { function_id: 'support::auth' },
       })

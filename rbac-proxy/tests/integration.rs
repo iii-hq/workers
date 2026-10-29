@@ -13,10 +13,12 @@
 //!     worker — a required boot dependency — is not deployed in this engine).
 //!
 //! Covers spec *Testing* (a)–(e): an exposed call succeeds, a forbidden call
-//! rejects with `FORBIDDEN`, a trigger bound to a forbidden function is
-//! rejected at registration, a channel round-trips through `/ws/channels/{id}`,
-//! and `engine::functions::list` returns only exposed ids. Also: an exposed id
-//! called in another namespace is `FORBIDDEN`, and `observe` is refused.
+//! rejects with `FORBIDDEN`, an observer whose target is a forbidden function
+//! is refused with `FORBIDDEN`, a channel round-trips through
+//! `/ws/channels/{id}`, and `engine::functions::list` returns only exposed
+//! ids. Also: an exposed id called in another namespace is `FORBIDDEN`, an
+//! observer of an exposed function with an exposed target is accepted, and an
+//! engine event that lists functions cannot be observed.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,9 +27,8 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
@@ -36,6 +37,14 @@ use tokio_tungstenite::tungstenite::Message;
 const ENGINE_PORT: u16 = 49381;
 const ENGINE_WS: &str = "ws://127.0.0.1:49381";
 const PROXY_PORT: u16 = 49382;
+
+/// A call of `function_id` with a 5 s timeout.
+fn call(function_id: &str, payload: Value) -> CallRequest {
+    CallRequest {
+        timeout_ms: Some(5_000),
+        ..CallRequest::new(function_id, payload)
+    }
+}
 
 struct Harness {
     proxy: Child,
@@ -97,12 +106,14 @@ fn register_support() -> IIIClient {
 
     // Auth: accept every upgrade with the default (empty) AuthResult — the
     // proxy's `expose_functions` does the gating. A context is attached so
-    // middleware/hook plumbing has something to carry.
+    // middleware/hook plumbing has something to carry. It receives bearer
+    // tokens, so nobody may observe it.
     support.register_function(
         "test::auth",
         RegisterFunction::new_async(|_input: Value| async move {
             Ok::<Value, Error>(json!({ "context": { "tenant": "itest" } }))
-        }),
+        })
+        .observable(false),
     );
     support.register_function(
         "api::echo",
@@ -111,6 +122,11 @@ fn register_support() -> IIIClient {
     support.register_function(
         "secret::echo",
         RegisterFunction::new_async(|input: Value| async move { Ok::<Value, Error>(input) }),
+    );
+    // An exposed observer target.
+    support.register_function(
+        "api::sink",
+        RegisterFunction::new_async(|_input: Value| async move { Ok::<Value, Error>(Value::Null) }),
     );
     support
 }
@@ -247,12 +263,7 @@ async fn end_to_end_rbac_through_proxy() {
     // (a) Exposed call succeeds and echoes.
     let echoed = timeout(
         Duration::from_secs(8),
-        client.trigger(TriggerRequest {
-            function_id: "api::echo".to_string(),
-            payload: json!({ "hi": 1 }),
-            action: None,
-            timeout_ms: Some(5_000),
-        }),
+        client.call(call("api::echo", json!({ "hi": 1 }))),
     )
     .await
     .expect("api::echo did not return in time")
@@ -266,70 +277,39 @@ async fn end_to_end_rbac_through_proxy() {
     );
 
     // (b) Forbidden call rejects with FORBIDDEN.
-    let denied = client
-        .trigger(TriggerRequest {
-            function_id: "secret::echo".to_string(),
-            payload: json!({ "x": 1 }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
+    let denied = client.call(call("secret::echo", json!({ "x": 1 }))).await;
     match denied {
         Err(Error::Remote { code, .. }) => assert_eq!(code, "FORBIDDEN"),
         other => panic!("expected FORBIDDEN remote error, got {other:?}"),
     }
 
-    // (c) Trigger bound to a forbidden function is rejected at registration.
-    //     The Rust SDK's `register_trigger` is fire-and-forget (it never awaits
-    //     the result frame), so we observe the proxy's wire reply directly with
-    //     a raw client: send a RegisterTrigger for a forbidden target and read
-    //     until the REGISTRATION_DENIED frame.
+    // (c) An observer whose target is a forbidden function is refused with
+    //     the engine's answer, `observeresult { state: error }`, and never
+    //     reaches the engine.
     {
-        let url = format!("ws://127.0.0.1:{PROXY_PORT}/");
-        let (mut ws, _) = tokio_tungstenite::connect_async(&url)
-            .await
-            .expect("raw connect to proxy");
-        let frame = json!({
-            "type": "registertrigger",
-            "id": "itest-trig-1",
-            "trigger_type": "http",
-            "function_id": "secret::echo",
-            "config": {}
-        });
-        ws.send(Message::Text(frame.to_string()))
-            .await
-            .expect("send registertrigger");
-        let denied = timeout(Duration::from_secs(5), async {
-            while let Some(Ok(msg)) = ws.next().await {
-                if let Message::Text(t) = msg {
-                    if let Ok(v) = serde_json::from_str::<Value>(t.as_str()) {
-                        if v["type"] == "triggerregistrationresult"
-                            && v["error"]["code"] == "REGISTRATION_DENIED"
-                        {
-                            return true;
-                        }
-                    }
-                }
-            }
-            false
-        })
-        .await
-        .unwrap_or(false);
-        assert!(
-            denied,
-            "proxy must reply REGISTRATION_DENIED for a trigger bound to a forbidden function"
+        let mut ws = raw_client().await;
+        let reply = request(
+            &mut ws,
+            json!({
+                "type": "observe",
+                "id": "3a5c7e9b-1d3f-4a5c-8e9b-1d3f5a7c9e1b",
+                "source": { "function_id": "api::echo" },
+                "target": { "function_id": "secret::echo" }
+            }),
+            |v| v["type"] == "observeresult",
+        )
+        .await;
+        assert_eq!(reply["state"], "error", "got {reply}");
+        assert_eq!(
+            reply["error"]["code"], "FORBIDDEN",
+            "an observer targeting secret::echo must be refused; got {reply}"
         );
         let _ = ws.close(None).await;
     }
 
     // (d) Channel round-trips through the proxy's /ws/channels bridge.
     let ch = client
-        .trigger(TriggerRequest {
-            function_id: "engine::channels::create".to_string(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
+        .call(call("engine::channels::create", json!({})))
         .await
         .expect("engine::channels::create is in the carve-out and must be allowed");
     let cid = ch["writer"]["channel_id"].as_str().expect("channel_id");
@@ -362,12 +342,7 @@ async fn end_to_end_rbac_through_proxy() {
 
     // (e) engine::functions::list is filtered to the exposed surface.
     let list = client
-        .trigger(TriggerRequest {
-            function_id: "engine::functions::list".to_string(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
+        .call(call("engine::functions::list", json!({})))
         .await
         .expect("engine::functions::list is exposed");
     let ids: Vec<String> = list["functions"]
@@ -408,22 +383,61 @@ async fn end_to_end_rbac_through_proxy() {
         let _ = ws.close(None).await;
     }
 
-    // (g) `observe` is refused by the proxy (whatever the engine supports).
+    // (g) An observer of an exposed function with an exposed target reaches
+    //     the engine, which accepts it. Declaring the worker first settles
+    //     the connection's namespace, so the engine answers at once.
     {
         let mut ws = raw_client().await;
+        ws.send(Message::Text(
+            json!({
+                "type": "invokefunction",
+                "function_id": "engine::workers::register",
+                "data": {
+                    "runtime": "rust",
+                    "name": "rbac-proxy-itest-raw",
+                    "features": ["observe.v1", "observe.v2"]
+                },
+                "action": { "type": "void" }
+            })
+            .to_string(),
+        ))
+        .await
+        .expect("send engine::workers::register");
         let reply = request(
             &mut ws,
             json!({
                 "type": "observe",
                 "id": "5b0c3e1a-8f2d-4c6b-9a7e-1d2f3a4b5c6d",
                 "source": { "function_id": "api::echo" },
-                "target": { "function_id": "api::echo2" }
+                "target": { "function_id": "api::sink" }
             }),
             |v| v["type"] == "observeresult",
         )
         .await;
-        assert_eq!(reply["state"], "error");
-        assert_eq!(reply["error"]["code"], "UNSUPPORTED");
+        assert_ne!(
+            reply["state"], "error",
+            "an observer of api::echo targeting api::sink must be accepted; got {reply}"
+        );
+        let _ = ws.close(None).await;
+    }
+
+    // (h) An engine event that lists functions cannot be observed: its calls
+    //     carry the unfiltered function list.
+    {
+        let mut ws = raw_client().await;
+        let reply = request(
+            &mut ws,
+            json!({
+                "type": "observe",
+                "id": "7d9f1b3c-5e7a-4c9e-8b1d-3f5a7c9e1b3d",
+                "source": { "function_id": "engine::on-functions-changed" },
+                "target": { "function_id": "api::echo" }
+            }),
+            |v| v["type"] == "observeresult",
+        )
+        .await;
+        assert_eq!(reply["state"], "error", "got {reply}");
+        assert_eq!(reply["error"]["code"], "FORBIDDEN", "got {reply}");
         let _ = ws.close(None).await;
     }
 

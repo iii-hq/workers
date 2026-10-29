@@ -22,6 +22,6 @@ export const HERO_CLAIMS = [
   },
   {
     title: 'discovery, filtered',
-    body: 'all eight engine:: discovery functions are rewritten to the caller. you only ever see what you can call.',
+    body: 'all six engine:: discovery functions are rewritten to the caller. you only ever see what you can call.',
   },
 ] as const

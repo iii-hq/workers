@@ -163,6 +163,7 @@ middleware_function_id: support::middleware
 rbac:
   auth_function_id: support::auth
   on_function_registration_function_id: support::on-fn-reg
+  on_observer_registration_function_id: support::on-observer-reg
   expose_functions:
     - match("api::*")
     - match("engine::functions::*")
