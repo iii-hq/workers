@@ -1309,6 +1309,8 @@ fn registration_dedup_key(req: &SubscribeRequest, once: bool) -> Value {
 /// `sessions` filter is FORCE-STAMPED to the calling session — self-gating
 /// only. Forwarded to the engine so the binding survives like any other hook
 /// registration; the handle is kept for owner-checked teardown.
+// register_trigger: deprecated in iii 0.25, still served by 0.24 and 0.25.
+#[allow(deprecated)]
 async fn register_post_turn_hook(
     deps: &Deps,
     req: SubscribeRequest,
@@ -1656,6 +1658,8 @@ fn compose_provider_namespace<'a>(
 /// unregister handle. Returns the synthetic trigger id to store on the
 /// binding. Registration errors from the engine arrive asynchronously (the
 /// SDK logs them); what CAN fail synchronously is serialization/channel state.
+// register_trigger: deprecated in iii 0.25, still served by 0.24 and 0.25.
+#[allow(deprecated)]
 pub fn register_delivery_trigger(
     deps: &Deps,
     trigger_type: &str,

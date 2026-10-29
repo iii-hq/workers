@@ -648,3 +648,34 @@ Event configs accept `{ session_id?, parent_session_id? }`; hook configs accept
 `{ functions?, priority?, timeout_ms?, on_error? }`. See the spec at
 [`tech-specs/2026-06-agentic/harness.md`](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-agentic/harness.md)
 for the hook contract and chain semantics.
+
+### Observable functions (iii 0.25)
+
+Next to each async event trigger type (and the `timer` type) the harness
+registers an owner-delivered observable function whose args are that type's
+config. Observers receive exactly the event a binding receives; the trigger
+types stay registered, unchanged, for consumers that bind them.
+
+| Function | Next to | Args |
+|---|---|---|
+| `harness::on-session-tree-deletion` | `harness::session-tree-deletion` | `{ session_id?, operation_id? }` |
+| `harness::on-ready` | `harness::ready` | `{}` (an observer added after boot is called at once) |
+| `harness::on-turn-started` | `harness::turn-started` | `{ session_id?, parent_session_id? }` |
+| `harness::on-turn-completed` | `harness::turn-completed` | `{ session_id?, parent_session_id? }` |
+| `harness::on-message-queued` | `harness::message-queued` | `{ session_id?, parent_session_id? }` |
+| `harness::on-triggers-changed` | `harness::triggers-changed` | `{ session_id?, parent_session_id? }` |
+| `harness::on-compaction` | `harness::compaction` | `{ session_id?, parent_session_id? }` |
+| `harness::on-timer` | `timer` | `{ at }` or `{ in_ms }`; called once at the deadline. `in_ms` resolves when the observer is added (again after a reconnect replays it): pass `at` for a deadline that must survive one. |
+
+```typescript
+iii.observe(
+  { function_id: 'harness::on-turn-completed', args: { session_id: sessionId } },
+  'myapp::on-turn-done',
+)
+```
+
+Args the trigger type would refuse as a config, and `harness::spawn` as the
+target of a turn-event observer, are refused with `INVALID_ARGS`. Invoking an
+on-* function directly is refused with `FORBIDDEN`: only the harness emits
+its events, so nobody can forge one. The `harness::hook::*` points stay
+synchronous trigger types; they are not observable functions.

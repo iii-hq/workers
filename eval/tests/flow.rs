@@ -628,8 +628,11 @@ impl Harness {
     }
 
     /// A fresh process on the same storage: empty in-flight set and locks.
+    /// The engine connection is reused, so are the events it registered:
+    /// `eval::on-completed` is a function and registers once per client.
     fn restart(&mut self) {
-        self.deps = Deps::new(self.iii.clone(), EvalEvents::register(&self.iii));
+        let events = self.deps.events.clone();
+        self.deps = Deps::new(self.iii.clone(), events);
         self.deps.host_user = None;
     }
 

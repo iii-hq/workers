@@ -17,8 +17,8 @@ path = "src/lib.rs"
 [dependencies]
 harness = { path = "../harness" }
 judge-contract = { path = "../crates/judge-contract" }
-iii-sdk = "=0.24.6"
-iii-helpers = "=0.24.6"
+iii-sdk = "=0.25.0"
+iii-helpers = "=0.25.0"
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }

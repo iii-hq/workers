@@ -89,7 +89,12 @@ fn bind_triggers(iii: &Arc<iii_sdk::IIIClient>, deps: &Deps) -> Vec<Trigger> {
             json!({ "expression": "*/15 * * * * *" }),
         ),
     ] {
-        match iii.register_trigger(RegisterTriggerInput::new(trigger_type, function_id, config)) {
+        // Deprecated in 0.25 and still served by 0.24 and 0.25 engines;
+        // observing would drop 0.24 engines.
+        #[allow(deprecated)]
+        let registered =
+            iii.register_trigger(RegisterTriggerInput::new(trigger_type, function_id, config));
+        match registered {
             Ok(handle) => {
                 if function_id == functions::WAKE_ID {
                     deps.observer.set(Ok(()));

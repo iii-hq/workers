@@ -311,7 +311,18 @@ input. Leave `code_repository` unset to keep the investigation read-nothing.
 | `eval::reviews` | The stored review rows and, per analysis, its suggestions counted by lifecycle status. |
 | `eval::recurrence` | For a suggestion shipped in a version, how often its patterns appeared per analysis before and from that version. |
 | `eval::reproduce` | Replays a suggestion's decision point: rebuilds the request the model received at that step (optionally edited), samples the next reply N times without running any function and reads the signal in each. `dry_run` only rebuilds and checks fidelity. See [VALIDATION.md](VALIDATION.md). |
-| `eval::completed` (trigger) | `{evaluation_id, status, timestamp}` when an analysis ends. |
+| `eval::on-completed` (observable, iii 0.25) | `{evaluation_id, status, timestamp}` to every observer when an analysis ends. Observe it with args `{ evaluation_id? }` (the `eval::completed` binding config; unknown fields are refused). Only this worker fires it: a direct call is refused with `FORBIDDEN`. |
+| `eval::completed` (trigger) | `{evaluation_id, status, timestamp}` when an analysis ends. Kept for consumers on 0.24 and 0.25 engines that bind it; new consumers observe `eval::on-completed`. |
+
+A consumer on a 0.25 engine observes the function instead of binding the
+trigger type:
+
+```ts
+iii.observe({ function_id: 'eval::on-completed', args: { evaluation_id } }, 'app::on-eval-done')
+```
+
+Bindings and observers share one subscriber set and receive the same event
+under the same filter.
 
 Internal: `eval::step` (queue `eval-run`, FIFO per analysis, concurrency 8),
 `eval::on-turn-completed` and `eval::sweep` (cron, every 15 s).

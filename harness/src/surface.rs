@@ -92,3 +92,23 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<TriggersUnregisterRequest, TriggersUnregisterResponse>(TRIGGERS_UNREGISTER_ID),
     ]
 }
+
+/// The owner-delivered observable `harness::on-*` functions: request is the
+/// event each observer receives (what the refusing handler deserializes),
+/// response is `()`. Must name the same event types as each
+/// `observe::register_observable` call.
+pub fn observable_catalog() -> Vec<FunctionSpec> {
+    use crate::events;
+    vec![
+        spec::<events::ReadyEvent, ()>(events::ON_READY),
+        spec::<events::TurnStartedEvent, ()>(events::ON_TURN_STARTED),
+        spec::<events::TurnCompletedEvent, ()>(events::ON_TURN_COMPLETED),
+        spec::<events::MessageQueuedEvent, ()>(events::ON_MESSAGE_QUEUED),
+        spec::<events::TriggersChangedEvent, ()>(events::ON_TRIGGERS_CHANGED),
+        spec::<events::CompactionEvent, ()>(events::ON_COMPACTION),
+        spec::<crate::timer::TimerFiredEvent, ()>(crate::timer::ON_TIMER),
+        spec::<crate::functions::delete_session_tree::Snapshot, ()>(
+            crate::deletion_events::ON_SESSION_TREE_DELETION,
+        ),
+    ]
+}

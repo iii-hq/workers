@@ -301,6 +301,9 @@ impl HookRegistry {
             HookPoint::PostTrigger => "Synchronous hook: after the target returns, before the result is appended. May rewrite content/details/is_error.",
             HookPoint::PostTurn => "Synchronous hook: at finalize, after the output contract validated the result, before the turn completes. Deny re-prompts the turn (bounded by max_validation_retries). Config `sessions` globs scope it; config `payload`+`result_into` bind a plain composition function (fp::pipe) as the validator.",
         };
+        // Synchronous hook points stay trigger types (not observable
+        // functions): deprecated in iii 0.25, still served by 0.24 and 0.25.
+        #[allow(deprecated)]
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 point.trigger_type(),

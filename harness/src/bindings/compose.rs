@@ -150,6 +150,8 @@ pub struct ComposeOperationAck {
 /// subscription was installed long before, so the completion still arrives
 /// and recovers the wake through the snapshot path. Parks harmlessly when no
 /// Compose provider is connected.
+// register_trigger: deprecated in iii 0.25, still served by 0.24 and 0.25.
+#[allow(deprecated)]
 pub fn register_terminal_watch(deps: &Arc<Deps>) {
     let worker = deps.clone();
     deps.iii.register_function(

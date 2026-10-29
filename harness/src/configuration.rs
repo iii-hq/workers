@@ -323,6 +323,8 @@ impl TriggerHandles {
 /// Best-effort binding: the cron trigger type always exists (engine built-in),
 /// but a transient failure must not brick boot — it surfaces as a `None`
 /// handle.
+// register_trigger: deprecated in iii 0.25, still served by 0.24 and 0.25.
+#[allow(deprecated)]
 fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
     match iii.register_trigger(RegisterTriggerInput::new(
         trigger_type.to_string(),
@@ -385,6 +387,9 @@ pub struct OnConfigChangeResponse {
 /// Register the internal config-change handler and bind a `configuration`
 /// trigger. `handles` holds the live cron `Trigger` the handler re-binds when
 /// `sweep_expression` changes.
+// register_trigger is deprecated in iii 0.25 and still served by 0.24 and
+// 0.25 engines; moving to observe would drop 0.24 engines.
+#[allow(deprecated)]
 pub fn register_config_trigger(
     iii: &Arc<IIIClient>,
     cell: ConfigCell,
