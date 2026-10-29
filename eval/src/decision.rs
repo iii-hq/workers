@@ -669,7 +669,7 @@ pub fn no_room(criterion: &CriterionV1, pairs: u32, baseline: &EvidenceSideV1) -
         criterion.metric,
         CriterionMetricV1::PassRate | CriterionMetricV1::CriterionScore
     );
-    let room = baseline
+    let values: Vec<f64> = baseline
         .runs
         .iter()
         .filter_map(|run| {
@@ -677,20 +677,32 @@ pub fn no_room(criterion: &CriterionV1, pairs: u32, baseline: &EvidenceSideV1) -
                 .then(|| metric_value(run, criterion))
                 .flatten()
         })
+        .collect();
+    let with_room = values
+        .iter()
         .filter(|value| match criterion.direction {
-            DirectionV1::Decrease => value / scale + EFFECT_TOLERANCE >= criterion.min_effect,
+            DirectionV1::Decrease => *value / scale + EFFECT_TOLERANCE >= criterion.min_effect,
             DirectionV1::Increase if ceiling => {
-                (1.0 - value) / scale + EFFECT_TOLERANCE >= criterion.min_effect
+                (1.0 - *value) / scale + EFFECT_TOLERANCE >= criterion.min_effect
             }
             DirectionV1::Increase => true,
         })
         .count() as u32;
+    let measured = values.len() as u32;
+    // A baseline of earlier runs may hold more or fewer runs than the plan
+    // pairs: its share with room stands for the pairs.
+    let room = if measured == 0 || measured == pairs {
+        with_room
+    } else {
+        with_room * pairs / measured
+    };
     let best = SignTest {
         reached: room,
         pairs,
         p: sign_test_p(room, pairs),
     };
     (!best.passes()).then(|| {
+        let shown = if measured == 0 { pairs } else { measured };
         let already = match criterion.direction {
             DirectionV1::Decrease => "were already within",
             DirectionV1::Increase => "already scored within",
@@ -700,11 +712,12 @@ pub fn no_room(criterion: &CriterionV1, pairs: u32, baseline: &EvidenceSideV1) -
             DirectionV1::Increase => "the top",
         };
         format!(
-            "{} of the {pairs} baseline runs {already} {} {unit} of {bound} on {}, so at most \
+            "{} of the {} baseline runs {already} {} {unit} of {bound} on {}, so at most \
              {room} of {pairs} pairs could improve: a change needs every pair, or p <= \
              {SIGN_TEST_ALPHA} (here p={:.5} at best). Not even a perfect change could be \
              proven, so the cycle stopped before paying for a proposal",
-            pairs.saturating_sub(room),
+            shown.saturating_sub(with_room),
+            shown,
             number(criterion.min_effect),
             metric_label(criterion),
             best.p
@@ -1791,6 +1804,15 @@ mod tests {
         // enough; one without room is not.
         assert!(no_room(&tokens, 1, &side(Tokens, &[9_000.0])).is_none());
         assert!(no_room(&tokens, 3, &side(Tokens, &[2e3, 1e3, 3e3])).is_none());
+        // Three earlier runs with room stand for eight pairs; one without
+        // room in three leaves too few of the eight.
+        assert!(no_room(&tokens, 8, &side(Tokens, &[2e3, 1e3, 3e3])).is_none());
+        let history = no_room(&tokens, 8, &side(Tokens, &[2e3, 0.0, 3e3])).unwrap();
+        assert!(
+            history.contains("1 of the 3 baseline runs")
+                && history.contains("at most 5 of 8 pairs"),
+            "{history}"
+        );
         let short = no_room(&tokens, 3, &side(Tokens, &[2e3, 0.0, 3e3])).unwrap();
         assert!(
             short.contains("1 of the 3 baseline runs") && short.contains("at most 2 of 3 pairs"),
