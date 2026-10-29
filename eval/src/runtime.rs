@@ -637,7 +637,7 @@ async fn harness_version(deps: &Deps) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `harness::turn-completed`: validates eligibility and admits; never calls a
+/// `harness::on-turn-completed`: validates eligibility and admits; never calls a
 /// model.
 pub async fn wake(deps: &Deps, event: WakeEventV1) -> Result<WakeResponseV1, EvalError> {
     let outcome = |outcome, evaluation_id: Option<String>| WakeResponseV1 {

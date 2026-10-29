@@ -70,8 +70,8 @@ rules:
   # queue's engine event handler (functions/workers available): wakes waits
   # for a target function and the engine-restart check; engine dispatch only.
   - '!queue::on-engine-change'
-  # judge-typesafe's and judge-openai's own secrets::changed handlers (drop a
-  # rotated key).
+  # judge-typesafe's and judge-openai's own secrets::on-changed observers (drop
+  # a rotated key).
   - '!judge-typesafe::on-secret-change'
   - '!judge-openai::on-secret-change'
   - '!directory::pre-generate'
@@ -251,7 +251,7 @@ rules:
   - '!stories::ui-content'
   - '!stories::ui-file'
   - '!stories::on-config-change'
-  # eval: durable orchestration internals are trigger/queue targets only.
+  # eval: durable orchestration internals are observer/queue targets only.
   # Starting, cancelling, and deleting evaluations remain approval-gated by
   # the default. Status/result are read-only and the exact evaluator is pure.
   - '!eval::step'
