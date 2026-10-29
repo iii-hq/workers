@@ -10,8 +10,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Engine HTTP `api_path`s for the bridge ingress routes, and the suffixes
-/// appended to `public_base_url` to build the URLs Slack posts to.
+/// Paths of the bridge ingress routes (`http::on-request` observers, with a
+/// leading `/`), and the suffixes appended to `public_base_url` to build the
+/// URLs Slack posts to.
 pub const EVENTS_API_PATH: &str = "slack/events";
 pub const INTERACTIONS_API_PATH: &str = "slack/interactions";
 
