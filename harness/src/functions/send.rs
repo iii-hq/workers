@@ -1865,6 +1865,9 @@ pub(crate) async fn seed_new(
         skill_ack,
         skills_started,
         context_snapshot: None,
+        // The hooks are the session's, not the turn's: a new turn's first
+        // step reserves what the last one measured instead of the flat 256.
+        pre_generate_hook_tokens: prior.and_then(|record| record.pre_generate_hook_tokens),
         result: None,
         result_error: None,
         stop_reason: None,
@@ -2584,6 +2587,7 @@ mod tests {
             }),
             skills_started: started,
             context_snapshot: None,
+            pre_generate_hook_tokens: None,
             result: None,
             result_error: None,
             stop_reason: None,
