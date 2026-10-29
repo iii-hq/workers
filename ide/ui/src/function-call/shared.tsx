@@ -51,7 +51,7 @@ export function displayPath(reqPath: string, respPath?: string): string {
 interface TerminalCardProps {
   /** The `$ command` line; omitted for calls that have no command. */
   command?: string
-  /** Pulsing header + `triggering…` in place of the body. */
+  /** Pulsing header + `calling…` in place of the body. */
   running?: boolean
   /** Label/value pairs of the metadata strip. */
   items?: MetaRowItem[]
@@ -72,7 +72,7 @@ export function TerminalCard({ command, running, items, chips, children, footer 
         </div>
       ) : null}
       {items?.length || chips ? <MetaRow items={items}>{chips}</MetaRow> : null}
-      {running ? <div className="shui-running">triggering…</div> : children}
+      {running ? <div className="shui-running">calling…</div> : children}
       {footer ? <div className="shui-card-foot">{footer}</div> : null}
     </div>
   )

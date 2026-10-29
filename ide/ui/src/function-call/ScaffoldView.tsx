@@ -10,8 +10,8 @@ import {
   Button,
   Chip,
   EmptyState,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   StatusPanel,
   uiClasses,
@@ -29,11 +29,11 @@ import {
   hasAdePage,
   LANGUAGE_LABEL,
   type ListTemplatesResult,
+  type CallFunction,
   type ScaffoldResult,
   type StackPhase,
   sourceLabel,
   stackSteps,
-  type Trigger,
   workerFunctions,
 } from '../page/new-worker'
 import { StartFailure, StepList, type StepRow, WorkerFunctions } from '../page/worker-result'
@@ -200,10 +200,10 @@ function useFollowStart(
     let closed = false
     const controller = new AbortController()
     let phase: StackPhase = 'installing'
-    const trigger: Trigger = <T,>(functionId: string, payload: Record<string, unknown>) =>
-      closed ? Promise.reject<T>(new Error('the card closed')) : host.iii.trigger<T>(functionId, payload)
+    const call: CallFunction = <T,>(functionId: string, payload: Record<string, unknown>) =>
+      closed ? Promise.reject<T>(new Error('the card closed')) : host.iii.call<T>(functionId, payload)
     void followStart(
-      trigger,
+      call,
       composeOperations(host.iii),
       name,
       operation,
@@ -246,7 +246,7 @@ function useWorkerFunctions(host: Host, name: string | null): FunctionEntry[] | 
   useEffect(() => {
     if (name === null || asked.current === name) return
     asked.current = name
-    host.iii.trigger<{ functions: FunctionEntry[] }>('engine::functions::list', {}).then(
+    host.iii.call<{ functions: FunctionEntry[] }>('engine::functions::list', {}).then(
       ({ functions: all }) => setFunctions(workerFunctions(all, name)),
       () => setFunctions([]),
     )
@@ -422,7 +422,7 @@ function ScaffoldPreview({ request }: { request: ScaffoldRequest }) {
 
 /* ── the renderer ───────────────────────────────────────────────────── */
 
-function render(host: Host, message: FunctionTriggerMessage): ReactNode | null {
+function render(host: Host, message: FunctionCallMessage): ReactNode | null {
   if (!isScaffoldFunction(message.functionId) || message.pendingApproval) return null
   const running = !!message.running
   const output = message.output == null ? undefined : unwrapEnvelope(message.output)
@@ -441,12 +441,12 @@ function render(host: Host, message: FunctionTriggerMessage): ReactNode | null {
   return error ? <ErrorDisplayView display={error} /> : null
 }
 
-function renderPreview(message: FunctionTriggerMessage): ReactNode | null {
+function renderPreview(message: FunctionCallMessage): ReactNode | null {
   if (message.functionId !== SCAFFOLD_ID) return null
   return <ScaffoldPreview request={scaffoldRequest(message.input)} />
 }
 
-export function createScaffoldRenderer(host: Host): FunctionTriggerRenderer {
+export function createScaffoldRenderer(host: Host): FunctionCallRenderer {
   return {
     id: 'ide/page.js#scaffold',
     isMatch: isScaffoldFunction,

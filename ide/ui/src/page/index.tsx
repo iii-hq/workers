@@ -16,7 +16,7 @@
  * under the worker's data directory (`shell::ui-state::get`/`set`,
  * `persist.ts`). The same page can be open
  * several times in one workspace tab, each pane on its own folder with
- * its own terminals and its own live triggers.
+ * its own terminals and its own live observers.
  */
 
 import {
@@ -672,7 +672,7 @@ export function ShellExplorerPage({
     refreshSessionTurns()
   }, [harnessTurn.active, harnessTurn.completedAtMs, harnessTurn.turnId, refreshSessionTurns])
   // Between the boundaries, the worker says when the history gained a
-  // change (shell::turns::changed); the list is read then, never on a timer.
+  // change (shell::turns::on-changed); the list is read then, never on a timer.
   useTurnsChanged(host, conversationId, paneScope, refreshSessionTurns)
   // A turn that completed may have become an older turn's "after" side.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the completion stamp is the trigger
@@ -1157,7 +1157,7 @@ export function ShellExplorerPage({
 
   // ── live updates: the watched root streams every change here ──
   // The worker runs a system-level watch on the browsed root for this
-  // binding (`shell::changed`): agent writes, shell::exec side effects and
+  // observer (`shell::on-changed`): agent writes, shell::exec side effects and
   // outside-the-engine edits all land. A burst patches the tree, reloads
   // the active file when it was the one written (a clean buffer follows
   // the disk, a dirty one keeps the user's edits), and refreshes git and

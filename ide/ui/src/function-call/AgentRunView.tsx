@@ -11,7 +11,7 @@
  * adds a terminal, not a reimplementation of one.
  */
 
-import { Button, type FunctionTriggerMessage, type FunctionTriggerRenderer, type Host } from '@iii-dev/console-ui'
+import { Button, type FunctionCallMessage, type FunctionCallRenderer, type Host } from '@iii-dev/console-ui'
 import { SquareTerminal } from 'lucide-react'
 
 /** Agent function id → the CLI that agent is, for the hint on the control. */
@@ -38,7 +38,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
 }
 
-function cwdOf(message: FunctionTriggerMessage): string {
+function cwdOf(message: FunctionCallMessage): string {
   const cwd = asRecord(message.input)?.cwd
   return typeof cwd === 'string' ? cwd : ''
 }
@@ -50,7 +50,7 @@ function cliOf(functionId: string): string {
 
 /** The console has no error field on the message: a failed agent run says so
  *  in its own result shape (`is_error`, or an `error` the worker returned). */
-function failed(message: FunctionTriggerMessage): boolean {
+function failed(message: FunctionCallMessage): boolean {
   const output = asRecord(message.output)
   if (!output) return false
   return output.is_error === true || typeof output.error === 'string'
@@ -81,8 +81,8 @@ function OpenAgentTerminal({ host, cwd, command }: { host: Host; cwd: string; co
   )
 }
 
-export function createAgentRunRenderer(host: Host): FunctionTriggerRenderer {
-  const control = (message: FunctionTriggerMessage): React.ReactNode | null => {
+export function createAgentRunRenderer(host: Host): FunctionCallRenderer {
+  const control = (message: FunctionCallMessage): React.ReactNode | null => {
     // Reject before creating a React element. Returning an element whose
     // component later renders null would still win the host's first-non-null
     // dispatch and hide the renderer that actually owns this function.

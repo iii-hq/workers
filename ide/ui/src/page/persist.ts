@@ -78,7 +78,7 @@ async function fetchStoredState(
   key: string,
   legacyKey?: string,
 ): Promise<Record<string, unknown> | null> {
-  const resp = await host.iii.trigger<{ state?: unknown }>(UI_STATE_GET_FN, {
+  const resp = await host.iii.call<{ state?: unknown }>(UI_STATE_GET_FN, {
     key,
     legacy_key: legacyKey && legacyKey !== '' ? legacyKey : undefined,
   })
@@ -220,7 +220,7 @@ export function createTabUiStateSaver(
     if (!state) return
     chain = chain.then(async () => {
       try {
-        await host.iii.trigger(UI_STATE_SET_FN, { key, state })
+        await host.iii.call(UI_STATE_SET_FN, { key, state })
       } catch (err) {
         console.warn('[shell-ui] failed to persist pane state', err)
       }

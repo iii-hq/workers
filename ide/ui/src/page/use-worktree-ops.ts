@@ -598,11 +598,11 @@ export function useWorktreeOps(
   // should not linger in its project list.
   const forgetProjects = async (dir: string) => {
     try {
-      const listed = await host.iii.trigger<{ projects?: { path: string }[] }>('harness::projects::list', {})
+      const listed = await host.iii.call<{ projects?: { path: string }[] }>('harness::projects::list', {})
       await Promise.all(
         (listed.projects ?? [])
           .filter((project) => isInside(project.path, dir))
-          .map((project) => host.iii.trigger('harness::projects::delete', { path: project.path })),
+          .map((project) => host.iii.call('harness::projects::delete', { path: project.path })),
       )
     } catch {
       // The list is a convenience: a failure leaves a stale row, nothing else.

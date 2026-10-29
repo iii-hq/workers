@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
@@ -36,11 +36,11 @@ vi.mock('@iii-dev/console-ui', () => {
 import { StartFailure } from '../../page/worker-result'
 import { createScaffoldRenderer, harnessNote, notStartedReason, scaffoldRequest, shortFolder } from '../ScaffoldView'
 
-const host = { iii: { trigger: vi.fn(() => new Promise(() => {})) }, panels: { open: vi.fn() } } as unknown as Host
+const host = { iii: { call: vi.fn(() => new Promise(() => {})) }, panels: { open: vi.fn() } } as unknown as Host
 const renderer = createScaffoldRenderer(host)
 
-function message(functionId: string, extra: Partial<FunctionTriggerMessage> = {}): FunctionTriggerMessage {
-  return { id: 'm1', role: 'function-trigger', functionId, input: {}, createdAt: 0, ...extra }
+function message(functionId: string, extra: Partial<FunctionCallMessage> = {}): FunctionCallMessage {
+  return { id: 'm1', role: 'function-call', functionId, input: {}, createdAt: 0, ...extra }
 }
 
 const html = (node: ReactNode) => renderToStaticMarkup(<>{node}</>)

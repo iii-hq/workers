@@ -262,7 +262,7 @@ export async function detachTerminalSessionForUnmount(
   })
   active.unsubscribe()
   router.drain(active.sessionId)
-  await host.iii.trigger('shell::pty::detach', {
+  await host.iii.call('shell::pty::detach', {
     session_id: active.sessionId,
     access_key: active.accessKey,
   })
@@ -451,7 +451,7 @@ export function useTerminalSession(
     async (session: ActiveTerminalSession, data: Uint8Array) => {
       if (!host) return
       try {
-        await host.iii.trigger('shell::pty::write', {
+        await host.iii.call('shell::pty::write', {
           session_id: session.sessionId,
           access_key: session.accessKey,
           data: encodeBase64(data),
@@ -504,7 +504,7 @@ export function useTerminalSession(
       resizeTimerRef.current = window.setTimeout(() => {
         resizeTimerRef.current = null
         void host.iii
-          .trigger('shell::pty::resize', {
+          .call('shell::pty::resize', {
             session_id: active.sessionId,
             access_key: active.accessKey,
             cols: dimensions.cols,
@@ -969,7 +969,7 @@ export function useTerminalSession(
       }
       const { cols, rows } = dimensionsRef.current
       void host.iii
-        .trigger('shell::pty::resize', {
+        .call('shell::pty::resize', {
           session_id: active.sessionId,
           access_key: active.accessKey,
           cols,
@@ -1011,7 +1011,7 @@ export function useTerminalSession(
     const active = activeRef.current
     if (active && host) {
       try {
-        await host.iii.trigger('shell::pty::close', {
+        await host.iii.call('shell::pty::close', {
           session_id: active.sessionId,
           access_key: active.accessKey,
         })
@@ -1090,7 +1090,7 @@ export function useTerminalSession(
       router?.drain(active.sessionId)
       if (host) {
         void host.iii
-          .trigger('shell::pty::detach', {
+          .call('shell::pty::detach', {
             session_id: active.sessionId,
             access_key: active.accessKey,
           })

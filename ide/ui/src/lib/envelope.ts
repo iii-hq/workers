@@ -1,6 +1,6 @@
 /* Harness-envelope helpers + the wire building blocks the shell family
    shares with the worker's other fs-shaped payloads. Ported from the
-   console's sandbox/parsers.ts when the shell function-trigger family
+   console's sandbox/parsers.ts when the shell function-call family
    moved into this worker's injected UI. */
 
 import * as z from 'zod/mini'

@@ -50,7 +50,7 @@ export function useCommitMessage(host: Host, root: string | null, conversationId
 
   const loadConfig = useCallback(() => {
     host.iii
-      .trigger<CommitMessageConfig>('shell::scm::commit-message-config', {})
+      .call<CommitMessageConfig>('shell::scm::commit-message-config', {})
       .then(setConfig)
       // An older worker without the function: Generate still works on the fallback.
       .catch(() => setConfig(null))
@@ -68,7 +68,7 @@ export function useCommitMessage(host: Host, root: string | null, conversationId
           gitDescribeChanges(host, root, entries),
           gitRecentSubjects(host, root),
         ])
-        const out = await host.iii.trigger<GeneratedMessage>(
+        const out = await host.iii.call<GeneratedMessage>(
           'shell::scm::commit-message',
           { changes, recent_subjects: subjects, fallback_model: fallbackModel() },
           // The router may take a while on a large diff; the worker caps it at 120 s.

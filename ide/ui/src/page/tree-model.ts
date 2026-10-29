@@ -18,7 +18,7 @@ export function emptyTree(): FlatTree {
   return { paths: [], kinds: new Map(), truncations: [], loaded: new Set() }
 }
 
-/** The change vocabulary of `shell::changed`, root-relative. */
+/** The change vocabulary of `shell::on-changed`, root-relative. */
 export interface TreeChange {
   rel: string
   kind: 'created' | 'modified' | 'deleted' | string

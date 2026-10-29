@@ -152,7 +152,7 @@ export async function connectTerminalSession({
     for (const event of router.drain(sessionId)) enqueue(event)
     let attached: PtyAttachResponse
     try {
-      attached = await host.iii.trigger<PtyAttachResponse>(
+      attached = await host.iii.call<PtyAttachResponse>(
         'shell::pty::attach',
         {
           request_id: requestId,
@@ -177,7 +177,7 @@ export async function connectTerminalSession({
     truncated = attached.truncated
     nextSequence = attached.next_sequence
   } else {
-    const opened = await host.iii.trigger<PtyOpenResponse>(
+    const opened = await host.iii.call<PtyOpenResponse>(
       'shell::pty::open',
       {
         request_id: requestId,
@@ -233,7 +233,7 @@ export async function disposeTerminalConnection(
   connection: TerminalConnection,
 ): Promise<void> {
   stopRoutingOutput(router, connection)
-  await host.iii.trigger('shell::pty::detach', {
+  await host.iii.call('shell::pty::detach', {
     session_id: connection.sessionId,
     access_key: connection.accessKey,
   })
@@ -245,7 +245,7 @@ export async function closeTerminalConnection(
   connection: TerminalConnection,
 ): Promise<void> {
   stopRoutingOutput(router, connection)
-  await host.iii.trigger('shell::pty::close', {
+  await host.iii.call('shell::pty::close', {
     session_id: connection.sessionId,
     access_key: connection.accessKey,
   })
@@ -261,7 +261,7 @@ export async function reclaimTerminalLease(
   try {
     // The attach is only for the access key the close needs: past every
     // sequence, the backend replays nothing (and reports nothing truncated).
-    const attached = await host.iii.trigger<PtyAttachResponse>(
+    const attached = await host.iii.call<PtyAttachResponse>(
       'shell::pty::attach',
       {
         session_id: lease.sessionId,
@@ -283,7 +283,7 @@ export async function reclaimTerminalLease(
     } catch (error) {
       warning = errorMessage(error)
     }
-    await host.iii.trigger('shell::pty::close', {
+    await host.iii.call('shell::pty::close', {
       session_id: lease.sessionId,
       access_key: attached.access_key,
     })

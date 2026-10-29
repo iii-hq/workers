@@ -1,4 +1,4 @@
-import type { Host } from '@iii-dev/console-ui'
+import type { Host, ObserveSource } from '@iii-dev/console-ui'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TURNS_CHANGED_DEBOUNCE_MS, useTurnsChanged } from '../turn'
 import { mount } from './bare-hooks'
@@ -10,7 +10,7 @@ vi.mock('react', async (original) => ({
 
 function engine() {
   const handlers = new Map<string, (payload: unknown) => void>()
-  const triggers: Array<{ type: string; function_id: string; config: Record<string, unknown> }> = []
+  const observers: Array<{ source: ObserveSource; target: string }> = []
   const host = {
     iii: {
       browserId: 'tab',
@@ -18,16 +18,17 @@ function engine() {
         handlers.set(functionId, handler)
         return () => handlers.delete(functionId)
       },
-      registerTrigger: (input: (typeof triggers)[number]) => {
-        triggers.push(input)
-        return () => triggers.splice(triggers.indexOf(input), 1)
+      observe: (source: ObserveSource, target: string) => {
+        const observer = { source, target }
+        observers.push(observer)
+        return () => observers.splice(observers.indexOf(observer), 1)
       },
     },
   } as unknown as Host
   const fire = (payload: unknown) => {
-    for (const t of triggers) handlers.get(t.function_id.replace(/::tab$/, ''))?.(payload)
+    for (const o of observers) handlers.get(o.target.replace(/::tab$/, ''))?.(payload)
   }
-  return { host, handlers, triggers, fire }
+  return { host, handlers, observers, fire }
 }
 
 describe('useTurnsChanged', () => {
@@ -37,7 +38,7 @@ describe('useTurnsChanged', () => {
 
   it('reads the chat’s turns once per burst the worker reports, and on no timer', async () => {
     vi.useFakeTimers()
-    const { host, handlers, triggers, fire } = engine()
+    const { host, handlers, observers, fire } = engine()
     let reads = 0
     const pane = mount(
       () =>
@@ -46,11 +47,13 @@ describe('useTurnsChanged', () => {
         }),
       undefined,
     )
-    expect(triggers).toEqual([
+    expect(observers).toEqual([
       {
-        type: 'shell::turns::changed',
-        function_id: 'iii::shell-ui::turns-changed::pane-a::tab',
-        config: { session_id: 'chat-1' },
+        source: {
+          function_id: 'shell::turns::on-changed',
+          filters: { 'input.session_id': { $eq: 'chat-1' } },
+        },
+        target: 'iii::shell-ui::turns-changed::pane-a::tab',
       },
     ])
     await vi.advanceTimersByTimeAsync(60_000)
@@ -63,14 +66,14 @@ describe('useTurnsChanged', () => {
     expect(reads).toBe(1)
 
     pane.unmount()
-    expect(triggers).toEqual([])
+    expect(observers).toEqual([])
     expect(handlers.size).toBe(0)
   })
 
-  it('binds nothing without a chat', () => {
-    const { host, triggers } = engine()
+  it('observes nothing without a chat', () => {
+    const { host, observers } = engine()
     const pane = mount(() => useTurnsChanged(host, null, 'pane-a', () => {}), undefined)
-    expect(triggers).toEqual([])
+    expect(observers).toEqual([])
     pane.unmount()
   })
 })

@@ -187,7 +187,7 @@ describe('reclaimTerminalLease', () => {
     let subscribed = false
     const host = {
       iii: {
-        trigger: async (id: string, payload: Record<string, unknown>) => {
+        call: async (id: string, payload: Record<string, unknown>) => {
           expect(subscribed).toBe(true)
           calls.push({ id, payload })
           if (id === 'shell::pty::attach') {
@@ -245,7 +245,7 @@ describe('reclaimTerminalLease', () => {
   it('removes a stale lease after the backend confirms the session is missing', async () => {
     const host = {
       iii: {
-        trigger: async () => {
+        call: async () => {
           throw new Error('terminal session does not exist')
         },
       },
@@ -299,7 +299,7 @@ describe('connectTerminalSession', () => {
     }
     const host = {
       iii: {
-        trigger: async () => {
+        call: async () => {
           expect(emit).not.toBeNull()
           emit?.({
             session_id: 'session-1',
@@ -359,7 +359,7 @@ describe('connectTerminalSession', () => {
     }
     const host = {
       iii: {
-        trigger: async (_id: string, payload: Record<string, unknown>) => {
+        call: async (_id: string, payload: Record<string, unknown>) => {
           attachPayload = payload
           return {
             access_key: 'access-2',
@@ -433,7 +433,7 @@ describe('connectTerminalSession', () => {
     })
     const host = {
       iii: {
-        trigger: async (_id: string, payload: Record<string, unknown>) => {
+        call: async (_id: string, payload: Record<string, unknown>) => {
           attachPayload = payload
           // A late copy of a frame already on screen, and one past the replay.
           emit?.(live(2, 'dHdv'))
@@ -500,7 +500,7 @@ describe('connectTerminalSession', () => {
     const oneMiB = btoa('x'.repeat(1024 * 1024))
     const host = {
       iii: {
-        trigger: async () => {
+        call: async () => {
           for (let sequence = 1; sequence <= 3; sequence += 1) {
             emit?.({
               session_id: 'session-1',
@@ -601,7 +601,7 @@ describe('disposeTerminalConnection', () => {
     let unsubscribed = false
     const host = {
       iii: {
-        trigger: async (id: string, payload: Record<string, unknown>) => {
+        call: async (id: string, payload: Record<string, unknown>) => {
           calls.push({ id, payload })
         },
       },
@@ -655,7 +655,7 @@ describe('detachTerminalSessionForUnmount', () => {
     let unsubscribed = false
     const host = {
       iii: {
-        trigger: async (id: string, payload: Record<string, unknown>) => {
+        call: async (id: string, payload: Record<string, unknown>) => {
           calls.push({ id, payload })
         },
       },
@@ -711,7 +711,7 @@ describe('closeTerminalConnection', () => {
     const calls: string[] = []
     const host = {
       iii: {
-        trigger: async (id: string) => {
+        call: async (id: string) => {
           calls.push(id)
         },
       },

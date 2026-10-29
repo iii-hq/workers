@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage, FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, FunctionCallRenderer, Host } from '@iii-dev/console-ui'
 import { ErrorDisplayView } from '../lib/errors'
 import { FileChangesCard } from './FileChangesCard'
 import { diffPanelRequest, isFileChangesResponse, summarizeFileChanges } from './file-changes'
@@ -10,7 +10,7 @@ const UPDATE_ID = 'coder::update-file'
 const DELETE_ID = 'coder::delete-file'
 const FILE_CHANGE_IDS = new Set([CREATE_ID, UPDATE_ID, DELETE_ID])
 
-function render(host: Host, message: FunctionTriggerMessage): React.ReactNode | null {
+function render(host: Host, message: FunctionCallMessage): React.ReactNode | null {
   if (!FILE_CHANGE_IDS.has(message.functionId)) return null
   const rawOutput = message.output
   const input = unwrapEnvelope(message.input)
@@ -36,7 +36,7 @@ function render(host: Host, message: FunctionTriggerMessage): React.ReactNode | 
   return null
 }
 
-export function createFileChangesRenderer(host: Host): FunctionTriggerRenderer {
+export function createFileChangesRenderer(host: Host): FunctionCallRenderer {
   return {
     id: 'ide/page.js#file-changes',
     isMatch: (functionId) => FILE_CHANGE_IDS.has(functionId),

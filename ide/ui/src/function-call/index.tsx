@@ -1,5 +1,5 @@
 /**
- * Injected function-trigger renderer for the `shell::*` family — moved
+ * Injected function-call renderer for the `shell::*` family — moved
  * out of the console SPA (formerly ade/web/src/components/chat/shell/)
  * into the worker's own injected UI, so the rendering ships and versions
  * with the worker (the iii-directory precedent).
@@ -13,8 +13,8 @@
  */
 
 import type {
-  FunctionTriggerMessage,
-  FunctionTriggerRenderer,
+  FunctionCallMessage,
+  FunctionCallRenderer,
 } from '@iii-dev/console-ui'
 import { ErrorDisplayView } from '../lib/errors'
 import { ShellConfigStatusView } from './ConfigStatusView'
@@ -41,7 +41,7 @@ import {
 import { FunctionIdLabel } from './shared'
 import { ShellStatusView } from './StatusView'
 
-function render(message: FunctionTriggerMessage): React.ReactNode | null {
+function render(message: FunctionCallMessage): React.ReactNode | null {
   if (!isShellFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -99,7 +99,7 @@ function render(message: FunctionTriggerMessage): React.ReactNode | null {
 }
 
 function tryRenderPreview(
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
 ): React.ReactNode | null {
   if (!isShellFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)
@@ -115,7 +115,7 @@ function tryRenderPreview(
   }
 }
 
-export function createShellTriggerRenderer(): FunctionTriggerRenderer {
+export function createShellCallRenderer(): FunctionCallRenderer {
   return {
     id: 'ide/page.js#shell',
     isMatch: isShellFunction,
