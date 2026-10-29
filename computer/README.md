@@ -30,7 +30,7 @@ worker, persist with `state`, schedule with `cron`.
 ## Install
 
 ```bash
-iii trigger compose::add worker=computer
+iii call compose::add worker=computer
 ```
 
 To drive a throwaway desktop instead of your own machine, turn on the engine's
@@ -93,16 +93,16 @@ Start a session, look at the screen, click what you see:
 ```bash
 # drive this machine: a bare start picks the native driver when neither
 # sandbox_image nor default_endpoint is configured; '{"native": true}' always does
-iii trigger computer::sessions::start --json '{}'
+iii call computer::sessions::start --json '{}'
 # -> { "session_id": "c1", "endpoint": "native", "os": "macos", "screen": { "width": 1512, "height": 945 }, "semantic": { "supported": true } }
 
 # see the screen: an image block the vision model renders inline
-iii trigger computer::screenshot --json '{"session_id":"c1"}'
+iii call computer::screenshot --json '{"session_id":"c1"}'
 
 # click a pixel read off that screenshot (top-left origin)
-iii trigger computer::act --json '{"session_id":"c1","action":"click","x":640,"y":360}'
+iii call computer::act --json '{"session_id":"c1","action":"click","x":640,"y":360}'
 
-iii trigger computer::sessions::stop --json '{"session_id":"c1"}'
+iii call computer::sessions::stop --json '{"session_id":"c1"}'
 ```
 
 Swap the first call for `{"image":"desktop"}` to boot a sandboxed Linux desktop
@@ -113,8 +113,7 @@ is identical: the session id is the only handle.
 The same from a sibling worker:
 
 ```rust
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
@@ -122,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
     let started = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "computer::sessions::start".into(),
             payload: json!({}),
             action: None,
@@ -131,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     let session_id = started["session_id"].as_str().unwrap();
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "computer::act".into(),
         payload: json!({ "session_id": session_id, "action": "click", "x": 640, "y": 360 }),
         action: None,
@@ -261,24 +260,45 @@ and size the VM (memory, CPUs); a new OCI image goes into `custom_images`
 first, since iii-sandbox only boots names from its catalog.
 iii-sandbox boots on macOS Apple Silicon (libkrun) and Linux (`/dev/kvm`).
 
-## Custom trigger types
+## Observable functions
 
-Sibling workers (and the console page) subscribe to session activity instead of
-polling. Every binding accepts an optional `{ "session_id": "..." }` filter.
+Sibling workers (and the console page) observe session activity instead of
+polling. Each event is a call of a private function whose handler returns the
+event: only this worker calls them, anyone may observe them. A function
+nobody observes costs nothing: the event is never built.
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `computer::session-started` | A session connected and is ready | `{ session_id, endpoint, os, screen, timestamp }` |
-| `computer::session-stopped` | A session ended | `{ session_id, reason: "stopped" \| "idle", timestamp }` |
-| `computer::activity` | A `computer::act` call reached a session, or a `computer::run` started on it | `{ session_id, function, timestamp }` |
+| Function | Args | Delivery | Event |
+|---|---|---|---|
+| `computer::on-session-started` | none; filter on `input.session_id` | iii's default | `{ session_id, endpoint, os, screen, timestamp }` when a session connected and is ready |
+| `computer::on-session-stopped` | none; filter on `input.session_id` | iii's default | `{ session_id, reason: "stopped" \| "idle", timestamp }` when a session ended |
+| `computer::on-activity` | none; filter on `input.session_id` | iii's default | `{ session_id, function, timestamp }` when a `computer::act` call reached a session, or a `computer::run` started on it |
+| `computer::on-frame-changed` | `{ session_id }` (required) | the worker's own, below | `{ session_id, epoch, frame_seq, change, width, height, mime?, bytes?, timestamp }` |
+
+```ts
+// every session that ends
+iii.observe(
+  { function_id: 'computer::on-session-stopped', deliver: 'output' },
+  'my-worker::on-desktop-gone',
+)
+
+// what happens on one session
+iii.observe(
+  {
+    function_id: 'computer::on-activity',
+    filters: { 'input.session_id': { $eq: 'c1' } },
+    deliver: 'output',
+  },
+  'my-worker::on-desktop-activity',
+)
+```
 
 ## Live screen
 
-`computer::screencast::start` / `stop`, `computer::frame` and the
-`computer::frame-changed` trigger type drive the live viewport. The worker
+`computer::screencast::start` / `stop`, `computer::frame` and the observable
+function `computer::on-frame-changed` drive the live viewport. The worker
 captures at `screencast_fps` and keeps only the newest frame per session in
-memory (no history). After each frame it fires `computer::frame-changed` with a
-small, image-free notification; the viewer reads the frame with
+memory (no history). After each frame it calls `computer::on-frame-changed`
+with a small, image-free notification; the viewer reads the frame with
 `computer::frame` (notify, then fetch), so the console and any number of
 watchers follow the desktop without polling, and a slow watcher skips frames
 instead of queueing them.
@@ -288,14 +308,31 @@ when it opens and `stop` when it closes; the capture runs while one remains,
 and one nobody follows any more (a window closed without a `stop`) stops by
 itself after 10 seconds.
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `computer::frame-changed` | A new frame was stored (`change: "updated"`), or the frame was dropped because the screencast or session stopped (`change: "cleared"`) | `{ session_id, epoch, frame_seq, change, width, height, mime?, bytes?, timestamp }` |
+`computer::on-frame-changed` is called when a new frame was stored
+(`change: "updated"`), or when the frame was dropped because the screencast or
+session stopped (`change: "cleared"`). Its args `{ "session_id": "..." }` are
+**required** (a viewer follows one desktop), and the worker delivers each
+change itself:
 
-The binding config `{ "session_id": "..." }` is **required** (a viewer follows
-one desktop). Order frames by `(epoch, frame_seq)`; `epoch` changes when the
-worker restarts or restores the session. Bind first, then read
-`computer::frame` once for the current frame; read it again after each
-notification (pass `since_frame` to skip an unchanged image) and after a
-reconnect. These are internal console plumbing rather than agent surface, and
-stay out of agent function lists.
+- a change goes only to the observers of its session;
+- each observer has one delivery slot: one call through the observer in
+  flight (bounded by 5 s) and one pending notification, which a newer one
+  replaces, so a slow viewer skips frames and never queues them;
+- an observer's filters apply as usual; its target receives the notification
+  itself, and the caller gets `{ offered }`, the number of observers it was
+  offered to;
+- at most 64 observers; the 65th is rejected with `OBSERVER_LIMIT`, and a
+  blank `session_id` with `INVALID_ARGS`.
+
+```ts
+iii.observe(
+  { function_id: 'computer::on-frame-changed', args: { session_id: 'c1' } },
+  'my-worker::on-frame',
+)
+```
+
+Order frames by `(epoch, frame_seq)`; `epoch` changes when the worker restarts
+or restores the session. Observe first, then read `computer::frame` once for
+the current frame; read it again after each notification (pass `since_frame`
+to skip an unchanged image) and after a reconnect. These are internal console
+plumbing rather than agent surface, and stay out of agent function lists.

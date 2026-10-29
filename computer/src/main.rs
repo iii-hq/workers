@@ -1,7 +1,7 @@
 //! `computer` binary entry: connect, register configuration + fetch the
-//! authoritative value, register the `computer::*` trigger types and
-//! functions, restore any durable sessions, start the idle sweep, then sleep
-//! until Ctrl+C / SIGTERM.
+//! authoritative value, register the `computer::on-*` event functions and the
+//! `computer::*` functions, restore any durable sessions, start the idle
+//! sweep, then sleep until Ctrl+C / SIGTERM.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 
 use computer::config::WorkerConfig;
-use computer::events::{self, IiiDeliverer};
+use computer::events::{self, IiiEventSink};
 use computer::session::Sessions;
 use computer::{configuration, functions, manifest};
 
@@ -128,14 +128,13 @@ async fn main() -> Result<()> {
     );
     let shared = cfg.into_shared();
 
-    // Trigger types before functions, so handlers capture live subscriber sets.
-    let sets = events::register_trigger_types(&iii);
-    let emitter = Arc::new(events::Emitter::new(
-        sets,
-        Arc::new(IiiDeliverer::new(iii.clone())),
-    ));
+    // Event functions before the functions that emit them.
+    events::register(&iii);
+    let emitter = Arc::new(events::Emitter::new(Arc::new(IiiEventSink::new(
+        iii.clone(),
+    ))));
 
-    let frames = computer::frames::register_frame_trigger_type(&iii);
+    let frames = computer::frames::register(&iii);
 
     let sessions = Sessions::new(shared.clone(), emitter, frames, iii.clone());
 
@@ -146,8 +145,7 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &sessions);
 
-    configuration::register_config_trigger(&iii, shared.clone())
-        .context("registering configuration change trigger")?;
+    configuration::observe_config_changes(&iii, shared.clone());
 
     // Injectable console UI — after the computer::* functions so the console
     // can attribute the assets.

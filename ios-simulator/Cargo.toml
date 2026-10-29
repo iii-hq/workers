@@ -15,11 +15,10 @@ name = "ios_simulator"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
+iii-sdk = "=0.26.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
 iii-console-ui = { path = "../crates/console-ui" }
 arc-swap = "1"
-async-trait = "0.1"
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }

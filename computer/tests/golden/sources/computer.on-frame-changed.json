@@ -1,8 +1,8 @@
 {
-  "config_schema": {
+  "args_format": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "additionalProperties": false,
-    "description": "Binding filter for `computer::frame-changed`. `session_id` is required: a viewer follows one desktop; unknown keys fail the registration.",
+    "description": "The args of `computer::on-frame-changed`. `session_id` is required: a viewer follows one desktop; the engine refuses unknown keys.",
     "properties": {
       "session_id": {
         "description": "The computer session whose frames to follow.",
@@ -12,11 +12,11 @@
     "required": [
       "session_id"
     ],
-    "title": "FrameBindingConfig",
+    "title": "FrameArgs",
     "type": "object"
   },
-  "description": "The newest screencast frame of one session changed (a new frame was stored, or the frame was cleared because the screencast or session stopped). Config: { session_id } (required). Payload: { session_id, epoch, frame_seq, change, width, height, mime?, bytes?, timestamp }; no image: read it with computer::frame. Latest state only: intermediate notifications are coalesced for slow consumers, nothing is stored or replayed.",
-  "payload_schema": {
+  "description": "The newest screencast frame of one session changed (a new frame was stored, or the frame was cleared because the screencast or session stopped). Args: { session_id } (required). Each observer's target receives { session_id, epoch, frame_seq, change, width, height, mime?, bytes?, timestamp }; no image: read it with computer::frame. Latest state only: intermediate notifications are coalesced for slow consumers, nothing is stored or replayed. The caller gets { offered }, the number of observers the change was offered to.",
+  "event_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "FrameChangeKind": {
@@ -100,5 +100,6 @@
     "title": "FrameChange",
     "type": "object"
   },
-  "trigger_type": "computer::frame-changed"
+  "function_id": "computer::on-frame-changed",
+  "private": true
 }

@@ -13,7 +13,7 @@ screen updates as tmux draws it, the same way a second terminal attached with
 ## Install
 
 ```bash
-iii trigger compose::add worker=tmux
+iii call compose::add worker=tmux
 ```
 
 The worker drives the `tmux` binary installed on the host (Linux or macOS) and
@@ -27,14 +27,14 @@ terminal, and see the **Ports** tab. From code or an agent:
 
 ```bash
 # Every session → window → pane, with agent / compose / port status
-iii trigger tmux::sessions::list
+iii call tmux::sessions::list
 
 # A new session running a dev server, then a second window in it
-iii trigger tmux::sessions::create name=api cwd=~/code/api command="pnpm dev"
-iii trigger tmux::windows::create session=api name=logs
+iii call tmux::sessions::create name=api cwd=~/code/api command="pnpm dev"
+iii call tmux::windows::create session=api name=logs
 
 # Who listens on which port, and which compose stacks are up
-iii trigger tmux::ports::list
+iii call tmux::ports::list
 ```
 
 A pane running an agent and a pane running `iii compose` look like this in
@@ -75,7 +75,7 @@ tools it called with what they returned, oldest first, while it runs and
 after it finished:
 
 ```bash
-iii trigger tmux::subagents::transcript pane=%9 subagent=01a16528-d646
+iii call tmux::subagents::transcript pane=%9 subagent=01a16528-d646
 ```
 
 ```json
@@ -107,8 +107,8 @@ looking at that window; `zoom: false` unzooms. `tmux::panes::capture` returns a
 pane's visible screen with its colour escapes, its size and cursor:
 
 ```bash
-iii trigger tmux::panes::select pane=%3 zoom=true
-iii trigger tmux::panes::capture pane=%3
+iii call tmux::panes::select pane=%3 zoom=true
+iii call tmux::panes::capture pane=%3
 ```
 
 ## Configuration
@@ -135,11 +135,19 @@ The built-in list also recognises `codex`, `opencode` and `gemini`; see
 [`src/config.rs`](src/config.rs). Edit the configuration from the page's
 settings action or with `configuration::set`.
 
-## Custom trigger types
+## Observable functions
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `tmux::changed` | Once when bound, then whenever sessions, windows, panes, agent states, compose stacks or listening ports change | `{ sessions, ports }` — the same shapes `tmux::sessions::list` and `tmux::ports::list` return |
+| Function | Args | Delivery | Event |
+|---|---|---|---|
+| `tmux::on-changed` | none; the overview has no field to filter on | iii's default delivery; each new observer also receives the current overview once it is accepted | `Overview { sessions, ports }`: the shapes `tmux::sessions::list` and `tmux::ports::list` return |
 
-Bind it with `config: {}`. The worker only polls tmux while at least one
-binding exists.
+`tmux::on-changed` is private: only this worker calls it, whenever sessions,
+windows, panes, agent states, compose stacks or listening ports change. The
+worker polls tmux only while something observes it.
+
+```ts
+iii.registerFunction('my-worker::on-tmux', async ({ sessions, ports }) => {
+  // compare agent states with the previous overview
+})
+iii.observe({ function_id: 'tmux::on-changed', deliver: 'output' }, 'my-worker::on-tmux')
+```

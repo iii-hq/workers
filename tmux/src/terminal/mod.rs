@@ -24,8 +24,7 @@ use std::time::{Duration, Instant};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterFunction, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -211,10 +210,10 @@ async fn emit(iii: &IIIClient, function_id: &str, event: OutputEvent) -> bool {
         return false;
     };
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.to_string(),
             payload,
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             timeout_ms: None,
         })
         .await

@@ -1,7 +1,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useId, useRef, useState } from 'react'
-import { FRAME_EVENT, frameEvent, type SimApi, type TouchPoint } from '../lib/api'
+import { frameEvent, ON_FRAME_EVENT, type SimApi, type TouchPoint } from '../lib/api'
 
 export interface Screen {
   src: string
@@ -15,11 +15,13 @@ const RENEW_MS = 5_000
 
 /**
  * The live screen of one booted simulator. `watch` starts (and every few
- * seconds renews) the worker's capture; frames then arrive as
- * `ios-simulator::frame-event` triggers bound to this udid — the worker
- * pushes them straight to this tab, no polling and no other worker in
- * between. One `frame` read paints immediately, since the binding only
- * carries frames produced after it. Stops by itself when the lease lapses.
+ * seconds renews) the worker's capture; frames then arrive as calls of
+ * `ios-simulator::on-frame-event`, observed with this tenant and udid as args
+ * — the worker sends them straight to this tab, no polling and no other
+ * worker in between. The observer allows one frame in flight, so a slow tab
+ * drops frames instead of queueing them. One `frame` read paints
+ * immediately, since the observer only carries frames produced after it.
+ * Stops by itself when the lease lapses.
  */
 export function useLiveScreen(host: Host, api: SimApi, udid: string | null, enabled: boolean) {
   const [screen, setScreen] = useState<Screen | null>(null)
@@ -82,11 +84,11 @@ export function useLiveScreen(host: Host, api: SimApi, udid: string | null, enab
         }),
       )
       offs.push(
-        host.iii.registerTrigger({
-          type: FRAME_EVENT,
-          function_id: `${handler}::${host.iii.browserId}`,
-          config: { tenant: api.tenant, udid },
-        }),
+        host.iii.observe(
+          { function_id: ON_FRAME_EVENT, args: { tenant: api.tenant, udid }, deliver: 'output' },
+          `${handler}::${host.iii.browserId}`,
+          { max_in_flight: 1 },
+        ),
       )
     } catch (err) {
       setError(`live view unavailable: ${errorMessage(err)}`)

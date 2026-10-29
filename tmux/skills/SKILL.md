@@ -72,20 +72,21 @@ client that only the Console drives.
 - `tmux::subagents::transcript` — what one sub-agent of a pane's Claude Code or Codex has done (`pane`, `subagent` from `agent.subagents[].id`): its task, messages, reasoning, tool calls and results, oldest first.
 - `tmux::ports::list` — listening TCP ports with process, iii role, worker, compose namespace and pane, plus each `iii compose` stack.
 
-## Reactive triggers
+## Reacting to tmux
 
-Bind `tmux::changed` instead of polling `sessions::list` when something must
-react to tmux: an agent that finishes a turn (`working` → `idle`), one that
-starts waiting for the person, a compose stack that comes up, a session that
-appears or goes away. It fires the full overview (`sessions` and `ports`,
-the same shapes the two list functions return) once when bound and then only
-when something changed; the worker polls tmux only while a binding exists.
+Observe `tmux::on-changed` instead of polling `sessions::list` when something
+must react to tmux: an agent that finishes a turn (`working` → `idle`), one
+that starts waiting for the person, a compose stack that comes up, a session
+that appears or goes away. Each observer receives the full overview
+(`sessions` and `ports`, the same shapes the two list functions return) once
+when it is added and then only when something changed; the worker polls tmux
+only while the function is observed. It takes no args.
 
-Register a handler, then bind it with an empty config:
+Register a handler, then observe the function with it:
 
 ```ts
 iii.registerFunction('my-worker::on-tmux', async ({ sessions, ports }) => {
   // compare agent states with the previous overview
 })
-iii.registerTrigger({ type: 'tmux::changed', function_id: 'my-worker::on-tmux', config: {} })
+iii.observe({ function_id: 'tmux::on-changed', deliver: 'output' }, 'my-worker::on-tmux')
 ```

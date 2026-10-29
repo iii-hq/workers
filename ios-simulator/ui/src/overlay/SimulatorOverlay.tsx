@@ -12,7 +12,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react'
-import { ACTIVITY, DEFAULT_TENANT, DEVICE_CHANGED, OPEN, SimApi } from '../lib/api'
+import { DEFAULT_TENANT, ON_ACTIVITY, ON_DEVICE_CHANGED, OPEN, SimApi } from '../lib/api'
 import { useLiveScreen } from '../page/live'
 import {
   type Bounds,
@@ -112,33 +112,32 @@ interface DeviceEvent {
 function useDeviceEvents(host: Host) {
   const instance = useId().replace(/[^a-zA-Z0-9]/g, '')
   useEffect(() => {
-    const bind = (type: string, name: string, onEvent: (key: string, e: DeviceEvent) => void) => {
+    const observe = (functionId: string, name: string, onEvent: (key: string, e: DeviceEvent) => void) => {
       const handler = `iii::ios-simulator-ui::overlay-${name}::${instance}`
       const off = host.iii.on(handler, (payload: unknown) => {
         const e = (payload ?? {}) as DeviceEvent
         if (typeof e.tenant === 'string' && typeof e.udid === 'string') onEvent(`${e.tenant}/${e.udid}`, e)
       })
-      const unbind = host.iii.registerTrigger({
-        type,
-        function_id: `${handler}::${host.iii.browserId}`,
-        config: { tenant: DEFAULT_TENANT },
-      })
+      const dispose = host.iii.observe(
+        { function_id: functionId, filters: { 'input.tenant': { $eq: DEFAULT_TENANT } }, deliver: 'output' },
+        `${handler}::${host.iii.browserId}`,
+      )
       return () => {
-        unbind()
+        dispose()
         off()
       }
     }
     const offs: Array<() => void> = []
     try {
       offs.push(
-        bind(DEVICE_CHANGED, 'device', (key, e) => {
+        observe(ON_DEVICE_CHANGED, 'device', (key, e) => {
           if (e.state !== 'Booted') hideCard(key)
           else if (e.previous_state !== 'Booted' && e.preview !== false) showCard(key, true)
         }),
       )
-      offs.push(bind(ACTIVITY, 'activity', (key, e) => showCard(key, e.function === OPEN)))
+      offs.push(observe(ON_ACTIVITY, 'activity', (key, e) => showCard(key, e.function === OPEN)))
     } catch (err) {
-      console.warn('[ios-simulator-ui] preview binding failed', err)
+      console.warn('[ios-simulator-ui] preview observers failed', err)
     }
     return () => {
       for (const off of offs) off()
