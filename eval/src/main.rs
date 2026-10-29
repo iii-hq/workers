@@ -3,14 +3,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_helpers::observability::OtelConfig;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::trigger::Trigger;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, ObserverHandle, Source};
 use serde_json::json;
 
 use eval::events::EvalEvents;
-use eval::runtime::{self, Deps};
+use eval::runtime::{self, Deps, TURN_COMPLETED_FN};
 use eval::{functions, manifest, queue, ui};
 
 #[derive(Parser, Debug)]
@@ -71,7 +69,8 @@ async fn main() -> Result<()> {
         Ok(recovered) => tracing::info!(?recovered, "eval startup recovery finished"),
         Err(error) => tracing::warn!(%error, "eval startup recovery failed; the sweep retries"),
     }
-    let _trigger_handles = bind_triggers(&iii, &deps);
+    // The observers live as long as the worker's connection.
+    let _observers = observe(&iii, &deps);
 
     tracing::info!("eval ready");
     tokio::signal::ctrl_c().await?;
@@ -79,37 +78,25 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn bind_triggers(iii: &Arc<iii_sdk::IIIClient>, deps: &Deps) -> Vec<Trigger> {
-    let mut handles = Vec::new();
-    for (trigger_type, function_id, config) in [
-        ("harness::turn-completed", functions::WAKE_ID, json!({})),
-        (
-            "cron",
-            functions::SWEEP_ID,
-            json!({ "expression": "*/15 * * * * *" }),
-        ),
-    ] {
-        match iii.register_trigger(RegisterTriggerInput::new(trigger_type, function_id, config)) {
-            Ok(handle) => {
-                if function_id == functions::WAKE_ID {
-                    deps.observer.set(Ok(()));
-                }
-                handles.push(handle);
-            }
-            Err(error) => {
-                tracing::warn!(
-                    trigger_type,
-                    function_id,
-                    %error,
-                    "eval trigger binding failed"
-                );
-                if function_id == functions::WAKE_ID {
-                    // Shown by eval::config: automatic observation is
-                    // unavailable even when enabled.
-                    deps.observer.set(Err(error.to_string()));
-                }
-            }
-        }
-    }
-    handles
+/// The cron function that runs the sweep, and the sweep's schedule.
+const ON_TICK_FN: &str = "cron::on-tick";
+const SWEEP_EXPRESSION: &str = "*/15 * * * * *";
+
+/// Observe the harness's finished turns (admission and wake-up) and a
+/// fifteen-second cron tick (recovery, deadlines and retention), each target
+/// taking the event. An observer stays `pending` until its function
+/// registers; `eval::config` reports the turn observer's state.
+fn observe(iii: &IIIClient, deps: &Deps) -> [ObserverHandle; 2] {
+    let turns = iii.observe(
+        Source::function(TURN_COMPLETED_FN).deliver(Deliver::Output),
+        functions::WAKE_ID,
+    );
+    deps.observer.set(turns.clone());
+    let sweep = iii.observe(
+        Source::function(ON_TICK_FN)
+            .args(json!({ "expression": SWEEP_EXPRESSION }))
+            .deliver(Deliver::Output),
+        functions::SWEEP_ID,
+    );
+    [turns, sweep]
 }

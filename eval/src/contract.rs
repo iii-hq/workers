@@ -114,10 +114,10 @@ pub struct MonitorConfigV1 {
 pub struct MonitorStateResponseV1 {
     /// `null` until the user configures the monitor.
     pub config: Option<MonitorConfigV1>,
-    /// False when the `harness::turn-completed` binding was refused locally:
-    /// automatic observation is unavailable even if `config.enabled` is true.
-    /// The SDK does not wait for the engine's acknowledgement, so true means
-    /// the binding was requested, not confirmed.
+    /// True while the `harness::on-turn-completed` observer is active. False
+    /// while it is pending (no harness has registered the function) or after
+    /// the engine refused it (`observer_error` says why): automatic
+    /// observation is unavailable even if `config.enabled` is true.
     pub observer_bound: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observer_error: Option<String>,
@@ -979,7 +979,7 @@ pub struct StepResponseV1 {
     pub status: EvalStatusV1,
 }
 
-/// `harness::turn-completed`; extra fields are tolerated.
+/// The `harness::on-turn-completed` event; extra fields are tolerated.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct WakeEventV1 {
     #[serde(default)]
@@ -1672,7 +1672,7 @@ pub struct FidelityV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReplyCallV1 {
-    /// The function called (through `agent_trigger` or directly).
+    /// The function called (through `agent_call` or directly).
     pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

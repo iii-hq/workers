@@ -17,6 +17,7 @@ use eval::events::EvalEvents;
 use eval::runtime::{self, Deps};
 use eval::{ids, review, state, validation};
 use harness::functions::metrics::{SessionMetricsResponseV1, SessionUsageTotalsV1};
+use harness::policy::AGENT_CALL_NAME;
 use harness::types::content::ContentBlock;
 use harness::types::event::StopReason;
 use harness::types::message::{
@@ -410,7 +411,7 @@ impl World {
                 reply.content = if notice {
                     vec![ContentBlock::FunctionCall {
                         id: "c3".into(),
-                        function_id: "agent_trigger".into(),
+                        function_id: AGENT_CALL_NAME.into(),
                         arguments: json!({"function": INFO, "description": "re-read",
                             "payload": {"function_id": "crm::profile"}}),
                     }]
@@ -484,7 +485,7 @@ fn info_call(step: u32, call_id: &str) -> Value {
     message.stop_reason = StopReason::FunctionCall;
     message.content = vec![ContentBlock::FunctionCall {
         id: call_id.into(),
-        function_id: "agent_trigger".into(),
+        function_id: AGENT_CALL_NAME.into(),
         arguments: json!({"function": INFO, "description": "read the contract",
             "payload": {"function_id": "crm::profile"}}),
     }];
@@ -629,7 +630,8 @@ impl Harness {
 
     /// A fresh process on the same storage: empty in-flight set and locks.
     fn restart(&mut self) {
-        self.deps = Deps::new(self.iii.clone(), EvalEvents::register(&self.iii));
+        // The connection, and the event function it registered, stay.
+        self.deps = Deps::new(self.iii.clone(), self.deps.events.clone());
         self.deps.host_user = None;
     }
 
@@ -1710,7 +1712,7 @@ async fn with_a_code_directory_the_investigation_runs_in_it_and_the_directory_is
                 "allow": ["coder::search", "coder::tree", "coder::read-file",
                     "session::messages", "github::pr::list", "engine::functions::info"],
                 "deny": ["eval::*", "e2e::dashboard::execution-*"],
-                "expose": "agent_trigger"
+                "expose": "agent_call"
             })
         );
         let prompt = send["options"]["system_prompt"].as_str().unwrap();
@@ -1836,7 +1838,7 @@ async fn without_a_code_directory_the_investigation_is_unchanged_and_code_refs_a
     // Deny all: the analyst can call nothing.
     assert_eq!(
         send["options"]["functions"],
-        json!({"allow": [], "deny": [], "expose": "agent_trigger"})
+        json!({"allow": [], "deny": [], "expose": "agent_call"})
     );
     assert_eq!(send["options"]["max_turns"], 1);
     assert_eq!(send["options"]["max_total_tokens"], 200_000);
@@ -3772,7 +3774,7 @@ fn turn_record(turn_id: &str) -> Value {
             "provider": "p",
             "system_prompt": "You are an agent.",
             "max_turns": 16,
-            "functions": {"expose": "agent_trigger"}
+            "functions": {"expose": "agent_call"}
         },
         "created_at": 1,
         "updated_at": 1
@@ -4104,7 +4106,7 @@ async fn a_replay_keeps_the_turns_response_language_in_the_tool_schema() {
     );
 
     let expected =
-        serde_json::to_value([harness::policy::agent_trigger_schema(Some(&language))]).unwrap();
+        serde_json::to_value([harness::policy::agent_call_schema(Some(&language))]).unwrap();
     let calls = h.world().calls_to("router::complete");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["tools"], expected);

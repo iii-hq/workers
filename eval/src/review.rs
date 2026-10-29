@@ -1646,7 +1646,7 @@ mod tests {
             message.stop_reason = StopReason::FunctionCall;
             message.content = vec![ContentBlock::FunctionCall {
                 id: id.into(),
-                function_id: "agent_trigger".into(),
+                function_id: harness::policy::AGENT_CALL_NAME.into(),
                 arguments: json!({"function": info, "description": "d",
                     "payload": {"function_id": "crm::profile"}}),
             }];
