@@ -1,0 +1,145 @@
+{
+  "args_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "GroupChangedOpV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "created",
+              "status"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence on a group that is otherwise unchanged. Coalesced.",
+            "enum": [
+              "occurrence"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "What a subscriber may narrow `sentinel::group-changed` to.",
+    "properties": {
+      "group_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "ops": {
+        "default": null,
+        "items": {
+          "$ref": "#/definitions/GroupChangedOpV1"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "service_name": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "GroupChangedConfigV1",
+    "type": "object"
+  },
+  "description": "Fires when an investigation is created, starts, or finishes. Observe it with args { group_id? } (the sentinel::investigation-changed binding config); every observer receives the InvestigationChangedEventV1. Only the sentinel worker fires it: invoking it directly is refused.",
+  "function_id": "sentinel::on-investigation-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "InvestigationChangedOpV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "created",
+              "finished"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A diagnosis was recorded in it.",
+            "enum": [
+              "recorded"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass is in flight.",
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass ended.",
+            "enum": [
+              "completed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A chat-mode session: no first pass ever ran, the conversation is the investigation.",
+            "enum": [
+              "open"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "What an investigation changed to, for the console and for siblings.",
+    "properties": {
+      "error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "group_id": {
+        "type": "string"
+      },
+      "investigation_id": {
+        "type": "string"
+      },
+      "op": {
+        "$ref": "#/definitions/InvestigationChangedOpV1"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/InvestigationStatusV1"
+      }
+    },
+    "required": [
+      "group_id",
+      "investigation_id",
+      "op",
+      "session_id",
+      "status"
+    ],
+    "title": "InvestigationChangedEventV1",
+    "type": "object"
+  }
+}
