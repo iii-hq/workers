@@ -542,13 +542,13 @@ impl RuntimeManager {
                 // predicate (ops.rs): `ids` tracks id ownership flatly, so
                 // "may this claim be released" is "does ANY kind still hold
                 // this id", never "does a Function hold it". Scoped to
-                // `Function` this released a live TRIGGER TYPE's claim —
-                // trivially reachable, since `req.source` runs arbitrary
-                // statements in the namespace runtime and can call
-                // `iii.registerTriggerType('app::x', …)` before failing to
+                // `Function` this released the claim of live OBSERVER HOOKS
+                // at the same id — trivially reachable, since `req.source`
+                // runs arbitrary statements in the namespace runtime and can
+                // call `iii.onObserverAdded('app::x', …)` before failing to
                 // define `handler`. The freed id then let a second runtime in
-                // the same namespace claim it and silently clobber the first's
-                // trigger-type handler.
+                // the same namespace claim it and take over the first's
+                // observers of that function.
                 let held = runtime.unregisters.lock().unwrap();
                 if !held.iter().any(|(_, id, _)| *id == req.function_id) {
                     self.ids
@@ -991,6 +991,38 @@ mod tests {
         // call disposes its own runtime immediately, freeing the slot again
         // too, so there is nothing left to tear down afterward.
         m.run(req("return 1", None)).await.unwrap();
+    }
+
+    /// Observers and observer hooks live in the same books as functions, so
+    /// teardown undoes them too: the hooks are cleared at once, and each
+    /// observer's dispose is handed to the async runtime teardown runs on
+    /// (it waits on the bus, and teardown does not).
+    #[tokio::test]
+    async fn teardown_disposes_observers_and_clears_hooks() {
+        let (m, fake) = manager(NodeEngineConfig::default());
+        let mut first = req(
+            "iii.registerFunction('app::go', (e) => e, { private: true }); \
+             iii.onObserverAdded('app::go', () => {}); \
+             await iii.observe('state::on-changed', 'app::go'); \
+             return null",
+            None,
+        );
+        first.namespace = Some("app::".into());
+        let out = m.run(kept(first)).await.unwrap();
+        assert_eq!(fake.registered_observers().len(), 1);
+
+        m.teardown_runtime(addr(&out)).await.unwrap();
+        assert_eq!(fake.hooked_ids(), (vec![], vec![]));
+        for _ in 0..50 {
+            if fake.registered_observers().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            fake.registered_observers().is_empty(),
+            "teardown left the runtime's observer live on the bus"
+        );
     }
 
     #[tokio::test]
@@ -1669,16 +1701,16 @@ mod tests {
 
     /// CROSS-TASK: the failure arm of `register` released the id's
     /// worker-global claim whenever no FUNCTION held it — but `release_ids`
-    /// is kind-agnostic, so a live TRIGGER TYPE at the same id had its claim
-    /// freed out from under it. Reachable in one call: `source` executes
-    /// arbitrary statements in the namespace runtime, so it can publish a
-    /// trigger type and THEN fail to define `handler`. The freed id let a
-    /// second runtime in the same namespace claim it and silently clobber the
-    /// first's trigger-type handler (`register_trigger_type` overwrites
-    /// rather than panicking, so this is a hijack, not the process abort the
-    /// function path would have been).
+    /// is kind-agnostic, so live OBSERVER HOOKS at the same id had their
+    /// claim freed out from under them. Reachable in one call: `source`
+    /// executes arbitrary statements in the namespace runtime, so it can set
+    /// a hook and THEN fail to define `handler`. The freed id let a second
+    /// runtime in the same namespace claim it and set its own hooks over the
+    /// first's (the engine keeps one hook per id, so this is a hijack of the
+    /// function's observers, not the process abort the function path would
+    /// have been).
     #[tokio::test]
-    async fn a_doomed_registration_does_not_release_a_live_trigger_types_claim() {
+    async fn a_doomed_registration_does_not_release_live_observer_hooks_claim() {
         let (m, fake) = manager(NodeEngineConfig::default());
 
         // The seed is what makes this test discriminate, and it is not
@@ -1689,7 +1721,7 @@ mod tests {
         // hand-off before `define_handler` runs. The release then no-ops on
         // the owner check no matter what the predicate says, and the bug is
         // unreachable. Only on the REUSE path is `claim_owner` the live
-        // runtime_id that actually owns the trigger type's claim.
+        // runtime_id that actually owns the hooks' claim.
         m.register(reg(
             "app::seed",
             "export function handler(p) { return 1 }",
@@ -1701,8 +1733,7 @@ mod tests {
         let err = m
             .register(reg(
                 "app::x",
-                "iii.registerTriggerType({ id: 'app::x' }, \
-                 { registerTrigger() {}, unregisterTrigger() {} });",
+                "iii.onObserverAdded('app::x', () => {});",
                 None,
             ))
             .await
@@ -1710,11 +1741,14 @@ mod tests {
         assert_eq!(err.code(), "node-engine::eval_failed");
 
         // The side effect landed even though the registration failed: the
-        // trigger type is live on the bus and must stay claimed.
-        assert_eq!(fake.registered_trigger_types(), vec!["app::x".to_string()]);
+        // hooks are live on the engine and must stay claimed.
+        assert_eq!(
+            fake.hooked_ids(),
+            (vec!["app::x".to_string()], vec!["app::x".to_string()])
+        );
         assert!(
             !m.ids.claim("app::x", "some-other-runtime"),
-            "a live trigger type's claim was released by an unrelated failed registration"
+            "live observer hooks' claim was released by an unrelated failed registration"
         );
     }
 

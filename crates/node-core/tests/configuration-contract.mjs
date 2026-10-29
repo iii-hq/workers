@@ -6,12 +6,13 @@ export async function checkConfigurationContract({
   legacy = false, getError, malformed, registerError, makeError, probeUpgrade = false,
 }) {
   const calls = [];
-  const bindings = [];
+  const observers = [];
   let changes = 0;
   let handler;
+  let handlerId;
   let current = stored;
   const iii = {
-    async trigger(request) {
+    async call(request) {
       calls.push(structuredClone(request));
       assert.equal(request.namespace, 'default');
       assert.equal(request.payload.id, expectedId);
@@ -43,8 +44,21 @@ export async function checkConfigurationContract({
       }
       assert.fail(`unexpected RPC: ${request.function_id}`);
     },
-    registerFunction(_id, fn) { handler = fn; },
-    registerTrigger(request) { bindings.push(request); },
+    registerFunction(id, fn) {
+      handlerId = id;
+      handler = fn;
+      return { id, unregister() {} };
+    },
+    observe(source, target, options) {
+      observers.push({ source: structuredClone(source), target, options });
+      return {
+        id: `observer-${observers.length}`,
+        state: 'active',
+        async ready() {},
+        async dispose() {},
+        onStateChange() { return () => {}; },
+      };
+    },
   };
   const failure = error || ((getError?.code !== 'NOT_FOUND' || getError?.function_id) && getError) || registerError;
   if (failure || malformed) {
@@ -100,8 +114,12 @@ export async function checkConfigurationContract({
     const before = changes;
     await handler({});
     assert.equal(changes, before + 1);
-    assert.equal(bindings.length, 1);
-    assert.equal(bindings[0].config.configuration_id, expectedId);
+    assert.equal(observers.length, 1, 'one observer of configuration::on-updated');
+    const [{ source, target }] = observers;
+    assert.equal(source.function_id, 'configuration::on-updated');
+    assert.deepEqual(source.filters?.['input.id'], { $eq: expectedId });
+    assert.deepEqual(source.filters?.['input.event_type'], { $eq: 'configuration:updated' });
+    assert.equal(target, handlerId, 'the observer targets the registered reload function');
   }
 }
 

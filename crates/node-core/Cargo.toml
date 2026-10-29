@@ -13,7 +13,7 @@ publish = false
 
 # NO iii-sdk, and no feature to add one back.
 #
-# The bus seam is `trait Engine` (engine.rs) — five methods over `BoxFuture`
+# The bus seam is `trait Engine` (engine.rs) — seven methods over `BoxFuture`
 # and `serde_json::Value`, nothing else. The production implementation lives
 # in the worker that owns a connection; this crate never sees one.
 #
