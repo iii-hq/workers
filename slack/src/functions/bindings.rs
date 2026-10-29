@@ -1,14 +1,15 @@
-//! Bridge bindings: drive Slack streaming and approvals from engine events
-//! (`session::*`, `harness::turn-completed`, `approval::*`).
+//! Bridge observers: drive Slack streaming and approvals from the events of
+//! session-manager (`session::on-message-*`), the harness
+//! (`harness::on-turn-completed`) and approval-gate (`approval::on-pending-*`).
+//! Each target receives the event itself (`deliver: output`).
 
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::IIIClient;
+use iii_sdk::{Deliver, IIIClient, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::clients::slack;
 use crate::deps::Deps;
@@ -24,6 +25,13 @@ pub const ON_MESSAGE_UPDATED_ID: &str = "slack::on-message-updated";
 pub const ON_TURN_COMPLETED_ID: &str = "slack::on-turn-completed";
 pub const ON_PENDING_CREATED_ID: &str = "slack::on-pending-created";
 pub const ON_PENDING_RESOLVED_ID: &str = "slack::on-pending-resolved";
+
+/// The observed functions of session-manager, the harness and approval-gate.
+pub const SESSION_MESSAGE_ADDED_FN: &str = "session::on-message-added";
+pub const SESSION_MESSAGE_UPDATED_FN: &str = "session::on-message-updated";
+pub const HARNESS_TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
+pub const APPROVAL_PENDING_CREATED_FN: &str = "approval::on-pending-created";
+pub const APPROVAL_PENDING_RESOLVED_FN: &str = "approval::on-pending-resolved";
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct BindingAck {
@@ -115,7 +123,7 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         iii,
         deps,
         ON_PENDING_RESOLVED_ID,
-        "Observe approval resolution (button click already cleared the prompt).",
+        "Log approval resolution (button click already cleared the prompt).",
         |_d, evt: PendingResolvedEvent| async move {
             tracing::info!(
                 session = %evt.session_id,
@@ -169,59 +177,99 @@ async fn post_approval(deps: &Deps, rec: &PendingApprovalRecord) -> Result<(), E
     kv::store_approval_cb(deps, token, &cb).await
 }
 
-/// Bind the session/harness triggers (best-effort; siblings may be absent).
-pub fn bind_session_triggers(iii: &Arc<IIIClient>) {
-    let bindings = [
+/// Assistant messages only.
+fn assistant_messages() -> Value {
+    json!({ "input.message.role": { "$in": ["assistant"] } })
+}
+
+/// `(source, target, filters)` of the session and harness observers.
+pub fn session_observers() -> [(&'static str, &'static str, Option<Value>); 3] {
+    [
         (
-            "session::message-added",
+            SESSION_MESSAGE_ADDED_FN,
             ON_MESSAGE_ADDED_ID,
-            json!({ "roles": ["assistant"] }),
+            Some(assistant_messages()),
         ),
         (
-            "session::message-updated",
+            SESSION_MESSAGE_UPDATED_FN,
             ON_MESSAGE_UPDATED_ID,
-            json!({ "roles": ["assistant"] }),
+            Some(assistant_messages()),
         ),
-        ("harness::turn-completed", ON_TURN_COMPLETED_ID, json!({})),
-    ];
-    for (trigger_type, function_id, config) in bindings {
-        bind_best_effort(iii, trigger_type, function_id, config);
+        (HARNESS_TURN_COMPLETED_FN, ON_TURN_COMPLETED_ID, None),
+    ]
+}
+
+/// `(source, target, filters)` of the approval observers.
+pub fn approval_observers() -> [(&'static str, &'static str, Option<Value>); 2] {
+    [
+        (APPROVAL_PENDING_CREATED_FN, ON_PENDING_CREATED_ID, None),
+        (APPROVAL_PENDING_RESOLVED_FN, ON_PENDING_RESOLVED_ID, None),
+    ]
+}
+
+/// Observe the session and harness events. Each observer stays `pending`
+/// while its worker is absent and becomes active when it registers.
+pub fn observe_session_events(iii: &Arc<IIIClient>) {
+    for (source, target, filters) in session_observers() {
+        observe(iii, source, target, filters);
     }
 }
 
-/// Bind the approval triggers (only meaningful when `approval-gate` is present).
-pub fn bind_approval_triggers(iii: &Arc<IIIClient>) {
-    let bindings = [
-        (
-            "approval::pending-created",
-            ON_PENDING_CREATED_ID,
-            json!({}),
-        ),
-        (
-            "approval::pending-resolved",
-            ON_PENDING_RESOLVED_ID,
-            json!({}),
-        ),
-    ];
-    for (trigger_type, function_id, config) in bindings {
-        bind_best_effort(iii, trigger_type, function_id, config);
+/// Observe the approval events (only meaningful when `approval-gate` is present).
+pub fn observe_approval_events(iii: &Arc<IIIClient>) {
+    for (source, target, filters) in approval_observers() {
+        observe(iii, source, target, filters);
     }
 }
 
-fn bind_best_effort(
-    iii: &Arc<IIIClient>,
-    trigger_type: &str,
-    function_id: &str,
-    config: serde_json::Value,
-) {
-    match iii.register_trigger(RegisterTriggerInput::new(
-        trigger_type.to_string(),
-        function_id.to_string(),
-        config,
-    )) {
-        Ok(_) => tracing::info!(trigger_type, function_id, "trigger bound"),
-        Err(e) => {
-            tracing::warn!(trigger_type, function_id, error = %e, "trigger bind failed (sibling absent?)")
+/// The observer lives as long as the worker's connection; dropping the
+/// handle does not dispose it.
+fn observe(iii: &Arc<IIIClient>, source: &str, target: &str, filters: Option<Value>) {
+    let mut src = Source::function(source).deliver(Deliver::Output);
+    if let Some(filters) = filters {
+        src = src.filters(filters);
+    }
+    let handle = iii.observe(src, target);
+    tracing::info!(source, target, observer_id = handle.id(), "observing");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_observers_select_assistant_messages() {
+        for (source, _, filters) in session_observers() {
+            if source.starts_with("session::") {
+                assert_eq!(
+                    filters,
+                    Some(json!({ "input.message.role": { "$in": ["assistant"] } }))
+                );
+            } else {
+                assert_eq!(filters, None);
+            }
         }
+    }
+
+    #[test]
+    fn observed_functions_are_the_v2_event_sources() {
+        let sources: Vec<_> = session_observers()
+            .into_iter()
+            .chain(approval_observers())
+            .map(|(source, target, _)| (source, target))
+            .collect();
+        assert_eq!(
+            sources,
+            vec![
+                ("session::on-message-added", "slack::on-message-added"),
+                ("session::on-message-updated", "slack::on-message-updated"),
+                ("harness::on-turn-completed", "slack::on-turn-completed"),
+                ("approval::on-pending-created", "slack::on-pending-created"),
+                (
+                    "approval::on-pending-resolved",
+                    "slack::on-pending-resolved"
+                ),
+            ]
+        );
     }
 }

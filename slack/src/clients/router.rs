@@ -1,7 +1,7 @@
 //! `router::models::list` — the sole source of available models/providers.
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde::Deserialize;
 use serde_json::json;
@@ -22,7 +22,7 @@ struct ModelsListResponse {
 
 pub async fn list_models(iii: &IIIClient, timeout_ms: u64) -> Result<Vec<Model>, Error> {
     let value = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::models::list".into(),
             payload: json!({ "capability": "tools" }),
             action: None,

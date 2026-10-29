@@ -14,7 +14,7 @@ nothing is committed as a static `config.yaml` (defaults live in
 | `default_channel` | Optional default channel id for proactive sends. |
 | `allowed_channels` | Optional allowlist of channel ids the bridge responds in (empty = all). |
 | `allowed_teams` | Optional allowlist of team ids accepted (empty = all). |
-| `require_mention` | Channels fire a turn only on `@bot` mention. DMs always trigger. Default true. |
+| `require_mention` | Channels fire a turn only on `@bot` mention. DMs always run a turn. Default true. |
 | `backfill_thread` | Pull prior thread replies into the session on first mention. Default true. |
 | `backfill_max_messages` | Cap on backfilled/pending context messages. Default 50. |
 | `default_model` | Optional `{provider,id}`, validated against `router::models::list`. Provider-agnostic. |
@@ -39,6 +39,6 @@ logged, including on rotation.
 ## Bridge enablement and reload
 
 `bridge_enabled()` is true only when both `signing_secret` and `public_base_url`
-are set. Toggling `public_base_url` registers or unregisters the HTTP routes on
-reload (`ingress::apply`); all other fields are read from the live snapshot per
-call.
+are set. Toggling `public_base_url` observes `http::on-request` for the HTTP
+routes, or disposes those observers, on reload (`ingress::apply`); all other
+fields are read from the live snapshot per call.

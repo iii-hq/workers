@@ -63,7 +63,7 @@ pub struct WorkerConfig {
     pub allowed_teams: Vec<String>,
 
     /// Bridge: fire a harness turn in channels only on an explicit @bot mention.
-    /// DMs always trigger. Default true.
+    /// DMs always run a turn. Default true.
     #[serde(default = "default_true")]
     pub require_mention: bool,
 

@@ -1,7 +1,7 @@
 //! `approval::*` — resolve held tool calls (optional `approval-gate` worker).
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::json;
 
@@ -12,7 +12,7 @@ pub async fn resolve(
     allow: bool,
     timeout_ms: u64,
 ) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "approval::resolve".into(),
         payload: json!({
             "session_id": session_id,
@@ -32,7 +32,7 @@ pub async fn approve_always(
     function_id: &str,
     timeout_ms: u64,
 ) -> Result<(), Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "approval::approve-always".into(),
         payload: json!({ "session_id": session_id, "function_id": function_id }),
         action: None,

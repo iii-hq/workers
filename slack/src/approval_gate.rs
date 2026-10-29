@@ -5,7 +5,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde::Deserialize;
 use serde_json::json;
@@ -54,7 +54,7 @@ pub async fn probe_presence(iii: &IIIClient) -> bool {
 
 async fn list_workers(iii: &IIIClient) -> Result<Vec<EngineWorker>, Error> {
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::workers::list".into(),
             payload: json!({}),
             action: None,

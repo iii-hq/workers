@@ -72,9 +72,10 @@ pub struct Deps {
     pub identity: Arc<RwLock<Option<Identity>>>,
     pub runtime: Arc<RuntimeState>,
     pub approval_gate: Arc<ApprovalGateStatus>,
-    /// Engine HTTP-trigger handles for the bridge ingress routes (Some while the
-    /// HTTP bridge is enabled). Held so they can be unregistered on a config change.
-    pub bridge_triggers: Arc<Mutex<Vec<iii_sdk::trigger::Trigger>>>,
+    /// `http::on-request` observers that serve the bridge ingress routes
+    /// (non-empty while the HTTP bridge is enabled). Held so they can be
+    /// disposed on a config change.
+    pub bridge_routes: Arc<Mutex<Vec<iii_sdk::ObserverHandle>>>,
     /// Cancellation token for the Socket Mode loop (Some while socket mode runs).
     pub socket_cancel: Arc<Mutex<Option<tokio_util::sync::CancellationToken>>>,
 }
@@ -92,7 +93,7 @@ impl Deps {
             identity: Arc::new(RwLock::new(None)),
             runtime: Arc::new(RuntimeState::default()),
             approval_gate,
-            bridge_triggers: Arc::new(Mutex::new(Vec::new())),
+            bridge_routes: Arc::new(Mutex::new(Vec::new())),
             socket_cancel: Arc::new(Mutex::new(None)),
         }
     }
