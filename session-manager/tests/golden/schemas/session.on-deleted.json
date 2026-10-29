@@ -1,0 +1,27 @@
+{
+  "function_id": "session::on-deleted",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`session::deleted` — a session and its entries were removed.",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "session_id",
+      "timestamp"
+    ],
+    "title": "SessionDeletedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Null",
+    "type": "null"
+  }
+}

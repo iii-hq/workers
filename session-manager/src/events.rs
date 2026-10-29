@@ -768,8 +768,10 @@ pub fn refuse_invocation(kind: EventKind) -> Error {
 }
 
 /// The handler of `kind`'s observable function: refuses every invocation,
-/// so nobody can make this worker hand observers a forged event.
-pub fn refuse_observable_call(kind: EventKind, _event: Value) -> Result<(), Error> {
+/// so nobody can make this worker hand observers a forged event. `E` is the
+/// event payload observers of `kind` receive (e.g. [`SessionCreatedEvent`]),
+/// so the function publishes that typed request schema, never `AnyValue`.
+pub fn refuse_observable_call<E>(kind: EventKind, _event: E) -> Result<(), Error> {
     Err(refuse_invocation(kind))
 }
 
@@ -806,12 +808,17 @@ impl ObserveHandler for SessionObserveHandler {
 
 /// Register the observable function next to `set`'s trigger type,
 /// owner-delivered, with the trigger type's binding config `A` as its
-/// args_format.
-fn register_observable<A: JsonSchema>(iii: &Arc<IIIClient>, set: &SubscriberSet) {
+/// args_format and the event payload `E` its observers receive as its
+/// (typed) request schema.
+fn register_observable<A, E>(iii: &Arc<IIIClient>, set: &SubscriberSet)
+where
+    A: JsonSchema,
+    E: serde::de::DeserializeOwned + JsonSchema + Send + 'static,
+{
     let kind = set.kind();
     iii.register_function(
         kind.observable_function(),
-        RegisterFunction::new(move |event: Value| refuse_observable_call(kind, event))
+        RegisterFunction::new(move |event: E| refuse_observable_call(kind, event))
             .description(kind.observable_description())
             .observe(
                 Observe::owner()
@@ -999,12 +1006,12 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
 
     // Next to each trigger type, its observable function over the same
     // subscriber set; args_format is the trigger type's binding config.
-    register_observable::<CreatedBindingConfig>(iii, &sets.created);
-    register_observable::<MessageBindingConfig>(iii, &sets.message_added);
-    register_observable::<MessageBindingConfig>(iii, &sets.message_updated);
-    register_observable::<SessionBindingConfig>(iii, &sets.status_changed);
-    register_observable::<SessionBindingConfig>(iii, &sets.meta_updated);
-    register_observable::<SessionBindingConfig>(iii, &sets.deleted);
+    register_observable::<CreatedBindingConfig, SessionCreatedEvent>(iii, &sets.created);
+    register_observable::<MessageBindingConfig, MessageAddedEvent>(iii, &sets.message_added);
+    register_observable::<MessageBindingConfig, MessageUpdatedEvent>(iii, &sets.message_updated);
+    register_observable::<SessionBindingConfig, StatusChangedEvent>(iii, &sets.status_changed);
+    register_observable::<SessionBindingConfig, MetaUpdatedEvent>(iii, &sets.meta_updated);
+    register_observable::<SessionBindingConfig, SessionDeletedEvent>(iii, &sets.deleted);
 
     for kind in EventKind::all() {
         tracing::info!(
@@ -1669,7 +1676,11 @@ mod tests {
     fn each_on_function_refuses_direct_invocation() {
         for kind in EventKind::all() {
             let function_id = kind.observable_function();
-            match refuse_observable_call(kind, json!({ "session_id": "s_1" })) {
+            let forged = SessionDeletedEvent {
+                session_id: "s_1".into(),
+                timestamp: 1,
+            };
+            match refuse_observable_call(kind, forged) {
                 Err(Error::Remote { code, message, .. }) => {
                     assert_eq!(code, FORBIDDEN);
                     assert_eq!(code, iii_sdk::protocol::observe_codes::FORBIDDEN);
