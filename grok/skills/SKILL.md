@@ -31,7 +31,9 @@ worker to the bus instead of bolting anything onto this one.
 - Run long jobs without holding the call open: `grok::start` returns
   `{session_id, started}` immediately; bind `grok::raw-event` with
   `{ session_id }` for raw progress or `grok::agent-event` for the rendered
-  view (or poll `grok::status`); interrupt with `grok::stop`.
+  view (on iii 0.25 code can observe `grok::on-raw-event` /
+  `grok::on-agent-event` with the same args instead), or poll
+  `grok::status`; interrupt with `grok::stop`.
 - Act on the whole backend: turns carry the iii runtime context by default
   (prepended to the first prompt of a session), so the agent discovers and
   calls any registered function through the iii CLI (engine::functions::list,
@@ -65,3 +67,7 @@ worker to the bus instead of bolting anything onto this one.
 - `grok::status` — point-in-time session view: live flag, status, turn
   count.
 - `grok::sessions::list` — every session this worker has run.
+- `grok::on-agent-event` / `grok::on-raw-event` — observable functions
+  (iii 0.25) next to the two trigger types; observe one with args
+  `{ session_id }` to receive that session's frames (same payload as a
+  binding). Invoking them directly is refused with `FORBIDDEN`.
