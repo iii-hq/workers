@@ -5,6 +5,7 @@ mod lifecycle_tests;
 pub mod listeners;
 pub mod normalize;
 pub mod notifications;
+pub mod observe;
 pub mod setup;
 pub mod store;
 #[cfg(test)]
@@ -100,6 +101,11 @@ impl Service {
         namespace: Option<&str>,
         metadata: Option<Value>,
     ) -> Result<Value> {
+        // A github::on-pr-event observer is filed like a binding; its
+        // deliveries go through obs.call, not a trigger.
+        if let Some(observer_id) = observe::observer_target(function_id) {
+            return observe::deliver(observer_id, payload).await;
+        }
         #[cfg(test)]
         if let Some(bus) = &self.bus {
             return bus.invoke(function_id, payload, namespace, metadata);

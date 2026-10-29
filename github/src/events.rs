@@ -10,6 +10,14 @@
 //! subscriber in [`SubscriberSet`]. Emission is best-effort: a slow or absent
 //! subscriber never blocks or fails the real call — the mirror of the
 //! `iii-directory` / `browser` worker fan-out.
+//!
+//! iii 0.25: the same events are also observable through the owner-delivered
+//! function `github::on-called`. An observer passes the trigger config as args
+//! (free-form, ignored like a binding's), is filed in the same
+//! [`SubscriberSet`] as the bindings, and receives the same payload through
+//! `obs.call`, after the bindings. Invoking `github::on-called` directly is
+//! refused with FORBIDDEN. The trigger type stays registered for consumers on
+//! 0.24 and 0.25 engines.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -19,12 +27,57 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
-use serde::Serialize;
+use iii_sdk::{
+    IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
+    RegisterTriggerType, TriggerAction,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 /// The trigger type the console subscribes to for the activity feed.
 pub const CALLED: &str = "github::called";
+/// Observable function next to [`CALLED`] (iii 0.25).
+pub const ON_CALLED: &str = "github::on-called";
+const ON_CALLED_DESCRIPTION: &str = "Fires after each github function runs; carries the call + \
+     a short result summary. Observe it with args {} (the github::called trigger config, \
+     free-form and ignored); each observer receives the same payload a github::called binding \
+     receives. Best-effort, not stored, not replayed. Only the github worker delivers it: \
+     invoking it directly is refused.";
+
+/// The direct-invocation refusal and the SDK codes of a skipped `obs.call`.
+pub mod codes {
+    /// Any direct invocation of an observable event function.
+    pub const FORBIDDEN: &str = "FORBIDDEN";
+    /// An observer's filters rejected the payload: nothing was sent.
+    pub const FILTERS_NOT_MATCHED: &str = "FILTERS_NOT_MATCHED";
+    /// The observer was removed meanwhile: nothing was sent.
+    pub const OBSERVER_NOT_ACTIVE: &str = "OBSERVER_NOT_ACTIVE";
+}
+
+/// The refusal every direct invocation of an observable event function gets:
+/// its events only come from the github worker.
+pub fn refuse_invocation(function_id: &str) -> Error {
+    Error::Remote {
+        code: codes::FORBIDDEN.to_string(),
+        message: format!(
+            "{function_id} is an event source: observe it \
+             (iii.observe({{ function_id: '{function_id}', args }}, target)); \
+             only the github worker delivers its events"
+        ),
+        stacktrace: None,
+    }
+}
+
+/// An `obs.call` that sent nothing (filters not matched, observer gone): not
+/// a delivery failure.
+pub fn is_skipped_delivery(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Remote { code, .. }
+            if code == codes::FILTERS_NOT_MATCHED || code == codes::OBSERVER_NOT_ACTIVE
+    )
+}
 
 /// Result/args summaries are bounded so a huge diff or body can never bloat the
 /// event past what the feed row needs.
@@ -49,7 +102,9 @@ const PREVIEW_STREAM_BYTES: usize = PREVIEW_MAX_BYTES / 2;
 
 /// One `github::called` event: the call that ran plus a short, human result
 /// summary. Serialized as the trigger payload; the console renders it directly.
-#[derive(Debug, Clone, Serialize)]
+/// Also the payload every `github::on-called` observer receives, and so the
+/// request schema of that function.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CalledEvent {
     /// The `github::*` function id that ran.
     pub function_id: String,
@@ -77,12 +132,37 @@ pub struct CalledEvent {
     pub timestamp: String,
 }
 
-/// Thread-safe subscriber registry keyed by trigger-instance id. Cloned into
-/// the [`CalledTriggerHandler`] (mutates on register/unregister) and the
-/// [`CalledEmitter`] fan-out (iterates read-only).
+/// One observer of `github::on-called`, as the fan-out delivers to it:
+/// [`Observer`] delivers with `obs.call`.
+#[async_trait]
+pub trait CalledObserver: Send + Sync {
+    fn id(&self) -> &str;
+    /// Hand one event payload to the observer's target.
+    async fn deliver(&self, payload: Value) -> Result<(), Error>;
+}
+
+#[async_trait]
+impl CalledObserver for Observer {
+    fn id(&self) -> &str {
+        Observer::id(self)
+    }
+
+    async fn deliver(&self, payload: Value) -> Result<(), Error> {
+        self.call::<Value>(payload).await.map(|_| ())
+    }
+}
+
+type ObserverMap = HashMap<String, Arc<dyn CalledObserver>>;
+
+/// Thread-safe subscriber registry: trigger bindings keyed by trigger-instance
+/// id and `github::on-called` observers keyed by observer id. Cloned into the
+/// [`CalledTriggerHandler`] / [`CalledObserveHandler`] (mutate on
+/// register/unregister) and the [`CalledEmitter`] fan-out (iterates
+/// read-only).
 #[derive(Clone, Default)]
 pub struct SubscriberSet {
     inner: Arc<Mutex<HashMap<String, String>>>,
+    observers: Arc<Mutex<ObserverMap>>,
 }
 
 impl SubscriberSet {
@@ -98,18 +178,39 @@ impl SubscriberSet {
         self.lock().remove(id);
     }
 
+    /// File an observer (replacing one with the same id).
+    pub fn add_observer(&self, observer: Arc<dyn CalledObserver>) {
+        self.lock_observers()
+            .insert(observer.id().to_string(), observer);
+    }
+
+    /// Remove an observer; true when it was filed.
+    pub fn remove_observer(&self, observer_id: &str) -> bool {
+        self.lock_observers().remove(observer_id).is_some()
+    }
+
     /// Snapshot of the current subscriber `function_id`s so the mutex is never
     /// held across an await.
     pub fn function_ids(&self) -> Vec<String> {
         self.lock().values().cloned().collect()
     }
 
+    /// Snapshot of the current observers, for the same reason.
+    pub fn observers(&self) -> Vec<Arc<dyn CalledObserver>> {
+        self.lock_observers().values().cloned().collect()
+    }
+
+    /// True when neither a binding nor an observer is filed.
     pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
+        self.lock().is_empty() && self.lock_observers().is_empty()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn lock_observers(&self) -> std::sync::MutexGuard<'_, ObserverMap> {
+        self.observers.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
@@ -137,6 +238,46 @@ impl TriggerHandler for CalledTriggerHandler {
     }
 }
 
+/// An observer's args: the `github::called` trigger config, which is
+/// free-form and ignored (unknown keys are accepted, as for a binding).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct CalledArgs {}
+
+/// The observe hooks of `github::on-called`: each observer is filed in the
+/// same [`SubscriberSet`] as the trigger bindings and taken out when the
+/// engine removes it.
+pub struct CalledObserveHandler {
+    subscribers: SubscriberSet,
+}
+
+impl CalledObserveHandler {
+    pub fn new(subscribers: SubscriberSet) -> Self {
+        Self { subscribers }
+    }
+}
+
+#[async_trait]
+impl ObserveHandler for CalledObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        // Filed before the ack: the first event after the engine marks the
+        // observer active reaches it.
+        self.subscribers.add_observer(Arc::new(obs.clone()));
+        tracing::info!(function_id = ON_CALLED, observer = %obs.id(), target = %obs.target(), "observer added");
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.subscribers.remove_observer(obs.id());
+        tracing::info!(function_id = ON_CALLED, observer = %obs.id(), "observer removed");
+    }
+}
+
+/// Handler of `github::on-called`: typed by the [`CalledEvent`] its observers
+/// receive (the published request schema); any invocation is refused.
+fn refuse_called(_event: CalledEvent) -> Result<(), Error> {
+    Err(refuse_invocation(ON_CALLED))
+}
+
 /// Fires `github::called` events to every current subscriber. Holds the client
 /// and the shared subscriber set; cheap to clone into each function handler.
 #[derive(Clone)]
@@ -154,12 +295,14 @@ impl CalledEmitter {
         !self.subscribers.is_empty()
     }
 
-    /// Fan `event` out to every subscriber with `TriggerAction::Void`
-    /// (fire-and-forget). No subscribers ⇒ no work. Delivery failures are
-    /// logged and swallowed — the real call already returned.
+    /// Fan `event` out to every binding with `TriggerAction::Void`
+    /// (fire-and-forget), then to every `github::on-called` observer with
+    /// `obs.call`. No subscribers ⇒ no work. Delivery failures are logged and
+    /// swallowed — the real call already returned.
     pub async fn emit(&self, event: CalledEvent) {
         let targets = self.subscribers.function_ids();
-        if targets.is_empty() {
+        let observers = self.subscribers.observers();
+        if targets.is_empty() && observers.is_empty() {
             return;
         }
         let payload = match serde_json::to_value(&event) {
@@ -183,12 +326,25 @@ impl CalledEmitter {
                 tracing::warn!(function_id = %function_id, error = %e, "github::called fan-out failed");
             }
         }
+        for observer in observers {
+            match observer.deliver(payload.clone()).await {
+                Ok(()) => {}
+                Err(e) if is_skipped_delivery(&e) => {
+                    tracing::debug!(observer = %observer.id(), error = %e, "github::on-called observer skipped the event")
+                }
+                Err(e) => {
+                    tracing::warn!(observer = %observer.id(), error = %e, "github::on-called observer delivery failed")
+                }
+            }
+        }
     }
 }
 
-/// Register the `github::called` trigger type with the engine and return the
-/// emitter wired to its subscriber set. Call before registering the functions
-/// so the emitter is ready to thread through them.
+/// Register the `github::called` trigger type and the `github::on-called`
+/// observable function with the engine and return the emitter wired to their
+/// shared subscriber set. Call before registering the functions so the
+/// emitter is ready to thread through them. On an engine without observe the
+/// function registers as a plain function and its hooks never run.
 pub fn register_called_trigger(iii: &Arc<IIIClient>) -> CalledEmitter {
     let subscribers = SubscriberSet::new();
     // `register_trigger_type` is deprecated in iii-sdk 0.25. Kept until the
@@ -202,6 +358,17 @@ pub fn register_called_trigger(iii: &Arc<IIIClient>) -> CalledEmitter {
         },
     ));
     tracing::info!(trigger_type = CALLED, "registered trigger type");
+    let _ = iii.register_function(
+        ON_CALLED,
+        RegisterFunction::new(refuse_called)
+            .description(ON_CALLED_DESCRIPTION)
+            .observe(
+                Observe::owner()
+                    .args_format::<CalledArgs>()
+                    .handler(CalledObserveHandler::new(subscribers.clone())),
+            ),
+    );
+    tracing::info!(function_id = ON_CALLED, "registered observable function");
     CalledEmitter::new(iii.clone(), subscribers)
 }
 
@@ -725,7 +892,7 @@ fn civil_from_epoch(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
@@ -1066,5 +1233,161 @@ mod tests {
             })
             .await;
         assert!(matches!(err, Err(Error::Handler(m)) if m == "boom"));
+    }
+
+    /// An observer of `github::on-called` that records what it is handed.
+    struct Recording {
+        id: String,
+        fail_with: Option<&'static str>,
+        received: Mutex<Vec<Value>>,
+    }
+
+    impl Recording {
+        fn new(id: &str, fail_with: Option<&'static str>) -> Arc<Self> {
+            Arc::new(Self {
+                id: id.to_string(),
+                fail_with,
+                received: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn received(&self) -> Vec<Value> {
+            self.received.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl CalledObserver for Recording {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn deliver(&self, payload: Value) -> Result<(), Error> {
+            if let Some(code) = self.fail_with {
+                return Err(Error::Remote {
+                    code: code.to_string(),
+                    message: "not sent".to_string(),
+                    stacktrace: None,
+                });
+            }
+            self.received.lock().unwrap().push(payload);
+            Ok(())
+        }
+    }
+
+    fn called_event() -> CalledEvent {
+        CalledEvent {
+            function_id: "github::pr::list".into(),
+            args_summary: "pr list owner/repo".into(),
+            repo: Some("owner/repo".into()),
+            ok: true,
+            duration_ms: 12,
+            result_summary: "3 pull requests".into(),
+            kind: "list".into(),
+            result_preview: json!([{ "number": 1 }]),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn on_called_refuses_direct_invocation() {
+        assert_eq!(ON_CALLED, "github::on-called");
+        let error = refuse_called(called_event()).unwrap_err();
+        assert!(
+            matches!(&error, Error::Remote { code, message, .. }
+                if code == codes::FORBIDDEN && message.contains(ON_CALLED)),
+            "{error:?}"
+        );
+    }
+
+    /// The request and response schemas the SDK auto-extracts from a sync
+    /// handler, exactly as `RegisterFunction::new` publishes them.
+    pub(crate) fn handler_schemas<F, M>(_handler: &F) -> (Value, Value)
+    where
+        F: iii_sdk::iii::IntoSyncHandler<M>,
+    {
+        (
+            F::request_format().unwrap_or(Value::Null),
+            F::response_format().unwrap_or(Value::Null),
+        )
+    }
+
+    /// A schema the interface boot smoke accepts: not AnyValue, not empty.
+    pub(crate) fn assert_typed_schema(function_id: &str, which: &str, schema: &Value) {
+        let typed = schema.as_object().is_some_and(|o| {
+            [
+                "type",
+                "properties",
+                "$ref",
+                "allOf",
+                "anyOf",
+                "oneOf",
+                "enum",
+            ]
+            .iter()
+            .any(|k| o.contains_key(*k))
+        });
+        assert!(typed, "{function_id} {which} schema is untyped: {schema}");
+    }
+
+    #[test]
+    fn on_called_publishes_typed_schemas() {
+        let (request, response) = handler_schemas(&refuse_called);
+        assert_typed_schema(ON_CALLED, "request", &request);
+        assert_typed_schema(ON_CALLED, "response", &response);
+        // The request schema documents the delivered event.
+        for field in ["function_id", "ok", "result_summary", "timestamp"] {
+            assert!(request["properties"].get(field).is_some(), "{request}");
+        }
+        // The delivered payload round-trips through the published type.
+        let delivered = serde_json::to_value(called_event()).unwrap();
+        let parsed: CalledEvent = serde_json::from_value(delivered.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), delivered);
+    }
+
+    #[tokio::test]
+    async fn an_on_called_observer_receives_the_payload_a_binding_receives() {
+        let subscribers = SubscriberSet::new();
+        let observer = Recording::new("o1", None);
+        subscribers.add_observer(observer.clone());
+        assert!(!subscribers.is_empty());
+        assert!(subscribers.function_ids().is_empty(), "bindings untouched");
+        let emitter = CalledEmitter::new(
+            Arc::new(IIIClient::new("ws://127.0.0.1:1")),
+            subscribers.clone(),
+        );
+        assert!(emitter.has_subscribers());
+
+        let event = called_event();
+        // Bindings get `serde_json::to_value(&event)` with TriggerAction::Void;
+        // the observer gets the same value through obs.call.
+        let expected = serde_json::to_value(&event).unwrap();
+        emitter.emit(event).await;
+        assert_eq!(observer.received(), vec![expected]);
+
+        assert!(subscribers.remove_observer("o1"));
+        assert!(!subscribers.remove_observer("o1"));
+        assert!(subscribers.is_empty());
+        emitter.emit(called_event()).await;
+        assert_eq!(observer.received().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_skipped_or_failing_on_called_observer_does_not_stop_the_others() {
+        let subscribers = SubscriberSet::new();
+        let ok = Recording::new("ok", None);
+        subscribers.add_observer(Recording::new("skipped", Some(codes::FILTERS_NOT_MATCHED)));
+        subscribers.add_observer(Recording::new("gone", Some(codes::OBSERVER_NOT_ACTIVE)));
+        subscribers.add_observer(Recording::new("broken", Some("TARGET_FAILED")));
+        subscribers.add_observer(ok.clone());
+        let emitter = CalledEmitter::new(Arc::new(IIIClient::new("ws://127.0.0.1:1")), subscribers);
+        emitter.emit(called_event()).await;
+        assert_eq!(ok.received().len(), 1);
+        assert!(is_skipped_delivery(&Error::Remote {
+            code: codes::OBSERVER_NOT_ACTIVE.into(),
+            message: String::new(),
+            stacktrace: None,
+        }));
+        assert!(!is_skipped_delivery(&Error::Handler("x".into())));
     }
 }

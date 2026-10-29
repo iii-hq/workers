@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use iii_sdk::{
     protocol::RegisterTriggerInput,
     trigger::{TriggerConfig, TriggerHandler},
-    RegisterFunction, RegisterTriggerType,
+    Observe, RegisterFunction, RegisterTriggerType,
 };
 
 use super::*;
@@ -37,6 +37,20 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for EngineRequest<T> {
     }
 }
 
+/// Parse and validate a `github::pr::event` binding config; also the args of
+/// a `github::on-pr-event` observer.
+pub(super) fn parse_filter(config: Value) -> std::result::Result<EventFilter, iii_sdk::Error> {
+    let filter: EventFilter =
+        serde_json::from_value(config).map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
+    if let Some(repo) = &filter.repo {
+        validate_repo(repo)?;
+    }
+    if let Some(policy) = &filter.notifications {
+        policy.validate()?;
+    }
+    Ok(filter)
+}
+
 struct EventHandler(Arc<Service>);
 #[async_trait]
 impl TriggerHandler for EventHandler {
@@ -44,14 +58,7 @@ impl TriggerHandler for EventHandler {
         &self,
         config: TriggerConfig,
     ) -> std::result::Result<(), iii_sdk::Error> {
-        let filter: EventFilter = serde_json::from_value(config.config)
-            .map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
-        if let Some(repo) = &filter.repo {
-            validate_repo(repo)?;
-        }
-        if let Some(policy) = &filter.notifications {
-            policy.validate()?;
-        }
+        let filter = parse_filter(config.config)?;
         let service = self.0.clone();
         storage_task(async move {
             if let Some(store) = &service.store {
@@ -126,6 +133,19 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
     // trigger type is retired; consumers bind it on 0.24 and 0.25 engines.
     #[allow(deprecated)]
     iii.register_trigger_type(RegisterTriggerType::new("github::pr::event", "Durable PR lifecycle, comment, review and per-entity CI events. Arm before watch and read one snapshot after watch.", EventHandler(service.clone())).trigger_request_format::<EventFilter>().call_request_format::<notifications::NotificationEvent>());
+    // iii 0.25: the same deliveries, observable. Observers share the bindings'
+    // subscriber set (see observe.rs); on an engine without observe the
+    // function registers as a plain function and its hooks never run.
+    iii.register_function(
+        observe::ON_PR_EVENT,
+        RegisterFunction::new(observe::refuse_pr_event)
+            .description(observe::ON_PR_EVENT_DESCRIPTION)
+            .observe(
+                Observe::owner()
+                    .args_format::<EventFilter>()
+                    .handler(observe::PrEventObserveHandler::new(service.clone())),
+            ),
+    );
     macro_rules! function {
         ($id:expr, $desc:expr, $req:ty, $resp:ty, $method:ident $(, $field:ident)?) => {{
             let service = service.clone();
