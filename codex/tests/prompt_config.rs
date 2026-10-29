@@ -134,6 +134,15 @@ fn schema_and_manifest_carry_no_stream_keys() {
         .as_str()
         .unwrap()
         .contains("agent::events"));
+    let description = manifest["description"].as_str().unwrap();
+    for name in [
+        "codex::raw-event",
+        "codex::agent-event",
+        "codex::on-raw-event",
+        "codex::on-agent-event",
+    ] {
+        assert!(description.contains(name), "{name} missing: {description}");
+    }
     // the seed file shipped next to the binary parses and matches the defaults
     let seed = Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml")).unwrap();
     assert_eq!(seed.to_json(), Config::default().to_json());

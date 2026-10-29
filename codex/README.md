@@ -1,6 +1,6 @@
 # codex
 
-OpenAI Codex as an iii worker: the Codex API exposed as functions and trigger types on the iii bus, nothing else. The worker spawns the same `codex` binary the user runs in their terminal, with the same login (ChatGPT or API key), the same filesystem, and the same sandbox. `codex::run` executes one headless turn and returns the result; the raw Codex thread events are delivered verbatim on the `codex::raw-event` trigger type, and a translated AgentEvent view on `codex::agent-event`, so the acp worker and any sibling worker observe a Codex run exactly like a native harness turn.
+OpenAI Codex as an iii worker: the Codex API exposed as functions and trigger types on the iii bus, nothing else. The worker spawns the same `codex` binary the user runs in their terminal, with the same login (ChatGPT or API key), the same filesystem, and the same sandbox. `codex::run` executes one headless turn and returns the result; the raw Codex thread events are delivered verbatim on the `codex::raw-event` trigger type, and a translated AgentEvent view on `codex::agent-event` (on iii 0.25 both are also observable as `codex::on-raw-event` / `codex::on-agent-event`), so the acp worker and any sibling worker observe a Codex run exactly like a native harness turn.
 
 ## Install
 
