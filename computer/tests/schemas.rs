@@ -93,6 +93,40 @@ fn every_function_has_typed_request_and_response_schemas() {
     }
 }
 
+/// The observable `computer::on-*` functions too: each refusing handler takes
+/// the event its observers receive, so neither schema may be `AnyValue`
+/// (the interface boot smoke fails any untyped registered function).
+#[test]
+fn every_observable_function_has_typed_request_and_response_schemas() {
+    let specs = computer::events::observable_catalog();
+    let ids: Vec<&str> = specs.iter().map(|s| s.function_id).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "computer::on-session-started",
+            "computer::on-session-stopped",
+            "computer::on-activity",
+            "computer::on-frame-changed",
+        ]
+    );
+    for spec in specs {
+        support::assert_typed_schema(
+            &format!("{} request_schema", spec.function_id),
+            &spec.request_schema,
+        );
+        support::assert_typed_schema(
+            &format!("{} response_schema", spec.function_id),
+            &spec.response_schema,
+        );
+        let request = serde_json::to_value(&spec.request_schema).unwrap();
+        assert!(
+            request["properties"]["session_id"].is_object(),
+            "{}: request schema must document the delivered event: {request}",
+            spec.function_id
+        );
+    }
+}
+
 /// The worker-owned `computer::frame-changed` trigger type: binding config and
 /// notification payload are wire surface too (the console viewport binds it).
 #[test]

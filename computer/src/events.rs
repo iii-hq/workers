@@ -22,10 +22,12 @@ use iii_sdk::{
     RegisterTriggerType, TriggerAction,
 };
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::driver::Screen;
+use crate::functions::FunctionSpec;
 
 pub const SESSION_STARTED: &str = "computer::session-started";
 pub const SESSION_STOPPED: &str = "computer::session-stopped";
@@ -365,19 +367,68 @@ pub fn refuse_invocation(function_id: &str) -> Error {
     }
 }
 
-/// The handler registered for an on-* function: refuses any payload, of any
-/// shape, with FORBIDDEN (it takes a raw [`Value`], so no parse error comes
-/// first).
-pub fn observable_handler(
+/// The handler registered for an on-* function: refuses every invocation
+/// with FORBIDDEN. It takes `E`, the event each observer receives, so the
+/// function's request schema documents the delivered shape (never the
+/// permissive `AnyValue`).
+pub fn observable_handler<E>(
     function_id: &'static str,
-) -> impl Fn(Value) -> Result<(), Error> + Send + Sync + 'static {
-    move |_payload: Value| Err(refuse_invocation(function_id))
+) -> impl Fn(E) -> Result<(), Error> + Send + Sync + 'static
+where
+    E: DeserializeOwned + JsonSchema + Send + 'static,
+{
+    move |_event: E| Err(refuse_invocation(function_id))
 }
 
-/// JSON Schema of the event an observer receives, documented as the
-/// function's request format.
-pub(crate) fn event_schema<E: JsonSchema>() -> Value {
-    serde_json::to_value(schemars::schema_for!(E)).unwrap_or(Value::Null)
+/// The request/response schemas a sync handler registers with, generated
+/// from the handler's own types the way iii-sdk derives them.
+fn handler_spec<F, Req, Resp>(
+    function_id: &'static str,
+    description: &'static str,
+    _handler: &F,
+) -> FunctionSpec
+where
+    F: Fn(Req) -> Result<Resp, Error>,
+    Req: JsonSchema,
+    Resp: JsonSchema,
+{
+    let generator = || schemars::r#gen::SchemaSettings::draft07().into_generator();
+    FunctionSpec {
+        function_id,
+        description,
+        request_schema: generator().into_root_schema_for::<Req>(),
+        response_schema: generator().into_root_schema_for::<Resp>(),
+    }
+}
+
+/// Every observable `computer::on-*` function, with the schemas its very
+/// handler registers. Keep in lockstep with [`register_trigger_types`] and
+/// [`crate::frames::register_frame_trigger_type`]; schema-tested in
+/// `tests/schemas.rs`.
+pub fn observable_catalog() -> Vec<FunctionSpec> {
+    use crate::frames::{refuse_on_frame_changed, ON_FRAME_CHANGED, ON_FRAME_CHANGED_DESC};
+    vec![
+        handler_spec(
+            ON_SESSION_STARTED,
+            ON_SESSION_STARTED_DESC,
+            &observable_handler::<SessionStartedEvent>(ON_SESSION_STARTED),
+        ),
+        handler_spec(
+            ON_SESSION_STOPPED,
+            ON_SESSION_STOPPED_DESC,
+            &observable_handler::<SessionStoppedEvent>(ON_SESSION_STOPPED),
+        ),
+        handler_spec(
+            ON_ACTIVITY,
+            ON_ACTIVITY_DESC,
+            &observable_handler::<ActivityEvent>(ON_ACTIVITY),
+        ),
+        handler_spec(
+            ON_FRAME_CHANGED,
+            ON_FRAME_CHANGED_DESC,
+            &refuse_on_frame_changed,
+        ),
+    ]
 }
 
 /// Registers `kind`'s observable function, owner-delivered, with args
@@ -386,14 +437,13 @@ pub(crate) fn event_schema<E: JsonSchema>() -> Value {
 /// as a plain function and its hooks never run.
 fn register_observable<E>(iii: &IIIClient, kind: EventKind, description: &str, sets: &TriggerSets)
 where
-    E: JsonSchema,
+    E: DeserializeOwned + JsonSchema + Send + 'static,
 {
     let function_id = kind.observable_function();
     iii.register_function(
         function_id,
-        RegisterFunction::new(observable_handler(function_id))
+        RegisterFunction::new(observable_handler::<E>(function_id))
             .description(description)
-            .request_format(event_schema::<E>())
             .observe(Observe::owner().args_format::<BindingConfig>().handler(
                 ComputerObserveHandler {
                     set: sets.for_kind(kind).clone(),
@@ -682,26 +732,45 @@ mod tests {
 
     #[test]
     fn on_functions_refuse_direct_invocation() {
-        // The very handler each on-* function is registered with: any
-        // payload, junk included, is refused before any parsing.
-        for kind in EventKind::all() {
-            let function_id = kind.observable_function();
-            let handler = observable_handler(function_id);
-            for junk in [
-                json!("junk"),
-                json!(42),
-                Value::Null,
-                json!({ "session_id": "c1", "forged": true }),
-                json!([1, 2, 3]),
-            ] {
-                let err = handler(junk).unwrap_err();
-                assert!(
-                    matches!(&err, Error::Remote { code, message, .. }
-                        if code == codes::FORBIDDEN && message.contains(function_id)),
-                    "{err:?}"
-                );
-            }
+        // The very handler each on-* function is registered with: a
+        // well-formed event, forged by a caller, is refused.
+        fn assert_forbidden(function_id: &str, result: Result<(), Error>) {
+            let err = result.unwrap_err();
+            assert!(
+                matches!(&err, Error::Remote { code, message, .. }
+                    if code == codes::FORBIDDEN && message.contains(function_id)),
+                "{err:?}"
+            );
         }
+        assert_forbidden(
+            ON_SESSION_STARTED,
+            observable_handler(ON_SESSION_STARTED)(SessionStartedEvent {
+                session_id: "c1".into(),
+                endpoint: "native".into(),
+                os: "linux".into(),
+                screen: Screen {
+                    width: 1,
+                    height: 1,
+                },
+                timestamp: 1,
+            }),
+        );
+        assert_forbidden(
+            ON_SESSION_STOPPED,
+            observable_handler(ON_SESSION_STOPPED)(SessionStoppedEvent {
+                session_id: "c1".into(),
+                reason: "stopped".into(),
+                timestamp: 1,
+            }),
+        );
+        assert_forbidden(
+            ON_ACTIVITY,
+            observable_handler(ON_ACTIVITY)(ActivityEvent {
+                session_id: "c1".into(),
+                function: "computer::act".into(),
+                timestamp: 1,
+            }),
+        );
         for kind in EventKind::all() {
             let function_id = kind.observable_function();
             let err = refuse_invocation(function_id);

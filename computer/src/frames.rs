@@ -40,11 +40,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::events::{codes, event_schema, refuse_invocation};
+use crate::events::{codes, refuse_invocation};
 
-/// The handler registered for `computer::on-frame-changed`: refuses any
-/// payload, of any shape, with FORBIDDEN.
-pub fn refuse_on_frame_changed(_payload: Value) -> Result<(), Error> {
+/// The handler registered for `computer::on-frame-changed`: refuses every
+/// invocation with FORBIDDEN. It takes [`FrameChange`], the notification each
+/// observer receives, so the request schema documents the delivered shape.
+pub fn refuse_on_frame_changed(_change: FrameChange) -> Result<(), Error> {
     Err(refuse_invocation(ON_FRAME_CHANGED))
 }
 
@@ -513,7 +514,6 @@ pub fn register_frame_trigger_type(iii: &Arc<IIIClient>) -> Arc<FrameNotifier> {
         ON_FRAME_CHANGED,
         RegisterFunction::new(refuse_on_frame_changed)
             .description(ON_FRAME_CHANGED_DESC)
-            .request_format(event_schema::<FrameChange>())
             .observe(
                 Observe::owner()
                     .args_format::<FrameBindingConfig>()
@@ -750,15 +750,10 @@ mod tests {
 
     #[test]
     fn on_frame_changed_refuses_direct_invocation() {
-        // The very handler computer::on-frame-changed is registered with.
-        for junk in [
-            json!("junk"),
-            json!(7),
-            Value::Null,
-            json!({ "session_id": "c1" }),
-            serde_json::to_value(change("c1", 1)).unwrap(),
-        ] {
-            let err = refuse_on_frame_changed(junk).unwrap_err();
+        // The very handler computer::on-frame-changed is registered with: a
+        // well-formed notification, forged by a caller, is refused.
+        for forged in [change("c1", 1), change("c2", 7)] {
+            let err = refuse_on_frame_changed(forged).unwrap_err();
             assert!(
                 matches!(&err, Error::Remote { code, message, .. }
                     if code == codes::FORBIDDEN && message.contains(ON_FRAME_CHANGED)),
