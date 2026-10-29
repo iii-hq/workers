@@ -93,37 +93,81 @@
     }
   },
   {
-    "description": "Attach an allowlisted live state, stream, or shell event binding to a surface.",
+    "description": "Attach a declarative live binding to a surface: a worker's event function observed with args or filters (optionally with its worker's read-only query), state::on-changed, or shell::on-changed. Legacy stream::on-changed bindings are deprecated.",
     "name": "a2ui::binding::set",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "definitions": {
+        "BindingQuery": {
+          "additionalProperties": false,
+          "description": "Read-only query the worker that hosts an observed event source exposes for the current data. The function must be registered by the same worker as the observed function with metadata `{\"read_only\": true}`.",
+          "properties": {
+            "function_id": {
+              "description": "Provider function that returns the current value.",
+              "type": "string"
+            },
+            "payload": {
+              "description": "Fixed request payload, validated against the function's request schema."
+            },
+            "result_path": {
+              "description": "JSON Pointer inside the query result to apply. Defaults to the whole result.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "function_id"
+          ],
+          "type": "object"
+        },
         "LiveBinding": {
           "additionalProperties": false,
+          "description": "Declarative live-data binding rendered by the Console: the page observes `function_id` (with `args` and `filters`) for its own view and writes delivered values to `target_path`. Bindings cannot invoke arbitrary functions.",
           "properties": {
-            "config": true,
+            "args": {
+              "description": "Args for a function that takes them, validated against the function's registered `args_format`."
+            },
             "event_path": {
+              "description": "JSON Pointer inside the event to apply (event mode only).",
               "type": [
                 "string",
                 "null"
               ]
             },
-            "id": {
+            "filters": {
+              "description": "Filters selecting which calls are delivered, each with an explicit operator: `{ \"input.status\": { \"$eq\": \"open\" } }`."
+            },
+            "function_id": {
+              "description": "Function to observe: a worker's event source (for example `orders::on-changed`), `state::on-changed`, or `shell::on-changed`. `stream::on-changed` is accepted only as deprecated legacy compatibility.",
               "type": "string"
+            },
+            "id": {
+              "description": "Stable binding id within the surface.",
+              "type": "string"
+            },
+            "query": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/BindingQuery"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional provider query for a worker's event source: run for the initial read, after every notification, and on reconnect."
             },
             "target_path": {
-              "type": "string"
-            },
-            "trigger_type": {
+              "description": "JSON Pointer in the surface data model that receives the value.",
               "type": "string"
             }
           },
           "required": [
-            "config",
+            "function_id",
             "id",
-            "target_path",
-            "trigger_type"
+            "target_path"
           ],
           "type": "object"
         }
@@ -209,7 +253,7 @@
     }
   },
   {
-    "description": "Internal: stamp the authoritative Harness session onto A2UI calls before dispatch.",
+    "description": "Internal: stamp authoritative Harness context onto A2UI function arguments before dispatch.",
     "name": "a2ui::stamp-session",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -223,7 +267,7 @@
           "type": "object"
         }
       },
-      "description": "Trusted pre-trigger envelope supplied by the Harness hook runner.",
+      "description": "Trusted pre-call hook input supplied by the Harness hook runner.",
       "properties": {
         "call": {
           "anyOf": [
@@ -4889,12 +4933,12 @@
       },
       "properties": {
         "code": {
-          "description": "Node: the body of an async function — `return x` yields the result, top-level `await` works. Python: a module — assign `result = x`. Both get a global `iii` that can trigger any bus function; node's can also register functions for the life of the runtime and reach its private scratch directory via `iii.files`, python's is synchronous and gets `/work` instead.",
+          "description": "Node: an async function body (`return x` sets `result`; `await` works). Python: a module (assign `result = x`). A global `iii` is in scope.",
           "type": "string"
         },
         "keep": {
           "default": false,
-          "description": "Only meaningful when `runtime_id` is omitted. `false` (the default): one-shot — create a runtime, run `code`, return the result, destroy it. Nothing persists. `true`: leave it running; the response's `runtime_id` addresses it for later runs and is the capability `code-runner::teardown` needs to stop it.",
+          "description": "When `runtime_id` is omitted: `true` leaves the runtime running and returns its `runtime_id`; `false` destroys it after the run.",
           "type": "boolean"
         },
         "lang": {
@@ -4907,11 +4951,11 @@
             }
           ],
           "default": null,
-          "description": "Required when `runtime_id` is omitted — picks the engine (\"node\" or \"python\"). On an existing runtime: omit it, or pass the runtime's own language; languages cannot be mixed in one runtime."
+          "description": "Required when `runtime_id` is omitted; on an existing runtime omit it or pass the runtime's own language."
         },
         "runtime_id": {
           "default": null,
-          "description": "Run in a SPECIFIC runtime, sharing its scratch directory and its globals: the run lands in that runtime and it is NOT destroyed afterwards — you own it. Omit this to run one-shot (see `keep`).",
+          "description": "Run in this existing runtime (from a keep: true run), sharing its globals and scratch; it is not destroyed afterwards. Omit to run one-shot.",
           "type": [
             "string",
             "null"
@@ -21428,7 +21472,7 @@
     }
   },
   {
-    "description": "Publish a bus function whose handler executes inside a microVM. No runtime_id needed: sandbox-code-runner keeps one persistent runtime per namespace (the segment of function_id before `::`) and language — the first registration in a namespace boots it, later ones in the same namespace and lang reuse it automatically. `source` must DEFINE handler(payload) in `lang` — `export function handler(payload) {...}` (node) or `def handler(payload): ...` (python); each call runs it in a fresh interpreter process with the trigger payload and returns its JSON-serialized result. The first registered id in a namespace claims it; later ids must share both the namespace and its lang. `description` is what engine::functions::info shows a caller — write one. Handlers get the same global `iii` that run code gets (the real iii-sdk client, lazily connected) — but a handler that triggers a function registered on ITS OWN runtime waits on the runtime's one-exec-at-a-time slot and can only time out; call across runtimes or workers instead. Functions stop resolving when their namespace is torn down (sandbox-code-runner::teardown namespace=...) or its runtime is reaped for idleness.",
+    "description": "Publish a bus function whose handler runs in a microVM; no runtime_id needed. source must define handler(payload) in lang; each call runs it and returns its JSON result. The namespace (function_id before `::`) shares one runtime per lang; its functions stop resolving once torn down or idle-reaped.",
     "name": "sandbox-code-runner::register_function",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -21444,14 +21488,14 @@
       "properties": {
         "description": {
           "default": null,
-          "description": "What engine::functions::info shows a caller — write one.",
+          "description": "What `engine::functions::info` shows a caller — write one.",
           "type": [
             "string",
             "null"
           ]
         },
         "function_id": {
-          "description": "e.g. \"my-app::greet\". The first registration in a namespace (the segment before `::`) claims it; later ids must share it. sandbox-code-runner keeps ONE persistent runtime per (namespace, lang) — the first registration creates it, later ones reuse it — as an implementation detail you never see or manage.",
+          "description": "Bus id, e.g. `my-app::greet`; the segment before the first `::` is the namespace, which holds one persistent runtime per lang.",
           "type": "string"
         },
         "lang": {
@@ -21460,10 +21504,10 @@
               "$ref": "#/definitions/Lang"
             }
           ],
-          "description": "Which runner backs this namespace: \"node\" or \"python\". A namespace's language is fixed by its first registration; a later id under the same namespace but a different lang is refused."
+          "description": "Language of the namespace runtime this handler runs in."
         },
         "source": {
-          "description": "Source that DEFINES `handler(payload)` in `lang`: `export function handler(payload) {…}` (node) or `def handler(payload): …` (python). The runner loads the file, calls `handler`, and JSON-serializes the return value.",
+          "description": "Source that defines `handler(payload)` in `lang`: `export function handler(payload) {…}` (node) or `def handler(payload): …` (python).",
           "type": "string"
         }
       },
@@ -21477,7 +21521,7 @@
     }
   },
   {
-    "description": "Run code in an isolated microVM. Pass lang (\"node\" or \"python\"). By default run is ONE-SHOT: it boots a fresh VM, runs code, returns the result, and destroys the VM — nothing persists, no files, no installed packages, and the response carries no runtime_id (there is nothing left to address). Pass keep: true to leave the VM running instead: the response's runtime_id then addresses it, and is the capability sandbox-code-runner::teardown needs to stop it later. Pass runtime_id on a later call to reuse that same VM (same filesystem, fresh interpreter process each time) — that runtime is never auto-stopped, you own it until you tear it down or its idle TTL reaps it, and a reaped reuse fails with sandbox-code-runner::expired (retry without runtime_id to boot a fresh one). Every VM boots with outbound network, so npm/pip installs work on any path. Code you run gets a global `iii` — the real iii-sdk client, lazily connected to the engine on first use: `await iii.trigger({ function_id, payload })` (Node) / `iii.trigger({'function_id': ..., 'payload': ...})` (Python, synchronous) invokes any bus function, and the full SDK surface is available. Functions registered with iii.registerFunction die when the run process exits — register through sandbox-code-runner::register_function (via iii.trigger) for one that persists. stdout, stderr and exit_code come back verbatim — a failing script is a response, not an error.",
+    "description": "Run code in an isolated microVM with outbound network. One-shot by default: nothing persists and no runtime_id is returned. keep: true keeps the VM and returns its runtime_id to reuse until sandbox-code-runner::teardown or the idle TTL reaps it. A failing script is a response, not an error.",
     "name": "sandbox-code-runner::run",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -21492,12 +21536,12 @@
       },
       "properties": {
         "code": {
-          "description": "Source run as a whole file by a fresh interpreter process. Variables do NOT survive between runs; whether files and installed packages do depends on the path below. A global `iii` is in scope — the real iii-sdk client, lazily connected to the engine on first use: `await iii.trigger({ function_id, payload })` in Node, `iii.trigger({'function_id': ..., 'payload': ...})` in Python. Functions registered with `iii.registerFunction` live only until this process exits — use sandbox-code-runner::register_function (callable through `iii.trigger`) for one that persists.",
+          "description": "Source run as a file by a fresh interpreter process; variables do not survive between runs. A global `iii` (iii-sdk client) is in scope.",
           "type": "string"
         },
         "keep": {
           "default": false,
-          "description": "Only meaningful when `runtime_id` is omitted. `false` (the default): one-shot — boot a VM, run `code`, return the result, destroy the VM. Nothing persists: no files, no installed packages. `true`: boot a VM and leave it running; the response's `runtime_id` addresses it for later runs (pass it back to keep working in the same filesystem) and is the capability `sandbox-code-runner::teardown` needs to stop it. Every runtime boots with outbound network (the `iii` global's engine link needs it), so npm/pip installs work on any path.",
+          "description": "When `runtime_id` is omitted: `true` leaves the VM running and returns its `runtime_id`; `false` destroys it after the run.",
           "type": "boolean"
         },
         "lang": {
@@ -21510,11 +21554,11 @@
             }
           ],
           "default": null,
-          "description": "Required when `runtime_id` is omitted — picks the sandbox image (\"node\" or \"python\"). On an existing runtime: omit it, or pass the runtime's own language; languages cannot be mixed in one runtime."
+          "description": "Required when `runtime_id` is omitted; on an existing runtime omit it or pass the runtime's own language."
         },
         "runtime_id": {
           "default": null,
-          "description": "Run in a SPECIFIC runtime, sharing its filesystem: the write and the run land in that VM, and it is NOT stopped afterwards — you own it. Omit this to run one-shot (see `keep`).",
+          "description": "Run in this existing runtime (from a keep: true run), sharing its filesystem; it is not stopped afterwards. Omit to run one-shot.",
           "type": [
             "string",
             "null"

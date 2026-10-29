@@ -15,13 +15,13 @@ Use this skill to create or restructure a Node.js/TypeScript iii worker, especia
 
 Read the relevant references before implementing:
 
-- [`configuration.md`](./configuration.md) — bundled beside this file: schema-validated configuration registration, reads, updates, and reactive triggers.
+- [`configuration.md`](./configuration.md) — bundled beside this file: schema-validated configuration registration, reads, updates, and observing `configuration::on-updated`.
 - The UI half lives in the `ade-worker-design` skill (`directory::skills::get { "id": "harness/ade-worker-design/<name>" }`) and belongs to the Frontend Engineer profile:
   - `console-injectable-ui` — the complete injectable UI contract, host APIs, asset registration, hot reload, responsiveness, and validation requirements.
   - `console-design` — the Console visual system, component grammar, tokens, typography, spacing, and interaction rules.
   - `patterns` — concrete recipes for record-shaped UIs: boards with lanes and drag-and-drop, a record screen that opens as its own pane, activity timelines with threaded comments, creation modals, chat cards for agent calls, settings forms, and live updates.
 
-This file still owns the worker-side half of an injectable UI — the build script, the asset content function and its triggers, the dev watchers — because those ship inside the worker package. The pages, renderers, forms and styles themselves are the Frontend Engineer's work; when a task needs them, name the gap in your result rather than improvising markup here.
+This file still owns the worker-side half of an injectable UI — the build script, the asset content function and its `console::ui::asset` observers, the dev watchers — because those ship inside the worker package. The pages, renderers, forms and styles themselves are the Frontend Engineer's work; when a task needs them, name the gap in your result rather than improvising markup here.
 
 ### Precedence for this Node scaffold
 
@@ -147,7 +147,7 @@ allowBuilds:
 
 (add whatever else the install reports as ignored, with `false` for packages that do not need scripts) and run `pnpm install` again.
 
-Do not guess the `iii-sdk` version. Preserve the destination project's compatible version when one exists; otherwise select a published version intentionally and validate it against the current SDK reference.
+Do not guess the `iii-sdk` version. Preserve the destination project's compatible version when one exists; otherwise select a published version intentionally and validate it against the current SDK reference. This file uses the `iii-sdk` 0.26 API: `call`, `observe`, and the observer hooks.
 
 ## TypeScript configuration
 
@@ -212,15 +212,15 @@ const iii = registerWorker(
 
 If passing `undefined` as the address is incompatible with the installed SDK types, omit the first argument and let `III_URL` resolve according to the current SDK reference. Do not invent connection setup beyond the documented API.
 
-Import only actual top-level SDK exports such as `registerWorker` and, when needed, `TriggerAction` or documented types. Do not import or destructure `registerFunction`, `registerTrigger`, or other client methods as top-level exports. Call `iii.registerFunction(...)`, `iii.registerTrigger(...)`, and `iii.registerTriggerType(...)`. The `IIIClient` type comes from `iii-sdk`; `TriggerConfig`/`TriggerHandler` come from `iii-sdk/trigger`.
+Import only actual top-level SDK exports such as `registerWorker` and, when needed, `CallAction`, `ObserveRejection`, `EngineSources` or documented types. Do not import or destructure `registerFunction`, `call`, `observe`, or other client methods as top-level exports. Call `iii.registerFunction(...)`, `iii.call(...)`, `iii.observe(...)`, and the hook methods `iii.onObserverAdded(...)`, `iii.onObserverRemoved(...)`, `iii.onObserverMatch(...)` and `iii.onObserverDeliver(...)`. The `IIIClient`, `FunctionRef`, `Observer`, `Call` and `Observed` types come from `iii-sdk`.
 
 ### Namespaces
 
 A Compose project usually runs its workers in a project namespace (`III_NAMESPACE` is set by Compose); the engine-hosted workers (`configuration`, `state`, `engine::*`) live in `default`. Consequences:
 
-- Calls to engine-hosted functions from the worker need `namespace: 'default'` on `iii.trigger`; calls to the worker's own functions and other project workers omit it.
-- `iii.registerTrigger` for an engine-provided type (`configuration`) and for another project worker's type (`console:script`) both resolve without a `trigger_namespace`; do not set one.
-- A trigger type the worker registers itself lands in the worker's namespace; console tabs and the harness bind to it without extra configuration.
+- Calls to engine-hosted functions from the worker need `namespace: 'default'` on `iii.call`; calls to the worker's own functions and other project workers omit it.
+- `iii.observe` of an engine-hosted function (`configuration::on-updated`, `engine::on-functions-changed`) and of another project worker's function (`console::ui::asset`) resolves without a `namespace` on the source; do not set one.
+- An event function the worker registers itself lands in the worker's namespace; console tabs and the harness observe it without extra configuration.
 - The harness and the console reach the worker's functions by bare id; never prefix ids with a namespace.
 
 Every public function must provide:
@@ -271,7 +271,7 @@ Follow [`configuration.md`](./configuration.md). For a configurable worker:
 3. Call `configuration::register` at startup with an id, name, description, JSON Schema, and an `initial_value` only when no value exists.
 4. Read and validate the effective value before constructing resources that depend on it.
 5. Register an internal reload function with accurate request/response schemas and `metadata: { internal: true }` when appropriate.
-6. Bind that function with an SDK Message-path trigger of type `configuration`, filtered to the configuration id and relevant event types.
+6. Observe `configuration::on-updated` with that function as the target, filtered on `input.id` and `input.event_type`, with `deliver: 'output'`.
 7. In the UI, register a purpose-built form with `host.configForms.register(...)`; never fall back to a raw JSON textarea.
 8. Set `configurationId` on the page registration so the Console exposes the standard settings action.
 
@@ -282,7 +282,7 @@ async function configurationCall<T>(
   functionId: string,
   payload: Record<string, unknown>,
 ): Promise<T> {
-  return iii.trigger({
+  return iii.call({
     function_id: functionId,
     namespace: 'default',
     payload,
@@ -291,67 +291,122 @@ async function configurationCall<T>(
 }
 ```
 
-Use an explicit namespace only when required by the destination deployment (see Namespaces above; `default` is required for `configuration::*` when the project runs under a Compose namespace). Copy the exact trigger config from the live `configuration` trigger contract rather than assuming it. Preserve unknown configuration fields and `${ENV:default}` templates as required by the bundled references.
+Use an explicit namespace only when required by the destination deployment (see Namespaces above; `default` is required for `configuration::*` when the project runs under a Compose namespace). Copy the event fields from `engine::functions::info { function_id: 'configuration::on-updated' }` rather than assuming them. Preserve unknown configuration fields and `${ENV:default}` templates as required by the bundled references.
 
 Contract details the live registry does not advertise:
 
 - `configuration::register` is hidden from `engine::functions::list` and `engine::functions::info` reports it as not available; it still exists (see `engine::workers::info { name: 'configuration' }`). Its payload is `{ id, name, description, schema, initial_value?, metadata: { ui_form: '<configuration-id>' } }`. Re-registering with `initial_value` **replaces** the stored value, so pass it only when the read below returned nothing.
 - `configuration::get { id }` throws when the id is not registered yet; treat that error as “no value” during startup, register, then read again (with defaults expanded) to obtain the effective value.
 - The persisted file is `<config dir>/<id>.yaml` with `id`, `name`, `description`, `metadata`, and `value`.
-- The `configuration` trigger delivers `{ id, event_type, name, description, schema, old_value, new_value, type: 'configuration' }`; filter with `config: { configuration_id, event_types: ['configuration:updated'] }`.
+- `configuration::on-updated` is called with `{ type: 'configuration', event_type, id, name, description, schema, old_value, new_value, metadata }`; observe it with `filters: { 'input.id': { $eq: '<configuration-id>' }, 'input.event_type': { $eq: 'configuration:updated' } }` and `deliver: 'output'`.
 - Relative paths in configuration should resolve from a stable root. Resolve them against the project root (the nearest ancestor of the worker directory that contains `worker-compose.yaml`, overridable by an env var), not the process cwd, and expose the resolved path through a small `<worker-name>::config::info` function so the settings form can show it.
 
-## Live updates (own trigger type)
+## Live updates (the worker's event function)
 
-When other tabs, agents, or workers must react to changes without polling, the worker provides its own trigger type and fans events out to every binding:
+When other tabs, agents, or workers must react to changes without polling, the worker hosts an event function: a private function whose handler returns the event it is called with. The worker calls it after every persisted mutation, and iii delivers each call to the observers whose filters match:
 
 ```ts
-import { TriggerAction, type IIIClient } from 'iii-sdk'
-import type { TriggerConfig } from 'iii-sdk/trigger'
+import { CallAction } from 'iii-sdk'
 
-type ChangeConfig = { record_id?: string; events?: string[]; metadata?: unknown }
-const subscribers = new Map<string, TriggerConfig<ChangeConfig>>()
+const ON_CHANGE_FN = '<worker-name>::on-change'
 
-/** A subscription's metadata: declared in the config, or on the binding itself. */
-function subscriptionMetadata(binding: TriggerConfig<ChangeConfig>): unknown {
-  return binding.config.metadata ?? binding.metadata
+type ChangeEvent = {
+  event: string // e.g. 'record.updated', 'store.reloaded'
+  record_id?: string
+  record?: Record<string, unknown>
 }
 
-iii.registerTriggerType<ChangeConfig>(
-  {
-    id: '<worker-name>:change',
-    description:
-      'Fires after every mutation. Config: { record_id?, events?, metadata? } — metadata rides along to the invoked handler.',
-  },
-  {
-    registerTrigger: async (binding) => {
-      subscribers.set(binding.id, {
-        ...binding,
-        config: { ...binding.config, metadata: subscriptionMetadata(binding) },
-      })
-    },
-    unregisterTrigger: async (binding) => { subscribers.delete(binding.id) },
-  },
-)
+iii.registerFunction(ON_CHANGE_FN, (event: ChangeEvent) => event, {
+  description:
+    'Called after every persisted mutation with the whole record. No args; filter on input.event or input.record_id.',
+  request_format: changeEventSchema,
+  response_format: changeEventSchema,
+  private: true, // everyone may observe it; only this worker calls it
+})
 
-function emit(event: Record<string, unknown>) {
-  for (const binding of subscribers.values()) {
-    if (!matches(binding.config, event)) continue
-    const metadata = subscriptionMetadata(binding)
-    iii.trigger({
-      function_id: binding.function_id,
-      namespace: binding.namespace, // pass the binding's namespace through
-      payload: event,
-      ...(metadata === undefined ? {} : { metadata }), // never drop the subscriber's metadata
-      action: TriggerAction.Void(),  // fire-and-forget; a closed tab must not block the loop
-    }).catch(() => undefined)
-  }
+function emit(event: ChangeEvent) {
+  if (!iii.isObserved(ON_CHANGE_FN)) return // one atomic load while nothing observes it
+  iii
+    .call({ function_id: ON_CHANGE_FN, payload: event, action: CallAction.Void() }) // delivery does not wait for targets
+    .catch((error) => console.error('[<worker-name>] emit failed', error))
 }
 ```
 
-Emit from the store after each persisted mutation and include the **whole record** in the payload so consumers can upsert without a round trip. The UI side of this contract is in the designer's `console-injectable-ui` (`host.iii` → live data) and `patterns` §8.
+Emit from the store after each persisted mutation and include the **whole record** in the payload so consumers can upsert without a round trip. The function takes no args: consumers choose calls with filters on its `input`. The UI side of this contract is in the designer's `console-injectable-ui` (`host.iii` → live data) and `patterns` §8.
 
-**Every trigger type the worker provides must carry trigger metadata.** A registration's `metadata` arrives at the provider as `binding.metadata` (`TriggerConfig.metadata`) and must come back out on every `iii.trigger` as `metadata`; the bound handler receives it as its **second argument**, a channel separate from the payload, and a fan-out that omits it silently drops it. Because the top-level `metadata` slot also carries the harness's own control fields (`{ payload, event_into }`) for call-to-function bindings, also accept a `metadata` field inside the trigger's config, name it in the trigger type's `description`, and forward whichever the subscriber set (config first). Never merge metadata into the payload.
+Another worker observes it with a function of its own as the target:
+
+```ts
+iii.observe(
+  {
+    function_id: '<worker-name>::on-change',
+    filters: { 'input.record_id': { $eq: recordId } },
+    deliver: 'output', // the target receives the event itself
+  },
+  'other-worker::on-record-change',
+  { metadata: { reason: 'sync' } },
+)
+```
+
+An observer's `metadata` stays with the engine: its target receives it as the handler's **second argument** on every call, a channel separate from the payload. The worker that hosts the event function neither sees nor forwards it, so never merge metadata into the payload.
+
+### Observer hooks: setup, matching and delivery
+
+By default iii accepts every observer, delivers every call to each observer whose filters match, and gives the caller the handler's return value. A function that needs more overrides one default with a hook, set on the client by function id or chained on the `FunctionRef` that `registerFunction` returns:
+
+| Hook | Set it when | The default it overrides |
+|---|---|---|
+| `onObserverAdded(obs)` | each observer needs something set up (a timer, a watch, a subscription); throw `ObserveRejection` to refuse it | accept the observer |
+| `onObserverRemoved(obs)` | that setup must be torn down | forget the observer |
+| `onObserverMatch(obs, call)` | the observer's `args` say which calls it wants | every observer wants every call |
+| `onObserverDeliver(call, observers)` | each call goes to one observer, or the caller needs the target's answer | deliver to every match and return the handler's value |
+
+`args` belong to the worker that hosts the function and `filters` to iii. A function takes args only when an observer needs its own setup or its own calls; it declares them with `args_format`, and the engine validates every observer's args against it (`INVALID_ARGS`). Everything else is a filter on `input`.
+
+```ts
+import { CallAction, ObserveRejection } from 'iii-sdk'
+
+const ON_DUE_FN = '<worker-name>::on-due'
+
+iii
+  .registerFunction(ON_DUE_FN, (due: { record_id: string; due_at: number }) => due, {
+    description: 'Called when a record falls due. Args: { record_id }.',
+    args_format: {
+      type: 'object',
+      properties: { record_id: { type: 'string' } },
+      required: ['record_id'],
+    },
+    private: true,
+  })
+  .onObserverAdded(async (obs) => {
+    const record = await store.get(obs.args.record_id as string)
+    if (!record) throw new ObserveRejection('UNKNOWN_RECORD', `no record ${obs.args.record_id}`)
+    timers.retain(record.id, record.due_at, () =>
+      iii.call({
+        function_id: ON_DUE_FN,
+        payload: { record_id: record.id, due_at: record.due_at },
+        action: CallAction.Void(),
+      }),
+    )
+  })
+  .onObserverRemoved((obs) => timers.release(obs.args.record_id as string))
+  // many observers: match by keys, one lookup per call
+  // .onObserverMatch({ observer: (obs) => obs.args.record_id as string, call: (call) => call.input.record_id })
+  .onObserverMatch((obs, call) => obs.args.record_id === call.input.record_id)
+```
+
+- Hooks of one function run one at a time. Chain them on `registerFunction`, or set them by id before it, so they see every observer.
+- `onObserverRemoved` runs exactly once for every accepted observer, and never for a rejected one.
+- A new observer that needs the current state gets it through itself once it is accepted. From `onObserverAdded`, without awaiting it: `void obs.accepted().then(() => iii.call({ observer: obs, payload: current, action: CallAction.Void() }))`. A call through an observer runs its target with the observer's policy and metadata; only the worker that hosts the observed function may make one.
+- `onObserverDeliver` receives the call and the observers that matched it, delivers the call itself, and returns what the caller gets back. It applies each observer's filters with `obs.matches(call)`:
+
+```ts
+iii.onObserverDeliver('<worker-name>::on-command', async (call, observers) => {
+  const handler = observers.find((obs) => obs.args.command === call.input.command)
+  if (!handler || !handler.matches(call)) return { handled: false }
+  return iii.call({ observer: handler, payload: call.input })
+})
+```
 
 ## Injectable UI builder
 
@@ -430,14 +485,14 @@ export default function setup(host: Host) {
 
   // Register only surfaces that are implemented.
   // host.configForms.register('<configuration-id>', WorkerConfigForm)
-  // host.functionTriggers.register(createFunctionRenderer())
-  // host.triggerRenderers?.register(createTriggerRenderer())
+  // host.functionCalls.register(createFunctionRenderer())
+  // host.observerRenderers?.register(createObserverActivityRenderer())
 }
 ```
 
 If the worker has no configuration, omit both `configurationId` and the config form. If it has configuration, implement and register the form; do not advertise settings without a corresponding interface.
 
-The page body is the designer's work: `harness/ade-worker-design/console-injectable-ui` covers narrow panes, loading/error/empty states, renderer fallthrough, redaction, dirty state, live triggers, accessibility, and real-Console testing; `harness/ade-worker-design/console-design` covers visual decisions.
+The page body is the designer's work: `harness/ade-worker-design/console-injectable-ui` covers narrow panes, loading/error/empty states, renderer fallthrough, redaction, dirty state, live observers, accessibility, and real-Console testing; `harness/ade-worker-design/console-design` covers visual decisions.
 
 Every selector in `ui/styles.css` must be scoped under `[data-iii-ui="<worker-name>"]`:
 
@@ -458,9 +513,9 @@ Node workers implement the injectable UI wire contract directly:
 1. Build first, so `dist/ui/page.js` and `dist/ui/styles.css` exist.
 2. From compiled `dist/index.js`, read them with URLs relative to `import.meta.url`.
 3. Register one content function accepting `{ path }` and returning `{ content, content_type }`.
-4. Register one SDK Message-path trigger per asset:
-   - `console:script` with `config: { path: '<worker-name>/page.js' }`;
-   - `console:style` with `config: { path: '<worker-name>/styles.css' }`.
+4. Observe `console::ui::asset` once per asset, with the content function as the target:
+   - args `{ kind: 'script', path: '<worker-name>/page.js' }`;
+   - args `{ kind: 'style', path: '<worker-name>/styles.css' }`.
 5. Keep the first path segment equal to `<worker-name>`; it defines the CSS scope.
 6. Reject unknown asset paths.
 
@@ -505,22 +560,20 @@ iii.registerFunction(
   },
 )
 
-iii.registerTrigger({
-  type: 'console:script',
-  function_id: UI_CONTENT_FUNCTION,
-  config: { path: '<worker-name>/page.js' },
-})
+iii.observe(
+  { function_id: 'console::ui::asset', args: { kind: 'script', path: '<worker-name>/page.js' } },
+  UI_CONTENT_FUNCTION,
+)
 
-iii.registerTrigger({
-  type: 'console:style',
-  function_id: UI_CONTENT_FUNCTION,
-  config: { path: '<worker-name>/styles.css' },
-})
+iii.observe(
+  { function_id: 'console::ui::asset', args: { kind: 'style', path: '<worker-name>/styles.css' } },
+  UI_CONTENT_FUNCTION,
+)
 ```
 
-Use SDK Message-path trigger registrations here, not the engine's durable trigger-registration function. SDK registrations are replayed after reconnect and removed when the worker disconnects.
+Once each observer is active, the console calls the content function through it and serves the bytes. Observe over the worker's own connection: its observers are replayed after a reconnect and leave with the worker when it disconnects, and the console drops their assets.
 
-The in-memory asset map is intentionally populated at process startup. During development, rebuilding `dist/ui` restarts the worker, which reads the new bytes and re-registers the same paths with new content hashes.
+The in-memory asset map is intentionally populated at process startup. During development, rebuilding `dist/ui` restarts the worker, which reads the new bytes and observes the same paths again with new content hashes.
 
 ## Development loop required for injectable UI
 
@@ -632,7 +685,7 @@ Do not replace this script with only `tsc --watch`. It must:
 8. terminate all children if any watcher fails;
 9. forward `SIGINT`/`SIGTERM` and escalate only after a short grace period.
 
-This enables injectable UI hot development: an edit changes `dist/ui`, Node restarts the worker, the worker reconnects and re-registers the same asset paths with new content, and the Console hot-swaps the asset. The Console itself is not rebuilt.
+This enables injectable UI hot development: an edit changes `dist/ui`, Node restarts the worker, the worker reconnects and observes the same asset paths with new content, and the Console hot-swaps the asset. The Console itself is not rebuilt.
 
 ## Worker manifest
 
@@ -670,13 +723,18 @@ Never write the worker's entry into `worker-compose.yaml` by hand. A running dae
 1. Arm the wake, with an operation id you choose (`add-<worker-name>-<suffix>`):
 
    ```json
-   engine::register_trigger {
-     "trigger_type": "compose-operation",
-     "config": { "operation_id": "add-issue-board-7f3a", "terminal_only": true },
+   harness::observe {
+     "function_id": "compose::on-operation-progress",
+     "filters": {
+       "input.operation_id": { "$eq": "add-issue-board-7f3a" },
+       "input.terminal": { "$eq": true }
+     },
      "once": true,
      "lifecycle": { "expires_in_ms": 600000 }
    }
    ```
+
+   It returns `{ observer_id, once }`; keep the `observer_id`.
 
 2. Declare the worker with the same id, as a container object, so the dev loop and the start order land in the file with it:
 
@@ -698,9 +756,9 @@ Never write the worker's entry into `worker-compose.yaml` by hand. A running dae
    - `scripts.run: pnpm dev` runs the coordinated loop from `scripts/dev.mjs` instead of the production `start` script; it is what gives the worker hot reload under compose.
    - The response `{ operation_id, requested, status }` is an acceptance, not readiness.
 
-3. Read `compose::operation { "operation_id": "add-issue-board-7f3a" }` once. If `last_event.terminal` is true, unregister the wake and read the result; otherwise end the turn and let the terminal event wake you. Do not poll.
+3. Read `compose::operation { "operation_id": "add-issue-board-7f3a" }` once. If `last_event.terminal` is true, remove the wake with `harness::unobserve { "id": "<observer_id>" }` and read the result; otherwise end the turn and let the terminal event wake you. Do not poll.
 
-4. On the terminal event, confirm: `compose::status` shows the container `ready`, and `engine::workers::info { "name": "<worker-name>" }` lists its functions and trigger types. On `failed`, `compose::logs { "container": "<container key>", "tail": 100 }` has the real error. The container runs the worker's own install and start scripts, so the first run installs dependencies and restarts once or twice while the watchers write `dist/`; that is expected.
+4. On the terminal event, confirm: `compose::status` shows the container `ready`, and `engine::workers::info { "name": "<worker-name>" }` lists its functions and the observers it created. On `failed`, `compose::logs { "container": "<container key>", "tail": 100 }` has the real error. The container runs the worker's own install and start scripts, so the first run installs dependencies and restarts once or twice while the watchers write `dist/`; that is expected.
 
 A container that is already declared is left as it is by `compose::add`; if it is stopped, `compose::up { "container": "<container key>" }` starts it. A dependency added later is `pnpm install` in the worker directory, as during scaffolding; the running loop picks it up on the next rebuild. Never restart the whole project: the harness is a container of it and goes down mid-turn.
 
@@ -714,10 +772,10 @@ A container that is already declared is left as it is by `compose::add`; if it i
 6. Implement and test backend domain behavior.
 7. Register functions with complete contracts and add configuration integration if needed.
 8. Build the injectable UI using shared Console components and scoped CSS.
-9. Add worker-side asset delivery and Message-path registrations.
+9. Add worker-side asset delivery and its `console::ui::asset` observers.
 10. Add the coordinated `scripts/dev.mjs` loop.
 11. Add or update `iii.worker.yaml`.
-12. Declare the worker through `compose::add` under a `compose-operation` wake, then confirm with `compose::status` and `engine::workers::info`.
+12. Declare the worker through `compose::add` under a `compose::on-operation-progress` wake, then confirm with `compose::status` and `engine::workers::info`.
 13. Validate static builds, runtime registration, asset delivery, hot reload, and real rendering. Drive the real Console through the `browser` worker (`browser::sessions::start` on the console URL, then `browser::snapshot`, `browser::act`, `browser::evaluate`, `browser::screenshot`) so both light and dark themes, narrow and wide panes, and the chat renderer are checked with screenshots, not assumptions.
 
 ## Validation checklist
@@ -729,8 +787,8 @@ Before declaring the worker complete:
 - `pnpm install` succeeds and the lockfile resolves `@iii-dev/console-ui` from npm at `0.1.0`, not through `file:`, `link:`, or `workspace:`.
 - `pnpm typecheck`, `pnpm test`, and `pnpm build` pass.
 - `pnpm dev` builds all outputs before starting watchers and shuts down cleanly.
-- The worker appears in the engine with every intended function and trigger type.
-- A worker-provided trigger type forwards every subscription's metadata (`binding.metadata`, or the config's `metadata` field) on every `iii.trigger`, and its description names that field.
+- The worker appears in the engine with every intended function, and `engine::workers::info` lists its asset observers.
+- The worker's event function is registered `private: true`, returns the event it is called with, and delivers to an observer after a real mutation; that observer's `metadata` reaches its target as the handler's second argument.
 - Every public function exposes accurate descriptions and request/response schemas.
 - Configuration registration, read, update, and reload behavior work without erasing existing or unknown values.
 - `dist/ui/page.js` and `dist/ui/styles.css` are non-empty and React remains external.
@@ -741,5 +799,5 @@ Before declaring the worker complete:
 - Live updates reach an open page without a reload: mutate through a function from outside the UI and watch the page change.
 - A record opens as its own pane in the same workspace tab through `host.panels.open`, and the collection page adapts when the tab splits (narrow mode).
 - The real Console renders the page in narrow and wide panes, light and dark themes, with keyboard navigation, visible focus, stable async states, and no browser-console errors.
-- Reconnects and repeated UI edits do not accumulate duplicate functions, triggers, pages, renderers, or forms.
+- Reconnects and repeated UI edits do not accumulate duplicate functions, observers, pages, renderers, or forms.
 - The worker was declared through `compose::add`, never by editing `worker-compose.yaml`; `compose::status` shows it `ready`, and its entry runs `pnpm dev` after the console container.
