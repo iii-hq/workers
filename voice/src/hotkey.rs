@@ -57,7 +57,10 @@ fn status_cell() -> &'static Mutex<HotkeyStatus> {
 }
 
 pub fn status() -> HotkeyStatus {
-    status_cell().lock().unwrap_or_else(|p| p.into_inner()).clone()
+    status_cell()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
 }
 
 fn set_status(next: HotkeyStatus) {
@@ -194,7 +197,8 @@ mod mac {
                 None
             }
             KCG_EVENT_FLAGS_CHANGED => {
-                let code = unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) };
+                let code =
+                    unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) };
                 let flags = unsafe { CGEventGetFlags(event) };
                 listener
                     .tracker

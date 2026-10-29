@@ -14,16 +14,27 @@ export function isLocalHost(host: string): boolean {
   return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254)
 }
 
-/** Where the address bar sends a query that is not an address. */
+/** A typed address becomes a url: a real scheme passes, a local host gets
+ * http://, anything else https:// (a bare `host:port` like localhost:3000 is
+ * not a scheme). The worker still falls back to http when https fails the
+ * TLS handshake on a local host. Never a search: the iii app's native viewer
+ * shares this rule and gates what it opens on it. */
+export function toUrl(draft: string): string {
+  const url = draft.trim()
+  if (!url) return ''
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url) || url.startsWith('about:')) return url
+  const host = url.split(/[/?#]/)[0]?.replace(/:\d+$/, '') ?? ''
+  return `${isLocalHost(host) ? 'http' : 'https'}://${url}`
+}
+
+/** Where the console's address bar sends a query that is not an address. */
 export const SEARCH_URL = 'https://www.google.com/search?q='
 
-/** A typed address becomes a url: a real scheme passes, a local host gets
- * http://, a host-looking word (a dot, a port, `localhost`) gets https://,
- * and anything else — words with spaces, a lone word — is a search, the way
- * a browser's address bar reads it (a bare `host:port` like localhost:3000
- * is not a scheme). The worker still falls back to http when https fails
- * the TLS handshake on a local host. */
-export function toUrl(draft: string): string {
+/** The console's address bar, the way a browser's reads what you type: an
+ * address (a scheme, a local host, a dot or a port in the host) goes
+ * through `toUrl`; anything else — words with spaces, a lone word — is a
+ * search. */
+export function toUrlOrSearch(draft: string): string {
   const url = draft.trim()
   if (!url) return ''
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url) || url.startsWith('about:')) return url
@@ -32,9 +43,11 @@ export function toUrl(draft: string): string {
   const looksLikeHost =
     !/\s/.test(url) &&
     host.length > 0 &&
-    (isLocalHost(host) || /^\[[0-9a-f:]+\]$/i.test(host) || /:\d+$/.test(hostPort) || /^[^.\s]+(\.[^.\s]+)+$/.test(host))
-  if (!looksLikeHost) return `${SEARCH_URL}${encodeURIComponent(url)}`
-  return `${isLocalHost(host) ? 'http' : 'https'}://${url}`
+    (isLocalHost(host) ||
+      /^\[[0-9a-f:]+\]$/i.test(host) ||
+      /:\d+$/.test(hostPort) ||
+      /^[^.\s]+(\.[^.\s]+)+$/.test(host))
+  return looksLikeHost ? toUrl(url) : `${SEARCH_URL}${encodeURIComponent(url)}`
 }
 
 /** How the bar reads a page it is not editing, the way Chrome shows it: the

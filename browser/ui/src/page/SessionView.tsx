@@ -82,7 +82,7 @@ import {
   typeBrowserText,
   zoomBrowserPage,
 } from '../lib/browser'
-import { displayUrl, siteSecurity, toUrl } from '../lib/address'
+import { displayUrl, siteSecurity, toUrlOrSearch } from '../lib/address'
 import { cn } from '../lib/cn'
 import { useBrowserSessionEvent } from '../lib/events'
 import {
@@ -291,7 +291,7 @@ export function SessionView({
   }, [shownUrl])
 
   const submitUrl = useCallback(() => {
-    const url = toUrl(urlDraft)
+    const url = toUrlOrSearch(urlDraft)
     if (!url) return
     setUrlDraft(url)
     pendingUrlRef.current = url
@@ -316,7 +316,7 @@ export function SessionView({
   )
 
   const openCurrentPage = useCallback(() => {
-    const url = toUrl(urlDraft) || shownUrl
+    const url = toUrlOrSearch(urlDraft) || shownUrl
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
   }, [shownUrl, urlDraft])
 

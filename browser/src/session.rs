@@ -548,7 +548,10 @@ impl Tab {
     }
 
     pub fn favicon(&self) -> String {
-        self.favicon.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.favicon
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// The page reported its icon. False when it is what the tab already

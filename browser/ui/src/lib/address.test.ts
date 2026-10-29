@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { displayUrl, isLocalHost, siteSecurity, toUrl } from '../lib/address'
+import { displayUrl, isLocalHost, siteSecurity, toUrl, toUrlOrSearch } from '../lib/address'
 
 describe('address bar url guessing', () => {
   it('reaches local hosts over http and everything else over https', () => {
@@ -15,11 +15,11 @@ describe('address bar url guessing', () => {
   })
 
   it('searches what is not an address', () => {
-    expect(toUrl('react hooks')).toBe('https://www.google.com/search?q=react%20hooks')
-    expect(toUrl('github')).toBe('https://www.google.com/search?q=github')
-    expect(toUrl('localhost')).toBe('http://localhost')
-    expect(toUrl('intranet:8080/x')).toBe('https://intranet:8080/x')
-    expect(toUrl('docs.rs/serde')).toBe('https://docs.rs/serde')
+    expect(toUrlOrSearch('react hooks')).toBe('https://www.google.com/search?q=react%20hooks')
+    expect(toUrlOrSearch('github')).toBe('https://www.google.com/search?q=github')
+    expect(toUrlOrSearch('localhost')).toBe('http://localhost')
+    expect(toUrlOrSearch('intranet:8080/x')).toBe('https://intranet:8080/x')
+    expect(toUrlOrSearch('docs.rs/serde')).toBe('https://docs.rs/serde')
   })
 
   it('reads a page url the way Chrome shows it', () => {
