@@ -76,7 +76,7 @@ export const CASES: TestCase[] = [
   {
     name: 'exposed-call-through-middleware',
     async run({ down }) {
-      const r: Json = await down.trigger({ function_id: 'api::echo', payload: { hi: 1 } })
+      const r: Json = await down.call({ function_id: 'api::echo', payload: { hi: 1 } })
       if (r?.mw !== true) throw new Error(`middleware did not wrap the call: ${JSON.stringify(r)}`)
       if (r?.result?.hi !== 1) throw new Error(`target did not echo through middleware: ${JSON.stringify(r)}`)
     },
@@ -87,7 +87,7 @@ export const CASES: TestCase[] = [
   {
     name: 'forbidden-call-rejected',
     async run({ down, expectError }) {
-      await expectError(() => down.trigger({ function_id: 'secret::echo', payload: {} }), 'FORBIDDEN')
+      await expectError(() => down.call({ function_id: 'secret::echo', payload: {} }), 'FORBIDDEN')
     },
   },
 
@@ -95,7 +95,7 @@ export const CASES: TestCase[] = [
   {
     name: 'discovery-functions-filtered',
     async run({ down }) {
-      const res: Json = await down.trigger({ function_id: 'engine::functions::list', payload: {} })
+      const res: Json = await down.call({ function_id: 'engine::functions::list', payload: {} })
       const ids: string[] = (res?.functions ?? []).map((f: Json) => f.function_id)
       if (!ids.includes('api::echo')) throw new Error(`exposed api::echo missing from discovery: ${JSON.stringify(ids)}`)
       if (ids.includes('secret::echo')) throw new Error(`forbidden secret::echo leaked into discovery: ${JSON.stringify(ids)}`)
@@ -107,7 +107,7 @@ export const CASES: TestCase[] = [
   {
     name: 'discovery-workers-internals-stripped',
     async run({ down }) {
-      const res: Json = await down.trigger({ function_id: 'engine::workers::list', payload: {} })
+      const res: Json = await down.call({ function_id: 'engine::workers::list', payload: {} })
       const workers: Json[] = res?.workers ?? []
       for (const w of workers) {
         if ('ip_address' in w) throw new Error(`ip_address leaked on worker ${w?.name}`)
@@ -128,7 +128,7 @@ export const CASES: TestCase[] = [
       for (let i = 0; i < 25; i++) {
         await sleep(200)
         try {
-          detail = await support.trigger({
+          detail = await support.call({
             function_id: 'engine::functions::info',
             payload: { function_id: 'tenant1::myfn' },
           })
@@ -156,7 +156,7 @@ export const CASES: TestCase[] = [
       let lastErr: unknown
       for (let i = 0; i < 25; i++) {
         try {
-          r = await down.trigger({ function_id: 'myfn', payload: {} })
+          r = await down.call({ function_id: 'myfn', payload: {} })
           break
         } catch (e) {
           lastErr = e
@@ -168,25 +168,54 @@ export const CASES: TestCase[] = [
     },
   },
 
-  // (c) A trigger bound to a forbidden function is denied at registration: the
-  //     proxy never forwards it, so no such binding exists on the engine.
+  // (c) An observer whose target is a forbidden function is refused with
+  //     FORBIDDEN: the proxy never forwards it, so the engine holds no
+  //     observer targeting it.
   {
-    name: 'trigger-to-forbidden-denied',
-    async run({ down, support }) {
-      try {
-        down.registerTrigger({
-          type: 'http',
-          function_id: 'secret::echo',
-          config: { api_path: 'sneak', http_method: 'GET' },
-        })
-      } catch {
-        /* the SDK may not surface the async denial; the proxy's block is what matters */
+    name: 'observe-to-forbidden-target-denied',
+    async run({ down, support, expectError }) {
+      const handle = down.observe('api::echo', 'secret::echo')
+      await expectError(() => handle.ready(), 'FORBIDDEN')
+      const res: Json = await support.call({ function_id: 'engine::observers::list', payload: {} })
+      const targets: string[] = (res?.observers ?? []).map((o: Json) => o?.target?.function_id)
+      if (targets.includes('secret::echo')) {
+        throw new Error(`proxy forwarded an observer targeting a forbidden function: ${JSON.stringify(targets)}`)
       }
-      await sleep(1000)
-      const res: Json = await support.trigger({ function_id: 'engine::registered-triggers::list', payload: {} })
-      const bound: string[] = (res?.registered_triggers ?? []).map((t: Json) => t.function_id)
-      if (bound.includes('secret::echo')) {
-        throw new Error(`proxy forwarded a trigger bound to a forbidden function: ${JSON.stringify(bound)}`)
+    },
+  },
+
+  // The on_observer_registration hook runs before an observer reaches the
+  // engine; it denies observers whose args ask for it. (api::echo takes no
+  // args, so an observer the hook let through would fail with INVALID_ARGS.)
+  {
+    name: 'observer-registration-hook-denies',
+    async run({ down, expectError }) {
+      const handle = down.observe({ function_id: 'api::echo', args: { deny: true } }, 'api::sink')
+      await expectError(() => handle.ready(), 'FORBIDDEN')
+    },
+  },
+
+  // An observer of an exposed function, targeting the session's own function,
+  // goes active; a call of the observed function runs the target through the
+  // proxy with the `Observed` envelope (the prefix stripped from the target).
+  {
+    name: 'observer-of-exposed-function-fires-through-proxy',
+    async run({ down }) {
+      let seen: Json
+      down.registerFunction('on-echo', async (observed: Json) => {
+        seen = observed
+        return null
+      })
+      const handle = down.observe('api::echo', 'on-echo')
+      await handle.ready()
+      try {
+        await down.call({ function_id: 'api::echo', payload: { ping: 'observed' } })
+        for (let i = 0; i < 25 && seen === undefined; i++) await sleep(200)
+      } finally {
+        await handle.dispose()
+      }
+      if (seen?.function_id !== 'api::echo' || seen?.input?.ping !== 'observed') {
+        throw new Error(`the observer's target did not receive the call of api::echo: ${JSON.stringify(seen)}`)
       }
     },
   },
@@ -214,19 +243,22 @@ export const CASES: TestCase[] = [
     },
   },
 
-  // A call over the engine's 16 MiB frame limit reaches middleware on the
-  // shared control connection. It must fail with payload_too_large instead of
-  // being replayed ahead of every later message on each reconnect, which left
-  // the proxy unable to authenticate sessions or answer any call. Kept last:
-  // on failure the proxy stays wedged for the cases after it.
+  // A call over 16 MiB reaches middleware on the shared control connection.
+  // The proxy's SDK and the engine both declare large-messages.v1, so it
+  // round-trips; it must never be replayed ahead of every later message on
+  // each reconnect, which left the proxy unable to authenticate sessions or
+  // answer any call. Kept last: on failure the proxy stays wedged for the
+  // cases after it.
   {
-    name: 'oversized-call-rejected-without-poisoning',
+    name: 'oversized-call-without-poisoning',
     async run({ down }) {
-      const big: Json = await rawInvoke('api::echo', { blob: 'x'.repeat(17 * 1024 * 1024) })
-      if (big?.error?.code !== 'payload_too_large') {
-        throw new Error(`oversized call should fail with payload_too_large: ${JSON.stringify(big).slice(0, 300)}`)
+      const size = 17 * 1024 * 1024
+      const big: Json = await rawInvoke('api::echo', { blob: 'x'.repeat(size) })
+      if (big?.result?.result?.blob?.length !== size) {
+        const summary = JSON.stringify(big, (key, value) => (key === 'blob' ? `<${value.length} chars>` : value))
+        throw new Error(`oversized call should round-trip through middleware: ${summary.slice(0, 300)}`)
       }
-      const r: Json = await down.trigger({ function_id: 'api::echo', payload: { hi: 2 }, timeoutMs: 10_000 })
+      const r: Json = await down.call({ function_id: 'api::echo', payload: { hi: 2 }, timeoutMs: 10_000 })
       if (r?.result?.hi !== 2) {
         throw new Error(`middleware stopped answering after the oversized call: ${JSON.stringify(r)}`)
       }

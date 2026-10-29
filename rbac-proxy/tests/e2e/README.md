@@ -33,7 +33,8 @@ run-tests.sh
   └─ run the Node harness (workers/harness), which:
        1. registers the support fns on the engine:
           support::auth (bearer-token gate, per-tenant prefix + context),
-          support::middleware, support::on-fn-reg, api::echo, secret::echo
+          support::middleware, support::on-fn-reg, support::on-observer-reg,
+          api::echo, secret::echo
        2. connects a downstream worker THROUGH the proxy (Bearer test-token)
        3. runs the cases, streams per-case results, emits HARNESS_DONE: PASS n/m
 ```
@@ -48,9 +49,11 @@ run-tests.sh
 | `discovery-workers-internals-stripped` | `engine::workers::list` strips `ip_address` / `isolation` |
 | `prefix-applied-and-hook-ran-on-registration` | a bare `myfn` is namespaced to `tenant1::myfn`; the `on_function_registration` hook stamps metadata (verified against the engine's unfiltered view) |
 | `prefix-self-invoke-roundtrip` | the session invokes its own bare `myfn`; the proxy resolves + dispatches back (prefix stripped) and the handler runs |
-| `trigger-to-forbidden-denied` | a trigger bound to a forbidden function is never forwarded (no such binding on the engine) |
+| `observe-to-forbidden-target-denied` | an observer whose target is a forbidden function is refused with `FORBIDDEN` and never forwarded (the engine holds no observer targeting it) |
+| `observer-registration-hook-denies` | the `on_observer_registration` hook runs before the engine sees an observer; its throw refuses the observer with `FORBIDDEN` |
+| `observer-of-exposed-function-fires-through-proxy` | an observer of `api::echo` targeting the session's own `on-echo` goes active, and a call of `api::echo` runs `on-echo` through the proxy with the `Observed` envelope |
 | `channel-roundtrip-through-proxy` | a channel round-trips through the proxy's `/ws/channels` bridge |
-| `oversized-call-rejected-without-poisoning` | a call over the engine's 16 MiB frame limit (sent fragmented, as browsers do) fails with `payload_too_large`; middleware calls and new sessions keep working afterwards |
+| `oversized-call-without-poisoning` | a call over 16 MiB (sent fragmented, as browsers do) round-trips through middleware, the proxy's control connection carrying it as a large message; middleware calls and new sessions keep working afterwards |
 
 ## Output
 
@@ -58,7 +61,7 @@ A per-case summary prints at the end; the machine-readable report is written to
 `reports/report.json`:
 
 ```json
-{ "pass": 9, "total": 9, "results": [ { "case": "...", "status": "PASS", "duration_ms": 12 } ] }
+{ "pass": 11, "total": 11, "results": [ { "case": "...", "status": "PASS", "duration_ms": 12 } ] }
 ```
 
 Engine / proxy / harness logs are written to `reports/{engine,proxy,harness}-<ts>.log`.
