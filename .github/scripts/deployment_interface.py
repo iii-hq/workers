@@ -2,7 +2,8 @@
 """Capture and verify Registry interfaces from immutable prepared artifacts.
 
 This is publication evidence, not a deployment smoke test: the prepared worker
-is only allowed to register its functions with an isolated engine. No worker function, external backend, or product behavior is exercised.
+is only allowed to register its functions with an isolated engine. No worker
+function, external backend, or product behavior is exercised.
 """
 
 from __future__ import annotations
