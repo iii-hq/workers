@@ -4761,7 +4761,7 @@ mod tests {
             SkillAck {
                 generation: 2,
                 fingerprint: Some("sha256:b".into()),
-                ids: Vec::new(),
+                ids: None,
             },
         )
         .await
@@ -4778,7 +4778,7 @@ mod tests {
             SkillAck {
                 generation: 3,
                 fingerprint: Some("sha256:c".into()),
-                ids: Vec::new(),
+                ids: None,
             },
         )
         .await
@@ -4793,7 +4793,7 @@ mod tests {
             Some(SkillAck {
                 generation: 3,
                 fingerprint: Some("sha256:c".into()),
-                ids: Vec::new(),
+                ids: None,
             })
         );
     }
@@ -4810,7 +4810,7 @@ mod tests {
         let mut ack = Some(SkillAck {
             generation: 2,
             fingerprint: Some("sha256:b".into()),
-            ids: Vec::new(),
+            ids: None,
         });
 
         let result = super::persist_skill_correction(
@@ -4822,7 +4822,7 @@ mod tests {
             SkillAck {
                 generation: 3,
                 fingerprint: Some("sha256:c".into()),
-                ids: Vec::new(),
+                ids: None,
             },
         )
         .await;

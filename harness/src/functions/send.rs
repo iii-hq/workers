@@ -2584,7 +2584,7 @@ mod tests {
             skill_ack: Some(crate::types::turn::SkillAck {
                 generation,
                 fingerprint: Some(format!("sha256:{generation}")),
-                ids: Vec::new(),
+                ids: None,
             }),
             skills_started: started,
             context_snapshot: None,
