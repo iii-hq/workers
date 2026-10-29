@@ -711,6 +711,8 @@ async fn live_frames_keep_flowing_across_tabs() {
     )
     .await;
     let first_id = first["session_id"].as_str().expect("id").to_string();
+    // register_trigger is deprecated in iii 0.25; the trigger type stays.
+    #[allow(deprecated)]
     client
         .register_trigger(RegisterTriggerInput::new(
             "browser::frame-event".to_string(),
@@ -2169,6 +2171,8 @@ async fn late_titles_and_handoff_clicks_arrive_as_events() {
         .as_str()
         .expect("session_id")
         .to_string();
+    // register_trigger is deprecated in iii 0.25; the trigger type stays.
+    #[allow(deprecated)]
     client
         .register_trigger(RegisterTriggerInput::new(
             "browser::session-updated".to_string(),
@@ -2267,6 +2271,8 @@ async fn idle_and_expired_tabs_go_on_their_own_deadlines() {
         }),
     );
     for trigger in ["browser::session-updated", "browser::session-stopped"] {
+        // register_trigger is deprecated in iii 0.25; the trigger type stays.
+        #[allow(deprecated)]
         client
             .register_trigger(RegisterTriggerInput::new(
                 trigger.to_string(),

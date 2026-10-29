@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: browser
 tags: [browser, chromium, automation, web, cdp, scraping, extraction, parsing]
-description: A browser on the iii bus - shared Chromium with persistent, restorable tabs and incognito tabs. Navigate, act, read the page console, pick elements. Also parses HTML natively without a browser (browser::* - css/xpath/regex, element search, markdown).
+description: A browser on the iii bus - shared Chromium with persistent, restorable tabs and incognito tabs. Navigate, act, read the page console, pick elements. Also parses HTML natively without a browser (browser::* - css/xpath/regex, element search, markdown). Registers the browser::* event trigger types (sessions, navigation, console, network, picks, handoffs, downloads, frames, Chromium install progress, crawl items) and, next to each one, an observable browser::on-* function (iii 0.25).
 
 # Browser compatibility validation budgets for five concurrent Chromium
 # processes inside this production envelope. Runtime session caps still apply.

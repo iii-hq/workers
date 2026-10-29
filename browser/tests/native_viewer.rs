@@ -1254,6 +1254,8 @@ async fn measure_scroll_to_frame() {
     );
     let url = serve_html(LONG_PAGE);
     let id = open(&client, &url).await;
+    // register_trigger is deprecated in iii 0.25; the trigger type stays.
+    #[allow(deprecated)]
     client
         .register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
             "browser::frame-event".to_string(),

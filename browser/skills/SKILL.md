@@ -185,8 +185,9 @@ a second call to parse what you fetched. Each takes a single `url` or a bulk
   default, capped by `max_pages` (20) and `max_depth` (2). The response holds
   only a ≤10-item sample; page through every item with
   `browser::crawl::items { crawl_id: <crawl.id>, after?, limit? }` (retained
-  in memory for 1 h, last 32 crawls). For items live while it runs, bind
-  `browser::crawl-item` with `{ crawl_id }` first, then call
+  in memory for 1 h, last 32 crawls). For items live while it runs, observe
+  `browser::on-crawl-item` (or bind `browser::crawl-item`) with
+  `{ crawl_id }` first, then call
   `browser::crawl { crawl_id }`; missed or dropped events (`seq` gaps,
   `dropped_events`) are read back with `browser::crawl::items`.
   `stream_name` is deprecated and ignored (a `warnings` entry says so).
@@ -351,3 +352,22 @@ equality filter; omit it to receive events for all sessions
 per entry, so filter by session and treat `browser::console::read` as the
 durable record. For event payload shapes, call `get function info` on the
 trigger type.
+
+### Observable functions (iii 0.25)
+
+Next to each trigger type `browser::<event>` the worker registers the
+observable function `browser::on-<event>` (for example
+`browser::on-console-event`, `browser::on-crawl-item`). Code on a 0.25 engine
+observes it with the trigger config as args; the target receives the same
+payload a binding does:
+
+```typescript
+iii.observe(
+  { function_id: 'browser::on-console-event', args: { session_id: 'b1' } },
+  'mywatcher::on-console',
+)
+```
+
+Invoking an `on-*` function directly is refused with `FORBIDDEN`: only the
+browser worker emits its events. The trigger types keep working for
+consumers that bind them.

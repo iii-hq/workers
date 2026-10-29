@@ -427,9 +427,10 @@ trigger_type, retained, dropped_events }` says where the rest is:
   in memory: the last 32 crawls, for 1 h after they finish, 32 MiB per crawl
   and 128 MiB in total, not across worker restarts. A crawl that hit a cap
   reports `retained` below `stats.crawled` and the read says `truncated`.
-- **Live, while it runs:** bind the `browser::crawl-item` trigger type
-  (filter `{ crawl_id }`) *before* calling `browser::crawl { crawl_id }`.
-  Each bound function receives `{ crawl_id, event: "item", seq, item,
+- **Live, while it runs:** observe `browser::on-crawl-item` with args
+  `{ crawl_id }` (iii 0.25), or bind the `browser::crawl-item` trigger type
+  (filter `{ crawl_id }`), *before* calling `browser::crawl { crawl_id }`.
+  Each observer's target or bound function receives `{ crawl_id, event: "item", seq, item,
   truncated }` per page, in `seq` order, then one `{ event: "done", seq: n+1,
   stats, retained, dropped_events }`. Event items cut page content to 64 KiB
   (`truncated: true`); the full item is in `browser::crawl::items`. Delivery
@@ -624,11 +625,39 @@ The declared production envelope is 4 GiB memory and 2 CPUs. Tier-1 release
 validation budgets for five concurrent browser processes; that is a release
 test envelope, not permission to exceed configured session caps.
 
-## Custom trigger types
+## Custom trigger types and observable functions
 
 Sibling workers (and the console UI) can subscribe to session activity. All
 session bindings accept an optional `{ "session_id": "..." }` filter;
 `browser::crawl-item` takes `{ "crawl_id": "..." }` instead.
+
+On an iii 0.25 engine, observe the observable function next to each trigger
+type instead: `browser::on-<event>` for `browser::<event>`
+(`browser::on-session-started`, `browser::on-session-stopped`,
+`browser::on-session-updated`, `browser::on-navigated`,
+`browser::on-console-event`, `browser::on-network-event`,
+`browser::on-picked`, `browser::on-handoff-requested`,
+`browser::on-handoff-resolved`, `browser::on-download-changed`,
+`browser::on-frame-event`, `browser::on-chromium-install-progress` and
+`browser::on-crawl-item`). The args are the trigger config (`{ session_id? }`,
+`{ crawl_id? }` for `on-crawl-item`, `{}` for `on-chromium-install-progress`),
+and the observer's target receives the same payload a binding receives (the
+table below), through `obs.call`:
+
+```typescript
+iii.observe(
+  { function_id: 'browser::on-console-event', args: { session_id: 'b1' } },
+  'mywatcher::on-console',
+)
+```
+
+The functions are owner-delivered: the worker routes events in-process and
+refuses a direct invocation with `FORBIDDEN`, so nobody can forge one. Args
+the trigger type would refuse as a config reject the observer with
+`INVALID_ARGS`. `browser::on-crawl-item` observers share the 64-subscriber
+cap with `browser::crawl-item` bindings (`LIMIT_REACHED` above it). Every
+trigger type stays registered and served, on 0.24 and 0.25 engines, for
+consumers that bind it.
 
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
