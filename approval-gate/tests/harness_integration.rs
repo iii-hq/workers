@@ -58,7 +58,7 @@ async fn seed_held_turn(
             "model": "test",
             "max_turns": 8,
             "output": { "type": "text" },
-            "functions": { "allow": ["*"], "expose": "agent_trigger" },
+            "functions": { "allow": ["*"], "expose": "agent_call" },
             "max_validation_retries": 2,
         },
         "calls": calls,
@@ -86,7 +86,7 @@ async fn harness_held_call_survives_sweep_pending() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn harness_pre_trigger_hold_then_resolve_allow() {
+async fn harness_pre_call_hold_then_resolve_allow() {
     with_harness_stack(BootOpts::needs_approval_with_harness(), |stack| async move {
         let iii = &stack.iii;
 
@@ -109,7 +109,7 @@ async fn harness_pre_trigger_hold_then_resolve_allow() {
                 "model": "test",
                 "max_turns": 8,
                 "output": { "type": "text" },
-                "functions": { "allow": ["*"], "expose": "agent_trigger" },
+                "functions": { "allow": ["*"], "expose": "agent_call" },
                 "max_validation_retries": 2,
             },
             "calls": {},
@@ -127,14 +127,14 @@ async fn harness_pre_trigger_hold_then_resolve_allow() {
 
         let pending = call(
             iii,
-            "harness::function::trigger",
+            "harness::function::call",
             json!({
                 "session_id": "s_1",
                 "call": { "id": "c_1", "function_id": "shell::run", "arguments": { "cmd": "echo hi" } }
             }),
         )
         .await
-        .expect("trigger");
+        .expect("call");
         assert_eq!(pending["pending"], json!(true));
         assert!(pending.get("pending_timeout_ms").is_none());
 
@@ -191,7 +191,7 @@ async fn resolve_deny_delivers_is_error_through_harness() {
                     "model": "test",
                     "max_turns": 8,
                     "output": { "type": "text" },
-                    "functions": { "allow": ["*"], "expose": "agent_trigger" },
+                    "functions": { "allow": ["*"], "expose": "agent_call" },
                     "max_validation_retries": 2,
                 },
                 "calls": {

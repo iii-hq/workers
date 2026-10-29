@@ -93,7 +93,7 @@ pub enum HintOutcome {
     Candidate(AccessRequest),
 }
 
-/// Steps 1-4: does this post_trigger envelope carry a jail-scope
+/// Steps 1-4: does this post_call envelope carry a jail-scope
 /// `filesystem_access_request` worth acting on?
 pub fn extract_hint(input: &HookInput) -> HintOutcome {
     let Some(result) = &input.result else {

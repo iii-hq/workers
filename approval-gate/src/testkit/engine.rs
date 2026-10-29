@@ -5,13 +5,15 @@ use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{
+    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle,
+    RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::configuration::{self, ConfigCell};
-use crate::events::{self, Emitter, PENDING_CREATED, PENDING_RESOLVED};
+use crate::events::{self, Emitter, ON_PENDING_CREATED_FN, ON_PENDING_RESOLVED_FN};
 use crate::functions::{self, Deps};
 
 pub struct Engine {
@@ -113,7 +115,7 @@ pub async fn spawn_engine() -> Option<Engine> {
         // spuriously. Probe a dummy id and accept any response (including
         // NOT_FOUND) as "the worker is up".
         let core_ready = probe
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::workers::list".into(),
                 payload: json!({}),
                 action: None,
@@ -123,7 +125,7 @@ pub async fn spawn_engine() -> Option<Engine> {
             .is_ok();
         let ready = core_ready
             && match probe
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "configuration::get".into(),
                     payload: json!({ "id": "__readiness_probe__" }),
                     action: None,
@@ -196,7 +198,7 @@ pub struct BootOpts {
     /// `harness::function::resolve` stub.
     pub real_harness: bool,
     /// Test-only replacement written while the fake function resolver runs,
-    /// modeling a post-trigger hook that parks the same call again.
+    /// modeling a post-call hook that parks the same call again.
     pub function_resolve_replacement: Option<Value>,
 }
 
@@ -285,9 +287,9 @@ pub struct TestStack {
     pub config: ConfigCell,
     /// Requests received by the fake `harness::function::resolve`.
     pub harness_calls: CallLog,
-    /// `approval::pending-created` deliveries.
+    /// `approval::on-pending-created` events, delivered as output.
     pub created: CallLog,
-    /// `approval::pending-resolved` deliveries.
+    /// `approval::on-pending-resolved` events, delivered as output.
     pub resolved: CallLog,
     harness_child: Option<std::process::Child>,
 }
@@ -316,7 +318,7 @@ async fn wait_for_harness(iii: &IIIClient) -> bool {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "harness::status".into(),
                 payload: json!({ "session_id": "__probe__" }),
                 action: None,
@@ -364,10 +366,10 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     }
     let config: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
-    let sets = events::register_trigger_types(&iii);
+    events::register_functions(&iii);
     let deps = Arc::new(Deps {
         iii: iii.clone(),
-        sink: Arc::new(Emitter::new(sets, iii.clone())),
+        sink: Arc::new(Emitter::new(iii.clone())),
         config: config.clone(),
     });
     functions::register_all(&iii, &deps);
@@ -450,25 +452,25 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
             }),
         );
     }
-    iii.register_trigger(RegisterTriggerInput::new(
-        PENDING_CREATED.to_string(),
-        "recorder::on_created".to_string(),
-        json!({}),
-    ))
-    .expect("bind pending_created");
-    iii.register_trigger(RegisterTriggerInput::new(
-        PENDING_RESOLVED.to_string(),
-        "recorder::on_resolved".to_string(),
-        json!({}),
-    ))
-    .expect("bind pending_resolved");
+    // The recorders observe both event functions; wait until each observer
+    // is active, so the emitter (which calls only while observed) reaches
+    // them from the first test step on.
+    for (function_id, recorder) in [
+        (ON_PENDING_CREATED_FN, "recorder::on_created"),
+        (ON_PENDING_RESOLVED_FN, "recorder::on_resolved"),
+    ] {
+        let handle = iii.observe(
+            Source::function(function_id).deliver(Deliver::Output),
+            recorder,
+        );
+        await_active(&handle, function_id).await;
+    }
 
-    configuration::bind_hook(&iii);
+    let gate_observer = configuration::observe_hook(&iii);
 
-    // The typed, re-fetching config-change handler + its `configuration`
-    // trigger binding (mirrors the production boot order: last).
-    configuration::register_config_trigger(&iii, config.clone())
-        .expect("register configuration change trigger");
+    // The typed, re-fetching config-change handler + its observer of
+    // `configuration::on-updated` (mirrors the production boot order: last).
+    configuration::observe_config_changes(&iii, config.clone());
 
     let harness_child = if opts.real_harness {
         let child = spawn_harness_worker(&engine.url).expect("spawn harness worker");
@@ -476,6 +478,9 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
             wait_for_harness(&iii).await,
             "harness worker did not become ready"
         );
+        // The gate's observer of `harness::hook::on-pre-call` stays pending
+        // until the harness registers its hook function.
+        await_active(&gate_observer, configuration::HOOK_ON_PRE_CALL_FN).await;
         Some(child)
     } else {
         None
@@ -492,12 +497,26 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     }
 }
 
+/// Wait (bounded) until an observer is active; panics with its state and
+/// reason otherwise.
+async fn await_active(handle: &ObserverHandle, function_id: &str) {
+    match tokio::time::timeout(Duration::from_secs(10), handle.ready()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("observer of {function_id} failed: {e}"),
+        Err(_) => panic!(
+            "observer of {function_id} not active after 10s: {:?} ({:?})",
+            handle.state(),
+            handle.reason()
+        ),
+    }
+}
+
 pub async fn call(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
 ) -> Result<Value, iii_sdk::errors::Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
@@ -528,7 +547,7 @@ pub async fn settle() {
 
 pub fn hook_input(session_id: &str, call_id: &str, function_id: &str) -> Value {
     json!({
-        "point": "pre_trigger",
+        "point": "pre_call",
         "session_id": session_id,
         "turn_id": "t_1",
         "step": 1,

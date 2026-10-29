@@ -2,19 +2,21 @@
 //! function calls (tech-specs/2026-06-agentic/approval-gate.md).
 //!
 //! Three surfaces, one worker:
-//! 1. The gate — `approval::gate`, a `pre_trigger` hook the worker binds
-//!    itself at startup; answers `continue` / `deny` / `hold`.
+//! 1. The gate — `approval::gate`, a `pre_call` hook: the worker observes
+//!    `harness::hook::on-pre-call` with it at startup; answers `continue` /
+//!    `deny` / `hold`.
 //! 2. The decision plane — `approval::resolve` plus the per-session
 //!    settings RPCs (human/console-only).
 //! 3. The pending inbox — an ephemeral index of held calls
 //!    (`approval::list-pending` / `approval::get-pending`) plus the
-//!    `approval::pending-created` / `approval::pending-resolved` trigger
-//!    types notification workers bind to.
+//!    `approval::on-pending-created` / `approval::on-pending-resolved` event
+//!    functions notification workers observe.
 //!
 //! The worker codes against the greenfield harness contracts
-//! (`harness::hook::pre-trigger`, `harness::function::resolve`,
-//! `harness::turn-completed` — harness.md § Hooks, § API Reference);
-//! those bindings are best-effort so the worker also boots standalone.
+//! (`harness::hook::on-pre-call`, `harness::function::resolve`,
+//! `harness::on-turn-completed` — harness.md § Hooks, § API Reference);
+//! its observers stay pending while a sibling is absent, so the worker also
+//! boots standalone.
 
 pub mod config;
 pub mod configuration;

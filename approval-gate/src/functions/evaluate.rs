@@ -1,22 +1,23 @@
 //! `approval::evaluate` — what would `approval::gate` decide for this call,
 //! WITHOUT deciding it.
 //!
-//! The gate is a `pre_trigger` hook: it can only answer while a turn is
+//! The gate is a `pre_call` hook: it can only answer while a turn is
 //! dispatching, and a `needs_approval` verdict WRITES a pending record for a
 //! human to resolve. Callers that need the verdict ahead of time — the
-//! harness, when an agent asks to bind a trigger to an ordinary function —
-//! cannot use it: a trigger-fired call dispatches with worker authority
-//! outside the turn loop, so it never reaches the gate at all, and probing
-//! the gate itself would spawn phantom pendings nobody asked for.
+//! harness, when an agent asks to observe a function with an ordinary
+//! function as the target — cannot use it: an observer's target runs with
+//! worker authority outside the turn loop, so it never reaches the gate at
+//! all, and probing the gate itself would spawn phantom pendings nobody asked
+//! for.
 //!
 //! This runs the SAME decision ladder as [`super::gate`] (human-only defense,
 //! mode/always-allow short-circuit, then the configured rules) and reports the
 //! verdict. It never writes: no pending record, no settings seeding.
 //!
 //! SECURITY: the point of the probe is the invariant "a reaction may not do
-//! what a direct call could not do unapproved". A binding is only safe when
+//! what a direct call could not do unapproved". An observer is only safe when
 //! this answers `allow`; `needs_approval` means the deployment wants a human
-//! in the loop, and a fired trigger has no way to ask one.
+//! in the loop, and an observer's target has no way to ask one.
 
 use super::Deps;
 use crate::decision;
@@ -112,8 +113,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn reports_the_gate_ladder_and_never_writes() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
-            // Unlisted under a needs-approval deployment: the verdict a
-            // trigger binding must be refused on.
+            // Unlisted under a needs-approval deployment: the verdict an
+            // agent's observer must be refused on.
             let out = handle(&stack.deps, req("fp::pipe")).await.unwrap();
             assert_eq!(out.verdict, EvaluateVerdict::NeedsApproval);
             assert!(out.reason.unwrap().contains("human approval"));
@@ -123,7 +124,7 @@ mod tests {
 
             // An auto-mode trust-list entry does NOT flip a manual-mode
             // session: `always_allow` only short-circuits in auto mode, so the
-            // binding stays refused here.
+            // observer stays refused here.
             add_always_allow::handle(
                 &stack.deps,
                 AlwaysAllowMutationRequest {
@@ -139,7 +140,7 @@ mod tests {
             );
 
             // A remembered human decision ("approve always") applies in EVERY
-            // mode — a human was in the loop, so the binding is safe.
+            // mode — a human was in the loop, so the observer is safe.
             approve_always::handle(
                 &stack.deps,
                 ApproveAlwaysRequest {
