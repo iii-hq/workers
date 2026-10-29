@@ -6,8 +6,8 @@
 //! runs the model and costs nothing.
 //!
 //! Chat Completions gateways have no such route, and a Responses gateway may
-//! not serve it, so the fallback is the local tiktoken estimate shared with
-//! `provider-openai-codex` (`llm_router::provider_scaffold::tiktoken_count`).
+//! not serve it, so the fallback is the local tiktoken estimate
+//! (`llm_router::provider_scaffold::tiktoken_count`).
 
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;

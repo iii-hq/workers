@@ -9,7 +9,8 @@
 //! Only the encoder lives here. Which text a request contributes and what the
 //! chat framing costs are in
 //! [`crate::provider_scaffold::chat_framing`], shared with every other local
-//! counter so the two cannot drift apart.
+//! counter so the two cannot drift apart. `provider-openai-codex` takes only
+//! the encoder and counts the Responses items its own wire mappers build.
 
 use tiktoken_rs::{cl100k_base_singleton, o200k_base_singleton, CoreBPE};
 

@@ -77,7 +77,7 @@ pub fn can_disable(model: &str) -> bool {
 }
 
 /// `gpt-5.<minor>…` → minor version number.
-fn gpt5_minor(id: &str) -> Option<u32> {
+pub(crate) fn gpt5_minor(id: &str) -> Option<u32> {
     let rest = id.strip_prefix("gpt-5.")?;
     let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()

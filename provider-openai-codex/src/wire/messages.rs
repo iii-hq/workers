@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 
 /// Output body injected for a tool call that never got a result.
-const ORPHAN_TOOL_PLACEHOLDER: &str =
+pub(crate) const ORPHAN_TOOL_PLACEHOLDER: &str =
     "Tool call was interrupted before completing. Continue without its output.";
 
 fn text_of(content: &[ContentBlock]) -> String {
