@@ -9,8 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::json;
 
 /// What a provider is asked to do; the stronger request wins when both are
@@ -53,7 +52,7 @@ pub fn bus_fire(iii: IIIClient) -> Fire {
         let iii = iii.clone();
         Box::pin(async move {
             let _ = iii
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: refresh.function_id(&provider),
                     payload: json!({}),
                     action: None,

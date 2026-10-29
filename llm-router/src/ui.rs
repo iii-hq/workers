@@ -4,17 +4,17 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `llm-router/page.js` (`console:script`) — the custom configuration form
+//! - `llm-router/page.js` (a `script` asset) — the custom configuration form
 //!   for the `llm-router` entry: per-provider credential cards with
 //!   plain-text-secret detection on api keys (steers operators to
 //!   `${ENV_VAR}` references, which the configuration worker expands on
 //!   read), the default-provider picker, stream budgets, and the
 //!   routing-heuristics table.
-//! - `llm-router/styles.css` (`console:style`) — its stylesheet, every rule
+//! - `llm-router/styles.css` (a `style` asset) — its stylesheet, every rule
 //!   scoped under `[data-iii-ui="llm-router"]`.
 //!
 //! The registration machinery (content function `llm-router::ui-content`,
-//! one Message-path trigger per asset, `III_LLM_ROUTER_UI_WATCH` hot-reload
+//! one `console::ui::asset` observer per asset, `III_LLM_ROUTER_UI_WATCH` hot-reload
 //! watcher) lives in the shared `iii-console-ui` crate; this module only
 //! names the assets and embeds their bytes.
 

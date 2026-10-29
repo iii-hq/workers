@@ -11,11 +11,13 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{register_worker, IIIClient, RegisterFunction};
+use iii_sdk::{
+    register_worker, Call, CallRequest, Deliver, IIIClient, Observer, RegisterFunction, Source,
+};
 use llm_router::channels::create_router_channel;
 use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value, ENTRY_ID};
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::provider_scaffold::router_client::observe_router_ready;
 use llm_router::register::register_router;
 use llm_router::registry::store::RegistryStore;
 use llm_router::types::router::ProviderDeclaration;
@@ -29,7 +31,7 @@ mod engine_fixture;
 use engine_fixture::*;
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
@@ -357,7 +359,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                     .map(|id| json!({ "id": id, "provider": "real", "context_window": 100000, "max_output_tokens": 8192, "supports_vision": true }))
                     .collect();
                 async move {
-                    iii.trigger(TriggerRequest {
+                    iii.call(CallRequest {
                         function_id: "router::models::reconcile".into(),
                         payload: json!({ "provider": "real", "token": token, "models": models }),
                         action: None,
@@ -370,9 +372,10 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
         );
     }
 
-    // Match the production provider lifecycle: keep a deterministic direct
-    // ready handler so a restarted router can rediscover this still-live
-    // provider even if the one-shot trigger binding was replayed too late.
+    // Match the production provider lifecycle: a deterministic ready handler,
+    // the target of the provider's observer of router::on-ready, which a
+    // restarted router also calls directly when it rediscovers this
+    // still-live provider.
     let iii_ready = iii.clone();
     let token_for_ready = token_cell.clone();
     let opts_for_ready = opts.clone();
@@ -389,7 +392,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                 let token = token.ok_or_else(|| {
                     Error::Handler("provider ready handler has no registration token".into())
                 })?;
-                iii.trigger(TriggerRequest {
+                iii.call(CallRequest {
                     function_id: "router::provider::register".into(),
                     payload: live_provider_declaration(&opts, Some(token)),
                     action: None,
@@ -400,11 +403,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
             }
         }),
     );
-    let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
-        "provider::real::on_router_ready",
-        json!({}),
-    ));
+    observe_router_ready(&iii, "provider::real::on_router_ready");
 
     // declare (with a short retry in case the router is still booting)
     let mut token = None;
@@ -476,7 +475,7 @@ async fn end_to_end_relay_over_a_live_engine() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
 
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
             action: None,
@@ -547,7 +546,7 @@ async fn route_previews_the_same_provider_chat_executes() {
     // pinning the preview as the explicit provider executes on that provider.
     let (writer_ref, _frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -583,7 +582,7 @@ async fn route_previews_the_same_provider_chat_executes() {
     assert_eq!(route["provider"], "real");
     let (writer_ref, _frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({ "writer_ref": writer_ref, "model": "real::live-1", "messages": [] }),
             action: None,
@@ -637,7 +636,7 @@ async fn consumer_cancellation_propagates_to_the_provider() {
         let writer_ref = channel.writer_ref.clone();
         tokio::spawn(async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
                     action: None,
@@ -687,9 +686,9 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
         .await
         .expect("router reboots");
 
-    // Availability is pessimistically reset on load. The router must recover
-    // this still-live provider itself through its direct engine-function nudge;
-    // relying only on the one-shot router::ready replay has a boot race.
+    // Availability is pessimistically reset on load. The provider's observer
+    // of router::on-ready outlives the first router, so the second one's ready
+    // call reaches it, and the registration sweep nudges it directly too.
     let list = call_until(&second, "router::provider::list", json!({}), |value| {
         value["providers"].as_array().is_some_and(|providers| {
             providers
@@ -978,7 +977,7 @@ async fn abort_stops_the_stream_and_terminates_with_done_aborted() {
         let consumer = consumer.clone();
         tokio::spawn(async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({ "writer_ref": writer_ref, "request_id": "abort-me", "model": "live-1", "messages": [] }),
                     action: None,
@@ -1046,7 +1045,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
         let consumer = first_consumer.clone();
         tokio::spawn(async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({
                         "writer_ref": first_ref,
@@ -1070,7 +1069,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
     let second_consumer = register_worker(&engine.url, test_init_options());
     let (second_ref, second_frames, second_pump) = consumer_channel(&second_consumer).await;
     let duplicate = second_consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": second_ref,
@@ -1172,7 +1171,7 @@ async fn update_credential_persists_and_resolves_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn models_changed_event_reaches_a_trigger_subscriber() {
+async fn models_changed_event_reaches_an_observer() {
     let engine = engine_or_skip!();
 
     let router_iii = register_worker(&engine.url, test_init_options());
@@ -1180,8 +1179,9 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
         .await
         .expect("router boots");
 
-    // Probe worker bound to the router-owned trigger type (README § Events):
-    // the handler must receive the raw payload, no envelope.
+    // Probe worker observing the router's event function (README § Events)
+    // with the event delivered as output: the handler receives the raw event,
+    // no envelope.
     let probe = register_worker(&engine.url, test_init_options());
     let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
     let sink = received.clone();
@@ -1195,13 +1195,16 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
             }
         }),
     );
-    probe
-        .register_trigger(RegisterTriggerInput::new(
-            "router::models::changed",
-            "probe::on_models_changed",
-            json!({}),
-        ))
-        .expect("router::models::changed trigger registered");
+    let observer = probe.observe(
+        Source::function("router::models::on-changed")
+            .filters(json!({ "input.provider": { "$eq": "real" } }))
+            .deliver(Deliver::Output),
+        "probe::on_models_changed",
+    );
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .expect("router::models::on-changed observer active in time")
+        .expect("router::models::on-changed observer accepted");
 
     // Declare already emits count=1 from the static model; reconcile two
     // models so the explicit-reconcile emission is unambiguous.
@@ -1230,7 +1233,7 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
         }
         assert!(
             Instant::now() < deadline,
-            "router::models::changed never reached the trigger subscriber; got {:?}",
+            "router::models::on-changed never reached the observer; got {:?}",
             received.lock().unwrap()
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1541,7 +1544,7 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
         let consumer = consumer.clone();
         tokio::spawn(async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({
                         "writer_ref": writer_ref,
@@ -1667,7 +1670,7 @@ async fn provider_bad_request_is_permanent_and_is_not_retried() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let error = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -1824,7 +1827,7 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let response = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -1941,7 +1944,7 @@ async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
         let consumer = consumer.clone();
         tokio::spawn(async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({
                         "writer_ref": writer_ref,
@@ -2076,7 +2079,7 @@ async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let error = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -2154,7 +2157,7 @@ async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
     }
 
     let error = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -2223,7 +2226,7 @@ async fn chat_provider_disappears_before_dispatch_emits_one_terminal_and_eof() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let err = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -2310,7 +2313,7 @@ async fn terminal_frame_completes_even_when_the_provider_handler_lingers() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let started = Instant::now();
     let response = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
             action: None,
@@ -2540,45 +2543,23 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
 
 /// Stand-in for the `secrets` worker: `secrets::resolve` answers from a
 /// name → value / error-code table (`env://NAME` references under that full
-/// key), and the `secrets::changed` trigger type fans out to whoever bound
-/// it.
+/// key), and `secrets::on-changed` is a private function whose deliver hook
+/// calls every matching observer and waits for each, so an announcement
+/// returns once the router has handled it.
 #[derive(Clone)]
 struct FakeSecretsWorker {
     iii: IIIClient,
     table: Arc<std::sync::Mutex<HashMap<String, Result<String, String>>>>,
-    bindings: Arc<std::sync::Mutex<HashMap<String, String>>>,
     callers: Arc<std::sync::Mutex<Vec<Value>>>,
 }
 
-struct FakeSecretsChanged {
-    bindings: Arc<std::sync::Mutex<HashMap<String, String>>>,
-}
-
-#[async_trait::async_trait]
-impl iii_sdk::trigger::TriggerHandler for FakeSecretsChanged {
-    async fn register_trigger(&self, config: iii_sdk::trigger::TriggerConfig) -> Result<(), Error> {
-        self.bindings
-            .lock()
-            .unwrap()
-            .insert(config.id, config.function_id);
-        Ok(())
-    }
-
-    async fn unregister_trigger(
-        &self,
-        config: iii_sdk::trigger::TriggerConfig,
-    ) -> Result<(), Error> {
-        self.bindings.lock().unwrap().remove(&config.id);
-        Ok(())
-    }
-}
+const SECRETS_ON_CHANGED: &str = "secrets::on-changed";
 
 async fn start_fake_secrets(url: &str) -> FakeSecretsWorker {
     let iii = register_worker(url, test_init_options());
     let fake = FakeSecretsWorker {
         iii: iii.clone(),
         table: Arc::default(),
-        bindings: Arc::default(),
         callers: Arc::default(),
     };
     let (table, callers) = (fake.table.clone(), fake.callers.clone());
@@ -2614,13 +2595,28 @@ async fn start_fake_secrets(url: &str) -> FakeSecretsWorker {
             }
         }),
     );
-    iii.register_trigger_type(iii_sdk::RegisterTriggerType::new(
-        "secrets::changed",
-        "fake secrets worker: a secret changed",
-        FakeSecretsChanged {
-            bindings: fake.bindings.clone(),
-        },
-    ));
+    {
+        let iii_for_deliver = iii.clone();
+        iii.on_observer_deliver_for(
+            SECRETS_ON_CHANGED,
+            move |call: Call, observers: Vec<Observer>| {
+                let iii = iii_for_deliver.clone();
+                async move {
+                    for observer in observers.iter().filter(|obs| obs.matches(&call)) {
+                        iii.call(CallRequest::observer(observer, call.input.clone()))
+                            .await?;
+                    }
+                    Ok(call.input)
+                }
+            },
+        );
+    }
+    iii.register_function(
+        SECRETS_ON_CHANGED,
+        RegisterFunction::new(|event: Value| Ok::<_, Error>(event))
+            .description("fake secrets worker: a secret changed")
+            .private(),
+    );
     fake
 }
 
@@ -2632,8 +2628,9 @@ impl FakeSecretsWorker {
             .insert(name.into(), outcome.map(String::from).map_err(String::from));
     }
 
-    /// Fire `secrets::changed` to every binding, synchronously, once the
-    /// engine has handed this (late) type its parked bindings.
+    /// Call `secrets::on-changed`, which reaches the router's observer
+    /// synchronously, once that observer (pending until this late function
+    /// registered) is active.
     async fn announce(&self, name: &str, action: &str) {
         self.announce_ref(name, &format!("secret://{name}"), action)
             .await;
@@ -2641,26 +2638,20 @@ impl FakeSecretsWorker {
 
     async fn announce_ref(&self, name: &str, reference: &str, action: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let targets = loop {
-            let targets: Vec<String> = self.bindings.lock().unwrap().values().cloned().collect();
-            if !targets.is_empty() {
-                break targets;
-            }
+        while !self.iii.is_observed(SECRETS_ON_CHANGED) {
             assert!(
                 Instant::now() < deadline,
-                "the router's secrets::changed binding never reached the late trigger type"
+                "the router's observer of secrets::on-changed never became active"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
-        };
-        for function_id in targets {
-            call(
-                &self.iii,
-                &function_id,
-                json!({ "name": name, "ref": reference, "action": action, "updated_at": "2026-10-02T00:00:00Z" }),
-            )
-            .await
-            .expect("secrets::changed subscriber answers");
         }
+        call(
+            &self.iii,
+            SECRETS_ON_CHANGED,
+            json!({ "name": name, "ref": reference, "action": action, "updated_at": "2026-10-02T00:00:00Z" }),
+        )
+        .await
+        .expect("secrets::on-changed reaches the router's observer");
     }
 }
 
@@ -2759,7 +2750,7 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
         "provider::list never carries a value"
     );
 
-    // Rotation announced on secrets::changed: the router serves the new value
+    // Rotation announced on secrets::on-changed: the router serves the new value
     // and nudges the provider to drop its cached resolve.
     let ready_before = provider.ready_calls.load(Ordering::SeqCst);
     secrets.set("REAL_KEY", Ok("sk-rotated"));

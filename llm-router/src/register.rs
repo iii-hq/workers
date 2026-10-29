@@ -1,19 +1,20 @@
 //! Wiring: restore stores → register and fetch configuration → build the live
 //! in-memory snapshot and the secret-reference cache → register functions →
-//! bind and reconcile the configuration trigger → emit `router::ready` → bind
-//! the (optional) `secrets::changed` trigger.
+//! observe and reconcile the configuration entry → call `router::on-ready` →
+//! observe the (optional) secrets worker's `secrets::on-changed`.
 //!
 //! Function registrations use `iii_sdk` directly, with the shared typed
 //! registration adapter where malformed payloads have a stable public error
-//! code. Trigger bindings use `RegisterTriggerInput::new(...)`. Router events
-//! fan out via worker-owned trigger types (`triggers::RouterEvents`).
+//! code. Each observer is `iii.observe(...)` with the event delivered as
+//! output; dropping its handle keeps it for the life of the connection. Router
+//! events are the worker's own private functions (`events::RouterEvents`).
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use iii_sdk::engine::EngineSources;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 use crate::catalog::handlers::{
@@ -30,6 +31,7 @@ use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
 use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::provider_entry_schema;
 use crate::config::state::{new_config_cell, snapshot, ConfigCell};
+use crate::events::RouterEvents;
 use crate::provider_scaffold::registration::typed_async_with_bad_request;
 use crate::registry::availability::make_provider_list;
 use crate::registry::refresh::{bus_fire, RefreshQueue};
@@ -39,7 +41,6 @@ use crate::registry::store::RegistryStore;
 use crate::secrets::on_changed::{make_on_secret_changed, refresh_referencing_providers};
 use crate::secrets::{bus_fetch, spawn_unavailable_retry, SecretCache};
 use crate::surface;
-use crate::triggers::RouterEvents;
 use crate::types::errors::invalid_request_from_serde;
 use crate::types::router::{ConfigChangedEvent, FunctionsChangedEvent, RouterAck};
 
@@ -92,7 +93,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         refresh_referencing_providers(config.clone(), refresh.clone()),
     ));
 
-    // 4. Shared runtime state + router event fan-out.
+    // 4. Shared runtime state + the router's event functions.
     let inflight = Arc::new(InflightMap::default());
     let events = RouterEvents::register(&iii);
 
@@ -283,7 +284,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         .metadata(internal_meta()),
     );
 
-    // 6. Bind configuration changes only after every consumer of the live
+    // 6. Observe configuration changes only after every consumer of the live
     // snapshot has been built.
     let on_config_changed = {
         let registry_for_listing = registry.clone();
@@ -313,17 +314,21 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::ON_CONFIG_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration",
+    iii.observe(
+        Source::function(EngineSources::CONFIGURATION_UPDATED)
+            .filters(json!({
+                "input.id": { "$eq": crate::config::entry::config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
         surface::ON_CONFIG_CHANGED_ID,
-        json!({ "configuration_id": crate::config::entry::config_id(), "event_types": ["configuration:updated"] }),
-    ))?;
+    );
 
-    // Close the boot race between the initial fetch and trigger binding by
-    // running the SAME operation the trigger runs: one reconcile keeps the
-    // snapshot, the fingerprint baseline, and any due `refresh_models` in
-    // step (a bare `apply_config` would install a newer value the handler
-    // then diffs against a stale baseline).
+    // Close the boot race between the initial fetch and the observer becoming
+    // active by running the SAME operation each delivery runs: one reconcile
+    // keeps the snapshot, the fingerprint baseline, and any due
+    // `refresh_models` in step (a bare `apply_config` would install a newer
+    // value the handler then diffs against a stale baseline).
     let ack = on_config_changed(ConfigChangedEvent { id: None }).await?;
     if !ack.ok {
         tracing::warn!(
@@ -331,50 +336,28 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         );
     }
 
-    // 7. ready — providers re-declare on this
-    events.emit(crate::triggers::READY, json!({})).await;
-
-    // The ready fan-out only reaches providers whose `router::ready` binding
-    // still exists — and the engine drops those bindings when THIS worker
-    // (the trigger type's owner) disconnects, so providers that outlived a
-    // router restart never hear it. Nudge every provider directly:
-    // `provider::<id>::on_router_ready` is the deterministic per-provider
-    // handler (same one the fan-out targets), a live provider re-declares —
-    // flipping the boot-reset availability back up — and a dead one is
-    // function_not_found, which is exactly the right answer. Detached: boot
-    // must not block on provider round-trips.
-    //
-    // The provider set comes from the ENGINE, not `registry.ids()`: the
-    // persisted registry is empty on any stack whose state worker runs
-    // in-memory, and then this repair reached nobody. See
-    // `registry::rediscover`.
-    {
-        let iii = iii.clone();
-        tokio::spawn(async move {
-            let count = crate::registry::rediscover::nudge_live_providers(&iii).await;
-            tracing::debug!(
-                providers = count,
-                "boot: nudged live providers to re-declare"
-            );
-        });
-    }
+    // 7. ready — providers re-declare on this. Their observers of
+    // `router::on-ready` outlive a router restart (pending while it is down),
+    // so this one call reaches every provider, and one that observes later
+    // receives the event through its observer (`events::RouterEvents`).
+    events.ready().await;
 
     // A provider that reconnects to the engine while the router stays up gets
     // its FUNCTIONS replayed by the SDK, but not its catalog — that is
     // application state this worker holds, and nothing re-pushes it until the
-    // provider's own periodic timer (three minutes for openai-codex). Watch
-    // the engine's registration stream and re-run the same nudge, so a
-    // returning provider is resolvable in seconds instead of minutes.
+    // provider's own periodic timer (three minutes for openai-codex). Observe
+    // the engine's registration stream and nudge each provider that is newly
+    // live, so a returning provider is resolvable in seconds instead of
+    // minutes. See `registry::rediscover`.
     //
     // The same stream is how a router that booted before the secrets worker
     // learns it arrived: references that failed as unreachable are re-read,
     // and any that now resolve refresh their providers.
     //
-    // The event is advisory: current engines fire it once per ~100ms burst of
+    // The event is advisory: the engine calls it once per ~100ms burst of
     // registry changes (any register, including a schema-only re-register,
-    // and any removal); older engines poll every 5s and fire only when the
-    // set of ids changes, so recovery there can take up to one tick longer.
-    // Both followers keep their own quiet period; see `SweepHandle`.
+    // and any removal). Both followers keep their own quiet period; see
+    // `SweepHandle`.
     {
         let iii_handler = iii.clone();
         let sweep = crate::registry::rediscover::spawn_debounced_sweep(iii_handler);
@@ -395,35 +378,27 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::ON_FUNCTIONS_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
-        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
-            "engine::functions-available",
+        iii.observe(
+            Source::function(EngineSources::FUNCTIONS_CHANGED).deliver(Deliver::Output),
             surface::ON_FUNCTIONS_CHANGED_ID,
-            json!({}),
-        )) {
-            // Best-effort: without it providers still recover on their own
-            // timer, exactly as before this binding existed.
-            tracing::warn!(error = %e, "binding engine::functions-available failed; provider re-discovery falls back to each provider's periodic refresh");
-        }
+        );
     }
 
-    // 8. Secret changes. `secrets::changed` belongs to the optional `secrets`
-    // worker: when it is absent the engine parks this binding and activates
-    // it once the type registers (and again after a secrets worker restart),
-    // so nothing here retries. Cache TTLs bound staleness if an event is
-    // ever missed.
+    // 8. Secret changes. `secrets::on-changed` belongs to the optional
+    // `secrets` worker: while it is absent this observer waits `pending`, and
+    // it becomes active whenever the function registers (again after a
+    // secrets worker restart), so nothing here retries. Cache TTLs bound
+    // staleness if an event is ever missed.
     iii.register_function(
         surface::ON_SECRET_CHANGED_ID,
         RegisterFunction::new_async(make_on_secret_changed(config.clone(), secrets.clone()))
             .description(surface::ON_SECRET_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
-    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
-        crate::secrets::CHANGED_TRIGGER_TYPE,
+    iii.observe(
+        Source::function(crate::secrets::ON_CHANGED_FN).deliver(Deliver::Output),
         surface::ON_SECRET_CHANGED_ID,
-        json!({}),
-    )) {
-        tracing::warn!(error = %e, "binding secrets::changed failed; secret references refresh on their cache TTL only");
-    }
+    );
     // Warm the cache off the boot path; a secrets worker that is not up yet
     // is retried when it registers (see the registration stream above).
     {

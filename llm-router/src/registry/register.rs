@@ -13,13 +13,13 @@ use crate::types::errors::{RouterCode, RouterError};
 use crate::types::router::{accepted_icon_svg, ProviderRegisterRequest, ProviderRegisterResponse};
 use futures::future::BoxFuture;
 use iii_sdk::{errors::Error, IIIClient};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::catalog::store::CatalogStore;
 use crate::config::entry::{register_entry, EntryWriteLock};
 use crate::config::schema::{provider_entry_schema, validate_custom_schema};
+use crate::events::RouterEvents;
 use crate::registry::store::{ProviderRecord, RegistryStore};
-use crate::triggers::{self, RouterEvents};
 
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
@@ -184,23 +184,13 @@ pub fn make_provider_register(
             let token = upserted.token;
             let availability_recovered = upserted.availability_recovered;
 
-            events
-                .emit(
-                    triggers::PROVIDER_CHANGED,
-                    json!({ "provider": id, "op": "register" }),
-                )
-                .await;
+            events.provider_changed(&id, "register").await;
 
             // A down provider coming back up via re-registration is an
             // availability transition; emit it explicitly so subscribers tracking
             // op:"available"/"unavailable" don't stay stuck on the prior down state.
             if availability_recovered {
-                events
-                    .emit(
-                        triggers::PROVIDER_CHANGED,
-                        json!({ "provider": id, "op": "available" }),
-                    )
-                    .await;
+                events.provider_changed(&id, "available").await;
             }
 
             if let Some(count) = upserted
@@ -211,12 +201,7 @@ pub fn make_provider_register(
                 .filter(|models| !models.is_empty())
                 .map(Vec::len)
             {
-                events
-                    .emit(
-                        triggers::MODELS_CHANGED,
-                        json!({ "provider": id, "count": count }),
-                    )
-                    .await;
+                events.models_changed(&id, count).await;
             }
 
             Ok(ProviderRegisterResponse {
