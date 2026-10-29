@@ -10,15 +10,16 @@ description: >-
 # iii runtime
 
 This machine runs an iii engine. iii is a language agnostic runtime where services, agents, and
-tools are composed of the same things: workers, triggers, and functions. The single engine process
+tools are composed of the same things: workers, functions, and observers. The single engine process
 holds a live registry of every connected worker, every function those workers expose, and every
-trigger bound to them. Every call routes worker -> engine -> worker, so the language, runtime,
+observer that runs one function when another runs. Events (a cron tick, an HTTP request, a state
+write) are functions too. Every call routes worker -> engine -> worker, so the language, runtime,
 and location of a worker are invisible to its callers. The function id is the ONLY contract
 between two workers.
 
 You act on iii ONLY through the `iii` CLI on PATH, via your shell:
 
-    iii trigger <function> [key=value ...] [--json '<object>'] [--timeout-ms <ms>]
+    iii call <function> [key=value ...] [--json '<object>'] [--timeout-ms <ms>]
 
 Function ids are namespaced with `::` (e.g. `engine::functions::list`). Simple arguments go
 as `key=value` pairs; structured payloads go as `--json` with a single-quoted JSON OBJECT.
@@ -30,30 +31,30 @@ engine and trust it over memory or this prompt.
 
 The live engine is the single source of truth. Ask it — never assume:
 
-- `iii trigger engine::functions::list --json '{"search":"<term>"}'` — every function across
+- `iii call engine::functions::list --json '{"search":"<term>"}'` — every function across
   all workers; optional filters `prefix` / `search` / `worker`. Use it to FIND a function
   id.
-- `iii trigger <function> --help` — that function's description and request schema, served by
+- `iii call <function> --help` — that function's description and request schema, served by
   the engine. THIS IS THE API REFERENCE for every call you make. Fetch it BEFORE the first call
   to any function; a one-line description from `list` is a hint, not the contract.
-- `iii trigger engine::workers::list` — every WS-connected (currently running) worker;
-  `iii trigger engine::workers::info name=<name>` — one worker's full surface.
-- `iii trigger worker::list` — installed + running workers, including daemon-managed
+- `iii call engine::workers::list` — every WS-connected (currently running) worker;
+  `iii call engine::workers::info name=<name>` — one worker's full surface.
+- `iii call worker::list` — installed + running workers, including daemon-managed
   builtins. `engine::workers::list` sees only WS-connected workers, so to confirm a worker is
   RUNNING, merge the two by name.
-- `iii trigger engine::triggers::list` — every trigger TYPE;
-  `iii trigger engine::registered-triggers::list` — every trigger INSTANCE already bound.
+- `iii call engine::observers::list` — every observer: the observed function, its args and
+  filters, and the target it runs.
 
 Trust a successful runtime call over an empty list: an empty `*::list` can mean lag, not
 absence — never conclude a function or worker is missing from one empty read.
 
 Need a backend capability? Check what is already registered FIRST — it is usually one call
 away. When nothing fits, search the public registry before building anything:
-`iii trigger directory::registry::workers::list --json '{"search":"<capability>"}'` pages the
-published catalogue and `iii trigger directory::registry::workers::info name=<name>` returns
-one worker's pre-install card (functions and triggers by name and description; `readme=true`
+`iii call directory::registry::workers::list --json '{"search":"<capability>"}'` pages the
+published catalogue and `iii call directory::registry::workers::info name=<name>` returns
+one worker's pre-install card (functions, event sources included, by name and description; `readme=true`
 adds the README). Say what you are about to install and why, install with
-`iii trigger worker::add --json '{"source":{"kind":"registry","name":"<name>"}}'`, then
+`iii call worker::add --json '{"source":{"kind":"registry","name":"<name>"}}'`, then
 confirm the new ids appear via `engine::functions::list` with that prefix and fetch each
 contract with `--help` as usual.
 
@@ -62,9 +63,9 @@ contract with `--help` as usual.
 Another coding agent on this engine is a WORKER, not a model and not a provider:
 `claude::task` and `pi::task` delegate one task and return a session id at once.
 Its outcome is an ordinary `state` write under `agent_tasks/<session id>` — so
-the trigger rule below is the whole answer, and holding a call open for someone
+the observer rule below is the whole answer, and holding a call open for someone
 else's agent run is never it. Full contract:
-`iii trigger directory::skills::get id=agent-delegation`.
+`iii call directory::skills::get id=agent-delegation`.
 
 ## Calling rules
 
@@ -72,10 +73,13 @@ else's agent run is never it. Full contract:
   JSON-encoded string where the engine expects an object — workers reject it with
   `invalid_arguments` / `serialization error`.
 - Long-running functions need `--timeout-ms` well above the default 30000.
-- Triggers are the engine's push channel: NEVER poll (a loop re-reading a queue, file, or
-  table) when a trigger type fits — bind a trigger instead. A trigger registration succeeds
-  even when its type's provider is absent or the config keys are wrong — the binding lands but
-  never fires — so copy config keys from `engine::triggers::info`, not from memory.
+- Observers are the engine's push channel: NEVER poll (a loop re-reading a queue, file, or
+  table) when an event function fits (`cron::on-tick`, `http::on-request`,
+  `state::on-changed`, a worker's own `<worker>::on-*`) — observe it from a worker instead. An
+  observer stays pending while the observed function's worker is absent, and never runs when
+  its args or filters are wrong, so copy the args keys from the function's `args_format` and
+  the filter fields from its `response_format` (`iii call engine::functions::info
+  function_id=<function>`), not from memory.
 
 ## Error handling
 
@@ -95,7 +99,7 @@ report the blocker and stop.
   patterns carried in from other ecosystems. If you reach for a tool that is not an iii
   function for a backend action, stop and re-check the engine's surface first.
 
-## Creating a function or trigger
+## Creating a function or an observer
 
 Any process with an iii SDK is a worker. Scaffold a directory, install
 `iii-sdk`, and run it:
@@ -107,15 +111,16 @@ const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134', {
   workerName: 'my-worker',
 });
 
-iii.registerFunction('my-worker::greet', async ({ name }) => ({
-  message: `Hello, ${name}!`,
+iii.registerFunction('my-worker::greet', async (req) => ({
+  status_code: 200,
+  body: { message: `Hello, ${req.query_params?.name ?? 'world'}!` },
 }));
 
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'my-worker::greet',
-  config: { api_path: '/greet', http_method: 'GET' },
-});
+// serve it over HTTP: each GET /greet runs my-worker::greet with the request
+iii.observe(
+  { function_id: 'http::on-request', args: { method: 'GET', path: '/greet' } },
+  'my-worker::greet',
+);
 ```
 
 Function ids are `<worker>::<verb>`, kebab-case for multi-word segments.
