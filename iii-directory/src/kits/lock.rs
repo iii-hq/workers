@@ -37,7 +37,7 @@ use sha2::{Digest, Sha256};
 pub const LOCK_VERSION: u32 = 1;
 
 const HEADER: &str = "# kits.lock — kits installed in this project by iii-directory.\n\
-# Commit this file. Edit kits with `iii trigger directory::download-kit` or the\n\
+# Commit this file. Edit kits with `iii call directory::download-kit` or the\n\
 # ADE (Directory → Kits), not by hand.\n";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

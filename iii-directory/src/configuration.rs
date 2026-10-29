@@ -3,7 +3,7 @@
 //!
 //! Mirrors the `database` worker's pattern: register a JSON Schema + seed
 //! at boot, read the authoritative (env-expanded) value via
-//! `configuration::get`, and bind a `configuration` trigger so a
+//! `configuration::get`, and observe `configuration::on-updated` so a
 //! `configuration:updated` event re-fetches and applies the change.
 //!
 //! Tunable fields (`registry_url`, `download_timeout_ms`,
@@ -19,8 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 use crate::config::{FunctionSearchMode, SharedConfig, SkillsConfig, Topology};
@@ -66,9 +65,9 @@ pub struct SharedState {
     pub registered_cache: Arc<RegisteredWorkersCache>,
     /// Restart-only fields captured at boot.
     boot_topology: Topology,
-    /// Live `directory::pre-generate` hook binding, reconciled with the
+    /// Live `directory::pre-generate` hook observer, reconciled with the
     /// `inject_hint` knob on every reload.
-    pub hint_binding: crate::hook::HintBindingState,
+    pub hint_observer: crate::hook::HintObserverSlot,
     pub search: crate::functions::search::Deps,
     /// Keep each reload's config snapshot and semantic activation together.
     apply_lock: Arc<tokio::sync::Mutex<()>>,
@@ -81,7 +80,7 @@ impl SharedState {
         registry_cache: RegistryCache,
         registered_cache: Arc<RegisteredWorkersCache>,
         boot_topology: Topology,
-        hint_binding: crate::hook::HintBindingState,
+        hint_observer: crate::hook::HintObserverSlot,
         search: crate::functions::search::Deps,
     ) -> Self {
         Self {
@@ -90,7 +89,7 @@ impl SharedState {
             registry_cache,
             registered_cache,
             boot_topology,
-            hint_binding,
+            hint_observer,
             search,
             apply_lock: Arc::default(),
         }
@@ -148,7 +147,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<SkillsConfig, String> {
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     iii_config_client::initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -164,7 +163,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 
 /// Returns `Ok(None)` when the entry does not exist (`NOT_FOUND`).
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -200,9 +199,10 @@ pub async fn apply_config(state: &SharedState, cfg: SkillsConfig) {
     state.registered_cache.invalidate().await;
 }
 
-/// Trigger payload for `directory::on-config-change`. The handler ignores it
-/// (it re-fetches from the authoritative configuration); the empty struct
-/// exists so the function publishes a typed request schema rather than AnyValue.
+/// The `configuration::on-updated` event, as `directory::on-config-change`
+/// receives it. The handler ignores it (it re-fetches from the authoritative
+/// configuration); the empty struct exists so the function publishes a typed
+/// request schema rather than AnyValue.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 struct OnConfigChangeRequest {}
 
@@ -211,9 +211,15 @@ struct OnConfigChangeResponse {
     ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger for `configuration:updated` on the `iii-directory` entry.
-pub fn register_config_trigger(iii: &IIIClient, state: SharedState) -> Result<(), Error> {
+/// The configuration worker's change event.
+const CONFIG_ON_UPDATED_FN: &str = "configuration::on-updated";
+
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` with it for the `configuration:updated` events
+/// of the `iii-directory` entry. The observer stays `pending` while the
+/// configuration worker is not registered, and lives as long as the worker's
+/// connection.
+pub fn observe_config_changes(iii: &IIIClient, state: SharedState) {
     let st = state.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -233,20 +239,20 @@ pub fn register_config_trigger(iii: &IIIClient, state: SharedState) -> Result<()
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(CONFIG_ON_UPDATED_FN)
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
 }
 
 /// Reload from the AUTHORITATIVE configuration.
 ///
-/// The caller-supplied trigger payload is intentionally ignored:
+/// The delivered event is intentionally ignored:
 /// `directory::on-config-change` is a discoverable bus function, so trusting
 /// `payload.new_value` would let any caller repoint the registry URL or
 /// download roots without updating persisted state. Re-fetch the stored
@@ -282,13 +288,13 @@ async fn on_config_change(iii: &IIIClient, state: &SharedState) {
             .is_some_and(crate::functions::search_semantic::bundle_complete),
     );
     apply_config(state, cfg).await;
-    // Reconcile the pre-generate hook binding with the reloaded knob (hot,
-    // no restart): on → bind once; off → unregister.
-    crate::hook::apply(iii, &state.hint_binding, inject_hint);
+    // Reconcile the pre-generate hook observer with the reloaded knob (hot,
+    // no restart): on → observe once; off → dispose.
+    crate::hook::apply(iii, &state.hint_observer, inject_hint);
     tracing::info!("iii-directory configuration reloaded (tunable fields applied; caches cleared)");
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -296,8 +302,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,

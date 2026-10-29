@@ -3,17 +3,17 @@
 //! Boot sequence:
 //!   1. Parse CLI / load YAML config (with fallback to defaults).
 //!   2. Connect to the iii engine over WebSocket.
-//!   3. Register the custom trigger types
+//!   3. Register the change functions
 //!      `directory::skills::on-change` /
 //!      `directory::system-prompts::on-change` /
-//!      `directory::agents::on-change`.
+//!      `directory::agents::on-change` / `directory::kits::on-change`.
 //!   4. Register every public function against the engine — every
 //!      registration sits under `directory::*` (search, skills, system
 //!      prompts, agents, registry, and one engine-info wrapper).
-//!   5. (Optional) Subscribe to `worker` trigger for auto-download on
-//!      worker add events and run a boot reconcile for missing skills.
+//!   5. (Optional) Observe `engine::on-workers-changed` for auto-download
+//!      when a worker connects, and run a boot reconcile for missing skills.
 //!   6. Start the filesystem watch so external edits under the directory
-//!      roots fire the matching `on-change` (best-effort, never fatal).
+//!      roots call the matching `on-change` (best-effort, never fatal).
 //!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 //!
 //! Write paths are `directory::skills::download*` (bulk materialization)
@@ -33,10 +33,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
-use serde_json::json;
+use iii_sdk::{
+    register_worker, CallRequest, Deliver, IIIClient, InitOptions, RegisterFunction, Source,
+};
+use serde_json::{json, Value};
 
 use iii_directory::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
 use iii_directory::functions::download::{
@@ -48,7 +49,7 @@ use iii_directory::functions::skills::{
     ENGINE_NAMESPACE,
 };
 use iii_directory::sources::registry::VersionSpec;
-use iii_directory::{configuration, functions, manifest, trigger_types};
+use iii_directory::{configuration, events, functions, manifest};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -185,22 +186,22 @@ async fn main() -> Result<()> {
     let registry_cache = RegistryCache::new_shared(cache_ttl_ms.clone());
     let cfg_handle: SharedConfig = cfg.into_shared();
 
-    // Custom trigger types come first because the download function captures
-    // the subscriber sets it'll fan out to on success.
-    let registered = trigger_types::register_all(&iii);
+    // The change functions come first: the write functions call them on
+    // success.
+    let sources = events::register_all(&iii);
     functions::register_all_with_cache(
         &iii,
         &cfg_handle,
-        &registered,
+        &sources,
         &registered_cache,
         registry_cache.clone(),
     );
     functions::log_fs_health(&cfg_handle.load_full());
 
     // Function search: seed the engine-catalog snapshot (best effort — the
-    // functions-available push refreshes it), register
+    // engine::on-functions-changed observer refreshes it), register
     // directory::search_functions + its internal hook/preview/listener, and
-    // reconcile the pre-generate hint binding with the inject_hint knob.
+    // reconcile the pre-generate hint observer with the inject_hint knob.
     let search_catalog: functions::search::CatalogCell =
         Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new())));
     let semantic =
@@ -226,7 +227,7 @@ async fn main() -> Result<()> {
     functions::search::register(&iii, &search_deps);
     // The same model, as router::embed's local embedder.
     functions::embed_provider::register(&iii, &semantic);
-    functions::search::bind_best_effort(&iii);
+    functions::search::observe_catalog_changes(&iii);
     // The judge's context window (compact options, tournament) follows the
     // hub's default provider: re-read it as soon as the hub's configuration
     // changes instead of when the cache expires.
@@ -275,14 +276,14 @@ async fn main() -> Result<()> {
             }
         });
     }
-    let hint_binding = iii_directory::hook::HintBindingState::default();
-    iii_directory::hook::apply(&iii, &hint_binding, cfg_handle.load().inject_hint);
+    let hint_observer = iii_directory::hook::HintObserverSlot::default();
+    iii_directory::hook::apply(&iii, &hint_observer, cfg_handle.load().inject_hint);
 
     // Injectable console UI: the directory editor page, the
-    // directory::* function-trigger renderer, and the configuration form.
+    // directory::* function-call renderer, and the configuration form.
     iii_directory::ui::register(&iii);
 
-    // Auto-download: subscribe to worker add events + boot reconcile. Wired
+    // Auto-download: observe worker connections + boot reconcile. Wired
     // from the boot value of `auto_download` (a topology field — changing it
     // requires a restart).
     if auto_download {
@@ -296,20 +297,19 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Bind the configuration-change trigger so tunable fields hot-reload.
+    // Observe configuration changes so tunable fields hot-reload.
     let state = configuration::SharedState::new(
         cfg_handle.clone(),
         cache_ttl_ms,
         registry_cache,
         registered_cache,
         boot_topology,
-        hint_binding,
+        hint_observer,
         search_deps.clone(),
     );
-    configuration::register_config_trigger(&iii, state)
-        .context("registering configuration change trigger")?;
+    configuration::observe_config_changes(&iii, state);
 
-    // Filesystem watch: external edits under the directory roots fire the
+    // Filesystem watch: external edits under the directory roots call the
     // matching on-change with { op: "external" }. Failure to start is a
     // degradation (tabs refresh on interaction only), never fatal.
     let cfg_now = cfg_handle.load_full();
@@ -328,7 +328,7 @@ async fn main() -> Result<()> {
     // user-global `~/.iii/agents` root only when it already exists — this
     // worker edits profiles there in place but never materializes the
     // directory itself. A directory already watched under another kind is
-    // added again under this one: its edits must reach both subscriber sets.
+    // added again under this one: its edits must reach both change functions.
     for (i, profiles_root) in cfg_now.resolved_agents_roots().into_iter().enumerate() {
         if i > 0 && !profiles_root.is_dir() {
             continue;
@@ -351,25 +351,16 @@ async fn main() -> Result<()> {
         }
     }
     let watch_iii = iii.clone();
-    // Named fields, not a tuple: transposing two positional subscriber sets
-    // would compile, pass every test, and route pasted system prompts to the
-    // wrong subscribers.
-    let watch_sets = trigger_types::RegisteredTriggerTypes {
-        skills: registered.skills.clone(),
-        system_prompts: registered.system_prompts.clone(),
-        agents: registered.agents.clone(),
-        kits: registered.kits.clone(),
-    };
     let rt = tokio::runtime::Handle::current();
     let _fs_watch = match iii_directory::watch::spawn_fs_watch(watch_roots, move |kind| {
-        let set = match kind {
-            iii_directory::fs_source::SourceKind::Skill => watch_sets.skills.clone(),
-            iii_directory::fs_source::SourceKind::SystemPrompt => watch_sets.system_prompts.clone(),
-            iii_directory::fs_source::SourceKind::Agent => watch_sets.agents.clone(),
+        let source = match kind {
+            iii_directory::fs_source::SourceKind::Skill => sources.skills,
+            iii_directory::fs_source::SourceKind::SystemPrompt => sources.system_prompts,
+            iii_directory::fs_source::SourceKind::Agent => sources.agents,
         };
         let iii = watch_iii.clone();
         rt.spawn(async move {
-            trigger_types::dispatch(&iii, &set, serde_json::json!({ "op": "external" })).await;
+            events::emit(&iii, source, serde_json::json!({ "op": "external" })).await;
         });
     }) {
         Ok(h) => {
@@ -390,12 +381,14 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// `worker` trigger payload for `directory::__on_worker_added`. Only `worker`
-/// is read; declared as a struct so the function publishes a typed schema.
+/// The `engine::on-workers-changed` event, delivered as output to
+/// `directory::__on_worker_added`. Only `worker_id` is read: the handler
+/// looks the worker's name up in `engine::workers::list`. Declared as a struct
+/// so the function publishes a typed schema.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
-struct WorkerAddedEvent {
+struct WorkerConnectedEvent {
     #[serde(default)]
-    worker: Option<String>,
+    worker_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
@@ -403,82 +396,113 @@ struct WorkerAddedAck {
     ok: bool,
 }
 
-/// Register the internal `directory::__on_worker_added` handler and
-/// subscribe to the `worker` trigger type for `add` operations.
+/// The engine's worker connection events.
+const WORKERS_ON_CHANGED_FN: &str = "engine::on-workers-changed";
+
+/// Register the internal `directory::__on_worker_added` handler and observe
+/// `engine::on-workers-changed` with it for `worker_connected` events.
 fn setup_auto_download(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     cache: &Arc<RegisteredWorkersCache>,
     in_flight: &Arc<InFlightGuard>,
 ) {
+    let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
     let cache_inner = cache.clone();
     let in_flight_inner = in_flight.clone();
 
-    // Register the internal handler that fires on worker-add events.
+    // The internal handler that runs when a worker connects.
     iii.register_function(
         "directory::__on_worker_added",
-        RegisterFunction::new_async(move |event: WorkerAddedEvent| {
+        RegisterFunction::new_async(move |event: WorkerConnectedEvent| {
+            let iii = iii_inner.clone();
             let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
             let in_flight = in_flight_inner.clone();
             async move {
-                handle_worker_added(&cfg, &cache, &in_flight, &event).await;
+                handle_worker_connected(&iii, &cfg, &cache, &in_flight, &event).await;
                 Ok::<_, Error>(WorkerAddedAck { ok: true })
             }
         })
-        .description("Internal: auto-download skills on worker add event.")
+        .description("Internal: auto-download skills when a worker connects.")
         .metadata(serde_json::json!({ "internal": true })),
     );
 
-    // Subscribe to the `worker` trigger type with a retry backoff.
-    let iii_sub = iii.clone();
-    tokio::spawn(async move {
-        for attempt in 1..=5 {
-            let result = iii_sub.register_trigger(RegisterTriggerInput::new(
-                "worker".to_string(),
-                "directory::__on_worker_added".to_string(),
-                json!({
-                    "operations": ["add"],
-                    "stages": ["done"]
-                }),
-            ));
-            match result {
-                Ok(_) => {
-                    tracing::info!("subscribed to worker trigger for auto-download");
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        attempt,
-                        error = %e,
-                        "failed to subscribe to worker trigger; retrying"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(attempt * 2)).await;
-                }
-            }
-        }
-        tracing::warn!(
-            "exhausted retries subscribing to worker trigger; \
-             auto-download on worker add will not work"
-        );
-    });
+    // The observer stays `pending` until the engine source is registered,
+    // and lives as long as the worker's connection.
+    let handle = iii.observe(
+        Source::function(WORKERS_ON_CHANGED_FN)
+            .filters(json!({ "input.event": { "$eq": "worker_connected" } }))
+            .deliver(Deliver::Output),
+        "directory::__on_worker_added",
+    );
+    tracing::info!(
+        observer_id = handle.id(),
+        "observing worker connections for auto-download"
+    );
 }
 
-/// Handle a `worker` trigger add event. Downloads skills for the
-/// newly added worker if not already in-flight.
-async fn handle_worker_added(
+/// The name of the connected worker `worker_id`, from `engine::workers::list`.
+async fn connected_worker_name(iii: &IIIClient, worker_id: &str) -> Option<String> {
+    let reply = iii
+        .call(CallRequest {
+            function_id: "engine::workers::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await;
+    let reply = match reply {
+        Ok(reply) => reply,
+        Err(e) => {
+            tracing::warn!(worker_id, error = %e, "engine::workers::list failed; skipping auto-download");
+            return None;
+        }
+    };
+    worker_name_in_list(&reply, worker_id)
+}
+
+/// The `name` of the `engine::workers::list` row whose `id` is `worker_id`.
+fn worker_name_in_list(reply: &Value, worker_id: &str) -> Option<String> {
+    reply
+        .get("workers")?
+        .as_array()?
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(worker_id))?
+        .get("name")?
+        .as_str()
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+}
+
+/// Handle a worker connection. Downloads the worker's skills when they are
+/// missing (no local override, no completion marker) and no download for it
+/// is already in flight. A worker reconnecting with its skills in place costs
+/// one `engine::workers::list` call.
+async fn handle_worker_connected(
+    iii: &IIIClient,
     cfg: &SkillsConfig,
     cache: &RegisteredWorkersCache,
     in_flight: &Arc<InFlightGuard>,
-    event: &WorkerAddedEvent,
+    event: &WorkerConnectedEvent,
 ) {
-    let worker = match event.worker.as_deref() {
-        Some(w) => w.to_string(),
-        None => {
-            tracing::debug!("worker add event missing 'worker' field; skipping");
-            return;
-        }
+    let Some(worker_id) = event.worker_id.as_deref() else {
+        tracing::debug!("worker connection event missing 'worker_id'; skipping");
+        return;
+    };
+    let Some(worker) = connected_worker_name(iii, worker_id).await else {
+        tracing::debug!(worker_id, "connected worker has no listed name; skipping");
+        return;
+    };
+    let Some(spec) = reconcile_decision(
+        &worker,
+        None,
+        &cfg.local_skills_folder(),
+        &cfg.resolved_skills_folder(),
+    ) else {
+        tracing::debug!(worker = %worker, "worker skills present or overridden; skipping");
+        return;
     };
 
     // RAII: _claim drops at scope end (including on panic/early-return).
@@ -487,17 +511,16 @@ async fn handle_worker_added(
         return;
     };
 
-    let spec = VersionSpec::Tag("latest".to_string());
     match download_worker_skills(cfg, &worker, &spec).await {
         Ok(true) => {
-            tracing::info!(worker = %worker, "auto-download complete on worker add");
+            tracing::info!(worker = %worker, "auto-download complete on worker connect");
             cache.invalidate().await;
         }
         Ok(false) => {
             tracing::debug!(worker = %worker, "no skills bundle for worker (404)");
         }
         Err(e) => {
-            tracing::warn!(worker = %worker, error = %e, "auto-download failed on worker add");
+            tracing::warn!(worker = %worker, error = %e, "auto-download failed on worker connect");
         }
     }
 }
@@ -546,7 +569,7 @@ async fn reconcile_one(
 async fn fetch_worker_names_with_retry(iii: &IIIClient) -> Option<Vec<String>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
-        let result = iii.trigger(compose_status_request(10_000)).await;
+        let result = iii.call(compose_status_request(10_000)).await;
 
         match result {
             Ok(val) => {
@@ -657,4 +680,27 @@ fn spawn_boot_reconcile(
             "boot reconcile complete"
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_name_comes_from_the_listed_row_with_that_id() {
+        let reply = json!({ "workers": [
+            { "id": "w-1", "name": "kanban" },
+            { "id": "w-2", "name": "iii-directory" },
+            { "id": "w-3", "name": "  " },
+            { "id": "w-4" },
+        ] });
+        assert_eq!(
+            worker_name_in_list(&reply, "w-2").as_deref(),
+            Some("iii-directory")
+        );
+        assert_eq!(worker_name_in_list(&reply, "w-3"), None);
+        assert_eq!(worker_name_in_list(&reply, "w-4"), None);
+        assert_eq!(worker_name_in_list(&reply, "w-9"), None);
+        assert_eq!(worker_name_in_list(&json!({}), "w-1"), None);
+    }
 }

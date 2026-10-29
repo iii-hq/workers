@@ -7,7 +7,7 @@
 //! batched fetch) is gone — see [`crate::functions::skills`].
 
 use cucumber::{given, then, when};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use serde_json::{json, Value};
 
 use crate::common::world::IiiSkillsWorld;
@@ -64,7 +64,7 @@ async fn list_skills(world: &mut IiiSkillsWorld) {
         return;
     };
     if let Ok(v) = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "directory::skills::list".to_string(),
             payload: json!({}),
             action: None,
@@ -157,7 +157,7 @@ async fn get_skill(world: &mut IiiSkillsWorld, id: String) {
         return;
     };
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "directory::skills::get".to_string(),
             payload: json!({ "id": id }),
             action: None,
@@ -273,7 +273,7 @@ async fn index_skills(world: &mut IiiSkillsWorld) {
         return;
     };
     if let Ok(v) = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "directory::skills::index".to_string(),
             payload: json!({}),
             action: None,

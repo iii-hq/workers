@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -203,15 +203,15 @@ impl EngineCompose {
         if let Some(ns) = &namespace {
             payload["namespace"] = json!(ns);
         }
-        let request = TriggerRequest {
+        let request = CallRequest {
             function_id: function.to_string(),
             payload,
             action: None,
             timeout_ms: Some(timeout_ms),
         };
         let result = match namespace {
-            Some(ns) => self.iii.trigger(request.namespace(ns)).await,
-            None => self.iii.trigger(request).await,
+            Some(ns) => self.iii.call(request.namespace(ns)).await,
+            None => self.iii.call(request).await,
         };
         result.map_err(|e| e.to_string())
     }

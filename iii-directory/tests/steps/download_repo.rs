@@ -12,7 +12,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use cucumber::{given, then, when};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use serde_json::{json, Value};
 
 use crate::common::world::IiiSkillsWorld;
@@ -164,8 +164,8 @@ impl Drop for ScopedGitConfig {
     }
 }
 
-#[when(regex = r#"^I trigger directory::skills::download with repo=local skill="([^"]+)"$"#)]
-async fn trigger_download_repo(world: &mut IiiSkillsWorld, skill: String) {
+#[when(regex = r#"^I call directory::skills::download with repo=local skill="([^"]+)"$"#)]
+async fn call_download_repo(world: &mut IiiSkillsWorld, skill: String) {
     world.stash.remove(LAST_OK);
     world.stash.remove(LAST_ERR);
     let Some(iii) = world.iii.clone() else {
@@ -175,7 +175,7 @@ async fn trigger_download_repo(world: &mut IiiSkillsWorld, skill: String) {
     let url = repo_url(world);
     let _git_config = ScopedGitConfig::rewrite_fixture_url(&repo, &url);
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "directory::skills::download".to_string(),
             payload: json!({ "repo": url, "skill": skill }),
             action: None,
@@ -195,9 +195,9 @@ async fn trigger_download_repo(world: &mut IiiSkillsWorld, skill: String) {
 }
 
 #[when(
-    regex = r#"^I trigger directory::skills::download with both repo="([^"]+)" and worker="([^"]+)" and tag="([^"]+)"$"#
+    regex = r#"^I call directory::skills::download with both repo="([^"]+)" and worker="([^"]+)" and tag="([^"]+)"$"#
 )]
-async fn trigger_download_conflicting(
+async fn call_download_conflicting(
     world: &mut IiiSkillsWorld,
     repo: String,
     worker: String,
@@ -209,7 +209,7 @@ async fn trigger_download_conflicting(
         return;
     };
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "directory::skills::download".to_string(),
             payload: json!({
                 "repo": repo,

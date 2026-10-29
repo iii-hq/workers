@@ -6,7 +6,7 @@
 //! the shared wiremock server in `common::workers`.
 
 use cucumber::{given, then, when};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use serde_json::Value;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, Request, ResponseTemplate};
@@ -24,7 +24,7 @@ async fn call_registry(world: &mut IiiSkillsWorld, function_id: &str, payload: V
         return;
     };
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
@@ -184,16 +184,16 @@ async fn wiremock_worker_skills_status(_world: &mut IiiSkillsWorld, status: u16,
         .await;
 }
 
-// ── trigger steps ──────────────────────────────────────────────────
+// ── call steps ──────────────────────────────────────────────────
 
-#[when(regex = r#"^I trigger directory::registry::workers::list with payload:$"#)]
-async fn trigger_worker_list(world: &mut IiiSkillsWorld, step: &cucumber::gherkin::Step) {
+#[when(regex = r#"^I call directory::registry::workers::list with payload:$"#)]
+async fn call_worker_list(world: &mut IiiSkillsWorld, step: &cucumber::gherkin::Step) {
     let payload = parse_payload(step);
     call_registry(world, "directory::registry::workers::list", payload).await;
 }
 
-#[when(regex = r#"^I trigger directory::registry::workers::info with payload:$"#)]
-async fn trigger_worker_info(world: &mut IiiSkillsWorld, step: &cucumber::gherkin::Step) {
+#[when(regex = r#"^I call directory::registry::workers::info with payload:$"#)]
+async fn call_worker_info(world: &mut IiiSkillsWorld, step: &cucumber::gherkin::Step) {
     let payload = parse_payload(step);
     call_registry(world, "directory::registry::workers::info", payload).await;
 }
@@ -378,18 +378,6 @@ fn wi_functions_count(world: &mut IiiSkillsWorld, n: usize) {
         .as_array()
         .expect("missing api_reference.functions");
     assert_eq!(arr.len(), n, "functions array: {arr:?}");
-}
-
-#[then(regex = r#"^the registry worker-info api_reference triggers count is (\d+)$"#)]
-fn wi_triggers_count(world: &mut IiiSkillsWorld, n: usize) {
-    if world.iii.is_none() {
-        return;
-    }
-    let v = last_ok(world);
-    let arr = v["api_reference"]["triggers"]
-        .as_array()
-        .expect("missing api_reference.triggers");
-    assert_eq!(arr.len(), n, "triggers array: {arr:?}");
 }
 
 #[then(regex = r#"^the registry worker-info skills_tree skills count is (\d+)$"#)]

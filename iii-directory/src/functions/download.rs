@@ -4,8 +4,8 @@
 //!
 //! The function is the only write path in the worker. It validates the
 //! incoming arguments, dispatches to the matching source module under
-//! [`crate::sources`], and fires the matching on-change triggers on success so that
-//! subscribers (the `mcp` worker today) can forward MCP
+//! [`crate::sources`], and calls the matching `directory::*::on-change` on
+//! success so that its observers (the `mcp` worker today) can forward MCP
 //! `notifications/*_list_changed` to their clients.
 
 use std::sync::Arc;
@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::config::{SharedConfig, SkillsConfig};
+use crate::events;
 use crate::sources::{self, registry::VersionSpec, DownloadResult};
-use crate::trigger_types;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DownloadInput {
@@ -112,10 +112,10 @@ pub enum ClassifiedInput {
 /// with `master`-default repos can override via the `branch` field.
 pub const DEFAULT_REPO_BRANCH: &str = "main";
 
-pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &super::Subscribers) {
-    register_download(iii, cfg, subscribers);
-    register_download_from_registry(iii, cfg, subscribers);
-    register_download_from_repo(iii, cfg, subscribers);
+pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig, sources: &super::ChangeSources) {
+    register_download(iii, cfg, sources);
+    register_download_from_registry(iii, cfg, sources);
+    register_download_from_repo(iii, cfg, sources);
 }
 
 /// Shared pipeline for all three download functions: validate + classify
@@ -123,14 +123,14 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &super::S
 async fn run_and_fan_out(
     iii: &IIIClient,
     cfg: &SkillsConfig,
-    subs: &super::Subscribers,
+    sources: &super::ChangeSources,
     input: DownloadInput,
 ) -> Result<DownloadOutput, Error> {
     let classified = classify_input(input).map_err(Error::Handler)?;
     let result = run_download(cfg, &classified)
         .await
         .map_err(Error::Handler)?;
-    fan_out(iii, subs, &classified, &result).await;
+    fan_out(iii, sources, &classified, &result).await;
     Ok(build_output(&classified, result))
 }
 
@@ -138,17 +138,16 @@ async fn run_and_fan_out(
 /// source set. Kept for back-compat; new callers should prefer the
 /// explicit `download_from_registry` / `download_from_repo`, whose
 /// schemas make the source unambiguous.
-fn register_download(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &super::Subscribers) {
+fn register_download(iii: &Arc<IIIClient>, cfg: &SharedConfig, sources: &super::ChangeSources) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
-    let subs_outer = subscribers.clone();
+    let sources = *sources;
     iii.register_function(
         "directory::skills::download",
         RegisterFunction::new_async(move |req: DownloadInput| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.load_full();
-            let subs = subs_outer.clone();
-            async move { run_and_fan_out(&iii, &cfg, &subs, req).await }
+            async move { run_and_fan_out(&iii, &cfg, &sources, req).await }
         })
         .description(
             "Download skills into skills_folder from exactly one source: {repo, \
@@ -166,17 +165,16 @@ fn register_download(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &sup
 fn register_download_from_registry(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subscribers: &super::Subscribers,
+    sources: &super::ChangeSources,
 ) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
-    let subs_outer = subscribers.clone();
+    let sources = *sources;
     iii.register_function(
         "directory::skills::download_from_registry",
         RegisterFunction::new_async(move |req: RegistryDownloadInput| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.load_full();
-            let subs = subs_outer.clone();
             async move {
                 let input = DownloadInput {
                     worker: Some(req.worker),
@@ -184,7 +182,7 @@ fn register_download_from_registry(
                     tag: req.tag,
                     ..Default::default()
                 };
-                run_and_fan_out(&iii, &cfg, &subs, input).await
+                run_and_fan_out(&iii, &cfg, &sources, input).await
             }
         })
         .description(
@@ -203,17 +201,16 @@ fn register_download_from_registry(
 fn register_download_from_repo(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subscribers: &super::Subscribers,
+    sources: &super::ChangeSources,
 ) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
-    let subs_outer = subscribers.clone();
+    let sources = *sources;
     iii.register_function(
         "directory::skills::download_from_repo",
         RegisterFunction::new_async(move |req: RepoDownloadInput| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.load_full();
-            let subs = subs_outer.clone();
             async move {
                 let input = DownloadInput {
                     repo: Some(req.repo),
@@ -221,7 +218,7 @@ fn register_download_from_repo(
                     branch: req.branch,
                     ..Default::default()
                 };
-                run_and_fan_out(&iii, &cfg, &subs, input).await
+                run_and_fan_out(&iii, &cfg, &sources, input).await
             }
         })
         .description(
@@ -370,13 +367,13 @@ fn build_output(classified: &ClassifiedInput, result: DownloadResult) -> Downloa
     }
 }
 
-/// Fan out to subscribers. We fire `skills::on-change` only when at
+/// Call the change functions. We call `skills::on-change` only when at
 /// least one skill was written (and likewise for system prompts / agents)
 /// so noisy no-op downloads don't churn MCP
 /// `notifications/list_changed`.
 async fn fan_out(
     iii: &IIIClient,
-    subs: &super::Subscribers,
+    sources: &super::ChangeSources,
     classified: &ClassifiedInput,
     result: &DownloadResult,
 ) {
@@ -389,13 +386,13 @@ async fn fan_out(
         },
     });
     if !result.skills_written.is_empty() {
-        trigger_types::dispatch(iii, &subs.skills, payload.clone()).await;
+        events::emit(iii, sources.skills, payload.clone()).await;
     }
     if !result.system_prompts_written.is_empty() {
-        trigger_types::dispatch(iii, &subs.system_prompts, payload.clone()).await;
+        events::emit(iii, sources.system_prompts, payload.clone()).await;
     }
     if !result.agents_written.is_empty() {
-        trigger_types::dispatch(iii, &subs.agents, payload).await;
+        events::emit(iii, sources.agents, payload).await;
     }
 }
 
