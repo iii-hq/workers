@@ -66,8 +66,10 @@ pub const FORBIDDEN: &str = "FORBIDDEN";
 pub struct EventArgs {}
 
 /// The error `sandbox-code-runner::on-event` answers every invocation with:
-/// its events come only from the [`Emitter`].
-pub fn refuse_on_event(_event: Value) -> Result<(), Error> {
+/// its events come only from the [`Emitter`]. Typed on the delivered
+/// [`Event`] so the published request schema documents what observers
+/// receive (never the permissive AnyValue schema).
+pub fn refuse_on_event(_event: Event) -> Result<(), Error> {
     Err(Error::Remote {
         code: FORBIDDEN.to_string(),
         message: format!(
@@ -83,21 +85,46 @@ pub fn refuse_on_event(_event: Value) -> Result<(), Error> {
 /// only when that kind carries it — never code, source, or output. No
 /// `Debug` impl on purpose: `runtime_id` and `sandbox_id` must never reach
 /// logs (they travel only to subscribers, who are the operator surface).
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Event {
-    kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Which lifecycle change this event reports.
+    kind: EventKind,
+    /// The runtime the event concerns (absent on `fleet`, and on a one-shot
+    /// `run_settled`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The runtime's language (`runtime_created`, `run_settled`,
+    /// `function_registered`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     lang: Option<Lang>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The microVM backing the runtime (`runtime_created`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sandbox_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The function published onto the runtime (`function_registered`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     function_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// True when the engine has no sandbox daemon (`fleet`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     daemon_absent: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The full current `sandbox::list` snapshot (`fleet`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sandboxes: Option<serde_json::Value>,
+}
+
+/// The lifecycle change an [`Event`] reports.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    /// A persistent runtime came up.
+    RuntimeCreated,
+    /// A run returned a response.
+    RunSettled,
+    /// A function was published onto a runtime.
+    FunctionRegistered,
+    /// A runtime was destroyed.
+    Teardown,
+    /// The sandbox daemon fleet changed.
+    Fleet,
 }
 
 impl Event {
@@ -105,7 +132,7 @@ impl Event {
     /// or a namespace's first registration. One-shot run VMs never emit.
     pub fn runtime_created(runtime_id: &str, lang: Lang, sandbox_id: &str) -> Self {
         Self {
-            kind: "runtime_created",
+            kind: EventKind::RuntimeCreated,
             runtime_id: Some(runtime_id.to_string()),
             lang: Some(lang),
             sandbox_id: Some(sandbox_id.to_string()),
@@ -119,7 +146,7 @@ impl Event {
     /// persists past the call — a one-shot run's VM is already gone.
     pub fn run_settled(runtime_id: Option<&str>, lang: Lang) -> Self {
         Self {
-            kind: "run_settled",
+            kind: EventKind::RunSettled,
             runtime_id: runtime_id.map(str::to_string),
             lang: Some(lang),
             sandbox_id: None,
@@ -132,7 +159,7 @@ impl Event {
     /// `register_function` published `function_id` onto `runtime_id`.
     pub fn function_registered(function_id: &str, runtime_id: &str, lang: Lang) -> Self {
         Self {
-            kind: "function_registered",
+            kind: EventKind::FunctionRegistered,
             runtime_id: Some(runtime_id.to_string()),
             lang: Some(lang),
             sandbox_id: None,
@@ -147,7 +174,7 @@ impl Event {
     /// daemon reaped or lost the VM behind our back.
     pub fn teardown(runtime_id: &str) -> Self {
         Self {
-            kind: "teardown",
+            kind: EventKind::Teardown,
             runtime_id: Some(runtime_id.to_string()),
             lang: None,
             sandbox_id: None,
@@ -164,7 +191,7 @@ impl Event {
     /// console tabs subscribe instead of each polling `sandbox::list`.
     pub fn fleet(daemon_absent: bool, sandboxes: serde_json::Value) -> Self {
         Self {
-            kind: "fleet",
+            kind: EventKind::Fleet,
             runtime_id: None,
             lang: None,
             sandbox_id: None,
@@ -451,7 +478,8 @@ impl ObserveHandler for EventObserveHandler {
 /// function over the same subscriber set, and return the emitter wired to
 /// it. Neither is a callable function: deliberately NOT in
 /// `functions::STATIC_IDS` or `catalog()` — nothing invokes them (on-event
-/// refuses every invocation), so there is no wire schema to pin.
+/// refuses every invocation). on-event's request schema is the delivered
+/// [`Event`], its response `()`; `tests/schemas.rs` pins both as typed.
 pub fn register_event_trigger(iii: &Arc<IIIClient>) -> Emitter {
     let subscribers = SubscriberSet::new();
     // Deprecated in 0.25 and still served by 0.24 and 0.25 engines: kept for
@@ -594,7 +622,7 @@ mod tests {
 
     #[test]
     fn on_event_refuses_direct_invocation() {
-        match refuse_on_event(json!({ "kind": "teardown", "runtime_id": "rt-1" })) {
+        match refuse_on_event(Event::teardown("rt-1")) {
             Err(Error::Remote { code, message, .. }) => {
                 assert_eq!(code, FORBIDDEN);
                 assert_eq!(code, iii_sdk::protocol::observe_codes::FORBIDDEN);
