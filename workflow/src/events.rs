@@ -1,27 +1,63 @@
-/// The terminal-state payload, shared by the global broadcast and the
-/// caller-supplied callback.
-fn completed_payload(record: &crate::types::WorkflowRunRecord) -> serde_json::Value {
-    serde_json::json!({
-        "run_id": record.run_id,
-        "status": record.status,
-        "result": record.result,
-        "result_error": record.result_error,
-    })
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::types::RunStatus;
+
+/// The event function every terminal run calls. Private: only this worker
+/// calls it; anyone may observe it.
+pub const ON_RUN_COMPLETED_FN: &str = "workflow::on-run-completed";
+pub const ON_RUN_COMPLETED_DESC: &str =
+    "A workflow run reached a terminal state (completed, failed or cancelled). Takes no \
+     args; observe it with filters on input.run_id or input.status. Called by the workflow \
+     worker only.";
+
+/// A run's terminal outcome: the `workflow::on-run-completed` event and the
+/// `notify` callback payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RunCompletedEvent {
+    pub run_id: String,
+    pub status: RunStatus,
+    /// The run's result; null unless it completed.
+    #[serde(default)]
+    pub result: Option<serde_json::Value>,
+    /// Why the run failed; null otherwise.
+    #[serde(default)]
+    pub result_error: Option<String>,
 }
 
-/// Global fire-and-forget event broadcast when any run reaches a terminal state.
-/// Untargeted: bind a worker to `workflow::run-completed` to observe every run.
-/// For a per-run "notify me" callback, see `emit_notify` + `NotifySpec`.
+impl From<&crate::types::WorkflowRunRecord> for RunCompletedEvent {
+    fn from(record: &crate::types::WorkflowRunRecord) -> Self {
+        Self {
+            run_id: record.run_id.clone(),
+            status: record.status,
+            result: record.result.clone(),
+            result_error: record.result_error.clone(),
+        }
+    }
+}
+
+/// The terminal-state payload, shared by the event function and the
+/// caller-supplied callback.
+fn completed_payload(record: &crate::types::WorkflowRunRecord) -> serde_json::Value {
+    serde_json::to_value(RunCompletedEvent::from(record)).unwrap_or(serde_json::Value::Null)
+}
+
+/// Call `workflow::on-run-completed` when any run reaches a terminal state,
+/// fire-and-forget and only while something observes it. For a per-run
+/// "notify me" callback, see `emit_notify` + `NotifySpec`.
 pub async fn emit_run_completed(
     deps: &crate::functions::Deps,
     record: &crate::types::WorkflowRunRecord,
 ) {
+    if !deps.iii.is_observed(ON_RUN_COMPLETED_FN) {
+        return;
+    }
     let _ = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "workflow::run-completed".into(),
+        .call(iii_sdk::CallRequest {
+            function_id: ON_RUN_COMPLETED_FN.into(),
             payload: completed_payload(record),
-            action: Some(iii_sdk::TriggerAction::Void),
+            action: Some(iii_sdk::CallAction::Void),
             timeout_ms: None,
         })
         .await; // best-effort fire-and-forget
@@ -48,10 +84,10 @@ pub async fn emit_notify(deps: &crate::functions::Deps, record: &crate::types::W
         .unwrap_or_else(|| "default".to_string());
     let _ = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: notify.function_id.clone(),
             payload: completed_payload(record),
-            action: Some(iii_sdk::TriggerAction::Enqueue { queue }),
+            action: Some(iii_sdk::CallAction::Enqueue { queue }),
             timeout_ms: None,
         })
         .await; // best-effort; durable retry is the queue's job
@@ -134,7 +170,7 @@ pub async fn emit_reply(deps: &crate::functions::Deps, record: &crate::types::Wo
     }
     let _ = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "harness::send".into(),
             payload,
             action: None,
@@ -165,6 +201,9 @@ mod tests {
         assert_eq!(p["result"], json!({"ok": true}));
         // result_error is absent on a clean completion → serialized as null.
         assert!(p["result_error"].is_null());
+        // The payload is the event the event function returns.
+        let event: RunCompletedEvent = serde_json::from_value(p).expect("event shape");
+        assert_eq!(event.status, RunStatus::Completed);
     }
 
     fn reply(spec: serde_json::Value) -> crate::types::ReplySpec {

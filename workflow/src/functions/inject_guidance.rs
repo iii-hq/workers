@@ -1,9 +1,10 @@
 //! `workflow::inject-guidance` — a `pre_generate` hook that contributes the
 //! workflow orchestration guidance to the agent's system prompt, ONLY while this
-//! worker is connected. The hook is bound at worker startup and the binding is
-//! dropped when the worker goes away, so the guidance is presence-gated for free:
-//! a deployment without the workflow worker never pays for it, and it is no longer
-//! hand-duplicated (and drifting) across the four static prompt variants.
+//! worker is connected. The worker observes `harness::hook::on-pre-generate`
+//! with the guidance as the observer's `inject_prompt` arg, and the engine
+//! disposes the observer once the worker stays disconnected, so the guidance is
+//! presence-gated: a deployment without the workflow worker never pays for it,
+//! and there is one copy of it instead of one per static prompt variant.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -11,7 +12,8 @@ use serde::{Deserialize, Serialize};
 pub const GUIDANCE_HOOK_ID: &str = "workflow::inject-guidance";
 pub const GUIDANCE_HOOK_DESC: &str =
     "Internal pre_generate hook: appends workflow orchestration guidance to the agent \
-     system prompt. Bound to harness::hook::pre-generate at worker startup; not called directly.";
+     system prompt. The target of the worker's harness::hook::on-pre-generate observer; not \
+     called directly.";
 
 /// The orchestration guidance appended to the system prompt — the single canonical
 /// copy (previously duplicated, and drifting, across default/anthropic/gpt/kimi).
