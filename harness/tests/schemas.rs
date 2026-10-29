@@ -101,6 +101,38 @@ fn every_function_has_typed_request_and_response_schemas() {
     }
 }
 
+/// The owner-delivered `harness::on-*` functions publish the event their
+/// observers receive as the request schema: never `AnyValue` (the interface
+/// boot smoke fails an untyped one).
+#[test]
+fn every_observable_function_has_typed_request_and_response_schemas() {
+    let specs = harness::surface::observable_catalog();
+    let ids: Vec<&str> = specs.iter().map(|s| s.function_id).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "harness::on-ready",
+            "harness::on-turn-started",
+            "harness::on-turn-completed",
+            "harness::on-message-queued",
+            "harness::on-triggers-changed",
+            "harness::on-compaction",
+            "harness::on-timer",
+            "harness::on-session-tree-deletion",
+        ]
+    );
+    for spec in specs {
+        support::assert_typed_schema(
+            &format!("{} request_schema", spec.function_id),
+            &spec.request_schema,
+        );
+        support::assert_typed_schema(
+            &format!("{} response_schema", spec.function_id),
+            &spec.response_schema,
+        );
+    }
+}
+
 #[test]
 fn metrics_request_schema_accepts_exactly_one_session_id_spelling() {
     use harness::functions::metrics::SessionMetricsRequestV1;
