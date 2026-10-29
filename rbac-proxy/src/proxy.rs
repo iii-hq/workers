@@ -253,9 +253,9 @@ async fn handle_connection(
 
     // One side closed: tear the connection down promptly. Aborting the writers
     // drops their socket sinks (closing both sockets); the engine then tears
-    // down this connection's functions/triggers via its existing per-connection
-    // cleanup. Any in-flight spawned middleware task finishes on its own — its
-    // reply send fails harmlessly once the forwarder is gone.
+    // down this connection's functions and observers via its existing
+    // per-connection cleanup. Any in-flight spawned middleware task finishes
+    // on its own — its reply send fails harmlessly once the forwarder is gone.
     client_writer.abort();
     engine_writer.abort();
     reply_forwarder.abort();

@@ -5,9 +5,9 @@
 //!   2. `register_worker(--url)`               — control connection
 //!   3. `register_config(seed)` + `fetch_config()`   — REQUIRED boot dependency (fatal)
 //!   4. build `ProxyState`; bind the public listener on `host:port`
-//!   5. register `rbac-proxy::status`; start the catalog-cache feed
+//!   5. register `rbac-proxy::status`; observe `engine::on-functions-changed` for the catalog cache
 //!   6. (the axum server is spawned by the bind in step 4)
-//!   7. `register_config_trigger`              — LAST, so the handler closes over fully-built state
+//!   7. `observe_config_changes`               — LAST, so the handler closes over fully-built state
 //!   8. wait for SIGINT/SIGTERM → drain → `iii.shutdown_async()`
 
 use std::sync::Arc;
@@ -121,11 +121,10 @@ async fn main() -> Result<()> {
 
     // 5. Public function + catalog-cache feed.
     functions::register_all(&iii, &state);
-    configuration::bind_catalog_refresh(&iii, state.catalog.clone());
+    configuration::observe_catalog_changes(&iii, state.catalog.clone());
 
-    // 7. Config-change trigger LAST (closes over the fully-built server handle).
-    configuration::register_config_trigger(&iii, cell, server.clone(), cli.url.clone())
-        .context("registering the configuration change trigger")?;
+    // 7. Config-change observer LAST (closes over the fully-built server handle).
+    configuration::observe_config_changes(&iii, cell, server.clone(), cli.url.clone());
 
     tracing::info!("rbac-proxy ready");
 
@@ -137,12 +136,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Load a one-time seed config from a YAML file.
+/// Load a one-time seed config from a YAML file. It is read like a stored
+/// entry ([`WorkerConfig::from_json`]), so a seed written for an earlier
+/// proxy loads too.
 fn load_seed(path: &str) -> Result<WorkerConfig> {
     let contents = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
-    let cfg: WorkerConfig =
+    let raw: serde_json::Value =
         serde_yaml::from_str(&contents).with_context(|| format!("parsing {path}"))?;
-    Ok(cfg)
+    WorkerConfig::from_json(&raw)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("parsing {path}"))
 }
 
 /// Wait for SIGINT or, on Unix, SIGTERM (so `docker stop` / `kubectl delete`

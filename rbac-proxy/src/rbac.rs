@@ -25,8 +25,7 @@
 
 use std::collections::HashMap;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeMap;
@@ -50,18 +49,49 @@ pub struct RbacConfig {
     /// exposed if **any** filter matches.
     #[serde(default)]
     pub expose_functions: Vec<FunctionFilter>,
+    /// Called before a function is registered, with its `function_id`,
+    /// `description`, `metadata`, `namespace`, `private`, `observable`,
+    /// `args_format` (when set) and the session's `context`. An object answer
+    /// may rewrite `function_id`, `description`, `metadata`, `private`,
+    /// `observable` and `args_format`; anything else denies (the registration
+    /// is dropped).
     #[serde(default)]
     pub on_function_registration_function_id: Option<String>,
-    #[serde(default)]
-    pub on_trigger_registration_function_id: Option<String>,
-    #[serde(default)]
-    pub on_trigger_type_registration_function_id: Option<String>,
-    /// The engine's observer registration hook (iii 0.25). Accepted so an
-    /// engine `rbac` block can be copied here unchanged, but not called yet:
-    /// this version of the proxy refuses every `observe` (see the
-    /// interceptor), so there is no registration for the hook to rewrite.
+    /// Called before an observer is created, with `observer_id`,
+    /// `function_id`, `namespace`, `args`, `filters`, `target_function_id`,
+    /// `target_namespace`, `metadata` and the session's `context`. An object
+    /// answer may rewrite `function_id`, `target_function_id`, `args`,
+    /// `filters` and `metadata`; anything else denies (`FORBIDDEN`).
     #[serde(default)]
     pub on_observer_registration_function_id: Option<String>,
+}
+
+/// `rbac` keys an earlier proxy read and this one ignores, with what replaces
+/// each (the engine's own list, `rbac_config.rs` `REMOVED_KEYS`). A stored
+/// configuration that still sets one loads, with one `warn` per key.
+pub const REMOVED_KEYS: [(&str, &str); 2] = [
+    (
+        "on_trigger_registration_function_id",
+        "use on_observer_registration_function_id, which gates every observer",
+    ),
+    (
+        "on_trigger_type_registration_function_id",
+        "use on_function_registration_function_id: an event source is a function \
+         registered with args_format and private",
+    ),
+];
+
+/// Remove the [`REMOVED_KEYS`] from a raw `rbac` object before it is parsed
+/// (the struct denies unknown fields), logging one `warn` for each key set.
+pub fn drop_removed_keys(rbac: &mut Value) {
+    let Some(obj) = rbac.as_object_mut() else {
+        return;
+    };
+    for (key, replacement) in REMOVED_KEYS {
+        if obj.remove(key).is_some() {
+            tracing::warn!(key = %key, "rbac.{key} is ignored: {replacement}");
+        }
+    }
 }
 
 impl RbacConfig {
@@ -464,9 +494,11 @@ impl JsonSchema for FunctionFilter {
 //
 // Part of iii's public contract: additive-only within a major version. These
 // ten ids keep connection setup, channel creation, logging, and context
-// propagation working regardless of `expose_functions`. The eight *discovery*
+// propagation working regardless of `expose_functions`. The six *discovery*
 // functions are deliberately NOT here — they are gated by `expose_functions`
-// and their results are rewritten (see `engine_overrides`).
+// and their results are rewritten (see `engine_overrides`). The carve-out is
+// for calling: the interceptor refuses observers of these ids, whose calls
+// carry other workers' channel keys, logs and registrations.
 // ---------------------------------------------------------------------------
 
 pub const INFRASTRUCTURE_FUNCTIONS: &[&str] = &[
@@ -570,9 +602,8 @@ pub struct ProxySession {
     pub allowed_functions: Vec<String>,
     /// Denials, global on purpose (deny wins in every namespace).
     pub forbidden_functions: Vec<String>,
-    /// `None` = all trigger types allowed.
-    pub allowed_trigger_types: Option<Vec<String>>,
-    pub allow_trigger_type_registration: bool,
+    /// Whether the connection may register functions, event sources
+    /// included (an event source is a function with `args_format`).
     pub allow_function_registration: bool,
     /// Forwarded to middleware + registration hooks.
     pub context: Value,
@@ -582,9 +613,8 @@ pub struct ProxySession {
 
 impl ProxySession {
     /// The permissive default used when no `auth_function_id` is configured —
-    /// identical to the engine's no-auth-function branch (rbac_session.rs:76-86):
-    /// note `allow_trigger_type_registration: true` here, unlike the
-    /// `AuthResult` serde default (`false`).
+    /// identical to the engine's no-auth-function branch
+    /// (`Session::authenticate` in rbac_session.rs).
     pub fn permissive(ip_address: String) -> Self {
         Self {
             session_id: Uuid::new_v4(),
@@ -592,8 +622,6 @@ impl ProxySession {
             namespaces: HashMap::new(),
             allowed_functions: vec![],
             forbidden_functions: vec![],
-            allowed_trigger_types: None,
-            allow_trigger_type_registration: true,
             allow_function_registration: true,
             context: json!({}),
             function_registration_prefix: None,
@@ -607,7 +635,7 @@ impl ProxySession {
 }
 
 // ---------------------------------------------------------------------------
-// AuthResult — VENDORED defaults from rbac_session.rs:48-64.
+// AuthResult — VENDORED defaults from rbac_session.rs (`AuthResult`).
 // ---------------------------------------------------------------------------
 
 fn default_true() -> bool {
@@ -626,10 +654,6 @@ pub struct AuthResult {
     pub allowed_functions: Vec<String>,
     #[serde(default)]
     pub forbidden_functions: Vec<String>,
-    #[serde(default)]
-    pub allowed_trigger_types: Option<Vec<String>>,
-    #[serde(default)]
-    pub allow_trigger_type_registration: bool,
     #[serde(default = "default_true")]
     pub allow_function_registration: bool,
     #[serde(default = "default_context")]
@@ -646,12 +670,34 @@ impl AuthResult {
             namespaces: self.namespaces,
             allowed_functions: self.allowed_functions,
             forbidden_functions: self.forbidden_functions,
-            allowed_trigger_types: self.allowed_trigger_types,
-            allow_trigger_type_registration: self.allow_trigger_type_registration,
             allow_function_registration: self.allow_function_registration,
             context: self.context,
             function_registration_prefix: self.function_registration_prefix,
         }
+    }
+}
+
+/// Auth result fields an earlier proxy read and this one ignores (the
+/// engine's `REMOVED_FIELDS` in rbac_session.rs).
+pub const REMOVED_AUTH_FIELDS: [&str; 2] =
+    ["allowed_trigger_types", "allow_trigger_type_registration"];
+
+/// Logs one `warn` per process when an auth function's result sets a removed
+/// field: registering an event source is registering a function, gated by
+/// `allow_function_registration` and the registration hook.
+fn warn_removed_auth_fields(result: &Value) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if REMOVED_AUTH_FIELDS
+        .iter()
+        .any(|field| result.get(field).is_some())
+        && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        tracing::warn!(
+            fields = ?REMOVED_AUTH_FIELDS,
+            "the auth function's result sets fields rbac-proxy ignores; function registration \
+             (allow_function_registration, on_function_registration_function_id) gates event \
+             sources"
+        );
     }
 }
 
@@ -666,10 +712,13 @@ pub struct AuthRejection {
 /// Authenticate an upgrade and derive its [`ProxySession`].
 ///
 /// Invokes `rbac.auth_function_id` **once per upgrade** over the control
-/// connection (`iii.trigger`), exactly as the engine invokes it via
-/// `engine.call` (rbac_session.rs:67-107). Unset, unresolvable or errored all
-/// **fail closed** (reject the upgrade): neither a missing setting nor a
-/// broken control plane opens the door.
+/// connection (`iii.call`), exactly as the engine invokes it via
+/// `engine.call` (`Session::authenticate` in rbac_session.rs). Unset,
+/// unresolvable or errored all **fail closed** (reject the upgrade): neither
+/// a missing setting nor a broken control plane opens the door.
+///
+/// The auth function receives the upgrade's headers (bearer tokens
+/// included), so operators register it with `observable: false`.
 pub async fn resolve_session(
     iii: &IIIClient,
     rbac: Option<&RbacConfig>,
@@ -693,14 +742,7 @@ pub async fn resolve_session(
         "ip_address": ip_address,
     });
 
-    let result = iii
-        .trigger(TriggerRequest {
-            function_id: auth_fn.to_string(),
-            payload: input,
-            action: None,
-            timeout_ms: None,
-        })
-        .await;
+    let result = iii.call(CallRequest::new(auth_fn, input)).await;
 
     match result {
         Err(e) => Err(AuthRejection {
@@ -711,13 +753,16 @@ pub async fn resolve_session(
             code: "AUTH_ERROR".to_string(),
             message: "auth function returned no result".to_string(),
         }),
-        Ok(v) => match serde_json::from_value::<AuthResult>(v) {
-            Ok(r) => Ok(r.into_session(ip_address)),
-            Err(e) => Err(AuthRejection {
-                code: "AUTH_ERROR".to_string(),
-                message: e.to_string(),
-            }),
-        },
+        Ok(v) => {
+            warn_removed_auth_fields(&v);
+            match serde_json::from_value::<AuthResult>(v) {
+                Ok(r) => Ok(r.into_session(ip_address)),
+                Err(e) => Err(AuthRejection {
+                    code: "AUTH_ERROR".to_string(),
+                    message: e.to_string(),
+                }),
+            }
+        }
     }
 }
 
@@ -893,10 +938,8 @@ mod tests {
             "engine::functions::info",
             "engine::workers::list",
             "engine::workers::info",
-            "engine::triggers::list",
-            "engine::triggers::info",
-            "engine::registered-triggers::list",
-            "engine::registered-triggers::info",
+            "engine::observers::list",
+            "engine::observers::get",
         ] {
             let c = cfg(&[]);
             assert!(
@@ -990,8 +1033,6 @@ mod tests {
         assert!(r.namespaces.is_empty());
         assert!(r.allowed_functions.is_empty());
         assert!(r.forbidden_functions.is_empty());
-        assert!(r.allowed_trigger_types.is_none());
-        assert!(!r.allow_trigger_type_registration); // serde default false
         assert!(r.allow_function_registration); // default true
         assert_eq!(r.context, json!({}));
         assert!(r.function_registration_prefix.is_none());
@@ -1015,11 +1056,23 @@ mod tests {
     }
 
     #[test]
-    fn permissive_session_enables_trigger_type_registration() {
+    fn permissive_session_allows_function_registration() {
         let s = ProxySession::permissive("1.2.3.4".to_string());
-        assert!(s.allow_trigger_type_registration);
         assert!(s.allow_function_registration);
-        assert!(s.allowed_trigger_types.is_none());
+        assert!(s.namespaces.is_empty());
+        assert!(s.function_registration_prefix.is_none());
+    }
+
+    /// An auth result written for an earlier proxy still parses: the fields
+    /// it no longer reads are ignored.
+    #[test]
+    fn removed_auth_fields_are_ignored() {
+        let mut raw = json!({ "allowed_functions": ["api::a"] });
+        for field in REMOVED_AUTH_FIELDS {
+            raw[field] = json!(true);
+        }
+        let r: AuthResult = serde_json::from_value(raw).unwrap();
+        assert_eq!(r.allowed_functions, vec!["api::a".to_string()]);
     }
 
     #[test]
@@ -1271,6 +1324,24 @@ mod tests {
             s.namespaces.get("orders"),
             Some(&vec!["svc::*".to_string()])
         );
+    }
+
+    /// A stored `rbac` block that sets a removed key loads once the key is
+    /// dropped; every other unknown key is still refused.
+    #[test]
+    fn removed_keys_are_dropped_before_parsing() {
+        let mut raw = json!({ "auth_function_id": "p::auth" });
+        for (key, _) in REMOVED_KEYS {
+            raw[key] = json!("p::hook");
+        }
+        assert!(serde_json::from_value::<RbacConfig>(raw.clone()).is_err());
+        drop_removed_keys(&mut raw);
+        let c: RbacConfig = serde_json::from_value(raw).unwrap();
+        assert_eq!(c.auth_function_id.as_deref(), Some("p::auth"));
+
+        let mut typo = json!({ "on_observer_registration_fn": "p::hook" });
+        drop_removed_keys(&mut typo);
+        assert!(serde_json::from_value::<RbacConfig>(typo).is_err());
     }
 
     #[test]
