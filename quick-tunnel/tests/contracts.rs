@@ -159,9 +159,17 @@ async fn interface_registers_without_cloudflared_and_sdk_preserves_namespace_met
     // Every on-* function publishes typed request and response schemas: the
     // interface boot smoke refuses an untyped (AnyValue or empty) schema.
     let typed = |schema: &Value| {
-        ["type", "properties", "$ref", "allOf", "anyOf", "oneOf", "enum"]
-            .iter()
-            .any(|key| schema.get(*key).is_some())
+        [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+        ]
+        .iter()
+        .any(|key| schema.get(*key).is_some())
     };
     for (id, registration) in functions
         .iter()
