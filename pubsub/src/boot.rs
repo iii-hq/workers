@@ -1,5 +1,6 @@
 //! Boot sequence: builtin guard → build adapter → hub → register the
-//! `subscribe` trigger type and the `publish` service function.
+//! `subscribe` trigger type, the `pubsub::on-message` observable function and
+//! the `publish` service function.
 
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ use serde_json::Value;
 use crate::adapters::{self, Invoker};
 use crate::config::PubSubConfig;
 use crate::hub::Hub;
+use crate::on_message::{ObserverRouter, Observers};
 use crate::trigger::{SubscribeTriggerHandler, SubscribeTriggerSpec};
 use crate::{PUBLISH_FUNCTION_ID, TRIGGER_TYPE};
 
@@ -97,17 +99,31 @@ impl Invoker for SdkInvoker {
 pub async fn start(iii: Arc<IIIClient>, config: PubSubConfig) -> anyhow::Result<BootHandle> {
     guard_against_builtin_pubsub(&iii).await?;
 
-    let invoker: Arc<dyn Invoker> = Arc::new(SdkInvoker { iii: iii.clone() });
+    // Observers of pubsub::on-message are hub subscriptions keyed
+    // `observer:<id>`; the router delivers those with obs.call and every
+    // trigger subscription through iii.trigger, as before. Hot-swapped
+    // adapters get the same router (BootHandle::invoker).
+    let observers = Observers::default();
+    let invoker: Arc<dyn Invoker> = Arc::new(ObserverRouter::new(
+        observers.clone(),
+        Arc::new(SdkInvoker { iii: iii.clone() }),
+    ));
     let adapter = adapters::build_adapter(&config, invoker.clone()).await?;
     let hub = Arc::new(Hub::new(adapter));
 
     // The engine delivers every `subscribe` trigger binding through this
-    // handler into the hub.
+    // handler into the hub. Kept until the trigger type is retired; old
+    // consumers bind it on 0.24 and 0.25 engines.
     let handler = SubscribeTriggerHandler::new(hub.clone());
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(TRIGGER_TYPE, "Subscribe to a topic", handler)
             .trigger_request_format::<SubscribeTriggerSpec>(),
     );
+    // The same subscriptions through observe (iii 0.25): each observer is
+    // filed in the same hub under its topic. On an engine without observe its
+    // hooks never run and the trigger type above carries everything.
+    crate::on_message::register(&iii, hub.clone(), observers);
 
     // Service function: the bare id `publish` (see PUBLISH_FUNCTION_ID docs —
     // exact path parity with the builtin is load-bearing).
