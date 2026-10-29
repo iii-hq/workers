@@ -678,7 +678,12 @@ export function CommandPalette({
               ref={inputRef}
               value={typed}
               onChange={(event) => {
-                setQuery((mode ?? '') + event.target.value)
+                const next = event.target.value
+                // A prefix typed (or pasted) while a chip already shows
+                // replaces the chip, as it would in an empty field: never
+                // `>` + `>focus`, a query nothing matches.
+                const swapsMode = mode !== null && next[0] in MODE_LABEL
+                setQuery(swapsMode ? next : (mode ?? '') + next)
                 setActive(0)
               }}
               aria-label="Search the ADE"

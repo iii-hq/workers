@@ -67,8 +67,13 @@ test('the keyboard reaches the chat, the panes and every page command through ‚å
   await expect(
     palette.getByRole('button', { name: /Change model/ }),
   ).toBeVisible()
-  await expect(palette.getByRole('button', { name: /^workers/ })).toHaveCount(0)
+  await expect(palette.getByRole('button', { name: /^workers/i })).toHaveCount(
+    0,
+  )
+  // An empty field keeps the Commands chip; Backspace peels it off, back
+  // to the palette's resting list.
   await palette.getByRole('textbox').fill('')
+  await palette.getByRole('textbox').press('Backspace')
   await expect(palette.getByText('Recent', { exact: true })).toBeVisible()
   await expect(
     palette.getByRole('button', { name: /Focus message box/ }).first(),
@@ -91,7 +96,7 @@ test('the keyboard reaches the chat, the panes and every page command through ‚å
 
   await page.keyboard.press('ControlOrMeta+k')
   await palette.getByRole('textbox').fill('go to workers')
-  await palette.getByRole('button', { name: /^workers/ }).click()
+  await palette.getByRole('button', { name: /^workers/i }).click()
   await expect(
     page.locator(
       '[data-workspace-pane-id]:focus-within [aria-label="workers"]',

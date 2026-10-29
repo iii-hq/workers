@@ -450,8 +450,25 @@ function SettingsForm({
     const bar = applyCopy.current?.closest<HTMLElement>('.wk-applybar')
     const sheet = bar?.parentElement
     if (!bar || !sheet) return
-    const resize = () =>
-      sheet.style.setProperty('--wk-apply-height', `${bar.offsetHeight + 24}px`)
+    // What a scrolled-to element must clear: the stuck bar sits below the
+    // scroll area's top padding (`top: 0` sticks inside it), then its own
+    // height, then a gap. Without the padding the focus outline of whatever
+    // scrolled under it sat beneath the bar.
+    let scroller: HTMLElement | null = sheet
+    while (
+      scroller &&
+      !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)
+    )
+      scroller = scroller.parentElement
+    const resize = () => {
+      const inset = scroller
+        ? Number.parseFloat(getComputedStyle(scroller).paddingTop) || 0
+        : 0
+      sheet.style.setProperty(
+        '--wk-apply-height',
+        `${Math.ceil(inset + bar.getBoundingClientRect().height) + 24}px`,
+      )
+    }
     resize()
     const observer = new ResizeObserver(resize)
     observer.observe(bar)

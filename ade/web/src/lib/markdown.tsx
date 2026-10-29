@@ -455,9 +455,13 @@ function MarkdownImage({
     )
   }
   const chip = (
+    // An image that is not drawn inline is still an image to a screen
+    // reader: named by its alt text (else its file name).
     <span
       className="chat-prose-image-chip"
       data-image-chip=""
+      role="img"
+      aria-label={alt || name}
       title={title ?? src ?? name}
     >
       <ImageIcon aria-hidden className="size-4 shrink-0 text-ink-faint" />
