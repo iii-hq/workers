@@ -1,12 +1,9 @@
 //! Contract mocks, not the production queue adapter/cloudflared process.
 //! Queue ACK means accepted; dispatch is explicit so assertions can inspect the
 //! real SQLite inbox before the real registered process handler consumes it.
-use async_trait::async_trait;
-use iii_sdk::{
-    protocol::TriggerRequest,
-    trigger::{TriggerConfig, TriggerHandler},
-    Error, IIIClient, RegisterFunction, RegisterTriggerType,
-};
+//! Each mock source is a private function whose hooks keep its observers; the
+//! mock delivers by calling through them, as the real queue worker does.
+use iii_sdk::{Call, CallRequest, Error, IIIClient, ObserveRejection, Observer, RegisterFunction};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -15,31 +12,54 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
+    time::Duration,
 };
 
 pub const PROVIDER: &str = "integration-provider";
 pub const CONSUMER: &str = "integration-consumer";
 
+/// The observers of one mock source, kept by its added and removed hooks.
 #[derive(Clone, Default)]
-pub struct Bindings(Arc<Mutex<Vec<TriggerConfig>>>);
-#[async_trait]
-impl TriggerHandler for Bindings {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.0.lock().unwrap().push(config);
-        Ok(())
+pub struct Observers(Arc<Mutex<Vec<Observer>>>);
+impl Observers {
+    /// Hosts `function_id` as a private source whose handler returns the event,
+    /// taking args only when `args_format` is given.
+    fn host(
+        &self,
+        iii: &IIIClient,
+        function_id: &str,
+        description: &str,
+        args_format: Option<Value>,
+    ) {
+        let added = self.clone();
+        iii.on_observer_added_for(function_id, move |obs: Observer| {
+            let added = added.clone();
+            async move {
+                added.0.lock().unwrap().push(obs);
+                Ok::<(), ObserveRejection>(())
+            }
+        });
+        let removed = self.clone();
+        iii.on_observer_removed_for(function_id, move |obs: Observer| {
+            let removed = removed.clone();
+            async move {
+                removed.0.lock().unwrap().retain(|o| o.id() != obs.id());
+            }
+        });
+        let mut registration = RegisterFunction::new(|event: Value| Ok::<_, Error>(event))
+            .description(description)
+            .private();
+        if let Some(schema) = args_format {
+            registration = registration.args_format_value(schema);
+        }
+        iii.register_function(function_id, registration);
     }
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.0.lock().unwrap().retain(|v| v.id != config.id);
-        Ok(())
-    }
-}
-impl Bindings {
-    pub fn values(&self) -> Vec<TriggerConfig> {
+    pub fn values(&self) -> Vec<Observer> {
         self.0.lock().unwrap().clone()
     }
 }
 
-// Same wire contract as queue/src/trigger.rs SubscriberSpec: the top-level
+// Same wire contract as the queue worker's SubscriberSpec: the top-level
 // max_retries/backoff_ms are supported, not misclassified as invalid nesting.
 #[derive(Deserialize)]
 struct SubscriberSpec {
@@ -50,7 +70,7 @@ struct SubscriberSpec {
 }
 #[derive(Clone, Default)]
 pub struct Queue {
-    pub bindings: Bindings,
+    pub observers: Observers,
     pending: Arc<Mutex<VecDeque<(String, Value)>>>,
     pub fail: Arc<AtomicBool>,
     pub failed_publications: Arc<AtomicUsize>,
@@ -58,11 +78,12 @@ pub struct Queue {
 }
 impl Queue {
     pub fn register(&self, iii: &IIIClient) {
-        iii.register_trigger_type(RegisterTriggerType::new(
-            "durable:subscriber",
+        self.observers.host(
+            iii,
+            "queue::on-message",
             "Deterministic local queue",
-            self.bindings.clone(),
-        ));
+            Some(json!({"type":"object"})),
+        );
         let queue = self.clone();
         iii.register_function(
             "iii::durable::publish",
@@ -104,26 +125,23 @@ impl Queue {
             let Some((topic, payload)) = self.pending.lock().unwrap().pop_front() else {
                 return Ok(());
             };
-            let bindings = self.bindings.values();
             let mut matched = false;
-            for binding in bindings {
-                let spec: SubscriberSpec = serde_json::from_value(binding.config.clone()).unwrap();
+            for obs in self.observers.values() {
+                let spec: SubscriberSpec =
+                    serde_json::from_value(obs.args_value().clone()).unwrap();
                 if spec.queue != topic {
                     continue;
                 }
                 matched = true;
                 assert_eq!(spec.max_retries, Some(5));
                 assert_eq!(spec.backoff_ms, Some(1000));
-                let request = request(&binding.function_id, payload.clone())
-                    .namespace(binding.namespace.as_deref().unwrap_or("default"))
-                    .metadata(binding.metadata.unwrap_or(Value::Null));
-                if let Err(error) = iii.trigger(request).await {
+                if let Err(error) = iii.call(through(&obs, payload.clone())).await {
                     // A failed real handler is NOT ACKed. Explicit next drain retries it.
                     self.pending.lock().unwrap().push_front((topic, payload));
                     return Err(error);
                 }
             }
-            assert!(matched, "publication has no registered subscriber");
+            assert!(matched, "publication has no observer");
         }
         panic!("queue dispatch exceeded bounded test budget");
     }
@@ -131,7 +149,8 @@ impl Queue {
 
 #[derive(Clone)]
 pub struct Tunnel {
-    pub bindings: Bindings,
+    pub observers: Observers,
+    pub cron: Observers,
     snapshot: Arc<Mutex<Value>>,
     leases: Arc<Mutex<HashMap<String, Value>>>,
     pub releases: Arc<Mutex<Vec<String>>>,
@@ -139,7 +158,8 @@ pub struct Tunnel {
 impl Default for Tunnel {
     fn default() -> Self {
         Self {
-            bindings: Bindings::default(),
+            observers: Observers::default(),
+            cron: Observers::default(),
             snapshot: Arc::new(Mutex::new(json!({
                 "tunnel_id":"webhooks","status":"starting","public_url":null,"generation":"starting-1","error":null
             }))),
@@ -150,16 +170,19 @@ impl Default for Tunnel {
 }
 impl Tunnel {
     pub fn register(&self, iii: &IIIClient) {
-        iii.register_trigger_type(RegisterTriggerType::new(
-            "quick-tunnel::changed",
+        // quick-tunnel::on-changed takes no args: observers filter on input.tunnel_id.
+        self.observers.host(
+            iii,
+            "quick-tunnel::on-changed",
             "Local controlled tunnel lifecycle",
-            self.bindings.clone(),
-        ));
-        iii.register_trigger_type(RegisterTriggerType::new(
-            "cron",
+            None,
+        );
+        self.cron.host(
+            iii,
+            "cron::on-tick",
             "Recorded only; no wall-clock scheduler",
-            Bindings::default(),
-        ));
+            Some(json!({"type":"object"})),
+        );
         let this = self.clone();
         iii.register_function("quick-tunnel::acquire", RegisterFunction::new(move |input: Value| {
             let consumer = input["consumer_id"].as_str().ok_or_else(|| Error::Handler("consumer required".into()))?;
@@ -214,22 +237,35 @@ impl Tunnel {
         let value = json!({"tunnel_id":"webhooks","status":"ready","public_url":url,"generation":generation,"error":null});
         // A ready event and the status read expose the SAME authoritative generation.
         *self.snapshot.lock().unwrap() = value.clone();
-        let bindings = self.bindings.values();
-        assert_eq!(bindings.len(), 1);
-        for binding in bindings {
-            assert_eq!(binding.config["tunnel_id"], "webhooks");
-            iii.trigger(
-                request(&binding.function_id, value.clone())
-                    .namespace(binding.namespace.as_deref().unwrap_or("default"))
-                    .metadata(binding.metadata.unwrap_or(Value::Null)),
-            )
-            .await
-            .unwrap();
+        let observers = self.observers.values();
+        assert_eq!(observers.len(), 1);
+        let other = json!({"tunnel_id":"other","status":"ready"});
+        for obs in observers {
+            // The observer selects its tunnel with a filter on input.tunnel_id.
+            assert!(obs
+                .args_value()
+                .as_object()
+                .is_none_or(|args| args.is_empty()));
+            assert!(!obs.matches(&event_call(other.clone())));
+            assert!(obs.matches(&event_call(value.clone())));
+            iii.call(through(&obs, value.clone())).await.unwrap();
         }
     }
 }
-pub fn request(id: &str, payload: Value) -> TriggerRequest {
-    TriggerRequest {
+/// A call of a source whose handler returned `event`.
+fn event_call(event: Value) -> Call {
+    Call {
+        output: Some(event.clone()),
+        input: event,
+        ..Call::default()
+    }
+}
+/// A call through `obs`: its target receives `payload`.
+fn through(obs: &Observer, payload: Value) -> iii_sdk::CallRequestWithMetadata {
+    CallRequest::observer(obs, payload).timeout(Duration::from_secs(10))
+}
+pub fn request(id: &str, payload: Value) -> CallRequest {
+    CallRequest {
         function_id: id.into(),
         payload,
         action: None,
@@ -237,7 +273,7 @@ pub fn request(id: &str, payload: Value) -> TriggerRequest {
     }
 }
 pub async fn call(iii: &IIIClient, id: &str, payload: Value) -> Value {
-    iii.trigger(request(id, payload))
+    iii.call(request(id, payload))
         .await
         .unwrap_or_else(|e| panic!("{id}: {e}"))
 }

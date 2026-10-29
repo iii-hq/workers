@@ -359,8 +359,8 @@ rules:
   - '!slack::on-turn-completed'
   - '!slack::on-pending-created'
   - '!slack::on-pending-resolved'
-  # github: internal hot-reload hook — invoked only by the engine's
-  # configuration:updated trigger dispatch, never agent-callable.
+  # github: internal hot-reload hook — the target of its observer of
+  # configuration::on-updated, never agent-callable.
   - '!github::on-config-change'
   # Webhook ingress, queue consumers, and tunnel lifecycle callbacks are
   # trusted engine plumbing, never direct agent calls. Starting/stopping a

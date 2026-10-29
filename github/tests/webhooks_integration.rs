@@ -1,11 +1,8 @@
 //! Fully local integration: real HTTP listener -> SDK binary ChannelReader ->
-//! GitHub handlers -> SQLite inbox/outbox -> deterministic queue -> callback.
+//! GitHub handlers -> SQLite inbox/outbox -> deterministic queue ->
+//! github::pr::on-event -> the observer's target.
 //! No external engine, GitHub, cloudflared, credentials, or skipped tests.
 //! Run: CARGO_TARGET_DIR=target-integration-82238077 cargo test --offline --test webhooks_integration
-
-// The worker binds triggers with `register_trigger` / `register_trigger_type`,
-// deprecated in iii-sdk 0.25; the mocks stand in for the same calls.
-#![allow(deprecated)]
 
 #[path = "support/webhook_engine.rs"]
 mod engine;
@@ -20,7 +17,9 @@ use iii_http::{
     boot::{self, BootHandle},
     config::{RestApiConfig, WebhookListenerConfig},
 };
-use iii_sdk::{protocol::RegisterTriggerInput, Error, IIIClient, RegisterFunction};
+use iii_sdk::{
+    Error, IIIClient, ObserverHandle, ObserverOptions, RegisterFunction, Source, Target,
+};
 use mocks::{call, Queue, Tunnel, CONSUMER, PROVIDER};
 use serde_json::{json, Value};
 use sha2::Sha256;
@@ -35,9 +34,29 @@ use std::{
 use tokio::sync::RwLock;
 
 const CALLBACK: &str = "integration::pr-event";
+const ON_EVENT: &str = "github::pr::on-event";
 const COMMENT: &str = "Ação: café ☃ — comentário\n  Preserve whitespace.";
 fn metadata() -> Value {
     json!({"__binding":"integration-82238077", "tenant":"ação", "payload":{"ticket":17}})
+}
+/// Observes `github::pr::on-event` in the provider's namespace from
+/// `consumer`, with `args`, and waits until the github worker accepted it.
+async fn observe_events(
+    consumer: &IIIClient,
+    args: Value,
+    target: &str,
+    options: ObserverOptions,
+) -> ObserverHandle {
+    let handle = consumer.observe_with(
+        Source::function(ON_EVENT).namespace(PROVIDER).args(args),
+        Target::function(target),
+        options,
+    );
+    tokio::time::timeout(Duration::from_secs(10), handle.ready())
+        .await
+        .expect("github::pr::on-event observer accepted in time")
+        .unwrap_or_else(|e| panic!("github::pr::on-event observer refused: {e}"));
+    handle
 }
 fn pr(number: u64) -> Value {
     json!({"number":number,"head":{"sha":format!("head-{number}")},"state":"open","merged":false,
@@ -69,6 +88,8 @@ struct Fixture {
     tunnel: Tunnel,
     callbacks: CallbackLog,
     callback_fail: Arc<AtomicBool>,
+    /// The id of the consumer's observer of github::pr::on-event.
+    observer: String,
     http: reqwest::Client,
     gh_path: PathBuf,
     db_path: PathBuf,
@@ -119,14 +140,20 @@ impl Fixture {
             ..Default::default()
         })));
         github::webhooks::register(&iii, &cell, &engine.url).await;
-        for (kind, function) in [
-            ("http", "github::webhooks::receive"),
-            ("durable:subscriber", "github::webhooks::process"),
-            ("quick-tunnel::changed", "github::webhooks::tunnel-changed"),
-            ("cron", "github::webhooks::maintain"),
+        for (function, target) in [
+            ("http::on-request", "github::webhooks::receive"),
+            ("queue::on-message", "github::webhooks::process"),
+            (
+                "quick-tunnel::on-changed",
+                "github::webhooks::tunnel-changed",
+            ),
+            ("cron::on-tick", "github::webhooks::maintain"),
         ] {
-            engine.registered(kind, function).await;
+            engine.observed(function, target).await;
         }
+        let ticks = tunnel.cron.values();
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].args_value()["expression"], "*/10 * * * * *");
         let callbacks = Arc::new(Mutex::new(Vec::new()));
         let callback_fail = Arc::new(AtomicBool::new(false));
         let received = callbacks.clone();
@@ -145,14 +172,15 @@ impl Fixture {
             .response_format(json!({"type":"object"})),
         );
         engine.function(CONSUMER, CALLBACK).await;
-        let mut binding =
-            RegisterTriggerInput::new("github::pr::event", CALLBACK, json!({"repo":"owner/repo"}));
-        binding.namespace = Some(CONSUMER.into());
-        binding.trigger_namespace = Some(PROVIDER.into());
-        binding.metadata = Some(metadata());
-        consumer.register_trigger(binding).unwrap();
-        // Binding ACK precedes BOTH watch calls, not just local SDK submission.
-        engine.registered("github::pr::event", CALLBACK).await;
+        // The github worker accepted the observer before BOTH watch calls, not
+        // just local SDK submission.
+        let observer = observe_events(
+            &consumer,
+            json!({"repo":"owner/repo"}),
+            CALLBACK,
+            ObserverOptions::default().metadata(metadata()),
+        )
+        .await;
         let http = reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(10))
@@ -166,6 +194,7 @@ impl Fixture {
             tunnel,
             callbacks,
             callback_fail,
+            observer: observer.id().to_owned(),
             http,
             gh_path,
             db_path,
@@ -430,9 +459,9 @@ async fn local_raw_webhooks_preserve_events_isolate_routes_and_cleanup_shared_ho
         fixture.iii.register_function("integration::private", RegisterFunction::new(|_: Value| {
             Ok::<_, Error>(json!({"body":"private"}))
         }).description("Private route isolation control").request_format(json!({"type":"object"})).response_format(json!({"type":"object"})));
-        fixture.iii.register_trigger(RegisterTriggerInput::new("http", "integration::private",
-            json!({"api_path":"/private","http_method":"GET"}))).unwrap();
-        fixture.engine.registered("http", "integration::private").await;
+        fixture.iii.observe(Source::function("http::on-request").args(json!({"method":"GET","path":"/private"})),
+            "integration::private");
+        fixture.engine.observed("http::on-request", "integration::private").await;
         assert_eq!(fixture.http.get(format!("http://{}/private", fixture.boot.local_addr)).send().await.unwrap().status(), 200);
         let public = fixture.boot.current_webhook_addr().await.unwrap();
         for path in ["/private", "/admin", "/console", "/engine", "/github::pr::watch"] {
@@ -465,10 +494,15 @@ async fn local_raw_webhooks_preserve_events_isolate_routes_and_cleanup_shared_ho
         assert_eq!(event["snapshot"]["head_sha"], "head-1");
         assert_eq!(event["final_event"], false);
         assert!(fixture.engine.bytes().contains(&raw), "channel bytes differ from signed HTTP input");
+        // github::pr::on-event's deliver hook calls through the consumer's
+        // observer; the engine routes the call to its target with its metadata.
         let frame = fixture.engine.frames().into_iter().find(|f| f["type"] == "invokefunction"
-            && f["function_id"] == CALLBACK && f["data"]["entity"] == "9001").unwrap();
-        assert_eq!(frame["namespace"], CONSUMER);
-        assert_eq!(frame["metadata"], metadata());
+            && f["activation"]["observer_id"] == fixture.observer.as_str() && f["data"]["entity"] == "9001").unwrap();
+        assert!(frame["metadata"].is_null(), "the observer's metadata stays with the engine");
+        let routed = fixture.engine.dispatched().into_iter().find(|f| f["function_id"] == CALLBACK
+            && f["data"]["entity"] == "9001").unwrap();
+        assert_eq!(routed["namespace"], CONSUMER);
+        assert_eq!(routed["metadata"], metadata());
         let mut delivered = frame["data"].clone();
         delivered["_caller_worker_id"] = json!("test-worker");
         assert_eq!(delivered, *event);
@@ -582,8 +616,11 @@ async fn failed_publication_and_callback_keep_durable_work_until_real_handler_ac
             .find(|j| j["kind"] == "notify" && j["event"]["entity"] == "9002")
             .unwrap();
         let event_id = notify["event"]["event_id"].clone();
-        assert_eq!(notify["target"]["metadata"], metadata());
-        assert_eq!(notify["target"]["namespace"], CONSUMER);
+        // The subscriber is the observer; its target, namespace and metadata
+        // stay with the engine.
+        assert_eq!(notify["target"]["id"], fixture.observer.as_str());
+        assert_eq!(notify["target"]["filter"]["repo"], "owner/repo");
+        assert!(notify["target"].get("metadata").is_none());
         assert!(fixture.queue.len() > 0, "failed handler must not be ACKed");
         fixture.callback_fail.store(false, Ordering::SeqCst);
         fixture.queue.drain(&fixture.iii).await.unwrap();
@@ -624,13 +661,17 @@ async fn review_policy_filters_signed_ingress_and_delivers_compact_retryable_eve
             Ok(json!({"ok":true}))
         }).description("Capture compact review events").request_format(json!({"type":"object"})).response_format(json!({"type":"object"})));
         fixture.engine.function(CONSUMER, "integration::compact").await;
-        let mut binding = RegisterTriggerInput::new("github::pr::event", "integration::compact", json!({
+        observe_events(&consumer, json!({
             "watch_id":"watch-1", "notifications":{"profile":"review_assistant", "batch_window_ms":0,
             "success_checks":["check_run:lint","check_run:tests"],"ignored_actors":["my-agent"]}
-        }));
-        binding.namespace = Some(CONSUMER.into()); binding.trigger_namespace = Some(PROVIDER.into());
-        consumer.register_trigger(binding).unwrap();
-        fixture.engine.registered("github::pr::event", "integration::compact").await;
+        }), "integration::compact", ObserverOptions::default()).await;
+        // The github worker rejects an observer whose args it cannot serve.
+        let refused = consumer.observe(Source::function(ON_EVENT).namespace(PROVIDER)
+            .args(json!({"repo":"not a repo"})), "integration::compact");
+        let error = tokio::time::timeout(Duration::from_secs(10), refused.ready()).await
+            .expect("rejection in time").unwrap_err();
+        assert!(error.to_string().contains("INVALID_ARGS"), "{error}");
+        assert!(fixture.database()["subscribers"].as_object().map_or(true, |s| !s.contains_key(refused.id())));
         let check = |id, name, status, conclusion| json!({"repository":{"full_name":"owner/repo"},"action":"completed",
             "check_run":{"id":id,"name":name,"head_sha":"head-1","status":status,"conclusion":conclusion,
                 "completed_at":"2026-01-01T00:01:00Z","details_url":format!("https://ci.example/{id}")}});
@@ -661,7 +702,7 @@ async fn review_policy_filters_signed_ingress_and_delivers_compact_retryable_eve
         fixture.deliver("issue_comment", "reviewer-comment", &comment(100)).await;
         assert_eq!(review_log.lock().unwrap().len(), 3);
         assert_eq!(review_log.lock().unwrap()[2]["detail"]["body"], COMMENT);
-        // Legacy consumer receives full events independently.
+        // The profile `all` observer receives full events independently.
         assert!(fixture.events().iter().all(|e| e.get("snapshot").is_some()));
         for number in [1,2] { call(&fixture.iii,"github::pr::unwatch",json!({"watch_id":format!("watch-{number}")})).await; }
     }).catch_unwind().await;

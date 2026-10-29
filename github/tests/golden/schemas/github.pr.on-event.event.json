@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "NotificationEvent",
-  "description": "The trigger keeps the legacy schema as one branch and adds compact delivery.",
+  "description": "What a `github::pr::on-event` target receives: the full event (profile `all`), or a compact event or digest.",
   "anyOf": [
     {
       "$ref": "#/definitions/PrEvent"

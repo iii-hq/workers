@@ -12,7 +12,7 @@ GitHub monitoring uses three independently reusable worker surfaces:
 3. `github` owns repository hooks, signature verification, PR correlation,
    persistent watches, notification delivery, and cleanup.
 
-Worker calls and trigger delivery are routed through the engine. No worker
+Worker calls and observer deliveries are routed through the engine. No worker
 calls another worker directly. The tunnel's HTTP forwarding is transport, not
 an alternative worker RPC surface.
 
@@ -57,11 +57,18 @@ restart model.
 
 ## Subscription lifecycle
 
-A consumer chooses a unique watch ID, binds `github::pr::event` for that ID, and
-then calls `github::pr::watch`. It reads the returned snapshot to cover events
-that happened during setup. The watcher takes a one-time PR, checks and commit-status baseline; it does not
-repeatedly query the PR while idle. Event-triggered correlation and recovery
-queries are allowed and must not be described as periodic monitoring.
+A consumer chooses a unique watch ID, observes `github::pr::on-event` with args
+`{ watch_id }` for that ID, and then calls `github::pr::watch`. It reads the
+returned snapshot to cover events that happened during setup. The watcher takes
+a one-time PR, checks and commit-status baseline; it does not repeatedly query
+the PR while idle. Correlation and recovery queries that a webhook event starts
+are allowed and must not be described as periodic monitoring.
+
+The github worker persists each observer of `github::pr::on-event` as a
+subscriber with its args. Each notification for it is one durable outbox job,
+delivered as a call of `github::pr::on-event` that the function's deliver hook
+hands to that observer's target; the target's result acks the job, and an error
+retries it. A watch stays alive while an observer listens to it.
 
 The provider manages one hook per installation/repository, shared by all
 interested watches. It must not adopt or remove hooks belonging to other tools.

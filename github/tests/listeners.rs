@@ -31,10 +31,7 @@ fn by_watch(id: &str) -> EventFilter {
 fn subscriber(id: &str, filter: EventFilter) -> Subscriber {
     Subscriber {
         id: id.into(),
-        function_id: "harness::trigger::deliver".into(),
         filter,
-        metadata: None,
-        namespace: None,
     }
 }
 fn data() -> Data {
@@ -93,8 +90,17 @@ fn an_unfiltered_binding_listens_to_every_watch() {
 }
 
 #[test]
-fn stale_bindings_are_known_locally_but_absent_from_the_engine() {
-    let known = BTreeSet::from(["live".to_string(), "gone".to_string()]);
-    let engine = BTreeSet::from(["live".to_string(), "registered-meanwhile".to_string()]);
-    assert_eq!(stale(&known, &engine), ["gone"]);
+fn stale_subscribers_have_no_observer_at_two_reconciliations_in_a_row() {
+    let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+    let known = ids(&["live", "gone", "announced-late"]);
+    let observed = ids(&["live", "added-meanwhile"]);
+    // First miss: nothing is dropped yet.
+    let (dropped, absent) = stale(&known, &observed, &BTreeSet::new());
+    assert!(dropped.is_empty());
+    assert_eq!(absent, ids(&["gone", "announced-late"]));
+    // The engine announced one of them in between; the other is still missing.
+    let observed = ids(&["live", "announced-late"]);
+    let (dropped, absent) = stale(&known, &observed, &absent);
+    assert_eq!(dropped, ["gone"]);
+    assert!(absent.is_empty());
 }

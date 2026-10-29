@@ -1,16 +1,17 @@
 /**
  * Entry for the github worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/page.js and served over
- * the `console:script` trigger (see src/ui.rs). The stylesheet is its own
- * asset: ../styles.css ships over `console:style` as github/styles.css —
- * the console mounts and link-swaps it, styles-before-scripts on boot.
+ * a `console::ui::asset` observer of kind `script` (see src/ui.rs). The
+ * stylesheet is its own asset: ../styles.css ships as the `style` asset
+ * github/styles.css — the console mounts and link-swaps it,
+ * styles-before-scripts on boot.
  *
  * `setup(host)` registers one contribution:
  * - src/page/GithubPage — the `github` page: the standard page chrome
  *   with a graph | activity switch over the worker's live bus. GRAPH
  *   (default, the hero) draws the working repo's commit DAG from a single
  *   `shell::exec` `git log --all`, refreshing as the agent works. ACTIVITY
- *   is the live feed — a tab-scoped subscription to `github::called`
+ *   is the live feed — a tab-scoped observer of `github::on-called`
  *   rendering each github call as it finishes. Both are read-only observers
  *   of the bus (the graph additionally runs `git log` / `git show` via the
  *   shell worker; it never writes).
