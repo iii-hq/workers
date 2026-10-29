@@ -56,7 +56,7 @@ pub struct TurnsChangedConfig {
 }
 
 /// What changed: a session's record. Ask `shell::turns::list` for it.
-#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct TurnsChangedEvent {
     pub session_id: String,
 }
@@ -490,6 +490,17 @@ mod tests {
         assert!(
             matches!(&err, Error::Remote { code, message, .. }
                 if code == codes::FORBIDDEN && message.contains(ON_TURNS_CHANGED)),
+            "{err:?}"
+        );
+        // Typed request/response schemas, and the handler still refuses.
+        let handler = crate::observable::refusing_handler::<TurnsChangedEvent>(ON_TURNS_CHANGED);
+        crate::observable::testing::assert_typed_schemas(ON_TURNS_CHANGED, &handler);
+        let err = handler(TurnsChangedEvent {
+            session_id: "s1".into(),
+        })
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::Remote { code, .. } if code == codes::FORBIDDEN),
             "{err:?}"
         );
     }

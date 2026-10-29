@@ -17,6 +17,7 @@ use std::time::Duration;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, Observe, ObserveHandler, Observer, RegisterFunction};
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 /// Codes the `shell::on-*` functions refuse with.
@@ -109,18 +110,20 @@ pub fn refuse_invocation(function_id: &str) -> Error {
     }
 }
 
-/// The JSON Schema `T` registers as, generated the way iii-sdk does.
-fn schema_of<T: JsonSchema>() -> Value {
-    serde_json::to_value(
-        schemars::r#gen::SchemaSettings::draft07()
-            .into_generator()
-            .into_root_schema_for::<T>(),
-    )
-    .unwrap_or(Value::Null)
+/// The handler of an on-* function: takes the event `E` its observers
+/// receive, so the function publishes that typed request schema (and `()`
+/// as its response), never `AnyValue`, and refuses every invocation.
+pub fn refusing_handler<E>(
+    function_id: &'static str,
+) -> impl Fn(E) -> Result<(), Error> + Send + Sync + 'static
+where
+    E: DeserializeOwned + JsonSchema + Send + 'static,
+{
+    move |_event: E| Err(refuse_invocation(function_id))
 }
 
 /// Register `function_id` owner-delivered: args `A` (the trigger config),
-/// request format `E` (the event an observer receives), `handler` filing
+/// request schema `E` (the event an observer receives), `handler` filing
 /// observers in the trigger type's registry. Invoking it is refused. On an
 /// engine without observe it registers as a plain function and its hooks
 /// never run.
@@ -131,17 +134,14 @@ pub fn register_observable<A, E, H>(
     handler: H,
 ) where
     A: JsonSchema,
-    E: JsonSchema,
+    E: DeserializeOwned + JsonSchema + Send + 'static,
     H: ObserveHandler,
 {
     iii.register_function(
         function_id,
-        RegisterFunction::new(move |_event: Value| -> Result<(), Error> {
-            Err(refuse_invocation(function_id))
-        })
-        .description(description)
-        .request_format(schema_of::<E>())
-        .observe(Observe::owner().args_format::<A>().handler(handler)),
+        RegisterFunction::new(refusing_handler::<E>(function_id))
+            .description(description)
+            .observe(Observe::owner().args_format::<A>().handler(handler)),
     );
     tracing::info!(function_id, "registered observable function");
 }
@@ -173,6 +173,35 @@ pub(crate) mod testing {
 
         pub(crate) fn seen(&self) -> Vec<Value> {
             self.seen.lock().unwrap().clone()
+        }
+    }
+
+    /// Assert the schemas iii-sdk publishes for `handler` (an on-* refusing
+    /// handler) are typed: the interface boot smoke fails `AnyValue` or an
+    /// empty schema.
+    pub(crate) fn assert_typed_schemas<F, M>(function_id: &str, _handler: &F)
+    where
+        F: iii_sdk::iii::IntoSyncHandler<M>,
+    {
+        const TYPED: [&str; 7] = [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+        ];
+        for (side, schema) in [
+            ("request", F::request_format()),
+            ("response", F::response_format()),
+        ] {
+            let schema = schema.unwrap_or_else(|| panic!("{function_id}: no {side} schema"));
+            assert!(
+                TYPED.iter().any(|key| schema.get(*key).is_some()),
+                "{function_id}: untyped {side} schema {schema}"
+            );
+            assert_ne!(schema["title"], "AnyValue", "{function_id}: {side} schema");
         }
     }
 
@@ -227,6 +256,37 @@ mod tests {
                 "{err:?}"
             );
         }
+    }
+
+    #[test]
+    fn every_on_function_publishes_typed_schemas() {
+        use crate::events::{ChangedEvent, ON_CHANGED};
+        use crate::git_events::{GitChangedEvent, ON_GIT_CHANGED};
+        use crate::job_events::{JobFinishedEvent, ON_JOB_FINISHED};
+        use testing::assert_typed_schemas;
+        // shell::on-turns-changed: checked in turn_events.rs.
+        assert_typed_schemas(
+            ON_JOB_FINISHED,
+            &refusing_handler::<JobFinishedEvent>(ON_JOB_FINISHED),
+        );
+        assert_typed_schemas(
+            ON_GIT_CHANGED,
+            &refusing_handler::<GitChangedEvent>(ON_GIT_CHANGED),
+        );
+        assert_typed_schemas(ON_CHANGED, &refusing_handler::<ChangedEvent>(ON_CHANGED));
+        // The typed handler still refuses a well-formed (forged) event.
+        let forged = ChangedEvent {
+            path: "a.txt".into(),
+            kind: "modified".into(),
+            root: "/tmp".into(),
+            dir: false,
+            ignored: false,
+        };
+        let err = refusing_handler::<ChangedEvent>(ON_CHANGED)(forged).unwrap_err();
+        assert!(
+            matches!(&err, Error::Remote { code, .. } if code == codes::FORBIDDEN),
+            "{err:?}"
+        );
     }
 
     #[test]

@@ -62,7 +62,7 @@ pub struct JobFinishedConfig {
 
 /// What ended. Lean by design, like [`crate::events::ChangedEvent`]: a
 /// subscriber that wants the job's output asks `shell::status`.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct JobFinishedEvent {
     pub job_id: String,
     /// The command as spawned, so a subscriber bound without a `job_id`

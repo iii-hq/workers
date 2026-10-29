@@ -92,7 +92,7 @@ pub struct GitChangedConfig {
 
 /// One batch of repository changes. Lean like [`crate::events::ChangedEvent`]:
 /// a subscriber that wants the new state asks git.
-#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct GitChangedEvent {
     /// The watched directory: the binding's `path`, canonical.
     pub path: String,

@@ -82,7 +82,7 @@ const CHANGED_WATCH_BUDGET: usize = 32_768;
 
 /// What changed. Lean by design: a subscriber that wants content asks
 /// `coder::read-file`; one that wants the diff asks git.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChangedEvent {
     /// Path relative to `root`.
     pub path: String,
