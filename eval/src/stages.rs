@@ -541,7 +541,7 @@ pub async fn insight_stage(
         )
         .await
     };
-    if plan.criterion.metric == CriterionMetricV1::Tokens {
+    if plan.criterion.metric.is_tokens() {
         (found.points, found.reason) = insight::spend(&evidence.bundle, &plan.parameters.scenarios);
         found.source = Some(InsightSourceV1::Transcripts);
         // The objective names the spend itself: no point stops nothing.
@@ -1611,7 +1611,7 @@ async fn replay_steps(deps: &Deps, record: &CycleRecordV1) -> Result<ReplayV1, E
     if let Some(plan) = record
         .plan
         .as_ref()
-        .filter(|plan| plan.criterion.metric == CriterionMetricV1::Tokens)
+        .filter(|plan| plan.criterion.metric.is_tokens())
     {
         return Box::pin(replay_sizes(plan, config, commit, &evidence.bundle)).await;
     }

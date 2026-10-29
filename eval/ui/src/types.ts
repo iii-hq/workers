@@ -262,6 +262,7 @@ export type CriterionMetric =
   | 'cost_usd'
   | 'duration'
   | 'tokens'
+  | 'harness_tokens'
   | 'function_calls'
   | 'function_call_errors'
 export type Direction = 'decrease' | 'increase'
@@ -287,6 +288,7 @@ export interface EvidenceRun {
   cost_usd?: number
   wall_time_ms?: number
   total_tokens?: number
+  harness_tokens?: number
   function_calls?: number
   function_call_errors?: number
   criteria?: Record<string, number>

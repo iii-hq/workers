@@ -41,7 +41,7 @@ pub const NEEDS: [Need; 4] = [
         id: "skills",
         triggers: &[&["skill", "skills"]],
         evidence: &[&["skill", "skills"]],
-        metric: CriterionMetricV1::Tokens,
+        metric: CriterionMetricV1::HarnessTokens,
         direction: DirectionV1::Decrease,
         gap: "no E2E test spec measures skill effect, selection or cost (no skill in its criteria, summary or invariants)",
         observed: false,
@@ -50,7 +50,7 @@ pub const NEEDS: [Need; 4] = [
         id: "context_consumption",
         triggers: &[&["context", "contexto", "token", "tokens", "memory", "memória", "memoria", "recall"]],
         evidence: &[&["context"], &["distractor", "recall", "memory", "pressure", "load"]],
-        metric: CriterionMetricV1::Tokens,
+        metric: CriterionMetricV1::HarnessTokens,
         direction: DirectionV1::Decrease,
         gap: "no E2E test spec puts the context under load (context together with distractor, recall, memory, pressure or load)",
         observed: false,
@@ -651,7 +651,7 @@ pub fn derive(
 /// The plan frozen from a coverage, before any result: `metric` on the
 /// first selected scenario, and the pass rate and every spec criterion of
 /// every selected scenario and control as preserved correctness (any loss
-/// rejects). Every selected test and control is frozen in `tests` with its
+/// rejects); on the tokens the Harness writes, the whole token count too. Every selected test and control is frozen in `tests` with its
 /// case, seed, behavior, inputs and contract digests. With a validation
 /// config the baseline runs the candidate's base commit on the pinned
 /// stack, so the only intended difference of a later candidate is its
@@ -712,6 +712,17 @@ pub fn plan(
                 0.0,
             ));
         }
+    }
+    // What the Harness writes is the measure; the whole count is kept: a
+    // rise the runs show beyond chance rejects.
+    if metric == CriterionMetricV1::HarnessTokens {
+        preserved.push(criterion(
+            CriterionMetricV1::Tokens,
+            None,
+            &first.scenario_id,
+            DirectionV1::Decrease,
+            0.0,
+        ));
     }
     let scenarios: Vec<String> = tests.iter().map(|test| test.scenario_id.clone()).collect();
     let (where_, stack) = match (&config.validation, &config.candidate) {

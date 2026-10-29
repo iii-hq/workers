@@ -108,11 +108,154 @@ const OWN: &str = "the model's own turns";
 const MISSED: &str = "cache misses";
 const OUTPUT: &str = "the model's output";
 
+const SKILLS: &str = "skills list messages";
+/// The shares the Harness writes, whatever the model does: the system
+/// prompt and tools, its skills list messages, and earlier context paid
+/// again when the cache missed.
+const HARNESS: [&str; 3] = [SYSTEM, SKILLS, MISSED];
+
 #[derive(Default)]
 struct Part {
     tokens: f64,
     count: u32,
     repeats: u32,
+}
+
+/// One run's counted tokens, by share.
+#[derive(Default)]
+struct RunSpend {
+    parts: BTreeMap<String, Part>,
+    steps: usize,
+    input: f64,
+    output: f64,
+    cached: f64,
+    shrank: u32,
+    models: std::collections::BTreeSet<String>,
+}
+
+/// Where one recorded run spends the tokens the E2E metric counts (see
+/// [`spend`]); `None` without a transcript or a step with usage.
+fn run_spend(run: &Value) -> Option<RunSpend> {
+    let mut spent = RunSpend::default();
+    let entries = run["transcript"]["messages"].as_array()?;
+    let at: Vec<usize> = (0..entries.len())
+        .filter(|&i| {
+            entries[i]["message"]["role"] == "assistant"
+                && entries[i]["message"]["usage"].is_object()
+        })
+        .collect();
+    let &first = at.first()?;
+    let usage = |i: usize, key: &str| entries[i]["message"]["usage"][key].as_f64().unwrap_or(0.0);
+    let sent = |i: usize| usage(i, "input") + usage(i, "cache_read") + usage(i, "cache_write");
+    let chars = |entry: &Value| entry["message"]["content"].to_string().len() as f64;
+    for pair in at.windows(2) {
+        spent.shrank += u32::from(sent(pair[1]) < sent(pair[0]));
+    }
+    let parts = &mut spent.parts;
+    let mut called = std::collections::BTreeSet::new();
+    let keys: Vec<Option<String>> = entries
+        .iter()
+        .map(|entry| {
+            let message = &entry["message"];
+            Some(match message["role"].as_str()? {
+                "function_result" => message["function_id"].as_str().unwrap_or("?").to_string(),
+                "assistant" => {
+                    if let Ok(AgentMessage::Assistant(assistant)) =
+                        serde_json::from_value(message.clone())
+                    {
+                        for call in plan_calls(&assistant, ExposeMode::AgentTrigger) {
+                            if call.kind == CallKind::Trigger
+                                && !called
+                                    .insert((call.function_id.clone(), call.arguments.to_string()))
+                            {
+                                parts.entry(call.function_id).or_default().repeats += 1;
+                            }
+                        }
+                    }
+                    OWN.into()
+                }
+                "user" if entry["origin"]["skill_update"] == true => SKILLS.into(),
+                "user" => "user messages".into(),
+                _ => return None,
+            })
+        })
+        .collect();
+    // Characters the model read beyond the system prompt and the tools
+    // at each step, and the line through the first and the last step's
+    // whole input (cache reads included): its slope is this run's tokens
+    // a character, its intercept the system prompt and the tools.
+    let mut window = Vec::with_capacity(at.len());
+    let mut read = 0.0;
+    let mut next = 0;
+    for &step in &at {
+        for i in next..step {
+            if keys[i].is_some() {
+                read += chars(&entries[i]);
+            }
+        }
+        next = step;
+        window.push(read);
+    }
+    let last = at.len() - 1;
+    let rate = match (sent(at[last]) - sent(first)) / (window[last] - window[0]) {
+        rate if rate.is_finite() && rate > 0.0 => rate,
+        _ => TOKENS_PER_CHAR,
+    };
+    let system = (sent(first) - rate * window[0]).max(0.0);
+    let mut from = 0;
+    for &step in &at {
+        let mut new: Vec<(String, f64)> = (from..step)
+            .filter_map(|i| Some((keys[i].clone()?, rate * chars(&entries[i]))))
+            .collect();
+        if step == first {
+            new.push((SYSTEM.into(), system));
+        }
+        from = step;
+        let estimate = new.iter().map(|(_, tokens)| tokens).sum::<f64>();
+        let paid = usage(step, "input");
+        let scale = if estimate > 0.0 {
+            (paid / estimate).min(1.0)
+        } else {
+            0.0
+        };
+        for (key, tokens) in new {
+            let part = parts.entry(key).or_default();
+            part.tokens += tokens * scale;
+            part.count += 1;
+        }
+        if paid > estimate {
+            let part = parts.entry(MISSED.into()).or_default();
+            part.tokens += paid - estimate;
+            part.count += 1;
+        }
+        let part = parts.entry(OUTPUT.into()).or_default();
+        part.tokens += usage(step, "output");
+        spent.input += paid;
+        spent.output += usage(step, "output");
+        spent.cached += usage(step, "cache_read");
+        spent.models.extend(
+            entries[step]["message"]["model"]
+                .as_str()
+                .map(str::to_string),
+        );
+    }
+    spent.steps = at.len();
+    Some(spent)
+}
+
+/// The counted tokens of what the Harness writes in one run ([`HARNESS`]):
+/// the part of the E2E tokens metric a Harness change moves, without the
+/// model's output, its turns, the results of the calls it chose or the
+/// test's prompt, which vary from run to run with the model alone.
+pub fn harness_tokens(run: &Value) -> Option<f64> {
+    let spent = run_spend(run)?;
+    Some(
+        HARNESS
+            .iter()
+            .filter_map(|key| spent.parts.get(*key))
+            .map(|part| part.tokens)
+            .sum(),
+    )
 }
 
 /// Where `scenarios`' recorded runs spend the tokens the E2E metric counts
@@ -137,118 +280,22 @@ pub fn spend(bundle: &Value, scenarios: &[String]) -> (Vec<ImprovementPointV1>, 
         {
             continue;
         }
-        let Some(entries) = run["transcript"]["messages"].as_array() else {
+        let Some(spent) = run_spend(run) else {
             continue;
         };
-        let at: Vec<usize> = (0..entries.len())
-            .filter(|&i| {
-                entries[i]["message"]["role"] == "assistant"
-                    && entries[i]["message"]["usage"].is_object()
-            })
-            .collect();
-        let Some(&first) = at.first() else {
-            continue;
-        };
-        let usage =
-            |i: usize, key: &str| entries[i]["message"]["usage"][key].as_f64().unwrap_or(0.0);
-        let sent = |i: usize| usage(i, "input") + usage(i, "cache_read") + usage(i, "cache_write");
-        let chars = |entry: &Value| entry["message"]["content"].to_string().len() as f64;
-        for pair in at.windows(2) {
-            shrank += u32::from(sent(pair[1]) < sent(pair[0]));
+        for (key, part) in spent.parts {
+            let total = parts.entry(key).or_default();
+            total.tokens += part.tokens;
+            total.count += part.count;
+            total.repeats += part.repeats;
         }
-        let mut called = std::collections::BTreeSet::new();
-        let keys: Vec<Option<String>> = entries
-            .iter()
-            .map(|entry| {
-                let message = &entry["message"];
-                Some(match message["role"].as_str()? {
-                    "function_result" => message["function_id"].as_str().unwrap_or("?").to_string(),
-                    "assistant" => {
-                        if let Ok(AgentMessage::Assistant(assistant)) =
-                            serde_json::from_value(message.clone())
-                        {
-                            for call in plan_calls(&assistant, ExposeMode::AgentTrigger) {
-                                if call.kind == CallKind::Trigger
-                                    && !called.insert((
-                                        call.function_id.clone(),
-                                        call.arguments.to_string(),
-                                    ))
-                                {
-                                    parts.entry(call.function_id).or_default().repeats += 1;
-                                }
-                            }
-                        }
-                        OWN.into()
-                    }
-                    "user" if entry["origin"]["skill_update"] == true => {
-                        "skills list messages".into()
-                    }
-                    "user" => "user messages".into(),
-                    _ => return None,
-                })
-            })
-            .collect();
-        // Characters the model read beyond the system prompt and the tools
-        // at each step, and the line through the first and the last step's
-        // whole input (cache reads included): its slope is this run's tokens
-        // a character, its intercept the system prompt and the tools.
-        let mut window = Vec::with_capacity(at.len());
-        let mut read = 0.0;
-        let mut next = 0;
-        for &step in &at {
-            for i in next..step {
-                if keys[i].is_some() {
-                    read += chars(&entries[i]);
-                }
-            }
-            next = step;
-            window.push(read);
-        }
-        let last = at.len() - 1;
-        let rate = match (sent(at[last]) - sent(first)) / (window[last] - window[0]) {
-            rate if rate.is_finite() && rate > 0.0 => rate,
-            _ => TOKENS_PER_CHAR,
-        };
-        let system = (sent(first) - rate * window[0]).max(0.0);
-        let mut from = 0;
-        for &step in &at {
-            let mut new: Vec<(String, f64)> = (from..step)
-                .filter_map(|i| Some((keys[i].clone()?, rate * chars(&entries[i]))))
-                .collect();
-            if step == first {
-                new.push((SYSTEM.into(), system));
-            }
-            from = step;
-            let estimate = new.iter().map(|(_, tokens)| tokens).sum::<f64>();
-            let paid = usage(step, "input");
-            let scale = if estimate > 0.0 {
-                (paid / estimate).min(1.0)
-            } else {
-                0.0
-            };
-            for (key, tokens) in new {
-                let part = parts.entry(key).or_default();
-                part.tokens += tokens * scale;
-                part.count += 1;
-            }
-            if paid > estimate {
-                let part = parts.entry(MISSED.into()).or_default();
-                part.tokens += paid - estimate;
-                part.count += 1;
-            }
-            let part = parts.entry(OUTPUT.into()).or_default();
-            part.tokens += usage(step, "output");
-            input += paid;
-            output += usage(step, "output");
-            cached += usage(step, "cache_read");
-            models.extend(
-                entries[step]["message"]["model"]
-                    .as_str()
-                    .map(str::to_string),
-            );
-        }
+        input += spent.input;
+        output += spent.output;
+        cached += spent.cached;
+        shrank += spent.shrank;
+        models.extend(spent.models);
         runs += 1;
-        steps += at.len();
+        steps += spent.steps;
     }
     if runs == 0 {
         return (
@@ -878,8 +925,17 @@ mod tests {
             usage["cache_read"] = json!(0);
         }
         let bundle = json!({"detail": {"reports": [{"report": {"scenarios": [
-            {"scenario_id": "s", "runs": [uncached]}]}}]}});
+            {"scenario_id": "s", "runs": [uncached.clone()]}]}}]}});
         assert_eq!(spend(&bundle, &["s".into()]).0[0].function_id, MISSED);
+        // What the Harness writes: the system prompt and tools, not the
+        // model's calls or their results; a missed cache is its too.
+        let written = harness_tokens(&spending_run()).unwrap();
+        assert_eq!(written.round(), 2982.0);
+        assert!(harness_tokens(&uncached).unwrap() > written + 5_000.0);
+        assert_eq!(
+            harness_tokens(&json!({"transcript": {"messages": []}})),
+            None
+        );
     }
 }
 
@@ -900,6 +956,29 @@ mod real {
             println!("{}", serde_json::to_string_pretty(&site).unwrap());
         }
         let (points, reason) = super::spend(&bundle, &scenarios);
+        for (_, run) in crate::evidence::runs(&bundle) {
+            println!(
+                "{}: harness {:?} of {:?}",
+                run["run_id"],
+                super::harness_tokens(run).map(f64::round),
+                run["efficiency"]["total_tokens"].as_f64()
+            );
+            if let Some(spent) = super::run_spend(run) {
+                for key in super::HARNESS {
+                    println!(
+                        "  {key}: {:?}",
+                        spent
+                            .parts
+                            .get(key)
+                            .map(|part| (part.tokens.round(), part.count))
+                    );
+                }
+                println!(
+                    "  steps {} input {} output {}",
+                    spent.steps, spent.input, spent.output
+                );
+            }
+        }
         println!("{reason}");
         for point in points {
             println!("- {}", point.summary);

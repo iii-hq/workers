@@ -370,7 +370,11 @@ fn run(run_id: &str, status: &str, completion: &str, tokens: f64, awards: &[Opti
         "efficiency": {"total_tokens": tokens, "function_calls": 50},
         "criteria": CRITERIA.iter().zip(awards).map(|(id, awarded)| json!({
             "id": id, "possible": 10, "awarded": awarded, "gate": false, "reason": "r"})).collect::<Vec<_>>(),
-        "transcript": {"messages": []}})
+        // One step that paid every token for the system prompt: the Harness
+        // wrote all of them.
+        "transcript": {"messages": [{"entry_id": "e_t_0_assistant", "message": {
+            "role": "assistant", "timestamp": 0, "model": "m", "provider": "p",
+            "stop_reason": "end", "usage": {"input": tokens, "output": 0}, "content": []}}]}})
 }
 
 fn bundle(id: &str, label: &str, status: &str, runs: Vec<Value>) -> Value {
@@ -589,8 +593,12 @@ async fn objective_freezes_a_plan_reserves_dispatches_and_imports_the_baseline_i
     );
     // The plan preserves every spec criterion and the pass rate, before any result.
     let plan = record.plan.clone().unwrap();
-    assert_eq!(plan.criterion.metric, CriterionMetricV1::Tokens);
+    assert_eq!(plan.criterion.metric, CriterionMetricV1::HarnessTokens);
     assert_eq!(plan.criterion.direction, DirectionV1::Decrease);
+    // The whole token count is kept: a shown rise rejects.
+    assert!(plan.preserved.iter().any(|criterion| {
+        criterion.metric == CriterionMetricV1::Tokens && criterion.min_effect == 0.0
+    }));
     let preserved: Vec<_> = plan
         .preserved
         .iter()
@@ -1790,10 +1798,11 @@ async fn a_token_objective_reads_where_the_recorded_runs_spend_their_input() {
     let record = h.cycle(&cycle_id).await;
     assert_eq!(h.world().starts, 0, "nothing dispatched");
     let plan = record.plan.clone().unwrap();
-    assert_eq!(plan.criterion.metric, CriterionMetricV1::Tokens);
+    assert_eq!(plan.criterion.metric, CriterionMetricV1::HarnessTokens);
     let baseline = record.baseline.clone().unwrap();
     assert!(baseline.usable, "{}", baseline.reason);
-    assert_eq!(baseline.primary.mean, Some(27_150.0));
+    // The system prompt and tools of the one run, paid uncached once.
+    assert_eq!(baseline.primary.mean.map(f64::round), Some(2982.0));
     let insight = record.insight.clone().unwrap();
     assert_eq!(insight.source, Some(InsightSourceV1::Transcripts));
     assert_eq!(

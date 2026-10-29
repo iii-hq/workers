@@ -74,7 +74,10 @@ and cannot pin a candidate. `docker` and `github` need a
    exact gap. Nothing is spent. `tool_contract_recovery` does not cover
    provider/model fallback.
 6. If a test covers it, the plan freezes before any result:
-   - the metric: tokens per run for `context_consumption`;
+   - the metric: for `context_consumption`, the tokens per run of what the
+     Harness writes (`harness_tokens`: the system prompt and tools, its
+     skills list messages and the cache misses), with the whole count
+     (`tokens`) kept: a rise the runs show beyond chance rejects;
    - the preserved correctness: the pass rate and every spec criterion
      (`criterion_score` = awarded/possible), where any loss rejects;
    - the sampling (the canonical `case_id`s);
@@ -191,7 +194,12 @@ cycle runs these steps:
    at the first step; what a step pays beyond that is a cache miss. The
    largest shares, and identical repeat calls, are the points
    (`insight::spend`), with the model, the cache share and whether the
-   window ever shrank. Its level 1 rebuilds every recorded step of the
+   window ever shrank. The runs decide on what the Harness writes, not the
+   whole count: the model's output, its turns and the results of the calls
+   it chose vary by thousands of tokens between runs of one build, so a
+   Harness change of a few percent never shows in the total with 3 runs a
+   side (cycle 5: the skills lists fell 36% while the total rose 548). Its
+   level 1 rebuilds every recorded step of the
    baseline runs under both builds (`harness-replay` sizes) and compares
    the uncached input a run each pays at the recorded trajectory: each
    step's characters past the prefix the previous request shares (what a

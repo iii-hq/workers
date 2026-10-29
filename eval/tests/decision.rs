@@ -180,6 +180,7 @@ fn run(scenario_id: &str, at: usize, status: Option<&str>, cost: Option<f64>) ->
         cost_usd: cost,
         wall_time_ms: None,
         total_tokens: None,
+        harness_tokens: None,
         function_calls: None,
         function_call_errors: None,
         criteria: Default::default(),
@@ -402,6 +403,69 @@ fn plan_is_frozen_before_results_with_its_coverage() {
     assert!(is_conflict(
         &decision::freeze(&mut late, plan()).unwrap_err()
     ));
+}
+
+#[test]
+fn a_token_plan_decides_on_what_the_harness_writes_and_keeps_the_total() {
+    let mut plan = plan();
+    plan.criterion = criterion(
+        CriterionMetricV1::HarnessTokens,
+        DirectionV1::Decrease,
+        500.0,
+        "s",
+    );
+    plan.preserved = vec![
+        criterion(CriterionMetricV1::PassRate, DirectionV1::Increase, 0.0, "s"),
+        criterion(CriterionMetricV1::Tokens, DirectionV1::Decrease, 0.0, "s"),
+    ];
+    plan.sampling.runs_per_side = 6;
+    let side = |written: f64, totals: &[f64]| -> Vec<EvidenceRunV1> {
+        totals
+            .iter()
+            .enumerate()
+            .map(|(at, total)| EvidenceRunV1 {
+                harness_tokens: Some(written),
+                total_tokens: Some(*total),
+                ..run("s", at, Some("passed"), Some(0.01))
+            })
+            .collect()
+    };
+    let (baseline, candidate) = pair();
+    let decide = |base: &[f64], cand: &[f64]| {
+        let evidence = vec![evidence_for(
+            "s",
+            "base",
+            side(6_500.0, base),
+            "cand",
+            side(5_500.0, cand),
+        )];
+        decision::decide(&plan, &baseline, &candidate, &evidence, NOW)
+    };
+    // 1000 fewer written on every pair while the model's own spend wanders
+    // up on most: accepted, the rise is not shown.
+    let base = [19_000.0, 22_000.0, 29_000.0, 21_000.0, 24_000.0, 20_000.0];
+    let wandering = [23_000.0, 24_000.0, 25_000.0, 22_000.0, 24_500.0, 19_500.0];
+    let decided = decide(&base, &wandering);
+    assert_eq!(
+        decided.outcome,
+        DecisionOutcomeV1::Accepted,
+        "{}",
+        decided.reason
+    );
+    assert!(
+        decided.reason.contains("tokens the Harness writes"),
+        "{}",
+        decided.reason
+    );
+    // A total that rises on every pair is shown: it rejects whatever was written.
+    let decided = decide(&base, &base.map(|total| total + 3_000.0));
+    assert_eq!(
+        decided.outcome,
+        DecisionOutcomeV1::Rejected,
+        "{}",
+        decided.reason
+    );
+    assert!(decided.reason.contains("tokens:"), "{}", decided.reason);
 }
 
 #[test]
@@ -1645,7 +1709,9 @@ fn a_test_the_objective_names_is_selected_by_its_id() {
     assert_eq!(coverage.need, "context_consumption");
     assert_eq!(coverage.selected.len(), 1);
     assert_eq!(coverage.selected[0].scenario_id, "form_flow_build");
-    assert!(coverage.selected[0].rationale.starts_with("the objective names it"));
+    assert!(coverage.selected[0]
+        .rationale
+        .starts_with("the objective names it"));
 }
 
 #[test]

@@ -520,6 +520,7 @@ pub fn runs_of(bundle: &Value, scenario_id: &str, patterns: &[String]) -> Vec<Ev
                 cost_usd: run["cost"]["total_usd"].as_f64(),
                 wall_time_ms: run["wall_time_ms"].as_f64(),
                 total_tokens: run["efficiency"]["total_tokens"].as_f64(),
+                harness_tokens: crate::insight::harness_tokens(run),
                 function_calls: run["efficiency"]["function_calls"].as_f64(),
                 // Read from the transcript, not `efficiency.function_call_errors`:
                 // that total is `harness::metrics`, which a candidate may change.

@@ -39,6 +39,7 @@ fn metric_value(run: &EvidenceRunV1, criterion: &CriterionV1) -> Option<f64> {
         CriterionMetricV1::CostUsd => run.cost_usd,
         CriterionMetricV1::Duration => run.wall_time_ms,
         CriterionMetricV1::Tokens => run.total_tokens,
+        CriterionMetricV1::HarnessTokens => run.harness_tokens,
         CriterionMetricV1::FunctionCalls => run.function_calls,
         CriterionMetricV1::FunctionCallErrors => run.function_call_errors,
     }
@@ -56,6 +57,7 @@ fn metric_label(criterion: &CriterionV1) -> String {
         (CriterionMetricV1::CostUsd, _) => "cost (USD)".into(),
         (CriterionMetricV1::Duration, _) => "wall time (ms)".into(),
         (CriterionMetricV1::Tokens, _) => "tokens".into(),
+        (CriterionMetricV1::HarnessTokens, _) => "tokens the Harness writes".into(),
         (CriterionMetricV1::FunctionCalls, _) => "function calls".into(),
         (CriterionMetricV1::FunctionCallErrors, _) => "function call errors".into(),
     }
@@ -75,7 +77,7 @@ fn effect_unit(metric: CriterionMetricV1) -> (&'static str, f64) {
         CriterionMetricV1::PassRate | CriterionMetricV1::CriterionScore => ("pp", 0.01),
         CriterionMetricV1::CostUsd => ("USD", 1.0),
         CriterionMetricV1::Duration => ("s", 1_000.0),
-        CriterionMetricV1::Tokens => ("tokens", 1.0),
+        CriterionMetricV1::Tokens | CriterionMetricV1::HarnessTokens => ("tokens", 1.0),
         CriterionMetricV1::FunctionCalls => ("calls", 1.0),
         CriterionMetricV1::FunctionCallErrors => ("errors", 1.0),
     }
@@ -1444,7 +1446,10 @@ fn measured(
     let built = built_from_commit(record);
     let self_reported = matches!(
         plan.criterion.metric,
-        CriterionMetricV1::Tokens | CriterionMetricV1::CostUsd | CriterionMetricV1::FunctionCalls
+        CriterionMetricV1::Tokens
+            | CriterionMetricV1::HarnessTokens
+            | CriterionMetricV1::CostUsd
+            | CriterionMetricV1::FunctionCalls
     );
     let gap = if let Some(gap) = unmeasurable(commit, &built) {
         gap
@@ -1531,6 +1536,7 @@ mod tests {
             cost_usd: Some(0.5),
             wall_time_ms: None,
             total_tokens: None,
+            harness_tokens: None,
             function_calls: None,
             function_call_errors: None,
             criteria: BTreeMap::new(),

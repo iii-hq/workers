@@ -1551,7 +1551,9 @@ async fn history_stage(
 fn reads_transcripts(plan: &CyclePlanV1) -> bool {
     matches!(
         plan.criterion.metric,
-        CriterionMetricV1::FunctionCallErrors | CriterionMetricV1::Tokens
+        CriterionMetricV1::FunctionCallErrors
+            | CriterionMetricV1::Tokens
+            | CriterionMetricV1::HarnessTokens
     )
 }
 

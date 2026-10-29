@@ -231,6 +231,7 @@ fn no_cost_reduction_is_accepted_while_a_cost_is_unknown() {
         cost_usd: Some(cost),
         wall_time_ms: None,
         total_tokens: None,
+        harness_tokens: None,
         function_calls: None,
         function_call_errors: None,
         criteria: Default::default(),

@@ -1731,7 +1731,7 @@ async fn a_token_objective_is_planned_and_judged_by_what_the_candidate_changes()
     // Whether the totals are independent depends on the candidate's diff
     // (see the decision tests); the cycle is not stopped before one exists.
     let plan = record.plan.clone().expect("a frozen plan");
-    assert_eq!(plan.criterion.metric, CriterionMetricV1::Tokens);
+    assert_eq!(plan.criterion.metric, CriterionMetricV1::HarnessTokens);
     assert_eq!(record.outcome, None, "{:?}", record.history);
     assert_eq!(rig.world().e2e.dispatched.len(), 1, "the baseline");
 }

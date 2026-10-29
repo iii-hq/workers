@@ -1355,9 +1355,20 @@ pub enum CriterionMetricV1 {
     CostUsd,
     Duration,
     Tokens,
+    /// The counted tokens of what the Harness writes (see
+    /// `insight::harness_tokens`): the part of `Tokens` a Harness change
+    /// moves, without the model's output and trajectory.
+    HarnessTokens,
     FunctionCalls,
     /// Function results marked as errors in the run's own transcript.
     FunctionCallErrors,
+}
+
+impl CriterionMetricV1 {
+    /// A token objective's metric: its level 1 replays every step's size.
+    pub fn is_tokens(self) -> bool {
+        matches!(self, Self::Tokens | Self::HarnessTokens)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1413,6 +1424,8 @@ pub struct EvidenceRunV1 {
     pub wall_time_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_tokens: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function_calls: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

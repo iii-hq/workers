@@ -599,6 +599,13 @@
             "type": "string"
           },
           {
+            "description": "The counted tokens of what the Harness writes (see `insight::harness_tokens`): the part of `Tokens` a Harness change moves, without the model's output and trajectory.",
+            "enum": [
+              "harness_tokens"
+            ],
+            "type": "string"
+          },
+          {
             "description": "Function results marked as errors in the run's own transcript.",
             "enum": [
               "function_call_errors"
@@ -1556,6 +1563,13 @@
             ]
           },
           "function_calls": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "harness_tokens": {
             "format": "double",
             "type": [
               "number",

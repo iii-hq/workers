@@ -482,6 +482,7 @@ const METRIC: Record<CriterionMetric, string> = {
   cost_usd: 'cost (USD)',
   duration: 'wall time',
   tokens: 'tokens',
+  harness_tokens: 'tokens the Harness writes',
   function_calls: 'function calls',
   function_call_errors: 'function call errors',
 }
@@ -538,6 +539,8 @@ export function runValue(run: EvidenceRun, criterion: Criterion): number | undef
       return run.wall_time_ms
     case 'tokens':
       return run.total_tokens
+    case 'harness_tokens':
+      return run.harness_tokens
     case 'function_calls':
       return run.function_calls
     case 'function_call_errors':
