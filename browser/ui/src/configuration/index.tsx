@@ -56,6 +56,8 @@ const BROWSER_OWNED_TOP_LEVEL_FIELDS = [
   'max_timeout_ms',
   'inactive_after_ms',
   'screenshot_quality',
+  'live_view_scale',
+  'live_view_quality',
   'allowed_schemes',
   'max_snapshot_nodes',
   'default_origin_policy',
@@ -82,6 +84,8 @@ const DEFAULTS = {
   max_timeout_ms: 120_000,
   inactive_after_ms: 1_800_000,
   screenshot_quality: 60,
+  live_view_scale: 2,
+  live_view_quality: 85,
   allowed_schemes: ['http', 'https', 'file'],
   max_snapshot_nodes: 2_000,
   allow_history_access: true,
@@ -117,6 +121,8 @@ const FIELD_SECTION: Record<string, SectionId> = {
   viewport_width: 'viewport',
   viewport_height: 'viewport',
   screenshot_quality: 'viewport',
+  live_view_scale: 'viewport',
+  live_view_quality: 'viewport',
   console_buffer: 'limits',
   network_buffer: 'limits',
   max_snapshot_nodes: 'limits',
@@ -839,7 +845,7 @@ function ConfigNav({
     {
       id: 'viewport',
       label: 'Viewport',
-      description: 'Canvas and screenshots',
+      description: 'Canvas, live view, screenshots',
       summary: `${width} × ${height}`,
     },
     {
@@ -1221,6 +1227,35 @@ export function BrowserConfigEditor({
                 </div>
                 <p>Aspect-ratio preview for newly launched sessions.</p>
               </div>
+            </ConfigSection>
+            <ConfigSection
+              title="Live view"
+              description="How sharp the page looks in the browser pane, against the bandwidth each frame costs."
+            >
+              <SettingsList className="br-cfg-section-list">
+                <NumberField
+                  field="live_view_scale"
+                  label="Pixel density"
+                  value={value.live_view_scale}
+                  placeholder={DEFAULTS.live_view_scale}
+                  min={1}
+                  max={3}
+                  hint="2 is as sharp as Chrome on a retina screen; 1 sends a quarter of the pixels and looks soft there. Pages still see a device pixel ratio of 1. Applies when the browser next launches."
+                  error={fieldError(errors, 'live_view_scale')}
+                  onChange={(next) => setNumber('live_view_scale', next)}
+                />
+                <NumberField
+                  field="live_view_quality"
+                  label="Frame JPEG quality"
+                  value={value.live_view_quality}
+                  placeholder={DEFAULTS.live_view_quality}
+                  min={1}
+                  max={100}
+                  hint="Use a value from 1 to 100. Lower values blur text edges first."
+                  error={fieldError(errors, 'live_view_quality')}
+                  onChange={(next) => setNumber('live_view_quality', next)}
+                />
+              </SettingsList>
             </ConfigSection>
             <ConfigSection
               title="Screenshot capture"

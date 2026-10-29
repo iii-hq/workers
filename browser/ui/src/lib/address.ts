@@ -14,14 +14,58 @@ export function isLocalHost(host: string): boolean {
   return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254)
 }
 
+/** Where the address bar sends a query that is not an address. */
+export const SEARCH_URL = 'https://www.google.com/search?q='
+
 /** A typed address becomes a url: a real scheme passes, a local host gets
- * http://, anything else https:// (a bare `host:port` like localhost:3000 is
- * not a scheme). The worker still falls back to http when https fails the
- * TLS handshake on a local host. */
+ * http://, a host-looking word (a dot, a port, `localhost`) gets https://,
+ * and anything else — words with spaces, a lone word — is a search, the way
+ * a browser's address bar reads it (a bare `host:port` like localhost:3000
+ * is not a scheme). The worker still falls back to http when https fails
+ * the TLS handshake on a local host. */
 export function toUrl(draft: string): string {
   const url = draft.trim()
   if (!url) return ''
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url) || url.startsWith('about:')) return url
-  const host = url.split(/[/?#]/)[0]?.replace(/:\d+$/, '') ?? ''
+  const hostPort = url.split(/[/?#]/)[0] ?? ''
+  const host = hostPort.replace(/:\d+$/, '')
+  const looksLikeHost =
+    !/\s/.test(url) &&
+    host.length > 0 &&
+    (isLocalHost(host) || /^\[[0-9a-f:]+\]$/i.test(host) || /:\d+$/.test(hostPort) || /^[^.\s]+(\.[^.\s]+)+$/.test(host))
+  if (!looksLikeHost) return `${SEARCH_URL}${encodeURIComponent(url)}`
   return `${isLocalHost(host) ? 'http' : 'https'}://${url}`
+}
+
+/** How the bar reads a page it is not editing, the way Chrome shows it: the
+ * scheme dropped for http(s), the host in full ink and the rest (path,
+ * query, hash) dimmed; a bare root `/` is dropped. Other schemes (file:,
+ * data:, about:) read whole, all dimmed. */
+export function displayUrl(url: string): { host: string; rest: string } {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return { host: '', rest: url }
+    const tail = `${parsed.pathname}${parsed.search}${parsed.hash}`
+    return { host: parsed.host, rest: tail === '/' ? '' : tail }
+  } catch {
+    return { host: '', rest: url }
+  }
+}
+
+/** What the bar's site icon says about a page: https is secure, http is
+ * not (except on a local host, where it is just a dev server), a file is a
+ * file, and an empty tab has nothing to say. */
+export type SiteSecurity = 'secure' | 'insecure' | 'local' | 'file' | 'none'
+
+export function siteSecurity(url: string): SiteSecurity {
+  if (!url || url === 'about:blank') return 'none'
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol === 'https:') return 'secure'
+    if (parsed.protocol === 'http:') return isLocalHost(parsed.hostname) ? 'local' : 'insecure'
+    if (parsed.protocol === 'file:') return 'file'
+    return 'none'
+  } catch {
+    return 'none'
+  }
 }

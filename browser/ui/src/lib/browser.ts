@@ -60,6 +60,8 @@ export const sessionInfoSchema = z.object({
   session_id: z.string(),
   url: z.string(),
   title: z.string().optional(),
+  /** The page's icon: a `data:` URL, or the icon's own http(s) URL. */
+  favicon: z.string().optional(),
   headless: z.boolean(),
   created_ms: z.number(),
   last_used_ms: z.number(),

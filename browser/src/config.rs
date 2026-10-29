@@ -288,6 +288,15 @@ pub struct WorkerConfig {
     pub inactive_after_ms: u64,
     /// JPEG quality for `browser::screenshot` (1-100).
     pub screenshot_quality: u64,
+    /// Pixel density the console's live view is drawn at (1-3). At 2 a
+    /// retina screen shows text and edges as sharp as a local Chrome; 1
+    /// sends a quarter of the pixels and looks soft on a high-DPI screen.
+    /// Pages still see `devicePixelRatio` 1, so layout, screenshots and
+    /// click coordinates do not change. Headless only; applies the next
+    /// time the browser process launches.
+    pub live_view_scale: f64,
+    /// JPEG quality of the console's live view frames (1-100).
+    pub live_view_quality: u64,
     /// URL schemes `browser::navigate` accepts.
     ///
     /// `file` ships enabled so a local document can be opened and rendered —
@@ -345,6 +354,8 @@ impl Default for WorkerConfig {
             max_timeout_ms: 120_000,
             inactive_after_ms: 1_800_000,
             screenshot_quality: 60,
+            live_view_scale: 2.0,
+            live_view_quality: 85,
             allowed_schemes: vec!["http".to_string(), "https".to_string(), "file".to_string()],
             max_snapshot_nodes: 2_000,
             default_origin_policy: None,
@@ -405,6 +416,20 @@ impl WorkerConfig {
         self.max_bulk_concurrency = self.scrapling.max_bulk_concurrency;
     }
 
+    /// `live_view_scale` as the launch flag takes it: a stray value can't
+    /// ask Chromium for a 0x or 10x window.
+    pub fn live_view_scale(&self) -> f64 {
+        if self.live_view_scale.is_finite() {
+            self.live_view_scale.clamp(1.0, 3.0)
+        } else {
+            1.0
+        }
+    }
+
+    pub fn live_view_quality(&self) -> i64 {
+        self.live_view_quality.clamp(1, 100) as i64
+    }
+
     /// Clamp a caller-supplied timeout to the configured ceiling, defaulting
     /// when omitted.
     pub fn clamp_timeout(&self, requested: Option<u64>) -> u64 {
@@ -430,6 +455,8 @@ mod tests {
         assert_eq!(c.network_buffer, 500);
         assert_eq!(c.viewport_width, 1280);
         assert_eq!(c.viewport_height, 800);
+        assert_eq!(c.live_view_scale(), 2.0);
+        assert_eq!(c.live_view_quality(), 85);
         assert_eq!(c.default_timeout_ms, 30_000);
         assert_eq!(c.max_timeout_ms, 120_000);
         assert_eq!(c.inactive_after_ms, 1_800_000);

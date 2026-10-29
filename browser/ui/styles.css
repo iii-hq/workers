@@ -50,23 +50,29 @@
 }
 
 /* ── tab strip — Chrome's, not the console's line tabs ──────────────────
-   Tabs sit on the window chrome (the sidebar surface); the active one is
-   cut from the toolbar's own surface and welded to it with inverted
-   corners. Titles fade out where they run out of room, never ellipsize. */
+   Tabs sit on the window chrome (the page background, one step darker than
+   the toolbar); the active one is cut from the toolbar's own surface and
+   welded to it with inverted corners, so tab and toolbar read as one sheet.
+   Titles fade out where they run out of room, never ellipsize. */
 [data-iii-ui="browser"] .br-ui-tabstrip {
   display: flex;
   align-items: flex-end;
   flex-shrink: 0;
-  height: 42px;
-  padding: 6px 8px 0 6px;
-  background: var(--color-sidebar);
+  height: 40px;
+  padding: 6px 8px 0;
+  background: var(--color-bg);
+  container-type: inline-size;
 }
 [data-iii-ui="browser"] .br-ui-tabstrip-scroll {
   display: flex;
   align-items: flex-end;
   flex: 1;
   min-width: 0;
+  height: 100%;
+  /* room for the active tab's inverted corners at the strip's ends */
+  padding: 0 6px;
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
 }
 [data-iii-ui="browser"] .br-ui-tabstrip-scroll::-webkit-scrollbar {
@@ -78,41 +84,45 @@
   align-items: center;
   gap: 8px;
   flex: 1 1 220px;
-  min-width: 64px;
+  min-width: 72px;
   max-width: 240px;
-  height: 36px;
+  height: 34px;
   padding: 0 6px 0 12px;
   border: 0;
   border-radius: 6px 6px 0 0;
   background: transparent;
   color: var(--color-ink-faint);
   font-family: var(--font-sans);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1;
   text-align: left;
-  cursor: pointer;
+  cursor: default;
   user-select: none;
   outline: none;
+  transition:
+    background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
 }
-[data-iii-ui="browser"] .br-ui-tab:hover {
-  background: var(--color-surface-hover);
+[data-iii-ui="browser"] .br-ui-tab:not(.is-active):hover {
+  background: var(--color-surface);
   color: var(--color-ink);
 }
 [data-iii-ui="browser"] .br-ui-tab:focus-visible {
   box-shadow: inset 0 0 0 2px var(--color-rule-focus);
 }
-/* hairline between resting tabs; none touching the active one */
+/* hairline between resting tabs; none touching the active or hovered one */
 [data-iii-ui="browser"] .br-ui-tab + .br-ui-tab::before {
   content: "";
   position: absolute;
-  left: -1px;
-  top: 9px;
-  bottom: 9px;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
   width: 1px;
   background: var(--color-edge);
 }
 [data-iii-ui="browser"] .br-ui-tab.is-active::before,
 [data-iii-ui="browser"] .br-ui-tab.is-active + .br-ui-tab::before,
+[data-iii-ui="browser"] .br-ui-tab:hover::before,
 [data-iii-ui="browser"] .br-ui-tab:hover + .br-ui-tab::before {
   display: none;
 }
@@ -137,41 +147,69 @@
 }
 [data-iii-ui="browser"] .br-ui-tab-icon {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
   width: 16px;
-  justify-content: center;
-  opacity: 0.85;
+  height: 16px;
+}
+[data-iii-ui="browser"] .br-ui-favicon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  -webkit-user-drag: none;
 }
 [data-iii-ui="browser"] .br-ui-tab-title {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  mask-image: linear-gradient(to right, black calc(100% - 18px), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - 16px), transparent);
 }
 /* the close ✕ shows on hover and on the active tab */
 [data-iii-ui="browser"] .br-ui-tab-close {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
   flex-shrink: 0;
+  padding: 0;
   border-radius: 50%;
-  color: inherit;
+  color: var(--color-ink-faint);
   opacity: 0;
+}
+[data-iii-ui="browser"] .br-ui-tab-close:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
 }
 [data-iii-ui="browser"] .br-ui-tab:hover .br-ui-tab-close,
 [data-iii-ui="browser"] .br-ui-tab.is-active .br-ui-tab-close,
 [data-iii-ui="browser"] .br-ui-tab-close:focus-visible {
   opacity: 1;
 }
-/* asleep: page closed, tab kept — dimmed, moon in the favicon slot */
+/* a crowded strip keeps titles readable: only the active tab keeps its ✕ */
+@container (max-width: 520px) {
+  [data-iii-ui="browser"] .br-ui-tab:not(.is-active) .br-ui-tab-close {
+    display: none;
+  }
+}
+/* asleep: page closed, tab kept — dimmed, its icon kept (a moon without one) */
 [data-iii-ui="browser"] .br-ui-tab.is-asleep .br-ui-tab-icon,
 [data-iii-ui="browser"] .br-ui-tab.is-asleep .br-ui-tab-title {
-  opacity: 0.5;
+  opacity: 0.55;
 }
 [data-iii-ui="browser"] .br-ui-tab-new {
   flex-shrink: 0;
-  margin: 0 4px 2px 6px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  margin: 0 0 3px 6px;
   border-radius: 50%;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="browser"] .br-ui-tab-new:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
 }
 
 /* ── incognito: the strip, the tab and the toolbar go dark ──────────────
@@ -181,6 +219,8 @@
    own dark theme works. Nothing below the toolbar changes. */
 [data-iii-ui="browser"] .br-ui-tab.is-incognito,
 [data-iii-ui="browser"] .br-ui-browser.is-incognito .br-ui-tabstrip {
+  --color-bg: var(--br-incognito-bg);
+  --color-surface: var(--br-incognito-hover);
   --color-sidebar: var(--br-incognito-bg);
   --color-panel-raised: var(--br-incognito-tab);
   --color-surface-hover: var(--br-incognito-raised);
@@ -237,21 +277,24 @@
   background: var(--color-panel-raised);
 }
 
-/* toolbar: the shared toolbar recipe grown to hold the round chrome buttons.
+/* toolbar: one quiet row on the toolbar surface — round history buttons,
+   the pill-shaped omnibox taking the room, the page actions at the end.
    Wrap before the address bar is squeezed to an icon — it is the primary
    control, so it keeps a readable width and takes a full row when the pane
    cannot fit buttons + URL on one line. */
 [data-iii-ui="browser"] .br-ui-toolbar {
   height: auto;
-  min-height: 2.25rem;
+  min-height: 40px;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 2px;
   padding: 4px 8px;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
 }
 [data-iii-ui="browser"] .br-ui-history-controls {
   display: inline-flex;
   align-items: center;
-  gap: 1px;
+  gap: 2px;
   flex-shrink: 0;
   min-width: 0;
   margin: 0;
@@ -263,19 +306,25 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   flex-shrink: 0;
   padding: 0;
   border: 0;
   border-radius: 50%;
   background: transparent;
   color: var(--color-ink-faint);
-  cursor: pointer;
+  cursor: default;
+  transition:
+    background-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="browser"] .br-ui-chrome-btn:hover {
   background: var(--color-surface-hover);
   color: var(--color-ink);
+}
+[data-iii-ui="browser"] .br-ui-chrome-btn:active {
+  background: var(--color-surface-active);
 }
 [data-iii-ui="browser"] .br-ui-chrome-btn:focus-visible {
   outline: 2px solid var(--color-rule-focus);
@@ -291,8 +340,8 @@
 }
 [data-iii-ui="browser"] .br-ui-chrome-badge {
   position: absolute;
-  top: 2px;
-  right: 2px;
+  top: 0;
+  right: 0;
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
@@ -305,33 +354,52 @@
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+/* the omnibox: a pill on the toolbar; focused, it lifts to the panel with
+   the focus ring, the way Chrome's does */
 [data-iii-ui="browser"] .br-ui-address {
+  position: relative;
   display: flex;
   flex: 1 1 12rem;
   align-items: center;
   gap: 8px;
   min-width: 12rem;
-  height: 34px;
-  margin: 0 4px;
-  padding: 0 6px 0 12px;
-  border-radius: 6px;
+  height: 30px;
+  margin: 0 6px;
+  padding: 0 14px 0 10px;
+  border-radius: 9999px;
   background: var(--color-surface);
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
-[data-iii-ui="browser"] .br-ui-address:focus-within {
+[data-iii-ui="browser"] .br-ui-address:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="browser"] .br-ui-address.is-focused {
+  background: var(--color-panel);
   outline: 2px solid var(--color-rule-focus);
-  outline-offset: -1px;
+  outline-offset: -2px;
 }
 [data-iii-ui="browser"] .br-ui-address-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   flex-shrink: 0;
-  color: var(--color-ink-ghost);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="browser"] .br-ui-address-warn {
+  padding-right: 8px;
+  border-right: 1px solid var(--color-edge);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  white-space: nowrap;
 }
 [data-iii-ui="browser"] .br-ui-url-input {
   flex: 1;
   min-width: 0;
-  height: 32px;
+  height: 28px;
   padding: 0;
   border: 0;
   background: transparent;
+  font-family: var(--font-sans);
   font-size: 13px;
 }
 [data-iii-ui="browser"] .br-ui-url-input:hover,
@@ -340,6 +408,64 @@
   background: transparent;
   outline: none;
   box-shadow: none;
+}
+/* unfocused, the url reads Chrome's way (host in ink, the rest dimmed) and
+   the real input lies invisibly over the whole pill, so a click anywhere
+   focuses it with the full url selected */
+[data-iii-ui="browser"] .br-ui-url-display {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 28px;
+  mask-image: linear-gradient(to right, black calc(100% - 16px), transparent);
+}
+[data-iii-ui="browser"] .br-ui-url-host {
+  color: var(--color-ink);
+}
+[data-iii-ui="browser"] .br-ui-url-rest {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="browser"] .br-ui-address.is-display .br-ui-url-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+}
+/* the load line: a thin bar under the toolbar while a load this pane
+   started is in flight, over the page so nothing shifts */
+[data-iii-ui="browser"] .br-ui-progress {
+  position: relative;
+  height: 0;
+  z-index: 2;
+}
+[data-iii-ui="browser"] .br-ui-progress::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -1px;
+  height: 2px;
+  width: 0;
+  background: var(--color-glyph-blue);
+  opacity: 0;
+}
+[data-iii-ui="browser"] .br-ui-progress.is-loading::after {
+  opacity: 1;
+  animation: br-ui-progress-run calc(var(--motion-duration-panel) * 8) var(--motion-ease-standard) forwards;
+}
+@keyframes br-ui-progress-run {
+  0% {
+    width: 0;
+  }
+  30% {
+    width: 45%;
+  }
+  100% {
+    width: 85%;
+  }
 }
 [data-iii-ui="browser"] .br-ui-visually-hidden {
   position: absolute;
@@ -367,7 +493,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-sidebar);
+  background: var(--color-panel);
   border: 0;
   overflow: hidden;
   cursor: default;
@@ -397,6 +523,99 @@
 }
 [data-iii-ui="browser"] .br-ui-vp-empty {
   width: min(360px, 100% - 32px);
+}
+[data-iii-ui="browser"] .br-ui-vp-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+/* the viewport and what can lie over it (the new-tab surface) */
+[data-iii-ui="browser"] .br-ui-vp-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+/* a tab on about:blank: the theme's own new-tab page instead of Chromium's
+   white blank, pointing at the address bar */
+[data-iii-ui="browser"] .br-ui-ntp {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  background: var(--color-panel);
+  text-align: center;
+}
+[data-iii-ui="browser"] .br-ui-ntp-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 8px;
+  border-radius: 50%;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="browser"] .br-ui-ntp-title {
+  margin: 0;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 600;
+}
+[data-iii-ui="browser"] .br-ui-ntp-body {
+  margin: 0;
+  max-width: 40ch;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+}
+[data-iii-ui="browser"] .br-ui-ntp-focus {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(520px, 100%);
+  height: 44px;
+  margin-top: 16px;
+  padding: 0 8px 0 16px;
+  border: 1px solid var(--color-edge);
+  border-radius: 9999px;
+  background: var(--color-panel-raised);
+  color: var(--color-ink-ghost);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  text-align: left;
+  cursor: text;
+  transition: background-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+[data-iii-ui="browser"] .br-ui-ntp-focus:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="browser"] .br-ui-ntp-focus:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+[data-iii-ui="browser"] .br-ui-ntp-focus > span {
+  flex: 1;
+}
+[data-iii-ui="browser"] .br-ui-ntp-kbd {
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 12px;
 }
 /* annotate-mode hover highlight, drawn client-side over the frozen frame */
 [data-iii-ui="browser"] .br-ui-vp-hint {
@@ -677,20 +896,15 @@
 
 /* touch sizes in a narrow pane: URL on its own row so it cannot collapse
    to the globe icon, then history + actions underneath. */
+/* a narrow pane (a side panel) keeps Chrome's single row: the omnibox just
+   gives up width first, and only wraps to its own row when even that fails */
 [data-iii-ui="browser"] .br-ui-browser.narrow .br-ui-address {
-  flex: 1 0 100%;
-  order: -1;
-  min-width: 0;
-  margin: 0;
-  height: 40px;
+  flex-basis: 8rem;
+  min-width: 8rem;
+  margin: 0 4px;
 }
-[data-iii-ui="browser"] .br-ui-browser.narrow .br-ui-url-input {
-  height: 38px;
-  font-size: 15px;
-}
-[data-iii-ui="browser"] .br-ui-browser.narrow .br-ui-chrome-btn {
-  width: 40px;
-  height: 40px;
+[data-iii-ui="browser"] .br-ui-browser.narrow .br-ui-address-warn {
+  display: none;
 }
 [data-iii-ui="browser"] .br-ui-browser.narrow .br-ui-incognito-pill {
   display: none;
@@ -1553,14 +1767,88 @@
   color: var(--color-accent);
 }
 [data-iii-ui="browser"] .br-ui-open-in-browser {
-  margin-left: 8px;
   white-space: nowrap;
 }
 
+/* the `→ url` line (UrlLine): the shared ActionLine top-aligns a 1lh icon
+ * box, which only lines up with a single run of body text. With the 32px
+ * "Open in browser" button inline, the line box grew to 32px, the URL sat on
+ * the button's baseline (its icon's bottom edge) and the arrow rode high.
+ * Here the arrow box, the URL's first line and the button share one band,
+ * the URL is a 13px mono link and the button holds the trailing edge. */
+[data-iii-ui="browser"] .br-ui-url-line {
+  --br-url-band: 20px;
+  align-items: flex-start;
+}
+[data-iii-ui="browser"] .br-ui-url-line.has-action {
+  --br-url-band: 32px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+[data-iii-ui="browser"] .br-ui-url-line > :first-child {
+  height: var(--br-url-band);
+}
+[data-iii-ui="browser"] .br-ui-url-line > :last-child {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+[data-iii-ui="browser"] .br-ui-url {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: calc((var(--br-url-band) - 20px) / 2) 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 20px;
+}
+[data-iii-ui="browser"] .br-ui-url-line .br-ui-open-in-browser {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* a link inside a card: the one hue the card carries */
+[data-iii-ui="browser"] .br-ui-link {
+  color: var(--color-glyph-blue);
+  text-decoration: none;
+  text-underline-offset: 3px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+[data-iii-ui="browser"] .br-ui-link:hover {
+  text-decoration: underline;
+}
+[data-iii-ui="browser"] .br-ui-link:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* fetched text (TextPreview): links/URLs in the link ink, markdown marks
+ * receded, heading lines in weight */
+[data-iii-ui="browser"] .br-ui-md-link {
+  color: var(--color-glyph-blue);
+}
+[data-iii-ui="browser"] .br-ui-md-url {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="browser"] .br-ui-md-mark {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="browser"] .br-ui-md-heading {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
 /* scraping views */
+/* the card body is one framed panel, like the shell's terminal cards: the
+ * chip strip, the url line and the text bands share its edges, instead of
+ * square bands floating inside the tool row's gutter */
 [data-iii-ui="browser"] .br-ui-scrape-section {
   min-width: 0;
   overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-xl);
   background: var(--color-bg);
   color: var(--color-ink);
   font-family: var(--font-mono);

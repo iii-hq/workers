@@ -73,6 +73,11 @@ pub struct SessionInfo {
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The page's icon for a tab strip: a `data:` URL, or the icon's
+    /// http(s) URL when the page could not hand the bytes over. Absent when
+    /// the page has none (or has not reported it yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub favicon: Option<String>,
     pub headless: bool,
     pub read_only: bool,
     /// Private tab: nothing persisted, closes instead of sleeping.

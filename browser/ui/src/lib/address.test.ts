@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isLocalHost, toUrl } from '../lib/address'
+import { displayUrl, isLocalHost, siteSecurity, toUrl } from '../lib/address'
 
 describe('address bar url guessing', () => {
   it('reaches local hosts over http and everything else over https', () => {
@@ -12,5 +12,32 @@ describe('address bar url guessing', () => {
     expect(toUrl('  ')).toBe('')
     expect(isLocalHost('172.20.0.1')).toBe(true)
     expect(isLocalHost('172.32.0.1')).toBe(false)
+  })
+
+  it('searches what is not an address', () => {
+    expect(toUrl('react hooks')).toBe('https://www.google.com/search?q=react%20hooks')
+    expect(toUrl('github')).toBe('https://www.google.com/search?q=github')
+    expect(toUrl('localhost')).toBe('http://localhost')
+    expect(toUrl('intranet:8080/x')).toBe('https://intranet:8080/x')
+    expect(toUrl('docs.rs/serde')).toBe('https://docs.rs/serde')
+  })
+
+  it('reads a page url the way Chrome shows it', () => {
+    expect(displayUrl('https://github.com/')).toEqual({ host: 'github.com', rest: '' })
+    expect(displayUrl('https://github.com/iii-hq/workers?tab=1#x')).toEqual({
+      host: 'github.com',
+      rest: '/iii-hq/workers?tab=1#x',
+    })
+    expect(displayUrl('http://localhost:5173/')).toEqual({ host: 'localhost:5173', rest: '' })
+    expect(displayUrl('file:///tmp/a.pdf')).toEqual({ host: '', rest: 'file:///tmp/a.pdf' })
+  })
+
+  it('says whether the connection is secure', () => {
+    expect(siteSecurity('https://a.test/')).toBe('secure')
+    expect(siteSecurity('http://a.test/')).toBe('insecure')
+    expect(siteSecurity('http://localhost:3000/')).toBe('local')
+    expect(siteSecurity('file:///tmp/a.pdf')).toBe('file')
+    expect(siteSecurity('')).toBe('none')
+    expect(siteSecurity('about:blank')).toBe('none')
   })
 })

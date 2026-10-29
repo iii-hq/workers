@@ -22,7 +22,6 @@ pub mod history;
 pub mod history_list;
 pub mod navigate;
 pub mod network;
-pub mod overlays;
 pub mod pdf;
 pub mod pick;
 pub mod recording;
@@ -697,10 +696,12 @@ fn register_sessions_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             None => (headless_default, 0),
                         };
                         let title = tab.title();
+                        let favicon = tab.favicon();
                         sessions::SessionInfo {
                             session_id: tab.id.clone(),
                             url: tab.url(),
                             title: (!title.is_empty()).then_some(title),
+                            favicon: (!favicon.is_empty()).then_some(favicon),
                             headless,
                             read_only: tab.read_only,
                             incognito: tab.incognito,
@@ -1024,18 +1025,6 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
-/// Best-effort: draw the ghost cursor at the acted point so a human watching
-/// the streamed viewport sees where the agent acted. Only injected while
-/// screencast is active (someone is watching); a failed injection is ignored.
-async fn move_ghost_cursor(session: &Session, x: f64, y: f64, click: bool) {
-    if session.screencast_on() {
-        let _ = session
-            .page
-            .evaluate(overlays::ghost_cursor_script(x, y, click))
-            .await;
-    }
-}
-
 /// Unique Runtime object group per ref-addressed call, released when the call
 /// ends so page handles never pile up.
 fn object_group() -> String {
@@ -1336,7 +1325,6 @@ async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) ->
         .build()
         .map_err(handler_err)?;
     send(pressed).await?;
-    move_ghost_cursor(session, x1, y1, true).await;
     const STEPS: i64 = 8;
     for step in 1..=STEPS {
         let t = step as f64 / STEPS as f64;
@@ -1349,9 +1337,6 @@ async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) ->
             .build()
             .map_err(handler_err)?;
         send(step_move).await?;
-        // Glide the ghost cursor with the drag so a viewer watching the
-        // stream sees the gesture, not a jump to the end.
-        move_ghost_cursor(session, xi, yi, false).await;
     }
     let released = DispatchMouseEventParams::builder()
         .r#type(DispatchMouseEventType::MouseReleased)
@@ -1436,14 +1421,12 @@ async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Resu
             let button = req.button.as_deref().unwrap_or("left");
             let clicks = i64::from(req.click_count.unwrap_or(1));
             dispatch_click(session, x, y, button, clicks).await?;
-            move_ghost_cursor(session, x, y, true).await;
             settle(session, false).await;
             format!("clicked {button} x{clicks} at ({x:.0}, {y:.0})")
         }
         "hover" => {
             let (x, y) = action_point(session, req, group).await?;
             dispatch_hover(session, x, y).await?;
-            move_ghost_cursor(session, x, y, false).await;
             format!("hovering at ({x:.0}, {y:.0})")
         }
         "type" => {
@@ -2772,31 +2755,15 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::resize")?;
                 session.touch();
-                let mut width = resize::clamp(req.width);
-                let mut height = resize::clamp(req.height);
-                // A pane auto-fit with several pane viewers grows the shared
-                // viewport but never shrinks it: the largest pane wins and the
-                // smaller ones letterbox-scale, so one small viewer can't
-                // shrink a session another viewer needs bigger. A lone pane
-                // (corner previews and recordings don't count) or an explicit
-                // device resize sizes it freely.
-                if req.fit.unwrap_or(false)
-                    && session
-                        .pane_viewers
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                        > 1
-                {
-                    let (cur_w, cur_h) = session.viewport();
-                    width = width.max(cur_w);
-                    height = height.max(cur_h);
-                    if width == cur_w && height == cur_h {
-                        return Ok::<_, Error>(resize::ResizeOutput {
-                            ok: true,
-                            width,
-                            height,
-                        });
-                    }
-                }
+                // A pane fit applies like any resize: the pane that last
+                // changed size (or was last used, see the console's refit on
+                // focus) wins. It used to only grow the viewport while more
+                // than one pane watched, but a viewer that vanished without
+                // `screencast::stop` (a closed window) kept that count up for
+                // good, and the one pane left letterboxed in a viewport it
+                // could never shrink.
+                let width = resize::clamp(req.width);
+                let height = resize::clamp(req.height);
                 let dpr = req.device_scale_factor.unwrap_or(1.0).clamp(0.5, 3.0);
                 let params = cdp_emulation::SetDeviceMetricsOverrideParams::builder()
                     .width(i64::from(width))
@@ -3656,21 +3623,6 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 // Sessions::acquire_screencast, which uses every_nth_frame(1)
                 // and caps the push rate by time in the pump).
                 sx.acquire_screencast(&session).await.map_err(handler_err)?;
-                if !req.preview.unwrap_or(false) {
-                    session
-                        .pane_viewers
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                // A human is now watching: show the session-status badge.
-                let mode = if session.read_only {
-                    "read-only"
-                } else {
-                    "active"
-                };
-                let _ = session
-                    .page
-                    .evaluate(overlays::badge_script(&session.id, mode))
-                    .await;
                 Ok::<_, Error>(pick::AckOutput { ok: true })
             }
         })
@@ -3690,20 +3642,6 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     // Release this console viewer; the CDP screencast stops
                     // only if no other consumer (e.g. a recording) remains.
                     sx.release_screencast(&session).await;
-                    if !req.preview.unwrap_or(false) {
-                        let _ = session.pane_viewers.fetch_update(
-                            std::sync::atomic::Ordering::Relaxed,
-                            std::sync::atomic::Ordering::Relaxed,
-                            |n| n.checked_sub(1),
-                        );
-                    }
-                    // The viewer's overlays go regardless; they belong to the
-                    // watching human, not to a recording consumer.
-                    let _ = session.page.evaluate(overlays::remove_badge_script()).await;
-                    let _ = session
-                        .page
-                        .evaluate(overlays::remove_ghost_cursor_script())
-                        .await;
                 }
                 Ok::<_, Error>(pick::AckOutput { ok: true })
             }

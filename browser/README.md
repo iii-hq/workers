@@ -294,9 +294,8 @@ expected page state after it returns.
 `browser::recording::start` / `browser::recording::stop` capture a session's
 live viewport to a webm or mp4 file by piping the screencast through ffmpeg
 (turning screencast on if needed); stop returns the path, duration, and
-frame count. While screencast is active a human watching the viewport also
-sees a ghost cursor following the agent's clicks and a session-status badge;
-both are fixed-position in-page overlays that never touch page content.
+frame count. Nothing is injected into the page for the viewer: the live
+viewport shows the page exactly as it draws itself.
 `browser::doctor` reports whether ffmpeg (recording) and attach mode are
 available.
 
@@ -515,6 +514,8 @@ browser:
   max_timeout_ms: 120000    # ceiling; caller timeout_ms clamped DOWN to this
   inactive_after_ms: 1800000 # unused, unwatched tabs sleep after this (incognito closes); 0 disables
   screenshot_quality: 60    # JPEG quality 1-100
+  live_view_scale: 2        # console live-view pixel density 1-3 (2 = sharp on retina); headless only
+  live_view_quality: 85     # console live-view JPEG quality 1-100
   allowed_schemes: [http, https, file]  # `file` lets a local document be rendered; see below
   max_snapshot_nodes: 2000  # a11y outline size cap
   default_origin_policy:    # omitted fields default to allow

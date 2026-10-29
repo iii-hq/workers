@@ -455,6 +455,10 @@ pub struct Tab {
     dom_counter: AtomicU64,
     url: Mutex<String>,
     title: Mutex<String>,
+    /// The page's icon for the tab strip: a `data:` URL when the page could
+    /// hand the bytes over, else the icon's own `http(s)` URL; empty when the
+    /// page has none.
+    favicon: Mutex<String>,
     /// Visited pages, newest last, for the history panel. Capped.
     pub history: Mutex<Vec<HistoryVisit>>,
     /// Back/forward stack that outlives the page; see `NavStack`.
@@ -474,6 +478,8 @@ struct TabRecord {
     id: String,
     url: String,
     title: String,
+    #[serde(default)]
+    favicon: String,
     #[serde(default)]
     read_only: bool,
     created_ms: i64,
@@ -513,6 +519,23 @@ impl Tab {
 
     pub fn title(&self) -> String {
         self.title.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    pub fn favicon(&self) -> String {
+        self.favicon.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// The page reported its icon. False when it is what the tab already
+    /// showed, or not something an `<img>` should load (an oversized or
+    /// non-image `data:` URL, a non-http scheme) — that clears the icon.
+    pub fn set_favicon(&self, icon: &str) -> bool {
+        let icon = if favicon_ok(icon) { icon } else { "" };
+        let mut current = self.favicon.lock().unwrap_or_else(|p| p.into_inner());
+        if *current == icon {
+            return false;
+        }
+        *current = icon.to_string();
+        true
     }
 
     pub fn set_location(&self, url: &str, title: Option<&str>) {
@@ -664,6 +687,7 @@ impl Tab {
             id: self.id.clone(),
             url: self.url(),
             title: self.title(),
+            favicon: self.favicon(),
             read_only: self.read_only,
             created_ms: self.created_ms,
             ttl_ms: self.ttl_ms,
@@ -787,9 +811,6 @@ pub struct Session {
     /// 1->0, so stopping a recording never cuts off a UI viewer (and vice
     /// versa). A watched tab is never put to sleep.
     pub screencast_consumers: std::sync::atomic::AtomicUsize,
-    /// Console panes watching (screencast consumers minus previews and
-    /// recordings): a pane auto-fit is arbitrated on this count only.
-    pub pane_viewers: std::sync::atomic::AtomicUsize,
     /// Set while a `browser::recording` is capturing; the screencast pump
     /// writes decoded frames into it.
     pub recording: tokio::sync::Mutex<Option<Recording>>,
@@ -1390,6 +1411,7 @@ impl Sessions {
                 dom_counter: AtomicU64::new(0),
                 url: Mutex::new(record.url),
                 title: Mutex::new(record.title),
+                favicon: Mutex::new(record.favicon),
                 history: Mutex::new(record.history),
                 nav: Mutex::new(record.nav),
                 downloads: Mutex::new(Vec::new()),
@@ -1514,6 +1536,7 @@ impl Sessions {
             dom_counter: AtomicU64::new(0),
             url: Mutex::new("about:blank".to_string()),
             title: Mutex::new(String::new()),
+            favicon: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
             nav: Mutex::new(NavStack::default()),
             downloads: Mutex::new(Vec::new()),
@@ -1681,7 +1704,6 @@ impl Sessions {
             viewport_height: AtomicU32::new(cfg.viewport_height),
             latest_frame: Mutex::new(None),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
-            pane_viewers: std::sync::atomic::AtomicUsize::new(0),
             recording: tokio::sync::Mutex::new(None),
             page: page.clone(),
             console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
@@ -1799,6 +1821,14 @@ impl Sessions {
         let handler_task = tokio::spawn(async move {
             while let Some(event) = handler.next().await {
                 if let Err(e) = event {
+                    // chromiumoxide never ends the stream on a dead socket: it
+                    // yields `Ws(AlreadyClosed)` forever, so without this the
+                    // worker kept a corpse and every call on every tab hung
+                    // until its timeout (seen after a ResetWithoutClosingHandshake).
+                    if connection_lost(&e) {
+                        tracing::warn!(error = %e, "cdp connection lost");
+                        break;
+                    }
                     tracing::debug!(error = %e, "cdp handler event error");
                 }
             }
@@ -1834,7 +1864,14 @@ impl Sessions {
                 _ => return,
             }
         }
-        tracing::warn!("browser process exited; live tabs are asleep until used again");
+        // The socket can drop while the process lives on (a reset
+        // connection): end it, so its profile lock is free for the relaunch.
+        // Bounded: a call stuck holding the browser must not hold this up.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            lost.browser.lock().await.kill().await
+        })
+        .await;
+        tracing::warn!("browser connection lost; live tabs are asleep until used again");
         for session in self.live_sessions() {
             if session.kind != SessionKind::Launched {
                 continue;
@@ -1962,6 +1999,10 @@ impl Sessions {
         let handler_task = tokio::spawn(async move {
             while let Some(event) = handler.next().await {
                 if let Err(e) = event {
+                    if connection_lost(&e) {
+                        tracing::warn!(error = %e, "attached browser connection lost");
+                        break;
+                    }
                     tracing::debug!(error = %e, "cdp handler event error");
                 }
             }
@@ -2012,6 +2053,7 @@ impl Sessions {
             dom_counter: AtomicU64::new(0),
             url: Mutex::new(url.clone().unwrap_or_else(|| "about:blank".to_string())),
             title: Mutex::new(String::new()),
+            favicon: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
             nav: Mutex::new(NavStack::default()),
             downloads: Mutex::new(Vec::new()),
@@ -2030,7 +2072,6 @@ impl Sessions {
             viewport_height: AtomicU32::new(cfg.viewport_height),
             latest_frame: Mutex::new(None),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
-            pane_viewers: std::sync::atomic::AtomicUsize::new(0),
             recording: tokio::sync::Mutex::new(None),
             page: page.clone(),
             console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
@@ -2394,7 +2435,7 @@ impl Sessions {
         if prev > 0 {
             return Ok(());
         }
-        let quality = self.config.load().screenshot_quality as i64;
+        let quality = self.config.load().live_view_quality();
         let params = cdp_page::StartScreencastParams::builder()
             .format(cdp_page::StartScreencastFormat::Jpeg)
             .quality(quality)
@@ -2424,7 +2465,7 @@ impl Sessions {
             .load(std::sync::atomic::Ordering::Relaxed)
             > 1
         {
-            let quality = self.config.load().screenshot_quality as i64;
+            let quality = self.config.load().live_view_quality();
             let restart = cdp_page::StartScreencastParams::builder()
                 .format(cdp_page::StartScreencastFormat::Jpeg)
                 .quality(quality)
@@ -2744,6 +2785,17 @@ fn build_browser_config(
         })
         .user_data_dir(profile_dir);
     builder = if headless {
+        // The screencast is drawn at the window's real pixel density, not the
+        // emulated one, so a 1x window streams soft frames to a retina screen.
+        // Forcing the density keeps the page at devicePixelRatio 1 (the
+        // device-metrics override chromiumoxide applies), so layout,
+        // `browser::screenshot` and click coordinates stay in CSS pixels; only
+        // the live frames gain the detail. A headful window keeps the
+        // display's own density.
+        let scale = cfg.live_view_scale();
+        if scale > 1.0 {
+            builder = builder.arg(("force-device-scale-factor", scale.to_string().as_str()));
+        }
         builder.new_headless_mode()
     } else {
         builder.with_head()
@@ -2886,6 +2938,42 @@ async fn note_title(sessions: &Arc<Sessions>, session: &Arc<Session>, title: &st
     sessions.emit_updated(&session.tab, true).await;
 }
 
+/// A handler error that means the CDP socket itself is gone (closed, reset,
+/// unreadable): nothing more will ever arrive on it.
+fn connection_lost(error: &CdpError) -> bool {
+    matches!(error, CdpError::Ws(_) | CdpError::Io(_))
+}
+
+/// The page's icon changed (reported by the watcher): keep it on the tab and
+/// tell the tab strip, like a title change.
+async fn note_favicon(sessions: &Arc<Sessions>, session: &Arc<Session>, icon: &str) {
+    if !session.tab.set_favicon(icon) {
+        return;
+    }
+    if session.tab.persists() {
+        sessions.persist();
+    }
+    sessions.emit_updated(&session.tab, true).await;
+}
+
+/// Largest icon the tab keeps: a `data:` URL past this (a multi-size .ico)
+/// stays out of every `sessions::list` and `tabs.json`; the watcher sends
+/// the icon's URL instead.
+const FAVICON_MAX_LEN: usize = 24 * 1024;
+
+/// Whether a reported icon is safe and small enough for the tab strip's
+/// `<img>`: an image `data:` URL under the cap, or an http(s) URL.
+fn favicon_ok(icon: &str) -> bool {
+    if icon.len() > FAVICON_MAX_LEN {
+        return false;
+    }
+    let lower = icon.get(..24).unwrap_or(icon).to_ascii_lowercase();
+    lower.starts_with("data:image/")
+        || lower.starts_with("data:application/octet-stream")
+        || lower.starts_with("https://")
+        || lower.starts_with("http://")
+}
+
 /// The tab's inactivity timer: sleeps until `last_used + inactive_after_ms`
 /// and puts the tab to sleep then (incognito and attached tabs close). Use
 /// re-arms it (`Tab::touch`), a watching viewer or a recording holds it off
@@ -2923,16 +3011,63 @@ fn spawn_idle_timer(sessions: Arc<Sessions>, session: Arc<Session>) -> tokio::ta
 /// The binding the title watcher reports through, and the isolated world it
 /// runs in: the page's own scripts see neither.
 const TITLE_BINDING: &str = "__iiiTitle";
+/// The icon binding, in the same world: the tab strip's favicon.
+const ICON_BINDING: &str = "__iiiIcon";
 const TITLE_WORLD: &str = "iii-title";
 /// Runs in every new top-level document (isolated world): reports the title
-/// once the document parsed, then on every change under `<head>` (a
-/// MutationObserver, so only when the DOM there actually changes).
+/// and the icon once the document parsed, then on every change under
+/// `<head>` (a MutationObserver, so only when the DOM there actually
+/// changes). The icon is the page's `<link rel=icon>` (an SVG first, else
+/// the size closest to 32px), else `/favicon.ico` on an http(s) page, read
+/// into a `data:` URL so the tab strip needs nothing from the page's host;
+/// an icon the page can't read back (cross-origin, too big) goes as its URL,
+/// a missing one as "".
 const TITLE_WATCH_SCRIPT: &str = r#"(() => {
   if (window.top !== window) return;
   const report = globalThis.__iiiTitle;
   if (typeof report !== 'function') return;
+  const reportIcon = globalThis.__iiiIcon;
   let last;
+  let lastIcon;
+  const iconHref = () => {
+    const links = [...document.querySelectorAll('link[rel~="icon" i]')].filter((l) => l.href);
+    const size = (l) => {
+      const m = /(\d+)x\d+/.exec(l.getAttribute('sizes') || '');
+      return m ? Math.abs(Number(m[1]) - 32) : 16;
+    };
+    const svg = links.find((l) => /svg/i.test(l.type) || /\.svg(\?|$)/i.test(l.href));
+    const best = svg || links.sort((a, b) => size(a) - size(b))[0];
+    if (best) return best.href;
+    return /^https?:$/.test(location.protocol) ? location.origin + '/favicon.ico' : '';
+  };
+  const sendIcon = () => {
+    if (typeof reportIcon !== 'function') return;
+    const href = iconHref();
+    if (href === lastIcon) return;
+    lastIcon = href;
+    if (!href || href.startsWith('data:')) {
+      reportIcon(href.length <= 24000 ? href : '');
+      return;
+    }
+    const current = () => href === lastIcon;
+    fetch(href, { credentials: 'include' })
+      .then((res) => {
+        const type = res.headers.get('content-type') || 'image/';
+        return res.ok && /^image\//i.test(type) ? res.blob() : null;
+      })
+      .then((blob) => {
+        if (!current()) return;
+        if (!blob) return reportIcon('');
+        if (blob.size > 16384) return reportIcon(href);
+        const reader = new FileReader();
+        reader.onload = () => current() && reportIcon(String(reader.result));
+        reader.onerror = () => current() && reportIcon(href);
+        reader.readAsDataURL(blob);
+      })
+      .catch(() => current() && reportIcon(href));
+  };
   const send = () => {
+    sendIcon();
     const title = document.title;
     if (title === last) return;
     last = title;
@@ -2973,6 +3108,15 @@ async fn arm_title_watch(page: &Page) -> bool {
     else {
         return false;
     };
+    // The icon is extra: an engine that refuses its binding still gets
+    // titles (the watcher skips an icon it can't report).
+    if let Ok(icon) = runtime::AddBindingParams::builder()
+        .name(ICON_BINDING)
+        .execution_context_name(TITLE_WORLD)
+        .build()
+    {
+        let _ = page.execute(icon).await;
+    }
     page.execute(binding).await.is_ok() && page.execute(script).await.is_ok()
 }
 
@@ -3093,6 +3237,8 @@ async fn spawn_event_pumps(
                 while let Some(event) = events.next().await {
                     if event.name == TITLE_BINDING {
                         note_title(&sx, &s, &event.payload).await;
+                    } else if event.name == ICON_BINDING {
+                        note_favicon(&sx, &s, &event.payload).await;
                     }
                 }
             }));
@@ -3921,11 +4067,27 @@ mod tests {
             dom_counter: AtomicU64::new(0),
             url: Mutex::new(url.to_string()),
             title: Mutex::new(title.to_string()),
+            favicon: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
             nav: Mutex::new(NavStack::default()),
             downloads: Mutex::new(Vec::new()),
             downloads_dir: None,
         }
+    }
+
+    #[test]
+    fn a_favicon_must_be_an_image_the_strip_can_load() {
+        let tab = tab("https://a.test/", "A");
+        assert!(tab.set_favicon("data:image/png;base64,AAAA"));
+        assert!(!tab.set_favicon("data:image/png;base64,AAAA"));
+        assert!(tab.set_favicon("https://cdn.test/icon.svg"));
+        assert_eq!(tab.favicon(), "https://cdn.test/icon.svg");
+        // Anything else clears the icon rather than reaching an <img>.
+        assert!(tab.set_favicon("javascript:alert(1)"));
+        assert_eq!(tab.favicon(), "");
+        let huge = format!("data:image/png;base64,{}", "A".repeat(FAVICON_MAX_LEN));
+        assert!(!tab.set_favicon(&huge));
+        assert_eq!(tab.favicon(), "");
     }
 
     #[test]
@@ -3965,6 +4127,7 @@ mod tests {
             id: "b7".to_string(),
             url: "https://a.test/".to_string(),
             title: "A".to_string(),
+            favicon: "data:image/png;base64,AAAA".to_string(),
             read_only: false,
             created_ms: 1,
             ttl_ms: Some(5_000),
@@ -3989,6 +4152,7 @@ mod tests {
         assert_eq!(back.tabs[0].id, "b7");
         assert_eq!(back.tabs[0].ttl_ms, Some(5_000));
         assert_eq!(back.tabs[0].nav.urls, ["https://a.test/"]);
+        assert_eq!(back.tabs[0].favicon, "data:image/png;base64,AAAA");
     }
 }
 

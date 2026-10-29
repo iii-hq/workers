@@ -22,6 +22,7 @@ import {
 } from '../lib/browser'
 import { cn } from '../lib/cn'
 import { renderWithHighlight } from '../lib/highlight'
+import { UrlLine } from './url-line'
 import {
   actResultSchema,
   consoleReadSchema,
@@ -82,9 +83,7 @@ export function SnapshotView({ output }: { output: unknown }) {
         {res.title ? <Chip>{truncate(res.title, 60)}</Chip> : null}
         {res.truncated ? <Badge variant="warn">truncated</Badge> : null}
       </MetaRow>
-      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-        <span className="br-ui-break">{res.url}</span>
-      </ActionLine>
+      <UrlLine url={res.url} />
       <SnapshotTree tree={res.tree} />
     </div>
   )
@@ -103,9 +102,7 @@ export function SessionStartView({ output }: { output: unknown }) {
         {res.incognito ? <Chip tone="warning">incognito</Chip> : null}
         <Chip>{res.headless ? 'headless' : 'headful'}</Chip>
       </MetaRow>
-      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-        <span className="br-ui-break">{res.url}</span>
-      </ActionLine>
+      <UrlLine url={res.url} />
       {res.error ? (
         <ActionLine icon={<TriangleAlert size={16} aria-hidden />} tone="warn">
           <span className="br-ui-break">page failed to load: {res.error}</span>
@@ -172,9 +169,7 @@ export function NavigateView({ output }: { output: unknown }) {
         {res.timed_out ? <Badge variant="warn">timed out</Badge> : null}
         {res.title ? <Chip>{truncate(res.title, 60)}</Chip> : null}
       </MetaRow>
-      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-        <span className="br-ui-break">{res.url}</span>
-      </ActionLine>
+      <UrlLine url={res.url} />
     </div>
   )
 }
@@ -344,9 +339,7 @@ export function HistoryView({
           <Badge variant="warn">no history entry</Badge>
         ) : null}
       </MetaRow>
-      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-        <span className="br-ui-break">{res.url}</span>
-      </ActionLine>
+      <UrlLine url={res.url} />
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { ActionLine, Badge, Chip, MetaRow } from '@iii-dev/console-ui'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import { ArrowRight, Radio } from 'lucide-react'
+import { Radio } from 'lucide-react'
+import { UrlLine } from '../url-line'
 import { cn } from '../../lib/cn'
 import { FilterChip } from '../../lib/shared'
 import {
@@ -171,9 +172,7 @@ export function CrawlPreview({ input }: { input: unknown }) {
       </MetaRow>
       {seeds.slice(0, 5).map((u, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: static wire snapshot; seed list is fixed
-        <ActionLine key={`${i}:${u}`} icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-          <span className="br-ui-break">{u}</span>
-        </ActionLine>
+        <UrlLine key={`${i}:${u}`} url={u} />
       ))}
     </div>
   )

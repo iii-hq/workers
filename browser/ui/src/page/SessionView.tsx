@@ -29,13 +29,18 @@ import { copyText } from '@iii-dev/console-ui/format'
 import { usePaneState } from '@iii-dev/console-ui/hooks'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import {
-  ChevronLeft,
-  ChevronRight,
+  ArrowLeft,
+  ArrowRight,
   ExternalLink,
+  FileText,
   Globe,
   HatGlasses,
+  Info,
+  Lock,
   MessageSquarePlus,
-  RefreshCw,
+  RotateCw,
+  Search,
+  TriangleAlert,
   X,
 } from 'lucide-react'
 import type { RefObject } from 'react'
@@ -77,7 +82,7 @@ import {
   typeBrowserText,
   zoomBrowserPage,
 } from '../lib/browser'
-import { toUrl } from '../lib/address'
+import { displayUrl, siteSecurity, toUrl } from '../lib/address'
 import { cn } from '../lib/cn'
 import { useBrowserSessionEvent } from '../lib/events'
 import {
@@ -189,6 +194,8 @@ interface SessionViewProps {
   actionsRef?: RefObject<SessionActions | null>
   onSessionsRefresh: () => void
   onNewTab: (incognito: boolean) => void
+  /** A load this pane started began or ended (the tab strip's spinner). */
+  onLoadingChange?: (sessionId: string, loading: boolean) => void
 }
 
 export function SessionView({
@@ -200,6 +207,7 @@ export function SessionView({
   actionsRef,
   onSessionsRefresh,
   onNewTab,
+  onLoadingChange,
 }: SessionViewProps) {
   const sessionId = session.session_id
   const asleep = session.active === false
@@ -239,40 +247,72 @@ export function SessionView({
     }
   }, [])
 
+  // Loads started here (address bar, back/forward/reload): the progress
+  // line under the toolbar and the tab's spinner. Counted, so overlapping
+  // loads end only when the last one does.
+  const [loads, setLoads] = useState(0)
+  const loading = loads > 0
+  const onLoadingChangeRef = useRef(onLoadingChange)
+  onLoadingChangeRef.current = onLoadingChange
+  useEffect(() => {
+    onLoadingChangeRef.current?.(sessionId, loading)
+  }, [sessionId, loading])
+  useEffect(() => () => onLoadingChangeRef.current?.(sessionId, false), [sessionId])
+  const runLoad = useCallback(
+    async (action: () => Promise<void>) => {
+      setLoads((n) => n + 1)
+      try {
+        await runAction(action)
+      } finally {
+        setLoads((n) => Math.max(0, n - 1))
+      }
+    },
+    [runAction],
+  )
+
   // URL bar: mirrors the tab's committed url, but never clobbers
   // in-progress typing (focus-aware sync). about:blank reads as empty, the
   // way a new tab's bar does.
   const shownUrl = session.url === 'about:blank' ? '' : session.url
   const [urlDraft, setUrlDraft] = useState(shownUrl)
   const urlFocusedRef = useRef(false)
+  // Mirrors urlFocusedRef for rendering: unfocused, the bar shows the url
+  // the way Chrome does (no scheme, host in full ink, the rest dimmed).
+  const [urlFocused, setUrlFocused] = useState(false)
+  // The address just submitted: the bar keeps showing it while the load is
+  // in flight, like a browser, until the tab's committed url replaces it.
+  const pendingUrlRef = useRef<string | null>(null)
   const lastSessionUrlRef = useRef(shownUrl)
   useEffect(() => {
     if (lastSessionUrlRef.current === shownUrl) return
     lastSessionUrlRef.current = shownUrl
+    pendingUrlRef.current = null
     if (!urlFocusedRef.current) setUrlDraft(shownUrl)
   }, [shownUrl])
 
   const submitUrl = useCallback(() => {
     const url = toUrl(urlDraft)
     if (!url) return
-    void runAction(async () => {
+    setUrlDraft(url)
+    pendingUrlRef.current = url
+    void runLoad(async () => {
       const result = await navigateBrowser(host.iii, sessionId, url)
       onSessionsRefresh()
       // Like a browser: the tab shows Chromium's error page; say why here.
       if (result?.error) throw new Error(`page failed to load: ${result.error}`)
     })
     urlInputRef.current?.blur()
-  }, [host, urlDraft, sessionId, runAction, onSessionsRefresh])
+  }, [host, urlDraft, sessionId, runLoad, onSessionsRefresh])
 
   const handleHistory = useCallback(
     (action: 'back' | 'forward' | 'reload') => {
-      void runAction(async () => {
+      void runLoad(async () => {
         const result = await controlBrowserHistory(host.iii, sessionId, action)
         if (result?.url && result.url !== 'about:blank') setUrlDraft(result.url)
         onSessionsRefresh()
       })
     },
-    [host, sessionId, runAction, onSessionsRefresh],
+    [host, sessionId, runLoad, onSessionsRefresh],
   )
 
   const openCurrentPage = useCallback(() => {
@@ -640,6 +680,20 @@ export function SessionView({
     [applyViewport, session.read_only],
   )
   useEffect(() => () => window.clearTimeout(resizeTimerRef.current), [])
+  // Back in this pane after another one (or a window since closed) sized the
+  // shared viewport: when the frame no longer matches the pane, fit it again
+  // so the page fills it the way a browser window does. Only on use, never
+  // per frame, so two open panes never trade resizes back and forth.
+  const liveSizeRef = useRef<{ w: number; h: number } | null>(null)
+  liveSizeRef.current = live.frame ? { w: live.frame.width, h: live.frame.height } : null
+  const refitPane = useCallback(() => {
+    const pane = lastPaneSizeRef.current
+    const shown = liveSizeRef.current
+    if (!pane || !shown || annotatingRef.current) return
+    if (Math.abs(shown.w - pane.w) < 4 && Math.abs(shown.h - pane.h) < 4) return
+    lastSentSizeRef.current = null
+    onSurfaceResize(pane.w, pane.h)
+  }, [onSurfaceResize])
   // A tab that just woke has a fresh page: start its screencast again and
   // fit the config-sized viewport to the pane.
   const wasAsleepRef = useRef(asleep)
@@ -952,6 +1006,11 @@ export function SessionView({
   }, [host, sessionId, runAction, handleHistory])
 
   const urlInputRef = useRef<HTMLInputElement>(null)
+  // A new tab opens with the address bar focused, like a browser's.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: on mount only
+  useEffect(() => {
+    if (shownUrl === '' && !session.read_only) urlInputRef.current?.focus()
+  }, [])
 
   useEffect(() => {
     if (!actionsRef) return
@@ -1013,9 +1072,10 @@ export function SessionView({
       <HistoryPanel host={host} sessionId={sessionId} enabled={enabled} />
     )
 
-  const viewportLabel = asleep
-    ? 'Opening the page…'
-    : 'Waiting for the first frame…'
+  const viewportLabel = asleep ? 'Opening the page…' : 'Loading…'
+  // A tab still on about:blank is a new tab: it shows the new-tab surface in
+  // the theme's colours (not Chromium's white blank page) until a load starts.
+  const newTab = shownUrl === '' && !loading && !annotating
   const marks = annotations.length
 
   return (
@@ -1046,7 +1106,7 @@ export function SessionView({
               title="back"
               aria-label="back"
             >
-              <ChevronLeft size={16} aria-hidden />
+              <ArrowLeft size={16} aria-hidden />
             </button>
             <button
               type="button"
@@ -1055,7 +1115,7 @@ export function SessionView({
               title="forward"
               aria-label="forward"
             >
-              <ChevronRight size={16} aria-hidden />
+              <ArrowRight size={16} aria-hidden />
             </button>
             <button
               type="button"
@@ -1064,15 +1124,26 @@ export function SessionView({
               title="reload"
               aria-label="reload"
             >
-              <RefreshCw size={16} aria-hidden />
+              <RotateCw size={16} aria-hidden />
             </button>
           </fieldset>
-          <div className="br-ui-address">
-            {session.incognito ? (
-              <HatGlasses size={16} aria-hidden className="br-ui-address-icon" />
-            ) : (
-              <Globe size={16} aria-hidden className="br-ui-address-icon" />
+          <div
+            className={cn(
+              'br-ui-address',
+              urlFocused && 'is-focused',
+              !urlFocused && urlDraft !== '' && 'is-display',
             )}
+          >
+            <SiteIcon
+              url={urlFocused ? '' : urlDraft}
+              incognito={session.incognito === true}
+            />
+            {!urlFocused && urlDraft !== '' ? (
+              <span className="br-ui-url-display" aria-hidden>
+                <span className="br-ui-url-host">{displayUrl(urlDraft).host}</span>
+                <span className="br-ui-url-rest">{displayUrl(urlDraft).rest}</span>
+              </span>
+            ) : null}
             <Input
               ref={urlInputRef}
               name="browser-url"
@@ -1087,12 +1158,15 @@ export function SessionView({
               aria-label="page url"
               onFocus={(event) => {
                 urlFocusedRef.current = true
+                setUrlFocused(true)
                 event.currentTarget.select()
               }}
               onBlur={() => {
                 urlFocusedRef.current = false
-                // Typing abandoned: fall back to where the tab really is.
-                setUrlDraft(shownUrl)
+                setUrlFocused(false)
+                // Typing abandoned: fall back to where the tab really is (or
+                // to the address just submitted, while it loads).
+                setUrlDraft(pendingUrlRef.current ?? shownUrl)
               }}
               onKeyDown={(event) => {
                 if (event.key === 'Escape') {
@@ -1169,6 +1243,12 @@ export function SessionView({
             navigate to address
           </button>
         </form>
+        <div
+          className={cn('br-ui-progress', loading && 'is-loading')}
+          role="progressbar"
+          aria-label="page loading"
+          aria-hidden={!loading}
+        />
 
         {actionError ? (
           <div className="br-ui-banner" role="alert">
@@ -1370,19 +1450,49 @@ export function SessionView({
             )}
           </Toolbar>
         ) : null}
-        <Viewport
-          frame={annotating && frozen ? frozen : live.frame}
-          loading={live.loading}
-          emptyLabel={viewportLabel}
-          error={live.error}
-          annotation={viewportAnnotation}
-          onSurfaceResize={onSurfaceResize}
-          onClickAt={handleClickAt}
-          onScrollAt={handleScrollAt}
-          onTextInput={handleTextInput}
-          onPressKey={handlePressKey}
-          requestHint={requestHint}
-        />
+        <div className="br-ui-vp-wrap">
+          <Viewport
+            frame={annotating && frozen ? frozen : live.frame}
+            loading={live.loading}
+            emptyLabel={viewportLabel}
+            error={live.error}
+            annotation={viewportAnnotation}
+            onSurfaceResize={onSurfaceResize}
+            onEngage={refitPane}
+            onClickAt={handleClickAt}
+            onScrollAt={handleScrollAt}
+            onTextInput={handleTextInput}
+            onPressKey={handlePressKey}
+            requestHint={requestHint}
+          />
+          {newTab ? (
+            <div className="br-ui-ntp">
+              <span className="br-ui-ntp-mark" aria-hidden>
+                {session.incognito ? <HatGlasses size={28} /> : <Search size={28} />}
+              </span>
+              <p className="br-ui-ntp-title">
+                {session.incognito ? 'You’ve gone incognito' : 'New tab'}
+              </p>
+              <p className="br-ui-ntp-body">
+                {session.incognito
+                  ? 'Nothing this tab visits is saved: no history, no cookies, no site data.'
+                  : 'Type an address or a search in the bar above.'}
+              </p>
+              <button
+                type="button"
+                className="br-ui-ntp-focus"
+                onClick={() => {
+                  urlInputRef.current?.focus()
+                  urlInputRef.current?.select()
+                }}
+              >
+                <Search size={16} aria-hidden />
+                <span>Search or type a URL</span>
+                <kbd className="br-ui-ntp-kbd">⌘L</kbd>
+              </button>
+            </div>
+          ) : null}
+        </div>
 
         {devtoolsOpen ? (
           <div className="br-ui-dock">
@@ -1415,3 +1525,42 @@ export function SessionView({
     </section>
   )
 }
+
+/** The address bar's leading icon: what the connection is (a lock for
+ * https, a warning for plain http off a local host, an info dot for a dev
+ * server, a page for a file), a search glass on an empty tab or while
+ * typing, the hat and glasses on an incognito tab. */
+function SiteIcon({ url, incognito }: { url: string; incognito: boolean }) {
+  if (incognito) return <HatGlasses size={16} aria-hidden className="br-ui-address-icon" />
+  const security = siteSecurity(url)
+  const label =
+    security === 'secure'
+      ? 'Connection is secure'
+      : security === 'insecure'
+        ? 'Not secure'
+        : security === 'local'
+          ? 'Local page'
+          : undefined
+  const Icon =
+    security === 'secure'
+      ? Lock
+      : security === 'insecure'
+        ? TriangleAlert
+        : security === 'local'
+          ? Info
+          : security === 'file'
+            ? FileText
+            : url
+              ? Globe
+              : Search
+  return (
+    <span
+      className={cn('br-ui-address-icon', security === 'insecure' && 'is-insecure')}
+      title={label}
+    >
+      <Icon size={16} aria-hidden />
+      {security === 'insecure' ? <span className="br-ui-address-warn">Not secure</span> : null}
+    </span>
+  )
+}
+
