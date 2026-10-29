@@ -312,6 +312,19 @@ pub fn refuse_invocation(function_id: &str) -> Error {
     }
 }
 
+/// The handler of an `ios-simulator::on-*` function: refuses every
+/// invocation with FORBIDDEN. `E` is the event its observers receive (e.g.
+/// [`DeviceChangedEvent`]), so the function publishes that typed request
+/// schema and `()` as its response, never `AnyValue`.
+pub fn refusing_handler<E>(
+    function_id: &'static str,
+) -> impl Fn(E) -> Result<(), Error> + Send + Sync + 'static
+where
+    E: DeserializeOwned + JsonSchema + Send + 'static,
+{
+    move |_event: E| Err(refuse_invocation(function_id))
+}
+
 /// Registers an observable function, owner-delivered, with args
 /// [`BindingConfig`] (the trigger config) and hooks filing observers in the
 /// trigger type's subscriber set. On an engine without observe it registers
@@ -326,15 +339,13 @@ fn register_observable<E>(
 {
     iii.register_function(
         function_id,
-        RegisterFunction::new(move |_event: E| -> Result<(), Error> {
-            Err(refuse_invocation(function_id))
-        })
-        .description(description)
-        .observe(
-            Observe::owner()
-                .args_format::<BindingConfig>()
-                .handler(ObserverTable(subscribers.clone())),
-        ),
+        RegisterFunction::new(refusing_handler::<E>(function_id))
+            .description(description)
+            .observe(
+                Observe::owner()
+                    .args_format::<BindingConfig>()
+                    .handler(ObserverTable(subscribers.clone())),
+            ),
     );
 }
 
@@ -582,6 +593,106 @@ mod observable_tests {
                 "{err:?}"
             );
         }
+    }
+
+    /// The request and response schemas the SDK publishes for `handler`,
+    /// extracted exactly as `RegisterFunction::new` does.
+    fn formats<F, M>(_handler: &F) -> (Option<Value>, Option<Value>)
+    where
+        F: iii_sdk::iii::IntoSyncHandler<M>,
+    {
+        (F::request_format(), F::response_format())
+    }
+
+    /// Typed: not `AnyValue`/empty. The boot smoke rejects anything else.
+    fn assert_typed(function_id: &str, which: &str, schema: Option<Value>) {
+        let schema = schema.unwrap_or_else(|| panic!("{function_id}: no {which} schema"));
+        let typed = schema.as_object().is_some_and(|o| {
+            [
+                "type",
+                "properties",
+                "$ref",
+                "allOf",
+                "anyOf",
+                "oneOf",
+                "enum",
+            ]
+            .iter()
+            .any(|k| o.contains_key(*k))
+        });
+        assert!(typed, "{function_id}: untyped {which} schema {schema}");
+    }
+
+    #[test]
+    fn each_on_function_publishes_typed_schemas_and_refuses() {
+        fn check<E>(function_id: &'static str, title: &str, forged: E)
+        where
+            E: DeserializeOwned + JsonSchema + Send + 'static,
+        {
+            let handler = refusing_handler::<E>(function_id);
+            let (request, response) = formats(&handler);
+            assert_eq!(
+                request.as_ref().and_then(|s| s["title"].as_str()),
+                Some(title),
+                "{function_id}: request schema is the delivered event"
+            );
+            assert_typed(function_id, "request", request);
+            assert_typed(function_id, "response", response);
+            assert!(
+                matches!(handler(forged), Err(Error::Remote { code, .. }) if code == codes::FORBIDDEN),
+                "{function_id}: invocation must be refused"
+            );
+        }
+        check(
+            ON_DEVICE_CHANGED,
+            "DeviceChangedEvent",
+            DeviceChangedEvent {
+                tenant: "acme".into(),
+                udid: "U1".into(),
+                name: "iPhone".into(),
+                state: "Booted".into(),
+                previous_state: "Shutdown".into(),
+                change: "updated".into(),
+                preview: false,
+                timestamp: 1,
+            },
+        );
+        check(
+            ON_MEDIA_CHANGED,
+            "MediaChangedEvent",
+            MediaChangedEvent {
+                tenant: "acme".into(),
+                udid: "U1".into(),
+                name: "U1/shot.png".into(),
+                kind: "screenshot".into(),
+                change: "added".into(),
+                timestamp: 1,
+            },
+        );
+        check(
+            ON_FRAME_EVENT,
+            "FrameEvent",
+            FrameEvent {
+                tenant: "acme".into(),
+                udid: "U1".into(),
+                data: "AAAA".into(),
+                width: 1,
+                height: 1,
+                device_width: 1,
+                device_height: 1,
+                seq: 1,
+            },
+        );
+        check(
+            ON_ACTIVITY,
+            "ActivityEvent",
+            ActivityEvent {
+                tenant: "acme".into(),
+                udid: "U1".into(),
+                function: "ios-simulator::open".into(),
+                timestamp: 1,
+            },
+        );
     }
 
     #[test]
