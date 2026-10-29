@@ -1,150 +1,205 @@
-//! `http::on-request`: the observable function next to the `http` trigger
-//! type (iii 0.25).
+//! `http::on-request`: one call per HTTP request.
 //!
-//! The function is owner-delivered. Each observer's args (`{ method, path,
-//! public_webhook?, middleware_function_ids?, condition_function_id? }`, see
-//! [`HttpRouteArgs`]) declare one route; [`RouteObserver`] is its
-//! [`ObserveHandler`] and files that route in the same [`RouteTable`] the
-//! `http` trigger bindings use, with the observer as its
-//! [`RouteSink::Observer`]. The server then serves it like any route: the
-//! request goes through the same matching, middleware, condition and
-//! channels, and the target is invoked with `obs.call`, whose result is the
-//! HTTP response. The observer's filters are evaluated in-process against the
-//! request (as `input`); a request they reject is answered `422`, like an
-//! unmet condition.
+//! Each observer's args (`{ method, path, public_webhook?,
+//! middleware_function_ids? }`, see [`HttpRouteArgs`]) declare one route. The
+//! function's hooks keep the [`RouteTable`] the server matches requests
+//! against, and deliver each request to its route:
 //!
-//! The function itself is never invoked: requests reach observers through the
-//! server, so its handler refuses every direct invocation (`FORBIDDEN`).
+//! - **added** files the observer's route, or rejects the observer with
+//!   `HTTP_ROUTE_CONFLICT` when another observer holds the same method and
+//!   path shape;
+//! - **removed** takes the route out;
+//! - **match** picks the observer whose route the server matched: the server
+//!   names it in the call's metadata ([`ROUTE_METADATA_KEY`]);
+//! - **deliver** answers `404` when that observer is gone and `422` when its
+//!   filters reject the request (`input` is the request), runs the route
+//!   middleware, then calls the target through the observer. Its result is
+//!   the call's result, which the server turns into the HTTP response.
 //!
-//! On an engine without observe (0.24.x) the SDK registers it as a plain
-//! function and its hooks never run; the `http` trigger type carries every
-//! route there.
+//! The handler returns the request it is called with: observers observe the
+//! request, and the call's result is the route target's response. The
+//! function is private: only this worker's server calls it.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::FunctionRef;
-use iii_sdk::{IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction};
+use iii_sdk::{
+    AddedHook, Call, CallRequest, DeliverHook, IIIClient, Match, ObserveRejection, Observer,
+    RegisterFunction, RemovedHook,
+};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
-use crate::trigger::{log_registered, log_unregistered, Route, RouteSink, RouteTable};
+use crate::configuration::ConfigCell;
+use crate::middleware::{self, error_body, response_value, MiddlewareOutcome};
+use crate::routes::{log_registered, log_unregistered, Route, RouteTable};
 use crate::types::{HttpRequest, HttpRouteArgs};
 
-/// The function observers bind routes on.
+/// The function observers declare routes on.
 pub const ON_REQUEST_FN: &str = "http::on-request";
 
 /// Rejection code of an observer whose route collides with a registered one.
 pub const HTTP_ROUTE_CONFLICT: &str = "HTTP_ROUTE_CONFLICT";
 
-/// Error code of a direct invocation of [`ON_REQUEST_FN`].
-pub const FORBIDDEN: &str = "FORBIDDEN";
+/// Key of the call metadata that names the observer whose route the server
+/// matched.
+pub const ROUTE_METADATA_KEY: &str = "route";
 
 pub const ON_REQUEST_DESCRIPTION: &str =
-    "One event per HTTP request. Observe it with args { method, path } (plus optional \
-     public_webhook, middleware_function_ids and the deprecated condition_function_id) to \
-     serve that route: each matching request invokes the target with the HTTP request, and \
-     its return value ({ status_code, headers, body }, or null after streaming to the \
-     response channel) is the response. Filters are evaluated against the request as \
-     `input`; a request they reject gets 422. Only the http worker routes requests: \
-     invoking it directly is refused.";
+    "One call per HTTP request; observers observe the request. Observe it with args \
+     { method, path } (plus optional public_webhook and middleware_function_ids) to serve \
+     that route: each matching request calls the target with the HTTP request, and its \
+     return value ({ status_code, headers, body }, or null after streaming to the response \
+     channel) is the response. The observer's filters select requests by `input`; a request \
+     they reject gets 422. Only the http worker calls it.";
 
-/// Registers [`ON_REQUEST_FN`] with a [`RouteObserver`] over `routes` as its
-/// hooks. `routes` is the table the `http` trigger bindings fill, so both
-/// kinds of routes share one namespace and one conflict rule.
-///
-/// No `legacy_trigger_type`: this worker still provides the `http` trigger
-/// type itself, which wins over the engine's legacy shim anyway.
-pub fn register(iii: &IIIClient, routes: Arc<RwLock<RouteTable>>) -> FunctionRef {
+/// Registers [`ON_REQUEST_FN`] with [`RouteHooks`] over `routes` as its
+/// hooks. The hooks are set by id before the function registers, so they run
+/// for every observer.
+pub fn register(
+    iii: &Arc<IIIClient>,
+    routes: Arc<RwLock<RouteTable>>,
+    config: ConfigCell,
+) -> FunctionRef {
+    let hooks = RouteHooks {
+        routes,
+        iii: iii.clone(),
+        config,
+    };
+    iii.on_observer_added_for(ON_REQUEST_FN, hooks.clone());
+    iii.on_observer_removed_for(ON_REQUEST_FN, hooks.clone());
+    // Each call goes to the observer whose route the server matched.
+    iii.on_observer_match_for(
+        ON_REQUEST_FN,
+        Match::keys(|obs| obs.id().into(), |call| matched_route(call).into()),
+    );
+    iii.on_observer_deliver_for(ON_REQUEST_FN, hooks);
+
     iii.register_function(
         ON_REQUEST_FN,
-        RegisterFunction::new(|_request: Value| Err::<Value, _>(direct_invocation_error()))
+        RegisterFunction::new(|request: Value| Ok::<_, Error>(request))
             .description(ON_REQUEST_DESCRIPTION)
             .request_format(request_format())
-            .response_format(response_format())
-            .observe(
-                Observe::owner()
-                    .args_format::<HttpRouteArgs>()
-                    .handler(RouteObserver { routes }),
-            ),
+            .response_format(request_format())
+            .args_format::<HttpRouteArgs>()
+            .private(),
     )
 }
 
-fn direct_invocation_error() -> Error {
-    Error::Remote {
-        code: FORBIDDEN.to_string(),
-        message: format!(
-            "{ON_REQUEST_FN} is an event source: observe it \
-             (iii.observe({{ function_id: '{ON_REQUEST_FN}', args: {{ method, path }} }}, target)); \
-             only the http worker routes requests to its observers"
-        ),
-        stacktrace: None,
-    }
+/// Removes the hooks [`register`] set, once the function is unregistered.
+pub fn clear_hooks(iii: &IIIClient) {
+    iii.clear_observer_added_for(ON_REQUEST_FN);
+    iii.clear_observer_removed_for(ON_REQUEST_FN);
+    iii.clear_observer_match_for(ON_REQUEST_FN);
+    iii.clear_observer_deliver_for(ON_REQUEST_FN);
 }
 
-/// What each target receives: the same [`HttpRequest`] an `http` trigger's
-/// function receives.
+/// The observer id the server named in the call's metadata.
+fn matched_route(call: &Call) -> Option<&str> {
+    call.metadata.as_ref()?.get(ROUTE_METADATA_KEY)?.as_str()
+}
+
+/// The call's input and what observers observe: the [`HttpRequest`].
 fn request_format() -> Value {
     serde_json::to_value(schemars::schema_for!(HttpRequest)).unwrap_or(Value::Null)
 }
 
-/// What each target returns, as `HttpResponse::from_function_return` reads it.
-fn response_format() -> Value {
-    json!({
-        "type": ["object", "null"],
-        "properties": {
-            "status_code": { "type": "integer", "default": 200 },
-            "headers": {
-                "description": "An object of header values, or a list of \"Name: value\" lines",
-                "type": ["object", "array"]
-            },
-            "body": { "description": "JSON by default; a string or raw value with a non-JSON content-type" }
-        }
-    })
+/// `404 NOT_FOUND`: the route's observer left after the server matched it.
+fn not_found() -> Value {
+    response_value(404, error_body("NOT_FOUND", "Not Found", None))
 }
 
-/// The hooks of [`ON_REQUEST_FN`]: one route per observer, in the shared
-/// [`RouteTable`].
+/// `422 CONDITION_NOT_MET`: the observer's filters rejected the request.
+fn filters_not_met() -> Value {
+    let mut body = error_body("CONDITION_NOT_MET", "Request condition not met", None);
+    body["skipped"] = json!(true);
+    response_value(422, body)
+}
+
+/// The hooks of [`ON_REQUEST_FN`]: one route per observer in the shared
+/// [`RouteTable`], and delivery of each request to its route's observer.
 #[derive(Clone)]
-pub struct RouteObserver {
+pub struct RouteHooks {
     pub routes: Arc<RwLock<RouteTable>>,
+    iii: Arc<IIIClient>,
+    /// Read per request, for the middleware and target timeouts.
+    config: ConfigCell,
 }
 
-impl RouteObserver {
-    /// The route `obs` asks for: its args, validated like an `http` trigger's
-    /// config (normalized path, uppercased method).
+impl RouteHooks {
+    /// The route `obs` asks for: its args, with a normalized path and an
+    /// uppercased method.
     pub fn route_for(obs: &Observer) -> Result<Route, ObserveRejection> {
         let args: HttpRouteArgs = obs.args()?;
         Ok(Route {
-            sink: RouteSink::Observer(obs.clone()),
-            function_id: obs.target().to_string(),
+            observer_id: obs.id().to_string(),
             http_path: args.path,
             http_method: args.method.to_uppercase(),
             public_webhook: args.public_webhook,
-            condition_function_id: args.condition_function_id,
             middleware_function_ids: args.middleware_function_ids,
         })
     }
 }
 
 #[async_trait]
-impl ObserveHandler for RouteObserver {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        let route = Self::route_for(obs)?;
+impl AddedHook for RouteHooks {
+    async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
+        let route = Self::route_for(&obs)?;
         self.routes
             .write()
             .await
             .insert(route.clone())
             .map_err(|message| ObserveRejection::new(HTTP_ROUTE_CONFLICT, message))?;
-        log_registered(&route);
+        log_registered(&route, obs.target());
         Ok(())
     }
+}
 
-    async fn on_observer_removed(&self, obs: &Observer) {
-        if let Some(route) = self.routes.write().await.remove_by_observer_id(obs.id()) {
-            log_unregistered(&route);
+#[async_trait]
+impl RemovedHook for RouteHooks {
+    async fn on_removed(&self, obs: Observer) {
+        if let Some(route) = self.routes.write().await.remove(obs.id()) {
+            log_unregistered(&route, obs.target());
         }
+    }
+}
+
+#[async_trait]
+impl DeliverHook for RouteHooks {
+    async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
+        let Some(obs) = observers.into_iter().next() else {
+            return Ok(not_found());
+        };
+        if !obs.matches(&call) {
+            tracing::debug!(
+                observer_id = %obs.id(),
+                target = %obs.target(),
+                "Observer filters rejected the request, skipping handler"
+            );
+            return Ok(filters_not_met());
+        }
+        let Some(route) = self.routes.read().await.get(obs.id()).cloned() else {
+            return Ok(not_found());
+        };
+        let timeout_ms = self.config.read().await.default_timeout;
+        let request = call.input;
+
+        // Route middleware runs after the global middleware (in the server)
+        // and before the target.
+        for mw_fn_id in &route.middleware_function_ids {
+            let input = middleware::middleware_input_for(&request);
+            match middleware::execute_middleware(&self.iii, mw_fn_id, input, timeout_ms).await {
+                Ok(MiddlewareOutcome::Continue) => {}
+                Err(response) => return Ok(response),
+            }
+        }
+
+        self.iii
+            .call(CallRequest::observer(&obs, request).timeout(Duration::from_millis(timeout_ms)))
+            .await
     }
 }
 
@@ -153,18 +208,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn direct_invocation_is_forbidden() {
-        match direct_invocation_error() {
-            Error::Remote { code, message, .. } => {
-                assert_eq!(code, FORBIDDEN);
-                assert!(message.contains(ON_REQUEST_FN));
-            }
-            other => panic!("expected a remote error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn request_format_is_the_trigger_payload() {
+    fn request_format_is_the_http_request() {
         let schema = request_format();
         for field in [
             "path",
@@ -179,5 +223,31 @@ mod tests {
                 "request_format lacks {field}"
             );
         }
+    }
+
+    #[test]
+    fn the_matched_route_is_read_from_the_call_metadata() {
+        let call = Call {
+            metadata: Some(json!({ ROUTE_METADATA_KEY: "obs-1" })),
+            ..Call::default()
+        };
+        assert_eq!(matched_route(&call), Some("obs-1"));
+        assert_eq!(matched_route(&Call::default()), None);
+        let other = Call {
+            metadata: Some(json!({ "route": 7 })),
+            ..Call::default()
+        };
+        assert_eq!(matched_route(&other), None);
+    }
+
+    #[test]
+    fn hook_answers_are_responses() {
+        let missing = crate::types::HttpResponse::from_function_return(not_found());
+        assert_eq!(missing.status_code, 404);
+        assert_eq!(missing.body["error"]["code"], "NOT_FOUND");
+        let rejected = crate::types::HttpResponse::from_function_return(filters_not_met());
+        assert_eq!(rejected.status_code, 422);
+        assert_eq!(rejected.body["error"]["code"], "CONDITION_NOT_MET");
+        assert_eq!(rejected.body["skipped"], true);
     }
 }

@@ -14,11 +14,14 @@
 //! This mirrors the engine's `take_sender`/`take_receiver` semantics exactly
 //! (engine `views.rs:391-466`).
 //!
-//! The worker then races the response channel against the function invocation:
-//! a function that writes to the response channel streams its body (control
-//! Text messages set status/headers, Binary frames carry the body); a function
-//! that returns a non-null value without touching the channel produces a
-//! buffered response (backward-compatible path).
+//! The worker then calls `http::on-request` with the request, naming the
+//! matched route's observer in the call's metadata, and races the response
+//! channel against that call: its deliver hook (see [`crate::on_request`])
+//! calls the route's target through the observer and returns the target's
+//! result. A target that writes to the response channel streams its body
+//! (control Text messages set status/headers, Binary frames carry the body); a
+//! target that returns a non-null value without touching the channel produces
+//! a buffered response.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -36,17 +39,17 @@ use colored::Colorize;
 use iii_helpers::observability::opentelemetry::metrics::Counter;
 use iii_helpers::observability::opentelemetry::KeyValue;
 use iii_sdk::helpers::create_channel;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::Instrument;
 
-use crate::condition::check_condition;
 use crate::configuration::ConfigCell;
-use crate::middleware::{self, error_body, generate_error_id, MiddlewareOutcome};
-use crate::trigger::RouteTable;
-use crate::types::{ControlMessage, HttpRequest, HttpResponse, TriggerMetadata};
+use crate::middleware::{self, generate_error_id, MiddlewareOutcome};
+use crate::on_request::{ON_REQUEST_FN, ROUTE_METADATA_KEY};
+use crate::routes::RouteTable;
+use crate::types::{ControlMessage, HttpRequest, HttpResponse};
 
 /// Shared state injected into the handler via an axum `Extension`.
 pub struct AppState {
@@ -108,14 +111,6 @@ pub(crate) fn error_response(status: StatusCode, code: &str, message: &str) -> R
         .into_response()
 }
 
-/// `422 CONDITION_NOT_MET`: the route's condition function returned `false`,
-/// or its observer's filters rejected the request.
-fn condition_not_met() -> Response {
-    let mut body = error_body("CONDITION_NOT_MET", "Request condition not met", None);
-    body["skipped"] = json!(true);
-    (StatusCode::UNPROCESSABLE_ENTITY, axum::Json(body)).into_response()
-}
-
 /// Apply a parsed control message to the accumulated response status/headers.
 ///
 /// Field-tolerant by construction: a `SetHeaders` with non-string values keeps
@@ -143,9 +138,9 @@ fn apply_control(
 }
 
 /// Catch-all (fallback) handler. Matches the request against the route table
-/// and, on a hit, invokes the bound function and maps its return value (or its
-/// streamed response channel output) to an HTTP response. Unmatched requests
-/// get the stable `NOT_FOUND` envelope.
+/// and, on a hit, calls `http::on-request` with the request and maps the
+/// route target's return value (or its streamed response channel output) to
+/// an HTTP response. Unmatched requests get the stable `NOT_FOUND` envelope.
 pub async fn dynamic_handler(
     Extension(state): Extension<Arc<AppState>>,
     method: Method,
@@ -260,7 +255,6 @@ pub async fn dynamic_handler(
     // mirror the span tags: method + matched route (captured here) + status.
     let method_attr = method.as_str().to_string();
     let route_attr = route_path.clone();
-    let called_function_id = matched.as_ref().map(|(route, _)| route.function_id.clone());
     let started = std::time::Instant::now();
     let record_status = move |response: Response| -> Response {
         let code = response.status().as_u16();
@@ -284,15 +278,11 @@ pub async fn dynamic_handler(
             _ => status.red(),
         };
         tracing::info!(
-            "{} Endpoint {} → {} {} {}",
+            "{} Endpoint {} {} {}",
             "[CALLED]".blue(),
             format!("{} {}", method_attr, route_attr)
                 .bright_yellow()
                 .bold(),
-            called_function_id
-                .as_deref()
-                .unwrap_or("<no route>")
-                .purple(),
             status,
             format!("({}ms)", started.elapsed().as_millis()).dimmed()
         );
@@ -320,11 +310,20 @@ pub async fn dynamic_handler(
         return record_status(response);
     };
 
+    let header_map: HashMap<String, String> = headers
+        .iter()
+        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
+        .collect();
+
     // Global middleware (config-driven, sorted by priority at config-load
     // time), run before the matched route's per-route middleware and handler.
     for mw in config.middleware.iter().filter(|mw| mw.phase == "preHandler") {
-        let mw_input =
-            middleware::build_middleware_input(&path_params, &query_params, &headers, method.as_str());
+        let mw_input = middleware::build_middleware_input(
+            &path_params,
+            &query_params,
+            &header_map,
+            method.as_str(),
+        );
         match middleware::execute_middleware(
             &state.iii,
             &mw.function_id,
@@ -334,7 +333,11 @@ pub async fn dynamic_handler(
         .await
         {
             Ok(MiddlewareOutcome::Continue) => {}
-            Err(response) => return record_status(response),
+            Err(response) => {
+                return record_status(
+                    HttpResponse::from_function_return(response).into_axum_response(),
+                )
+            }
         }
     }
 
@@ -399,11 +402,6 @@ pub async fn dynamic_handler(
         });
     }
 
-    let header_map: HashMap<String, String> = headers
-        .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
-        .collect();
-
     let request = HttpRequest {
         query_params,
         path_params,
@@ -411,11 +409,6 @@ pub async fn dynamic_handler(
         path: route.http_path.clone(),
         method: method.as_str().to_string(),
         body: parsed_body,
-        trigger: Some(TriggerMetadata {
-            trigger_type: "http".to_string(),
-            path: Some(actual_path),
-            method: Some(method.as_str().to_string()),
-        }),
         request_body: req_reader_ref,
         response: res_writer_ref,
     };
@@ -430,83 +423,6 @@ pub async fn dynamic_handler(
             ));
         }
     };
-
-    // An observer's filters (evaluated in-process against the request as
-    // `input`) gate the route like a condition function returning `false`.
-    // Always passes for a trigger binding.
-    if !route.sink.accepts(&payload) {
-        tracing::debug!(
-            function_id = %route.function_id,
-            observer_id = %route.id(),
-            "Observer filters rejected the request, skipping handler"
-        );
-        drop(res_reader);
-        return record_status(condition_not_met());
-    }
-
-    // Conditional execution (trigger config-driven), runs after global
-    // middleware and before per-route middleware/handler. The condition
-    // function receives the serialized request minus the channel refs, which
-    // carry no useful signal.
-    if let Some(condition_id) = &route.condition_function_id {
-        let mut condition_input = payload.clone();
-        if let Some(obj) = condition_input.as_object_mut() {
-            obj.remove("request_body");
-            obj.remove("response");
-        }
-
-        match check_condition(&state.iii, condition_id, condition_input, config.default_timeout)
-        .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                tracing::debug!(
-                    function_id = %route.function_id,
-                    condition_function_id = %condition_id,
-                    "Condition check failed, skipping handler"
-                );
-                drop(res_reader);
-                return record_status(condition_not_met());
-            }
-            Err(err) => {
-                let error_id = generate_error_id();
-                tracing::error!(
-                    condition_function_id = %condition_id,
-                    error = %err,
-                    error_id = %error_id,
-                    "Error invoking condition function"
-                );
-                drop(res_reader);
-                return record_status(
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        axum::Json(error_body("INTERNAL_ERROR", &err.to_string(), Some(&error_id))),
-                    )
-                        .into_response(),
-                );
-            }
-        }
-    }
-
-    // Per-route middleware (trigger config-driven), runs after the condition
-    // check, before invoking the handler.
-    for mw_fn_id in &route.middleware_function_ids {
-        let mw_input = middleware::build_middleware_input(
-            &request.path_params,
-            &request.query_params,
-            &headers,
-            method.as_str(),
-        );
-        match middleware::execute_middleware(&state.iii, mw_fn_id, mw_input, config.default_timeout)
-        .await
-        {
-            Ok(MiddlewareOutcome::Continue) => {}
-            Err(response) => {
-                drop(res_reader);
-                return record_status(response);
-            }
-        }
-    }
 
     // Accumulated response control state. Text control messages on the response
     // channel are dispatched (in order, ahead of the next Binary frame) to the
@@ -546,15 +462,22 @@ pub async fn dynamic_handler(
         }
     });
 
-    // Spawn the invocation so it runs concurrently with draining the response
-    // channel. The route invokes its target the way it was bound: `iii.trigger`
-    // for a trigger, `obs.call` for an observer (see `Route::call`).
+    // Spawn the call of `http::on-request` so it runs concurrently with
+    // draining the response channel. The call names the route's observer in
+    // its metadata; the function's deliver hook applies the observer's
+    // filters, runs the route middleware and calls the target through the
+    // observer, and returns the target's result (see `crate::on_request`).
     let mut call = {
         let iii = state.iii.clone();
-        let target = route.clone();
-        let timeout_ms = config.default_timeout;
+        let request = CallRequest {
+            function_id: ON_REQUEST_FN.to_string(),
+            payload,
+            action: None,
+            timeout_ms: Some(config.default_timeout),
+        }
+        .metadata(json!({ ROUTE_METADATA_KEY: route.id() }));
         // Propagate THIS request's HTTP-span trace context onto the outbound
-        // trigger so `request -> worker -> function` is one unified trace. The
+        // call so `request -> worker -> function` is one unified trace. The
         // enclosing block is `.instrument(span)`, but `tokio::spawn` starts a
         // detached task that inherits neither the tracing span nor the OTel
         // `Context::current()` that the SDK's `inject_traceparent` reads. Capture
@@ -565,9 +488,7 @@ pub async fn dynamic_handler(
         use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
         use tracing_opentelemetry::OpenTelemetrySpanExt;
         let otel_cx = tracing::Span::current().context();
-        tokio::spawn(
-            async move { target.call(&iii, payload, timeout_ms).await }.with_context(otel_cx),
-        )
+        tokio::spawn(async move { iii.call(request).await }.with_context(otel_cx))
     };
 
     // Overall bound for the streaming drain. The engine bounds an open response
@@ -581,11 +502,12 @@ pub async fn dynamic_handler(
 
     // Race the response channel against the invocation result.
     //
-    // - A Binary frame -> the function is streaming; begin building the body.
-    // - The invocation completing with a non-null value -> buffered response
-    //   (the function never touched the channel).
-    // - The invocation completing with `null` -> the function streamed (or
-    //   produced no body); drain the remaining channel frames into the body.
+    // - A Binary frame -> the target is streaming; begin building the body.
+    // - The call completing with a non-null value -> buffered response (the
+    //   target never touched the channel, or the deliver hook answered for
+    //   it: 404, 422, a route middleware's response).
+    // - The call completing with `null` -> the target streamed (or produced
+    //   no body); drain the remaining channel frames into the body.
     // Biased: prefer a ready channel frame over the invocation result, so a
     // streaming function's first Binary frame wins the race even if its return
     // value arrives in the same poll.
@@ -619,7 +541,8 @@ pub async fn dynamic_handler(
                     forward.abort();
                     let error_id = generate_error_id();
                     tracing::error!(
-                        function_id = %route.function_id,
+                        observer_id = %route.id(),
+                        route = %route_path,
                         error = %err,
                         error_id = %error_id,
                         "function invocation failed"
@@ -639,7 +562,8 @@ pub async fn dynamic_handler(
                     forward.abort();
                     let error_id = generate_error_id();
                     tracing::error!(
-                        function_id = %route.function_id,
+                        observer_id = %route.id(),
+                        route = %route_path,
                         error = %join_err,
                         error_id = %error_id,
                         "function invocation task panicked"
@@ -668,7 +592,8 @@ pub async fn dynamic_handler(
             Err(_) => {
                 tracing::warn!(
                     timeout_ms = config.default_timeout,
-                    function_id = %route.function_id,
+                    observer_id = %route.id(),
+                    route = %route_path,
                     "Streaming drain timed out waiting for first frame; ending stream"
                 );
                 forward.abort();

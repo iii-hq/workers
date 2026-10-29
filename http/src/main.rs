@@ -2,7 +2,7 @@
 //!
 //! Boot: parse CLI, connect to the engine, register the `http` configuration
 //! schema, fetch the authoritative value, start the HTTP server via
-//! `boot::start`, wire the `configuration:updated` reload trigger, then sleep
+//! `boot::start`, observe `configuration::on-updated` to reload, then sleep
 //! until Ctrl+C. The optional `--config` YAML file is a **seed only**: it is
 //! used to populate the configuration entry the first time, after which the
 //! configuration worker is the source of truth.
@@ -112,18 +112,16 @@ async fn main() -> Result<()> {
     let boot = iii_http::boot::start(iii.clone(), config).await?;
     tracing::info!(address = %boot.local_addr, "iii-http ready");
 
-    // Subscribe to configuration:updated so middleware/default_timeout and the
+    // Observe configuration updates so middleware/default_timeout and the
     // CORS/timeout/concurrency layers reload live on a same-address change, and
     // a host/port change rebinds the listener live (see configuration).
-    configuration::register_config_trigger(
+    let _config_observer = configuration::register_config_observer(
         &iii,
         boot.config.clone(),
         boot.hot_router.clone(),
         boot.control.clone(),
         boot.apply_lock.clone(),
-    )
-    .map_err(anyhow::Error::msg)
-    .context("binding configuration trigger")?;
+    );
     configuration::register_listener_status(
         &iii,
         boot.config.clone(),

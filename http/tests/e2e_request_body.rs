@@ -20,10 +20,9 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{engine, worker};
+use common::{backend, engine, worker};
 use iii_sdk::channel::ChannelReader;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use serial_test::serial;
@@ -39,7 +38,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// Register a function that reads the full request body off its
 /// `request_body` channel (rather than the buffered `body` field) and echoes
 /// it back so the test can assert the streamed bytes match exactly what was
-/// sent. Bound to an `http` trigger for `api_path` + `http_method`.
+/// sent. Serves `api_path` + `http_method`.
 async fn register_request_body_echo_backend(
     iii: &Arc<IIIClient>,
     api_path: &str,
@@ -75,13 +74,11 @@ async fn register_request_body_echo_backend(
         }),
     );
 
-    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
-        json!({ "api_path": api_path, "http_method": http_method }),
-    ))
-    .expect("register http trigger for request-body echo backend");
+    backend::serve_route(
+        iii,
+        &function_id,
+        json!({ "method": http_method, "path": api_path }),
+    );
 }
 
 #[tokio::test]

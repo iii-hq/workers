@@ -9,12 +9,11 @@ use common::fake_engine::FakeEngine;
 use iii_http::boot::{self, BootHandle};
 use iii_http::config::{CorsConfig, MiddlewareConfig, RestApiConfig, WebhookListenerConfig};
 use iii_http::configuration;
+use iii_http::on_request::ON_REQUEST_FN;
 use iii_http::types::HttpRequest;
 use iii_sdk::channel::ChannelReader;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::trigger::Trigger;
-use iii_sdk::RegisterFunction;
+use iii_sdk::{CallRequest, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
@@ -35,14 +34,13 @@ async fn start(enabled: bool) -> (FakeEngine, BootHandle) {
     let boot = boot::start(engine.iii.clone(), config(enabled))
         .await
         .unwrap();
-    configuration::register_config_trigger(
+    configuration::register_config_observer(
         &engine.iii,
         boot.config.clone(),
         boot.hot_router.clone(),
         boot.control.clone(),
         boot.apply_lock.clone(),
-    )
-    .unwrap();
+    );
     configuration::register_listener_status(
         &engine.iii,
         boot.config.clone(),
@@ -56,7 +54,7 @@ async fn start(enabled: bool) -> (FakeEngine, BootHandle) {
 async fn listener_status(engine: &FakeEngine) -> Value {
     engine
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "http::webhook-listener::status".into(),
             payload: json!({}),
             action: None,
@@ -66,13 +64,15 @@ async fn listener_status(engine: &FakeEngine) -> Value {
         .unwrap()
 }
 
+/// Serves `method` `path` with a byte-preserving echo target: observes
+/// `http::on-request` with the route as args. Returns the observer id.
 async fn bind(
     engine: &FakeEngine,
     boot: &BootHandle,
     path: &str,
     method: &str,
     public: Option<bool>,
-) -> Trigger {
+) -> String {
     let id = format!("test::{method}:{path}");
     let url = engine.url.clone();
     engine.iii.register_function(id.clone(), RegisterFunction::new_async(move |req: HttpRequest| {
@@ -86,24 +86,27 @@ async fn bind(
             Ok::<Value, Error>(json!({"body": {"raw": raw, "headers": req.headers, "body": req.body, "method": req.method}}))
         }
     }).description("Local byte-preserving HTTP test backend").response_format(json!({"type": "object"})));
-    let mut config = json!({"api_path": path, "http_method": method});
+    let mut args = json!({"method": method, "path": path});
     if let Some(public) = public {
-        config["public_webhook"] = json!(public);
+        args["public_webhook"] = json!(public);
     }
-    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
-    let trigger = engine
-        .iii
-        .register_trigger(RegisterTriggerInput::new("http", id, config))
-        .unwrap();
+    let observer_id = format!("obs-{method}:{path}");
+    let rejection = engine
+        .add_observer(
+            ON_REQUEST_FN,
+            json!({"id": observer_id, "target": id, "args": args, "filters": {}}),
+        )
+        .await;
+    assert!(rejection.is_none(), "{method} {path}: {rejection:?}");
     common::wait_for_route(&boot.routes, method, path).await;
-    trigger
+    observer_id
 }
 
 async fn reload(engine: &FakeEngine, value: &RestApiConfig) {
     engine.set_config(value.to_json()).await;
     engine
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "http::on-config-change".into(),
             payload: json!({"untrusted": "ignored"}),
             action: None,
@@ -238,7 +241,7 @@ async fn restricted_listener_exposes_only_explicit_routes_and_preserves_raw_byte
             404
         );
     }
-    public.unregister();
+    engine.remove_observer(ON_REQUEST_FN, &public);
     common::wait_for_no_route(&boot.routes, "POST", "/hook").await;
     assert_eq!(
         http.post(format!("http://{restricted}/hook"))
@@ -248,7 +251,7 @@ async fn restricted_listener_exposes_only_explicit_routes_and_preserves_raw_byte
             .status(),
         404
     );
-    assert_eq!(engine.http_provider_count(), 1);
+    assert_eq!(engine.on_request_registrations(), 1);
     boot.shutdown().await;
     assert_closed(normal).await;
     assert_closed(restricted).await;
@@ -362,7 +365,7 @@ async fn reload_enables_rebinds_disables_and_rolls_back_both_listeners() {
     reload(&engine, &next).await; // Late bus callback cannot resurrect listeners.
     assert!(control.lock().await.is_none());
     assert!(public_control.lock().await.is_none());
-    assert_eq!(engine.http_provider_count(), 1);
+    assert_eq!(engine.on_request_registrations(), 1);
     engine.shutdown().await;
 }
 
@@ -448,15 +451,18 @@ async fn brace_parameter_route_serves_and_extracts_path_params() {
         .description("Test backend")
         .response_format(json!({"type": "object"})),
     );
-    let trigger_config = json!({
-        "api_path": "/users/{userId}/tasks/{tid}",
-        "http_method": "GET",
-    });
-    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
-    let _trigger = engine
-        .iii
-        .register_trigger(RegisterTriggerInput::new("http", id, trigger_config))
-        .unwrap();
+    let rejection = engine
+        .add_observer(
+            ON_REQUEST_FN,
+            json!({
+                "id": "obs-users-tasks",
+                "target": id,
+                "args": { "method": "GET", "path": "/users/{userId}/tasks/{tid}" },
+                "filters": {},
+            }),
+        )
+        .await;
+    assert!(rejection.is_none(), "{rejection:?}");
     common::wait_for_route(&boot.routes, "GET", "/users/:userId/tasks/:tid").await;
 
     let normal = boot.local_addr;
@@ -480,7 +486,7 @@ async fn status_reports_the_bound_port_and_a_local_url() {
     let (engine, boot) = start(false).await;
     let status = engine
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "http::status".into(),
             payload: json!({}),
             action: None,

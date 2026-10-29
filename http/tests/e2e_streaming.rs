@@ -13,7 +13,6 @@ use std::sync::Arc;
 use common::{backend, engine, worker};
 use iii_sdk::channel::ChannelWriter;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use serial_test::serial;
@@ -22,8 +21,8 @@ use iii_http::types::HttpRequest;
 
 /// Register a function that streams its response: it opens a writer on the
 /// response channel ref, sends a `set_status` control message, writes two body
-/// chunks, closes the channel, and returns `null` (no buffered body). Bound to
-/// an `http` trigger for `api_path` + `http_method`.
+/// chunks, closes the channel, and returns `null` (no buffered body). Serves
+/// `api_path` + `http_method`.
 async fn register_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_method: &str) {
     let function_id = format!("test.stream {http_method} {api_path}");
     let ws_url = engine::ws_url();
@@ -45,19 +44,17 @@ async fn register_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_meth
         }),
     );
 
-    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
-        json!({ "api_path": api_path, "http_method": http_method }),
-    ))
-    .expect("register http trigger for stream backend");
+    backend::serve_route(
+        iii,
+        &function_id,
+        json!({ "method": http_method, "path": api_path }),
+    );
 }
 
-/// Register a function that forces the "trigger result wins the race" ordering:
+/// Register a function that forces the "call result wins the race" ordering:
 /// it returns `null` *immediately*, then -- from a detached task, after a delay
 /// -- sends `set_status 201` + two body chunks on the response channel. Because
-/// the trigger return reliably beats the first channel frame, the worker must
+/// the call's return reliably beats the first channel frame, the worker must
 /// drain control before snapshotting status/headers (Bug 1). If it snapshots
 /// early the client sees 200 instead of 201.
 async fn register_late_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http_method: &str) {
@@ -89,13 +86,11 @@ async fn register_late_stream_backend(iii: &Arc<IIIClient>, api_path: &str, http
         }),
     );
 
-    #[allow(deprecated)] // an old consumer: binds the `http` trigger type
-    iii.register_trigger(RegisterTriggerInput::new(
-        iii_http::TRIGGER_TYPE.to_string(),
-        function_id,
-        json!({ "api_path": api_path, "http_method": http_method }),
-    ))
-    .expect("register http trigger for late stream backend");
+    backend::serve_route(
+        iii,
+        &function_id,
+        json!({ "method": http_method, "path": api_path }),
+    );
 }
 
 #[tokio::test]
@@ -119,7 +114,7 @@ async fn streamed_response_chunks_and_status() {
 
 #[tokio::test]
 #[serial]
-async fn streamed_response_when_trigger_returns_first() {
+async fn streamed_response_when_the_call_returns_first() {
     let Some(iii) = engine::get_or_init().await else {
         return;
     };
@@ -129,7 +124,7 @@ async fn streamed_response_when_trigger_returns_first() {
 
     let url = format!("http://{}/late-stream", boot.local_addr);
     let resp = reqwest::Client::new().get(&url).send().await.unwrap();
-    // Control (set_status 201) is sent *after* the trigger returns null; the
+    // Control (set_status 201) is sent *after* the call returns null; the
     // worker must still apply it before snapshotting the response status.
     assert_eq!(resp.status(), 201);
     let body = resp.text().await.unwrap();

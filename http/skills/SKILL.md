@@ -1,30 +1,26 @@
 ---
 name: http
-tags: http, routing, triggers, webhooks, endpoints
+tags: http, routing, observers, webhooks, endpoints
 description: >-
   Expose registered functions as HTTP endpoints with the standalone http
-  worker. Its surface is the `http` trigger type and, on iii 0.25 engines, the
-  observable function `http::on-request`.
+  worker. A function serves a route by observing `http::on-request` with
+  `{ method, path }` as args.
 ---
 
 # http
 
 The `http` worker exposes registered functions as HTTP endpoints, turning a
 function into a route that browsers, webhooks, and external clients can call
-without using the iii SDK. It exposes no callable `http::*` functions; a route
-is declared by binding the `http` trigger type with a worker SDK trigger
-registration such as `iii.registerTrigger({ type: 'http', function_id, config })`,
-or, on iii 0.25 engines, by observing `http::on-request` with
+without using the iii SDK. A route is an observer of `http::on-request`: the
+args name the route, and the target is the function that answers it:
 `iii.observe({ function_id: 'http::on-request', args: { method, path } }, target)`.
 
-Install it with `iii trigger compose::add worker=http`. The legacy in-engine HTTP service must not
-run on the same engine because it also owns the `http` trigger type. Remove the
-legacy built-in from the engine config before starting this worker; the standalone
-worker refuses to boot when the builtin is active.
+Install it with `iii call compose::add worker=http`.
 
-Incoming requests are matched by HTTP method and path. The invoked handler
-receives method, path, headers, query params, extracted `:path` params, parsed
-body, trigger metadata, and request/response stream channels. Returning a JSON
+Each HTTP request is one call of `http::on-request`. The worker matches the
+request's method and path to a route and calls that route's target with the
+request: method, path template, headers, query params, extracted `:path`
+params, parsed body, and request/response stream channels. Returning a JSON
 value yields a buffered response; writing to the response channel yields a
 chunked streaming response.
 
@@ -33,8 +29,8 @@ chunked streaming response.
 - A webhook, browser, mobile app, or third-party service needs to call an iii
   function over plain HTTP.
 - You need route matching with path params such as `/orders/:id`.
-- A route should have per-route middleware or a condition function before the
-  handler runs.
+- A route should run middleware before the handler, or accept only requests
+  whose headers or body match a filter.
 - You need CORS, HTTP status codes, headers, JSON bodies, or chunked streaming
   responses at the edge of the engine.
 - Several external routes should dispatch into normal iii functions while
@@ -42,28 +38,24 @@ chunked streaming response.
 
 ## Boundaries
 
-- No callable functions are exposed. Never invoke `http::*`; bind the `http`
-  trigger type to one of your own functions, or observe `http::on-request`
-  with it as the target (invoking `http::on-request` is refused with
-  `FORBIDDEN`).
+- Never call `http::on-request`: it is private to the http worker. Observe it
+  with one of your own functions as the target.
 - This is inbound HTTP. For outbound network requests from an agent or worker,
   use `web::fetch` instead.
-- This is not a scheduler or event queue. For clock-based execution, use
-  `cron`; for data-change reactions, use the relevant state, stream, queue, or
-  database worker.
-- The legacy in-engine HTTP service cannot run beside this standalone worker on
-  the same engine because both own the `http` trigger type.
+- This is not a scheduler or event queue. For clock-based execution, observe
+  `cron::on-tick`; for data-change reactions, use the relevant state, stream,
+  queue, or database worker.
 - Route shapes with the same method and equivalent path structure conflict:
-  `/orders/:id` and `/orders/:order_id` are the same shape. Triggers and
-  `http::on-request` observers share one route table: the later one is
-  refused (an observer with `HTTP_ROUTE_CONFLICT`).
+  `/orders/:id` and `/orders/:order_id` are the same shape. The later observer
+  is rejected with `HTTP_ROUTE_CONFLICT`.
+- `http::on-request` has one host per namespace: run one http worker per
+  namespace.
 
-## Reactive triggers
+## Serving a route
 
-Bind an `http` trigger when a handler should run automatically for each
-matching HTTP request. The handler runs through the engine as a normal function
-invocation, and the worker turns the handler's return value or stream writes
-back into an HTTP response.
+Observe `http::on-request` when a handler should run for each matching HTTP
+request. The worker turns the handler's return value or stream writes into
+the HTTP response.
 
 Reach for it when:
 
@@ -74,60 +66,43 @@ Reach for it when:
 - A handler should stream chunks to the client instead of returning one
   buffered body.
 
-### How to bind
+### How to observe
 
 1. Register a handler: `iii.registerFunction('orders::get', handler)`.
-2. Register the trigger:
-
-```typescript
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'orders::get',
-  config: {
-    api_path: '/orders/:id',
-    http_method: 'GET',
-    // condition_function_id and middleware_function_ids are optional.
-  },
-})
-```
-
-`api_path` is required. `http_method` defaults to `GET`. Path segments prefixed
-with `:` are extracted into `path_params`; query string values arrive in
-`query_params`; request headers arrive in `headers`.
-
-Trigger config:
-
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `api_path` | yes | - | Route path such as `/orders/:id`; `:name` segments become path params. |
-| `http_method` | no | `GET` | HTTP method to match. |
-| `condition_function_id` | no | - | Function invoked before middleware and handler; a falsy result rejects the request with `422`. |
-| `middleware_function_ids` | no | `[]` | Per-route middleware functions, run before the handler in list order. |
-
-### How to observe (iii 0.25)
-
-Instead of a trigger, observe `http::on-request` with the route as its args and
-your handler as the target. The handler receives the same request and returns
-the same response as with a trigger.
+2. Observe `http::on-request` with the route as args:
 
 ```typescript
 const route = iii.observe(
   {
     function_id: 'http::on-request',
-    args: { method: 'GET', path: '/orders/:id' },
+    args: {
+      method: 'GET',
+      path: '/orders/:id',
+      // middleware_function_ids and public_webhook are optional.
+    },
     // optional: filters on the request, e.g. { 'input.headers.x-api-key': { $exists: true } }
   },
   'orders::get',
 )
 await route.ready()
+// later: await route.dispose() removes the route
 ```
 
-Args: `method` and `path` are required; `public_webhook`,
-`middleware_function_ids` and the deprecated `condition_function_id` are
-optional and mean what they mean in the trigger config. Unknown args are
-refused with `INVALID_ARGS`. A request the observer's `filters` reject gets
-`422 CONDITION_NOT_MET` without calling the handler. `route.dispose()` removes
-the route. On a 0.24 engine `observe` fails with `UNSUPPORTED`: use the trigger.
+Args:
+
+| Arg | Required | Default | Description |
+|---|---|---|---|
+| `method` | yes | - | HTTP method to match, case insensitive. |
+| `path` | yes | - | Route path such as `/orders/:id` (or `/orders/{id}`); `:name` segments become path params. |
+| `public_webhook` | no | `false` | Also expose the route on the restricted webhook listener. |
+| `middleware_function_ids` | no | `[]` | Per-route middleware functions, run before the handler in list order. |
+
+Unknown args are refused with `INVALID_ARGS`. Path segments prefixed with `:`
+are extracted into `path_params`; query string values arrive in
+`query_params`; request headers arrive in `headers`. A request the observer's
+`filters` reject gets `422 CONDITION_NOT_MET` without calling the handler.
+The handler receives the `HttpRequest` whatever the observer's `deliver`
+option, and the observer's `metadata` arrives as its metadata sidecar.
 
 Handler return values become buffered responses with `status_code`, `headers`,
 and `body`; `status_code` defaults to `200` and `body` defaults to an empty
@@ -151,5 +126,5 @@ middleware: []
 
 Global `middleware` runs on every route in ascending `priority` order. Per-route
 `middleware_function_ids` run after global middleware and before the handler.
-`middleware` and `default_timeout` hot-reload; `port`, `host`, CORS, and
-`concurrency_request_limit` take effect on the next restart.
+`middleware`, `default_timeout`, CORS and `concurrency_request_limit` reload
+live; a `port` or `host` change rebinds the listener.

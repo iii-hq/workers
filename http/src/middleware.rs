@@ -1,23 +1,23 @@
-//! Middleware execution: global (config-driven) and per-route (trigger
-//! config-driven) `preHandler` middleware.
+//! Middleware execution: global (config-driven) and per-route (observer
+//! args-driven) `preHandler` middleware.
 //!
 //! Ported from the in-engine `iii-http` `execute_middleware` /
 //! `build_middleware_input` (`views.rs`), adapted to this worker's
 //! invocation: instead of `engine.call` wrapped in an external
-//! `tokio::time::timeout`, this worker uses `IIIClient::trigger`, which
+//! `tokio::time::timeout`, this worker uses `IIIClient::call`, which
 //! already applies `timeout_ms` internally and surfaces an expired timeout as
 //! `Error::Timeout`.
+//!
+//! A middleware that short-circuits produces a response as a function returns
+//! one (`{ status_code, headers, body }`), which
+//! [`crate::types::HttpResponse::from_function_return`] turns into the HTTP
+//! response: the server does it for global middleware, and `http::on-request`
+//! returns it for route middleware.
 
 use std::collections::HashMap;
 
-use axum::{
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
-    Json,
-};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 
 /// Outcome of a middleware invocation that did not short-circuit the request.
@@ -45,7 +45,12 @@ pub(crate) fn error_body(code: &str, message: &str, error_id: Option<&str>) -> V
     json!({ "error": error })
 }
 
-/// Builds the 500 error envelope for a failed `IIIClient::trigger` call,
+/// A response as a function returns it, for [`crate::types::HttpResponse::from_function_return`].
+pub(crate) fn response_value(status_code: u16, body: Value) -> Value {
+    json!({ "status_code": status_code, "body": body })
+}
+
+/// Builds the 500 error envelope for a failed `IIIClient::call`,
 /// propagating the invoked function's own error code/message when available
 /// (mirrors the engine's `Error::Remote` -> `{code, message}` propagation, see
 /// `engine/src/workers/rest_api/views.rs:248-251,518`). Falls back to
@@ -58,20 +63,13 @@ pub(crate) fn error_body_for_call_error(err: &Error, error_id: Option<&str>) -> 
     }
 }
 
-fn serialize_headers(headers: &HeaderMap) -> HashMap<String, String> {
-    headers
-        .iter()
-        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect()
-}
-
 /// Builds the payload sent to a middleware function: the lifecycle phase, the
 /// inbound request shape (path/query params, headers, method), and an empty
 /// `context` map for the middleware to populate (unused by this worker today).
 pub fn build_middleware_input(
     path_params: &HashMap<String, String>,
     query_params: &HashMap<String, String>,
-    headers: &HeaderMap,
+    headers: &HashMap<String, String>,
     method: &str,
 ) -> Value {
     json!({
@@ -79,55 +77,62 @@ pub fn build_middleware_input(
         "request": {
             "path_params": path_params,
             "query_params": query_params,
-            "headers": serialize_headers(headers),
+            "headers": headers,
             "method": method,
         },
         "context": {},
     })
 }
 
+/// [`build_middleware_input`] for a serialized [`crate::types::HttpRequest`]:
+/// the input of a route's middleware, built in `http::on-request`'s deliver
+/// hook from the call's input.
+pub fn middleware_input_for(request: &Value) -> Value {
+    let field = |name: &str| request.get(name).cloned().unwrap_or_else(|| json!({}));
+    json!({
+        "phase": "preHandler",
+        "request": {
+            "path_params": field("path_params"),
+            "query_params": field("query_params"),
+            "headers": field("headers"),
+            "method": request.get("method").cloned().unwrap_or(Value::Null),
+        },
+        "context": {},
+    })
+}
+
 /// Turns a middleware's `{"action": "respond", "response": {...}}` result into
-/// the axum response it describes: `status_code` (default 200), `body`
-/// (default null), and `headers` (best-effort -- entries that don't parse as
-/// valid header name/value pairs are skipped).
-fn respond_to_response(response: &Value) -> Response {
+/// the response it describes: `status_code` (default 200), `body` (default
+/// null), and `headers` (an object of header values; entries that are not
+/// valid header name/value pairs are skipped when the response is built).
+fn respond_to_response(response: &Value) -> Value {
     let status = response
         .get("status_code")
         .and_then(|s| s.as_u64())
-        .unwrap_or(200) as u16;
+        .unwrap_or(200);
     let body = response.get("body").cloned().unwrap_or(Value::Null);
-    let headers_map: HashMap<String, String> = response
+    let headers: HashMap<String, String> = response
         .get("headers")
         .and_then(|h| serde_json::from_value(h.clone()).ok())
         .unwrap_or_default();
-
-    let mut resp = (
-        StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
-        Json(body),
-    )
-        .into_response();
-    for (k, v) in headers_map {
-        if let (Ok(name), Ok(val)) = (k.parse::<HeaderName>(), v.parse::<HeaderValue>()) {
-            resp.headers_mut().insert(name, val);
-        }
-    }
-    resp
+    json!({ "status_code": status, "headers": headers, "body": body })
 }
 
 /// Invokes a middleware function and maps its result to either
-/// [`MiddlewareOutcome::Continue`] or a short-circuit [`Response`] (the `Err`
-/// arm): `action: "continue"` continues, `action: "respond"` builds the
-/// response from `response.{status_code,body,headers}`, any other/missing
-/// action logs and continues, a call error maps to a 500 envelope, and a
-/// timed-out call maps to a 504 `MIDDLEWARE_TIMEOUT` envelope.
+/// [`MiddlewareOutcome::Continue`] or a short-circuit response (the `Err`
+/// arm, as a function returns one): `action: "continue"` continues,
+/// `action: "respond"` builds the response from
+/// `response.{status_code,body,headers}`, any other/missing action logs and
+/// continues, a call error maps to a 500 envelope, and a timed-out call maps
+/// to a 504 `MIDDLEWARE_TIMEOUT` envelope.
 pub async fn execute_middleware(
     iii: &IIIClient,
     fn_id: &str,
     input: Value,
     timeout_ms: u64,
-) -> Result<MiddlewareOutcome, Response> {
+) -> Result<MiddlewareOutcome, Value> {
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: fn_id.to_string(),
             payload: input,
             action: None,
@@ -153,11 +158,10 @@ pub async fn execute_middleware(
         },
         Err(Error::Timeout) => {
             tracing::error!(middleware_fn = %fn_id, "Middleware timed out");
-            Err((
-                StatusCode::GATEWAY_TIMEOUT,
-                Json(error_body("MIDDLEWARE_TIMEOUT", "Middleware timeout", None)),
-            )
-                .into_response())
+            Err(response_value(
+                504,
+                error_body("MIDDLEWARE_TIMEOUT", "Middleware timeout", None),
+            ))
         }
         Err(err) => {
             let error_id = generate_error_id();
@@ -167,11 +171,10 @@ pub async fn execute_middleware(
                 error_id = %error_id,
                 "Middleware execution failed"
             );
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(error_body_for_call_error(&err, Some(&error_id))),
-            )
-                .into_response())
+            Err(response_value(
+                500,
+                error_body_for_call_error(&err, Some(&error_id)),
+            ))
         }
     }
 }
@@ -179,7 +182,13 @@ pub async fn execute_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{HeaderName, HeaderValue};
+    use crate::types::HttpResponse;
+    use axum::http::StatusCode;
+
+    /// The HTTP response a short-circuit value turns into.
+    fn http(value: Value) -> axum::response::Response {
+        HttpResponse::from_function_return(value).into_axum_response()
+    }
 
     // =========================================================================
     // build_middleware_input
@@ -187,11 +196,8 @@ mod tests {
 
     #[test]
     fn build_middleware_input_has_prehandler_phase_and_request_shape() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("x-trace"),
-            HeaderValue::from_static("abc"),
-        );
+        let mut headers = HashMap::new();
+        headers.insert("x-trace".to_string(), "abc".to_string());
         let mut path_params = HashMap::new();
         path_params.insert("id".to_string(), "42".to_string());
         let mut query_params = HashMap::new();
@@ -207,22 +213,49 @@ mod tests {
         assert_eq!(input["context"], json!({}));
     }
 
+    #[test]
+    fn middleware_input_for_a_serialized_request_matches_the_server_input() {
+        let mut headers = HashMap::new();
+        headers.insert("x-trace".to_string(), "abc".to_string());
+        let mut path_params = HashMap::new();
+        path_params.insert("id".to_string(), "42".to_string());
+        let mut query_params = HashMap::new();
+        query_params.insert("q".to_string(), "1".to_string());
+        let request = json!({
+            "path_params": path_params,
+            "query_params": query_params,
+            "headers": headers,
+            "path": "/users/:id",
+            "method": "POST",
+            "body": { "ignored": true },
+        });
+
+        assert_eq!(
+            middleware_input_for(&request),
+            build_middleware_input(&path_params, &query_params, &headers, "POST")
+        );
+    }
+
     // =========================================================================
     // respond_to_response
     // =========================================================================
 
     #[tokio::test]
     async fn respond_to_response_defaults_status_200_and_null_body() {
-        let resp = respond_to_response(&json!({}));
+        let resp = http(respond_to_response(&json!({})));
         assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"null");
     }
 
     #[tokio::test]
     async fn respond_to_response_honors_status_code_and_body() {
-        let resp = respond_to_response(&json!({
+        let resp = http(respond_to_response(&json!({
             "status_code": 403,
             "body": { "denied": true },
-        }));
+        })));
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
@@ -233,10 +266,10 @@ mod tests {
 
     #[tokio::test]
     async fn respond_to_response_applies_valid_headers_and_skips_invalid() {
-        let resp = respond_to_response(&json!({
+        let resp = http(respond_to_response(&json!({
             "status_code": 200,
             "headers": { "X-Custom": "value", "": "skip-empty-name" },
-        }));
+        })));
         assert_eq!(
             resp.headers().get("x-custom").and_then(|v| v.to_str().ok()),
             Some("value")
