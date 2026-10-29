@@ -9,7 +9,6 @@ use crate::functions::{
     TOPIC_STATS_FN_ID,
 };
 use crate::on_message::ON_MESSAGE_FN;
-use crate::TRIGGER_TYPE;
 
 #[derive(Debug, Serialize)]
 pub struct ModuleManifest {
@@ -18,7 +17,6 @@ pub struct ModuleManifest {
     pub description: String,
     pub default_config: serde_json::Value,
     pub config_schema: serde_json::Value,
-    pub trigger_types: Vec<String>,
     pub functions: Vec<String>,
     pub supported_targets: Vec<String>,
 }
@@ -30,7 +28,6 @@ pub fn build_manifest() -> ModuleManifest {
         description: "Durable queue worker for iii.".to_string(),
         default_config: QueueConfig::packaged_default().to_json(),
         config_schema: QueueConfig::json_schema(),
-        trigger_types: vec![TRIGGER_TYPE.to_string()],
         functions: vec![
             DEFINE_QUEUE_FN_ID.to_string(),
             ENQUEUE_FUNCTION_FN_ID.to_string(),
@@ -56,7 +53,6 @@ mod tests {
     fn manifest_has_queue_identity_and_interfaces() {
         let value = serde_json::to_value(build_manifest()).unwrap();
         assert_eq!(value["name"], "queue");
-        assert_eq!(value["trigger_types"][0], crate::TRIGGER_TYPE);
         let functions = value["functions"].as_array().unwrap();
         assert_eq!(functions.len(), 11);
         assert!(functions.iter().any(|id| id == DEFINE_QUEUE_FN_ID));

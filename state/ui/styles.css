@@ -1,6 +1,6 @@
 /*
  * The state worker's console stylesheet (`console:style` asset), scoped under
- * `[data-iii-ui="state"]` — page, function-trigger message and config form.
+ * `[data-iii-ui="state"]` — page, function-call message and config form.
  * Layout only: chrome comes from @iii-dev/console-ui and the console's tokens.
  */
 
@@ -286,7 +286,7 @@
   color: var(--color-ink-ghost);
 }
 
-/* --- function-trigger message (chat / traces card) ------------------- */
+/* --- function-call message (chat / traces card) ---------------------- */
 [data-iii-ui="state"] .state-ui-msg {
   background: var(--color-bg);
 }

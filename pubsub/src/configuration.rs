@@ -2,24 +2,24 @@
 //!
 //! The worker registers its config schema under the id `pubsub` (validated
 //! when its explicit global Settings form saves), reads the authoritative
-//! value before binding, and hot-applies `configuration:updated` events by rebuilding the
-//! backend adapter and rebinding the live subscriptions onto it.
+//! value before observing it, and hot-applies `configuration:updated` events
+//! (observed on `configuration::on-updated`) by rebuilding the backend
+//! adapter.
 //!
 //! [`on_config_change`] is serialized end-to-end by an [`ApplyLock`]: the SDK
 //! dispatches each function invocation via `tokio::spawn`, so overlapping
 //! `configuration:updated` events could otherwise interleave their fetch →
-//! decide → swap sequences. Mirrors the builtin's subscriptions/apply lock
+//! decide → swap sequences. Mirrors the builtin's apply lock
 //! (engine/src/workers/pubsub/pubsub.rs:508-513).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 
-use crate::adapters::{self, Invoker};
+use crate::adapters::{self, Relay};
 use crate::boot::{ApplyLock, ConfigCell};
 use crate::config::PubSubConfig;
 use crate::hub::Hub;
@@ -44,6 +44,8 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "pubsub::on-config-change";
+/// The configuration worker's change event source.
+const CONFIG_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 /// Upper bound on every `configuration::*` bus call (mirrors the builtin's
@@ -58,7 +60,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&PubSubConfig>) -> Re
     let mut payload = json!({
         "id": config_id(),
         "name": "PubSub",
-        "description": "PubSub worker settings — the pub/sub backend adapter (`local` in-process broadcast, or `redis` for cross-instance delivery). The adapter hot-swaps at runtime: a change rebuilds the backend and re-subscribes live subscriptions onto it.",
+        "description": "PubSub worker settings — the pub/sub backend adapter (`local`: events stay on this engine, or `redis` to carry them to the pubsub workers of other engines). The adapter hot-swaps at runtime: a change rebuilds the backend.",
         "schema": PubSubConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
@@ -70,7 +72,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&PubSubConfig>) -> Re
     let seed = seed.cloned().unwrap_or_default().normalized();
     payload["initial_value"] = seed.to_json();
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
+        call_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
     })
     .await
 }
@@ -97,7 +99,7 @@ mod initialization;
 /// Return the stored value, distinguishing entry absence from transport or service errors.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     initialization::get_value_with(config_id(), |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
+        call_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
     })
     .await
 }
@@ -108,19 +110,21 @@ fn swap_needed(current: &PubSubConfig, next: &PubSubConfig) -> bool {
     current.effective_adapter() != next.effective_adapter()
 }
 
-/// Register `pubsub::on-config-change` and subscribe it to
-/// `configuration:updated` events for the `pubsub` entry. The handler ignores
-/// the trigger payload and re-fetches the authoritative value (the bus function
-/// is discoverable, so a caller-supplied payload must not be trusted).
-pub fn register_config_trigger(
+/// Register `pubsub::on-config-change` and observe `configuration::on-updated`
+/// with it, filtered to the `configuration:updated` events of the `pubsub`
+/// entry. The handler ignores the event and re-fetches the authoritative value
+/// (the function is discoverable, so a caller-supplied payload must not be
+/// trusted). The observer stays `pending` until the configuration worker
+/// hosts the function; it lives as long as the worker's connection.
+pub fn observe_config_changes(
     iii: &Arc<IIIClient>,
     hub: Arc<Hub>,
-    invoker: Arc<dyn Invoker>,
+    relay: Arc<dyn Relay>,
     cell: ConfigCell,
     apply_lock: ApplyLock,
-) -> Result<(), Error> {
+) -> ObserverHandle {
     let hub_for_fn = hub.clone();
-    let invoker_for_fn = invoker.clone();
+    let relay_for_fn = relay.clone();
     let cell_for_fn = cell.clone();
     let apply_lock_for_fn = apply_lock.clone();
     let engine = iii.clone();
@@ -128,12 +132,12 @@ pub fn register_config_trigger(
         CONFIG_FN_ID,
         RegisterFunction::new_async(move |_payload: ConfigChangeRequest| {
             let hub = hub_for_fn.clone();
-            let invoker = invoker_for_fn.clone();
+            let relay = relay_for_fn.clone();
             let cell = cell_for_fn.clone();
             let apply_lock = apply_lock_for_fn.clone();
             let engine = engine.clone();
             async move {
-                on_config_change(&engine, &hub, &invoker, &cell, &apply_lock).await;
+                on_config_change(&engine, &hub, &relay, &cell, &apply_lock).await;
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
@@ -143,15 +147,20 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(CONFIG_UPDATED_FN)
+            .filters(config_update_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    )
+}
+
+/// Selects the `configuration:updated` events of one entry.
+fn config_update_filters(config_id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": config_id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 /// Re-fetch the authoritative config and, if the effective adapter changed,
@@ -161,13 +170,13 @@ pub fn register_config_trigger(
 async fn on_config_change(
     iii: &IIIClient,
     hub: &Arc<Hub>,
-    invoker: &Arc<dyn Invoker>,
+    relay: &Arc<dyn Relay>,
     cell: &ConfigCell,
     apply_lock: &ApplyLock,
 ) {
     let _guard = apply_lock.lock().await;
 
-    // Never trust the trigger payload; re-fetch the authoritative value
+    // Never trust the event payload; re-fetch the authoritative value
     // (builtin parity, configuration.rs:122-127).
     let next = match fetch_config(iii).await {
         Ok(cfg) => cfg,
@@ -184,7 +193,7 @@ async fn on_config_change(
         return;
     }
 
-    let new_adapter = match adapters::build_adapter(&next, invoker.clone()).await {
+    let new_adapter = match adapters::build_adapter(&next, relay.clone()).await {
         Ok(a) => a,
         Err(e) => {
             tracing::error!(error = %e, "pubsub: failed to build new adapter; keeping previous backend and config");
@@ -197,7 +206,7 @@ async fn on_config_change(
     tracing::info!("pubsub configuration reloaded (adapter hot-swapped)");
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -206,8 +215,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -279,6 +288,17 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn config_observer_selects_the_entrys_updates() {
+        assert_eq!(
+            config_update_filters("pubsub"),
+            json!({
+                "input.id": { "$eq": "pubsub" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
+    }
 
     #[test]
     fn swap_needed_only_when_effective_adapter_changes() {

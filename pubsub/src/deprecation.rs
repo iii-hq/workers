@@ -1,8 +1,8 @@
 //! Rate-limited deprecation warnings for the pubsub worker (MOT-3619, Phase 1).
 //!
-//! The `publish` function, the `subscribe` trigger type and the `pubsub`
-//! configuration entry are deprecated. Behavior is unchanged: this module only
-//! logs. It never alters a response, an error or a delivered payload.
+//! The `publish` function and the `pubsub` configuration entry are
+//! deprecated. Behavior is unchanged: this module only logs. It never alters a
+//! response, an error or a delivered payload.
 //!
 //! Rules (mirroring the engine's iii-stream warner):
 //! - One warning per `(entry point, caller)` key per [`WARN_INTERVAL`].
@@ -10,23 +10,22 @@
 //!   pruning keys whose interval has elapsed), new callers share the fallback
 //!   caller key [`FALLBACK_CALLER`] for that entry point, so memory stays bounded.
 //! - Warnings carry only the entry point, the caller worker id and the guide
-//!   URL. They NEVER contain payloads, `data`, topic names or subscriber config.
-//! - `subscribe` warns on trigger registration only, never per delivered event.
+//!   URL. They NEVER contain payloads, `data`, topic names or observer filters.
 //! - Worker startup warns once per process (not again on configuration reload).
 //!
 //! Exemption: topic [`STREAM_BRIDGE_TOPIC`] (`stream.events`) never warns. It is
 //! the engine's own iii-stream `bridge` adapter
 //! (engine/src/workers/stream/adapters/bridge.rs, SDK client name
-//! `iii-stream-bridge`), which calls `publish` and binds `subscribe` on that
-//! topic for every bridged stream mutation. That is engine-internal traffic, not
-//! user code using pubsub; it is covered by the iii-stream deprecation instead.
+//! `iii-stream-bridge`), which calls `publish` on that topic for every bridged
+//! stream mutation and observes it. That is engine-internal traffic, not user
+//! code using pubsub; it is covered by the iii-stream deprecation instead.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::{PUBLISH_FUNCTION_ID, TRIGGER_TYPE};
+use crate::PUBLISH_FUNCTION_ID;
 
 /// Public migration guide for iii-stream and pubsub.
 /// Pinned to the guide in iii-hq/iii#2281 until it is published on the docs site.
@@ -170,31 +169,11 @@ fn warn_publish_with(
     warn_entry(limiter, PUBLISH_FUNCTION_ID, caller, now)
 }
 
-fn warn_subscribe_with(
-    limiter: &RateLimiter,
-    topic: &str,
-    caller: Option<&str>,
-    now: Instant,
-) -> bool {
-    if is_exempt_topic(topic) {
-        return false;
-    }
-    warn_entry(limiter, TRIGGER_TYPE, caller, now)
-}
-
 /// Warn (rate-limited) that `publish` is deprecated. `topic` is used only to
 /// apply the stream-bridge exemption; it is never logged. `caller` is the
 /// invocation's `_caller_worker_id`, if any.
 pub fn warn_publish(topic: &str, caller: Option<&str>) -> bool {
     warn_publish_with(global(), topic, caller, Instant::now())
-}
-
-/// Warn (rate-limited) that the `subscribe` trigger type is deprecated. Call
-/// on trigger registration only. `topic` is used only for the stream-bridge
-/// exemption and is never logged. Trigger providers receive no caller worker
-/// id from the engine, so callers normally pass `None` (`"unknown"`).
-pub fn warn_subscribe(topic: &str, caller: Option<&str>) -> bool {
-    warn_subscribe_with(global(), topic, caller, Instant::now())
 }
 
 /// Warn once per process that the pubsub worker is deprecated.
@@ -207,7 +186,6 @@ pub fn warn_worker_startup() -> bool {
         target: LOG_TARGET,
         entry_point = WORKER_ENTRY,
         functions = PUBLISH_FUNCTION_ID,
-        trigger_types = TRIGGER_TYPE,
         guide = MIGRATION_GUIDE_URL,
         "{}",
         deprecation_message(WORKER_ENTRY)
@@ -273,8 +251,8 @@ mod tests {
             !warn_publish_with(&l, "orders", Some(""), t0),
             "blank == unknown"
         );
-        assert!(warn_subscribe_with(&l, "orders", Some("w1"), t0));
-        assert!(!warn_subscribe_with(&l, "orders", Some("w1"), t0));
+        assert!(warn_entry(&l, WORKER_ENTRY, Some("w1"), t0));
+        assert!(!warn_entry(&l, WORKER_ENTRY, Some("w1"), t0));
     }
 
     #[test]
@@ -313,12 +291,10 @@ mod tests {
         let t0 = Instant::now();
         for caller in [None, Some("bridge-worker")] {
             assert!(!warn_publish_with(&l, STREAM_BRIDGE_TOPIC, caller, t0));
-            assert!(!warn_subscribe_with(&l, STREAM_BRIDGE_TOPIC, caller, t0));
         }
         assert!(l.last_warned.lock().unwrap().is_empty());
-        // The global entry points honor the exemption too.
+        // The global entry point honors the exemption too.
         assert!(!warn_publish("stream.events", Some("bridge-worker")));
-        assert!(!warn_subscribe("stream.events", None));
         // Exact match only.
         assert!(warn_publish_with(&l, "stream.events.other", None, t0));
     }
@@ -367,7 +343,7 @@ mod tests {
             warn_publish_with(&l, "secret-topic", Some("worker-1"), t0);
             warn_publish_with(&l, "secret-topic", Some("worker-1"), t0);
             warn_publish_with(&l, STREAM_BRIDGE_TOPIC, Some("worker-1"), t0);
-            warn_subscribe_with(&l, STREAM_BRIDGE_TOPIC, None, t0);
+            warn_publish_with(&l, STREAM_BRIDGE_TOPIC, None, t0);
         });
         let out = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
         let lines: Vec<&str> = out.lines().collect();
@@ -386,7 +362,7 @@ mod tests {
     fn startup_warns_once_per_process() {
         let first = warn_worker_startup();
         assert!(!warn_worker_startup());
-        // Another test in this process may have triggered it first; either
+        // Another test in this process may have warned first; either
         // way, at most one call ever returns true.
         let _ = first;
     }

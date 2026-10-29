@@ -71,7 +71,7 @@ export function ValueEditor({
   const load = useCallback(() => {
     setLoadError(null)
     host.iii
-      .trigger<unknown>('state::get', { scope, key: itemKey })
+      .call<unknown>('state::get', { scope, key: itemKey })
       .then((value) => {
         setLoadError(null)
         setStored({ loaded: true, value })
@@ -147,7 +147,7 @@ export function ValueEditor({
     }
     setSaving(true)
     try {
-      await host.iii.trigger('state::set', {
+      await host.iii.call('state::set', {
         scope,
         key: itemKey,
         value: parsed,

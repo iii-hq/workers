@@ -19,7 +19,7 @@ export function registerStatePalette(host: Host): void {
     minQuery: 2,
     async search(query, { signal }) {
       const needle = query.trim().toLowerCase()
-      const { groups } = await host.iii.trigger<{ groups: string[] }>(
+      const { groups } = await host.iii.call<{ groups: string[] }>(
         'state::list_groups',
         {},
       )
@@ -28,7 +28,7 @@ export function registerStatePalette(host: Host): void {
       for (const scope of groups) {
         if (signal.aborted) return []
         const { keys } = await host.iii
-          .trigger<{ keys: string[] }>('state::list_keys', { scope })
+          .call<{ keys: string[] }>('state::list_keys', { scope })
           .catch(() => ({ keys: [] as string[] }))
         for (const key of keys) {
           if (key.toLowerCase().includes(needle)) out.push({ scope, key })

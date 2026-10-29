@@ -1,6 +1,6 @@
 //! Builtin transport adapter — subscribe model with per-subscriber
-//! concurrency, fifo mode, and condition-function short-circuit, built on
-//! top of the worker's own [`QueueStore`].
+//! concurrency and fifo mode, built on top of the worker's own
+//! [`QueueStore`].
 //!
 //! Ported from the engine builtin `iii-queue` worker:
 //! - `engine/src/workers/queue/adapters/builtin/adapter.rs` (the
@@ -81,7 +81,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, TopicInfo};
 use crate::store::{Job, QueueStore, TopicStats};
 use crate::subscriber_config::SubscriberQueueConfig;
-use crate::trigger::{Invoker, SubscriberTarget};
+use crate::subscribers::{Invoker, Subscriber};
 
 /// `engine/src/builtins/queue.rs` `QueueConfig::default()` (max_attempts).
 const DEFAULT_MAX_RETRIES: u32 = 3;
@@ -103,10 +103,8 @@ struct PollerConfig {
     /// `format!("{topic}::{id}")`, not the bare topic name (see
     /// the module doc's fan-out model).
     queue_name: String,
-    /// Who each message goes to: a trigger's function (with its stored
-    /// metadata, the harness's `__binding` pointer) or an observer.
-    target: SubscriberTarget,
-    condition_function_id: Option<String>,
+    /// The `queue::on-message` observer each message goes to.
+    subscriber: Subscriber,
     max_retries: u32,
     backoff_ms: u64,
 }
@@ -222,12 +220,11 @@ impl QueueAdapter for BuiltinAdapter {
         }
     }
 
-    async fn subscribe_target(
+    async fn subscribe(
         &self,
         topic: &str,
         id: &str,
-        target: SubscriberTarget,
-        condition_function_id: Option<String>,
+        subscriber: Subscriber,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         let key = (topic.to_string(), id.to_string());
@@ -265,11 +262,10 @@ impl QueueAdapter for BuiltinAdapter {
             .or_default()
             .insert(id.to_string());
 
-        let function_id = target.function_id().to_string();
+        let subscriber_id = subscriber.id().to_string();
         let cfg = PollerConfig {
             queue_name,
-            target,
-            condition_function_id,
+            subscriber,
             max_retries,
             backoff_ms,
         };
@@ -283,7 +279,7 @@ impl QueueAdapter for BuiltinAdapter {
         );
         subs.insert(key, sub);
 
-        tracing::debug!(topic = %topic, id = %id, function_id = %function_id, ?mode, "Subscribed to queue via BuiltinAdapter");
+        tracing::debug!(topic = %topic, id = %id, subscriber = %subscriber_id, ?mode, "Subscribed to queue via BuiltinAdapter");
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
@@ -306,13 +302,13 @@ impl QueueAdapter for BuiltinAdapter {
         // Stop consuming and DETACH the poller instead of awaiting it: the
         // in-flight delivery still runs to completion and acks (dropping a
         // JoinHandle detaches the task; aborting it would risk duplicate
-        // execution on redelivery), but callers — the trigger handler holds
-        // its registrations lock across this call — return after the map
+        // execution on redelivery), but callers — the subscribers hold
+        // their registrations lock across this call — return after the map
         // updates instead of blocking for up to one whole invocation. The
         // store state stays untouched: the backlog, DLQ, and stats are the
         // durable data a later same-id resubscribe reattaches to —
         // unsubscribe fires on every routine subscriber disconnect, so
-        // destroying them here would wipe exactly what `durable:subscriber`
+        // destroying them here would wipe exactly what a durable subscriber
         // exists to keep. A same-id resubscribe racing the detached drain is
         // safe: two pollers on one store queue still deliver each job once.
         let _ = sub.cancel.send(());
@@ -996,46 +992,19 @@ async fn process_job(
     cfg: &PollerConfig,
     job: Job,
 ) {
-    let result = invoke(
-        invoker.as_ref(),
-        &cfg.target,
-        cfg.condition_function_id.as_deref(),
-        job.payload.clone(),
-    )
-    .await;
+    let result = cfg
+        .subscriber
+        .deliver(invoker.as_ref(), job.payload.clone())
+        .await;
 
     match result {
-        Ok(()) => store.ack(&cfg.queue_name, &job.id).await,
+        Ok(_) => store.ack(&cfg.queue_name, &job.id).await,
         Err(_err) => {
             store
                 .nack(&cfg.queue_name, job, cfg.max_retries, cfg.backoff_ms)
                 .await
         }
     }
-}
-
-/// Port of the engine's `FunctionHandler::handle` condition-skip semantics
-/// (`queue/src/trigger.rs:201-213`): only an explicit `Ok(Some(false))`
-/// from the condition function skips (and acks, since it returns `Ok(())`
-/// here); any other `Ok` continues to the target function; `Err` fails the
-/// job (nacks).
-async fn invoke(
-    invoker: &dyn Invoker,
-    target: &SubscriberTarget,
-    condition_function_id: Option<&str>,
-    payload: Value,
-) -> Result<(), String> {
-    if let Some(condition_id) = condition_function_id {
-        match invoker
-            .call_in_namespace(condition_id, payload.clone(), target.namespace())
-            .await
-        {
-            Ok(Some(Value::Bool(false))) => return Ok(()),
-            Ok(_) => {}
-            Err(err) => return Err(err),
-        }
-    }
-    target.deliver(invoker, payload).await.map(|_| ())
 }
 
 #[cfg(test)]
@@ -1310,26 +1279,17 @@ mod tests {
         (x % 15) + 1
     }
 
+    /// Records `(subscriber, payload)` per delivery: the default
+    /// [`Invoker::deliver`] calls [`Invoker::call`] with the subscriber id.
     #[derive(Default)]
     struct FakeInvoker {
         calls: Mutex<Vec<(String, Value)>>,
-        delivery_metadata: Mutex<Vec<Option<Value>>>,
-        delivery_namespaces: Mutex<Vec<Option<String>>>,
         fail_backend: AtomicBool,
-        condition_value: Mutex<Option<Value>>,
     }
 
     impl FakeInvoker {
         async fn calls(&self) -> Vec<(String, Value)> {
             self.calls.lock().await.clone()
-        }
-
-        async fn delivery_metadata(&self) -> Vec<Option<Value>> {
-            self.delivery_metadata.lock().await.clone()
-        }
-
-        async fn delivery_namespaces(&self) -> Vec<Option<String>> {
-            self.delivery_namespaces.lock().await.clone()
         }
     }
 
@@ -1340,29 +1300,11 @@ mod tests {
                 .lock()
                 .await
                 .push((function_id.to_string(), payload));
-            if function_id == "condition" {
-                return Ok(self.condition_value.lock().await.clone());
-            }
             if self.fail_backend.load(Ordering::SeqCst) {
                 Err("backend failed".to_string())
             } else {
                 Ok(Some(json!({"ok": true})))
             }
-        }
-
-        async fn call_delivery(
-            &self,
-            function_id: &str,
-            payload: Value,
-            metadata: Option<Value>,
-            namespace: Option<&str>,
-        ) -> Result<Option<Value>, String> {
-            self.delivery_metadata.lock().await.push(metadata);
-            self.delivery_namespaces
-                .lock()
-                .await
-                .push(namespace.map(str::to_string));
-            self.call(function_id, payload).await
         }
     }
 
@@ -1581,11 +1523,8 @@ mod tests {
                 .subscribe(
                     "demo",
                     "sub1",
-                    "backend",
-                    None,
-                    None,
+                    Subscriber::new("backend"),
                     config(mode_config(fifo)),
-                    None,
                 )
                 .await;
             // With a paused clock this only returns once every task is idle:
@@ -1673,15 +1612,12 @@ mod tests {
                 .subscribe(
                     "demo",
                     "sub1",
-                    "backend",
-                    None,
-                    None,
+                    Subscriber::new("backend"),
                     config(SubscriberQueueConfig {
                         max_retries: Some(3),
                         backoff_delay_ms: Some(BACKOFF_MS),
                         ..mode_config(fifo)
                     }),
-                    None,
                 )
                 .await;
             adapter.enqueue("demo", json!("job"), None, None).await;
@@ -1721,11 +1657,8 @@ mod tests {
                 .subscribe(
                     "demo",
                     "sub1",
-                    "backend",
-                    None,
-                    None,
+                    Subscriber::new("backend"),
                     config(mode_config(fifo)),
-                    None,
                 )
                 .await;
 
@@ -1778,8 +1711,7 @@ mod tests {
                 invoker.clone(),
                 PollerConfig {
                     queue_name: "shared".to_string(),
-                    target: SubscriberTarget::function("backend", None, None),
-                    condition_function_id: None,
+                    subscriber: Subscriber::new("backend"),
                     max_retries: 3,
                     backoff_ms: 1,
                 },
@@ -1828,7 +1760,7 @@ mod tests {
         let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
-            .subscribe("demo", "sub1", "backend", None, None, None, None)
+            .subscribe("demo", "sub1", Subscriber::new("backend"), None)
             .await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)
@@ -1853,10 +1785,10 @@ mod tests {
         let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
-            .subscribe("demo", "sub-a", "fn-a", None, None, None, None)
+            .subscribe("demo", "sub-a", Subscriber::new("fn-a"), None)
             .await;
         adapter
-            .subscribe("demo", "sub-b", "fn-b", None, None, None, None)
+            .subscribe("demo", "sub-b", Subscriber::new("fn-b"), None)
             .await;
 
         for i in 0..3 {
@@ -1874,60 +1806,6 @@ mod tests {
         let fn_b_calls = calls.iter().filter(|(f, _)| f == "fn-b").count();
         assert_eq!(fn_a_calls, 3, "fn-a should receive every enqueued message");
         assert_eq!(fn_b_calls, 3, "fn-b should receive every enqueued message");
-        adapter.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn same_function_subscriptions_receive_metadata_and_namespace() {
-        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        let invoker = Arc::new(FakeInvoker::default());
-        let adapter = BuiltinAdapter::new(store, invoker.clone());
-
-        adapter
-            .subscribe(
-                "demo",
-                "sub-a",
-                "backend",
-                Some(json!({"binding": "a"})),
-                None,
-                None,
-                Some("project-a".to_string()),
-            )
-            .await;
-        adapter
-            .subscribe(
-                "demo",
-                "sub-b",
-                "backend",
-                Some(json!({"binding": "b"})),
-                None,
-                None,
-                Some("project-b".to_string()),
-            )
-            .await;
-        adapter
-            .enqueue("demo", json!({"event": 1}), None, None)
-            .await;
-
-        wait_until(|| {
-            let invoker = invoker.clone();
-            async move { invoker.calls().await.len() == 2 }
-        })
-        .await;
-
-        let calls = invoker.calls().await;
-        assert!(calls
-            .iter()
-            .all(|(function_id, payload)| function_id == "backend"
-                && payload == &json!({"event": 1})));
-        let metadata = invoker.delivery_metadata().await;
-        assert_eq!(metadata.len(), 2);
-        assert!(metadata.contains(&Some(json!({"binding": "a"}))));
-        assert!(metadata.contains(&Some(json!({"binding": "b"}))));
-        let namespaces = invoker.delivery_namespaces().await;
-        assert_eq!(namespaces.len(), 2);
-        assert!(namespaces.contains(&Some("project-a".to_string())));
-        assert!(namespaces.contains(&Some("project-b".to_string())));
         adapter.shutdown().await;
     }
 
@@ -1964,14 +1842,11 @@ mod tests {
             .subscribe(
                 "demo",
                 "sub1",
-                "backend",
-                None,
-                None,
+                Subscriber::new("backend"),
                 config(SubscriberQueueConfig {
                     concurrency: Some(0),
                     ..Default::default()
                 }),
-                None,
             )
             .await;
         adapter
@@ -1997,14 +1872,11 @@ mod tests {
             .subscribe(
                 "demo",
                 "sub1",
-                "backend",
-                None,
-                None,
+                Subscriber::new("backend"),
                 config(SubscriberQueueConfig {
                     concurrency: Some(3),
                     ..Default::default()
                 }),
-                None,
             )
             .await;
         for i in 0..12 {
@@ -2033,9 +1905,7 @@ mod tests {
             .subscribe(
                 "demo",
                 "sub1",
-                "backend",
-                None,
-                None,
+                Subscriber::new("backend"),
                 config(SubscriberQueueConfig {
                     queue_mode: Some("fifo".to_string()),
                     // Deliberately set >1: fifo mode must ignore it (no
@@ -2043,7 +1913,6 @@ mod tests {
                     concurrency: Some(5),
                     ..Default::default()
                 }),
-                None,
             )
             .await;
         for i in 0..20 {
@@ -2076,15 +1945,12 @@ mod tests {
             .subscribe(
                 "demo",
                 "sub1",
-                "backend",
-                None,
-                None,
+                Subscriber::new("backend"),
                 config(SubscriberQueueConfig {
                     max_retries: Some(2),
                     backoff_delay_ms: Some(1),
                     ..Default::default()
                 }),
-                None,
             )
             .await;
         adapter.enqueue("demo", json!("job"), None, None).await;
@@ -2116,10 +1982,10 @@ mod tests {
             })
         };
         adapter
-            .subscribe("demo", "sub-a", "fn-a", None, None, retry_cfg(), None)
+            .subscribe("demo", "sub-a", Subscriber::new("fn-a"), retry_cfg())
             .await;
         adapter
-            .subscribe("demo", "sub-b", "fn-b", None, None, retry_cfg(), None)
+            .subscribe("demo", "sub-b", Subscriber::new("fn-b"), retry_cfg())
             .await;
 
         adapter.enqueue("demo", json!("job"), None, None).await;
@@ -2155,14 +2021,11 @@ mod tests {
             .subscribe(
                 "demo",
                 "sub1",
-                "backend",
-                None,
-                None,
+                Subscriber::new("backend"),
                 Some(SubscriberQueueConfig {
                     concurrency: Some(0),
                     ..Default::default()
                 }),
-                None,
             )
             .await;
         adapter.enqueue("demo", json!("queued"), None, None).await;
@@ -2182,7 +2045,7 @@ mod tests {
 
         // Re-arming under the same id resumes exactly where it left off.
         adapter
-            .subscribe("demo", "sub1", "backend", None, None, None, None)
+            .subscribe("demo", "sub1", Subscriber::new("backend"), None)
             .await;
         wait_until(|| {
             let invoker = invoker.clone();
@@ -2204,7 +2067,7 @@ mod tests {
         let adapter = Arc::new(BuiltinAdapter::new(store.clone(), invoker.clone()));
 
         adapter
-            .subscribe("demo", "sub1", "backend", None, None, None, None)
+            .subscribe("demo", "sub1", Subscriber::new("backend"), None)
             .await;
         adapter.enqueue("demo", json!("inflight"), None, None).await;
         tokio::time::timeout(Duration::from_secs(1), invoker.started.notified())
@@ -2212,9 +2075,9 @@ mod tests {
             .expect("delivery should start");
 
         // Returns promptly even though a delivery is parked mid-invocation:
-        // unsubscribe must never stall the control plane (the trigger
-        // handler holds its registrations lock across this call) behind one
-        // slow job.
+        // unsubscribe must never stall the control plane (the subscribers
+        // hold their registrations lock across this call) behind one slow
+        // job.
         tokio::time::timeout(Duration::from_secs(1), adapter.unsubscribe("demo", "sub1"))
             .await
             .expect("unsubscribe must not wait for the in-flight invocation");
@@ -2250,10 +2113,10 @@ mod tests {
             ..Default::default()
         });
         adapter
-            .subscribe("demo", "sub1", "backend", None, None, paused.clone(), None)
+            .subscribe("demo", "sub1", Subscriber::new("backend"), paused.clone())
             .await;
         adapter
-            .subscribe("other", "sub2", "backend", None, None, paused, None)
+            .subscribe("other", "sub2", Subscriber::new("backend"), paused)
             .await;
 
         let entered = store.entered.notified();
@@ -2298,39 +2161,6 @@ mod tests {
         adapter.shutdown().await;
     }
 
-    // (f) condition=false skips + acks without invoking the target function.
-    #[tokio::test]
-    async fn condition_false_skips_and_acks_without_invoking_target() {
-        let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        let invoker = Arc::new(FakeInvoker::default());
-        *invoker.condition_value.lock().await = Some(Value::Bool(false));
-        let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
-
-        adapter
-            .subscribe(
-                "demo",
-                "sub1",
-                "backend",
-                None,
-                Some("condition".to_string()),
-                None,
-                None,
-            )
-            .await;
-        adapter
-            .enqueue("demo", json!({"hello": "world"}), None, None)
-            .await;
-
-        wait_until(|| {
-            let invoker = invoker.clone();
-            async move { invoker.calls().await.len() == 1 }
-        })
-        .await;
-        assert_eq!(invoker.calls().await[0].0, "condition");
-        assert_eq!(adapter.topic_stats("demo").await.unwrap().delivered, 1);
-        adapter.shutdown().await;
-    }
-
     // Duplicate (topic, id) subscribe is a warn+no-op, not a silent replace.
     #[tokio::test]
     async fn duplicate_subscription_is_noop() {
@@ -2339,10 +2169,10 @@ mod tests {
         let adapter = BuiltinAdapter::new(store.clone(), invoker.clone());
 
         adapter
-            .subscribe("demo", "sub1", "backend", None, None, None, None)
+            .subscribe("demo", "sub1", Subscriber::new("backend"), None)
             .await;
         adapter
-            .subscribe("demo", "sub1", "other-backend", None, None, None, None)
+            .subscribe("demo", "sub1", Subscriber::new("other-backend"), None)
             .await;
         assert_eq!(adapter.subscriptions.lock().await.len(), 1);
         adapter.shutdown().await;

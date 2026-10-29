@@ -1,9 +1,9 @@
 //! `iii-state` binary entry.
 //!
 //! Boot: parse CLI, connect to the engine, register the `state` configuration
-//! schema, fetch the authoritative value, start the trigger type + functions
-//! via `boot::start`, wire the `configuration:updated` reload trigger, then
-//! sleep until Ctrl+C. The optional `--config` YAML file is a **seed only**:
+//! schema, fetch the authoritative value, start `state::on-changed` and the
+//! functions via `boot::start`, observe `configuration::on-updated` for live
+//! reloads, then sleep until Ctrl+C. The optional `--config` YAML file is a **seed only**:
 //! it is used to populate the configuration entry the first time, after which
 //! the configuration worker is the source of truth.
 
@@ -100,12 +100,10 @@ async fn main() -> Result<()> {
     let boot = iii_state::boot::start(iii.clone(), config.clone()).await?;
     tracing::info!(adapter = %config.effective_adapter_name(), "iii-state ready");
 
-    // Subscribe to configuration:updated so triggers_enabled/max_value_bytes
-    // reload live and a save_interval_ms change respawns the adapter's save
-    // loop (see configuration).
-    configuration::register_config_trigger(&iii, boot.ctx.clone(), boot.apply_lock.clone())
-        .map_err(anyhow::Error::msg)
-        .context("binding configuration trigger")?;
+    // Observe configuration:updated so events_enabled/max_value_bytes reload
+    // live and a save_interval_ms change respawns the adapter's save loop (see
+    // configuration).
+    configuration::observe_config_changes(&iii, boot.ctx.clone(), boot.apply_lock.clone());
 
     wait_for_shutdown_signal().await?;
     tracing::info!("iii-state shutting down");

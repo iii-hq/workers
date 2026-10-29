@@ -107,20 +107,19 @@ async fn main() -> Result<()> {
     }
 
     let boot = iii_queue::boot::start(project_iii.clone(), config).await?;
-    configuration::register_config_trigger(
+    configuration::observe_config_changes(
         &project_iii,
         boot.runtime.clone(),
-        boot.trigger_handler.clone(),
-    )
-    .map_err(anyhow::Error::msg)
-    .context("binding queue configuration trigger")?;
+        boot.subscribers.clone(),
+    );
 
-    // Reconcile once after binding the trigger so an update made between the
-    // initial fetch and trigger registration cannot be missed indefinitely.
+    // Reconcile once after observing configuration changes so an update made
+    // between the initial fetch and the observer's activation cannot be
+    // missed indefinitely.
     boot.runtime
-        .refresh_config(&boot.trigger_handler)
+        .refresh_config(&boot.subscribers)
         .await
-        .context("reconciling queue configuration after trigger binding")?;
+        .context("reconciling queue configuration after observing configuration changes")?;
 
     tracing::info!("queue worker ready");
 

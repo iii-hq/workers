@@ -27,10 +27,15 @@ pub struct StateConfig {
     #[schemars(schema_with = "state_adapter_schema")]
     pub adapter: Option<AdapterEntry>,
 
-    /// Globally enable or disable state change-trigger fan-out. Applied live.
+    /// Emit `state::on-changed` after every committed change. Applied live.
     /// Defaults to `true`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub triggers_enabled: Option<bool>,
+    // Entries stored by earlier releases name the knob `triggers_enabled`.
+    #[serde(
+        default,
+        alias = "triggers_enabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub events_enabled: Option<bool>,
 
     /// Reject `state::set` writes whose JSON-serialized value exceeds this many
     /// bytes (VALUE_TOO_LARGE). Applied live. Unset means no limit.
@@ -50,7 +55,7 @@ impl Default for StateConfig {
     fn default() -> Self {
         Self {
             adapter: None,
-            triggers_enabled: Some(true),
+            events_enabled: Some(true),
             max_value_bytes: None,
             save_interval_ms: None,
         }
@@ -211,9 +216,9 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn default_config_enables_triggers_and_uses_kv() {
+    fn default_config_enables_events_and_uses_kv() {
         let c = StateConfig::default();
-        assert_eq!(c.triggers_enabled, Some(true));
+        assert_eq!(c.events_enabled, Some(true));
         assert_eq!(c.effective_adapter_name(), "kv");
         assert!(c.max_value_bytes.is_none());
         assert!(c.save_interval_ms.is_none());
@@ -221,8 +226,15 @@ mod tests {
 
     #[test]
     fn deny_unknown_fields_rejects_typos() {
-        let r: Result<StateConfig, _> = serde_json::from_value(json!({"triggers_enabledd": true}));
+        let r: Result<StateConfig, _> = serde_json::from_value(json!({"events_enabledd": true}));
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn a_stored_entry_with_the_earlier_knob_name_loads() {
+        let c = StateConfig::from_json(&json!({"triggers_enabled": false})).unwrap();
+        assert_eq!(c.events_enabled, Some(false));
+        assert_eq!(c.to_json(), json!({"events_enabled": false}));
     }
 
     #[test]

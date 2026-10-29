@@ -1,19 +1,15 @@
-//! Per-subscriber consumer loop: pulls deliveries off a function's queue,
-//! invokes the target function (through an optional condition-function
-//! gate), and hands the result to the [`RetryHandler`] for ack/requeue/DLQ.
+//! Per-subscriber consumer loop: pulls deliveries off a subscriber's queue,
+//! hands each one to its `queue::on-message` observer, and passes the result
+//! to the [`RetryHandler`] for ack/requeue/DLQ.
 //!
 //! Port of `engine/src/workers/queue/adapters/rabbitmq/worker.rs`. Seams
 //! applied for the standalone worker:
 //! - `Arc<Engine>` and `engine.call(...)` become `Arc<dyn
-//!   crate::trigger::Invoker>` and `invoker.call(function_id, payload)`
-//!   (same seam as every other adapter in this crate, e.g.
-//!   `adapters/redis.rs`).
-//! - The engine's `condition::check_condition` helper and its telemetry span
-//!   (`tracing::info_span!` + OTel `SpanExt::with_parent_headers` +
-//!   `Instrument`) are dropped; `check_condition` is reimplemented locally
-//!   against `Invoker` with identical semantics (same duplication pattern as
-//!   `adapters/redis.rs::check_condition`) and the worker emits plain
-//!   `tracing` events instead of a parented span.
+//!   crate::subscribers::Invoker>` and [`Subscriber::deliver`] (same seam as
+//!   every other adapter in this crate, e.g. `adapters/redis.rs`).
+//! - The engine's telemetry span (`tracing::info_span!` + OTel
+//!   `SpanExt::with_parent_headers` + `Instrument`) is dropped; the worker
+//!   emits plain `tracing` events instead of a parented span.
 
 #![cfg(feature = "rabbitmq")]
 
@@ -21,44 +17,16 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use lapin::{message::Delivery, options::*, Channel};
-use serde_json::Value;
 use tokio::{
     sync::{oneshot, Semaphore},
     task::JoinSet,
 };
 
-use crate::trigger::{Invoker, SubscriberTarget};
+use crate::subscribers::{Invoker, Subscriber};
 
 use super::consumer::JobParser;
 use super::retry::RetryHandler;
 use super::types::{Job, QueueMode};
-
-/// Port of the engine's `check_condition` (`engine/src/condition.rs`) against
-/// `Invoker` instead of `EngineTrait` — same semantics as
-/// `adapters/redis.rs::check_condition`: `Ok(Some(v))` proceeds unless `v` is
-/// the JSON boolean `false`, `Ok(None)` proceeds (with a warn log), `Err`
-/// propagates the invocation failure.
-async fn check_condition(
-    invoker: &dyn Invoker,
-    condition_function_id: &str,
-    data: Value,
-    namespace: Option<&str>,
-) -> Result<bool, String> {
-    match invoker
-        .call_in_namespace(condition_function_id, data, namespace)
-        .await
-    {
-        Ok(Some(result)) => Ok(result.as_bool() != Some(false)),
-        Ok(None) => {
-            tracing::warn!(
-                condition_function_id = %condition_function_id,
-                "Condition function returned no result"
-            );
-            Ok(true)
-        }
-        Err(e) => Err(e),
-    }
-}
 
 pub struct Worker {
     channel: Arc<Channel>,
@@ -97,8 +65,7 @@ impl Worker {
         self: Arc<Self>,
         topic: String,
         subscription_id: String,
-        target: SubscriberTarget,
-        condition_function_id: Option<String>,
+        subscriber: Subscriber,
         consumer_tag: String,
         queue_name: String,
         mut cancelled: oneshot::Receiver<()>,
@@ -159,13 +126,7 @@ impl Worker {
                             // mid-invocation — an aborted invocation's side
                             // effects would apply again on redelivery.
                             if let Err(e) = self
-                                .process_delivery(
-                                    delivery,
-                                    &topic,
-                                    &subscription_id,
-                                    &target,
-                                    condition_function_id.as_deref(),
-                                )
+                                .process_delivery(delivery, &topic, &subscription_id, &subscriber)
                                 .await
                             {
                                 tracing::error!(
@@ -179,8 +140,7 @@ impl Worker {
                             let worker = Arc::clone(&self);
                             let topic_clone = topic.clone();
                             let subscription_id_clone = subscription_id.clone();
-                            let target_clone = target.clone();
-                            let condition_function_id_clone = condition_function_id.clone();
+                            let subscriber_clone = subscriber.clone();
                             let semaphore = self.semaphore.as_ref().map(Arc::clone);
                             tasks.spawn(async move {
                                 let _permit = if let Some(ref sem) = semaphore {
@@ -194,8 +154,7 @@ impl Worker {
                                         delivery,
                                         &topic_clone,
                                         &subscription_id_clone,
-                                        &target_clone,
-                                        condition_function_id_clone.as_deref(),
+                                        &subscriber_clone,
                                     )
                                     .await
                                 {
@@ -237,12 +196,11 @@ impl Worker {
         delivery: Delivery,
         topic: &str,
         subscription_id: &str,
-        target: &SubscriberTarget,
-        condition_function_id: Option<&str>,
+        subscriber: &Subscriber,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut job = JobParser::parse_from_delivery(&delivery)?;
 
-        match self.process_job(&job, target, condition_function_id).await {
+        match self.process_job(&job, subscriber).await {
             Ok(_) => {
                 delivery
                     .ack(BasicAckOptions::default())
@@ -276,45 +234,12 @@ impl Worker {
     async fn process_job(
         &self,
         job: &Job,
-        target: &SubscriberTarget,
-        condition_function_id: Option<&str>,
+        subscriber: &Subscriber,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let invoker = Arc::clone(&self.invoker);
         let data = job.data.clone();
 
-        if let Some(condition_path) = condition_function_id {
-            tracing::debug!(
-                condition_function_id = %condition_path,
-                "Checking trigger conditions"
-            );
-            match check_condition(
-                invoker.as_ref(),
-                condition_path,
-                data.clone(),
-                target.namespace(),
-            )
-            .await
-            {
-                Ok(true) => {}
-                Ok(false) => {
-                    tracing::debug!(
-                        function_id = %target.function_id(),
-                        "Condition check failed, skipping handler"
-                    );
-                    return Ok(());
-                }
-                Err(err) => {
-                    tracing::error!(
-                        condition_function_id = %condition_path,
-                        error = %err,
-                        "Error invoking condition function"
-                    );
-                    return Err(format!("Condition function error: {:?}", err).into());
-                }
-            }
-        }
-
-        match target.deliver(invoker.as_ref(), data).await {
+        match subscriber.deliver(invoker.as_ref(), data).await {
             Ok(_) => {
                 tracing::debug!(job_id = %job.id, "Job processed successfully");
                 Ok(())

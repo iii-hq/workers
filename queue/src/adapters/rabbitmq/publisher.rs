@@ -71,7 +71,7 @@ impl Publisher {
         subscription_id: Option<&str>,
     ) -> Result<()> {
         if let Some(id) = subscription_id {
-            // Per-subscription queue: publish directly to the binding's
+            // Per-subscription queue: publish directly to the subscription's
             // queue (default exchange) to avoid re-fanning out to all subscribers.
             let names = RabbitNames::new(topic);
             let queue_name = names.subscriber_queue(id);

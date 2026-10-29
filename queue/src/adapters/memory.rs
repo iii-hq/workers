@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, TopicInfo};
 use crate::store::{InMemoryStore, TopicStats};
 use crate::subscriber_config::SubscriberQueueConfig;
-use crate::trigger::{Invoker, SubscriberTarget};
+use crate::subscribers::{Invoker, Subscriber};
 
 use super::builtin::BuiltinAdapter;
 
@@ -55,16 +55,15 @@ impl QueueAdapter for MemoryAdapter {
         self.inner.enqueue(topic, data, traceparent, baggage).await;
     }
 
-    async fn subscribe_target(
+    async fn subscribe(
         &self,
         topic: &str,
         id: &str,
-        target: SubscriberTarget,
-        condition_function_id: Option<String>,
+        subscriber: Subscriber,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         self.inner
-            .subscribe_target(topic, id, target, condition_function_id, queue_config)
+            .subscribe(topic, id, subscriber, queue_config)
             .await;
     }
 
@@ -184,7 +183,7 @@ impl QueueAdapter for MemoryAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trigger::Invoker;
+    use crate::subscribers::Invoker;
     use async_trait::async_trait;
     use serde_json::json;
     use std::time::Duration;
@@ -212,7 +211,7 @@ mod tests {
         let adapter = MemoryAdapter::new(invoker.clone());
 
         adapter
-            .subscribe("demo", "sub-1", "fn-1", None, None, None, None)
+            .subscribe("demo", "sub-1", Subscriber::new("fn-1"), None)
             .await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)

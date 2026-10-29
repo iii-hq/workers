@@ -24,7 +24,7 @@ pub struct QueueConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter: Option<AdapterEntry>,
     /// Durable function queues keyed by the name used by
-    /// `TriggerAction::Enqueue`. Definitions are persisted through the
+    /// `CallAction::Enqueue`. Definitions are persisted through the
     /// configuration worker and restored when this worker restarts.
     #[serde(default)]
     pub queue_configs: BTreeMap<String, FunctionQueueConfig>,

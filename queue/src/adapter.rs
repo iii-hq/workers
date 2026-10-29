@@ -4,8 +4,8 @@
 //! Ported from the engine builtin `iii-queue` worker
 //! (`engine/src/workers/queue/mod.rs:40-160`). Seams applied for the
 //! standalone worker: the engine trait is invoked from `Arc<Engine>`
-//! call sites; here adapters are driven by the worker's own trigger loop
-//! and invoke functions through `Arc<dyn crate::trigger::Invoker>` instead.
+//! call sites; here adapters are driven by the worker's own subscribers
+//! and invoke functions through `Arc<dyn crate::subscribers::Invoker>` instead.
 //! Telemetry/tracing spans present on the engine's trait methods are
 //! dropped — the worker emits its own `tracing` events at call sites.
 
@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::store::TopicStats;
 use crate::subscriber_config::SubscriberQueueConfig;
-use crate::trigger::SubscriberTarget;
+use crate::subscribers::Subscriber;
 
 /// Summary of a known queue topic, returned by [`QueueAdapter::list_topics`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,41 +197,17 @@ pub trait QueueAdapter: Send + Sync + 'static {
         baggage: Option<String>,
     );
 
-    /// Register a subscriber (`id`) on `topic` that hands each delivered
-    /// message to `target` ([`SubscriberTarget::deliver`]): a trigger's
-    /// function or a `queue::on-message` observer. The target's result
-    /// drives ack, retry and DLQ the same way for both.
-    async fn subscribe_target(
-        &self,
-        topic: &str,
-        id: &str,
-        target: SubscriberTarget,
-        condition_function_id: Option<String>,
-        queue_config: Option<SubscriberQueueConfig>,
-    );
-
-    /// Register a subscriber (`id`) on `topic` that invokes `function_id`
-    /// for each delivered message: [`Self::subscribe_target`] with a
-    /// [`SubscriberTarget::Function`].
+    /// Register a subscription (`id`) on `topic` that hands each delivered
+    /// message to `subscriber` ([`Subscriber::deliver`]), a
+    /// `queue::on-message` observer. Its target's result drives ack, retry
+    /// and DLQ.
     async fn subscribe(
         &self,
         topic: &str,
         id: &str,
-        function_id: &str,
-        metadata: Option<Value>,
-        condition_function_id: Option<String>,
+        subscriber: Subscriber,
         queue_config: Option<SubscriberQueueConfig>,
-        namespace: Option<String>,
-    ) {
-        self.subscribe_target(
-            topic,
-            id,
-            SubscriberTarget::function(function_id, metadata, namespace),
-            condition_function_id,
-            queue_config,
-        )
-        .await;
-    }
+    );
 
     /// Remove a previously registered subscriber.
     async fn unsubscribe(&self, topic: &str, id: &str);
@@ -293,7 +269,7 @@ pub trait QueueAdapter: Send + Sync + 'static {
 
     // -- Function queue transport methods --
     //
-    // The engine routes `TriggerAction::Enqueue` through the standalone
+    // The engine routes `CallAction::Enqueue` through the standalone
     // `engine::queue::enqueue` provider, which publishes through this surface.
 
     /// Publish a message directly onto a function's dedicated queue.
@@ -383,7 +359,7 @@ pub trait QueueAdapter: Send + Sync + 'static {
 /// Hot-swappable [`QueueAdapter`]: holds the currently active adapter behind
 /// an `RwLock` and forwards every trait method to it. A configuration change
 /// replaces the inner adapter (e.g. builtin -> file-backed builtin) without
-/// the trigger handler or service functions needing to know a swap happened.
+/// the subscribers or service functions needing to know a swap happened.
 #[derive(Clone)]
 pub struct SwappableAdapter {
     inner: Arc<RwLock<Arc<dyn QueueAdapter>>>,
@@ -432,17 +408,16 @@ impl QueueAdapter for SwappableAdapter {
             .await;
     }
 
-    async fn subscribe_target(
+    async fn subscribe(
         &self,
         topic: &str,
         id: &str,
-        target: SubscriberTarget,
-        condition_function_id: Option<String>,
+        subscriber: Subscriber,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         self.current()
             .await
-            .subscribe_target(topic, id, target, condition_function_id, queue_config)
+            .subscribe(topic, id, subscriber, queue_config)
             .await;
     }
 
@@ -610,12 +585,11 @@ mod tests {
             self.enqueue_calls.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn subscribe_target(
+        async fn subscribe(
             &self,
             _topic: &str,
             _id: &str,
-            _target: SubscriberTarget,
-            _condition_function_id: Option<String>,
+            _subscriber: Subscriber,
             _queue_config: Option<SubscriberQueueConfig>,
         ) {
         }

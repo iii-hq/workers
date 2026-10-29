@@ -1,6 +1,6 @@
 //! `state::barrier` — fan-in as an ordinary function.
 //!
-//! A barrier answers one question for a trigger binding: "has everything I am
+//! A barrier answers one question for an observer: "has everything I am
 //! waiting for arrived?" It records each arrival idempotently, answers `skip`
 //! while the set is incomplete, and answers `allow` EXACTLY ONCE — on the
 //! arrival that completes it — carrying every arrival's payload.
