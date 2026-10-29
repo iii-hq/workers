@@ -7,12 +7,13 @@
 //!   4. Register config schema (seed = None for MVP) and fetch authoritative value.
 //!   5. Build ConfigCell + Deps.
 //!   6. Register all functions.
-//!   7. Bind the cron sweep trigger (retain handle for hot-reload).
-//!   8. Set up the harness hooks: one-shot binds for turn-completed / pre-trigger /
-//!      pre-generate (the engine parks them until the harness registers the types).
+//!   7. Observe `cron::on-tick` for the sweep (retain the handle for hot-reload).
+//!   8. Observe the harness: one-shot observers of on-turn-completed /
+//!      hook::on-pre-call, plus hook::on-pre-generate per `inject_guidance` (each
+//!      stays pending until the harness registers its function).
 //!   9. Resume-scan: re-enqueue a tick for every non-terminal run (crash recovery).
-//!  10. LAST: bind the configuration-change trigger so its handler closes over
-//!      the fully-built snapshot cell + the cron handle.
+//!  10. LAST: observe configuration changes so the handler closes over the
+//!      fully-built snapshot cell + the sweep handle.
 //!  11. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 
 use std::sync::Arc;
@@ -24,7 +25,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
-use workflow::configuration::{self, TriggerHandles};
+use workflow::configuration::{self, ObserverHandles};
 use workflow::functions::{self, ConfigCell};
 use workflow::locks::WorkflowLocks;
 use workflow::{manifest, state};
@@ -115,20 +116,22 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
-    // Bind the cron sweep; retain the handle so a sweep_expression change
-    // re-binds it live. The guidance slot starts empty — apply_guidance below
+    // Observe the cron sweep; retain the handle so a sweep_expression change
+    // replaces it live. The guidance slot starts empty — apply_guidance below
     // fills it only when the config asks for injection.
-    let handles = Arc::new(TriggerHandles {
-        sweep: std::sync::Mutex::new(configuration::bind_sweep(&iii, &cfg)),
+    let sweep = configuration::observe_sweep(&iii, &cfg);
+    configuration::report_sweep(sweep.clone());
+    let handles = Arc::new(ObserverHandles {
+        sweep: std::sync::Mutex::new(sweep),
         guidance: Default::default(),
     });
 
-    // Bind the two always-on HARNESS-provided hooks (turn-completed → wake,
-    // hook::pre-trigger → reply stamping). One shot: the engine parks each
-    // binding until the harness registers the trigger type (recoverable
-    // triggers, iii #1962) and re-activates them across harness restarts.
-    // The pre-generate guidance hook follows the `inject_guidance` config
-    // knob instead (on by default), hot-applied on config changes.
+    // Observe the two always-on HARNESS functions (on-turn-completed → wake,
+    // hook::on-pre-call → reply stamping). One shot: each observer stays
+    // pending until the harness registers its function and becomes active
+    // again across harness restarts. The pre-generate guidance hook follows
+    // the `inject_guidance` config knob instead (on by default), hot-applied
+    // on config changes.
     configuration::setup_harness_hooks(&iii);
     configuration::apply_guidance(&iii, &handles, cfg.inject_guidance);
 
@@ -147,16 +150,13 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!(error = %e, "resume-scan: list_runs failed"),
     }
 
-    // LAST: bind the configuration-change trigger.
-    match configuration::register_config_trigger(&iii, cell, handles) {
-        // One serialized re-fetch to close the boot gap: an update landing
-        // between the boot fetch and the binding just registered fired into
-        // nothing, and would otherwise stay invisible until the NEXT change.
-        Ok(reload) => reload.run().await,
-        Err(e) => {
-            tracing::warn!(error = %e, "registering the configuration change trigger failed; config frozen until restart");
-        }
-    }
+    // LAST: observe configuration changes. One serialized re-fetch closes the
+    // boot gap: an update landing between the boot fetch and the observer
+    // becoming active reached no one, and would otherwise stay invisible until
+    // the NEXT change.
+    configuration::observe_config_changes(&iii, cell, handles)
+        .run()
+        .await;
 
     tracing::info!("workflow ready");
 

@@ -19,7 +19,7 @@ The worker is simultaneously:
   for every outbound action (`sendMessage`, `editMessageText`, `setWebhook`, …); and
 - an **update receiver** — it consumes inbound `Update` objects either by
   long-polling Telegram (`getUpdates`) or by receiving Telegram's HTTP POSTs
-  through an engine route.
+  through an `http::on-request` route.
 
 Both ingress paths converge on a single sink, so the rest of the worker never
 needs to know which adapter delivered an update:
@@ -27,7 +27,7 @@ needs to know which adapter delivered an update:
 ```
 polling:  bg task ─ getUpdates ─┐
                                  ├─► webhook::process_update_with_tracing ─► process_update
-webhook:  engine HTTP route ─────┘
+webhook:  http::on-request route ┘
 ```
 
 ## 2. The HTTP client
@@ -89,9 +89,10 @@ starting anything new. Polling needs **no public URL** — ideal for local dev.
 updates: { name: webhook, config: { base_url: "https://engine.example", secret: "…" } }
 ```
 
-Telegram POSTs each update to the engine route `POST /telegram-bot/webhook`,
-which the engine dispatches to the `telegram-bot::webhook` function. The request
-arrives as an `HttpTriggerRequest { body: Value, headers: Option<Map> }`. The
+Telegram POSTs each update to the route `POST /telegram-bot/webhook`, an
+`http::on-request` observer whose target is the `telegram-bot::webhook`
+function. The request arrives as an `HttpRequest { body: Value, headers:
+Option<Map> }` (the fields of the http worker's request this worker reads). The
 handler:
 
 1. Confirms the active adapter is `webhook` (else rejects — the route may still

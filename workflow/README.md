@@ -1,19 +1,19 @@
 # workflow worker
 
 A deterministic DAG orchestrator running over the iii harness. Accepts
-`workflow::start` / `workflow::tick` / `workflow::stop` triggers; persists run
+`workflow::start` / `workflow::tick` / `workflow::stop` calls; persists run
 state in state; fans out nodes as child harness sessions with deterministic
 ids so duplicate deliveries are idempotent.
 
-The two always-on harness hook bindings (turn-completed → wake, pre-trigger →
-stamp-reply) are one-shot at startup and rely on the engine's recoverable
-triggers (iii #1962, engine ≥ 0.21.8): bound before the harness is up, they
-park as pending intents and activate when the harness registers the trigger
-types. On older engines the binds are silently dropped. The third hook —
-pre-generate → inject-guidance — follows the `inject_guidance` knob in the
-`workflow` configuration entry (ON by default): turning it off shrinks
-prompts (the harness's `# Granted functions` catalog still advertises the
-`workflow::*` ids) and the worker binds or unbinds it hot, no restart.
+The two always-on harness observers (`harness::on-turn-completed` → wake,
+`harness::hook::on-pre-call` → stamp-reply) are created once at startup. An
+observer created before the harness is up stays `pending` and becomes active
+when the harness registers its function, and again after a harness restart.
+The third — `harness::hook::on-pre-generate` → inject-guidance — follows the
+`inject_guidance` knob in the `workflow` configuration entry (ON by default):
+turning it off shrinks prompts (the harness's `# Granted functions` catalog
+still advertises the `workflow::*` ids) and the worker observes or disposes it
+hot, no restart.
 
 ---
 
@@ -34,13 +34,13 @@ the outcome; prefer push over polling `workflow::status` in a loop.
    }
    ```
 
-   You pass NO session id: a `pre_trigger` hook auto-stamps your real
+   You pass NO session id: a `pre_call` hook auto-stamps your real
    `session_id` / `model` / `provider` (an agent cannot target another session).
    Delivery is at-least-once; a deterministic `idempotency_key` (`wfreply_<run_id>`)
    makes a re-fire a no-op.
 
 1. **Completion callback (push), for a WORKER caller.** Pass `notify` to
-   `workflow::start`. When the run reaches a terminal state the worker triggers
+   `workflow::start`. When the run reaches a terminal state the worker calls
    your function once with `{run_id, status, result, result_error}`:
 
    ```jsonc
@@ -52,13 +52,48 @@ the outcome; prefer push over polling `workflow::status` in a loop.
    ```
 
    Delivery is durable (enqueued) and **at-least-once** — make the handler
-   idempotent and dedup on `run_id`. This is the trigger-driven path; no polling.
+   idempotent and dedup on `run_id`. This is the push path; no polling.
 
-2. **Global broadcast.** Every terminal run also fires `workflow::run-completed`
-   (untargeted). Bind a worker to it to observe *all* runs, e.g. for audit.
+2. **Observe every run.** Every terminal run also calls
+   `workflow::on-run-completed`. Observe it to see *all* runs, e.g. for audit
+   (see [Events](#events)).
+
+   ```ts
+   iii.observe(
+     { function_id: 'workflow::on-run-completed', filters: { 'input.status': { $eq: 'failed' } }, deliver: 'output' },
+     'audit::workflow-failed',
+   )
+   ```
 
 `workflow::status` remains for one-off inspection, but a live tracker should use
 `reply_to` (agents) or `notify` (workers) rather than a status loop.
+
+---
+
+## Events
+
+| Function | Args | Filter on | Event |
+|---|---|---|---|
+| `workflow::on-run-completed` | none | `input.run_id`, `input.status` | `RunCompletedEvent { run_id, status: completed \| failed \| cancelled, result, result_error }` |
+
+The function is private (only this worker calls it; anyone may observe it) and
+returns the event it is called with. The worker calls it once per terminal run,
+at least once (a crash mid-finalize re-fires it), and only while something
+observes it; dedup on `run_id`.
+
+## Observers
+
+| Observed function | Args / filters | Target | Target receives |
+|---|---|---|---|
+| `cron::on-tick` | args `{ expression: <sweep_expression> }` | `workflow::sweep` | the tick (`deliver: output`) |
+| `harness::on-turn-completed` | none | `workflow::wake` | `TurnCompletedEvent` (`deliver: output`); non-workflow sessions are ignored |
+| `harness::hook::on-pre-call` | args `{ functions: ["workflow::start"], on_error: "fail_open", timeout_ms: 30000 }` | `workflow::stamp-reply` | the pre-call hook input; returns the hook decision |
+| `harness::hook::on-pre-generate` | args `{ on_error: "fail_open", inject_prompt: <workflow guidance> }`, only while `inject_guidance` is on | `workflow::inject-guidance` | not called: the harness joins `inject_prompt` into the system prompt |
+| `configuration::on-updated` | filters on `input.id` and `input.event_type` (through `iii-config-client`) | `workflow::on-config-change` | the configuration event (`deliver: output`) |
+
+A `sweep_expression` change observes the new expression first, then disposes
+the old observer; if the cron worker refuses the new expression
+(`INVALID_CRON_EXPRESSION`), the old observer and schedule stay.
 
 ---
 

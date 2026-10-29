@@ -140,7 +140,7 @@ export class DictationController {
       if (!item) break
       this.inflight += 1
       this.host.iii
-        .trigger('voice::dictation::push', {
+        .call('voice::dictation::push', {
           session_id: sessionId,
           seq: item.seq,
           pcm16_base64: item.pcm16Base64,

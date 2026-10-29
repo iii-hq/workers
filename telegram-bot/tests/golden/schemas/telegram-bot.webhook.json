@@ -16,7 +16,7 @@
         ]
       }
     },
-    "title": "HttpTriggerRequest",
+    "title": "HttpRequest",
     "type": "object"
   },
   "response_schema": {

@@ -89,19 +89,17 @@ async fn main() -> Result<()> {
 
     functions::register_all(&iii, &deps);
 
-    // Probe the optional approval-gate worker; bind approval triggers if present.
+    // Probe the optional approval-gate worker; observe its events if present.
     gate.set_present(approval_gate::probe_presence(&iii).await);
-    bindings::bind_session_triggers(&iii);
+    bindings::observe_session_events(&iii);
     if gate.is_available() {
-        bindings::bind_approval_triggers(&iii);
+        bindings::observe_approval_events(&iii);
         tracing::info!("approval-gate present — inline approvals enabled");
     } else {
         tracing::info!("approval-gate absent — approvals disabled");
     }
 
-    configuration::register_config_trigger(&iii, cell, deps.clone())
-        .map_err(anyhow::Error::msg)
-        .context("binding configuration trigger")?;
+    configuration::observe_config_changes(&iii, cell, deps.clone());
 
     // Best-effort identity discovery (does not block boot if Slack is unreachable).
     match slack_client::auth_test(&deps).await {
@@ -112,7 +110,7 @@ async fn main() -> Result<()> {
         Err(e) => tracing::warn!(error = %e, "auth.test failed at boot (check bot_token)"),
     }
 
-    // Register the bridge HTTP routes if the bridge is configured.
+    // Serve the bridge HTTP routes if the bridge is configured.
     ingress::apply(&deps).await;
 
     tracing::info!("slack worker ready, waiting for invocations");

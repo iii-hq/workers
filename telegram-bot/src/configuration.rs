@@ -5,8 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -35,6 +34,8 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "telegram-bot::on-config-change";
+/// The configuration worker's change event.
+const ON_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
@@ -57,7 +58,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         .map(|value| value.to_json())
         .unwrap_or_else(|| WorkerConfig::default().to_json());
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload, config_rpc_timeout_ms(seed))
+        call_configuration_with_retry(iii, function, payload, config_rpc_timeout_ms(seed))
     })
     .await
 }
@@ -115,7 +116,7 @@ mod initialization;
 
 /// Bound lookup time while distinguishing a missing entry from a failed dependency.
 async fn try_get_config_value(iii: &IIIClient, timeout_ms: u64) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(
+    match call_configuration_with_retry(
         iii,
         "configuration::get",
         json!({ "id": config_id() }),
@@ -146,11 +147,14 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) -> bool {
     true
 }
 
-pub fn register_config_trigger(
+/// Register the internal reload handler and observe `configuration::on-updated`
+/// for this worker's entry with it. The observer stays `pending` while the
+/// configuration worker is absent; dropping the handle does not dispose it.
+pub fn observe_config_changes(
     iii: &IIIClient,
     cell: ConfigCell,
     deps: Arc<Deps>,
-) -> Result<(), Error> {
+) -> ObserverHandle {
     let cell_for_fn = cell.clone();
     let engine = iii.clone();
     let deps_for_fn = deps.clone();
@@ -171,15 +175,20 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(ON_UPDATED_FN)
+            .filters(config_update_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    )
+}
+
+/// Selects the `configuration:updated` events of one entry.
+fn config_update_filters(id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, deps: &Arc<Deps>) {
@@ -204,7 +213,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, deps: &Arc<Deps>) 
     }
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -213,8 +222,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -295,6 +304,17 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn config_observer_selects_updates_of_this_entry() {
+        assert_eq!(
+            config_update_filters("telegram-bot"),
+            json!({
+                "input.id": { "$eq": "telegram-bot" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
+    }
 
     #[tokio::test]
     async fn apply_config_swaps_all_fields() {

@@ -91,7 +91,7 @@ fn normalize_functions(functions: Option<Value>) -> Option<Value> {
 /// is already running INSIDE a workflow, so the implicit default denies the
 /// control plane a leaf LLM node could use to escalate or reshape the engine:
 /// `workflow::*` (recursive sub-workflow launches → unbounded nesting),
-/// `configuration::*` (worker reconfiguration, incl. pre-trigger hooks),
+/// `configuration::*` (worker reconfiguration, incl. pre-call hooks),
 /// `approval::*` (approval flows), and `harness::hook::*` (rebinding hooks).
 /// This matters because upstream LLM output is fed verbatim into a downstream
 /// node's prompt, so an un-narrowed node is a cross-node prompt-injection target;
@@ -258,14 +258,14 @@ pub(crate) async fn fire_node(
 
     let resp = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "harness::send".into(),
             payload: send_payload,
             action: None,
             timeout_ms: Some(dispatch_timeout_ms),
         })
         .await
-        .map_err(|e| WorkflowError::Trigger(e.to_string()))?;
+        .map_err(|e| WorkflowError::Call(e.to_string()))?;
 
     let turn_id = resp
         .get("turn_id")
@@ -379,11 +379,11 @@ async fn finalize(
     // otherwise show as "running" in workflow::status forever.
     cancel_running_checkpoints(&mut record.nodes);
 
-    // Emit terminal callbacks CONCURRENTLY (independent best-effort triggers — was
+    // Emit terminal callbacks CONCURRENTLY (independent best-effort calls — was
     // serial awaits holding the per-run lock for their sum). This stays BEFORE
     // `put_run` persists the terminal status (in tick::handle) on purpose: emit-first
     // is at-least-once — a crash before persist re-ticks and re-fires, and consumers
-    // dedup on run_id (notify/run-completed carry it; reply is keyed/idempotent).
+    // dedup on run_id (notify/on-run-completed carry it; reply is keyed/idempotent).
     // Persisting first would instead risk a LOST delivery on a crash mid-emit, which
     // is strictly worse for a delivery guarantee.
     let rec: &WorkflowRunRecord = record;
@@ -725,14 +725,14 @@ mod tests {
     fn normalize_functions_passes_through_policy_object_and_drops_null() {
         // An existing policy object gets the router deny unioned into its deny list.
         let got = normalize_functions(Some(
-            json!({ "allow": ["web::fetch"], "deny": [], "expose": "agent_trigger" }),
+            json!({ "allow": ["web::fetch"], "deny": [], "expose": "agent_call" }),
         ));
         assert_eq!(
             got,
             Some(json!({
                 "allow": ["web::fetch"],
                 "deny": ["router::chat", "router::complete"],
-                "expose": "agent_trigger"
+                "expose": "agent_call"
             }))
         );
         assert_eq!(normalize_functions(None), None);

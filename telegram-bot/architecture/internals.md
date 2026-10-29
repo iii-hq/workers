@@ -2,7 +2,7 @@
 
 This is the deep tour of everything that isn't ingress or configuration (covered
 in [telegram-api.md](telegram-api.md) and [configuration.md](configuration.md)):
-the reactive bindings to sibling workers, the render/streaming state machine, the
+the observers of sibling workers' events, the render/streaming state machine, the
 durable KV schema, the per-chat FSM, preference resolution, trace correlation,
 and the concurrency model that holds it all together.
 
@@ -10,7 +10,7 @@ and the concurrency model that holds it all together.
 
 ```
 src/
-├── main.rs            boot: register, fetch config, wire functions/triggers, start ingress
+├── main.rs            boot: register, fetch config, wire functions/observers, start ingress
 ├── lib.rs             module exports
 ├── config.rs          WorkerConfig schema + WebhookConfig::endpoint_url
 ├── configuration.rs   configuration-worker integration + hot-reload
@@ -29,10 +29,10 @@ src/
 │   ├── router.rs      router::models::list
 │   └── state.rs       state::get / set / delete (typed wrappers)
 ├── functions/
-│   ├── mod.rs         function registration; trigger binding; webhook-route helpers
+│   ├── mod.rs         function registration; observers; webhook-route helpers
 │   ├── webhook.rs     ingress sink + command/callback router + harness drive
 │   ├── set_webhook.rs manual setWebhook re-arm endpoint
-│   └── bindings/      the six sibling-event handlers
+│   └── bindings/      the six sibling-event handlers (observer targets)
 └── render/            outbound streaming pipeline
     ├── stream.rs      the render state machine (the heart)
     ├── verbosity.rs   phase classification + verbosity gating
@@ -52,23 +52,25 @@ no session id — harness assigns one, which the worker persists as the chat's
 session. Subsequent sends reuse it until `/start` resets the chat.
 
 **Outbound (agent → user).** Driving a turn makes `session-manager`/`harness`
-emit events, which the engine routes to this worker's bindings, which call into
+call their event functions, whose observers run this worker's handlers, which call into
 the render pipeline, which calls the Telegram API. See [§3](#3-reactive-bindings)
 and [§5](#5-the-render-state-machine).
 
-## 3. Reactive bindings
+## 3. Observers of sibling events
 
-`functions::bind_triggers` binds six handlers to sibling triggers (best-effort —
-a missing sibling only warns, so a binding can silently never fire):
+`functions::observe_events` observes six sibling event functions, each with
+`deliver: output` so the handler receives the event. An observer of an absent
+sibling stays `pending` and becomes active when the sibling registers its
+function:
 
-| Trigger | Handler | Role filter | On fire |
+| Observed function | Handler | Role filter (`input.message.role`) | On call |
 |---|---|---|---|
-| `session::message-added` | `on-message-added` | `assistant`, `function_result` | Start rendering a new entry (assistant text/thinking, or a verbosity-gated function-result bubble). |
-| `session::message-updated` | `on-message-updated` | `assistant` | Apply an incremental revision to an existing entry (or reconcile if already finalized). |
-| `session::status-changed` | `on-status-changed` | — | React to session status (drives typing/working state). |
-| `harness::turn-completed` | `on-turn-completed` | — | Finalize all entries, suppress typing, drain one FIFO-queued message. |
-| `approval::pending-created` | `on-pending-created` | — | Post the Approve/Reject/Approve-always keyboard. |
-| `approval::pending-resolved` | `on-pending-resolved` | — | Clear the keyboard once resolved (by any surface). |
+| `session::on-message-added` | `on-message-added` | `assistant`, `function_result` | Start rendering a new entry (assistant text/thinking, or a verbosity-gated function-result bubble). |
+| `session::on-message-updated` | `on-message-updated` | `assistant` | Apply an incremental revision to an existing entry (or reconcile if already finalized). |
+| `session::on-status-changed` | `on-status-changed` | — | React to session status (drives typing/working state). |
+| `harness::on-turn-completed` | `on-turn-completed` | — | Finalize all entries, suppress typing, drain one FIFO-queued message. |
+| `approval::on-pending-created` | `on-pending-created` | — | Post the Approve/Reject/Approve-always keyboard. |
+| `approval::on-pending-resolved` | `on-pending-resolved` | — | Clear the keyboard once resolved (by any surface). |
 
 Two invariants:
 
@@ -76,8 +78,8 @@ Two invariants:
   `kv::chat_id_for_session(session_id)`; if there's no mapping it returns
   `ok: true` and does nothing. (Bindings only know `session_id`; the reverse
   KV mapping is how they find the chat to post into.)
-- **Role filtering is the sibling's job** (passed in the trigger config), but
-  `on-message-added` re-checks the role defensively.
+- **Role filtering is iii's job** (the observer's filters on
+  `input.message.role`), but `on-message-added` re-checks the role defensively.
 
 A subtle ordering rule: `on-turn-completed` **suppresses typing before it
 finalizes**, because `turn-completed` can arrive before a stale
@@ -87,7 +89,7 @@ answer.
 ### Approval flow end to end
 
 ```
-approval-gate emits pending-created ─► on-pending-created:
+approval-gate calls approval::on-pending-created ─► on-pending-created:
      post inline keyboard [Approve a:<tok>] [Reject d:<tok>] [Approve always w:<tok>]
      store cb:<tok> → ApprovalCallbackData{ session_id, function_call_id, function_id }
      remember approval:<sid>:<fcid>:msg (the keyboard message id)
@@ -238,7 +240,7 @@ state, all built from `DashMap`s, async `Mutex`es, and `Notify`s:
   `last_created_order`.
 - **Steering**: `fifo_queues`.
 - **Ingress**: `poll_offset`, `poller_cancel`, `poller_handle`, and
-  `webhook_trigger` (the retained HTTP-route handle — see
+  `webhook_route` (the retained `http::on-request` observer handle — see
   [configuration.md §4](configuration.md#4-the-updates-adapter-lifecycle)).
 - **Typing**: `typing_tasks`, `typing_suppressed`, `typing_output_seen`,
   `typing_generation`.
@@ -258,8 +260,8 @@ stale refresh ticks can't fire.
 - **Approval token collisions** are possible (32-bit hash of `function_call_id`)
   across concurrent holds in one chat; resolution is idempotent so a stale token
   is a no-op rather than a wrong-approval.
-- **Best-effort bindings**: if a sibling worker is absent at boot, its trigger
-  binding only warns — that binding silently never fires. The webhook ingress
-  route, by contrast, is engine-native and not subject to sibling availability.
+- **Pending observers**: if a sibling worker is absent, its observer stays
+  `pending` and nothing reaches the handler until the sibling registers its
+  function. The webhook ingress route likewise waits on the http worker.
 - **No key TTLs**: KV grows until explicitly cleared; long-lived chats accumulate
   per-entry keys across sessions (cleared on `/start` for the prior session).

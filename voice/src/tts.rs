@@ -431,10 +431,10 @@ async fn remote_speech(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{NoopDeliverer, TriggerSets};
+    use crate::events::NoopDeliverer;
 
     fn test_emitter() -> Arc<Emitter> {
-        Arc::new(Emitter::new(TriggerSets::new(), Arc::new(NoopDeliverer)))
+        Arc::new(Emitter::new(Arc::new(NoopDeliverer)))
     }
 
     #[test]

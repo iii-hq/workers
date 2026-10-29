@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{from_value, json, Value};
 
@@ -41,7 +41,7 @@ fn dispatch_timeout_ms() -> u64 {
 // ---------------------------------------------------------------------------
 
 async fn state_get(iii: &IIIClient, scope: &str, key: &str) -> Result<Value, WorkflowError> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::get".into(),
         payload: json!({ "scope": scope, "key": key }),
         action: None,
@@ -57,7 +57,7 @@ async fn state_set(
     key: &str,
     value: Value,
 ) -> Result<(), WorkflowError> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".into(),
         payload: json!({ "scope": scope, "key": key, "value": value }),
         action: None,
@@ -69,7 +69,7 @@ async fn state_set(
 }
 
 async fn state_delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), WorkflowError> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::delete".into(),
         payload: json!({ "scope": scope, "key": key }),
         action: None,
@@ -81,7 +81,7 @@ async fn state_delete(iii: &IIIClient, scope: &str, key: &str) -> Result<(), Wor
 }
 
 async fn state_list(iii: &IIIClient, scope: &str) -> Result<Value, WorkflowError> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::list".into(),
         payload: json!({ "scope": scope }),
         action: None,

@@ -1,8 +1,8 @@
-//! `workflow::stamp-reply` — the pre_trigger hook that makes `reply_to`
+//! `workflow::stamp-reply` — the pre_call hook that makes `reply_to`
 //! auto-capture the caller's session.
 //!
-//! Bound to `harness::hook::pre-trigger` scoped to `workflow::start` (see
-//! `configuration::bind_pre_trigger_hook`). When an agent calls `workflow::start`
+//! Observes `harness::hook::on-pre-call` scoped to `workflow::start` (see
+//! `configuration::observe_pre_call_hook`). When an agent calls `workflow::start`
 //! with a `reply_to` object, this hook stamps the TRUE caller identity
 //! (`session_id` / `model` / `provider`, taken from the harness-supplied hook
 //! envelope) into `reply_to`, OVERWRITING anything the agent supplied — so an
@@ -11,7 +11,7 @@
 //! mutations (the harness parses that identically to `null`).
 //!
 //! The harness routes deserialization failures / hook errors through the
-//! binding's `on_error: fail_open`, so a hiccup here never blocks
+//! observer's `on_error: fail_open` arg, so a hiccup here never blocks
 //! `workflow::start` — it just skips the auto-stamp.
 
 use schemars::JsonSchema;
@@ -47,7 +47,7 @@ fn cont(mutations: Option<StampReplyMutations>) -> StampReplyResponse {
     }
 }
 
-/// The slice of the `pre_trigger` hook envelope we need (lenient: ignores the
+/// The slice of the `pre_call` hook envelope we need (lenient: ignores the
 /// other envelope fields the harness sends).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StampReplyEvent {
@@ -114,7 +114,7 @@ pub fn decide(event: StampReplyEvent) -> StampReplyResponse {
     cont(Some(StampReplyMutations { arguments: args }))
 }
 
-/// Pre_trigger hook handler: stamp the caller identity into the call's arguments
+/// Pre_call hook handler: stamp the caller identity into the call's arguments
 /// (see `decide`) and ALWAYS continue. The hook never parks or blocks the harness
 /// turn — `workflow::start` is fire-and-forget; the outcome comes back via
 /// `reply_to` / `notify`.

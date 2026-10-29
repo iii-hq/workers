@@ -44,7 +44,7 @@ impl Deps {
 pub(crate) async fn harness_stop_session(deps: &Deps, session_id: &str, dispatch_timeout_ms: u64) {
     let _ = deps
         .iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "harness::stop".into(),
             payload: serde_json::json!({ "session_id": session_id }),
             action: None,
@@ -182,10 +182,17 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             stamp_reply::handle(event).await
         })
         .description(
-            "Internal pre_trigger hook on workflow::start: stamps the caller's session (and, \
+            "Internal pre_call hook on workflow::start: stamps the caller's session (and, \
              for `reply_to`, model/provider/policy) into the arguments. Always continues; not \
              called directly.",
         ),
+    );
+
+    iii.register_function(
+        crate::events::ON_RUN_COMPLETED_FN,
+        RegisterFunction::new(|event: crate::events::RunCompletedEvent| Ok::<_, Error>(event))
+            .description(crate::events::ON_RUN_COMPLETED_DESC)
+            .private(),
     );
 
     iii.register_function(

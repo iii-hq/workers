@@ -3,8 +3,7 @@
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
@@ -64,7 +63,7 @@ async fn worker_registers_on_engine() {
 
     let result = timeout(
         Duration::from_secs(10),
-        client.trigger(TriggerRequest {
+        client.call(CallRequest {
             function_id: "engine::functions::list".into(),
             payload: json!({}),
             action: None,
@@ -72,8 +71,8 @@ async fn worker_registers_on_engine() {
         }),
     )
     .await
-    .expect("trigger timed out")
-    .expect("trigger failed");
+    .expect("call timed out")
+    .expect("call failed");
 
     let functions = result
         .get("functions")
@@ -82,8 +81,8 @@ async fn worker_registers_on_engine() {
     // The engine identifies functions by `function_id`; older builds used `id`.
     // Accept either so the probe is robust to engine/SDK version skew. The
     // `telegram-bot::webhook` function is registered regardless of the active
-    // updates adapter (its HTTP route is what is adapter-gated, not the
-    // function itself).
+    // updates adapter (its `http::on-request` observer is what is
+    // adapter-gated, not the function itself).
     let registered = functions.iter().any(|f| {
         f.get("function_id")
             .or_else(|| f.get("id"))
