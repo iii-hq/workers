@@ -1,8 +1,7 @@
-//! Live check against a real engine (run it without the deprecated stream
-//! worker): a provider client registers the security-scan change trigger
-//! types with the production deliverer, a separate consumer client binds a
-//! function, and the test checks filtered delivery, filter rejection and
-//! unregistration end to end.
+//! Live check against a real engine: a provider client registers the
+//! security-scan change functions and calls them through the production
+//! feed, a separate consumer client observes one with a filter, and the test
+//! checks filtered delivery, args refusal and disposal end to end.
 //!
 //! ```sh
 //! SECURITY_SCAN_LIVE_III_URL=ws://127.0.0.1:49641 cargo test --test live_change_feed -- --ignored
@@ -11,12 +10,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, RegisterFunction, Source};
 use security_scan::events::{
-    self, ChangeFeed, ChangeKind, IiiChangeDeliverer, ReconciliationChangedEventV1,
-    RECONCILIATION_CHANGED, RUN_CHANGED,
+    self, ChangeFeed, ChangeKind, ReconciliationChangedEventV1, ON_RECONCILIATION_CHANGED_FN,
+    ON_RUN_CHANGED_FN,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -56,15 +54,13 @@ fn event(run_id: &str, repository: &str) -> ReconciliationChangedEventV1 {
 
 #[tokio::test]
 #[ignore = "needs a live engine: set SECURITY_SCAN_LIVE_III_URL"]
-async fn change_trigger_types_work_on_a_live_engine() {
+async fn change_functions_work_on_a_live_engine() {
     let url = std::env::var("SECURITY_SCAN_LIVE_III_URL")
         .expect("set SECURITY_SCAN_LIVE_III_URL to a live engine");
 
     let provider = client(&url, "security-scan-live-provider");
-    let feed = Arc::new(ChangeFeed::new(Arc::new(IiiChangeDeliverer::new(
-        provider.clone(),
-    ))));
-    events::register_trigger_types(&provider, &feed);
+    events::register_functions(&provider);
+    let feed = ChangeFeed::new(provider.clone());
 
     let consumer = client(&url, "security-scan-live-consumer");
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
@@ -75,92 +71,78 @@ async fn change_trigger_types_work_on_a_live_engine() {
             Ok(Value::Null)
         }),
     );
-    let binding = consumer
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: RECONCILIATION_CHANGED.into(),
-            function_id: "security-scan-live::on-reconciliation".into(),
-            config: json!({ "repository": "iii" }),
-            metadata: None,
-            namespace: None,
-            trigger_namespace: None,
-        })
-        .expect("bind reconciliation-changed");
-    wait_for("the binding to reach the provider", || {
-        feed.binding_count(ChangeKind::Reconciliation) == 1
+    let observer = consumer.observe(
+        Source::function(ON_RECONCILIATION_CHANGED_FN)
+            .filters(json!({ "input.repository": { "$eq": "iii" } }))
+            .deliver(Deliver::Output),
+        "security-scan-live::on-reconciliation",
+    );
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .expect("observer active within 10 s")
+        .expect("observer accepted");
+    wait_for("the provider to see the observer", || {
+        provider.is_observed(ON_RECONCILIATION_CHANGED_FN)
     })
     .await;
-    println!("binding registered through the engine");
+    println!("observer active through the engine");
 
-    // A malformed filter is rejected by the provider and never stored.
-    let _rejected = consumer
-        .register_trigger(RegisterTriggerInput {
-            trigger_type: RUN_CHANGED.into(),
-            function_id: "security-scan-live::on-reconciliation".into(),
-            config: json!({ "stream_name": "security-scan:runs" }),
-            metadata: None,
-            namespace: None,
-            trigger_namespace: None,
-        })
-        .expect("send the malformed binding");
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(feed.binding_count(ChangeKind::Run), 0);
-    println!("malformed run-changed filter rejected by the provider");
-
-    // Filtered out: a change in another repository is not delivered.
-    assert_eq!(
-        feed.emit(
-            ChangeKind::Reconciliation,
-            "other",
-            "sec_other",
-            &event("sec_other", "other"),
-        )
-        .await,
-        0
+    // The change functions take no args: the engine refuses them.
+    let refused = consumer.observe(
+        Source::function(ON_RUN_CHANGED_FN).args(json!({ "repository": "iii" })),
+        "security-scan-live::on-reconciliation",
     );
-    assert_eq!(
-        feed.emit(
-            ChangeKind::Reconciliation,
-            "iii",
-            "sec_live",
-            &event("sec_live", "iii"),
-        )
-        .await,
-        1
+    let error = tokio::time::timeout(Duration::from_secs(10), refused.ready())
+        .await
+        .expect("an answer within 10 s")
+        .expect_err("args are refused");
+    assert!(error.to_string().contains("INVALID_ARGS"), "{error}");
+    assert!(!provider.is_observed(ON_RUN_CHANGED_FN));
+    println!("args on a no-args change function refused: {error}");
+
+    // Filtered out: a change in another repository is called but not delivered.
+    assert!(
+        feed.emit(ChangeKind::Reconciliation, &event("sec_other", "other"))
+            .await
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .is_err(),
+        "the filter keeps other repositories out"
+    );
+    assert!(
+        feed.emit(ChangeKind::Reconciliation, &event("sec_live", "iii"))
+            .await
     );
     let received = tokio::time::timeout(Duration::from_secs(10), rx.recv())
         .await
         .expect("delivery within 10 s")
         .expect("consumer channel open");
     println!("consumer received {received}");
-    // The engine may add routing fields (`_caller_worker_id`); the domain
-    // fields are exactly the notification.
-    assert_eq!(received["run_id"], "sec_live");
-    assert_eq!(received["repository"], "iii");
+    assert_eq!(
+        received,
+        json!({ "run_id": "sec_live", "repository": "iii" })
+    );
 
-    binding.unregister();
-    wait_for("the unregister callback", || {
-        feed.binding_count(ChangeKind::Reconciliation) == 0
+    observer.dispose().await.expect("dispose the observer");
+    wait_for("the provider to see the observer go", || {
+        !provider.is_observed(ON_RECONCILIATION_CHANGED_FN)
     })
     .await;
-    println!("binding unregistered through the engine");
-    assert_eq!(
-        feed.emit(
-            ChangeKind::Reconciliation,
-            "iii",
-            "sec_live",
-            &event("sec_live", "iii"),
-        )
-        .await,
-        0
+    println!("observer disposed through the engine");
+    assert!(
+        !feed
+            .emit(ChangeKind::Reconciliation, &event("sec_live", "iii"))
+            .await
     );
     assert!(
         tokio::time::timeout(Duration::from_millis(500), rx.recv())
             .await
             .is_err(),
-        "no delivery after unregister"
+        "no delivery after dispose"
     );
 
-    events::unregister_trigger_types(&provider);
     consumer.shutdown_async().await;
     provider.shutdown_async().await;
 }

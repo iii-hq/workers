@@ -26,6 +26,9 @@ fn catalog_matches_the_registered_surface() {
             "security-scan::action-execute",
             "security-scan::action-commit",
             "security-scan::action-push",
+            "security-scan::on-run-changed",
+            "security-scan::on-reconciliation-changed",
+            "security-scan::on-action-changed",
         ]
     );
 }
