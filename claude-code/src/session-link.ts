@@ -85,7 +85,7 @@ export const TASK_SCOPE = 'agent_tasks';
 export type TaskOutcome = {
   session_id: string;
   parent_session_id?: string;
-  /** Which agent ran it, so one binding can serve several. */
+  /** Which agent ran it, so one observer can serve several. */
   agent: string;
   task: string;
   status: 'done' | 'error';
