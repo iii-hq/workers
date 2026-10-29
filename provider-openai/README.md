@@ -21,7 +21,8 @@ and costs nothing).
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+  backoff until acked, and re-declares on every `router::on-ready` event
+  (it observes that function at boot; the observer outlives router restarts).
   The model slice is populated from live discovery and the declaration carries
   `credential_env_var: OPENAI_API_KEY`.
 - **Transport:** the default `https://api.openai.com/v1/responses` endpoint

@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { act, type ButtonHTMLAttributes, type HTMLAttributes } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -18,11 +18,11 @@ vi.mock('@iii-dev/console-ui', () => ({
   Skeleton: (props: HTMLAttributes<HTMLDivElement>) => <div {...props} />,
 }))
 
-const trigger = vi.fn<(id: string, payload: unknown, options?: unknown) => Promise<unknown>>()
+const call = vi.fn<(id: string, payload: unknown, options?: unknown) => Promise<unknown>>()
 const register = vi.fn()
 const host = {
-  iii: { trigger },
-  functionTriggers: { register },
+  iii: { call },
+  functionCalls: { register },
   providerConfigForms: { register: vi.fn() },
 } as unknown as Host
 const renderer = createImageRenderer(host)
@@ -40,10 +40,10 @@ const preview = { content: [{ type: 'image', data: 'cHJldmlldw==', mime: 'image/
 let root: Root
 let container: HTMLDivElement
 
-function message(overrides: Partial<FunctionTriggerMessage> = {}): FunctionTriggerMessage {
+function message(overrides: Partial<FunctionCallMessage> = {}): FunctionCallMessage {
   return {
     id: 'image-1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: GENERATE_ID,
     input: {},
     output: { details },
@@ -52,13 +52,13 @@ function message(overrides: Partial<FunctionTriggerMessage> = {}): FunctionTrigg
   }
 }
 
-async function render(overrides: Partial<FunctionTriggerMessage> = {}) {
+async function render(overrides: Partial<FunctionCallMessage> = {}) {
   await act(async () => root.render(renderer.tryRender(message(overrides))))
 }
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
-  trigger.mockReset().mockResolvedValue(preview)
+  call.mockReset().mockResolvedValue(preview)
   register.mockReset()
   container = document.createElement('div')
   document.body.append(container)
@@ -91,7 +91,7 @@ describe('image chat renderer', () => {
 
   it('fetches a preview and displays the image and saved file metadata', async () => {
     await render({ output: { content: [], details: { content: [], details } } })
-    expect(trigger).toHaveBeenCalledWith(READ_ID, { path, variant: 'preview' }, { timeoutMs: 20_000 })
+    expect(call).toHaveBeenCalledWith(READ_ID, { path, variant: 'preview' }, { timeoutMs: 20_000 })
     expect(container.querySelector('img')?.alt).toBe('A lighthouse at dusk')
     expect(container.querySelector('img')?.src).toBe('data:image/jpeg;base64,cHJldmlldw==')
     expect(container.textContent).toContain('1024×1536')
@@ -102,7 +102,7 @@ describe('image chat renderer', () => {
   it('uses an inline image without fetching it again', async () => {
     await render({ output: { ...preview, details } })
     expect(container.querySelector('img')).not.toBeNull()
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('shows pending generation without reading a file or bypassing approval', async () => {
@@ -115,7 +115,7 @@ describe('image chat renderer', () => {
     )
     expect(container.querySelector('[aria-busy="true"]')).not.toBeNull()
     expect(container.textContent).toContain('A lighthouse')
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
     expect(renderer.tryRenderRunning?.(message({ running: true, pendingApproval: true }))).toBeNull()
     expect(renderer.tryRender(message({ pendingApproval: true }))).toBeNull()
     expect(renderer.tryRender(message({ output: { error: 'denied' } }))).toBeNull()
@@ -125,7 +125,7 @@ describe('image chat renderer', () => {
     ['unavailable', () => Promise.reject(new Error('Preview unavailable'))],
     ['empty', () => Promise.resolve({ content: [] })],
   ] as const)('shows a readable error for %s previews', async (_name, response) => {
-    trigger.mockImplementation(response)
+    call.mockImplementation(response)
     await render()
     expect(container.querySelector('[role="status"]')?.textContent).toMatch(/unavailable|no preview/)
     expect(container.querySelector('img')).toBeNull()
@@ -134,7 +134,7 @@ describe('image chat renderer', () => {
 
   it('keeps the latest preview when an earlier file responds late', async () => {
     let resolveFirst!: (value: unknown) => void
-    trigger.mockImplementationOnce(
+    call.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolveFirst = resolve

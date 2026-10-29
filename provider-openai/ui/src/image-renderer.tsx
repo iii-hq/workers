@@ -1,5 +1,5 @@
 /**
- * Injected function-trigger renderer for `provider::openai::image::*`.
+ * Injected function-call renderer for `provider::openai::image::*`.
  *
  * `image::generate` deliberately returns no picture bytes: base64 in a
  * function result only inflates the conversation context. The preview the
@@ -11,8 +11,8 @@
  */
 
 import {
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   IconButton,
   Skeleton,
@@ -122,7 +122,7 @@ function usePreview(host: Host, path: string, inline: string | null): PreviewSta
     let cancelled = false
     setState({ status: 'loading' })
     host.iii
-      .trigger<unknown>(READ_ID, { path, variant: 'preview' }, { timeoutMs: 20_000 })
+      .call<unknown>(READ_ID, { path, variant: 'preview' }, { timeoutMs: 20_000 })
       .then((result) => {
         if (cancelled) return
         const src = inlineImageUrl(result)
@@ -239,7 +239,7 @@ export function isImageFunction(functionId: string): boolean {
   return functionId === GENERATE_ID || functionId === READ_ID
 }
 
-function renderSettled(host: Host, message: FunctionTriggerMessage): React.ReactNode | null {
+function renderSettled(host: Host, message: FunctionCallMessage): React.ReactNode | null {
   if (!isImageFunction(message.functionId) || message.pendingApproval || message.running || message.output == null) {
     return null
   }
@@ -248,12 +248,12 @@ function renderSettled(host: Host, message: FunctionTriggerMessage): React.React
   return <ImageCard host={host} details={details} inline={inlineImageUrl(message.output)} />
 }
 
-function renderRunning(message: FunctionTriggerMessage): React.ReactNode | null {
+function renderRunning(message: FunctionCallMessage): React.ReactNode | null {
   if (message.functionId !== GENERATE_ID || message.pendingApproval || !message.running) return null
   return <GeneratingCard input={message.input} />
 }
 
-export function createImageRenderer(host: Host): FunctionTriggerRenderer {
+export function createImageRenderer(host: Host): FunctionCallRenderer {
   return {
     id: 'provider-openai/page.js#image',
     isMatch: isImageFunction,
