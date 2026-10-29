@@ -112,9 +112,12 @@ pub struct FeedArgs {
     pub metadata: Option<Map<String, Value>>,
 }
 
-/// What a binding and an observer receive per frame.
+/// What a binding and an observer receive per frame: the delivered event of
+/// `grok::on-agent-event` / `grok::on-raw-event` and the request schema
+/// those functions publish.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 pub struct FeedEvent {
+    /// The grok session the frame belongs to.
     pub session_id: String,
     /// `<session_id>-<epoch>-<seq:08>`: the dedup key.
     pub event_id: String,
@@ -551,13 +554,15 @@ pub fn refuse_invocation(function_id: &str) -> Error {
     }
 }
 
-/// Handler of `grok::on-agent-event`: any payload is refused.
-fn refuse_agent_event(_payload: Value) -> Result<(), Error> {
+/// Handler of `grok::on-agent-event`: typed as the delivered [`FeedEvent`]
+/// so the function publishes its schema; any invocation is refused.
+fn refuse_agent_event(_event: FeedEvent) -> Result<(), Error> {
     Err(refuse_invocation(ON_AGENT_EVENT_FN))
 }
 
-/// Handler of `grok::on-raw-event`: any payload is refused.
-fn refuse_raw_event(_payload: Value) -> Result<(), Error> {
+/// Handler of `grok::on-raw-event`: typed as the delivered [`FeedEvent`]
+/// so the function publishes its schema; any invocation is refused.
+fn refuse_raw_event(_event: FeedEvent) -> Result<(), Error> {
     Err(refuse_invocation(ON_RAW_EVENT_FN))
 }
 
@@ -620,20 +625,14 @@ pub fn register(iii: &IIIClient) {
 }
 
 /// An owner-delivered observable function over `feed`: args_format is the
-/// binding config, the request format the delivery payload.
+/// binding config; the request format (the delivery payload, [`FeedEvent`])
+/// and the response format come from the typed refusing handler.
 fn observable(function: RegisterFunction, description: &str, feed: Arc<Feed>) -> RegisterFunction {
-    function
-        .description(description)
-        .request_format(feed_event_schema())
-        .observe(
-            Observe::owner()
-                .args_format::<FeedArgs>()
-                .handler(FeedObserveHandler::new(feed)),
-        )
-}
-
-fn feed_event_schema() -> Value {
-    serde_json::to_value(schemars::schema_for!(FeedEvent)).unwrap_or(Value::Null)
+    function.description(description).observe(
+        Observe::owner()
+            .args_format::<FeedArgs>()
+            .handler(FeedObserveHandler::new(feed)),
+    )
 }
 
 /// Deliver a translated AgentEvent frame on `grok::agent-event`.
@@ -962,16 +961,36 @@ mod tests {
         }
     }
 
+    fn feed_event(session_id: &str, event: Value) -> FeedEvent {
+        FeedEvent {
+            session_id: session_id.to_string(),
+            event_id: format!("{session_id}-{EPOCH}-00000000"),
+            seq: 0,
+            epoch: EPOCH.to_string(),
+            source: SOURCE.to_string(),
+            event,
+        }
+    }
+
     #[test]
     fn observable_functions_refuse_direct_invocation() {
         for (function_id, refused) in [
             (
                 ON_AGENT_EVENT_FN,
-                refuse_agent_event(json!({ "session_id": "s1" })),
+                refuse_agent_event(feed_event("s1", json!({ "type": "x" }))),
             ),
-            (ON_RAW_EVENT_FN, refuse_raw_event(json!({}))),
-            (ON_AGENT_EVENT_FN, refuse_agent_event(Value::Null)),
-            (ON_RAW_EVENT_FN, refuse_raw_event(json!("forged"))),
+            (
+                ON_RAW_EVENT_FN,
+                refuse_raw_event(feed_event("s1", json!({}))),
+            ),
+            (
+                ON_AGENT_EVENT_FN,
+                refuse_agent_event(feed_event("forged", Value::Null)),
+            ),
+            (
+                ON_RAW_EVENT_FN,
+                refuse_raw_event(feed_event("forged", json!("forged"))),
+            ),
         ] {
             let error = refused.unwrap_err();
             assert!(
@@ -982,6 +1001,58 @@ mod tests {
         }
         assert_eq!(ON_AGENT_EVENT_FN, "grok::on-agent-event");
         assert_eq!(ON_RAW_EVENT_FN, "grok::on-raw-event");
+    }
+
+    /// The request and response schemas a sync handler publishes, generated
+    /// the way `RegisterFunction::new` does (draft-07 root schema per type).
+    fn handler_schemas<T: JsonSchema, R: JsonSchema>(
+        _handler: fn(T) -> Result<R, Error>,
+    ) -> (Value, Value) {
+        let schema = |root| serde_json::to_value(root).unwrap();
+        let settings = schemars::gen::SchemaSettings::draft07();
+        (
+            schema(
+                settings
+                    .clone()
+                    .into_generator()
+                    .into_root_schema_for::<T>(),
+            ),
+            schema(settings.into_generator().into_root_schema_for::<R>()),
+        )
+    }
+
+    fn is_typed(schema: &Value) -> bool {
+        [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+        ]
+        .iter()
+        .any(|key| schema.get(key).is_some())
+    }
+
+    #[test]
+    fn on_handlers_publish_typed_request_and_response_schemas() {
+        for (function_id, (request, response)) in [
+            (ON_AGENT_EVENT_FN, handler_schemas(refuse_agent_event)),
+            (ON_RAW_EVENT_FN, handler_schemas(refuse_raw_event)),
+        ] {
+            assert!(is_typed(&request), "{function_id} request: {request}");
+            assert!(is_typed(&response), "{function_id} response: {response}");
+            assert_eq!(request["type"], "object", "{function_id}");
+            let mut fields: Vec<&String> =
+                request["properties"].as_object().unwrap().keys().collect();
+            fields.sort();
+            assert_eq!(
+                fields,
+                ["epoch", "event", "event_id", "seq", "session_id", "source"],
+                "{function_id}"
+            );
+        }
     }
 
     #[tokio::test]
