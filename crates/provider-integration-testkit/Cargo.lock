@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai"
-version = "1.2.27"
+version = "1.2.28"
 dependencies = [
  "base64 0.22.1",
  "clap",
