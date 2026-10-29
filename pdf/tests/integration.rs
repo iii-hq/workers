@@ -235,8 +235,8 @@ async fn caller_mistakes_come_back_as_errors() {
 }
 
 /// This worker is called on demand, so it must cost a turn that has nothing to
-/// do with a document exactly nothing. It registers no harness hook and binds no
-/// trigger type: an agent finds it through the function registry, and a person
+/// do with a document exactly nothing. It registers no harness hook and hosts no
+/// event source: an agent finds it through the function registry, and a person
 /// finds it through the console page. A hook here would run on every single
 /// generation, which is what a turn-loop worker is for, not this one.
 #[tokio::test(flavor = "multi_thread")]
