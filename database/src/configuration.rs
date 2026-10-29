@@ -5,8 +5,7 @@ use crate::config::WorkerConfig;
 use crate::handlers::AppState;
 use crate::pool::{self, Pool};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -57,7 +56,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -86,7 +85,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 
 /// Returns `Ok(None)` when the entry does not exist (`NOT_FOUND`).
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -98,7 +97,7 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
 /// The stored value as written (`raw: true`): `${VAR}` templates and
 /// `secret://` references unexpanded. `Value::Null` when nothing is stored.
 pub async fn get_raw_value(iii: &IIIClient) -> Result<Value, String> {
-    match trigger_configuration_with_retry(
+    match call_configuration_with_retry(
         iii,
         "configuration::get",
         json!({ "id": config_id(), "raw": true }),
@@ -116,8 +115,8 @@ pub async fn get_raw_value(iii: &IIIClient) -> Result<Value, String> {
 pub async fn set_value(iii: &IIIClient, value: Value) -> Result<(), String> {
     // One attempt: a rejected value (schema) must surface at once, and the
     // caller reports a transport failure as such.
-    iii.trigger(
-        TriggerRequest {
+    iii.call(
+        CallRequest {
             function_id: "configuration::set".to_string(),
             payload: json!({ "id": config_id(), "value": value }),
             action: None,
@@ -155,7 +154,7 @@ pub async fn build_pools(cfg: &WorkerConfig) -> Result<HashMap<String, Pool>, St
 pub async fn apply_config(
     state: &AppState,
     cfg: WorkerConfig,
-    listeners: Option<&crate::triggers::NativeListeners>,
+    listeners: Option<&crate::row_changes::NativeListeners>,
 ) -> Result<(), String> {
     use crate::connector::{self, Connector, Material, Stage};
     use std::collections::BTreeSet;
@@ -265,7 +264,7 @@ pub const MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_
 /// rebuilds only its connection's pool.
 pub fn spawn_maintenance(
     state: AppState,
-    listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
+    listeners: Option<std::sync::Arc<crate::row_changes::NativeListeners>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(MAINTENANCE_INTERVAL);
@@ -284,12 +283,7 @@ pub fn spawn_maintenance(
 
 const SECRET_FN_ID: &str = "database::on-secret-change";
 
-/// Register the internal `secrets::changed` handler and bind it. A rotated,
-/// deleted or re-shared secret that a connection references is re-read, and
-/// only the connections whose resolved values changed are rebuilt. The
-/// payload is advisory (it never carries a value) and anything unrelated is
-/// ignored, so a direct call can at most cause a re-read.
-/// A `secrets::changed` delivery for `reference` (canonical). Whatever uses
+/// A `secrets::on-changed` event for `reference` (canonical). Whatever uses
 /// it, its cached value is dropped; when a stored connection uses it, it is
 /// re-read now and the connections whose resolved values changed are rebuilt
 /// (deleted → those connections report the error; re-created → they come
@@ -297,7 +291,7 @@ const SECRET_FN_ID: &str = "database::on-secret-change";
 pub async fn on_secret_changed(
     state: &AppState,
     reference: &str,
-    listeners: Option<&crate::triggers::NativeListeners>,
+    listeners: Option<&crate::row_changes::NativeListeners>,
 ) {
     let cfg = state.config.read().await.clone();
     let referenced = cfg.databases.values().any(|db| {
@@ -317,11 +311,21 @@ pub async fn on_secret_changed(
     let _ = apply_config(state, cfg, listeners).await;
 }
 
-pub fn register_secret_trigger(
+/// Register the internal `database::on-secret-change` handler and observe
+/// `secrets::on-changed` with it, the event delivered as output. A rotated,
+/// deleted or re-shared secret that a connection references is re-read, and
+/// only the connections whose resolved values changed are rebuilt. The event
+/// is advisory (it never carries a value) and anything unrelated is ignored,
+/// so a direct call can at most cause a re-read.
+///
+/// `secrets::on-changed` belongs to the optional secrets worker: while it is
+/// absent the observer stays pending, and the engine activates it once the
+/// function registers. The TTLs bound staleness meanwhile.
+pub fn observe_secret_changes(
     iii: &IIIClient,
     state: AppState,
-    listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
-) {
+    listeners: Option<std::sync::Arc<crate::row_changes::NativeListeners>>,
+) -> ObserverHandle {
     let st = state.clone();
     iii.register_function(
         SECRET_FN_ID,
@@ -345,19 +349,13 @@ pub fn register_secret_trigger(
         )
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
-    // `secrets::changed` belongs to the secrets worker: when it is absent the
-    // engine parks this binding and activates it once the type registers.
-    #[allow(deprecated)]
-    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
-        crate::secrets::CHANGED_TRIGGER_TYPE.to_string(),
-        SECRET_FN_ID.to_string(),
-        json!({}),
-    )) {
-        tracing::warn!(error = %e, "binding secrets::changed failed; secret references refresh on their TTL only");
-    }
+    iii.observe(
+        Source::function(crate::secrets::ON_CHANGED_FN).deliver(Deliver::Output),
+        SECRET_FN_ID,
+    )
 }
 
-/// Advisory `secrets::changed` delivery (never carries a value).
+/// The advisory `secrets::on-changed` event (never carries a value).
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnSecretChangeEvent {
     #[serde(default)]
@@ -388,14 +386,13 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler. The returned binding hears
-/// the changes: [`ConfigBinding::follow`] picks the way the engine on the
-/// current connection serves them.
-pub fn register_config_trigger(
+/// Register the internal config-change handler and observe the engine's
+/// `configuration::on-updated` with it, for this worker's entry.
+pub fn observe_config_changes(
     iii: &IIIClient,
     state: AppState,
-    listeners: Option<std::sync::Arc<crate::triggers::NativeListeners>>,
-) -> ConfigBinding {
+    listeners: Option<std::sync::Arc<crate::row_changes::NativeListeners>>,
+) -> ObserverHandle {
     let st = state.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -414,83 +411,27 @@ pub fn register_config_trigger(
         )
         .metadata(json!({ "internal": true })),
     );
-    ConfigBinding {
-        iii: iii.clone(),
-        observer: std::sync::Mutex::new(None),
-        trigger: std::sync::Mutex::new(None),
-    }
-}
-
-/// How the worker hears its configuration entry change: an observer of the
-/// engine's `configuration::on-updated` on an engine with observe, the old
-/// `configuration` trigger on one without.
-pub struct ConfigBinding {
-    iii: IIIClient,
-    observer: std::sync::Mutex<Option<iii_sdk::ObserverHandle>>,
-    trigger: std::sync::Mutex<Option<iii_sdk::trigger::Trigger>>,
-}
-
-impl ConfigBinding {
-    /// Binds the way an engine that does (`true`) or does not (`false`)
-    /// support observe serves configuration changes, and drops the other.
-    /// Idempotent; called again when a reconnect lands on an engine of the
-    /// other kind (an upgrade or a rollback under the running worker).
-    pub fn follow(&self, engine_observes: bool) {
-        let mut observer = self.observer.lock().unwrap_or_else(|e| e.into_inner());
-        let mut trigger = self.trigger.lock().unwrap_or_else(|e| e.into_inner());
-        if engine_observes {
-            if observer.is_none() {
-                *observer = Some(
-                    self.iii.observe(
-                        Source::function("configuration::on-updated")
-                            .namespace("default")
-                            .filters(json!({
-                                "input.id": { "$eq": config_id() },
-                                "input.event_type": { "$eq": "configuration:updated" },
-                            }))
-                            // The event's input carries the whole configuration value
-                            // (url passwords included), and whatever an activation
-                            // ships lands in this worker's trace span. The filter reads
-                            // the input; the activation ships only the caller — the
-                            // handler re-fetches the value anyway.
-                            .capture([iii_sdk::protocol::Capture::Caller])
-                            .deliver(Deliver::Envelope),
-                        CONFIG_FN_ID,
-                    ),
-                );
-            }
-            if let Some(old) = trigger.take() {
-                old.unregister();
-            }
-            return;
-        }
-        // An observer made on an earlier engine stays: the SDK fails it with
-        // `UNSUPPORTED` here and replays it to the next engine with observe.
-        if trigger.is_none() {
-            // Deprecated in 0.25; kept for engines without observe.
-            #[allow(deprecated)]
-            let bound = self.iii.register_trigger(RegisterTriggerInput::new(
-                "configuration".to_string(),
-                CONFIG_FN_ID.to_string(),
-                json!({
-                    "configuration_id": config_id(),
-                    "event_types": ["configuration:updated"],
-                }),
-            ));
-            match bound {
-                Ok(bound) => *trigger = Some(bound),
-                Err(e) => tracing::error!(
-                    error = %e,
-                    "binding the configuration trigger failed; configuration changes are not heard"
-                ),
-            }
-        }
-    }
+    iii.observe(
+        Source::function("configuration::on-updated")
+            .namespace("default")
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            // The event's input carries the whole configuration value (url
+            // passwords included), and whatever a delivery ships lands in
+            // this worker's trace span. The filter reads the input; the
+            // delivery ships only the caller — the handler re-fetches the
+            // value anyway.
+            .capture([iii_sdk::Capture::Caller])
+            .deliver(Deliver::Envelope),
+        CONFIG_FN_ID,
+    )
 }
 
 /// Reload pools from the AUTHORITATIVE configuration.
 ///
-/// The caller-supplied trigger payload is intentionally ignored:
+/// The caller-supplied payload is intentionally ignored:
 /// `database::on-config-change` is a discoverable bus function, so trusting
 /// `payload.new_value` would let any caller replace the live connection pools
 /// (e.g. point them at an attacker-controlled database) without updating
@@ -498,7 +439,7 @@ impl ConfigBinding {
 async fn on_config_change(
     iii: &IIIClient,
     state: &AppState,
-    listeners: Option<&crate::triggers::NativeListeners>,
+    listeners: Option<&crate::row_changes::NativeListeners>,
 ) {
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
@@ -542,7 +483,7 @@ fn is_not_found(error: &str) -> bool {
         || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -550,8 +491,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,

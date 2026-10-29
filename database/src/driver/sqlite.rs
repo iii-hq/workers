@@ -234,8 +234,8 @@ fn schema_hint(c: &rusqlite::Connection, sql: &str, message: &str) -> Option<Str
             .and_then(|missing| missing.rsplit('.').nth(1));
         let table = qualified
             .map(str::to_string)
-            .or_else(|| crate::triggers::sql::classify(sql).and_then(|m| m.table))
-            .or_else(|| crate::triggers::sql::table_after_from(sql))?;
+            .or_else(|| crate::row_changes::sql::classify(sql).and_then(|m| m.table))
+            .or_else(|| crate::row_changes::sql::table_after_from(sql))?;
         return columns_hint(c, &table);
     }
     // "no such table: t" → say what tables DO exist.

@@ -4,8 +4,8 @@
 //! whether an event fires and what `table` it carries, so being wrong in the
 //! quiet direction — dropping an event — is the failure to avoid. Anything
 //! recognisably DML produces an event; when the table cannot be read out with
-//! confidence the event still fires with `table: null` and the subscriber that
-//! filtered on a table simply does not match it.
+//! confidence the event still fires with `table: null` and an observer that
+//! names a table simply does not match it.
 //!
 //! What it deliberately does not do: resolve CTEs, follow `INSERT … SELECT`
 //! sources, or expand views. A statement it cannot pin down is reported as
@@ -30,7 +30,7 @@ pub enum Op {
 pub struct Mutation {
     pub op: Op,
     /// `None` when the statement mutates something this classifier will not
-    /// guess at. A binding filtered on a table never matches these.
+    /// guess at. An observer that names a table never matches these.
     pub table: Option<String>,
 }
 
@@ -67,7 +67,7 @@ pub fn classify(sql: &str) -> Option<Mutation> {
             })
         }
         // A CTE can wrap any of the above. Rather than parse the CTE list, say
-        // "a write happened, table unknown" — a subscriber watching the whole
+        // "a write happened, table unknown" — an observer watching the whole
         // db still hears it, and one filtered on a table is not told a lie.
         "WITH" if mentions_dml(&stripped) => Some(Mutation {
             op: Op::Other,

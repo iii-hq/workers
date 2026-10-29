@@ -3,16 +3,16 @@
 //! MySQL has no LISTEN/NOTIFY, but it has something stronger — the binary
 //! log every replica reads. The worker connects as a replica (one dedicated
 //! connection per `capture: native` database), starts at the server's
-//! current position, and decodes row events into `database::row-changed`
-//! events. Nothing is installed in the user's schema: no triggers, no
-//! changelog table, no DDL at binding registration.
+//! current position, and decodes row events into `database::on-row-changed`
+//! events. Nothing is installed in the user's schema: no database triggers,
+//! no changelog table, no DDL when an observer is added.
 //!
 //! Semantics match the other drivers: only committed writes appear in the
 //! binlog (row events are flushed at commit), so commit gating is free; a
 //! reconnect re-snapshots the position, so events raised while the stream
 //! was down are lost — at-most-once, a doorbell not a ledger.
 //!
-//! Server prerequisites, checked loudly at binding registration:
+//! Server prerequisites, checked loudly when an observer is added:
 //! `log_bin=ON`, `binlog_format=ROW` (both 8.x defaults), and the
 //! `REPLICATION SLAVE, REPLICATION CLIENT` global grants for the worker's
 //! user. Row identity (`returning` = primary-key values) additionally needs
@@ -162,7 +162,7 @@ fn flush(
 
 /// Keep the stream alive forever, reconnecting with capped backoff. Events
 /// flow into `bus` via an unbounded channel so the decode loop never blocks
-/// on subscriber dispatch.
+/// on calling the function.
 pub(crate) async fn run_binlog(db_name: String, connector: Arc<Connector>, bus: Arc<RowChangeBus>) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RowChangedEvent>();
     // The forwarder dies with this task: aborting run_binlog drops `tx`,
@@ -197,7 +197,7 @@ async fn stream_once(
     out: &tokio::sync::mpsc::UnboundedSender<RowChangedEvent>,
 ) -> Result<(), String> {
     // Events for OTHER databases on the same server are not this handle's
-    // business — a binding names a db handle, and the handle names a schema.
+    // business — an observer names a db handle, and the handle names a schema.
     let schema = connector.mysql_db_name();
     let mut conn = connector.mysql_connect().await.map_err(|e| e.to_string())?;
     let (file, pos) = binlog_position(&mut conn).await?;

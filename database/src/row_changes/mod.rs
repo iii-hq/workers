@@ -11,29 +11,27 @@
 //!   commit, by classifying the SQL it was given. A write applied by psql,
 //!   another worker, or a database-side trigger is invisible. No database
 //!   setup, works identically on SQLite, Postgres and MySQL.
-//! * `native`: committed writes from ANY client fire events; table-scoped
-//!   bindings only. Postgres (`native.rs`): triggers + LISTEN/NOTIFY on a
-//!   dedicated connection. File-backed sqlite (`sqlite_watch.rs`): triggers →
-//!   changelog table → fs-watch drain. MySQL (`mysql_binlog.rs`): the binlog
-//!   replication stream — nothing installed in the schema at all.
+//! * `native`: committed writes from ANY client are reported; table-scoped
+//!   observers only. Postgres (`native.rs`): database triggers +
+//!   LISTEN/NOTIFY on a dedicated connection. File-backed sqlite
+//!   (`sqlite_watch.rs`): database triggers → changelog table → fs-watch
+//!   drain. MySQL (`mysql_binlog.rs`): the binlog replication stream —
+//!   nothing installed in the schema at all.
 //!
 //! Native delivery is at-most-once by contract: events raised while a
 //! listener is down — including the instants around a hot reload that
 //! restarts it, or an interactive transaction that outlives a reload of its
 //! database's config and commits on the OLD database — can be lost. It is a
-//! doorbell, not a ledger; subscribers needing a gapless view reconcile on
+//! doorbell, not a ledger; observers needing a gapless view reconcile on
 //! their own schedule.
 
 pub mod bus;
 pub mod capture;
-pub mod legacy;
 pub mod mysql_binlog;
 pub mod native;
 pub mod sql;
 pub mod sqlite_watch;
 
-pub use bus::{
-    LegacyRowChangedEvent, RowChangeBus, RowChangedArgs, RowChangedEvent, ROW_CHANGED_TYPE,
-};
+pub use bus::{RowChangeBus, RowChangedArgs, RowChangedEvent};
 pub use capture::{NativeCapture, ROW_CHANGED_DESCRIPTION, ROW_CHANGED_FN};
 pub use native::NativeListeners;

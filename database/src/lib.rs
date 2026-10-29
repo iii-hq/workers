@@ -9,11 +9,11 @@ pub mod handle;
 pub mod handlers;
 pub mod pool;
 pub mod redaction;
+pub mod row_changes;
 pub mod runtime;
 pub mod secrets;
 pub mod ssh;
 pub mod transaction;
-pub mod triggers;
 pub mod ui;
 pub mod value;
 

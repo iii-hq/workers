@@ -69,11 +69,11 @@ pub(crate) fn sqlite_file_path(url: &str) -> Option<PathBuf> {
 ///
 /// Two properties matter here:
 /// * The whole script runs inside ONE explicit transaction. `execute_batch`
-///   autocommits per statement, so without it a reinstall (second binding on
+///   autocommits per statement, so without it a reinstall (second observer on
 ///   the same table) would open a window with the triggers dropped — an
 ///   external write landing there would be lost silently.
 /// * The trigger-name suffix and the recorded `tbl` value are lowercased.
-///   SQLite resolves identifiers case-insensitively, so bindings spelled in
+///   SQLite resolves identifiers case-insensitively, so tables spelled in
 ///   different cases must converge on the SAME trigger set and the same
 ///   changelog spelling — never a second set double-logging every write.
 pub(crate) fn install_sql(table: &str, pk: &[String]) -> Result<String, String> {
@@ -259,7 +259,7 @@ fn parse_op(s: &str) -> Option<Op> {
 }
 
 /// Read everything past `cursor`, in id order. Returns the coalesced runs
-/// and the new cursor. A missing changelog table (no binding installed DDL
+/// and the new cursor. A missing changelog table (no observer installed DDL
 /// yet) is an empty result, not an error.
 fn drain(conn: &Connection, cursor: i64) -> rusqlite::Result<(Vec<Run>, i64)> {
     let mut stmt = match conn.prepare(&format!(
@@ -309,7 +309,7 @@ pub(crate) fn run_watcher(
         }
     };
     let _ = conn.busy_timeout(Duration::from_secs(5));
-    // The changelog may not exist yet (first binding not registered); create
+    // The changelog may not exist yet (no observer added yet); create
     // it here too so MAX(id) and data_version have something to run against.
     if let Err(e) = ensure_changelog(&conn) {
         tracing::warn!(db = %db_name, error = %e, "sqlite watcher could not ensure changelog");
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(pk_columns(&conn, "c").unwrap(), vec!["y", "x"]);
         assert_eq!(pk_columns(&conn, "w").unwrap(), vec!["k"]);
         assert!(pk_columns(&conn, "nk").unwrap().is_empty());
-        // Spelled the way a binding might spell it: cased, quoted, qualified.
+        // Spelled the way SQL might spell it: cased, quoted, qualified.
         assert_eq!(pk_columns(&conn, "A").unwrap(), vec!["id"]);
         assert_eq!(pk_columns(&conn, "\"a\"").unwrap(), vec!["id"]);
         assert_eq!(pk_columns(&conn, "main.a").unwrap(), vec!["id"]);
@@ -583,7 +583,7 @@ mod tests {
         ensure_changelog(&fresh).unwrap();
     }
 
-    /// Bindings spelled in different cases must converge on ONE trigger set
+    /// Tables spelled in different cases must converge on ONE trigger set
     /// writing ONE changelog row per change — never a second set that
     /// double-logs every write. (SQLite resolves identifiers
     /// case-insensitively, and install_sql normalizes the embedded spelling;

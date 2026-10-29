@@ -1,10 +1,9 @@
-//! The `database::on-row-changed` event, the transaction buffer, and the emit
-//! path.
+//! The `database::on-row-changed` event, the transaction buffer, and the
+//! call path.
 //!
-//! The worker announces its own writes through `database::on-row-changed`,
-//! an owner-delivered function (`capture.rs`): each event is routed to the
-//! observers whose args name its db, table and op. This module decides WHEN
-//! an event exists:
+//! The worker announces its own writes by calling `database::on-row-changed`
+//! (`capture.rs`): iii delivers each call to the observers whose args name
+//! its db, table and op. This module decides WHEN an event exists:
 //!
 //! * **Emit after the write is durable, never before.** A statement inside a
 //!   transaction has not happened until the commit does, so interactive
@@ -16,8 +15,9 @@
 //!   `capture: native` databases hear every client instead (`native.rs`,
 //!   `sqlite_watch.rs`, `mysql_binlog.rs`) and hand their events to
 //!   [`RowChangeBus::emit_event`] already shaped.
-//! * **Nothing is serialized for nobody.** With no active observer (and no
-//!   binding of the old trigger type) an event costs a few atomic loads.
+//! * **Nothing is serialized for nobody.** With no active observer an event
+//!   costs one atomic load; with observers of other tables only, a hash
+//!   lookup per key.
 //!
 //! The event never invents row data. On the statements path `returning` is the
 //! writer's own `RETURNING` projection, forwarded verbatim; on the native path
@@ -33,10 +33,6 @@ use serde_json::Value;
 use super::capture::NativeCapture;
 use super::sql::{self, Op};
 
-/// The trigger type this worker registered before 0.25, still registered on
-/// every engine for consumers that bind it (see `legacy.rs`).
-pub const ROW_CHANGED_TYPE: &str = "database::row-changed";
-
 /// How many changed-row keys one `capture: native` event carries at most.
 /// Shared by all three native producers so a listener sees one contract.
 /// Sized for the postgres NOTIFY payload limit (8000 bytes): a hundred
@@ -45,7 +41,7 @@ pub const ROW_CHANGED_TYPE: &str = "database::row-changed";
 pub(crate) const KEY_CAP: usize = 100;
 
 /// An observer's args: which database, and optionally which table and
-/// operations. Also the shape of the old trigger config.
+/// operations.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RowChangedArgs {
@@ -65,7 +61,8 @@ pub struct RowChangedArgs {
     pub ops: Option<Vec<Op>>,
 }
 
-/// One committed write statement: the input of `database::on-row-changed`.
+/// One committed write statement: the input of `database::on-row-changed`,
+/// and its output (the handler returns the event it is called with).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RowChangedEvent {
     pub db: String,
@@ -97,22 +94,6 @@ pub struct RowChangedEvent {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// Epoch millis at emit time.
-    pub at: i64,
-}
-
-/// What a `database::row-changed` binding received before 0.25, and still
-/// receives: no `schema`, and the table schema-qualified when a schema is
-/// known (`public.orders` from postgres native capture, as before).
-#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
-pub struct LegacyRowChangedEvent {
-    pub db: String,
-    pub table: Option<String>,
-    pub op: Op,
-    pub affected_rows: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub returning: Option<Vec<serde_json::Map<String, Value>>>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub truncated: bool,
     pub at: i64,
 }
 
@@ -157,22 +138,6 @@ impl RowChangedEvent {
             schema,
             table: Some(table),
             ..self
-        }
-    }
-
-    /// The pre-0.25 shape of this event (see [`LegacyRowChangedEvent`]).
-    pub fn legacy_view(&self) -> LegacyRowChangedEvent {
-        LegacyRowChangedEvent {
-            db: self.db.clone(),
-            table: match (&self.schema, &self.table) {
-                (Some(schema), Some(table)) => Some(format!("{schema}.{table}")),
-                (_, table) => table.clone(),
-            },
-            op: self.op,
-            affected_rows: self.affected_rows,
-            returning: self.returning.clone(),
-            truncated: self.truncated,
-            at: self.at,
         }
     }
 }
@@ -235,7 +200,7 @@ pub struct RowChangeBus {
 }
 
 impl RowChangeBus {
-    /// The engine client this bus dispatches through. Handlers reuse it to
+    /// The engine client this bus calls through. Handlers reuse it to
     /// call sibling workers (history goes to `state::*`) without threading a
     /// second client through `AppState`.
     pub fn client(&self) -> &Arc<IIIClient> {
@@ -244,12 +209,13 @@ impl RowChangeBus {
 
     /// A bus over its own, empty capture: staging and commit work, events go
     /// nowhere. For tests that exercise the buffer.
-    pub fn new(iii: Arc<IIIClient>, dispatch_timeout_ms: u64) -> Self {
-        let capture = Arc::new(NativeCapture::detached(iii.clone(), dispatch_timeout_ms));
+    pub fn new(iii: Arc<IIIClient>, call_timeout_ms: u64) -> Self {
+        let capture = Arc::new(NativeCapture::detached(iii.clone(), call_timeout_ms));
         Self::with_capture(iii, capture)
     }
 
-    /// A bus that hands its events to `capture`, which routes them.
+    /// A bus that hands its events to `capture`, which calls the function
+    /// with them.
     pub fn with_capture(iii: Arc<IIIClient>, capture: Arc<NativeCapture>) -> Self {
         Self {
             iii,
@@ -286,7 +252,7 @@ impl RowChangeBus {
         affected_rows: u64,
         returning: Option<&[serde_json::Map<String, Value>]>,
     ) {
-        if affected_rows == 0 || !self.capture.is_listened() {
+        if affected_rows == 0 || !self.capture.is_observed() {
             return;
         }
         let Some(mutation) = sql::classify(sql) else {
@@ -342,16 +308,13 @@ impl RowChangeBus {
     }
 
     async fn fan_out(&self, event: RowChangedEvent) {
-        // Nobody observing: no serialization, no call, no frames.
-        if !self.capture.is_listened() {
-            return;
-        }
-        // Routed in-process, from the invocation that made the write (the
+        // Called from the invocation that made the write (the
         // `database::execute` / `commitTransaction` handler, or a native
-        // listener task): the SDK checks each routed observer's filters and
-        // reports only matches, with that invocation as the event's caller.
-        // Awaited, so a transaction's statements are reported in commit order.
-        self.capture.route(&event).await;
+        // listener task), so that invocation is the call's caller. Nobody
+        // observing this db, table and op: no serialization, no call, no
+        // frames. Awaited, so a transaction's statements reach observers in
+        // commit order.
+        self.capture.call(&event).await;
     }
 }
 
@@ -450,9 +413,6 @@ mod tests {
         .canonical();
         assert_eq!(native.schema.as_deref(), Some("public"));
         assert_eq!(native.table.as_deref(), Some("orders"));
-        // Legacy bindings keep the schema-qualified name they got before.
-        assert_eq!(native.legacy_view().table.as_deref(), Some("public.orders"));
-        assert_eq!(bare.legacy_view().table.as_deref(), Some("orders"));
     }
 
     #[test]
@@ -472,7 +432,7 @@ mod tests {
 
     /// The wire shape a listener sees must not grow keys for events that
     /// carry no row identity: no `returning` key, no `truncated` key. The
-    /// flag appears only when it is true. The legacy view has no `schema`.
+    /// flag appears only when it is true.
     #[test]
     fn events_without_keys_omit_returning_and_truncated() {
         let plain =
@@ -480,9 +440,6 @@ mod tests {
         let value = serde_json::to_value(&plain).unwrap();
         assert!(value.get("returning").is_none(), "{value}");
         assert!(value.get("truncated").is_none(), "{value}");
-        let legacy = serde_json::to_value(plain.legacy_view()).unwrap();
-        assert!(legacy.get("schema").is_none(), "{legacy}");
-        assert!(legacy.get("returning").is_none(), "{legacy}");
 
         let capped = RowChangedEvent::from_raw(
             "primary",

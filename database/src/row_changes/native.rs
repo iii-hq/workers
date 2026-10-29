@@ -2,16 +2,16 @@
 //!
 //! The statements path (`bus.rs`) hears only what this worker executes. A
 //! database configured with `capture: native` instead installs an AFTER
-//! trigger per bound table that `pg_notify`s a small JSON payload, and the
-//! worker holds one dedicated (non-pooled) connection per database doing
+//! trigger per observed table that `pg_notify`s a small JSON payload, and
+//! the worker holds one dedicated (non-pooled) connection per database doing
 //! LISTEN. Any client's committed write — psql, another worker, another
-//! process — fires the same `database::row-changed` event, carrying the
-//! primary-key values of the changed rows (capped, see `bus::KEY_CAP`) so a
-//! listener learns WHICH rows changed without the writer's cooperation.
+//! process — becomes the same `database::on-row-changed` event, carrying the
+//! primary-key values of the changed rows (capped, see `bus::KEY_CAP`) so an
+//! observer learns WHICH rows changed without the writer's cooperation.
 //!
 //! Delivery is NOTIFY's: commit-gated (nothing fires for rolled-back
 //! transactions) but at-most-once — notifications raised while the listener
-//! connection is down are lost. Subscribers that cannot tolerate a gap must
+//! connection is down are lost. Observers that cannot tolerate a gap must
 //! reconcile on their own schedule; this is a doorbell, not a ledger.
 
 use std::collections::HashMap;
@@ -27,7 +27,8 @@ use super::sql::Op;
 use crate::config::{CaptureMode, WorkerConfig};
 use crate::connector::Connector;
 
-/// The NOTIFY channel every iii trigger function raises on.
+/// The NOTIFY channel the `iii_row_changed_notify()` database trigger
+/// function raises on.
 pub(crate) const CHANNEL: &str = "iii_row_changed";
 
 /// The DDL that makes one table announce its changes: a shared trigger
@@ -36,7 +37,7 @@ pub(crate) const CHANNEL: &str = "iii_row_changed";
 /// NOTIFY per row; `IF n = 0 THEN RETURN` keeps the "no rows, no event" rule.
 ///
 /// The function looks the firing table's primary key up at fire time
-/// (`TG_RELID` → `pg_index`), so one function body serves every bound table
+/// (`TG_RELID` → `pg_index`), so one function body serves every observed table
 /// and a key added later needs no reinstall. Key values are wrapped per type
 /// so their JSON matches what `database::query` returns for the same column
 /// (bigint/numeric as strings, bytea as base64); other types, including
@@ -128,7 +129,7 @@ CREATE TRIGGER iii_row_changed_del AFTER DELETE ON {target}
 }
 
 /// Quote a `table` or `schema.table` reference so it is only ever an
-/// identifier — binding config is a trust boundary and this string lands in
+/// identifier — observer args are a trust boundary and this string lands in
 /// DDL. A name that does not exist fails loudly at CREATE TRIGGER.
 /// Shared with the sqlite watcher: `"…"` quoting is valid in both dialects.
 pub(crate) fn quote_table(t: &str) -> Result<String, String> {
@@ -473,7 +474,7 @@ mod tests {
 
     #[test]
     fn install_sql_neutralizes_injection_attempts() {
-        // The binding config is a trust boundary; a hostile table name must
+        // Observer args are a trust boundary; a hostile table name must
         // come out as one (weird) quoted identifier, never as loose SQL.
         let evil = r#"orders"; DROP TABLE users; --"#;
         let sql = install_sql(evil).unwrap();
@@ -684,8 +685,8 @@ mod tests {
         assert_eq!(events[2].affected_rows, 1);
         for ev in &events {
             assert_eq!(
-                crate::triggers::sql::canonical_table(ev.table.as_deref().unwrap()),
-                crate::triggers::sql::canonical_table(&table)
+                crate::row_changes::sql::canonical_table(ev.table.as_deref().unwrap()),
+                crate::row_changes::sql::canonical_table(&table)
             );
             // `(id int, n int)` has no primary key: count-only, as before.
             assert!(ev.returning.is_none(), "{ev:?}");
@@ -755,8 +756,8 @@ mod tests {
         });
         for ev in &keyed_events[..2] {
             assert_eq!(
-                crate::triggers::sql::canonical_table(ev.table.as_deref().unwrap()),
-                crate::triggers::sql::canonical_table(&keyed)
+                crate::row_changes::sql::canonical_table(ev.table.as_deref().unwrap()),
+                crate::row_changes::sql::canonical_table(&keyed)
             );
             let keys = ev.returning.as_ref().expect("keyed table carries keys");
             assert_eq!(keys.len(), 1, "{ev:?}");
@@ -768,8 +769,8 @@ mod tests {
 
         let capped = &keyed_events[2];
         assert_eq!(
-            crate::triggers::sql::canonical_table(capped.table.as_deref().unwrap()),
-            crate::triggers::sql::canonical_table(&wide)
+            crate::row_changes::sql::canonical_table(capped.table.as_deref().unwrap()),
+            crate::row_changes::sql::canonical_table(&wide)
         );
         assert_eq!(capped.op, Op::Insert);
         assert_eq!(capped.affected_rows, 20, "the count stays exact");
