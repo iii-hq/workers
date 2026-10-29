@@ -17,7 +17,7 @@ Message sends return the existing contract:
 }
 ```
 
-`accepted` means Meta accepted the request. It does not establish delivery. Subscribe to `whatsapp::cloud::events` with `kinds: ["message.status"]` for subsequent status changes. Reactions have a `sent` notification but no `delivered` or `read` notification. Incoming selections, location responses and Flow completions arrive through the existing `message.received` trigger; their original Meta data is available in the event's `data` object, subject to the existing event byte limit.
+`accepted` means Meta accepted the request. It does not establish delivery. Observe `whatsapp::cloud::on-events` with the filter `{"input.kind": {"$eq": "message.status"}}` for subsequent status changes. Reactions have a `sent` notification but no `delivered` or `read` notification. Incoming selections, location responses and Flow completions arrive as `message.received` events; their original Meta data is available in the event's `data` object, subject to the existing event byte limit.
 
 Free-form interactive, location and contact messages require an open customer service window. Meta error 131047 becomes `cloud_window_closed`; the worker does not choose or send an approved template on your behalf. A timeout or unreadable POST acknowledgement becomes `cloud_outcome_unknown`: the operation might have succeeded, and no automatic retry is performed. Inspect subsequent webhooks before choosing to resend.
 

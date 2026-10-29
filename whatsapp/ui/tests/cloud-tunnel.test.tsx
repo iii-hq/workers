@@ -35,13 +35,13 @@ async function render(initial = stopped, webhookReady = true) {
   const statuses: Array<Promise<CloudTunnelStatus>> = []
   const starts: Array<Promise<CloudTunnelStatus>> = []
   const stops: Array<Promise<CloudTunnelStatus>> = []
-  const trigger = vi.fn(async (id: string) => {
+  const call = vi.fn(async (id: string) => {
     if (id.endsWith('::status')) return statuses.shift() ?? backend
     if (id.endsWith('::start')) return starts.shift() ?? (backend = ready)
     if (id.endsWith('::stop')) return stops.shift() ?? (backend = stopped)
     throw new Error(`Unexpected function: ${id}`)
   })
-  const host = { iii: { trigger, on: () => () => {}, registerTrigger: () => () => {}, browserId: 'test' } } as unknown as Host
+  const host = { iii: { call, on: () => () => {}, observe: () => () => {}, browserId: 'test' } } as unknown as Host
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -50,7 +50,7 @@ async function render(initial = stopped, webhookReady = true) {
   const unmount = () => { if (active) { act(() => root.unmount()); container.remove(); active = false } }
   mounted.push(unmount)
   return {
-    container, trigger, statuses, starts, stops, unmount,
+    container, call, statuses, starts, stops, unmount,
     setBackend(next: CloudTunnelStatus) { backend = next },
     async setReady(next: boolean) { await act(async () => root.render(<CloudTunnel host={host} webhookReady={next} />)) },
     button(label: string) { return Array.from(container.querySelectorAll('button')).find((button) => button.textContent === label || button.getAttribute('aria-label') === label) },
@@ -71,11 +71,11 @@ afterEach(() => {
 describe('development webhook controls', () => {
   it('only reads status on mount and requires configured webhook credentials to start', async () => {
     const view = await render(stopped, false)
-    expect(view.trigger.mock.calls.map(([id]) => id)).toEqual(['whatsapp::cloud::tunnel::status'])
+    expect(view.call.mock.calls.map(([id]) => id)).toEqual(['whatsapp::cloud::tunnel::status'])
     expect(view.button('Start development tunnel')?.disabled).toBe(true)
     await view.setReady(true)
     await view.click('Start development tunnel')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('::start'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('::start'))).toHaveLength(1)
     expect(view.container.querySelector('input')?.value).toBe(ready.webhook_url)
     expect(view.button('Stop tunnel')).toBeDefined()
     expect(view.container.textContent).toContain('does not register it with Meta')
@@ -93,7 +93,7 @@ describe('development webhook controls', () => {
     expect(view.container.querySelector('input')).toBeNull()
     expect(view.button('Stop tunnel')?.disabled).toBe(false)
     await view.click('Stop tunnel')
-    expect(view.trigger.mock.calls.some(([id]) => id.endsWith('::stop'))).toBe(true)
+    expect(view.call.mock.calls.some(([id]) => id.endsWith('::stop'))).toBe(true)
   })
 
   it('hides a previously ready URL after a failed refresh and restores only the current URL', async () => {
@@ -129,7 +129,7 @@ describe('development webhook controls', () => {
     await view.click('Refresh development tunnel')
     const stopButton = view.button('Stop tunnel')!
     await act(async () => { stopButton.click(); stopButton.click() })
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('::stop'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('::stop'))).toHaveLength(1)
     expect(view.container.querySelector('input')).toBeNull()
     await act(async () => oldPoll.resolve(ready))
     expect(view.container.querySelector('input')).toBeNull()
@@ -213,8 +213,8 @@ describe('development webhook controls', () => {
     view.stops.push(stop.promise)
     await view.click('Stop tunnel')
     view.unmount()
-    const before = view.trigger.mock.calls.length
+    const before = view.call.mock.calls.length
     await act(async () => stop.resolve(stopped))
-    expect(view.trigger.mock.calls).toHaveLength(before)
+    expect(view.call.mock.calls).toHaveLength(before)
   })
 })

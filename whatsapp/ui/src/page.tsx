@@ -55,9 +55,9 @@ function WhatsAppWorkspace({ host, configurationId, paneId, tabId, panelSide, on
   const instance = useId()
   const list = useWorkerLive<Session[]>({
     iii: host.iii,
-    triggers: [{ type: 'whatsapp::events', config: { kinds: ['session.created', 'session.connected', 'session.disconnected', 'session.stopped', 'session.starting', 'session.qr', 'session.logged_out'] } }],
+    sources: [{ function_id: 'whatsapp::on-events', filters: { 'input.kind': { $in: ['session.created', 'session.connected', 'session.disconnected', 'session.stopped', 'session.starting', 'session.qr', 'session.logged_out'] } } }],
     handlerId: `iii::whatsapp-ui::sessions::${instance}`, pollMs: 5000,
-    fetch: () => host.iii.trigger<Session[]>('whatsapp::sessions::list'),
+    fetch: () => host.iii.call<Session[]>('whatsapp::sessions::list'),
   })
   // A list request started before deletion may still return the old incarnation.
   const sessions = (list.data ?? []).filter((item) => !removedSessions.has(`${item.session_id}:${item.created_at_ms}`))
@@ -186,7 +186,7 @@ function WhatsAppWorkspace({ host, configurationId, paneId, tabId, panelSide, on
     setCreating(true)
     setCreateError(null)
     try {
-      await host.iii.trigger<Session>('whatsapp::sessions::create', { session_id: id })
+      await host.iii.call<Session>('whatsapp::sessions::create', { session_id: id })
       if (!current()) return
       setSelected(id)
       setTransport('native')
@@ -218,7 +218,7 @@ function WhatsAppWorkspace({ host, configurationId, paneId, tabId, panelSide, on
       focusAfterRemoval.current = true
       setRemoving(target.session_id)
       setRemoveFeedback(null)
-      await host.iii.trigger<Session>('whatsapp::sessions::delete', { session_id: target.session_id }, { timeoutMs: 730000 })
+      await host.iii.call<Session>('whatsapp::sessions::delete', { session_id: target.session_id }, { timeoutMs: 730000 })
       if (!current()) return
       drafts?.clearPrefix(`native:${configurationId}:${target.session_id}:${target.created_at_ms}:`)
       setRemovedSessions((previous) => new Set(previous).add(`${target.session_id}:${target.created_at_ms}`))

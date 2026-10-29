@@ -39,10 +39,10 @@ type cloudReceiveRequest struct {
 
 func registerCloudWebhooks(client *iii.Client, manager *Manager, engineURL string) error {
 	metadata := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
-	if err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::webhook::verify", cloudVerificationHandler(manager), metadata); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::webhook::verify", cloudVerificationHandler(manager), metadata); err != nil {
 		return err
 	}
-	if err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::webhook::receive", func(ctx context.Context, input callbackRequest[cloudReceiveRequest]) (cloudHTTPResponse, error) {
+	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::webhook::receive", func(ctx context.Context, input callbackRequest[cloudReceiveRequest]) (cloudHTTPResponse, error) {
 		if manager.interfaceOnly {
 			return cloudHTTPText(503, "Interface capture does not execute callbacks"), nil
 		}
@@ -55,8 +55,7 @@ func registerCloudWebhooks(client *iii.Client, manager *Manager, engineURL strin
 		return err
 	}
 	for _, route := range []struct{ method, function string }{{"GET", "whatsapp::cloud::webhook::verify"}, {"POST", "whatsapp::cloud::webhook::receive"}} {
-		config, _ := json.Marshal(map[string]any{"api_path": cloudWebhookPath(), "http_method": route.method, "public_webhook": true})
-		if err := client.RegisterTriggerNamespaced(ConfigID()+"-cloud-webhook-"+strings.ToLower(route.method), "http", route.function, Namespace(), config); err != nil {
+		if err := observeHTTPRoute(client, route.method, cloudWebhookPath(), route.function); err != nil {
 			return err
 		}
 	}
@@ -99,7 +98,17 @@ func verifyCloudSignature(secret string, raw []byte, signature string) bool {
 	return hmac.Equal(mac.Sum(nil), expected)
 }
 
-// readCloudChannel reads an HTTP trigger's original body up to limit bytes. A
+// observeHTTPRoute serves method and path on the HTTP worker's restricted
+// webhook listener with function: its observer of http::on-request receives
+// each request, and its result is the HTTP response.
+func observeHTTPRoute(client *iii.Client, method, path, function string) error {
+	return observeFunction(client, iii.Source{
+		FunctionID: "http::on-request",
+		Args:       iii.Args{"method": method, "path": path, "public_webhook": true},
+	}, function)
+}
+
+// readCloudChannel reads an HTTP request's original body up to limit bytes. A
 // non-zero status is 400 (no readable channel), 413 (too large) or 503 (read failed).
 func readCloudChannel(ctx context.Context, engineURL string, ref *iii.StreamChannelRef, limit int) ([]byte, int) {
 	if ref == nil || ref.Direction != iii.ChannelRead || ref.ChannelID == "" || ref.AccessKey == "" {

@@ -19,7 +19,7 @@ used for validation and engine discovery.
 | Cloud calls | [Groups and calls](cloud-groups-calls.md): settings, permissions and signaling; caller supplies media transport. |
 | Catalog/products, Brazil order/payment messages, India address collection | [Commerce](cloud-commerce.md): Meta messaging contracts; payment settlement belongs to the merchant/PSP. |
 | Marketing Messages and Direct Send | [Commerce and marketing](cloud-commerce.md): dedicated route and bounded documented variants. |
-| Account/template/group/call webhooks | [Event trigger](../cloud_events.md): opt-in `webhook.received`, field/event/group/participant filters and durable deduplication. |
+| Account/template/group/call webhooks | [`whatsapp::cloud::on-events`](../cloud_events.md): `webhook.received` events, filters on `input.field`, `input.event`, `input.group_id` and `input.participant_id`, and durable deduplication. |
 
 Existing text/template/document sends, message archives, Cloud status, webhook
 verification and Quick Tunnel operations keep their public IDs. New APIs reuse
@@ -36,9 +36,9 @@ There is no generic arbitrary-Graph-request function.
 - Mutations are attempted once. A timeout or missing acknowledgement can mean
   the operation succeeded remotely: `cloud_outcome_unknown` must not trigger an
   automatic resend. An accepted message ID is not a delivery receipt.
-- Default triggers still emit incoming messages only. Administrative events
-  require explicit opt-in. Group participant receipts do not mark the entire
-  group as delivered/read; participant identity is preserved in event filtering.
+- Observers select event kinds with a filter on `input.kind`; administrative
+  events are `webhook.received`. Group participant receipts do not mark the
+  entire group as delivered/read; their participant is `input.participant_id`.
 - Meta controls service windows, template approval, permissions, country
   availability and feature eligibility. Local validation and fixture tests do
   not certify an account's access to groups, calling, marketing beta or payments.

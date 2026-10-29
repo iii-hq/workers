@@ -1,8 +1,8 @@
 # Cloud commerce, Brazil payment messages and marketing
 
-These official Cloud functions use the existing account configuration, authenticated HTTP client, message archive and filtered webhook trigger. They do not use native linked-device sessions.
+These official Cloud functions use the existing account configuration, authenticated HTTP client, message archive and filtered webhook events (`whatsapp::cloud::on-events`). They do not use native linked-device sessions.
 
-All message responses use `{ "message_id": "wamid.example", "chat_id": "+15551234567", "status": "accepted", "message_status": null }`. Acceptance does not confirm delivery, payment, template approval or business eligibility. Follow `whatsapp::cloud::events` for received messages and delivery/failure statuses. POST timeouts return `cloud_outcome_unknown`; the worker never retries, charges a card, generates a Pix code, confirms payment, or sends an alternate message automatically.
+All message responses use `{ "message_id": "wamid.example", "chat_id": "+15551234567", "status": "accepted", "message_status": null }`. Acceptance does not confirm delivery, payment, template approval or business eligibility. Observe `whatsapp::cloud::on-events` for received messages and delivery/failure statuses. POST timeouts return `cloud_outcome_unknown`; the worker never retries, charges a card, generates a Pix code, confirms payment, or sends an alternate message automatically.
 
 ## Catalogs and products
 

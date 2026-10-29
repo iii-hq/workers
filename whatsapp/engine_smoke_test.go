@@ -49,7 +49,7 @@ func smokeProcess(t *testing.T, dir, name, binary string, args []string, environ
 		}
 	})
 }
-func smokeTrigger(engine, engineURL, namespace, function string, payload any) (map[string]any, error) {
+func smokeCall(engine, engineURL, namespace, function string, payload any) (map[string]any, error) {
 	value, err := smokeValue(engine, engineURL, namespace, function, payload)
 	if err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func smokeValue(engine, engineURL, namespace, function string, payload any) (any
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, engine, "trigger", "--engine", engineURL, "--namespace", namespace, function, "--json", string(encoded))
+	cmd := exec.CommandContext(ctx, engine, "call", "--engine", engineURL, "--namespace", namespace, function, "--json", string(encoded))
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	raw, err := cmd.Output()
@@ -136,7 +136,7 @@ func TestEngineSmoke(t *testing.T) {
 		}
 		smokeProcess(t, dir, "http", httpBinary, []string{"--url", engineURL, "--config", path}, "III_NAMESPACE="+smokeNamespace, "III_CONFIG_NAME=whatsapp-go-smoke-http", "III_DISABLE_TRACE_PAYLOADS=1")
 		smokeWait(t, "HTTP webhook listener", func() bool {
-			status, err := smokeTrigger(engine, engineURL, smokeNamespace, "http::webhook-listener::status", map[string]any{})
+			status, err := smokeCall(engine, engineURL, smokeNamespace, "http::webhook-listener::status", map[string]any{})
 			if err != nil {
 				return false
 			}
@@ -163,14 +163,14 @@ func TestEngineSmoke(t *testing.T) {
 	}
 	smokeProcess(t, dir, "whatsapp", worker, []string{"--url", engineURL, "--config", seed}, "III_NAMESPACE="+smokeNamespace, "III_CONFIG_NAME="+smokeNamespace, "HTTPS_PROXY=http://127.0.0.1:9", "https_proxy=http://127.0.0.1:9", "NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost")
 	smokeWait(t, "WhatsApp central configuration", func() bool {
-		status, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::config-status", map[string]any{})
+		status, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::config-status", map[string]any{})
 		return err == nil && status["id"] == smokeNamespace && status["source"] == "central" && status["last_outcome"] == "applied"
 	})
-	identity, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::configuration-id", map[string]any{})
+	identity, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::configuration-id", map[string]any{})
 	if err != nil || identity["id"] != smokeNamespace {
 		t.Fatalf("config identity: %v %v", identity, err)
 	}
-	schema, err := smokeTrigger(engine, engineURL, "default", "configuration::schema", map[string]any{"id": smokeNamespace})
+	schema, err := smokeCall(engine, engineURL, "default", "configuration::schema", map[string]any{"id": smokeNamespace})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestEngineSmoke(t *testing.T) {
 		t.Fatalf("missing ADE form metadata: %v", metadata)
 	}
 	for _, path := range []string{"whatsapp/page.js", "whatsapp/styles.css"} {
-		asset, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::ui-content", map[string]any{"path": path})
+		asset, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::ui-content", map[string]any{"path": path})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -190,7 +190,7 @@ func TestEngineSmoke(t *testing.T) {
 	}
 	for _, entry := range NewRegistry(nil).Catalog() {
 		id := entry.ID
-		info, err := smokeTrigger(engine, engineURL, "default", "engine::functions::info", map[string]any{"function_id": id, "namespace": smokeNamespace})
+		info, err := smokeCall(engine, engineURL, "default", "engine::functions::info", map[string]any{"function_id": id, "namespace": smokeNamespace})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -199,21 +199,21 @@ func TestEngineSmoke(t *testing.T) {
 			t.Fatalf("SDK schema adapter changed %s: %+v", id, info)
 		}
 	}
-	flowStatus, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::cloud::flows::endpoint::status", map[string]any{})
+	flowStatus, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::cloud::flows::endpoint::status", map[string]any{})
 	if err != nil || flowStatus["configured"] != false {
 		t.Fatalf("unexpected unconfigured Flow endpoint: %v %v", flowStatus, err)
 	}
 	if _, err = smokeValue(engine, engineURL, "default", "whatsapp::sessions::list", map[string]any{}); err == nil {
 		t.Fatal("worker functions escaped their namespace")
 	}
-	created, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::sessions::create", map[string]any{"session_id": "offline"})
+	created, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::sessions::create", map[string]any{"session_id": "offline"})
 	if err != nil || created["status"] != "stopped" {
 		t.Fatalf("create: %v %v", created, err)
 	}
-	if _, err = smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::sessions::create", map[string]any{"session_id": "../outside"}); err == nil {
+	if _, err = smokeCall(engine, engineURL, smokeNamespace, "whatsapp::sessions::create", map[string]any{"session_id": "../outside"}); err == nil {
 		t.Fatal("invalid session ID passed request validation")
 	}
-	page, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::chats::list", map[string]any{"session_id": "offline"})
+	page, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::chats::list", map[string]any{"session_id": "offline"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestEngineSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	smokeWait(t, "authoritative live reload", func() bool {
-		status, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::config-status", map[string]any{})
+		status, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::config-status", map[string]any{})
 		if err != nil {
 			return false
 		}
@@ -242,7 +242,7 @@ func TestEngineSmoke(t *testing.T) {
 	if _, err = smokeValue(engine, engineURL, smokeNamespace, "whatsapp::on-config-change", map[string]any{"value": map[string]any{"max_sessions": 99}}); err != nil {
 		t.Fatal(err)
 	}
-	status, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::config-status", map[string]any{})
+	status, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::config-status", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,10 +292,10 @@ func TestEngineSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	smokeWait(t, "structural restart marker", func() bool {
-		status, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::config-status", map[string]any{})
+		status, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::config-status", map[string]any{})
 		return err == nil && status["last_outcome"] == "restart_required"
 	})
-	status, _ = smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::config-status", map[string]any{})
+	status, _ = smokeCall(engine, engineURL, smokeNamespace, "whatsapp::config-status", map[string]any{})
 	if status["active"].(map[string]any)["data_dir"] == config.DataDir {
 		t.Fatal("live reload moved active storage")
 	}
@@ -307,7 +307,7 @@ func TestEngineSmoke(t *testing.T) {
 
 func smokeCloudWebhook(t *testing.T, engine, engineURL string, port int) {
 	t.Helper()
-	status, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::cloud::status", map[string]any{})
+	status, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::cloud::status", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func smokeCloudWebhook(t *testing.T, engine, engineURL string, port int) {
 	if got := post(raw, "sha256="+strings.Repeat("0", 64)); got != 403 {
 		t.Fatalf("invalid signature: HTTP %d", got)
 	}
-	page, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::cloud::messages::list", map[string]any{"chat_id": "+15551234567"})
+	page, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::cloud::messages::list", map[string]any{"chat_id": "+15551234567"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +401,7 @@ func smokeEventNamespace(t *testing.T, engineURL string) {
 		t.Fatal(err)
 	}
 	received := make(chan Event, 1)
-	if err = consumer.RegisterFunction("go-smoke::event", func(_ context.Context, raw json.RawMessage) (any, error) {
+	if _, err = consumer.RegisterFunction("go-smoke::event", func(_ context.Context, raw json.RawMessage) (any, error) {
 		var event Event
 		if err := json.Unmarshal(raw, &event); err != nil {
 			return nil, err
@@ -414,8 +414,20 @@ func smokeEventNamespace(t *testing.T, engineURL string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	filter := json.RawMessage(`{"session_id":"offline","kinds":["message.received"]}`)
-	if err = provider.RegisterTriggerNamespaced("go-smoke-event-binding", "whatsapp::events", "go-smoke::event", "go-smoke-consumer", filter); err != nil {
+	// The consumer observes the provider's function from its own namespace,
+	// where the target resolves.
+	observer, err := consumer.Observe(iii.Source{
+		FunctionID: "whatsapp::on-events",
+		Namespace:  "go-smoke-producer",
+		Filters:    iii.Filters{"input.session_id": iii.Op{"$eq": "offline"}, "input.kind": iii.Op{"$eq": "message.received"}},
+		Deliver:    iii.DeliverOutput,
+	}, "go-smoke::event")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyCtx, readyCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer readyCancel()
+	if err = observer.Ready(readyCtx); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.NewTimer(15 * time.Second)

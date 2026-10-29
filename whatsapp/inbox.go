@@ -497,7 +497,7 @@ func (i *Inbox) RecordExternalContext(ctx context.Context, messages []MessageVie
 }
 
 // RecordCloudDelivery atomically archives a webhook and claims its unseen events.
-// Markers suppress retries across restarts; they do not guarantee trigger delivery.
+// Markers suppress retries across restarts; they do not guarantee event delivery.
 func (i *Inbox) RecordCloudDeliveryContext(ctx context.Context, messages []MessageView, receipts []ExternalReceipt, events []CloudEvent) ([]CloudEvent, error) {
 	return i.recordExternal(ctx, messages, receipts, events)
 }

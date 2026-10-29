@@ -95,7 +95,7 @@ async function render(initial: Session[] = [session('support')]) {
   let sessions = initial
   let registeredCommands: readonly PageCommand[] = []
   const commands = { register(value: readonly PageCommand[]) { registeredCommands = value; return () => { registeredCommands = [] } } }
-  const trigger = vi.fn(async (id: string, input?: { session_id?: string }) => {
+  const call = vi.fn(async (id: string, input?: { session_id?: string }) => {
     if (id === 'whatsapp::sessions::list') return sessions
     if (id === 'whatsapp::sessions::create') {
       const created = session(input!.session_id!)
@@ -104,14 +104,14 @@ async function render(initial: Session[] = [session('support')]) {
     }
     throw new Error(`Unexpected function: ${id}`)
   })
-  const host = { iii: { trigger, on: () => () => {}, registerTrigger: () => () => {}, browserId: 'test' } } as unknown as Host
+  const host = { iii: { call, on: () => () => {}, observe: () => () => {}, browserId: 'test' } } as unknown as Host
   const setDirty = vi.fn()
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   await act(async () => root.render(<WhatsAppPage host={host} configurationId="transport-test" paneId="pane" commands={commands} setDirty={setDirty} />))
   cleanups.push(() => { act(() => root.unmount()); container.remove() })
   return {
-    container, trigger, setDirty,
+    container, call, setDirty,
     async click(label: string) {
       const button = Array.from(container.querySelectorAll('button')).find((item) => item.getAttribute('aria-label') === label || item.textContent === label)
       expect(button, `Missing button: ${label}`).toBeDefined()
@@ -132,7 +132,7 @@ async function render(initial: Session[] = [session('support')]) {
       await act(async () => { await command!.run() })
     },
     tabLabels() { return Array.from(container.querySelectorAll('[role="tab"]')).map((item) => item.textContent) },
-    mutationCalls() { return trigger.mock.calls.filter(([id]) => id !== 'whatsapp::sessions::list') },
+    mutationCalls() { return call.mock.calls.filter(([id]) => id !== 'whatsapp::sessions::list') },
   }
 }
 
@@ -160,7 +160,7 @@ describe('WhatsApp transport navigation', () => {
     await view.click('Session actions')
     await view.click('Refresh sessions')
     expect(view.container.querySelector('[role="menu"]')).toBeNull()
-    expect(view.trigger.mock.calls.filter(([id]) => id === 'whatsapp::sessions::list')).toHaveLength(2)
+    expect(view.call.mock.calls.filter(([id]) => id === 'whatsapp::sessions::list')).toHaveLength(2)
     expect(view.mutationCalls()).toHaveLength(0)
   })
 

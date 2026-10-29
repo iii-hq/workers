@@ -1,13 +1,13 @@
 # whatsapp
 
-Send and receive WhatsApp messages through iii functions using linked phones or the official Meta WhatsApp Cloud API. Pair accounts, inspect conversations and groups, send attachments and templates, and subscribe to filtered events. An ADE page helps you configure and test each transport separately. The worker runs as a Go binary without Node.js or Chromium.
+Send and receive WhatsApp messages through iii functions using linked phones or the official Meta WhatsApp Cloud API. Pair accounts, inspect conversations and groups, send attachments and templates, and observe filtered events. An ADE page helps you configure and test each transport separately. The worker runs as a Go binary without Node.js or Chromium.
 
 ## Install
 
 Install the worker into your existing iii Compose project:
 
 ```bash
-iii trigger compose::add worker=whatsapp
+iii call compose::add worker=whatsapp
 ```
 
 Compose resolves the declared `database`, `configuration`, `http`, and `quick-tunnel` dependencies, updates `worker-compose.yaml`, and starts the project. Dependency installation does not create the dedicated WhatsApp database or configure a Meta account. Configure storage before the worker's first successful start, as described under [Configuration](#configuration).
@@ -32,7 +32,7 @@ Create a session named `support`, start it, and link your phone. In ADE, open **
 Once the session reports `connected`, send a text message:
 
 ```bash
-iii trigger whatsapp::messages::send_text --json '{
+iii call whatsapp::messages::send_text --json '{
   "session_id": "support",
   "chat_id": "+15551234567",
   "text": "Hello from iii."
@@ -56,7 +56,7 @@ Stopping a session preserves its credentials. Starting the worker does not autom
 Configure your business account and webhook using the [Cloud setup guide](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md). Send a message from your test phone to the business number to open the customer service window, then reply through the official transport:
 
 ```bash
-iii trigger whatsapp::cloud::messages::send_text --json '{
+iii call whatsapp::cloud::messages::send_text --json '{
   "chat_id": "+15551234567",
   "text": "Hello from iii Cloud API."
 }'
@@ -142,22 +142,66 @@ Upload with `whatsapp::cloud::media::upload_document`, then reuse the returned `
 
 See [Cloud API coverage and contracts](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-api.md) for media, interactive messages, account management, Flows, and eligible group, calling, and commerce operations. Meta controls account eligibility and permissions. Cloud groups use their own IDs and functions, separate from native linked-phone groups.
 
-## Custom trigger types
+## Event functions
 
-Bind a registered callback function to the transport you want to monitor:
+The worker hosts two event sources. Each event is one call of the function, which returns the event, and iii delivers it to the function's observers. Both are private: only this worker calls them, and anyone may observe them. Neither takes args; observers select events with filters on the event's fields. The worker calls each function only while something observes it.
 
-| Trigger type | Fires when | Callback context |
+| Function | Args | Filter on | Event |
+| --- | --- | --- | --- |
+| `whatsapp::on-events` | none | `input.session_id`, `input.kind` | `{ session_id, sequence, kind, timestamp_ms, data }`: native session, message, receipt and group events |
+| `whatsapp::cloud::on-events` | none | `input.kind`, `input.chat_id`, `input.sender_id`, `input.message_type`, `input.status`, `input.business_account_id`, `input.phone_number_id`, `input.field`, `input.event`, `input.group_id`, `input.participant_id` | `{ kind, business_account_id, phone_number_id, message_id, chat_id, sender_id?, message_type?, text?, status?, timestamp_ms, data, event_id?, field?, event?, group_id?, participant_id? }`: verified Cloud webhook events after persistence |
+
+Delivery is best effort and not retried: target return values do not send replies. Set `namespace` on the observed source when the worker runs outside the observer's namespace; the target resolves in the observing worker's namespace, and observer metadata reaches the target as the call's metadata.
+
+### Native events
+
+Native kinds include `session.connected`, `session.disconnected`, `session.logged_out`, `session.qr`, `message.received`, `message.receipt`, `history.sync`, `group.updated` and `chat.presence`. Observe one session's incoming messages:
+
+```ts
+iii.observe(
+  {
+    function_id: 'whatsapp::on-events',
+    filters: { 'input.session_id': { $eq: 'support' }, 'input.kind': { $eq: 'message.received' } },
+    deliver: 'output',
+  },
+  'automation::on-whatsapp-message',
+)
+```
+
+Native event polling with `whatsapp::events::poll` reconciles a bounded in-memory event history. Read the [native event contract](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/native-api.md#functions-and-events) before observing.
+
+### Cloud events
+
+Kinds are `message.received`, `message.status` and `webhook.received`; an observer without a filter on `input.kind` receives all three. Clauses combine with AND, and `$in` lists alternatives. Observe incoming text messages from one contact:
+
+```ts
+iii.observe(
+  {
+    function_id: 'whatsapp::cloud::on-events',
+    filters: {
+      'input.kind': { $eq: 'message.received' },
+      'input.chat_id': { $eq: '+15550000009' },
+      'input.message_type': { $eq: 'text' },
+    },
+    deliver: 'output',
+  },
+  'automation::on-whatsapp-message',
+)
+```
+
+Read the [observer walkthrough](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md#filtered-cloud-webhook-events) and [complete filters and payloads](https://github.com/iii-hq/workers/blob/main/whatsapp/cloud_events.md). Cloud deduplication is persistent, but events can still be lost; reconcile through the Cloud chats and messages archive.
+
+### What the worker observes
+
+| Function | Args or filters | Target |
 | --- | --- | --- |
-| `whatsapp::events` | Native session events, filtered by `session_id` and `kinds` | `session_id`, `sequence`, `kind`, `timestamp_ms`, and `data` |
-| `whatsapp::cloud::events` | Verified Cloud webhook events after persistence, filtered by contact, group, type, status, or account | `kind`, account IDs, `timestamp_ms`, and event-specific fields |
+| `configuration::on-updated` | filters `input.id` (the configuration entry) and `input.event_type` `configuration:updated` | `whatsapp::on-config-change` |
+| `http::on-request` | args `{ method: GET \| POST, path: /webhooks/whatsapp-cloud/<configuration ID>, public_webhook: true }` | `whatsapp::cloud::webhook::verify`, `whatsapp::cloud::webhook::receive` |
+| `http::on-request` | args `{ method: POST, path: /webhooks/whatsapp-flows/<configuration ID>, public_webhook: true }` | `whatsapp::cloud::flows::endpoint` |
+| `console::ui::asset` | args `{ kind: script, path: whatsapp/page.js }`, `{ kind: style, path: whatsapp/styles.css }` | `whatsapp::ui-content` |
+| `quick-tunnel::on-changed` | filter `input.tunnel_id` `webhooks` | `whatsapp::cloud::tunnel::changed` |
 
-Native event polling can reconcile a bounded in-memory event history. Read the [native event contract](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/native-api.md#functions-and-events) before registering a callback.
-
-### Filtered Cloud webhook events
-
-Cloud subscriptions receive incoming messages by default. Delivery receipts and administrative events require explicit opt-in. Filters combine with AND; values within a list combine with OR. Read the [registration walkthrough](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md#filtered-cloud-webhook-events) and [complete filters and payloads](https://github.com/iii-hq/workers/blob/main/whatsapp/cloud_events.md).
-
-Callbacks are best effort and are not retried automatically. Cloud deduplication is persistent, but notifications can still be lost; reconcile through the Cloud chats and messages archive. Callback return values do not send replies.
+Each observer stays pending until its provider runs; a refused observer is logged and the worker keeps serving its own functions.
 
 ## Limits and differences from OpenWA
 
@@ -174,7 +218,7 @@ Rust credentials are incompatible with whatsmeow. Use a fresh `data/whatsapp-go`
 Find task-specific details in these guides:
 
 - [ADE setup, test results, archives, and draft behavior](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/ade.md)
-- [Cloud credentials, webhooks, documents, and trigger registration](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md)
+- [Cloud credentials, webhooks, documents, and event observers](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/cloud-setup.md)
 - [Linked-phone pairing, functions, and events](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/native-api.md)
 - [Database storage and migration](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/database-storage.md)
 - [Build from source, offline validation, and local SDK development](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/development.md)
