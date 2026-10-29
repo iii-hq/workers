@@ -18,7 +18,7 @@ under `/openwiki`.
 ## Install
 
 ```bash
-iii trigger compose::add worker=openwiki
+iii call compose::add worker=openwiki
 ```
 
 This pulls `state`, `cron`, and `llm-router` transitively. Add a model provider
@@ -30,7 +30,7 @@ For the best tier, agent-orchestrated pages written by one sub-agent per page
 with line citations, add the harness stack as well:
 
 ```bash
-iii trigger compose::add worker=harness
+iii call compose::add worker=harness
 ```
 
 `harness` transitively pulls `session-manager`, `context-manager`, `shell`
@@ -54,12 +54,12 @@ http://localhost:3111/openwiki
 Or drive it from the CLI:
 
 ```bash
-iii trigger openwiki::generate --json '{"repo_url":"https://github.com/owner/repo"}'
+iii call openwiki::generate --json '{"repo_url":"https://github.com/owner/repo"}'
 # -> { "wiki_id": "<wiki_id>", "status": "started" }
 
-iii trigger openwiki::status --json '{"id":"<wiki_id>"}'    # poll until phase = ready
-iii trigger openwiki::page   --json '{"id":"<wiki_id>","slug":"overview"}'
-iii trigger openwiki::search --json '{"id":"<wiki_id>","q":"config"}'
+iii call openwiki::status --json '{"id":"<wiki_id>"}'    # poll until phase = ready
+iii call openwiki::page   --json '{"id":"<wiki_id>","slug":"overview"}'
+iii call openwiki::search --json '{"id":"<wiki_id>","q":"config"}'
 ```
 
 `openwiki::refresh { id }` is incremental: it pulls the clone, diffs against
@@ -70,9 +70,28 @@ content-hash gate keeps an unchanged repo from churning the wiki.
 
 The full function catalogue (generation, scoped source readers for writer
 sub-agents, cited Q&A via `openwiki::ask`, Mermaid diagrams, `AGENTS.md`
-export, lint) is one `iii worker info openwiki` away. HTTP triggers mirror the
+export, lint) is one `iii worker info openwiki` away. HTTP routes mirror the
 read/generate functions under `/openwiki/api/*`, generation progress streams
 live over SSE, and page citations deep-link to source at the pinned commit.
+
+## What openwiki observes
+
+openwiki hosts no event functions; it observes other workers' functions:
+
+| Function | Args or filters | Target |
+| --- | --- | --- |
+| `http::on-request` | args `{ method, path }`, one observer per route under `/openwiki` | `openwiki::http::*` |
+| `cron::on-tick` | args `{ expression }`, one observer per wiki with an auto-refresh cadence, metadata `{ wiki_id }` | `openwiki::cron::refresh-due` |
+| `harness::on-turn-completed`, `harness::on-turn-started` | none (`deliver: 'output'`) | `openwiki::on-turn-completed`, `openwiki::on-turn-started` |
+| `configuration::on-updated` | filters on `input.id` (`openwiki`) and `input.event_type` (`configuration:updated`) | `openwiki::on-config-change` |
+
+```js
+worker.observe(
+  { function_id: 'cron::on-tick', args: { expression: '0 0 */6 * * *' } },
+  'openwiki::cron::refresh-due',
+  { metadata: { wiki_id } },
+);
+```
 
 openwiki also registers `openwiki::read-wiki-structure`,
 `openwiki::read-wiki-contents`, and `openwiki::ask-question`, which the
@@ -80,7 +99,7 @@ openwiki also registers `openwiki::read-wiki-structure`,
 MCP client:
 
 ```bash
-iii trigger compose::add worker=mcp
+iii call compose::add worker=mcp
 ```
 
 ## How generation works

@@ -1,6 +1,6 @@
 // Scoped source-read functions exposed to the harness. Each is jailed to one
 // wiki's clone directory (repoDir(wikiId)); the harness calls them via
-// agent_trigger to explore the repo and cite exact line ranges. Single-reader
+// agent_call to explore the repo and cite exact line ranges. Single-reader
 // surface — the orchestrator remains the single writer.
 import path from 'node:path';
 import fs from 'node:fs/promises';

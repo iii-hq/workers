@@ -75,7 +75,7 @@ export async function registerConfig(iii) {
     metadata: { ui_form: DEFAULT_CONFIG_ID },
     initial_value: DEFAULTS,
   };
-  const call = (function_id, payload) => iii.trigger({ function_id, namespace: 'default', payload });
+  const call = (function_id, payload) => iii.call({ function_id, namespace: 'default', payload });
   try {
     await call('configuration::ensure', payload);
     return;
@@ -113,7 +113,7 @@ export async function registerConfig(iii) {
 /** Overlay applied stored settings on defaults; unavailable configuration keeps environment defaults. */
 export async function fetchConfig(iii) {
   try {
-    const res = await iii.trigger({
+    const res = await iii.call({
       function_id: 'configuration::get',
       namespace: 'default',
       payload: { id: CONFIG_ID, raw: false },
@@ -125,8 +125,12 @@ export async function fetchConfig(iii) {
   }
 }
 
-/** Register the reload callback for this entry; an absent configuration service leaves defaults active. */
-export function bindConfigTrigger(iii, onChange) {
+/**
+ * Register the reload callback and observe `configuration::on-updated` for this
+ * entry. The observer stays pending while the configuration service is absent,
+ * and the defaults stay active.
+ */
+export function observeConfigChanges(iii, onChange) {
   iii.registerFunction(
     CONFIG_FN_ID,
     async () => {
@@ -145,13 +149,15 @@ export function bindConfigTrigger(iii, onChange) {
       },
     },
   );
-  try {
-    iii.registerTrigger({
-      type: 'configuration',
-      function_id: CONFIG_FN_ID,
-      config: { configuration_id: CONFIG_ID, event_types: ['configuration:updated'] },
-    });
-  } catch {
-    /* configuration worker may be absent; env defaults apply */
-  }
+  iii.observe(
+    {
+      function_id: 'configuration::on-updated',
+      filters: {
+        'input.id': { $eq: CONFIG_ID },
+        'input.event_type': { $eq: 'configuration:updated' },
+      },
+      deliver: 'output',
+    },
+    CONFIG_FN_ID,
+  );
 }

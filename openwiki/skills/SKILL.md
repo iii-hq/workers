@@ -45,12 +45,14 @@ stored in state; a browser UI and JSON API are served under `/openwiki`.
 The same operations are exposed over HTTP under `/openwiki/api/*`, and
 `/openwiki` serves the browser UI.
 
-## Reactive triggers
+## Observers
 
-- Each wiki with an auto-refresh cadence gets its own `cron` trigger; when one
-  fires, `openwiki::cron::refresh-due` runs an incremental refresh of every wiki
+- Each wiki with an auto-refresh cadence gets its own observer of
+  `cron::on-tick` (args `{ expression }`); on each tick
+  `openwiki::cron::refresh-due` runs an incremental refresh of every wiki
   whose interval has elapsed. Set the cadence per wiki (`openwiki::set-schedule`
   or the UI control); the config worker's `refresh_default` is the default for new
   wikis. Nothing is scheduled by default (`off`).
-- `openwiki::on-config-change` reloads the default model, page-writer concurrency,
-  and default refresh cadence when the `openwiki` configuration entry changes.
+- `openwiki::on-config-change` observes `configuration::on-updated` and reloads
+  the default model, page-writer concurrency, and default refresh cadence when
+  the `openwiki` configuration entry changes.
