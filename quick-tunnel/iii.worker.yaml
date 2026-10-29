@@ -5,7 +5,7 @@ deploy: binary
 manifest: Cargo.toml
 bin: quick-tunnel
 license: Apache-2.0
-description: Manage expiring durable leases on authorized cloudflared Quick Tunnel child processes.
+description: Manage expiring durable leases on authorized cloudflared Quick Tunnel child processes; observe quick-tunnel::on-changed (or bind quick-tunnel::changed) for lifecycle snapshots.
 tags: [cloudflare, quick-tunnel, webhooks, tunnel, leases]
 dependencies:
   configuration: latest

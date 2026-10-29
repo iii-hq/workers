@@ -126,7 +126,7 @@ async fn interface_registers_without_cloudflared_and_sdk_preserves_namespace_met
     let mut functions = BTreeMap::new();
     let mut trigger = None;
     tokio::time::timeout(Duration::from_secs(5), async {
-        while functions.len() < 3 || trigger.is_none() {
+        while functions.len() < 4 || trigger.is_none() {
             let value = captured.recv().await.unwrap();
             match value["type"].as_str() {
                 Some("registerfunction") => {
@@ -141,9 +141,52 @@ async fn interface_registers_without_cloudflared_and_sdk_preserves_namespace_met
     .unwrap();
     assert_eq!(
         functions.keys().map(String::as_str).collect::<Vec<_>>(),
-        vec![service::ACQUIRE, service::RELEASE, service::STATUS]
+        vec![
+            service::ACQUIRE,
+            service::ON_CHANGED,
+            service::RELEASE,
+            service::STATUS
+        ]
     );
-    for registration in functions.values() {
+    // The observable function next to the trigger type: owner-delivered,
+    // observed with the trigger config, no legacy trigger type.
+    let on_changed = &functions[service::ON_CHANGED];
+    assert!(!on_changed["description"].as_str().unwrap().is_empty());
+    assert_eq!(on_changed["observe"]["delivery"], "owner");
+    assert!(on_changed["observe"]["args_format"]["properties"]["tunnel_id"].is_object());
+    assert!(on_changed["observe"]["legacy_trigger_type"].is_null());
+    assert!(on_changed["request_format"]["properties"]["generation"].is_object());
+    // Every on-* function publishes typed request and response schemas: the
+    // interface boot smoke refuses an untyped (AnyValue or empty) schema.
+    let typed = |schema: &Value| {
+        [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+        ]
+        .iter()
+        .any(|key| schema.get(*key).is_some())
+    };
+    for (id, registration) in functions
+        .iter()
+        .filter(|(id, _)| id.starts_with("quick-tunnel::on-"))
+    {
+        for format in ["request_format", "response_format"] {
+            assert!(
+                typed(&registration[format]),
+                "{id} {format} is untyped: {}",
+                registration[format]
+            );
+        }
+    }
+    for (_, registration) in functions
+        .iter()
+        .filter(|(id, _)| id.as_str() != service::ON_CHANGED)
+    {
         assert!(!registration["description"].as_str().unwrap().is_empty());
         assert_eq!(registration["request_format"]["type"], "object");
         assert_eq!(registration["response_format"]["type"], "object");
@@ -183,6 +226,11 @@ async fn interface_registers_without_cloudflared_and_sdk_preserves_namespace_met
             true,
         ),
         (service::RELEASE, json!({"lease_id":"unknown"}), false),
+        (
+            service::ON_CHANGED,
+            json!({"tunnel_id":"webhooks", "status":"ready", "public_url":null, "generation":"g", "error":null}),
+            true,
+        ),
     ] {
         data["_caller_worker_id"] = json!("github-worker");
         let id = uuid::Uuid::new_v4();
@@ -196,6 +244,9 @@ async fn interface_registers_without_cloudflared_and_sdk_preserves_namespace_met
                 action: None,
                 metadata: None,
                 namespace: Some("provider-project".into()),
+                caller: None,
+                observe_depth: None,
+                activation: None,
             })
             .unwrap();
         let reply = next_matching(&mut captured, |v| {
@@ -203,6 +254,9 @@ async fn interface_registers_without_cloudflared_and_sdk_preserves_namespace_met
         })
         .await;
         assert_eq!(!reply["error"].is_null(), expect_error, "{reply}");
+        if function == service::ON_CHANGED {
+            assert_eq!(reply["error"]["code"], "FORBIDDEN", "{reply}");
+        }
         if function == service::ACQUIRE && !expect_error {
             assert_eq!(reply["result"]["status"], "failed");
         }

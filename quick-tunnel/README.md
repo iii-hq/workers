@@ -65,6 +65,16 @@ Config `{}` (todos os targets) ou `{"tunnel_id":"webhooks"}`. Evento `{tunnel_id
 
 **Integração GitHub: assine o trigger ANTES de acquire e leia status DEPOIS.** Mudanças podem ocorrer antes da resposta do acquire. Geração é UUID opaco, não ordenável; em dúvida reconcilie status. Nova tentativa de processo/restart sempre ganha nova geração e obtém uma URL nova do serviço (não há garantia de que o serviço nunca reutilize um hostname). Reconexão interna do mesmo filho conserva geração. Eventos são best-effort, não uma fila durável: bindings/entregas podem falhar, consumidores devem reconciliar status após reconectar; overflow de 256 eventos provoca reenvio dos snapshots atuais. Callback lento não bloqueia leases/expiração, mas atrasa outros callbacks (timeout de 5 s por entrega).
 
+### `quick-tunnel::on-changed` (iii 0.25)
+
+Função observável (owner-delivered) ao lado do trigger type `quick-tunnel::changed`, para consumidores novos em engines 0.25. Args = a config do trigger: `{}` ou omitidos (todos os targets) ou `{"tunnel_id":"webhooks"}`; campos desconhecidos são recusados pelo engine (`INVALID_ARGS`) e um `tunnel_id` fora dos targets autorizados é recusado com `INVALID_ARGS` (`unknown tunnel_id`); acima de 1024 observers, `LIMIT_EXCEEDED`. Cada observer cujo filtro casa recebe exatamente o snapshot que um binding recebe, `{tunnel_id,generation,status,public_url,error}`, do mesmo fan-out e com o mesmo timeout de 5 s por entrega.
+
+```js
+iii.observe({ function_id: 'quick-tunnel::on-changed', args: { tunnel_id: 'webhooks' } }, 'github::on-tunnel')
+```
+
+As mesmas regras valem: observe ANTES de acquire e leia status DEPOIS; entregas são best-effort. Os snapshots só saem do próprio worker: invocar `quick-tunnel::on-changed` diretamente é recusado com `FORBIDDEN`, então nenhum caller injeta eventos forjados. O trigger type `quick-tunnel::changed` continua registrado, sem mudança, para consumidores antigos em engines 0.24 e 0.25; em engine sem observe a função fica registrada como função comum e só o trigger type entrega.
+
 ## Ciclo de vida
 
 - Um task proprietário serializa aquisições/liberações, vencimentos, saídas e retries.
