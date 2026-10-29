@@ -24,7 +24,7 @@ pub struct CountTokensRequest {
     #[serde(default)]
     pub system_prompt: Option<String>,
     /// Invocation schema(s) to include in the estimate (typically the
-    /// single `agent_trigger` entry).
+    /// single `agent_call` entry).
     #[serde(default)]
     pub tools: Option<Vec<AgentFunction>>,
     /// Named auxiliary texts to count individually with the same
@@ -121,7 +121,7 @@ mod tests {
             .unwrap(),
         ];
         let tools: Vec<AgentFunction> = vec![serde_json::from_value(json!({
-            "name": "agent_trigger",
+            "name": "agent_call",
             "description": "Run an agent function",
             "parameters": { "type": "object" }
         }))

@@ -16,7 +16,7 @@ pub struct FpConfig {
     /// evaluations, where an advertised worker cannot be discovered — for
     /// those, store the off value BEFORE the worker's first boot (seed
     /// `./data/configuration/fp.yaml` or call `configuration::set` first),
-    /// since boot binds the hook before any later flip could land.
+    /// since boot observes the hook before any later flip could land.
     pub inject_guidance: bool,
 }
 

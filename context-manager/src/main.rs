@@ -15,8 +15,8 @@
 //!      compaction leases on the local filesystem (`lease_dir`). The
 //!      summariser reads `summarizer_timeout_ms` from the live snapshot per
 //!      call; the lease store is rebuilt + swapped on a `lease_dir` change.
-//!   5. Register the four `context::*` functions, then bind a
-//!      `configuration` trigger that hot-reloads every field (snapshot swap,
+//!   5. Register the four `context::*` functions, then observe
+//!      `configuration::on-updated` to hot-reload every field (snapshot swap,
 //!      lease-store rebuild) — nothing requires a restart.
 //!   6. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 
@@ -129,14 +129,14 @@ async fn main() -> Result<()> {
     let summarizer = Arc::new(RouterSummarizer::new(iii.clone(), cell.clone()));
 
     // The lease store is the one structural adapter: rebuilt + swapped on a
-    // lease_dir change (see configuration::register_config_trigger). A lease
+    // lease_dir change (see configuration::observe_config_changes). A lease
     // dir we can't create is boot-fatal — leasing must never silently no-op.
     let leases = lease_cell(Arc::new(
         FsLeaseStore::new(cfg.resolved_lease_dir())
             .map_err(|e| anyhow::anyhow!("opening the compaction lease directory: {e}"))?,
     ));
 
-    // Budget lookups are TTL-cached and flushed on router::models::changed;
+    // Budget lookups are TTL-cached and flushed on router::models::on-changed;
     // the decorator drops into Deps.resolver with no handler changes.
     let clock: Arc<SystemClock> = Arc::new(SystemClock);
     let resolver = Arc::new(CachingModelResolver::new(
@@ -153,13 +153,12 @@ async fn main() -> Result<()> {
     });
 
     functions::register_all(&iii, &deps);
-    context_manager::adapters::cache::register_models_changed_flush(&iii, resolver);
+    context_manager::adapters::cache::observe_models_changed_flush(&iii, resolver);
     ui::register(&iii);
 
-    // LAST: bind the configuration-change trigger so its handler closes over
-    // the snapshot cell + the lease cell it rebuilds on a lease_dir change.
-    configuration::register_config_trigger(&iii, cell, leases)
-        .context("registering the configuration change trigger")?;
+    // LAST: observe configuration changes so the handler closes over the
+    // snapshot cell + the lease cell it rebuilds on a lease_dir change.
+    configuration::observe_config_changes(&iii, cell, leases);
 
     tracing::info!("context-manager ready: 4 context::* functions");
 

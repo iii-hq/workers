@@ -40,7 +40,7 @@ Integration is always some subset of four moves:
 
 ## 2. Conventions
 
-- **Invocation**: every function is a **sync** `iii.trigger({ function_id,
+- **Invocation**: every function is a **sync** `iii.call({ function_id,
   payload, timeout_ms })` call; responses are the JSON shapes in §4. Give
   `assemble`/`compact` a generous `timeout_ms` (they may make a summariser LLM
   call — default outer budget is 320s).
@@ -178,7 +178,7 @@ Pure and router-free; safe for cost-sensitive callers with no `llm-router`.
 {
   messages: AgentMessage[];        // required
   system_prompt?: string;          // counted on top of messages
-  tools?: AgentFunction[];         // invocation schema(s), typically [agent_trigger]
+  tools?: AgentFunction[];         // invocation schema(s), typically [agent_call]
   model: ModelInput;               // tokenizer selection (v1: always heuristic)
 }
 -> {
@@ -375,7 +375,7 @@ persisted summary; send only the post-compaction window as `messages`.
 
 Call `context::count-tokens` with inline `model.limits` (or just an id — the
 heuristic ignores it) to decide whether a cheaper/larger model is needed before
-committing. Include the `agent_trigger` schema in `tools` so tool tokens count.
+committing. Include the `agent_call` schema in `tools` so tool tokens count.
 No LLM, no router, no state — works on a bare engine.
 
 ### Prune-only first pass
@@ -411,7 +411,7 @@ context-manager does **not**:
 - store conversations — pass messages in, persist results yourself (or use
   [session-manager](../../session-manager/architecture/integration.md));
 - decide *when* to compact a live session — that is your policy (a pre-flight,
-  or the optional reactive trigger in §11);
+  or the optional reactive pre-warm in §11);
 - talk to LLM providers directly — summarisation goes through `llm-router`;
 - guarantee exact token counts — v1 is a heuristic estimator (§2);
 - implement long-term / vector memory — that belongs in a dedicated sibling
@@ -445,11 +445,11 @@ bespoke in-harness compaction side-car with a reusable worker.
   the second caller skip compaction (`assemble`) or see `busy` (`compact`)
   without burning a model call. Crashed holders expire after `lease_ttl_secs`.
 - **Optional reactive pre-warm.** To pre-warm or surface a token-usage metric
-  off the hot path, bind a handler to `session::message-added` and call
-  `context::count-tokens` (cheap, no LLM) there. This is opt-in and lives in
-  the harness — context-manager binds no *session* triggers and never
-  reaches into a session itself, which is exactly what keeps it
-  store-agnostic.
+  off the hot path, observe `session::on-message-added` (filter on
+  `input.session_id`) with a handler that calls `context::count-tokens`
+  (cheap, no LLM). This is opt-in and lives in the harness — context-manager
+  observes no *session* functions and never reaches into a session itself,
+  which is exactly what keeps it store-agnostic.
 - **Agent exposure.** All functions are pure transforms (nothing to leak), but
   deny `context::assemble` and `context::compact` to in-run agents in
   cost-sensitive deployments — they can trigger a summariser call.

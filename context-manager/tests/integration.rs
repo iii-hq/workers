@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{register_worker, InitOptions};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
@@ -73,7 +73,7 @@ async fn end_to_end_via_iii_sdk() {
     let result = loop {
         let attempt = timeout(
             Duration::from_secs(5),
-            client.trigger(TriggerRequest {
+            client.call(CallRequest {
                 function_id: "context::count-tokens".into(),
                 payload: payload.clone(),
                 action: None,

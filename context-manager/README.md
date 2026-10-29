@@ -13,10 +13,10 @@ work standalone.
 ## Install
 
 ```bash
-iii trigger compose::add worker=context-manager
+iii call compose::add worker=context-manager
 ```
 
-`iii trigger compose::add` declares the worker in `worker-compose.yaml` and
+`iii call compose::add` declares the worker in `worker-compose.yaml` and
 starts it as part of the Compose project. Runtime configuration lives in the `configuration` worker
 (enabled by default in the engine): at boot the worker registers its schema and
 fetches the authoritative value, and it hot-reloads on change — every field,
@@ -29,14 +29,14 @@ seeds the first registration.
 Build a budgeted context before every model call:
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    let result = iii.trigger(TriggerRequest {
+    let result = iii.call(CallRequest {
         function_id: "context::assemble".into(),
         payload: json!({
             "messages": [
@@ -97,6 +97,14 @@ system prompt vs a model), `context::prune` (replace eligible old function outpu
 with `[output of {function_id} pruned: was ~N tokens; re-call it if still
 needed]` placeholders, no LLM involved), and `context::compact` (summarise the
 head, keep a recent tail verbatim — returns `ok | busy | empty | overflow`).
+
+Model budgets resolved through `router::models::budget` are cached for a
+minute. The worker observes `router::models::on-changed` with the internal
+`context::on-models-changed`, which empties the cache on every catalog change,
+and `configuration::on-updated` (filtered on its own entry) with
+`context::on-config-change`. Both observers stay `pending` until llm-router
+and the configuration worker register those functions; until then the cache
+expires by TTL alone.
 
 ## Configuration
 

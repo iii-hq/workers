@@ -4,7 +4,7 @@
 //! stores that report healthy while nothing persists, retrieval that
 //! quietly degrades. Every check here exercises the real path end-to-end.
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -215,7 +215,7 @@ async fn sibling_check(
 ) -> DoctorCheck {
     let res = deps
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.into(),
             payload,
             action: None,
