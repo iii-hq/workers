@@ -94,6 +94,112 @@ pub struct TurnEventBindingConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
 }
+/// What an observer of `harness::on-ready` (and a `harness::ready` binding)
+/// receives.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReadyEvent {
+    /// Always `ready`.
+    pub status: String,
+    /// Emission time, epoch milliseconds.
+    pub timestamp: i64,
+}
+
+/// What an observer of `harness::on-turn-started` (and a
+/// `harness::turn-started` binding) receives.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TurnStartedEvent {
+    pub session_id: String,
+    pub turn_id: String,
+    /// Emission time, epoch milliseconds.
+    pub timestamp: i64,
+    /// Sub-agent depth; 0 for a top-level turn.
+    pub depth: u32,
+    /// The first characters of the message that started the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_preview: Option<String>,
+    /// Sub-agent linkage of a spawned child turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ParentLink>,
+    /// Display parent of a trigger-fired child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+}
+
+/// What an observer of `harness::on-turn-completed` (and a
+/// `harness::turn-completed` binding) receives.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TurnCompletedEvent {
+    pub session_id: String,
+    pub turn_id: String,
+    /// `completed`, `cancelled` or `failed`.
+    pub status: String,
+    /// False while the session still owns an armed wake: progress, not the
+    /// run's final outcome.
+    pub terminal: bool,
+    /// Emission time, epoch milliseconds.
+    pub timestamp: i64,
+    /// The structured result, when the turn produced one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ParentLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// The latest generation's context accounting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::context_snapshot::ContextSnapshotV1>,
+}
+
+/// What an observer of `harness::on-message-queued` (and a
+/// `harness::message-queued` binding) receives: a pointer, not the message.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MessageQueuedEvent {
+    pub session_id: String,
+    pub entry_id: String,
+    /// When the message parked, epoch milliseconds.
+    pub queued_at: i64,
+    /// Emission time, epoch milliseconds.
+    pub timestamp: i64,
+}
+
+/// What an observer of `harness::on-triggers-changed` (and a
+/// `harness::triggers-changed` binding) receives: a doorbell to refetch
+/// `harness::triggers::list`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TriggersChangedEvent {
+    pub session_id: String,
+    /// Emission time, epoch milliseconds.
+    pub timestamp: i64,
+}
+
+/// What an observer of `harness::on-compaction` (and a `harness::compaction`
+/// binding) receives (`crate::compaction::event_payload`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CompactionEvent {
+    pub session_id: String,
+    pub compaction_id: String,
+    /// `started` or `completed`.
+    pub phase: String,
+    /// Emission time, epoch milliseconds.
+    pub timestamp: i64,
+    /// On `completed` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<crate::compaction::Status>,
+    /// On `completed` only: the outcome as every client shows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// On `completed` only: the transcript rows it wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_before: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_after: Option<u64>,
+}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BindingFilter {
@@ -496,7 +602,7 @@ impl TurnEvents {
             "registered harness::ready / harness::turn-started / harness::turn-completed / harness::message-queued / harness::triggers-changed / harness::compaction trigger types"
         );
 
-        observe::register_observable::<ReadyBindingConfig, Value, _>(
+        observe::register_observable::<ReadyBindingConfig, ReadyEvent, _>(
             iii,
             ON_READY,
             ON_READY_DESC,
@@ -505,44 +611,40 @@ impl TurnEvents {
                 ready: ready_emitted.clone(),
             },
         );
-        let turn_observables: [(&'static str, &'static str, &str, &SubscriberSet); 5] = [
-            (
-                ON_TURN_STARTED,
-                TURN_STARTED,
-                ON_TURN_STARTED_DESC,
-                &started,
-            ),
-            (
-                ON_TURN_COMPLETED,
-                TURN_COMPLETED,
-                ON_TURN_COMPLETED_DESC,
-                &completed,
-            ),
-            (
-                ON_MESSAGE_QUEUED,
-                MESSAGE_QUEUED,
-                ON_MESSAGE_QUEUED_DESC,
-                &queued,
-            ),
-            (
-                ON_TRIGGERS_CHANGED,
-                TRIGGERS_CHANGED,
-                ON_TRIGGERS_CHANGED_DESC,
-                &triggers_changed,
-            ),
-            (ON_COMPACTION, COMPACTION, ON_COMPACTION_DESC, &compaction),
-        ];
-        for (function_id, type_id, description, set) in turn_observables {
-            observe::register_observable::<TurnEventBindingConfig, Value, _>(
-                iii,
-                function_id,
-                description,
-                TurnEventObserveHandler {
-                    type_id,
-                    set: set.clone(),
-                },
-            );
-        }
+        let turn_observer = |type_id: &'static str, set: &SubscriberSet| TurnEventObserveHandler {
+            type_id,
+            set: set.clone(),
+        };
+        observe::register_observable::<TurnEventBindingConfig, TurnStartedEvent, _>(
+            iii,
+            ON_TURN_STARTED,
+            ON_TURN_STARTED_DESC,
+            turn_observer(TURN_STARTED, &started),
+        );
+        observe::register_observable::<TurnEventBindingConfig, TurnCompletedEvent, _>(
+            iii,
+            ON_TURN_COMPLETED,
+            ON_TURN_COMPLETED_DESC,
+            turn_observer(TURN_COMPLETED, &completed),
+        );
+        observe::register_observable::<TurnEventBindingConfig, MessageQueuedEvent, _>(
+            iii,
+            ON_MESSAGE_QUEUED,
+            ON_MESSAGE_QUEUED_DESC,
+            turn_observer(MESSAGE_QUEUED, &queued),
+        );
+        observe::register_observable::<TurnEventBindingConfig, TriggersChangedEvent, _>(
+            iii,
+            ON_TRIGGERS_CHANGED,
+            ON_TRIGGERS_CHANGED_DESC,
+            turn_observer(TRIGGERS_CHANGED, &triggers_changed),
+        );
+        observe::register_observable::<TurnEventBindingConfig, CompactionEvent, _>(
+            iii,
+            ON_COMPACTION,
+            ON_COMPACTION_DESC,
+            turn_observer(COMPACTION, &compaction),
+        );
 
         Self {
             iii: iii.clone(),
@@ -950,6 +1052,80 @@ mod observable_tests {
                 "{err:?}"
             );
         }
+    }
+
+    /// Every event an observer receives parses as the request type its
+    /// on-* function publishes, so the published schema documents it.
+    #[tokio::test]
+    async fn every_delivered_event_parses_as_its_published_request_type() {
+        let events = emitter();
+        let r = recorder("o1");
+        for set in [
+            &events.ready,
+            &events.started,
+            &events.completed,
+            &events.queued,
+            &events.triggers_changed,
+            &events.compaction,
+        ] {
+            set.file_observer(r.clone(), BindingFilter::default());
+        }
+        let parent = ParentLink {
+            session_id: "p1".into(),
+            turn_id: "pt".into(),
+            function_call_id: "fc".into(),
+        };
+        let outcome = crate::compaction::Outcome {
+            session_id: "s1".into(),
+            compaction_id: "c1".into(),
+            status: crate::compaction::Status::Ok,
+            message: "done".into(),
+            tokens_before: Some(10),
+            tokens_after: Some(2),
+            summary: None,
+            entry_ids: vec!["e1".into()],
+        };
+        events.emit_ready().await;
+        events
+            .emit_started("s1", "t1", Some(&parent), Some("p1"), Some("hi"), 1)
+            .await;
+        events
+            .emit_completed(
+                "s1",
+                "t1",
+                "completed",
+                Some(&json!({ "answer": 42 })),
+                None,
+                None,
+                Some(&parent),
+                Some("p1"),
+                true,
+                None,
+            )
+            .await;
+        events.emit_queued("s1", "q1", 5).await;
+        events.emit_triggers_changed("s1").await;
+        events
+            .emit_compaction("s1", crate::compaction::event_payload("started", &outcome))
+            .await;
+        events
+            .emit_compaction(
+                "s1",
+                crate::compaction::event_payload("completed", &outcome),
+            )
+            .await;
+        let seen = seen(&r);
+        assert_eq!(seen.len(), 7, "{seen:?}");
+        serde_json::from_value::<ReadyEvent>(seen[0].clone()).unwrap();
+        let started = serde_json::from_value::<TurnStartedEvent>(seen[1].clone()).unwrap();
+        assert_eq!(started.parent, Some(parent.clone()));
+        let completed = serde_json::from_value::<TurnCompletedEvent>(seen[2].clone()).unwrap();
+        assert!(completed.terminal);
+        serde_json::from_value::<MessageQueuedEvent>(seen[3].clone()).unwrap();
+        serde_json::from_value::<TriggersChangedEvent>(seen[4].clone()).unwrap();
+        serde_json::from_value::<CompactionEvent>(seen[5].clone()).unwrap();
+        let finished = serde_json::from_value::<CompactionEvent>(seen[6].clone()).unwrap();
+        assert_eq!(finished.status, Some(crate::compaction::Status::Ok));
     }
 
     #[tokio::test]

@@ -72,6 +72,18 @@ pub struct TimerTriggerConfig {
     pub in_ms: Option<i64>,
 }
 
+/// What one fire hands a `timer` binding or an observer of
+/// `harness::on-timer` (see `timer_event`).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct TimerFiredEvent {
+    /// Always `timer`.
+    pub trigger: String,
+    /// The instant the timer was armed for, epoch milliseconds.
+    pub scheduled_at: i64,
+    /// The instant it actually fired, epoch milliseconds.
+    pub actual_at: i64,
+}
+
 /// Keyed one-shot deadlines: each id holds at most one pending task that
 /// sleeps until an absolute epoch-ms instant, then runs its work once.
 ///
@@ -358,7 +370,7 @@ pub fn register(iii: &IIIClient, bus: TimerBus) {
         TIMER_DESC,
         TimerHandler { bus: bus.clone() },
     ));
-    observe::register_observable::<TimerTriggerConfig, Value, _>(
+    observe::register_observable::<TimerTriggerConfig, TimerFiredEvent, _>(
         iii,
         ON_TIMER,
         ON_TIMER_DESC,
@@ -527,6 +539,12 @@ mod observable_tests {
                 if code == codes::FORBIDDEN && message.contains(ON_TIMER)),
             "{err:?}"
         );
+    }
+    #[test]
+    fn the_fired_event_parses_as_the_published_request_type() {
+        let event: TimerFiredEvent = serde_json::from_value(timer_event(5)).unwrap();
+        assert_eq!(event.trigger, "timer");
+        assert_eq!(event.scheduled_at, 5);
     }
 
     #[tokio::test(start_paused = true)]
