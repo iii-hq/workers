@@ -102,7 +102,9 @@ const PREVIEW_STREAM_BYTES: usize = PREVIEW_MAX_BYTES / 2;
 
 /// One `github::called` event: the call that ran plus a short, human result
 /// summary. Serialized as the trigger payload; the console renders it directly.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+/// Also the payload every `github::on-called` observer receives, and so the
+/// request schema of that function.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CalledEvent {
     /// The `github::*` function id that ran.
     pub function_id: String,
@@ -270,8 +272,9 @@ impl ObserveHandler for CalledObserveHandler {
     }
 }
 
-/// Handler of `github::on-called`: any payload is refused.
-fn refuse_called(_payload: Value) -> Result<(), Error> {
+/// Handler of `github::on-called`: typed by the [`CalledEvent`] its observers
+/// receive (the published request schema); any invocation is refused.
+fn refuse_called(_event: CalledEvent) -> Result<(), Error> {
     Err(refuse_invocation(ON_CALLED))
 }
 
@@ -359,9 +362,6 @@ pub fn register_called_trigger(iii: &Arc<IIIClient>) -> CalledEmitter {
         ON_CALLED,
         RegisterFunction::new(refuse_called)
             .description(ON_CALLED_DESCRIPTION)
-            .request_format(
-                serde_json::to_value(schemars::schema_for!(CalledEvent)).unwrap_or(Value::Null),
-            )
             .observe(
                 Observe::owner()
                     .args_format::<CalledArgs>()
@@ -892,7 +892,7 @@ fn civil_from_epoch(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
@@ -1292,18 +1292,57 @@ mod tests {
     #[test]
     fn on_called_refuses_direct_invocation() {
         assert_eq!(ON_CALLED, "github::on-called");
-        for payload in [
-            json!({}),
-            Value::Null,
-            serde_json::to_value(called_event()).unwrap(),
-        ] {
-            let error = refuse_called(payload).unwrap_err();
-            assert!(
-                matches!(&error, Error::Remote { code, message, .. }
-                    if code == codes::FORBIDDEN && message.contains(ON_CALLED)),
-                "{error:?}"
-            );
+        let error = refuse_called(called_event()).unwrap_err();
+        assert!(
+            matches!(&error, Error::Remote { code, message, .. }
+                if code == codes::FORBIDDEN && message.contains(ON_CALLED)),
+            "{error:?}"
+        );
+    }
+
+    /// The request and response schemas the SDK auto-extracts from a sync
+    /// handler, exactly as `RegisterFunction::new` publishes them.
+    pub(crate) fn handler_schemas<F, M>(_handler: &F) -> (Value, Value)
+    where
+        F: iii_sdk::iii::IntoSyncHandler<M>,
+    {
+        (
+            F::request_format().unwrap_or(Value::Null),
+            F::response_format().unwrap_or(Value::Null),
+        )
+    }
+
+    /// A schema the interface boot smoke accepts: not AnyValue, not empty.
+    pub(crate) fn assert_typed_schema(function_id: &str, which: &str, schema: &Value) {
+        let typed = schema.as_object().is_some_and(|o| {
+            [
+                "type",
+                "properties",
+                "$ref",
+                "allOf",
+                "anyOf",
+                "oneOf",
+                "enum",
+            ]
+            .iter()
+            .any(|k| o.contains_key(*k))
+        });
+        assert!(typed, "{function_id} {which} schema is untyped: {schema}");
+    }
+
+    #[test]
+    fn on_called_publishes_typed_schemas() {
+        let (request, response) = handler_schemas(&refuse_called);
+        assert_typed_schema(ON_CALLED, "request", &request);
+        assert_typed_schema(ON_CALLED, "response", &response);
+        // The request schema documents the delivered event.
+        for field in ["function_id", "ok", "result_summary", "timestamp"] {
+            assert!(request["properties"].get(field).is_some(), "{request}");
         }
+        // The delivered payload round-trips through the published type.
+        let delivered = serde_json::to_value(called_event()).unwrap();
+        let parsed: CalledEvent = serde_json::from_value(delivered.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), delivered);
     }
 
     #[tokio::test]

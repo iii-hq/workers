@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use iii_sdk::{ObserveHandler, ObserveRejection, Observer};
 use serde_json::Value;
 
+use super::notifications::NotificationEvent;
 use super::wiring::{parse_filter, storage_task};
 use super::{Failure, Result, Service, Subscriber};
 use crate::events::{is_skipped_delivery, refuse_invocation};
@@ -177,8 +178,12 @@ pub(super) async fn deliver(observer_id: &str, payload: Value) -> Result<Value> 
     }
 }
 
-/// Handler of `github::on-pr-event`: any payload is refused.
-pub(super) fn refuse_pr_event(_payload: Value) -> std::result::Result<(), iii_sdk::Error> {
+/// Handler of `github::on-pr-event`: typed by the [`NotificationEvent`] its
+/// observers receive, as a `github::pr::event` binding does (the published
+/// request schema); any invocation is refused.
+pub(super) fn refuse_pr_event(
+    _event: NotificationEvent,
+) -> std::result::Result<(), iii_sdk::Error> {
     Err(refuse_invocation(ON_PR_EVENT))
 }
 
@@ -263,14 +268,44 @@ mod tests {
     #[test]
     fn on_pr_event_refuses_direct_invocation() {
         assert_eq!(ON_PR_EVENT, "github::on-pr-event");
-        for payload in [json!({}), Value::Null, json!({ "repo": "owner/repo" })] {
-            let error = refuse_pr_event(payload).unwrap_err();
-            assert!(
-                matches!(&error, iii_sdk::Error::Remote { code, message, .. }
-                    if code == crate::events::codes::FORBIDDEN && message.contains(ON_PR_EVENT)),
-                "{error:?}"
-            );
-        }
+        let error = refuse_pr_event(compact_event()).unwrap_err();
+        assert!(
+            matches!(&error, iii_sdk::Error::Remote { code, message, .. }
+                if code == crate::events::codes::FORBIDDEN && message.contains(ON_PR_EVENT)),
+            "{error:?}"
+        );
+    }
+
+    /// A compact delivery, as an observer with a compact policy receives it.
+    fn compact_event() -> NotificationEvent {
+        serde_json::from_value(json!({
+            "event_id": "e1",
+            "watch_id": "w1",
+            "repo": "owner/repo",
+            "number": 1,
+            "head_sha": "abc",
+            "category": "ci",
+            "kind": "ci.failed",
+            "final_event": false,
+            "body_truncated": false
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn on_pr_event_publishes_typed_schemas() {
+        use crate::events::tests::{assert_typed_schema, handler_schemas};
+        let (request, response) = handler_schemas(&refuse_pr_event);
+        assert_typed_schema(ON_PR_EVENT, "request", &request);
+        assert_typed_schema(ON_PR_EVENT, "response", &response);
+        // Same schema a github::pr::event binding's call request publishes.
+        let expected = serde_json::to_value(
+            schemars::r#gen::SchemaSettings::draft07()
+                .into_generator()
+                .into_root_schema_for::<NotificationEvent>(),
+        )
+        .unwrap();
+        assert_eq!(request, expected);
     }
 
     #[tokio::test]

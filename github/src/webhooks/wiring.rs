@@ -140,10 +140,6 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         observe::ON_PR_EVENT,
         RegisterFunction::new(observe::refuse_pr_event)
             .description(observe::ON_PR_EVENT_DESCRIPTION)
-            .request_format(
-                serde_json::to_value(schemars::schema_for!(notifications::NotificationEvent))
-                    .unwrap_or(Value::Null),
-            )
             .observe(
                 Observe::owner()
                     .args_format::<EventFilter>()
