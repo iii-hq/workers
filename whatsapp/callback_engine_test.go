@@ -81,6 +81,17 @@ func (p *callbackPeer) write(ctx context.Context, value any) error {
 	return p.conn.Write(ctx, websocket.MessageText, body)
 }
 
+// registerWorker greets the client as an engine with observe.v2 does, so the
+// SDK sends the registrations that need it (private functions, args_format).
+func (p *callbackPeer) registerWorker(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := p.write(ctx, map[string]any{"type": "workerregistered", "worker_id": "00000000-0000-4000-8000-000000000001", "features": []string{"observe.v1", "observe.v2"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (p *callbackPeer) invoke(ctx context.Context, id string, raw json.RawMessage) (json.RawMessage, *iii.InvocationError, error) {
 	p.nextID++
 	invocationID := fmt.Sprintf("00000000-0000-4000-8000-%012d", p.nextID)

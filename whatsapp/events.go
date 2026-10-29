@@ -1,16 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log"
 	"math"
-	"regexp"
-	"slices"
-	"sync"
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
@@ -509,99 +504,47 @@ func (m *Manager) eventCurrent(event Event) bool {
 	return event.epoch == event.owner.eventEpoch
 }
 
-type EventFilter struct {
-	SessionID string   `json:"session_id"`
-	Kinds     []string `json:"kinds"`
-}
-type eventBinding struct {
-	filter EventFilter
-	config iii.TriggerConfig
-}
-type EventRouter struct {
-	mu       sync.RWMutex
-	bindings map[string]eventBinding
-}
+// onEventsFn is the native event source: each current session, message,
+// receipt or group event is one call of it, and its observers receive the
+// Event. It takes no args; observers select events with filters on
+// input.session_id and input.kind.
+const onEventsFn = "whatsapp::on-events"
 
-var eventKindPattern = regexp.MustCompile(`^[A-Za-z0-9._]{1,128}$`)
-
-func (r *EventRouter) RegisterTrigger(_ context.Context, b iii.TriggerConfig) error {
-	var f EventFilter
-	d := json.NewDecoder(bytes.NewReader(b.Config))
-	d.DisallowUnknownFields()
-	if err := d.Decode(&f); err != nil {
-		return errors.New("invalid WhatsApp event filter")
-	}
-	var trailing any
-	if err := d.Decode(&trailing); err != io.EOF {
-		return errors.New("invalid WhatsApp event filter")
-	}
-	if f.SessionID != "" && validSessionID(f.SessionID) != nil {
-		return errors.New("invalid session_id filter")
-	}
-	if len(f.Kinds) > 128 {
-		return errors.New("too many event kinds")
-	}
-	for _, kind := range f.Kinds {
-		if !eventKindPattern.MatchString(kind) {
-			return errors.New("invalid event kind")
-		}
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.bindings == nil {
-		r.bindings = map[string]eventBinding{}
-	}
-	if _, exists := r.bindings[b.ID]; !exists && len(r.bindings) >= 1024 {
-		return errors.New("event subscription limit reached")
-	}
-	r.bindings[b.ID] = eventBinding{f, b}
-	return nil
-}
-func (r *EventRouter) UnregisterTrigger(_ context.Context, b iii.TriggerConfig) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.bindings, b.ID)
-	return nil
-}
 func registerEvents(ctx context.Context, client *iii.Client, m *Manager) error {
-	r := &EventRouter{bindings: map[string]eventBinding{}}
-	if err := client.RegisterTriggerType("whatsapp::events", "Native WhatsApp session, message, receipt and group events", r, iii.RegisterTriggerTypeOptions{
-		TriggerRequestFormat: nativeEventFilterSchema,
-		CallRequestFormat:    nativeEventPayloadSchema,
+	if _, err := client.RegisterFunction(onEventsFn, iii.Identity, iii.FunctionOptions{
+		Description:    "Native WhatsApp session, message, receipt and group events. Observe it with filters on input.session_id and input.kind.",
+		RequestFormat:  nativeEventPayloadSchema,
+		ResponseFormat: nativeEventPayloadSchema,
+		Private:        true,
 	}); err != nil {
 		return err
 	}
+	observed := func() bool { return client.IsObserved(onEventsFn) }
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case e := <-m.EventQueue:
-				if !m.eventCurrent(e) {
-					continue
-				}
-				r.mu.RLock()
-				bindings := []iii.TriggerConfig{}
-				for _, b := range r.bindings {
-					if (b.filter.SessionID == "" || b.filter.SessionID == e.SessionID) && (len(b.filter.Kinds) == 0 || slices.Contains(b.filter.Kinds, e.Kind)) {
-						bindings = append(bindings, b.config)
-					}
-				}
-				r.mu.RUnlock()
-				data, _ := json.Marshal(e)
-				for _, b := range bindings {
-					if !m.eventCurrent(e) {
-						break
-					}
-					callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-					_, err := client.Trigger(callCtx, iii.TriggerRequest{FunctionID: b.FunctionID, Data: data, Namespace: b.Namespace, Metadata: b.Metadata, Timeout: 5 * time.Second})
-					cancel()
-					if err != nil && ctx.Err() == nil {
-						log.Print("WhatsApp event delivery failed; reconcile with events::poll")
-					}
-				}
+				emitEvent(ctx, e, observed, m.eventCurrent, client.Call)
 			}
 		}
 	}()
 	return nil
+}
+
+// emitEvent calls whatsapp::on-events with e while anything observes it and e
+// belongs to its session's current account. The call does not wait for the
+// observers.
+func emitEvent(ctx context.Context, e Event, observed func() bool, current func(Event) bool, call func(context.Context, iii.CallRequest) (json.RawMessage, error)) {
+	if ctx.Err() != nil || !observed() || !current(e) {
+		return
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+	if _, err := call(ctx, iii.CallRequest{FunctionID: onEventsFn, Payload: data, Action: iii.VoidAction()}); err != nil && ctx.Err() == nil {
+		log.Print("WhatsApp event delivery failed; reconcile with events::poll")
+	}
 }
