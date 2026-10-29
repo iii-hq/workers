@@ -581,4 +581,53 @@ mod tests {
         set.remove("same");
         assert!(set.function_ids().is_empty());
     }
+
+    /// The schema iii-sdk publishes for a handler type (`SchemaSettings::draft07()`).
+    fn published_schema<T: JsonSchema>() -> Value {
+        serde_json::to_value(
+            schemars::r#gen::SchemaSettings::draft07()
+                .into_generator()
+                .into_root_schema_for::<T>(),
+        )
+        .unwrap()
+    }
+
+    /// Typed: a schema with a concrete `type`, never `AnyValue`, `true` or `{}`.
+    fn assert_typed(function_id: &str, side: &str, schema: &Value, ty: &str) {
+        assert!(schema.is_object(), "{function_id} {side}: {schema}");
+        assert_ne!(
+            schema["title"], "AnyValue",
+            "{function_id} {side}: {schema}"
+        );
+        assert_eq!(schema["type"], ty, "{function_id} {side}: {schema}");
+    }
+
+    #[test]
+    fn on_functions_publish_typed_request_and_response_schemas() {
+        // Request: the event struct the refusing handler takes (as passed to
+        // register_observable::<E>); response: the handler's `()`.
+        let cases = [
+            (ON_READY, published_schema::<RouterReadyEvent>(), vec![]),
+            (
+                ON_MODELS_CHANGED,
+                published_schema::<ModelsChangedPayload>(),
+                vec!["count", "provider"],
+            ),
+            (
+                ON_PROVIDER_CHANGED,
+                published_schema::<ProviderChangedPayload>(),
+                vec!["op", "provider"],
+            ),
+        ];
+        for (function_id, request, fields) in cases {
+            assert_typed(function_id, "request", &request, "object");
+            let mut keys: Vec<&str> = request["properties"]
+                .as_object()
+                .map(|p| p.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            keys.sort_unstable();
+            assert_eq!(keys, fields, "{function_id} request properties");
+            assert_typed(function_id, "response", &published_schema::<()>(), "null");
+        }
+    }
 }
