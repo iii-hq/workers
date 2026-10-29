@@ -166,7 +166,7 @@ const containers = names.map((container, index) => ({
       : 1200 + index,
 }))
 
-async function trigger(functionId, payload = {}, options) {
+async function call(functionId, payload = {}, options) {
   harness.calls.push({
     functionId,
     payload: structuredClone(payload),
@@ -246,8 +246,7 @@ async function trigger(functionId, payload = {}, options) {
                 namespace: 'workers-test',
               },
             ],
-        trigger_types: [],
-        registered_triggers: [],
+        observers: [],
       }
     }
     case 'console::configuration-id':
@@ -412,9 +411,9 @@ async function trigger(functionId, payload = {}, options) {
 
 const iii = {
   browserId: 'workers-harness',
-  trigger,
+  call,
   on: () => () => {},
-  registerTrigger: () => () => {},
+  observe: () => () => {},
   addConnectionStateListener: () => () => {},
 }
 

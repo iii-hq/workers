@@ -20,7 +20,7 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
   browser,
 }) => {
   const completed = stack.waitForTurnCompleted()
-  await stack.trigger()
+  await stack.send()
   expect(await completed).toMatchObject({ status: 'completed' })
 
   await page.setViewportSize({ width: 1280, height: 800 })
@@ -141,7 +141,7 @@ test('an engine-side open or close reaches the console without waiting for the p
   stack,
 }) => {
   const completed = stack.waitForTurnCompleted()
-  await stack.trigger()
+  await stack.send()
   expect(await completed).toMatchObject({ status: 'completed' })
 
   await page.emulateMedia({ reducedMotion: 'reduce' })

@@ -68,7 +68,7 @@ async function installSchemaFailure(page: Page, configurationId: string) {
       __providerConfigurationSchemaFailure?: boolean
       __providerConfigurationClientState?: {
         client: {
-          trigger: (
+          call: (
             functionId: string,
             payload?: Record<string, unknown>,
             options?: { timeoutMs?: number; namespace?: string },
@@ -85,13 +85,13 @@ async function installSchemaFailure(page: Page, configurationId: string) {
     const { getIiiClient } = await import(/* @vite-ignore */ modulePath)
     const client = await getIiiClient()
     if (!target.__providerConfigurationClientState) {
-      type Trigger = (
+      type Call = (
         functionId: string,
         payload?: Record<string, unknown>,
         options?: { timeoutMs?: number; namespace?: string },
       ) => Promise<unknown>
-      const original: Trigger = client.trigger.bind(client) as Trigger
-      client.trigger = async (
+      const original: Call = client.call.bind(client) as Call
+      client.call = async (
         functionId: string,
         payload?: Record<string, unknown>,
         options?: { timeoutMs?: number; namespace?: string },
@@ -116,13 +116,13 @@ async function restoreSchemaFailure(page: Page) {
     const target = window as Window & {
       __providerConfigurationSchemaFailure?: boolean
       __providerConfigurationClientState?: {
-        client: { trigger: (...args: never[]) => Promise<unknown> }
+        client: { call: (...args: never[]) => Promise<unknown> }
         original: (...args: never[]) => Promise<unknown>
       }
     }
     target.__providerConfigurationSchemaFailure = false
     if (target.__providerConfigurationClientState) {
-      target.__providerConfigurationClientState.client.trigger =
+      target.__providerConfigurationClientState.client.call =
         target.__providerConfigurationClientState.original
     }
   })
