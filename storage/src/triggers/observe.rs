@@ -4,6 +4,7 @@
 //! [`TriggerRegistry`] the bindings live in, so one fan-out serves both and
 //! an observer receives exactly the payload a binding receives (`obs.call`).
 
+use crate::handlers::schema_of;
 use crate::triggers::handler::WiredBuckets;
 use crate::triggers::normalize::EventKind;
 use crate::triggers::object_created::TriggerConfig as CreatedConfig;
@@ -133,6 +134,21 @@ impl ObserveHandler for OnObjectHandler {
         self.remove(obs.id());
         tracing::info!(observer = %obs.id(), "{} observer removed", function_id(self.kind));
     }
+}
+
+/// The request schema `kind`'s observable function registers: the event
+/// payload its observers receive, never `AnyValue`.
+pub fn request_schema(kind: EventKind) -> Value {
+    match kind {
+        EventKind::Created => schema_of::<crate::triggers::object_created::Event>(),
+        EventKind::Deleted => schema_of::<crate::triggers::object_deleted::Event>(),
+    }
+}
+
+/// The response schema of every `storage::on-object-*` function: its
+/// handler refuses every invocation and returns `()` on success.
+pub fn response_schema() -> Value {
+    schema_of::<()>()
 }
 
 /// The handler of a `storage::on-object-*` function: events only come from

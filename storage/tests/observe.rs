@@ -17,7 +17,8 @@ use storage::triggers::dispatcher::{event_payload, EngineDispatcher, EventDispat
 use storage::triggers::handler::{ObjectCreatedHandler, WiredBuckets};
 use storage::triggers::normalize::{EventKind, ObjectEventNormalized};
 use storage::triggers::observe::{
-    function_id, refuse_invocation, OnObjectHandler, ON_OBJECT_CREATED, ON_OBJECT_DELETED,
+    function_id, refuse_invocation, request_schema, response_schema, OnObjectHandler,
+    ON_OBJECT_CREATED, ON_OBJECT_DELETED,
 };
 use storage::triggers::registry::{ObjectObserver, TriggerRegistry};
 use tokio::sync::RwLock;
@@ -126,6 +127,49 @@ fn each_on_function_refuses_direct_invocation() {
             }
             other => panic!("expected FORBIDDEN, got {other:?}"),
         }
+    }
+}
+
+/// What the interface boot smoke requires of every registered function: a
+/// typed schema, never `AnyValue` or empty.
+fn is_typed(schema: &Value) -> bool {
+    schema.as_object().is_some_and(|o| {
+        [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+        ]
+        .iter()
+        .any(|k| o.contains_key(*k))
+    })
+}
+
+#[test]
+fn each_on_function_registers_typed_schemas() {
+    for kind in KINDS {
+        let request = request_schema(kind);
+        assert!(
+            is_typed(&request),
+            "{}: request {request}",
+            function_id(kind)
+        );
+        for field in ["bucket", "key", "raw_event_id"] {
+            assert!(
+                request["properties"][field].is_object(),
+                "{}: request lacks {field}: {request}",
+                function_id(kind)
+            );
+        }
+        let response = response_schema();
+        assert!(
+            is_typed(&response),
+            "{}: response {response}",
+            function_id(kind)
+        );
     }
 }
 

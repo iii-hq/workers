@@ -17,8 +17,8 @@ use storage::triggers::normalize::EventKind;
 use storage::triggers::object_created::TriggerConfig as CreatedConfig;
 use storage::triggers::object_deleted::TriggerConfig as DeletedConfig;
 use storage::triggers::observe::{
-    refuse_invocation, OnObjectHandler, ON_OBJECT_CREATED, ON_OBJECT_CREATED_DESCRIPTION,
-    ON_OBJECT_DELETED, ON_OBJECT_DELETED_DESCRIPTION,
+    refuse_invocation, request_schema, response_schema, OnObjectHandler, ON_OBJECT_CREATED,
+    ON_OBJECT_CREATED_DESCRIPTION, ON_OBJECT_DELETED, ON_OBJECT_DELETED_DESCRIPTION,
 };
 use storage::triggers::registry::TriggerRegistry;
 use tokio::sync::RwLock;
@@ -347,7 +347,8 @@ async fn main() -> Result<()> {
             Err(refuse_invocation(EventKind::Created))
         })
         .description(ON_OBJECT_CREATED_DESCRIPTION)
-        .request_format(schema_of::<storage::triggers::object_created::Event>())
+        .request_format(request_schema(EventKind::Created))
+        .response_format(response_schema())
         .observe(
             Observe::owner()
                 .args_format::<CreatedConfig>()
@@ -365,7 +366,8 @@ async fn main() -> Result<()> {
             Err(refuse_invocation(EventKind::Deleted))
         })
         .description(ON_OBJECT_DELETED_DESCRIPTION)
-        .request_format(schema_of::<storage::triggers::object_deleted::Event>())
+        .request_format(request_schema(EventKind::Deleted))
+        .response_format(response_schema())
         .observe(
             Observe::owner()
                 .args_format::<DeletedConfig>()
