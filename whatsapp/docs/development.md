@@ -4,8 +4,8 @@ Build, inspect, and test the worker from source. For installation and first use,
 
 The dependency is pinned to
 `1fbae988179a` (`v0.0.0-20261026125351-1fbae988179a`). The iii Go SDK is pinned
-to merged commit `a075c6e40389` (`v0.24.6-rc.1.0.20261002194513-a075c6e40389`),
-which includes the trigger schema API. A local SDK workspace is optional for SDK
+to `v0.26.0`, which hosts observable functions (private event sources) and
+observes other workers' functions. A local SDK workspace is optional for SDK
 development.
 
 This is a native function API, not an HTTP-compatible deployment of OpenWA.
@@ -71,8 +71,8 @@ session and inbox locking currently require POSIX `flock` and `O_NOFOLLOW`.
 See the [Go worker SOP](../../docs/sops/go-binary-worker.md) for the build contract.
 
 For interface discovery, use `--collect-interface --config config.collect.yaml`.
-This mode registers the complete typed function interface and triggers against
-the engine without fetching central configuration, opening database storage,
+This mode registers the complete typed function interface, including both event
+functions, and its observers against the engine without fetching central configuration, opening database storage,
 reading session/tunnel state, or connecting an account. It rejects business
 operation and callback execution. Normal startup still validates its storage
 backend; collection mode is only for metadata capture.
@@ -119,9 +119,9 @@ the release contracts and combined validation evidence.
 `make generate` to refresh the SDK schema adapters and compressed catalog, then
 rerun tests. Tests compare every embedded contract against the readable source.
 
-[Native functions and events](native-api.md#functions-and-events) defines the native subscription
+[Native functions and events](native-api.md#functions-and-events) defines the native event
 contract. [Filtered Cloud webhook events](cloud-setup.md#filtered-cloud-webhook-events) defines
-the Cloud contract, also exposed as structured schemas through trigger discovery.
+the Cloud contract, also exposed as structured schemas through `engine::functions::info`.
 
 ### Link the local Go SDK (optional)
 
@@ -164,11 +164,11 @@ GOWORK=off go test -run '^(TestEngineSmoke|TestCloudEnvironmentEngine)$' -count=
 This checks central configuration reloads, runtime schemas, ADE assets, offline
 session lifecycle and event delivery across namespaces. `HTTP_BINARY` is optional;
 when supplied, it also checks webhook verification, raw-body signatures, account
-isolation, duplicate message persistence, filtered Cloud callbacks, callback
-namespace/metadata and archive visibility before callback delivery using synthetic
+isolation, duplicate message persistence, filtered Cloud event observers, target
+namespace/metadata and archive visibility before event delivery using synthetic
 credentials and data.
-A synthetic quick-tunnel provider checks the development controls, shared lease
-isolation, namespace routing and callback changes through the real engine; it
-does not launch cloudflared or expose the test server publicly.
+A synthetic private `quick-tunnel::on-changed` checks the development controls,
+shared lease isolation, namespace routing and tunnel changes through the real
+engine; it does not launch cloudflared or expose the test server publicly.
 The test does not pair an account or call Meta. Without `III_BINARY`, `WHATSAPP_BINARY` and
 `DATABASE_BINARY`, it is skipped.

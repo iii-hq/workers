@@ -1,6 +1,6 @@
 # Configure Meta Cloud API and webhooks
 
-Set up an existing WhatsApp Business Platform account, expose its signed webhook, and register filtered callbacks. For first use, follow the [consumer README](../README.md).
+Set up an existing WhatsApp Business Platform account, expose its signed webhook, and observe filtered events. For first use, follow the [consumer README](../README.md).
 
 ## Table of contents
 
@@ -32,7 +32,7 @@ Detailed contracts and examples:
 - [Flows lifecycle and encrypted data exchange](cloud-flows.md)
 - [Groups and calling](cloud-groups-calls.md)
 - [Commerce, payments, and marketing](cloud-commerce.md)
-- [Webhook trigger filters and callback payloads](../cloud_events.md)
+- [Cloud event filters and payloads](../cloud_events.md)
 
 In ADE, open **Configure worker** and find **Meta Cloud API**. Enter the existing
 WhatsApp Business Account ID and Phone Number ID, then the access token, Meta
@@ -121,9 +121,9 @@ Select **Check connection** to inspect the number, WABA membership and subscribe
 apps. This is a read-only check. Readiness only describes local settings; it
 does not prove the token works or the public webhook is reachable.
 
-The worker depends on the iii HTTP worker for its callback. Use a version whose
-HTTP trigger supports `public_webhook` and raw `request_body` streams (verified
-with package 0.22.1). The HTTP worker's restricted webhook listener is disabled
+The worker depends on the iii HTTP worker for its callback: it observes
+`http::on-request` with `{ method, path, public_webhook: true }` for each route,
+and reads the raw `request_body` stream. The HTTP worker's restricted webhook listener is disabled
 by default. Enable it in that worker's existing configuration before exposing
 the callback:
 
@@ -138,7 +138,7 @@ confirm it opened successfully before starting a tunnel. See the
 [restricted listener guide](https://github.com/iii-hq/workers/blob/main/http/README.md#restricted-webhook-listener).
 Forward a public HTTPS callback to this listener, not the normal HTTP/admin
 listener on port 3111. Pointing a tunnel at port 3112 does not enable it.
-The worker registers GET and POST at:
+The worker serves GET and POST at:
 
 ```text
 /webhooks/whatsapp-cloud/<URL-encoded configuration ID>
@@ -167,7 +167,9 @@ tunnel does not register or change the callback in Meta.
 The `quick-tunnel` worker must run in the WhatsApp worker's namespace, with
 `cloudflared` installed and its `webhooks` target pointing to the HTTP worker's
 restricted webhook listener (normally `http://127.0.0.1:3112`). Only routes
-explicitly marked `public_webhook` are exposed there. The generated URL is:
+explicitly marked `public_webhook` are exposed there. The worker observes
+`quick-tunnel::on-changed`, filtered on `input.tunnel_id` `webhooks`, to follow
+the tunnel's status and URL. The generated URL is:
 
 ```text
 https://<host>.trycloudflare.com/webhooks/whatsapp-cloud/<configuration ID>
@@ -187,9 +189,9 @@ for a production callback. Linked-device sessions do not need this tunnel.
 The same controls are available as functions; use your deployment namespace:
 
 ```sh
-iii trigger whatsapp::cloud::tunnel::start --namespace my-project --json '{}'
-iii trigger whatsapp::cloud::tunnel::status --namespace my-project --json '{}'
-iii trigger whatsapp::cloud::tunnel::stop --namespace my-project --json '{}'
+iii call whatsapp::cloud::tunnel::start --namespace my-project --json '{}'
+iii call whatsapp::cloud::tunnel::status --namespace my-project --json '{}'
+iii call whatsapp::cloud::tunnel::stop --namespace my-project --json '{}'
 ```
 
 Sending is always explicit. Text messages require an open 24-hour customer
@@ -212,13 +214,13 @@ See [text messages](https://developers.facebook.com/documentation/business-messa
 and [business-scoped user IDs](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids).
 
 ```sh
-iii trigger whatsapp::cloud::status --json '{}'
-iii trigger whatsapp::cloud::check_connection --json '{}'
-iii trigger whatsapp::cloud::templates::list --json '{"limit":50}'
-iii trigger whatsapp::cloud::messages::send_text --json '{"chat_id":"+15550000001","text":"Hello"}'
-iii trigger whatsapp::cloud::messages::send_template --json '{"chat_id":"+15550000001","name":"hello_world","language":"en_US"}'
-iii trigger whatsapp::cloud::chats::list --json '{}'
-iii trigger whatsapp::cloud::messages::list --json '{"chat_id":"+15550000001"}'
+iii call whatsapp::cloud::status --json '{}'
+iii call whatsapp::cloud::check_connection --json '{}'
+iii call whatsapp::cloud::templates::list --json '{"limit":50}'
+iii call whatsapp::cloud::messages::send_text --json '{"chat_id":"+15550000001","text":"Hello"}'
+iii call whatsapp::cloud::messages::send_template --json '{"chat_id":"+15550000001","name":"hello_world","language":"en_US"}'
+iii call whatsapp::cloud::chats::list --json '{}'
+iii call whatsapp::cloud::messages::list --json '{"chat_id":"+15550000001"}'
 ```
 
 Sends make one request without automatic retry. An `accepted` result means Meta
@@ -255,7 +257,7 @@ Use your actual worker namespace. The first command uploads only; the second
 sends a message and should only run after confirming its recipient and file.
 
 ```sh
-iii trigger whatsapp::cloud::media::upload_document --namespace my-project \
+iii call whatsapp::cloud::media::upload_document --namespace my-project \
   --json '{"data_base64":"UmVwb3J0Cg==","mimetype":"text/plain","file_name":"report.txt"}'
 ```
 
@@ -275,7 +277,7 @@ example phone number with the explicitly confirmed recipient. `chat_id` uses
 the same Cloud recipient rules as text messages; native JIDs are rejected.
 
 ```sh
-iii trigger whatsapp::cloud::messages::send_document --namespace my-project \
+iii call whatsapp::cloud::messages::send_document --namespace my-project \
   --json '{"chat_id":"+15550000001","media_id":"1376223850470843","file_name":"report.txt","caption":"Your requested report"}'
 ```
 
@@ -311,29 +313,28 @@ Cloud archives use database-worker tables scoped by `<phone_number_id>`, separat
 from every native session. They retain webhook messages and worker-submitted
 messages under `max_inbox_messages`; changing the phone ID selects a separate
 archive. They contain message previews and media labels, without media downloads
-or historical backfill. Reading them sends no read receipt. Subscribe to
-`whatsapp::cloud::events` for filtered webhook notifications and reconcile with
-the archive; native `whatsapp::events` subscriptions remain separate.
+or historical backfill. Reading them sends no read receipt. Observe
+`whatsapp::cloud::on-events` for filtered webhook events and reconcile with
+the archive; native events are a separate function, `whatsapp::on-events`.
 The **Groups** tab continues to use the linked-device integration. Official
 Cloud group conversations appear in the Cloud archive; their management and
 send contracts are documented in [Cloud groups](cloud-groups-calls.md).
 
 ## Filtered Cloud webhook events
 
-Read the running worker's registration guide with `engine::triggers::info`:
+Each accepted incoming message, delivery-status object or administrative event
+is one call of `whatsapp::cloud::on-events`, after its archive transaction
+commits. The function is private, its handler returns the event, and it takes no
+args: observers select events with filters on its input fields. Read the running
+worker's guide with `engine::functions::info`:
 
 ```json
-{"id":"whatsapp::cloud::events","namespace":"messaging"}
+{"function_id":"whatsapp::cloud::on-events","namespace":"messaging"}
 ```
 
 Replace `messaging` with the WhatsApp worker's namespace. The returned
-`description` explains registration, filters and payloads. `configuration_schema`
-describes the accepted filters and `request_schema` describes each callback event.
-Runtime filter validation still applies.
-
-Trigger type `whatsapp::cloud::events` delivers one flat event per accepted
-incoming message or delivery-status object after its archive transaction commits.
-Administrative fields are opt-in; see the [complete event guide](../cloud_events.md).
+`description` explains observing, filters and payloads, and `response_schema`
+describes each event. See the [complete event guide](../cloud_events.md).
 A message event looks like:
 
 ```json
@@ -357,9 +358,9 @@ A message event looks like:
 }
 ```
 
-The default message stream uses `message.received`; opt-in receipts use
-`message.status`. Administrative webhooks use `webhook.received`, whose distinct
-payload is documented in the [complete event guide](../cloud_events.md).
+Incoming messages use `message.received`, receipts use `message.status`, and
+administrative webhooks use `webhook.received`, whose distinct payload is
+documented in the [complete event guide](../cloud_events.md).
 Every message or status event includes the account
 IDs, message ID, canonical chat ID and Meta's timestamp in milliseconds.
 `sender_id`, `message_type`, preview `text` and `status` are present when applicable.
@@ -369,81 +370,68 @@ Previews normally contain at most 16 KiB. Event envelopes are capped at 64 KiB;
 oversized content uses `data: {"content_omitted":true}` and a preview clipped to
 8 KiB so the JSON-encoded envelope stays bounded. Handle message bodies as private data.
 
-The strict filter accepts these fields; unknown fields are rejected:
+Filters name an event field and an operator; clauses combine with AND, and `$in`
+lists alternatives:
 
-| Field | Match |
+| Path | Match |
 |---|---|
-| `kinds` | Event kinds; omitted or empty means only `message.received`. Set `message.status` explicitly for receipts or `webhook.received` for administrative events. |
-| `chat_ids` | Canonical international phone numbers, business-scoped user IDs, or `group:<raw Cloud group ID>`. |
-| `sender_ids` | Canonical sender IDs; events without a matching sender are excluded. |
-| `message_types` | Exact raw Meta message types. |
-| `statuses` | Exact values on `message.status` events: `sent`, `delivered`, `read` or `failed`. |
-| `business_account_id` | Exact WABA ID. |
-| `phone_number_id` | Exact Phone Number ID. |
-| `fields` | Exact Meta webhook fields; administrative events also require `webhook.received`. |
-| `events` | Exact administrative event names. |
-| `group_ids` | Raw Cloud group IDs without the `group:` prefix. |
-| `participant_ids` | Participants identified by group delivery/read receipts; also select `message.status`. |
+| `input.kind` | `message.received`, `message.status` or `webhook.received`. An observer without this filter receives every kind. |
+| `input.chat_id` | Canonical international phone numbers, business-scoped user IDs, or `group:<raw Cloud group ID>`. |
+| `input.sender_id` | Canonical sender IDs, present on `message.received`. |
+| `input.message_type` | Exact raw Meta message types, present on `message.received`. |
+| `input.status` | `sent`, `delivered`, `read` or `failed`, on `message.status`. |
+| `input.business_account_id` | Exact WABA ID. |
+| `input.phone_number_id` | Exact Phone Number ID. |
+| `input.field` | Exact Meta webhook fields of `webhook.received` events. |
+| `input.event` | Exact administrative event names. |
+| `input.group_id` | Raw Cloud group IDs without the `group:` prefix. |
+| `input.participant_id` | Participants identified by group delivery/read receipts. |
 
-List entries are alternatives (OR); populated fields combine with AND. An empty
-list imposes no restriction, except for the received-only default of `kinds`.
-Each list accepts at most 128 values; the complete filter is limited to 64 KiB.
-Message type names use 1–64 lowercase letters, digits or underscores and start
-with a letter. Account IDs are numeric strings of at most 32 digits.
-Use a leading `+` for contact phone numbers, preserve business-scoped IDs such as
-`BR.ENT.Abc123`, and use `group:<raw Cloud group ID>` for group archive IDs. Native JIDs are not valid Cloud filters. A status event usually
-has no sender or message type, so leave those filters empty for receipt subscriptions.
+Filters compare exact values. Use a leading `+` for contact phone numbers,
+preserve business-scoped IDs such as `BR.ENT.Abc123`, and use
+`group:<raw Cloud group ID>` for group archive IDs; native JIDs never match. A
+status event has no sender or message type, so a clause on `input.sender_id` or
+`input.message_type` excludes receipts.
 
-### Register through an engine function
+### Observe from Node
 
-Call `engine::register_trigger` from a connection in the callback function's
-namespace. For a callback `support::on-cloud-message` registered in `support`
-and a WhatsApp worker in `messaging`, use a connection in `support` and this input:
+For a target `support::on-cloud-message` registered by a worker in `support`
+and a WhatsApp worker in `messaging`, observe from the `support` worker:
 
-```json
-{
-  "trigger_type": "whatsapp::cloud::events",
-  "function_id": "support::on-cloud-message",
-  "trigger_namespace": "messaging",
-  "config": {
-    "chat_ids": ["+15550000001"],
-    "message_types": ["text"]
+```ts
+iii.registerFunction('support::on-cloud-message', (event: { kind: string; message_id: string }) => ({
+  message_id: event.message_id,
+}))
+
+const observer = iii.observe(
+  {
+    function_id: 'whatsapp::cloud::on-events',
+    namespace: 'messaging',
+    filters: {
+      'input.kind': { $eq: 'message.received' },
+      'input.chat_id': { $eq: '+15550000001' },
+      'input.message_type': { $eq: 'text' },
+    },
+    deliver: 'output',
   },
-  "metadata": {"workflow": "customer-support"}
-}
+  'support::on-cloud-message',
+  { metadata: { workflow: 'customer-support' } },
+)
+await observer.ready()
 ```
 
-`trigger_type` and `function_id` identify the trigger and callback. Supply the
-Cloud filter as `config`, using `{}` for the received-only default. `metadata`
-is optional and travels separately from the event payload. `trigger_namespace`
-selects the trigger **provider**; the callback resolves in the **calling
-connection's namespace**. When `trigger_namespace` is omitted, provider lookup
-tries that connection's namespace and then `default`.
+`namespace` selects the WhatsApp worker; the target resolves in the observing
+worker's namespace. `deliver: 'output'` hands the target the event itself.
+`metadata` is optional and reaches the target as the call's metadata, separately
+from the event. `ready()` resolves once the observer is active and rejects with
+the engine's code (`INVALID_FILTER`, `FORBIDDEN`, ...). An observer stays
+`pending` while the WhatsApp worker is not running. It lives as long as the
+worker that created it; `observer.dispose()` removes it.
 
-A newly connected Go SDK client must wait until `engine::workers::list` shows
-its name in the intended namespace before calling this function. `Connect`
-can return before worker metadata is announced; an early call can bind the
-callback in `default`.
-
-The function returns `{"id":"<generated-id>"}`. Save that ID and call
-`engine::registered-triggers::info` with `{"id":"<generated-id>"}` to check
-`status: "active"`, the expected `function_id`, and the returned function detail.
-A `pending` registration is waiting for its trigger provider. Registration alone
-does not establish that the callback function is available.
-
-This engine-owned binding survives the caller's disconnection. Remove it with
-`engine::unregister_trigger` and `{"id":"<generated-id>"}`. Removal is idempotent;
-the response's `removed` field reports whether a binding existed.
-
-### Register through the Go SDK
-
-With connected Go SDK clients, register the binding from the WhatsApp worker's
-namespace and specify the callback's namespace explicitly. In this example,
-`subscriptions` is connected in that worker's namespace and `automation` in
-`support`; both clients remain connected for the subscription's lifetime:
+### Observe from the Go SDK
 
 ```go
-if err := automation.RegisterFunction("support::on-cloud-message", func(ctx context.Context, raw json.RawMessage) (any, error) {
+if _, err := automation.RegisterFunction("support::on-cloud-message", func(ctx context.Context, raw json.RawMessage) (any, error) {
     var event struct {
         Kind      string `json:"kind"`
         MessageID string `json:"message_id"`
@@ -456,19 +444,30 @@ if err := automation.RegisterFunction("support::on-cloud-message", func(ctx cont
 }); err != nil {
     return err
 }
-filter := json.RawMessage(`{"chat_ids":["+15550000001"],"message_types":["text"]}`)
-metadata := json.RawMessage(`{"workflow":"customer-support"}`)
-if err := subscriptions.RegisterTriggerNamespaced(
-    "support-cloud-messages", "whatsapp::cloud::events",
-    "support::on-cloud-message", "support", filter, metadata,
-); err != nil {
+observer, err := automation.Observe(iii.Source{
+    FunctionID: "whatsapp::cloud::on-events",
+    Namespace:  "messaging",
+    Filters: iii.Filters{
+        "input.kind":         iii.Op{"$eq": "message.received"},
+        "input.chat_id":      iii.Op{"$eq": "+15550000001"},
+        "input.message_type": iii.Op{"$eq": "text"},
+    },
+    Deliver: iii.DeliverOutput,
+}, "support::on-cloud-message", iii.ObserverOptions{Metadata: json.RawMessage(`{"workflow":"customer-support"}`)})
+if err != nil {
+    return err
+}
+if err := observer.Ready(ctx); err != nil {
     return err
 }
 ```
 
-The callback receives binding metadata through `iii.MetadataFromContext`,
-separately from the event payload. Callback results do not send WhatsApp messages;
-outbound actions still require an explicit call to a Cloud send function.
+`automation` is a client connected in `support`. A newly connected Go SDK client
+waits until `engine::workers::list` shows its name in the intended namespace
+before observing: `Connect` can return before worker metadata is announced.
+The target reads observer metadata through `iii.MetadataFromContext`, separately
+from the event. Target results do not send WhatsApp messages; outbound actions
+still require an explicit call to a Cloud send function.
 
 Webhook deduplication is persistent in the Cloud archive's database-worker tables and
 commits with the message/receipt changes before publication. The latest
@@ -480,9 +479,9 @@ not emit `message.received`; their subsequent Meta webhook receipts can emit
 `message.status`.
 
 Delivery is best effort through a separate Cloud queue bounded by `max_events`.
-Queue overflow, process shutdown or callback failure can lose a notification;
-there is no outbox, callback retry or Cloud event polling endpoint. Deduplication
-does not guarantee callback delivery. Reconcile application state with
+Queue overflow, process shutdown or target failure can lose an event;
+there is no outbox, target retry or Cloud event polling endpoint. Deduplication
+does not guarantee delivery. Reconcile application state with
 `cloud::chats::list` and `cloud::messages::list`; the archive records current
 retained state rather than every historical receipt transition. Cloud configuration
 changes invalidate queued events from the previous configuration.
