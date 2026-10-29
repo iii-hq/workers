@@ -682,15 +682,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_item_reaches_a_bound_crawl_item_consumer_in_seq_order_and_is_retained() {
-        use crate::scrapling::crawl_feed::{CrawlFeedHub, FeedBinding, FeedDelivery};
+    async fn every_item_reaches_an_observer_of_the_crawl_in_seq_order_and_is_retained() {
+        use crate::scrapling::crawl_feed::{CrawlFeedHub, FeedSink};
         use std::sync::{Arc, Mutex};
 
+        /// Observes crawls k1 and k2; records every delivered event.
         struct Recorder(Mutex<Vec<Value>>);
         #[async_trait::async_trait]
-        impl FeedDelivery for Recorder {
-            async fn deliver(&self, _binding: &FeedBinding, payload: Value) -> Result<(), String> {
-                self.0.lock().unwrap().push(payload);
+        impl FeedSink for Recorder {
+            fn is_observed(&self, crawl_id: &str) -> bool {
+                matches!(crawl_id, "k1" | "k2")
+            }
+
+            async fn deliver(&self, event: Value) -> Result<(), String> {
+                self.0.lock().unwrap().push(event);
                 Ok(())
             }
         }
@@ -708,17 +713,6 @@ mod tests {
 
         let recorder = Arc::new(Recorder(Mutex::new(Vec::new())));
         let hub = CrawlFeedHub::new(recorder.clone());
-        for (id, crawl_id) in [("mine", "k1"), ("other", "k2")] {
-            hub.bindings()
-                .add(iii_sdk::trigger::TriggerConfig {
-                    id: id.into(),
-                    function_id: format!("consumer::{id}"),
-                    config: json!({ "crawl_id": crawl_id }),
-                    metadata: None,
-                    namespace: None,
-                })
-                .unwrap();
-        }
 
         let mut feed = hub.start("k1").unwrap();
         let out = run(
@@ -746,7 +740,7 @@ mod tests {
         assert_eq!(summary.dropped_events, 0);
 
         let seen = recorder.0.lock().unwrap().clone();
-        assert_eq!(seen.len(), 17, "16 items + done, none from the k2 binding");
+        assert_eq!(seen.len(), 17, "16 items + done, all of crawl k1");
         let page = hub.items(&json!({"crawl_id": "k1", "limit": 100})).unwrap();
         let retained = page["items"].as_array().unwrap();
         for (i, event) in seen[..16].iter().enumerate() {

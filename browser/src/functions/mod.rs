@@ -156,9 +156,9 @@ pub const CHROMIUM_INSTALL_ID: &str = "browser::chromium::install";
 pub const CHROMIUM_INSTALL_DESC: &str =
     "Download Chromium (Chrome for Testing, Stable, about 200 MB) into the worker's cache \
      (~/.cache/iii/browser/chrome) for a machine with no Chrome or Chromium. Returns at once \
-     with a job_id; progress arrives on the browser::chromium-install-progress trigger and in \
-     browser::chromium::status. A Chrome installed on the system still takes precedence. Does \
-     nothing when a Chromium is already found, unless force=true.";
+     with a job_id; progress arrives as calls of browser::on-chromium-install-progress (observe \
+     it) and in browser::chromium::status. A Chrome installed on the system still takes \
+     precedence. Does nothing when a Chromium is already found, unless force=true.";
 pub const HANDOFF_ID: &str = "browser::handoff";
 pub const HANDOFF_DESC: &str =
     "Pause a session for a step only a human can do (CAPTCHA, 2FA, payment): show an in-page \
@@ -196,10 +196,10 @@ pub const STYLES_WRITE_DESC: &str =
      page's source files are untouched, and the edit dies with the next navigation.";
 pub const SCREENCAST_START_ID: &str = "browser::screencast::start";
 pub const SCREENCAST_START_DESC: &str =
-    "Internal: start the live viewport feed — frames arrive on the browser::frame-event \
-     trigger and browser::frame reads the newest. With a viewer_id the viewer holds a lease: \
-     repeat the start to renew it, or it lapses. Console-UI plumbing; agents use \
-     browser::screenshot. Not an agent function.";
+    "Internal: start the live viewport feed — frames arrive as calls of \
+     browser::on-frame-event (observe it with { session_id } args) and browser::frame reads the \
+     newest. With a viewer_id the viewer holds a lease: repeat the start to renew it, or it \
+     lapses. Console-UI plumbing; agents use browser::screenshot. Not an agent function.";
 pub const SCREENCAST_STOP_ID: &str = "browser::screencast::stop";
 pub const SCREENCAST_STOP_DESC: &str =
     "Internal: stop the live frame push. Idempotent. Not an agent function.";
@@ -207,7 +207,7 @@ pub const FRAME_ID: &str = "browser::frame";
 pub const FRAME_DESC: &str =
     "Internal: newest screencast frame, or nothing when since_frame is still current. No \
      capture round-trip: a viewer reads it once for its first paint, then frames arrive on \
-     browser::frame-event. Not an agent function.";
+     browser::on-frame-event. Not an agent function.";
 pub const RECORDING_START_ID: &str = "browser::recording::start";
 pub const RECORDING_START_DESC: &str =
     "Record a session's live viewport to a video file (webm or mp4). Turns the screencast on \
@@ -227,7 +227,7 @@ pub const PICK_START_DESC: &str =
      agent function.";
 pub const PICK_RESOLVE_ID: &str = "browser::pick::resolve";
 pub const PICK_RESOLVE_DESC: &str =
-    "Internal: resolve the element at a clicked viewport point and emit browser::picked. The \
+    "Internal: resolve the element at a clicked viewport point and emit browser::on-picked. The \
      console calls this on a pick-mode click. Not an agent function.";
 pub const PICK_STOP_ID: &str = "browser::pick::stop";
 pub const PICK_STOP_DESC: &str =

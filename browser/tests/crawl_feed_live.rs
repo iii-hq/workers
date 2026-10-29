@@ -1,7 +1,7 @@
 //! Live check of the crawl item feed on an engine WITHOUT a stream worker:
 //! spawn `iii` (worker manager only) + the worker binary, serve a static
-//! site on loopback, bind `browser::crawl-item` from a consumer worker, crawl,
-//! and read the retained items back with `browser::crawl::items`.
+//! site on loopback, observe `browser::on-crawl-item` from a consumer worker,
+//! crawl, and read the retained items back with `browser::crawl::items`.
 //!
 //! Self-skips when `iii` is not on PATH. Needs no Chromium (http fetcher).
 //! Ports default to free ones; `BROWSER_CRAWL_LIVE_ENGINE_PORT` and
@@ -16,8 +16,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+use iii_sdk::{register_worker, CallRequest, InitOptions, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
 
@@ -170,7 +169,7 @@ async fn crawl_items_reach_a_bound_consumer_and_are_recoverable_without_a_stream
         async move {
             timeout(
                 Duration::from_secs(60),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id: function_id.into(),
                     payload,
                     action: None,
@@ -196,6 +195,14 @@ async fn crawl_items_reach_a_bound_consumer_and_are_recoverable_without_a_stream
         ids.iter().any(|id| id == "browser::crawl::items"),
         "{ids:?}"
     );
+    let on_item = listed["functions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["function_id"] == "browser::on-crawl-item")
+        .unwrap_or_else(|| panic!("browser::on-crawl-item is registered: {ids:?}"));
+    assert_eq!(on_item["private"], true, "{on_item}");
+    assert!(on_item["args_format"].is_object(), "{on_item}");
     assert!(
         !ids.iter().any(|id| id.starts_with("stream::")),
         "engine must run without a stream worker: {ids:?}"
@@ -204,8 +211,8 @@ async fn crawl_items_reach_a_bound_consumer_and_are_recoverable_without_a_stream
     eprintln!("stream::list on this engine -> {no_stream:?}");
     assert!(no_stream.is_err(), "stream::list must not exist here");
 
-    // 2. A consumer binds the crawl-item trigger for one crawl id, and a
-    //    second binding watches a different crawl.
+    // 2. A consumer observes browser::on-crawl-item for one crawl id, and a
+    //    second observer watches a different crawl.
     let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel::<Value>();
     client.register_function(
         "crawltest::on-item",
@@ -231,21 +238,29 @@ async fn crawl_items_reach_a_bound_consumer_and_are_recoverable_without_a_stream
             }),
         );
     }
-    client
-        .register_trigger(RegisterTriggerInput::new(
-            "browser::crawl-item".to_string(),
-            "crawltest::on-item".to_string(),
-            json!({"crawl_id": "live-1"}),
-        ))
-        .expect("bind crawl-item");
-    client
-        .register_trigger(RegisterTriggerInput::new(
-            "browser::crawl-item".to_string(),
-            "crawltest::on-other".to_string(),
-            json!({"crawl_id": "someone-else"}),
-        ))
-        .expect("bind other crawl-item");
-    sleep(Duration::from_millis(1000)).await;
+    for (target, crawl_id) in [
+        ("crawltest::on-item", "live-1"),
+        ("crawltest::on-other", "someone-else"),
+    ] {
+        let observer = client.observe(
+            Source::function("browser::on-crawl-item").args(json!({ "crawl_id": crawl_id })),
+            target,
+        );
+        timeout(Duration::from_secs(10), observer.ready())
+            .await
+            .expect("crawl-item observer active in time")
+            .expect("crawl-item observer accepted");
+    }
+    // A bad crawl_id is refused by the worker's added hook.
+    let refused = client.observe(
+        Source::function("browser::on-crawl-item").args(json!({ "crawl_id": "" })),
+        "crawltest::on-other",
+    );
+    let err = timeout(Duration::from_secs(10), refused.ready())
+        .await
+        .expect("refusal in time")
+        .expect_err("an empty crawl_id is refused");
+    assert!(format!("{err}").contains("INVALID_ARGS"), "{err}");
 
     // 3. Crawl, still passing the deprecated stream_name.
     let result = call(
@@ -290,7 +305,7 @@ async fn crawl_items_reach_a_bound_consumer_and_are_recoverable_without_a_stream
         received.push(event);
     }
     eprintln!(
-        "browser::crawl-item events: {}",
+        "browser::on-crawl-item events: {}",
         Value::Array(received.clone())
     );
     for (i, event) in received.iter().enumerate() {
@@ -352,7 +367,7 @@ async fn crawl_items_reach_a_bound_consumer_and_are_recoverable_without_a_stream
         assert_eq!(entry["item"], result["items"][i], "sample == retained item");
     }
 
-    // 6. The other crawl's binding saw nothing; a missing id is an error.
+    // 6. The other crawl's observer saw nothing; a missing id is an error.
     assert!(stray.lock().unwrap().is_empty(), "crawl_id filter");
     let missing = call("browser::crawl::items", json!({"crawl_id": "nope"})).await;
     assert!(

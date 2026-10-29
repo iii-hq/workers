@@ -7,7 +7,7 @@
 //! and serving `{path: "browser/native.js"}` → `{content, hash, size}`. The
 //! iii app finds it on its probe, fetches the bundle, checks the hash and
 //! runs it in a QuickJS VM: the tabs, the live page of the open one (a
-//! RemoteScreen fed by `browser::frame-event`), its console, network and
+//! RemoteScreen fed by `browser::on-frame-event`), its console, network and
 //! history, shaped for a phone and a tablet.
 //!
 //! The bundle is compiled from `native-ui/` by `buildNativeUi` (TSX over the

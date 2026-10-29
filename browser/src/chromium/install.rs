@@ -1,6 +1,6 @@
 //! `browser::chromium::install`: download Chrome for Testing into the
-//! install dir in the background, reporting progress as
-//! `browser::chromium-install-progress` events.
+//! install dir in the background, reporting progress as calls of
+//! `browser::on-chromium-install-progress`.
 //!
 //! Steps: read the Chrome for Testing "last known good" manifest, take the
 //! Stable channel's `chrome` build for this platform, stream the zip to a
@@ -65,7 +65,7 @@ impl Phase {
     }
 }
 
-/// `browser::chromium-install-progress` — one install job moved: a new
+/// `browser::on-chromium-install-progress` — one install job moved: a new
 /// phase, or about 1 % more bytes (at most every 250 ms). Also the `job`
 /// field of `browser::chromium::status`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -185,8 +185,7 @@ impl Reporter {
         self.store();
         self.last_emit = Some(Instant::now());
         self.last_emit_bytes = self.state.bytes_done;
-        // Not a session event: empty session id, so only unfiltered
-        // bindings receive it.
+        // Not a session event: it belongs to no tab.
         self.emitter
             .emit(EventKind::ChromiumInstallProgress, "", &self.state)
             .await;

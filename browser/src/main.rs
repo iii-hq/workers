@@ -1,9 +1,9 @@
 //! `browser` binary entry: connect, register configuration + fetch the
-//! authoritative value, register the `browser::*` trigger types and functions
-//! plus the native `browser::*` parse surface, restore the saved tabs, then
-//! sleep until Ctrl+C. Tabs sleep and expire on their own deadline timers
-//! (see `session::Sessions`), and scrapling sessions reap themselves when
-//! idle (see `scrapling::sessions`): no periodic sweep.
+//! authoritative value, register the `browser::on-*` event functions and the
+//! `browser::*` functions plus the native `browser::*` parse surface, restore
+//! the saved tabs, then sleep until Ctrl+C. Tabs sleep and expire on their
+//! own deadline timers (see `session::Sessions`), and scrapling sessions reap
+//! themselves when idle (see `scrapling::sessions`): no periodic sweep.
 
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 
 use browser::config::{BrowserEngine, WorkerConfig};
-use browser::events::{self, IiiDeliverer};
+use browser::events::{self, Emitter};
 use browser::session::Sessions;
 use browser::{configuration, functions, manifest, scrapling};
 
@@ -171,12 +171,9 @@ async fn main() -> Result<()> {
     }
     let shared = cfg.into_shared();
 
-    // Trigger types before functions, so handlers capture live subscriber sets.
-    let sets = events::register_trigger_types(&iii);
-    let emitter = Arc::new(events::Emitter::new(
-        sets,
-        Arc::new(IiiDeliverer::new(iii.clone())),
-    ));
+    // The event functions the browser::* functions call to emit.
+    events::register_event_functions(&iii);
+    let emitter = Arc::new(Emitter::for_iii(iii.clone()));
 
     let sessions = Sessions::new(shared.clone(), emitter, iii.clone());
     functions::register_all(&iii, &sessions);
@@ -185,8 +182,8 @@ async fn main() -> Result<()> {
     // enter or control the interactive browser::sessions::* registry.
     let scrapling_ctx = Arc::new(scrapling::net::Ctx::new(sessions.clone(), iii.clone()));
     scrapling::register_all(&iii, &scrapling_ctx);
-    // The guidance hook FUNCTION is registered above (inert without a
-    // binding); the binding follows the inject_guidance knob — applied here
+    // The guidance hook FUNCTION is registered above (inert without an
+    // observer); the observer follows the inject_guidance knob — applied here
     // at boot and re-applied by the config-change handler, so console flips
     // take effect without a restart.
     let guidance = scrapling::GuidanceState::default();
@@ -194,13 +191,12 @@ async fn main() -> Result<()> {
 
     // A reload may change `inactive_after_ms`: the tabs' idle timers re-arm.
     let rearm = sessions.clone();
-    configuration::register_config_trigger(
+    configuration::observe_config_changes(
         &iii,
         shared.clone(),
         guidance,
         Arc::new(move || rearm.config_changed()),
-    )
-    .context("registering configuration change trigger")?;
+    );
 
     // Injectable console UI — after the browser::* functions so the console
     // can attribute the assets.

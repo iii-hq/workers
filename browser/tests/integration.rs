@@ -12,8 +12,10 @@ use std::time::Duration;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+use iii_sdk::{
+    register_worker, CallRequest, Deliver, InitOptions, ObserverHandle, ObserverOptions,
+    RegisterFunction, Source,
+};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
@@ -48,6 +50,16 @@ impl Drop for Harness {
         let _ = std::fs::remove_file(&self.config_path);
         let _ = std::fs::remove_dir_all(&self.data_dir);
     }
+}
+
+/// Waits until the observer is active: its function is registered and the
+/// worker accepted it. The worker emits nothing for an event nobody
+/// observes, so a test observes before it acts.
+async fn await_active(observer: &ObserverHandle) {
+    timeout(Duration::from_secs(30), observer.ready())
+        .await
+        .expect("observer not active in time")
+        .expect("observer refused");
 }
 
 /// Whether the worker would find a Chromium to launch. Its own resolver
@@ -145,8 +157,8 @@ async fn boot_with(lane: Lane, chromium_seed: Option<String>) -> Option<Harness>
         format!(
             // No `modules:` key: the engine then injects its builtin workers
             // (the configuration store among them). The worker itself needs
-            // no stream worker: live views and crawl items use its own
-            // trigger types.
+            // no stream worker: live views and crawl items are calls of its
+            // own event functions.
             "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n"
         ),
     )
@@ -241,7 +253,7 @@ async fn session_lifecycle_console_and_snapshot() {
         async move {
             timeout(
                 Duration::from_secs(30),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id,
                     payload,
                     action: None,
@@ -249,8 +261,8 @@ async fn session_lifecycle_console_and_snapshot() {
                 }),
             )
             .await
-            .expect("trigger timed out")
-            .expect("trigger failed")
+            .expect("call timed out")
+            .expect("call failed")
         }
     };
 
@@ -380,7 +392,7 @@ async fn session_lifecycle_console_and_snapshot() {
     // attach is gated off by default (allow_attach false): both attach
     // functions must refuse rather than reach the real profile
     let attach = client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "browser::sessions::attach".into(),
             payload: json!({ "cdp_url": "http://127.0.0.1:9222" }),
             action: None,
@@ -392,7 +404,7 @@ async fn session_lifecycle_console_and_snapshot() {
         "attach must be refused when allow_attach is false: {attach:?}"
     );
     let tabs = client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "browser::tabs::list".into(),
             payload: json!({ "cdp_url": "http://127.0.0.1:9222" }),
             action: None,
@@ -441,7 +453,7 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
         async move {
             timeout(
                 Duration::from_secs(60),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id,
                     payload,
                     action: None,
@@ -449,8 +461,8 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
                 }),
             )
             .await
-            .expect("trigger timed out")
-            .expect("trigger failed")
+            .expect("call timed out")
+            .expect("call failed")
         }
     };
 
@@ -600,7 +612,7 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
     .await;
     assert_ne!(after_wake["elements"][0]["ref"], old_ref, "{after_wake}");
     let stale = client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "browser::act".into(),
             payload: json!({ "session_id": regular_id, "action": "click", "ref": old_ref }),
             action: None,
@@ -620,7 +632,7 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
     );
     assert_ne!(new_snapshot_ref, old_snapshot_ref);
     let stale = client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "browser::act".into(),
             payload: json!({ "session_id": regular_id, "action": "click", "ref": old_snapshot_ref }),
             action: None,
@@ -640,7 +652,7 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
 }
 
 /// The live view: an animated page keeps producing screencast frames, they
-/// reach the `browser:frames` stream a subscriber listens on, and opening
+/// reach an observer of `browser::on-frame-event` for the tab, and opening
 /// (and watching) a second tab does not freeze the first — the regression a
 /// shared headless window caused, where only the newest tab still rendered.
 #[tokio::test]
@@ -659,7 +671,7 @@ async fn live_frames_keep_flowing_across_tabs() {
         async move {
             timeout(
                 Duration::from_secs(60),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id,
                     payload,
                     action: None,
@@ -667,8 +679,8 @@ async fn live_frames_keep_flowing_across_tabs() {
                 }),
             )
             .await
-            .expect("trigger timed out")
-            .expect("trigger failed")
+            .expect("call timed out")
+            .expect("call failed")
         }
     };
 
@@ -688,7 +700,7 @@ async fn live_frames_keep_flowing_across_tabs() {
     .expect("page file");
     let page_url = format!("file://{}", page.display());
 
-    // A frame subscriber, the way the console watches a tab.
+    // A frame observer's target, the way the console watches a tab.
     let pushes = Arc::new(AtomicUsize::new(0));
     {
         let pushes = pushes.clone();
@@ -711,13 +723,14 @@ async fn live_frames_keep_flowing_across_tabs() {
     )
     .await;
     let first_id = first["session_id"].as_str().expect("id").to_string();
-    client
-        .register_trigger(RegisterTriggerInput::new(
-            "browser::frame-event".to_string(),
-            "iii::browser-test::frames".to_string(),
-            json!({ "session_id": first_id }),
-        ))
-        .expect("frame trigger");
+    let frames = client.observe_with(
+        Source::function("browser::on-frame-event")
+            .args(json!({ "session_id": first_id }))
+            .deliver(Deliver::Output),
+        "iii::browser-test::frames",
+        ObserverOptions::default().max_in_flight(1),
+    );
+    await_active(&frames).await;
     call(
         "browser::screencast::start",
         json!({ "session_id": first_id }),
@@ -744,7 +757,7 @@ async fn live_frames_keep_flowing_across_tabs() {
     let pushed = pushes.load(Ordering::Relaxed);
     assert!(
         pushed >= 8,
-        "only {pushed} frames reached the frame subscriber"
+        "only {pushed} frames reached the frame observer"
     );
 
     // A second tab, watched too: the first must keep rendering.
@@ -773,7 +786,7 @@ async fn live_frames_keep_flowing_across_tabs() {
     let pushed = pushes.load(Ordering::Relaxed);
     assert!(
         pushed >= 8,
-        "only {pushed} frames of the first tab reached the subscriber after a second tab opened"
+        "only {pushed} frames of the first tab reached the observer after a second tab opened"
     );
     let second_seq = frame_seq(second_id.clone()).await;
     assert!(second_seq > 0, "second tab produced no frames");
@@ -812,7 +825,7 @@ async fn lightpanda_engine_drives_the_dom_surface() {
         async move {
             timeout(
                 Duration::from_secs(30),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id,
                     payload,
                     action: None,
@@ -820,8 +833,8 @@ async fn lightpanda_engine_drives_the_dom_surface() {
                 }),
             )
             .await
-            .expect("trigger timed out")
-            .expect("trigger failed")
+            .expect("call timed out")
+            .expect("call failed")
         }
     };
 
@@ -914,7 +927,7 @@ async fn lightpanda_engine_drives_the_dom_surface() {
 
     // and no screencast at all: the live view falls back to screenshots
     let screencast = client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "browser::screencast::start".into(),
             payload: json!({ "session_id": session_id }),
             action: None,
@@ -984,7 +997,7 @@ async fn elements_table_guards_select_and_replace() {
         async move {
             timeout(
                 Duration::from_secs(30),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id,
                     payload,
                     action: None,
@@ -992,12 +1005,12 @@ async fn elements_table_guards_select_and_replace() {
                 }),
             )
             .await
-            .expect("trigger timed out")
+            .expect("call timed out")
         }
     };
     let call = |function_id: &'static str, payload: serde_json::Value| {
         let pending = try_call(function_id, payload);
-        async move { pending.await.expect("trigger failed") }
+        async move { pending.await.expect("call failed") }
     };
 
     let url = serve_html(FORM_HTML);
@@ -1184,7 +1197,7 @@ async fn history_moves_return_promptly_even_from_the_back_forward_cache() {
         async move {
             timeout(
                 Duration::from_secs(30),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id: function_id.into(),
                     payload,
                     action: None,
@@ -1192,8 +1205,8 @@ async fn history_moves_return_promptly_even_from_the_back_forward_cache() {
                 }),
             )
             .await
-            .expect("trigger timed out")
-            .expect("trigger failed")
+            .expect("call timed out")
+            .expect("call failed")
         }
     };
     let a = serve_html("<!doctype html><title>a</title><p>page a</p>");
@@ -1273,7 +1286,7 @@ async fn dom_refs_never_name_a_node_on_another_page() {
         async move {
             timeout(
                 Duration::from_secs(30),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id,
                     payload,
                     action: None,
@@ -1281,12 +1294,12 @@ async fn dom_refs_never_name_a_node_on_another_page() {
                 }),
             )
             .await
-            .expect("trigger timed out")
+            .expect("call timed out")
         }
     };
     let call = |function_id: &'static str, payload: serde_json::Value| {
         let pending = try_call(function_id, payload);
-        async move { pending.await.expect("trigger failed") }
+        async move { pending.await.expect("call failed") }
     };
     fn refs(node: &serde_json::Value, out: &mut Vec<(String, String)>) {
         out.push((
@@ -1460,7 +1473,7 @@ async fn run_drives_a_form_with_the_judge_and_asks_for_missing_text() {
         async move {
             timeout(
                 Duration::from_secs(60),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id: function_id.into(),
                     payload,
                     action: None,
@@ -1468,8 +1481,8 @@ async fn run_drives_a_form_with_the_judge_and_asks_for_missing_text() {
                 }),
             )
             .await
-            .expect("trigger timed out")
-            .expect("trigger failed")
+            .expect("call timed out")
+            .expect("call failed")
         }
     };
     let url = serve_html(FORM_HTML);
@@ -1555,7 +1568,7 @@ async fn run_without_a_judge_returns_the_page_and_touches_nothing() {
         async move {
             timeout(
                 Duration::from_secs(30),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id: function_id.into(),
                     payload,
                     action: None,
@@ -1563,8 +1576,8 @@ async fn run_without_a_judge_returns_the_page_and_touches_nothing() {
                 }),
             )
             .await
-            .expect("trigger timed out")
-            .expect("trigger failed")
+            .expect("call timed out")
+            .expect("call failed")
         }
     };
     let started = call(
@@ -1723,7 +1736,7 @@ async fn run_waits_for_the_submit_it_triggered_and_matches_inputs_by_field() {
         async move {
             timeout(
                 Duration::from_secs(60),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id: function_id.into(),
                     payload,
                     action: None,
@@ -1731,8 +1744,8 @@ async fn run_waits_for_the_submit_it_triggered_and_matches_inputs_by_field() {
                 }),
             )
             .await
-            .expect("trigger timed out")
-            .expect("trigger failed")
+            .expect("call timed out")
+            .expect("call failed")
         }
     };
     let started = call(
@@ -1837,7 +1850,7 @@ async fn navigation_through_a_registered_service_worker_loads_promptly() {
         async move {
             timeout(
                 Duration::from_secs(60),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id: function_id.into(),
                     payload,
                     action: None,
@@ -1845,7 +1858,7 @@ async fn navigation_through_a_registered_service_worker_loads_promptly() {
                 }),
             )
             .await
-            .expect("trigger timed out")
+            .expect("call timed out")
         }
     };
     let site = serve_service_worker_site();
@@ -1936,7 +1949,7 @@ async fn a_stalled_load_times_out_on_budget_and_keeps_the_tab() {
         async move {
             timeout(
                 Duration::from_secs(60),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id: function_id.into(),
                     payload,
                     action: None,
@@ -1944,7 +1957,7 @@ async fn a_stalled_load_times_out_on_budget_and_keeps_the_tab() {
                 }),
             )
             .await
-            .expect("trigger timed out")
+            .expect("call timed out")
         }
     };
     let stalled = serve_stalled();
@@ -2053,7 +2066,7 @@ async fn a_navigation_that_timed_out_never_reaches_the_tab_later() {
         async move {
             timeout(
                 Duration::from_secs(90),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id: function_id.into(),
                     payload,
                     action: None,
@@ -2061,7 +2074,7 @@ async fn a_navigation_that_timed_out_never_reaches_the_tab_later() {
                 }),
             )
             .await
-            .expect("trigger timed out")
+            .expect("call timed out")
         }
     };
     let stalled = serve_stalled();
@@ -2120,9 +2133,10 @@ async fn a_navigation_that_timed_out_never_reaches_the_tab_later() {
 }
 
 /// The tab strip and a parked handoff hear the page instead of re-reading
-/// it: a title the page sets after it loaded arrives as
-/// `browser::session-updated`, and the in-page continue click resolves
-/// `browser::handoff` through its binding (no page polling on either path).
+/// it: a title the page sets after it loaded arrives as a call of
+/// `browser::on-session-updated`, and the in-page continue click resolves
+/// `browser::handoff` through its CDP binding (no page polling on either
+/// path).
 #[tokio::test]
 async fn late_titles_and_handoff_clicks_arrive_as_events() {
     let Some(h) = boot().await else {
@@ -2136,7 +2150,7 @@ async fn late_titles_and_handoff_clicks_arrive_as_events() {
         async move {
             timeout(
                 Duration::from_secs(40),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id: function_id.into(),
                     payload,
                     action: None,
@@ -2144,8 +2158,8 @@ async fn late_titles_and_handoff_clicks_arrive_as_events() {
                 }),
             )
             .await
-            .expect("trigger timed out")
-            .expect("trigger failed")
+            .expect("call timed out")
+            .expect("call failed")
         }
     };
 
@@ -2169,14 +2183,13 @@ async fn late_titles_and_handoff_clicks_arrive_as_events() {
         .as_str()
         .expect("session_id")
         .to_string();
-    client
-        .register_trigger(RegisterTriggerInput::new(
-            "browser::session-updated".to_string(),
-            "iii::browser-test::updated".to_string(),
-            json!({ "session_id": sid }),
-        ))
-        .expect("session-updated trigger");
-    sleep(Duration::from_millis(500)).await;
+    let updated = client.observe(
+        Source::function("browser::on-session-updated")
+            .filters(json!({ "input.session_id": { "$eq": sid } }))
+            .deliver(Deliver::Output),
+        "iii::browser-test::updated",
+    );
+    await_active(&updated).await;
 
     call(
         "browser::evaluate",
@@ -2243,7 +2256,7 @@ async fn idle_and_expired_tabs_go_on_their_own_deadlines() {
         async move {
             timeout(
                 Duration::from_secs(40),
-                client.trigger(TriggerRequest {
+                client.call(CallRequest {
                     function_id: function_id.into(),
                     payload,
                     action: None,
@@ -2251,8 +2264,8 @@ async fn idle_and_expired_tabs_go_on_their_own_deadlines() {
                 }),
             )
             .await
-            .expect("trigger timed out")
-            .expect("trigger failed")
+            .expect("call timed out")
+            .expect("call failed")
         }
     };
     let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
@@ -2266,16 +2279,13 @@ async fn idle_and_expired_tabs_go_on_their_own_deadlines() {
             }
         }),
     );
-    for trigger in ["browser::session-updated", "browser::session-stopped"] {
-        client
-            .register_trigger(RegisterTriggerInput::new(
-                trigger.to_string(),
-                "iii::browser-test::lifecycle".to_string(),
-                json!({}),
-            ))
-            .expect("lifecycle trigger");
+    for function_id in ["browser::on-session-updated", "browser::on-session-stopped"] {
+        let observer = client.observe(
+            Source::function(function_id).deliver(Deliver::Output),
+            "iii::browser-test::lifecycle",
+        );
+        await_active(&observer).await;
     }
-    sleep(Duration::from_millis(500)).await;
 
     let idle = call("browser::sessions::start", json!({})).await;
     let idle_id = idle["session_id"].as_str().expect("id").to_string();
@@ -2361,7 +2371,7 @@ async fn doctor_is_not_ok_when_the_executable_prints_no_version() {
     sleep(Duration::from_millis(500)).await;
     let doctor = timeout(
         Duration::from_secs(30),
-        client.trigger(TriggerRequest {
+        client.call(CallRequest {
             function_id: "browser::doctor".into(),
             payload: json!({}),
             action: None,
@@ -2369,8 +2379,8 @@ async fn doctor_is_not_ok_when_the_executable_prints_no_version() {
         }),
     )
     .await
-    .expect("trigger timed out")
-    .expect("trigger failed");
+    .expect("call timed out")
+    .expect("call failed");
     // Gone before the asserts, so a failing run leaves no script behind.
     let _ = std::fs::remove_file(&wrapper);
 

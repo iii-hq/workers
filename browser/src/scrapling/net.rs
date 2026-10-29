@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::config::{SecurityMode, SharedConfig, WorkerConfig};
 use crate::scrapling::crawl::{self, CrawlOpts, CrawlOutcome};
-use crate::scrapling::crawl_feed::{self, CrawlFeedHub, FeedSummary, IiiFeedDelivery};
+use crate::scrapling::crawl_feed::{self, CrawlFeedHub, FeedSummary, IiiFeedSink};
 use crate::scrapling::fetch::{self, HttpMode, HttpOptions};
 use crate::scrapling::page::{self, PageData};
 use crate::scrapling::raw_browser::{RawBrowser, RawBrowserOptions};
@@ -27,7 +27,7 @@ pub struct Ctx {
     pub iii: Arc<iii_sdk::IIIClient>,
     /// The interactive tabs, so a scraping call handed a tab id can say so.
     pub tabs: Arc<Sessions>,
-    /// Live `browser::crawl-item` delivery and retained crawl items.
+    /// Live `browser::on-crawl-item` delivery and retained crawl items.
     pub crawl_feed: Arc<CrawlFeedHub>,
 }
 
@@ -38,9 +38,7 @@ impl Ctx {
         Self {
             http: Registry::new(startup.max_sessions, startup.session_idle_timeout_s),
             config,
-            crawl_feed: Arc::new(CrawlFeedHub::new(Arc::new(IiiFeedDelivery::new(
-                iii.clone(),
-            )))),
+            crawl_feed: Arc::new(CrawlFeedHub::new(Arc::new(IiiFeedSink::new(iii.clone())))),
             iii,
             tabs: sessions,
         }
@@ -433,7 +431,7 @@ pub(crate) fn crawl_result(
         "crawl": {
             "id": crawl_id,
             "items_function": crawl_feed::ITEMS_FUNCTION,
-            "trigger_type": crawl_feed::CRAWL_ITEM,
+            "function_id": crawl_feed::ON_CRAWL_ITEM_FN,
             "retained": summary.retained,
             "dropped_events": summary.dropped_events,
         },
@@ -570,7 +568,7 @@ mod tests {
             json!({
                 "id": "g1",
                 "items_function": "browser::crawl::items",
-                "trigger_type": "browser::crawl-item",
+                "function_id": "browser::on-crawl-item",
                 "retained": 2,
                 "dropped_events": 0,
             })

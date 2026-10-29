@@ -4,8 +4,8 @@
 //! record — url, title, history, back/forward stack — that survives the page
 //! being closed and, for regular tabs, the worker restarting (`tabs.json`
 //! under `data_dir`). A `Session` is a tab with its page open: the CDP event
-//! pumps that keep the console/network ring buffers live and fire the
-//! `browser::*` custom triggers hang off it. Selecting or calling into a
+//! pumps that keep the console/network ring buffers live and call the
+//! `browser::on-*` event functions hang off it. Selecting or calling into a
 //! sleeping tab wakes it: the page is opened again at the remembered url.
 //! Incognito tabs live in their own throwaway browser context and never
 //! touch `data_dir`.
@@ -811,7 +811,7 @@ pub struct Session {
     pub viewport_width: AtomicU32,
     pub viewport_height: AtomicU32,
     pub latest_frame: Mutex<Option<LatestFrame>>,
-    /// The newest frame for the `browser::frame-event` pusher (latest
+    /// The newest frame for the `browser::on-frame-event` pusher (latest
     /// wins). Fed only by `Session::publish_frame`, with the slot above.
     frames: tokio::sync::watch::Sender<Option<LatestFrame>>,
     /// Bumped by every `Sessions::expect_fresh_frame`, so only the latest
@@ -1151,7 +1151,7 @@ impl Session {
     }
 
     /// Hand a frame to viewers as the newest: the next `frame_seq`, the
-    /// `browser::frame` slot, and the `browser::frame-event` push. The one
+    /// `browser::frame` slot, and the `browser::on-frame-event` push. The one
     /// way a frame goes out, for the screencast pump and the worker's own
     /// capture alike; numbered under the slot's lock so the slot and the
     /// push only ever move forward.
@@ -3618,8 +3618,8 @@ fn origin_access_denial(config: &WorkerConfig, url: &str) -> Option<String> {
 }
 
 /// A top-document navigation committed: the tab remembers where it is, the
-/// history panel and the back/forward stack learn about it, subscribers
-/// hear `browser::navigated`, and regular tabs are saved.
+/// history panel and the back/forward stack learn about it, observers of
+/// `browser::on-navigated` hear it, and regular tabs are saved.
 async fn note_navigation(sessions: &Arc<Sessions>, session: &Arc<Session>, url: &str) {
     // A wedged renderer must not stall the navigation pump on a title read;
     // after a short wait the visit records untitled.
@@ -3648,7 +3648,7 @@ async fn note_navigation(sessions: &Arc<Sessions>, session: &Arc<Session>, url: 
 }
 
 /// The page's title changed (reported by the title watcher): keep it on the
-/// tab and tell the tab strip (`browser::session-updated`).
+/// tab and tell the tab strip (`browser::on-session-updated`).
 async fn note_title(sessions: &Arc<Sessions>, session: &Arc<Session>, title: &str) {
     if !session.tab.retitle(title) {
         return;
@@ -3759,8 +3759,8 @@ async fn arm_title_watch(page: &Page) -> bool {
 }
 
 /// Arm the per-session CDP event listeners. Each pump owns one event stream,
-/// pushes into the ring buffer, and (console + pick) forwards to trigger
-/// subscribers.
+/// pushes into the ring buffer, and (console + pick) calls the matching
+/// `browser::on-*` event function.
 async fn spawn_event_pumps(
     sessions: Arc<Sessions>,
     session: Arc<Session>,
@@ -3864,7 +3864,7 @@ async fn spawn_event_pumps(
 
     // A title the page sets once it parsed, or later: the title watcher
     // reports `document.title` through a binding the moment it changes, and
-    // the tab strip hears it as `browser::session-updated` instead of
+    // the tab strip hears it as `browser::on-session-updated` instead of
     // re-reading the list on a timer. Best-effort: an engine without
     // isolated worlds or bindings keeps the title read at each navigation.
     if let Ok(mut events) = page.event_listener::<runtime::EventBindingCalled>().await {
@@ -4120,12 +4120,13 @@ async fn spawn_event_pumps(
     }
 
     // screencast frames: keep only the newest, ack every frame so Chromium
-    // keeps pushing. Delivery to the console (`browser::frame-event`, one
-    // awaited trigger per viewer) runs on its own task fed by a watch
-    // channel — latest frame wins — so a slow bus never stalls the pump or
-    // builds a backlog of stale pictures; the viewer always gets the newest
-    // frame the engine can take. The worker's own captures
-    // (`Sessions::expect_fresh_frame`) go out on the same channel.
+    // keeps pushing. Delivery to the console (a call of
+    // `browser::on-frame-event`, delivered to the tab's viewers) runs on its
+    // own task fed by a watch channel — latest frame wins — so a slow bus
+    // never stalls the pump or builds a backlog of stale pictures; a viewer
+    // observes with `max_in_flight: 1` and skips the frames it cannot take.
+    // The worker's own captures (`Sessions::expect_fresh_frame`) go out on
+    // the same channel.
     if let Ok(mut events) = page
         .event_listener::<cdp_page::EventScreencastFrame>()
         .await
@@ -4138,9 +4139,13 @@ async fn spawn_event_pumps(
                 while frame_rx.changed().await.is_ok() {
                     let next = frame_rx.borrow_and_update().clone();
                     if let Some(frame) = next {
+                        // Nobody watches this tab: copy nothing.
+                        if !sx.emitter.is_observed(EventKind::FrameEvent, &s.id) {
+                            continue;
+                        }
                         let data: &str = frame.frame.data.as_ref();
                         sx.emitter
-                            .emit_awaited(
+                            .emit(
                                 EventKind::FrameEvent,
                                 &s.id,
                                 &FrameEventPayload {
@@ -4215,9 +4220,9 @@ async fn spawn_event_pumps(
                     continue;
                 };
                 last_push_ms = now_ms();
-                // Offer it to the pusher (the console is bound to the frame
-                // trigger); the in-memory slot stays as the seed for a fresh
-                // viewer's first paint.
+                // Offer it to the pusher (the console observes
+                // `browser::on-frame-event`); the in-memory slot stays as the
+                // seed for a fresh viewer's first paint.
                 s.publish_frame(event);
                 // Feed the recorder the same capped frame flow through a
                 // bounded queue with try_send: the pump never awaits ffmpeg
@@ -4432,7 +4437,7 @@ pub async fn resolve_pick_at(
 }
 
 /// Resolve the picked node into a `PickedElement`, register a ref for it,
-/// and emit `browser::picked`.
+/// and emit `browser::on-picked`.
 async fn handle_pick(
     sessions: &Arc<Sessions>,
     session: &Arc<Session>,
