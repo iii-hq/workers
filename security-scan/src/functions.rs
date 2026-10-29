@@ -271,3 +271,26 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
     ]
 }
+
+/// The owner-delivered `security-scan::on-*` functions registered by
+/// `events::register_trigger_types`. Each refuses every invocation and is
+/// typed with the event payload its observers receive.
+pub fn observable_catalog() -> Vec<FunctionSpec> {
+    use crate::events::{
+        ActionChangedEventV1, ChangeKind, ReconciliationChangedEventV1, RunChangedEventV1,
+    };
+    vec![
+        spec::<RunChangedEventV1, ()>(
+            ChangeKind::Run.function_id(),
+            ChangeKind::Run.function_description(),
+        ),
+        spec::<ReconciliationChangedEventV1, ()>(
+            ChangeKind::Reconciliation.function_id(),
+            ChangeKind::Reconciliation.function_description(),
+        ),
+        spec::<ActionChangedEventV1, ()>(
+            ChangeKind::Action.function_id(),
+            ChangeKind::Action.function_description(),
+        ),
+    ]
+}

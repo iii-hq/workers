@@ -120,7 +120,7 @@ impl ChangeKind {
         }
     }
 
-    fn function_description(self) -> &'static str {
+    pub fn function_description(self) -> &'static str {
         match self {
             ChangeKind::Run => {
                 "Fires when a security scan run is created or changed. Observe it with args \
@@ -630,6 +630,32 @@ pub fn refuse_invocation(kind: ChangeKind) -> Error {
     }
 }
 
+/// The handler of `kind`'s `on-*` function: refuses every invocation, so no
+/// caller can make this worker hand observers a forged change. `E` is the
+/// event payload observers of `kind` receive (e.g. [`RunChangedEventV1`]), so
+/// the function publishes that typed request schema, never `AnyValue`.
+pub fn refuse_observable_call<E>(kind: ChangeKind, _change: E) -> Result<(), Error> {
+    Err(refuse_invocation(kind))
+}
+
+/// Registers `kind`'s owner-delivered `on-*` function over the trigger type's
+/// table, typed with the event payload `E` its observers receive.
+fn register_observable<E>(iii: &IIIClient, feed: &Arc<ChangeFeed>, kind: ChangeKind)
+where
+    E: serde::de::DeserializeOwned + JsonSchema + Send + 'static,
+{
+    let _ = iii.register_function(
+        kind.function_id(),
+        RegisterFunction::new(move |change: E| refuse_observable_call(kind, change))
+            .description(kind.function_description())
+            .observe(
+                Observe::owner()
+                    .args_format::<ChangeFilterV1>()
+                    .handler(ChangeObserveHandler::new(kind, feed.clone())),
+            ),
+    );
+}
+
 /// Registers the three trigger types and, next to each, its owner-delivered
 /// `on-*` function sharing the trigger type's table. Call before functions
 /// and UI so consumers registering early resolve against them.
@@ -646,18 +672,13 @@ pub fn register_trigger_types(iii: &IIIClient, feed: &Arc<ChangeFeed>) {
             )
             .trigger_request_format::<ChangeFilterV1>(),
         );
-        let _ = iii.register_function(
-            kind.function_id(),
-            RegisterFunction::new(move |_change: Value| -> Result<(), Error> {
-                Err(refuse_invocation(kind))
-            })
-            .description(kind.function_description())
-            .observe(
-                Observe::owner()
-                    .args_format::<ChangeFilterV1>()
-                    .handler(ChangeObserveHandler::new(kind, feed.clone())),
-            ),
-        );
+        match kind {
+            ChangeKind::Run => register_observable::<RunChangedEventV1>(iii, feed, kind),
+            ChangeKind::Reconciliation => {
+                register_observable::<ReconciliationChangedEventV1>(iii, feed, kind)
+            }
+            ChangeKind::Action => register_observable::<ActionChangedEventV1>(iii, feed, kind),
+        }
     }
 }
 
@@ -946,8 +967,8 @@ mod tests {
     #[test]
     fn each_on_function_refuses_direct_invocation() {
         for kind in ChangeKind::ALL {
-            match refuse_invocation(kind) {
-                Error::Remote { code, message, .. } => {
+            match refuse_observable_call(kind, event()) {
+                Err(Error::Remote { code, message, .. }) => {
                     assert_eq!(code, codes::FORBIDDEN);
                     assert_eq!(code, iii_sdk::protocol::observe_codes::FORBIDDEN);
                     assert!(message.contains(kind.function_id()), "{message}");
