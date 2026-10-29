@@ -5,15 +5,14 @@ use std::time::Duration;
 use dashmap::mapref::entry::Entry;
 use dashmap::{DashMap, DashSet};
 use iii_sdk::errors::Error as IiiError;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::runtime::FunctionRef;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::agent_feed::{
-    FeedEvent, Sequencer, binding_config, final_text_from_brain_result, is_not_found_error,
-    parse_feed_payload, readiness_error, resolve_events_trigger_types,
+    FeedEvent, Sequencer, final_text_from_brain_result, is_not_found_error, observer_args,
+    parse_feed_payload, readiness_error, resolve_events_functions,
 };
 use crate::session::{
     self, ActivePromptClaim, CloseHistoryResult, HistoryOwnerResult, PromptClaimResult,
@@ -106,15 +105,15 @@ pub struct AcpHandler {
     // forwarded for these sessions. Written by session/new, load, resume and
     // prompt; cleared by session/close.
     owned_sessions: Arc<DashSet<String>>,
-    // `<namespace>::agent-event` trigger types bound per owned session when an
-    // external brain is configured (see agent_feed).
-    events_trigger_types: Vec<String>,
-    // One binding per (owned session, events trigger type). Unregistered on
+    // `<namespace>::on-agent-event` functions observed per owned session when
+    // an external brain is configured (see agent_feed).
+    events_functions: Vec<String>,
+    // One observer per (owned session, events function). Disposed on
     // session/close and when the handler drops; the engine also drops them
     // when this connection goes away, and the SDK replays them on reconnect.
-    event_bindings: DashMap<String, Vec<iii_sdk::trigger::Trigger>>,
+    event_observers: DashMap<String, Vec<ObserverHandle>>,
     event_sink: Arc<EventSink>,
-    // The handler function every binding targets. Kept alive for the life
+    // The handler function every observer targets. Kept alive for the life
     // of the handler. None when no external brain is configured.
     _event_function: Option<FunctionRef>,
     event_function_id: String,
@@ -126,9 +125,9 @@ pub struct BrainConfig {
     pub model: Option<String>,
     pub provider: Option<String>,
     pub system_prompt: Option<String>,
-    /// Explicit `<namespace>::agent-event` trigger types; empty derives the
-    /// default from `function_id` (`claude::run` -> `claude::agent-event`).
-    pub events_trigger_types: Vec<String>,
+    /// Explicit `<namespace>::on-agent-event` functions; empty derives the
+    /// default from `function_id` (`claude::run` -> `claude::on-agent-event`).
+    pub events_functions: Vec<String>,
 }
 
 // Grace period before the brain-response fallback, so frames still in flight
@@ -157,12 +156,12 @@ impl AcpHandler {
         });
 
         // The external brain's worker publishes AgentEvent frames on its own
-        // `<namespace>::agent-event` trigger type. Register the handler once;
-        // bindings are added per owned session. The echo brain emits
+        // `<namespace>::on-agent-event` function. Register the handler once;
+        // observers are added per owned session. The echo brain emits
         // session/update directly and needs neither.
         let brain_configured = brain.function_id.is_some();
-        let events_trigger_types = if brain_configured {
-            resolve_events_trigger_types(&brain.events_trigger_types, brain.function_id.as_deref())
+        let events_functions = if brain_configured {
+            resolve_events_functions(&brain.events_functions, brain.function_id.as_deref())
         } else {
             Vec::new()
         };
@@ -171,8 +170,8 @@ impl AcpHandler {
             .then(|| register_event_function(&iii, &event_function_id, &event_sink));
         if brain_configured {
             tracing::info!(
-                ?events_trigger_types,
-                "acp binds agent event trigger types per session"
+                ?events_functions,
+                "acp observes agent event functions per session"
             );
         }
 
@@ -190,8 +189,8 @@ impl AcpHandler {
             brain_provider: brain.provider,
             brain_system_prompt: brain.system_prompt,
             owned_sessions,
-            events_trigger_types,
-            event_bindings: DashMap::new(),
+            events_functions,
+            event_observers: DashMap::new(),
             event_sink,
             _event_function: event_function,
             event_function_id,
@@ -199,56 +198,54 @@ impl AcpHandler {
     }
 
     /// Mark a session as owned by this connection and, with an external
-    /// brain, bind its agent events (once per session).
+    /// brain, observe its agent events (once per session).
     fn own_session(&self, session_id: &str) {
         self.owned_sessions.insert(session_id.to_string());
         if self._event_function.is_none() {
             return;
         }
-        if let Entry::Vacant(slot) = self.event_bindings.entry(session_id.to_string()) {
-            let mut triggers = Vec::with_capacity(self.events_trigger_types.len());
-            for trigger_type in &self.events_trigger_types {
-                match self.iii.register_trigger(RegisterTriggerInput::new(
-                    trigger_type.clone(),
-                    self.event_function_id.clone(),
-                    binding_config(session_id),
-                )) {
-                    Ok(trigger) => triggers.push(trigger),
-                    Err(error) => tracing::error!(
-                        %error,
-                        trigger_type,
-                        session_id,
-                        "failed to bind agent events for session"
-                    ),
-                }
-            }
-            slot.insert(triggers);
+        if let Entry::Vacant(slot) = self.event_observers.entry(session_id.to_string()) {
+            // `observe` returns at once; an observer stays pending until the
+            // agent worker hosts the function, then becomes active.
+            let observers = self
+                .events_functions
+                .iter()
+                .map(|function_id| {
+                    self.iii.observe(
+                        Source::function(function_id)
+                            .args(observer_args(session_id))
+                            .deliver(Deliver::Output),
+                        self.event_function_id.as_str(),
+                    )
+                })
+                .collect();
+            slot.insert(observers);
         }
     }
 
-    /// Forget a session: unbind its agent events and drop sequencing state.
+    /// Forget a session: dispose its agent event observers and drop
+    /// sequencing state.
     fn release_session(&self, session_id: &str) {
         self.owned_sessions.remove(session_id);
-        if let Some((_, triggers)) = self.event_bindings.remove(session_id) {
-            for trigger in triggers {
-                trigger.unregister();
+        if let Some((_, observers)) = self.event_observers.remove(session_id) {
+            for observer in observers {
+                dispose_in_background(observer);
             }
         }
         self.event_sink.forget(session_id);
     }
 
     /// Readiness of the agent event feed for an external brain: the handler
-    /// is registered and every events trigger type has a provider. Replaces
-    /// the old readiness gate on the legacy event tape.
+    /// is registered and every events function has a host.
     async fn event_feed_readiness(&self) -> Result<(), (i32, String)> {
         let mut missing = Vec::new();
         if self._event_function.is_some() {
-            for trigger_type in &self.events_trigger_types {
+            for function_id in &self.events_functions {
                 let info = self
                     .iii
-                    .trigger(TriggerRequest {
-                        function_id: "engine::triggers::info".to_string(),
-                        payload: json!({ "id": trigger_type }),
+                    .call(CallRequest {
+                        function_id: "engine::functions::info".to_string(),
+                        payload: json!({ "function_id": function_id }),
                         action: None,
                         timeout_ms: Some(5_000),
                     })
@@ -256,19 +253,19 @@ impl AcpHandler {
                 match info {
                     Ok(_) => {}
                     Err(error) if is_not_found_error(&error.to_string()) => {
-                        missing.push(trigger_type.clone());
+                        missing.push(function_id.clone());
                     }
                     Err(error) => tracing::warn!(
                         %error,
-                        trigger_type,
-                        "could not verify the agent event trigger type; continuing"
+                        function_id,
+                        "could not verify the agent event function; continuing"
                     ),
                 }
             }
         }
         match readiness_error(
             self._event_function.is_some(),
-            &self.events_trigger_types,
+            &self.events_functions,
             &missing,
         ) {
             Some(message) => Err((INTERNAL_ERROR, message)),
@@ -923,7 +920,7 @@ impl AcpHandler {
             }
             let stop = self
                 .iii
-                .trigger(external_brain_stop_request(&stop_fn, session_id))
+                .call(external_brain_stop_request(&stop_fn, session_id))
                 .await
                 .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
             if stop_reports_terminal(&stop) {
@@ -1160,8 +1157,8 @@ impl AcpHandler {
         // Canonical iii brain shape: feed run::start_and_wait (or any
         // function with the same input contract) a User message built
         // from ACP prompt content blocks. The brain's worker emits
-        // AgentEvent frames on its `<namespace>::agent-event` trigger
-        // type; the per-session binding (AcpHandler::own_session) feeds
+        // AgentEvent frames on its `<namespace>::on-agent-event`
+        // function; the per-session observer (AcpHandler::own_session) feeds
         // them to EventSink, which writes ACP session/update notifications
         // on stdout. The brain returns synchronously when the turn ends.
         let payload = external_brain_payload(
@@ -1173,7 +1170,7 @@ impl AcpHandler {
             self.brain_system_prompt.as_deref(),
         );
 
-        let req = TriggerRequest {
+        let req = CallRequest {
             function_id: fn_id.to_string(),
             payload,
             action: None,
@@ -1181,14 +1178,14 @@ impl AcpHandler {
         };
         let iii = self.iii.clone();
         let visible_before = self.event_sink.visible_count(session_id);
-        let mut brain = tokio::spawn(async move { iii.trigger(req).await });
+        let mut brain = tokio::spawn(async move { iii.call(req).await });
         let ((res, error_terminal), cancellation_accepted) = tokio::select! {
             r = &mut brain => (flatten_brain_result(r), None),
             _ = cancel.wait() => {
                 let mut stop_accepted = None;
                 if let Some(stop_fn) = self.brain_stop_fn.as_deref() {
                     let stop = external_brain_stop_request(stop_fn, session_id);
-                    match self.iii.trigger(stop).await {
+                    match self.iii.call(stop).await {
                         Ok(result) => {
                             let accepted = stop_was_accepted(&result);
                             stop_accepted = Some(accepted);
@@ -1325,7 +1322,7 @@ impl AcpHandler {
     }
 
     // Recovery when no live frame reached the editor during the prompt (a
-    // reconnect gap, a binding that was not active yet, or a brain whose
+    // reconnect gap, an observer that was not active yet, or a brain whose
     // frames carry no renderable update): render the final text from the
     // brain's synchronous response once. Buffered frames are released
     // first and in-flight deliveries get a short grace, so a turn that did
@@ -1393,11 +1390,30 @@ impl AcpHandler {
 
 impl Drop for AcpHandler {
     fn drop(&mut self) {
-        for entry in self.event_bindings.iter() {
-            for trigger in entry.value() {
-                trigger.unregister();
+        for entry in self.event_observers.iter() {
+            for observer in entry.value() {
+                dispose_in_background(observer.clone());
             }
         }
+    }
+}
+
+// Dispose an observer on a spawned task: `dispose` waits for the engine's
+// answer, and its callers (session/close, Drop) are synchronous.
+fn dispose_in_background(observer: ObserverHandle) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => {
+            runtime.spawn(async move {
+                if let Err(error) = observer.dispose().await {
+                    tracing::warn!(observer_id = observer.id(), %error, "observer dispose failed");
+                }
+            });
+        }
+        Err(_) => tracing::warn!(
+            observer_id = observer.id(),
+            "no tokio runtime to dispose the agent event observer on; the engine drops it with \
+             the connection"
+        ),
     }
 }
 
@@ -1493,10 +1509,11 @@ async fn write_notification(outbound: &Outbound, seq: &AtomicU64, method: &str, 
     }
 }
 
-// Register the handler every `<namespace>::agent-event` binding of this
-// connection targets. Bindings themselves are added per owned session
-// (`AcpHandler::own_session`) with config `{ session_id }`, so the producer
-// only delivers this connection's sessions.
+// Register the handler every `<namespace>::on-agent-event` observer of this
+// connection targets. Observers themselves are added per owned session
+// (`AcpHandler::own_session`) with args `{ session_id }` and
+// `deliver: output`, so the producer delivers only this connection's
+// sessions and the handler receives each frame as its input.
 fn register_event_function(iii: &IIIClient, fn_id: &str, sink: &Arc<EventSink>) -> FunctionRef {
     let sink = Arc::clone(sink);
     iii.register_function(
@@ -1508,7 +1525,7 @@ fn register_event_function(iii: &IIIClient, fn_id: &str, sink: &Arc<EventSink>) 
                 Ok(json!({ "ok": true }))
             }
         })
-        .description("ACP <namespace>::agent-event -> stdout fan-in"),
+        .description("ACP <namespace>::on-agent-event -> stdout fan-in"),
     )
 }
 
@@ -1848,8 +1865,8 @@ fn external_brain_payload(
     payload
 }
 
-fn external_brain_stop_request(function_id: &str, session_id: &str) -> TriggerRequest {
-    TriggerRequest {
+fn external_brain_stop_request(function_id: &str, session_id: &str) -> CallRequest {
+    CallRequest {
         function_id: function_id.to_string(),
         payload: json!({ "session_id": session_id }),
         action: None,
