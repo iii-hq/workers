@@ -29,7 +29,8 @@ rows mapped to full catalog records → `router::models::reconcile`).
   dead rows in the picker. Everything else in the listing (several hundred
   models) lands in the catalog with live metadata.
 - **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+  backoff until acked, and re-declares on every `router::on-ready` event
+  (it observes that function at boot; the observer outlives router restarts).
   The declaration carries no static `models` slice — the live listing is the
   source of truth and a refresh fires right after registration. Defaults:
   `api_url: https://openrouter.ai/api/v1/chat/completions`,
