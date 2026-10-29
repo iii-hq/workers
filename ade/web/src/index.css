@@ -116,6 +116,19 @@
   --color-glyph-green: #15803d;
   --color-glyph-amber: #b7791f;
   --color-glyph-rose: #e11d48;
+  /* ── Syntax tones ─────────────────────────────────────────────────────
+     Token colours for read-only highlighted code (`CodeHighlight` /
+     `JsonHighlight`: fenced Markdown blocks, tool-card payloads). The
+     GitHub "prettylights" palette, each tone at least 4.5:1 (AA) against
+     `bg`, the block's own background. Code text only: never a fill, a
+     border, chrome text or a status. Comments and punctuation stay on
+     `ink-faint`; diff lines reuse `ok` / `alert-strong`. */
+  --color-syntax-keyword: #cf222e;
+  --color-syntax-function: #8250df;
+  --color-syntax-constant: #0550ae;
+  --color-syntax-string: #0a3069;
+  --color-syntax-type: #953800;
+  --color-syntax-attribute: #116329;
 
   --color-ring: color-mix(in oklab, var(--foreground) 5%, transparent);
 
@@ -272,6 +285,13 @@
   --color-glyph-green: #22c55e;
   --color-glyph-amber: #eab308;
   --color-glyph-rose: #f43f5e;
+  /* Syntax tones: the dark prettylights set, AA against `bg`. */
+  --color-syntax-keyword: #ff7b72;
+  --color-syntax-function: #d2a8ff;
+  --color-syntax-constant: #79c0ff;
+  --color-syntax-string: #a5d6ff;
+  --color-syntax-type: #ffa657;
+  --color-syntax-attribute: #7ee787;
 }
 
 @layer base {
