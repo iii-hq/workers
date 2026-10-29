@@ -44,6 +44,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::kits::plan::PlanKind;
+use crate::kits::store::ApplyStep;
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
@@ -53,7 +55,7 @@ use iii_sdk::{
     RegisterTriggerType, TriggerAction,
 };
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const SKILLS_ON_CHANGE: &str = "directory::skills::on-change";
@@ -74,6 +76,62 @@ pub const FORBIDDEN: &str = "FORBIDDEN";
 /// trigger binding takes: every observer receives every change.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct OnChangeSpec {}
+
+/// The event every `directory::*::on-change` binding and every
+/// `directory::on-*-change` observer receives. `op` names the change; the
+/// other fields ride along depending on it:
+///
+/// - skills: `{ op: "create" | "update" | "delete", namespace, id }`;
+/// - system prompts: `{ op: "create" | "update" | "delete", name }`;
+/// - agents: `{ op: "create" | "update" | "delete", name }`;
+/// - any of the three: `{ op: "download", namespace?, source }`,
+///   `{ op: "kit", kit, plan_id }` or `{ op: "external" }`;
+/// - kits: `{ op: "plan" | "apply", kit, plan_id, kind }`,
+///   `{ op: "discard", plan_id, kit }`, `{ op: "progress", plan_id, kit,
+///   steps, error? }` or `{ op: "updates", kit? }`.
+///
+/// It types the request schema of the `directory::on-*-change` functions,
+/// which refuse every direct invocation anyway.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct OnChangeEvent {
+    /// What changed: `create`, `update`, `delete`, `download`, `external`,
+    /// `kit`, `plan`, `discard`, `progress`, `apply` or `updates`.
+    pub op: String,
+    /// Skill namespace (skill writes and downloads).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// Skill id, `<namespace>/<path>` (skill writes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// System prompt name or agent profile id (their writes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Download source: `repo` or `registry`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Kit the change belongs to (kit events).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kit: Option<String>,
+    /// Kit plan id (kit events).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<String>,
+    /// Kind of kit plan (`plan` / `apply`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<PlanKind>,
+    /// Apply steps so far (`progress`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<Vec<ApplyStep>>,
+    /// Apply error, when the apply failed (`progress`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The handler of every `directory::on-*-change` function: typed with the
+/// [`OnChangeEvent`] observers receive, it refuses every invocation so
+/// nobody can make this worker hand observers a forged event.
+pub fn refuse_on_change(function_id: &str, _event: OnChangeEvent) -> Result<(), Error> {
+    Err(refuse_invocation(function_id))
+}
 
 /// One observer as a sink of a [`SubscriberSet`]. Abstracted so the fan-out
 /// is unit-testable without an engine.
@@ -337,15 +395,13 @@ fn register_on_change(
 
     iii.register_function(
         function_id,
-        RegisterFunction::new(move |_event: Value| -> Result<(), Error> {
-            Err(refuse_invocation(function_id))
-        })
-        .description(on_change_description(trigger_type, description))
-        .observe(
-            Observe::owner()
-                .args_format::<OnChangeSpec>()
-                .handler(subscribers.observe_handler(function_id)),
-        ),
+        RegisterFunction::new(move |event: OnChangeEvent| refuse_on_change(function_id, event))
+            .description(on_change_description(trigger_type, description))
+            .observe(
+                Observe::owner()
+                    .args_format::<OnChangeSpec>()
+                    .handler(subscribers.observe_handler(function_id)),
+            ),
     );
     tracing::info!(function_id, "registered observable function");
 
@@ -559,6 +615,69 @@ mod tests {
         assert!(serde_json::from_value::<OnChangeSpec>(json!({})).is_ok());
         let schema = serde_json::to_value(schemars::schema_for!(OnChangeSpec)).unwrap();
         assert_eq!(schema["type"], json!("object"), "{schema}");
+    }
+
+    /// The schema iii-sdk publishes for a handler type (draft-07 root).
+    fn wire_schema<T: JsonSchema>() -> Value {
+        let root = schemars::gen::SchemaSettings::draft07()
+            .into_generator()
+            .into_root_schema_for::<T>();
+        serde_json::to_value(root).unwrap()
+    }
+
+    fn assert_typed(label: &str, schema: &Value) {
+        const TYPED: [&str; 7] = [
+            "type",
+            "properties",
+            "$ref",
+            "allOf",
+            "anyOf",
+            "oneOf",
+            "enum",
+        ];
+        assert!(
+            TYPED.iter().any(|key| schema.get(*key).is_some()),
+            "{label} is untyped (AnyValue/empty): {schema}"
+        );
+    }
+
+    /// Mirrors the boot smoke check on worker-interface.json: every
+    /// `directory::on-*-change` handler (`refuse_on_change`, input
+    /// [`OnChangeEvent`], output `()`) publishes typed schemas.
+    #[test]
+    fn each_on_change_function_has_typed_request_and_response_schemas() {
+        let handler: fn(&str, OnChangeEvent) -> Result<(), Error> = refuse_on_change;
+        let request = wire_schema::<OnChangeEvent>();
+        let response = wire_schema::<()>();
+        for (_, function_id) in ON_CHANGE_FUNCTIONS {
+            assert_typed(&format!("{function_id}.request_schema"), &request);
+            assert_typed(&format!("{function_id}.response_schema"), &response);
+            assert!(matches!(
+                handler(function_id, OnChangeEvent::default()),
+                Err(Error::Remote { code, .. }) if code == FORBIDDEN
+            ));
+        }
+        assert_eq!(request["type"], json!("object"), "{request}");
+        assert_eq!(request["required"], json!(["op"]), "{request}");
+        assert_eq!(response["type"], json!("null"), "{response}");
+    }
+
+    #[test]
+    fn every_dispatched_payload_deserializes_as_the_on_change_event() {
+        for payload in [
+            json!({ "op": "update", "namespace": "a", "id": "a/b.md" }),
+            json!({ "op": "create", "name": "coder" }),
+            json!({ "op": "download", "namespace": "a", "source": "registry" }),
+            json!({ "op": "external" }),
+            json!({ "op": "kit", "kit": "k", "plan_id": "p" }),
+            json!({ "op": "discard", "plan_id": "p", "kit": null }),
+            json!({ "op": "progress", "plan_id": "p", "kit": "k", "steps": [], "error": null }),
+            json!({ "op": "updates" }),
+        ] {
+            let event: OnChangeEvent = serde_json::from_value(payload.clone())
+                .unwrap_or_else(|e| panic!("{payload}: {e}"));
+            assert_eq!(Some(event.op.as_str()), payload["op"].as_str());
+        }
     }
 
     #[test]
