@@ -15,9 +15,7 @@ use crate::functions::bindings::message_added::BindingAck;
 use crate::kv;
 use crate::preferences::{self, parse_thinking_level, parse_verbosity, thinking_level_wire};
 use crate::telemetry;
-use crate::types::{
-    ChatFsm, HttpTriggerRequest, PendingApprovalRecord, ResolveDecision, TelegramUpdate,
-};
+use crate::types::{ChatFsm, HttpRequest, PendingApprovalRecord, ResolveDecision, TelegramUpdate};
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct WebhookResponse {
@@ -34,7 +32,7 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     );
 }
 
-pub async fn handle(deps: &Deps, req: HttpTriggerRequest) -> Result<WebhookResponse, Error> {
+pub async fn handle(deps: &Deps, req: HttpRequest) -> Result<WebhookResponse, Error> {
     let cfg = deps.cfg().await;
     if let UpdatesAdapter::Webhook(webhook) = &cfg.updates {
         // Validate the secret token only when one is configured. A secret-less

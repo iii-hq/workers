@@ -2,7 +2,7 @@
 #
 # The PR interface-smoke job
 # boot smoke (.github/workflows/ci.yml) boot a throwaway copy of this worker
-# purely to read back the functions and trigger types it registers with the
+# purely to read back the functions and observers it registers with the
 # engine — the published "interface". That interface is static: it does NOT
 # depend on a real Telegram bot token.
 #

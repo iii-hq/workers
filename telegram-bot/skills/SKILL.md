@@ -45,32 +45,33 @@ URL) or an HTTPS webhook, and every config field hot-reloads.
 
 ## Functions
 
-HTTP-triggered (operator/ingress only — not agent-callable):
+HTTP routes (`http::on-request` observers; operator/ingress only — not agent-callable):
 
 - `telegram-bot::webhook` — receive a Telegram update in webhook mode and
   route commands, messages, and callback queries.
 - `telegram-bot::set-webhook` — register the configured webhook URL with
   Telegram.
 
-Internal bindings (auto-registered against sibling triggers; not called directly):
+Observer targets (observing sibling workers' functions; not called directly):
 
 - `telegram-bot::on-message-added` — post each new assistant or
-  function_result entry into the chat (from `session::message-added`).
+  function_result entry into the chat (from `session::on-message-added`).
 - `telegram-bot::on-message-updated` — stream throttled assistant edits (from
-  `session::message-updated`).
+  `session::on-message-updated`).
 - `telegram-bot::on-status-changed` — show a typing indicator while the
-  session is working (from `session::status-changed`).
+  session is working (from `session::on-status-changed`).
 - `telegram-bot::on-turn-completed` — finalize streaming, post the outcome
-  toast, and drain the FIFO queue (from `harness::turn-completed`).
+  toast, and drain the FIFO queue (from `harness::on-turn-completed`).
 - `telegram-bot::on-pending-created` — show an inline approval keyboard for a
-  held call (from `approval::pending-created`).
+  held call (from `approval::on-pending-created`).
 - `telegram-bot::on-pending-resolved` — clear the approval prompt once the
-  call resolves (from `approval::pending-resolved`).
-- `telegram-bot::on-config-change` — hot-reload configuration.
+  call resolves (from `approval::on-pending-resolved`).
+- `telegram-bot::on-config-change` — hot-reload configuration (from
+  `configuration::on-updated`).
 
 ## Message flow
 
-The worker registers no trigger type for others to bind. It is a bidirectional
+The worker provides no observable event functions. It is a bidirectional
 bridge between one Telegram chat and one harness session, and that round-trip is
 the whole job.
 

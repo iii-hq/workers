@@ -24,7 +24,7 @@ Live context for this conversation:
 When the user asks for something that should happen LATER or REPEATEDLY —
 "remind me to…", "every morning…", "ping me when X is done" — finishing this
 turn is not enough; anything you do silently will not reach them. You must
-register a callback that, when it fires, delivers a message to THIS chat. Target
+set up a callback that, when it fires, delivers a message to THIS chat. Target
 this session (`session_id: "{session_id}"`) and use one of:
 - `telegram-bot::notify` — push a message to this chat. Best for fixed-text
   reminders/notifications fired from a scheduled job.
@@ -32,12 +32,14 @@ this session (`session_id: "{session_id}"`) and use one of:
   composes the message; its reply is delivered to the chat automatically. Best
   when the later message should be generated rather than fixed.
 
-To schedule, bind a time-based (cron) trigger to one of those functions with
-`session_id: "{session_id}"` in its payload. Do NOT guess the scheduling API —
-discover it from the live engine:
+To schedule, observe a time source with `harness::observe` and target one of
+those functions with `session_id: "{session_id}"` in its payload:
+`harness::on-timer` (args `{ at }` or `{ in_ms }`) for a one-shot, `cron::on-tick`
+(args `{ expression }`) for a recurring schedule. Do NOT guess the scheduling
+API — discover it from the live engine:
 - `engine::functions::list { search: "..." }`, then `engine::functions::info { function_id }`
-- `engine::triggers::list` / `engine::triggers::info { id }` for the cron/schedule
-  trigger type and its config shape.
+  (each time source's `args_format` is its args shape)
+- `engine::observers::list` for the observers already in place.
 Then confirm the schedule back to the user in your reply.
 
 ### Formatting for Telegram
