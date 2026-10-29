@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: ade
 tags: [ade, console, dashboard, ui, web, admin]
-description: Web console for iii — bundles the React UI and proxies the engine WebSocket on a single port.
+description: Web console for iii — bundles the React UI and proxies the engine WebSocket on a single port. Observe console::on-compose-changed, console::on-workspace-changed, console::on-script, console::on-style, console::on-module and console::on-assets (iii 0.25) or bind their console:* trigger types.
 
 runtime:
   kind: rust

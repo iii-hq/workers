@@ -241,6 +241,19 @@ The console adds what the daemon does not expose, read from the compose file and
 
 `console::compose::changed` fires when the daemon writes `state.json` or the compose file changes (bind with an empty config; the event carries `kind`, `file`, `namespace`, `state_dir`, `path`, `captured_at`). Defined in [`src/compose/`](src/compose/).
 
+### Observable functions (iii 0.25)
+
+On a 0.25 engine a new consumer observes an owner-delivered function instead of binding a trigger type. Each one shares its trigger type's registry, so an observer receives exactly the event a binding receives, at the same moments:
+
+| Function | Args | Event |
+|---|---|---|
+| `console::on-compose-changed` | `{}` | `{ kind, file, namespace, state_dir, path, captured_at }`, as `console::compose::changed` |
+| `console::on-workspace-changed` | `{}` | `{}` after every layout write and once when the observer is added, as `console::workspace::changed`; re-read with `console::workspace::list` |
+| `console::on-script` / `console::on-style` / `console::on-module` | `{ path }` (the `console:script` / `console:style` / `console:module` config) | The console calls the observer with `{ path }` and serves the returned `{ content, content_type? }`, as for a binding's content function; a newer registration of the path rejects the observer (`SUPERSEDED`) |
+| `console::on-assets` | `{}` | The `sync` / `set` / `delete` asset events a `console:assets` binding receives |
+
+Events are routed inside the console worker: invoking any of them directly is refused with `FORBIDDEN`. The trigger types stay registered, unchanged, so consumers that bind them keep working on 0.24 and 0.25 engines.
+
 ## Architecture
 
 ```mermaid

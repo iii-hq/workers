@@ -437,14 +437,18 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
+    // Deprecated in 0.25 (observe configuration::on-updated instead) and still
+    // served by 0.24 and 0.25 engines.
+    #[allow(deprecated)]
+    let bound = iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         CONFIG_CHANGE_FN_ID.to_string(),
         json!({
             "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-    ))?;
+    ));
+    bound?;
     Ok(())
 }
 

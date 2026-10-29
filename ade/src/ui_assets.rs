@@ -32,12 +32,18 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
+    RegisterTriggerType, TriggerAction,
+};
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
+
+use crate::observe::{observer_key, refuse_invocation};
 
 pub const SCRIPT_TYPE: &str = "console:script";
 pub const STYLE_TYPE: &str = "console:style";
@@ -104,6 +110,46 @@ impl AssetKind {
             AssetKind::Module => "module",
         }
     }
+}
+
+/// What `console::on-script`, `console::on-style` and `console::on-module`
+/// observers receive: the console asks for one asset's source and the
+/// observer answers `{ content, content_type? }`, like a content function.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AssetContentRequest {
+    /// The asset path the observer registered (`<worker>/<name>.<ext>`).
+    pub path: String,
+}
+
+/// One asset as `console:assets` pushes name it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AssetRef {
+    pub path: String,
+    pub kind: AssetKind,
+    /// Content version (first 16 hex chars of its sha256); empty on the
+    /// delete of a superseded path.
+    pub hash: String,
+}
+
+/// What every `console:assets` binding and `console::on-assets` observer
+/// receives.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "event", rename_all = "lowercase")]
+pub enum AssetPushEvent {
+    /// Every served asset, pushed once when the subscription registers.
+    Sync { assets: Vec<AssetRef> },
+    /// An asset was added, changed or re-enabled.
+    Set {
+        path: String,
+        kind: AssetKind,
+        hash: String,
+    },
+    /// An asset was removed, superseded or disabled.
+    Delete {
+        path: String,
+        kind: AssetKind,
+        hash: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -459,6 +505,291 @@ impl TriggerHandler for QueueingTriggerHandler {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Observable functions (iii 0.25), one next to each `console:*` trigger type.
+// An observer passes the trigger config as args and is filed in the same
+// registry as the bindings, under the trigger id and function id
+// `observer:<id>`: [`ObservingBus`] routes that entry's content fetch and
+// pushes to the observer with `obs.call`. Invoking the functions is refused
+// (FORBIDDEN): their events come only from this queue.
+// ---------------------------------------------------------------------------
+
+pub const ON_SCRIPT_FN: &str = "console::on-script";
+pub const ON_STYLE_FN: &str = "console::on-style";
+pub const ON_MODULE_FN: &str = "console::on-module";
+pub const ON_ASSETS_FN: &str = "console::on-assets";
+
+/// How long a new observer's registration waits for the engine to mark it
+/// active: its content fetch / first sync are `obs.call`s, sent only once
+/// the SDK acked the observer (after `on_observer_added` returns).
+const OBSERVER_ACTIVATION_WAIT: Duration = Duration::from_secs(5);
+const OBSERVER_ACTIVATION_POLL: Duration = Duration::from_millis(20);
+/// The late-rejection code of an observer whose registration failed (bad
+/// path, failed content fetch) or whose path a newer registration took.
+const CODE_REGISTRATION_FAILED: &str = "REGISTRATION_FAILED";
+const CODE_SUPERSEDED: &str = "SUPERSEDED";
+
+/// One observer of a `console::on-*` function, as the bus reaches it.
+/// Abstracted so the routing is unit-testable without an engine.
+#[async_trait]
+pub trait AssetObserver: Send + Sync + 'static {
+    fn id(&self) -> &str;
+    fn is_active(&self) -> bool {
+        true
+    }
+    /// `obs.call`: the content request (`{path}`) or one pushed event.
+    async fn call(&self, payload: Value) -> Result<Value, String>;
+    /// Late rejection: the engine drops the observer.
+    fn reject(&self, _code: &str, _message: &str) {}
+}
+
+#[async_trait]
+impl AssetObserver for Observer {
+    fn id(&self) -> &str {
+        Observer::id(self)
+    }
+
+    fn is_active(&self) -> bool {
+        Observer::is_active(self)
+    }
+
+    async fn call(&self, payload: Value) -> Result<Value, String> {
+        self.call_with_timeout::<Value>(payload, Duration::from_millis(FETCH_TIMEOUT_MS))
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    fn reject(&self, code: &str, message: &str) {
+        Observer::reject(self, code, message);
+    }
+}
+
+/// Live observers by registry key (`observer:<id>`).
+pub type AssetObservers = Arc<Mutex<HashMap<String, Arc<dyn AssetObserver>>>>;
+
+fn lock_observers(
+    observers: &AssetObservers,
+) -> std::sync::MutexGuard<'_, HashMap<String, Arc<dyn AssetObserver>>> {
+    observers.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// The bus the processor uses: calls addressed to an observer entry go to
+/// the observer with `obs.call`, every other call to the engine bus.
+pub struct ObservingBus {
+    inner: Arc<dyn UiBus>,
+    observers: AssetObservers,
+}
+
+impl ObservingBus {
+    pub fn new(inner: Arc<dyn UiBus>, observers: AssetObservers) -> Self {
+        Self { inner, observers }
+    }
+
+    fn observer(&self, key: &str) -> Option<Arc<dyn AssetObserver>> {
+        lock_observers(&self.observers).get(key).cloned()
+    }
+}
+
+#[async_trait]
+impl UiBus for ObservingBus {
+    async fn fetch_content(&self, function_id: &str, path: &str) -> Result<FetchedContent, String> {
+        let Some(observer) = self.observer(function_id) else {
+            return self.inner.fetch_content(function_id, path).await;
+        };
+        let resp = observer
+            .call(json!({ "path": path }))
+            .await
+            .map_err(|e| format!("content fetch via observer '{}' failed: {e}", observer.id()))?;
+        let content = resp
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!(
+                    "observer '{}' returned no string `content` field for path '{path}'",
+                    observer.id()
+                )
+            })?;
+        let content_type = resp
+            .get("content_type")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        Ok(FetchedContent {
+            content,
+            content_type,
+        })
+    }
+
+    async fn push(&self, function_id: &str, payload: Value) {
+        match self.observer(function_id) {
+            Some(observer) => {
+                if let Err(e) = observer.call(payload).await {
+                    tracing::debug!(observer = %observer.id(), error = %e, "ui-assets observer push failed");
+                }
+            }
+            None => self.inner.push(function_id, payload).await,
+        }
+    }
+
+    async fn unregister_engine_trigger(&self, trigger_id: &str) {
+        // A superseded observer has no engine trigger row: reject it instead,
+        // and the engine drops it.
+        match self.observer(trigger_id) {
+            Some(observer) => observer.reject(
+                CODE_SUPERSEDED,
+                "a newer registration took over this asset path",
+            ),
+            None => self.inner.unregister_engine_trigger(trigger_id).await,
+        }
+    }
+}
+
+/// The handler a `console::on-*` function is registered with: typed by `E`,
+/// the event its observers receive, every invocation is refused with
+/// FORBIDDEN.
+pub fn refuse_observable<E: 'static>(
+    function_id: &'static str,
+) -> impl Fn(E) -> Result<(), Error> + Send + Sync + 'static {
+    move |_event: E| Err(refuse_invocation(function_id))
+}
+
+/// The observe hooks of one `console::on-*` function: each observer is filed
+/// and queued like a trigger registration of the same type.
+struct AssetObserveHandler {
+    function_id: &'static str,
+    source: EventSource,
+    tx: mpsc::UnboundedSender<QueueEvent>,
+    observers: AssetObservers,
+}
+
+impl AssetObserveHandler {
+    fn validate(&self, args: &Value) -> Result<(), String> {
+        let args = if args.is_null() {
+            json!({})
+        } else {
+            args.clone()
+        };
+        let parsed = match self.source {
+            EventSource::Subscription => {
+                serde_json::from_value::<SubscriptionTriggerConfig>(args).map(|_| ())
+            }
+            _ => serde_json::from_value::<AssetTriggerConfig>(args).map(|_| ()),
+        };
+        parsed.map_err(|e| format!("invalid {} args: {e}", self.function_id))
+    }
+
+    /// Files `observer` and, once the engine marks it active, queues its
+    /// registration; a failed registration late-rejects it.
+    fn add(&self, observer: Arc<dyn AssetObserver>, args: Value) -> Result<(), String> {
+        self.validate(&args)?;
+        let key = observer_key(observer.id());
+        lock_observers(&self.observers).insert(key.clone(), observer.clone());
+        let tx = self.tx.clone();
+        let observers = self.observers.clone();
+        let source = self.source;
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + OBSERVER_ACTIVATION_WAIT;
+            while !observer.is_active() {
+                if tokio::time::Instant::now() >= deadline {
+                    lock_observers(&observers).remove(&key);
+                    return;
+                }
+                tokio::time::sleep(OBSERVER_ACTIVATION_POLL).await;
+            }
+            let (ack_tx, ack_rx) = oneshot::channel();
+            let config = TriggerConfig {
+                id: key.clone(),
+                function_id: key.clone(),
+                config: args,
+                metadata: None,
+                namespace: None,
+            };
+            if tx
+                .send(QueueEvent::Register {
+                    source,
+                    config,
+                    ack: ack_tx,
+                })
+                .is_err()
+            {
+                return;
+            }
+            if let Ok(Err(message)) = ack_rx.await {
+                lock_observers(&observers).remove(&key);
+                observer.reject(CODE_REGISTRATION_FAILED, &message);
+            }
+        });
+        Ok(())
+    }
+
+    /// Unregisters the observer's entry like a trigger, then forgets it.
+    async fn remove(&self, id: &str) {
+        let key = observer_key(id);
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let config = TriggerConfig {
+            id: key.clone(),
+            function_id: key.clone(),
+            config: Value::Null,
+            metadata: None,
+            namespace: None,
+        };
+        if self
+            .tx
+            .send(QueueEvent::Unregister {
+                config,
+                ack: ack_tx,
+            })
+            .is_ok()
+        {
+            let _ = ack_rx.await;
+        }
+        lock_observers(&self.observers).remove(&key);
+    }
+}
+
+#[async_trait]
+impl ObserveHandler for AssetObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        self.add(Arc::new(obs.clone()), obs.args_value().clone())
+            .map_err(|message| ObserveRejection::new("INVALID_ARGS", message))?;
+        tracing::info!(function_id = self.function_id, observer = %obs.id(), target = %obs.target(), "ui-assets observer added");
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.remove(obs.id()).await;
+        tracing::info!(function_id = self.function_id, observer = %obs.id(), "ui-assets observer removed");
+    }
+}
+
+/// Registers one owner-delivered `console::on-*` function whose observers
+/// join the `console:*` queue with `source`; args_format is the trigger
+/// config `A`, and `E` the event its observers receive.
+fn register_observable<A: JsonSchema, E: DeserializeOwned + JsonSchema + Send + 'static>(
+    iii: &IIIClient,
+    function_id: &'static str,
+    description: &str,
+    source: EventSource,
+    tx: &mpsc::UnboundedSender<QueueEvent>,
+    observers: &AssetObservers,
+) {
+    iii.register_function(
+        function_id,
+        RegisterFunction::new(refuse_observable::<E>(function_id))
+            .description(description)
+            .observe(
+                Observe::owner()
+                    .args_format::<A>()
+                    .handler(AssetObserveHandler {
+                        function_id,
+                        source,
+                        tx: tx.clone(),
+                        observers: observers.clone(),
+                    }),
+            ),
+    );
+}
+
 pub struct Processor {
     registry: Arc<UiRegistry>,
     bus: Arc<dyn UiBus>,
@@ -765,9 +1096,16 @@ fn trigger_type_of(kind: AssetKind) -> &'static str {
 /// approval-gate/memory ordering convention). Returns the registry the
 /// HTTP routes and `console::ui-manifest` read from, plus the control
 /// handle the configuration module feeds the per-worker toggles through.
+// register_trigger_type is deprecated in 0.25 and still served by 0.24 and
+// 0.25 engines; these types keep serving every console-ui worker.
+#[allow(deprecated)]
 pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     let registry = Arc::new(UiRegistry::default());
-    let bus = Arc::new(SdkBus { iii: iii.clone() });
+    let observers = AssetObservers::default();
+    let bus = Arc::new(ObservingBus::new(
+        Arc::new(SdkBus { iii: iii.clone() }),
+        observers.clone(),
+    ));
     let (tx, rx) = mpsc::unbounded_channel();
     let control = UiControl { tx: tx.clone() };
     let processor = Processor::new(registry.clone(), bus);
@@ -818,10 +1156,51 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
              per-tab handler the console pushes sync/set/delete asset events to.",
             QueueingTriggerHandler {
                 source: EventSource::Subscription,
-                tx,
+                tx: tx.clone(),
             },
         )
         .trigger_request_format::<SubscriptionTriggerConfig>(),
+    );
+    register_observable::<AssetTriggerConfig, AssetContentRequest>(
+        iii,
+        ON_SCRIPT_FN,
+        "An ESM JavaScript asset for the console UI, served by the observer. Observe it with \
+         args { path } (the console:script config); the console calls the observer with \
+         { path } for { content, content_type? }. Re-registering a path overrides it. Only \
+         the console worker drives it: invoking it directly is refused (FORBIDDEN).",
+        EventSource::Script,
+        &tx,
+        &observers,
+    );
+    register_observable::<AssetTriggerConfig, AssetContentRequest>(
+        iii,
+        ON_STYLE_FN,
+        "A CSS asset for the console UI, served by the observer. Same contract as \
+         console::on-script with a .css path (the console:style config). Invoking it \
+         directly is refused (FORBIDDEN).",
+        EventSource::Style,
+        &tx,
+        &observers,
+    );
+    register_observable::<AssetTriggerConfig, AssetContentRequest>(
+        iii,
+        ON_MODULE_FN,
+        "An ESM JavaScript module the console serves but never imports at mount, served by \
+         the observer. Same contract as console::on-script with a .js path (the \
+         console:module config). Invoking it directly is refused (FORBIDDEN).",
+        EventSource::Module,
+        &tx,
+        &observers,
+    );
+    register_observable::<SubscriptionTriggerConfig, AssetPushEvent>(
+        iii,
+        ON_ASSETS_FN,
+        "A console tab's live-update subscription. Observe it with args {} (the \
+         console:assets config); the observer receives the sync / set / delete asset events \
+         console:assets bindings receive. Invoking it directly is refused (FORBIDDEN).",
+        EventSource::Subscription,
+        &tx,
+        &observers,
     );
     tracing::info!(
         trigger_types = ?[SCRIPT_TYPE, STYLE_TYPE, MODULE_TYPE, ASSETS_TYPE],
@@ -1496,5 +1875,259 @@ mod tests {
         assert_eq!(workers[0].worker, "ghost");
         assert!(!workers[0].enabled);
         assert_eq!(workers[0].assets, 0);
+    }
+
+    /// An observer of a `console::on-*` function: answers content requests
+    /// with `content`, records every call and late rejection.
+    struct FakeObserver {
+        id: String,
+        content: Option<String>,
+        calls: StdMutex<Vec<Value>>,
+        rejected: StdMutex<Vec<String>>,
+    }
+
+    impl FakeObserver {
+        fn calls(&self) -> Vec<Value> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn rejected(&self) -> Vec<String> {
+            self.rejected.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl AssetObserver for FakeObserver {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn call(&self, payload: Value) -> Result<Value, String> {
+            self.calls.lock().unwrap().push(payload.clone());
+            if payload.get("event").is_none() {
+                return match &self.content {
+                    Some(content) => Ok(json!({ "content": content })),
+                    None => Err("no content".to_string()),
+                };
+            }
+            Ok(Value::Null)
+        }
+
+        fn reject(&self, code: &str, _message: &str) {
+            self.rejected.lock().unwrap().push(code.to_string());
+        }
+    }
+
+    fn fake_observer(id: &str, content: Option<&str>) -> Arc<FakeObserver> {
+        Arc::new(FakeObserver {
+            id: id.to_string(),
+            content: content.map(str::to_string),
+            calls: StdMutex::new(Vec::new()),
+            rejected: StdMutex::new(Vec::new()),
+        })
+    }
+
+    /// A running queue over `bus` wrapped in the observing bus, as `start`
+    /// wires it.
+    fn observing(
+        bus: Arc<MockBus>,
+    ) -> (
+        mpsc::UnboundedSender<QueueEvent>,
+        AssetObservers,
+        Arc<UiRegistry>,
+    ) {
+        let observers = AssetObservers::default();
+        let registry = Arc::new(UiRegistry::default());
+        let processor = Processor::new(
+            registry.clone(),
+            Arc::new(ObservingBus::new(bus, observers.clone())),
+        );
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(processor.run(rx));
+        (tx, observers, registry)
+    }
+
+    fn observe_hooks(
+        function_id: &'static str,
+        source: EventSource,
+        tx: &mpsc::UnboundedSender<QueueEvent>,
+        observers: &AssetObservers,
+    ) -> AssetObserveHandler {
+        AssetObserveHandler {
+            function_id,
+            source,
+            tx: tx.clone(),
+            observers: observers.clone(),
+        }
+    }
+
+    async fn eventually(what: &str, cond: impl Fn() -> bool) {
+        for _ in 0..300 {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    fn assert_forbidden(function_id: &str, result: Result<(), Error>) {
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, Error::Remote { code, message, .. }
+                if code == "FORBIDDEN" && message.contains(function_id)),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn on_functions_refuse_direct_invocation() {
+        for function_id in [ON_SCRIPT_FN, ON_STYLE_FN, ON_MODULE_FN] {
+            // The very handler each function is registered with.
+            let handler = refuse_observable::<AssetContentRequest>(function_id);
+            for path in ["state/page.js", "state/page.css", ""] {
+                let event = AssetContentRequest {
+                    path: path.to_string(),
+                };
+                assert_forbidden(function_id, handler(event));
+            }
+        }
+        let handler = refuse_observable::<AssetPushEvent>(ON_ASSETS_FN);
+        for push in [
+            json!({ "event": "sync", "assets": [] }),
+            json!({ "event": "set", "path": "state/page.js", "kind": "script", "hash": "ab" }),
+            json!({ "event": "delete", "path": "state/page.css", "kind": "style", "hash": "" }),
+        ] {
+            let event: AssetPushEvent = serde_json::from_value(push).unwrap();
+            assert_forbidden(ON_ASSETS_FN, handler(event));
+        }
+    }
+
+    #[test]
+    fn on_functions_schemas_are_typed() {
+        use crate::observe::schema_check::assert_typed_handler;
+        for function_id in [ON_SCRIPT_FN, ON_STYLE_FN, ON_MODULE_FN] {
+            assert_typed_handler(
+                function_id,
+                &refuse_observable::<AssetContentRequest>(function_id),
+            );
+        }
+        assert_typed_handler(
+            ON_ASSETS_FN,
+            &refuse_observable::<AssetPushEvent>(ON_ASSETS_FN),
+        );
+    }
+
+    #[tokio::test]
+    async fn an_assets_observer_receives_the_pushes_a_binding_receives() {
+        let bus = MockBus::new();
+        bus.set_content("state/page.js", "v1");
+        let (tx, observers, _registry) = observing(bus.clone());
+        let tab_binding = QueueingTriggerHandler {
+            source: EventSource::Subscription,
+            tx: tx.clone(),
+        };
+        tab_binding
+            .register_trigger(subscription("sub1", "iii::console::ui-assets::tab1"))
+            .await
+            .unwrap();
+        let hooks = observe_hooks(ON_ASSETS_FN, EventSource::Subscription, &tx, &observers);
+        let tab = fake_observer("tab-obs", None);
+        hooks.add(tab.clone(), json!({})).unwrap();
+        eventually("the observer's sync", || tab.calls().len() == 1).await;
+
+        let scripts = QueueingTriggerHandler {
+            source: EventSource::Script,
+            tx: tx.clone(),
+        };
+        scripts
+            .register_trigger(trigger("t1", "state::ui-content", "state/page.js"))
+            .await
+            .unwrap();
+        eventually("the observer's set", || tab.calls().len() == 2).await;
+
+        let bound = |bus: &MockBus| -> Vec<Value> {
+            bus.pushes()
+                .into_iter()
+                .filter(|(function_id, _)| function_id == "iii::console::ui-assets::tab1")
+                .map(|(_, payload)| payload)
+                .collect()
+        };
+        let binding_pushes = bound(&bus);
+        assert_eq!(binding_pushes.len(), 2);
+        assert_eq!(binding_pushes[0]["event"], "sync");
+        assert_eq!(binding_pushes[1]["event"], "set");
+        assert_eq!(tab.calls(), binding_pushes);
+        // Every push has the documented console::on-assets event shape.
+        for push in &binding_pushes {
+            serde_json::from_value::<AssetPushEvent>(push.clone()).unwrap();
+        }
+        // Observer pushes never reach the engine bus.
+        assert!(bus
+            .pushes()
+            .iter()
+            .all(|(function_id, _)| !function_id.starts_with("observer:")));
+
+        hooks.remove("tab-obs").await;
+        assert!(lock_observers(&observers).is_empty());
+        scripts
+            .unregister_trigger(trigger("t1", "state::ui-content", "state/page.js"))
+            .await
+            .unwrap();
+        assert_eq!(bound(&bus).len(), 3, "the binding gets the delete");
+        assert_eq!(tab.calls().len(), 2, "a removed observer gets nothing");
+    }
+
+    #[tokio::test]
+    async fn a_script_observer_serves_its_content_like_a_content_function() {
+        let bus = MockBus::new();
+        let (tx, observers, registry) = observing(bus.clone());
+        let hooks = observe_hooks(ON_SCRIPT_FN, EventSource::Script, &tx, &observers);
+        let worker = fake_observer("w1", Some("export default 1"));
+        hooks
+            .add(worker.clone(), json!({ "path": "state/page.js" }))
+            .unwrap();
+        eventually("the observer's asset", || {
+            registry.serve("state/page.js").is_some()
+        })
+        .await;
+        let (content, content_type, _) = registry.serve("state/page.js").unwrap();
+        assert_eq!(content, "export default 1");
+        assert!(content_type.starts_with("text/javascript"));
+        assert_eq!(worker.calls(), vec![json!({ "path": "state/page.js" })]);
+        // The call has the documented console::on-script event shape.
+        serde_json::from_value::<AssetContentRequest>(worker.calls()[0].clone()).unwrap();
+
+        // Args the trigger type would refuse are refused up front.
+        assert!(hooks
+            .add(
+                fake_observer("w2", Some("x")),
+                json!({ "pathh": "state/x.js" })
+            )
+            .is_err());
+        assert!(!lock_observers(&observers).contains_key(&observer_key("w2")));
+
+        // A registration the trigger type would fail late-rejects the observer.
+        let wrong_kind = fake_observer("w3", Some("x"));
+        hooks
+            .add(wrong_kind.clone(), json!({ "path": "state/page.css" }))
+            .unwrap();
+        eventually("the late rejection", || !wrong_kind.rejected().is_empty()).await;
+        assert_eq!(wrong_kind.rejected(), vec![CODE_REGISTRATION_FAILED]);
+        assert!(!lock_observers(&observers).contains_key(&observer_key("w3")));
+
+        // A binding taking over the path supersedes the observer: rejected,
+        // never pruned through the engine.
+        bus.set_content("state/page.js", "v2");
+        QueueingTriggerHandler {
+            source: EventSource::Script,
+            tx: tx.clone(),
+        }
+        .register_trigger(trigger("t9", "state::ui-content", "state/page.js"))
+        .await
+        .unwrap();
+        assert_eq!(worker.rejected(), vec![CODE_SUPERSEDED]);
+        assert!(bus.pruned().is_empty());
+        assert_eq!(registry.serve("state/page.js").unwrap().0, "v2");
     }
 }

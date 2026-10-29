@@ -18,9 +18,11 @@ use std::sync::Arc;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterFunction, RegisterTriggerType};
+use iii_sdk::{IIIClient, Observe, RegisterFunction, RegisterTriggerType};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::observe::refuse_invocation;
 
 use declaration::{read_project, ContainerSource, ProjectDeclaration};
 use entry::{container_object, read_entry, EditInput};
@@ -29,6 +31,21 @@ use registry::{PackageVersion, RegistryWorker};
 use watch::{compose_status, ChangedEvent, ChangedTriggerHandler, ChangedTriggerSpec};
 
 pub const CHANGED_TRIGGER: &str = "console::compose::changed";
+
+/// The observable function next to [`CHANGED_TRIGGER`].
+pub const ON_CHANGED_FN: &str = "console::on-compose-changed";
+
+pub const ON_CHANGED_DESCRIPTION: &str =
+    "Fires when the compose daemon writes state.json or the compose file changes. Observe it \
+     with args {}; every observer receives { kind: state|file, file, namespace, state_dir, \
+     path, captured_at }, the event console::compose::changed bindings receive. Only the \
+     console worker fires it: invoking it directly is refused (FORBIDDEN).";
+
+/// The handler of `console::on-compose-changed`: its events come only from
+/// the compose watch.
+pub fn refuse_on_changed(_event: ChangedEvent) -> Result<(), Error> {
+    Err(refuse_invocation(ON_CHANGED_FN))
+}
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct ProjectInput {
@@ -113,16 +130,31 @@ async fn read_compose_file(iii: &IIIClient, file: Option<&str>) -> Result<(Strin
     Ok((file, source))
 }
 
-/// Register the trigger type, then every `console::compose::*` function.
+/// Register the trigger type and `console::on-compose-changed` over one
+/// registry, then every `console::compose::*` function.
 pub fn register(iii: &Arc<IIIClient>) {
+    let changed = ChangedTriggerHandler::new(iii.clone());
+    // Deprecated in 0.25 and still served by 0.24 and 0.25 engines: kept for
+    // consumers that bind the trigger type.
+    #[allow(deprecated)]
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
             CHANGED_TRIGGER,
             "Fires when the compose daemon writes state.json or the compose file changes. Bind with an empty config.",
-            ChangedTriggerHandler::new(iii.clone()),
+            changed.clone(),
         )
         .trigger_request_format::<ChangedTriggerSpec>()
         .call_request_format::<ChangedEvent>(),
+    );
+    iii.register_function(
+        ON_CHANGED_FN,
+        RegisterFunction::new(refuse_on_changed)
+            .description(ON_CHANGED_DESCRIPTION)
+            .observe(
+                Observe::owner()
+                    .args_format::<ChangedTriggerSpec>()
+                    .handler(changed.observe_handler()),
+            ),
     );
 
     {
@@ -281,4 +313,44 @@ async fn edit(iii: &IIIClient, input: EditInput) -> Result<EditAccepted, Error> 
         .await?;
     serde_json::from_value(accepted)
         .map_err(|error| handler_error("INVALID_COMPOSE_RESPONSE", error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn on_compose_changed_refuses_direct_invocation() {
+        for kind in ["state", "file"] {
+            let event: ChangedEvent = serde_json::from_value(json!({
+                "kind": kind,
+                "file": "/p/iii.yaml",
+                "namespace": "default",
+                "state_dir": "/p/.iii",
+                "path": "/p/.iii/state.json",
+                "captured_at": 1,
+            }))
+            .unwrap();
+            let error = refuse_on_changed(event).unwrap_err();
+            assert!(
+                matches!(&error, Error::Remote { code, message, .. }
+                    if code == "FORBIDDEN" && message.contains(ON_CHANGED_FN)),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn on_compose_changed_schemas_are_typed() {
+        crate::observe::schema_check::assert_typed_handler(ON_CHANGED_FN, &refuse_on_changed);
+    }
+
+    #[test]
+    fn on_compose_changed_sits_next_to_the_trigger_type() {
+        assert_eq!(ON_CHANGED_FN, "console::on-compose-changed");
+        assert_eq!(CHANGED_TRIGGER, "console::compose::changed");
+        assert!(ON_CHANGED_DESCRIPTION.contains(CHANGED_TRIGGER));
+        assert!(ON_CHANGED_DESCRIPTION.contains("FORBIDDEN"));
+    }
 }

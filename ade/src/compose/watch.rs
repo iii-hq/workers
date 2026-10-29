@@ -8,11 +8,13 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::IIIClient;
+use iii_sdk::{IIIClient, ObserveHandler, ObserveRejection, Observer};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex};
+
+use crate::observe::{observer_key, EventObserver};
 
 pub const STATE_FILE: &str = "state.json";
 const COALESCE: Duration = Duration::from_millis(200);
@@ -41,20 +43,26 @@ pub struct ProjectLocation {
     pub state_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, JsonSchema)]
+/// What changed: the daemon's `state.json` or the compose file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChangeKind {
     State,
     File,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+/// The event every `console::compose::changed` binding and every
+/// `console::on-compose-changed` observer receives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChangedEvent {
     pub kind: ChangeKind,
+    /// The compose file of the project.
     pub file: String,
     pub namespace: String,
     pub state_dir: String,
+    /// The file that changed.
     pub path: String,
+    /// Epoch milliseconds of the change.
     pub captured_at: u64,
 }
 
@@ -68,7 +76,15 @@ struct Binding {
     namespace: Option<String>,
 }
 
-type Bindings = Arc<RwLock<HashMap<String, Binding>>>;
+/// One entry of the trigger type's registry: a `console::compose::changed`
+/// binding or a `console::on-compose-changed` observer.
+#[derive(Clone)]
+enum Sink {
+    Binding(Binding),
+    Observer(Arc<dyn EventObserver>),
+}
+
+type Bindings = Arc<RwLock<HashMap<String, Sink>>>;
 
 pub async fn compose_status(iii: &IIIClient, file: Option<&str>) -> Result<ComposeStatus, Error> {
     let value = iii
@@ -168,6 +184,15 @@ impl ChangedTriggerHandler {
     pub fn watcher(&self) -> StateWatcher {
         self.watcher.clone()
     }
+
+    /// The hooks of `console::on-compose-changed`: its observers join this
+    /// trigger type's registry and watch.
+    pub fn observe_handler(&self) -> OnChangedHandler {
+        OnChangedHandler {
+            bindings: self.bindings.clone(),
+            watcher: self.watcher.clone(),
+        }
+    }
 }
 
 #[async_trait]
@@ -183,10 +208,10 @@ impl TriggerHandler for ChangedTriggerHandler {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(
                 config.id,
-                Binding {
+                Sink::Binding(Binding {
                     function_id: config.function_id,
                     namespace: config.namespace,
-                },
+                }),
             );
         if self.watcher.ensure().await?.is_none() {
             tracing::warn!("compose daemon not reachable yet; watching starts on the next binding");
@@ -200,6 +225,53 @@ impl TriggerHandler for ChangedTriggerHandler {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&config.id);
         Ok(())
+    }
+}
+
+/// Observers of `console::on-compose-changed`, filed in the registry the
+/// `console::compose::changed` bindings live in: every change reaches both.
+#[derive(Clone)]
+pub struct OnChangedHandler {
+    bindings: Bindings,
+    watcher: StateWatcher,
+}
+
+impl OnChangedHandler {
+    async fn add(&self, observer: Arc<dyn EventObserver>) -> Result<(), Error> {
+        let id = observer.id().to_string();
+        self.bindings
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(observer_key(&id), Sink::Observer(observer));
+        if self.watcher.ensure().await?.is_none() {
+            tracing::warn!(
+                "compose daemon not reachable yet; watching starts on the next observer"
+            );
+        }
+        Ok(())
+    }
+
+    fn remove(&self, id: &str) {
+        self.bindings
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&observer_key(id));
+    }
+}
+
+#[async_trait]
+impl ObserveHandler for OnChangedHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        // Checked by the engine against args_format.
+        let _: ChangedTriggerSpec = obs.args()?;
+        self.add(Arc::new(obs.clone())).await?;
+        tracing::info!(observer = %obs.id(), target = %obs.target(), "console::on-compose-changed observer added");
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.remove(obs.id());
+        tracing::info!(observer = %obs.id(), "console::on-compose-changed observer removed");
     }
 }
 
@@ -363,32 +435,46 @@ fn emit_change(
         path,
         captured_at,
     };
-    let bindings: Vec<Binding> = bindings
+    let sinks: Vec<Sink> = bindings
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .values()
         .cloned()
         .collect();
-    for binding in bindings {
+    let event = serde_json::to_value(payload).expect("ChangedEvent serializes");
+    for sink in sinks {
         let iii = iii.clone();
-        let payload = payload.clone();
+        let event = event.clone();
         tokio::spawn(async move {
-            let request = TriggerRequest {
-                function_id: binding.function_id.clone(),
-                payload: serde_json::to_value(payload).expect("ChangedEvent serializes"),
-                action: None,
-                timeout_ms: Some(10_000),
-            };
-            let request: TriggerRequestWithMetadata = match binding.namespace {
-                Some(namespace) => request.namespace(namespace),
-                None => request.into(),
-            };
-            if let Err(error) = iii.trigger(request).await {
-                tracing::warn!(
-                    function_id = %binding.function_id,
-                    error = %error,
-                    "compose change subscriber rejected an event"
-                );
+            match sink {
+                Sink::Binding(binding) => {
+                    let request = TriggerRequest {
+                        function_id: binding.function_id.clone(),
+                        payload: event,
+                        action: None,
+                        timeout_ms: Some(10_000),
+                    };
+                    let request: TriggerRequestWithMetadata = match binding.namespace {
+                        Some(namespace) => request.namespace(namespace),
+                        None => request.into(),
+                    };
+                    if let Err(error) = iii.trigger(request).await {
+                        tracing::warn!(
+                            function_id = %binding.function_id,
+                            error = %error,
+                            "compose change subscriber rejected an event"
+                        );
+                    }
+                }
+                Sink::Observer(observer) => {
+                    if let Err(error) = observer.deliver(event).await {
+                        tracing::warn!(
+                            observer = %observer.id(),
+                            error = %error,
+                            "compose change observer rejected an event"
+                        );
+                    }
+                }
             }
         });
     }
@@ -487,5 +573,106 @@ mod tests {
             changes_for_event(&location, &state_dir, &resolved),
             [state_change]
         );
+    }
+
+    /// A `console::on-compose-changed` observer that records what it is handed.
+    struct Recorder {
+        id: String,
+        events: mpsc::UnboundedSender<serde_json::Value>,
+    }
+
+    #[async_trait]
+    impl EventObserver for Recorder {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn deliver(&self, event: serde_json::Value) -> Result<(), String> {
+            self.events.send(event).map_err(|error| error.to_string())
+        }
+    }
+
+    fn offline_client() -> Arc<IIIClient> {
+        // Never connects: the binding's trigger fails in its own task, the
+        // observer's delivery is in-process.
+        Arc::new(iii_sdk::register_worker(
+            "ws://127.0.0.1:9",
+            iii_sdk::InitOptions::default(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn an_observer_receives_the_event_a_binding_receives() {
+        let iii = offline_client();
+        let (events, mut received) = mpsc::unbounded_channel();
+        let bindings: Bindings = Arc::new(RwLock::new(HashMap::new()));
+        bindings.write().unwrap().insert(
+            "binding-1".to_string(),
+            Sink::Binding(Binding {
+                function_id: "iii::console::compose_changed::binding-1".to_string(),
+                namespace: None,
+            }),
+        );
+        bindings.write().unwrap().insert(
+            observer_key("obs-1"),
+            Sink::Observer(Arc::new(Recorder {
+                id: "obs-1".to_string(),
+                events,
+            })),
+        );
+
+        emit_change(
+            &iii,
+            &bindings,
+            &location(),
+            ChangeKind::State,
+            STATE_FILE.to_string(),
+        );
+
+        let event = tokio::time::timeout(Duration::from_secs(5), received.recv())
+            .await
+            .expect("the observer is handed the change")
+            .expect("one event");
+        let captured_at = event["captured_at"].as_u64().expect("captured_at");
+        // The ChangedEvent a console::compose::changed binding is triggered with.
+        assert_eq!(
+            event,
+            serde_json::to_value(ChangedEvent {
+                kind: ChangeKind::State,
+                file: "/proj/worker-compose.yaml".to_string(),
+                namespace: "app".to_string(),
+                state_dir: "/state/app".to_string(),
+                path: STATE_FILE.to_string(),
+                captured_at,
+            })
+            .unwrap()
+        );
+        assert!(received.try_recv().is_err(), "exactly one event");
+    }
+
+    #[tokio::test]
+    async fn removing_an_observer_keeps_the_bindings() {
+        let handler = ChangedTriggerHandler::new(offline_client());
+        let (events, _received) = mpsc::unbounded_channel();
+        handler.bindings.write().unwrap().insert(
+            "binding-1".to_string(),
+            Sink::Binding(Binding {
+                function_id: "iii::console::compose_changed::binding-1".to_string(),
+                namespace: None,
+            }),
+        );
+        handler.bindings.write().unwrap().insert(
+            observer_key("obs-1"),
+            Sink::Observer(Arc::new(Recorder {
+                id: "obs-1".to_string(),
+                events,
+            })),
+        );
+
+        handler.observe_handler().remove("obs-1");
+
+        let bindings = handler.bindings.read().unwrap();
+        assert!(!bindings.contains_key(&observer_key("obs-1")));
+        assert!(bindings.contains_key("binding-1"));
     }
 }
