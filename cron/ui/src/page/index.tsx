@@ -6,6 +6,7 @@ import {
   IconButton,
   Input,
   List,
+  type ObserveSource,
   PageBody,
   PageHeader,
   PageMain,
@@ -39,12 +40,13 @@ import {
   type FunctionSummary,
   listAllSchedules,
   listFunctions,
-  listSystemCronBindings,
+  listSystemCronObservers,
+  ON_TICK_FN,
   removeSessionCronTask,
   resolveModel,
   SCHEDULE_SESSION_METADATA,
   type SessionCronTask,
-  type SystemCronBinding,
+  type SystemCronObserver,
   sendToSession,
 } from '../lib/api'
 import { nextCronRun } from '../lib/cron'
@@ -53,13 +55,13 @@ import {
   manualSchedulePrompt,
   replaceSchedulePrompt,
 } from '../lib/prompts'
-import { BindingDetail, TaskDetail } from './detail'
+import { ObserverDetail, TaskDetail } from './detail'
 import { ManualTaskForm, type ManualTaskSpec } from './manual-form'
 import { parseCronPanelContext } from './panel-context'
 import {
-  BindingListRow,
-  BindingRow,
   cadenceLabel,
+  ObserverListRow,
+  ObserverRow,
   TaskListRow,
   TaskRow,
 } from './rows'
@@ -67,40 +69,38 @@ import {
   byNextRun,
   countByStatus,
   type Filter,
-  matchesBindingQuery,
   matchesFilter,
+  matchesObserverQuery,
   matchesQuery,
 } from './status'
 
-type View = 'tasks' | 'bindings'
+type View = 'tasks' | 'observers'
 type Feedback = { tone: 'success' | 'warn' | 'alert'; message: string }
 type Inspector =
   | { kind: 'new' }
   | { kind: 'task'; task: SessionCronTask }
-  | { kind: 'binding'; binding: SystemCronBinding }
+  | { kind: 'observer'; observer: SystemCronObserver }
   | null
 
 let mountSequence = 0
 
-/** Bind an engine trigger to a browser-local handler, following the console's
-    own convention: `on()` registers under `<fn>::<browserId>`, so the trigger
-    must target that id, and the trigger is disposed before the handler. */
+/** Observe a function with a browser-local handler, following the console's
+    own convention: `on()` registers under `<fn>::<browserId>`, so the observer
+    must target that id, and the observer is disposed before the handler. */
 function subscribe<T>(
   host: Host,
-  functionId: string,
-  type: string,
-  config: Record<string, unknown>,
+  handlerId: string,
+  source: ObserveSource,
   onEvent: (event: T) => void,
 ): () => void {
-  const offHandler = host.iii.on<T>(functionId, onEvent)
-  const offTrigger = host.iii.registerTrigger({
-    type,
-    function_id: `${functionId}::${host.iii.browserId}`,
-    config,
-  })
+  const offHandler = host.iii.on<T>(handlerId, onEvent)
+  const offObserver = host.iii.observe(
+    source,
+    `${handlerId}::${host.iii.browserId}`,
+  )
   return () => {
     try {
-      offTrigger()
+      offObserver()
     } finally {
       offHandler()
     }
@@ -117,12 +117,12 @@ export function CronSchedulesPage({
 }: { host: Host } & Partial<PageRenderProps>) {
   const [view, setView] = useState<View>('tasks')
   const [tasks, setTasks] = useState<SessionCronTask[]>([])
-  const [bindings, setBindings] = useState<SystemCronBinding[]>([])
+  const [observers, setObservers] = useState<SystemCronObserver[]>([])
   const [functions, setFunctions] = useState<FunctionSummary[]>([])
   const [tasksLoading, setTasksLoading] = useState(false)
-  const [bindingsLoading, setBindingsLoading] = useState(false)
+  const [observersLoading, setObserversLoading] = useState(false)
   const [tasksError, setTasksError] = useState<string | null>(null)
-  const [bindingsError, setBindingsError] = useState<string | null>(null)
+  const [observersError, setObserversError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [composer, setComposer] = useState('')
   const [sending, setSending] = useState(false)
@@ -135,15 +135,15 @@ export function CronSchedulesPage({
   const [now, setNow] = useState(() => new Date())
   /** The schedule session a send is waiting on. `harness::send` resolves only
       when the whole turn is done, so following its answer would leave the
-      operator on an unrelated chat for the length of a registration.
-      `session::created` fires as soon as the session exists, which is both
+      operator on an unrelated chat for the length of a turn.
+      `session::on-created` is called as soon as the session exists, which is both
       the moment worth following and the last moment before the turn's first
       call meets the approval gate. */
   const awaitedSession = useRef<{ title: string; since: number } | null>(null)
 
   const instanceId = useRef(++mountSequence)
   const tasksRequest = useRef(0)
-  const bindingsRequest = useRef(0)
+  const observersRequest = useRef(0)
   const sendRequest = useRef(0)
   const inspectorRef = useRef<HTMLElement | null>(null)
   const lastFocus = useRef<HTMLElement | null>(null)
@@ -155,7 +155,7 @@ export function CronSchedulesPage({
       taken a turn inherits no model — so a send has to name one. The operator's
       last pick is the only defensible source: choosing off the catalogue looks
       helpful until the guess lands on a model that cannot emit a function call
-      and the whole turn is spent failing to register anything. */
+      and the whole turn is spent failing to schedule anything. */
   const model = resolveModel(host, conversationId)
 
   const requireModel = (): string | undefined => {
@@ -203,37 +203,37 @@ export function CronSchedulesPage({
     }
   }, [host, conversationId])
 
-  const refreshBindings = useCallback(async () => {
-    const request = ++bindingsRequest.current
-    setBindingsLoading(true)
-    const [bindingsResult, functionsResult] = await Promise.allSettled([
-      listSystemCronBindings(host),
+  const refreshObservers = useCallback(async () => {
+    const request = ++observersRequest.current
+    setObserversLoading(true)
+    const [observersResult, functionsResult] = await Promise.allSettled([
+      listSystemCronObservers(host),
       listFunctions(host),
     ])
-    if (request !== bindingsRequest.current) return
-    if (bindingsResult.status === 'fulfilled') {
-      setBindings(bindingsResult.value)
-      setBindingsError(null)
+    if (request !== observersRequest.current) return
+    if (observersResult.status === 'fulfilled') {
+      setObservers(observersResult.value)
+      setObserversError(null)
     } else {
-      setBindingsError(errorMessage(bindingsResult.reason))
+      setObserversError(errorMessage(observersResult.reason))
     }
     if (functionsResult.status === 'fulfilled')
       setFunctions(functionsResult.value)
-    setBindingsLoading(false)
+    setObserversLoading(false)
   }, [host])
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshTasks(), refreshBindings()])
+    await Promise.all([refreshTasks(), refreshObservers()])
     setNow(new Date())
-  }, [refreshTasks, refreshBindings])
+  }, [refreshTasks, refreshObservers])
 
   useEffect(() => {
     void refreshTasks()
   }, [refreshTasks])
 
   useEffect(() => {
-    void refreshBindings()
-  }, [refreshBindings])
+    void refreshObservers()
+  }, [refreshObservers])
 
   useEffect(() => {
     // Relative labels move at minute granularity, and a hidden tab moves
@@ -252,9 +252,9 @@ export function CronSchedulesPage({
 
   const inspectorIdentity =
     inspector?.kind === 'task'
-      ? `task:${inspector.task.subscriptionId}`
-      : inspector?.kind === 'binding'
-        ? `binding:${inspector.binding.id}`
+      ? `task:${inspector.task.observerId}`
+      : inspector?.kind === 'observer'
+        ? `observer:${inspector.observer.id}`
         : (inspector?.kind ?? '')
 
   useEffect(() => {
@@ -273,33 +273,40 @@ export function CronSchedulesPage({
     setInspector((current) => {
       if (current?.kind === 'task') {
         const next = tasks.find(
-          (task) => task.subscriptionId === current.task.subscriptionId,
+          (task) => task.observerId === current.task.observerId,
         )
         if (next)
           return next === current.task ? current : { kind: 'task', task: next }
         return tasksLoading ? current : null
       }
-      if (current?.kind === 'binding') {
-        const next = bindings.find(
-          (binding) => binding.id === current.binding.id,
+      if (current?.kind === 'observer') {
+        const next = observers.find(
+          (observer) => observer.id === current.observer.id,
         )
         if (next)
-          return next === current.binding
+          return next === current.observer
             ? current
-            : { kind: 'binding', binding: next }
-        return bindingsLoading ? current : null
+            : { kind: 'observer', observer: next }
+        return observersLoading ? current : null
       }
       return current
     })
-  }, [tasks, bindings, tasksLoading, bindingsLoading])
+  }, [tasks, observers, tasksLoading, observersLoading])
 
   useEffect(
     () =>
       subscribe<{ session_id?: string; title?: string; created_at?: number }>(
         host,
         `iii::cron_ui_session_created_${instanceId.current}`,
-        'session::created',
-        { metadata: SCHEDULE_SESSION_METADATA },
+        {
+          function_id: 'session::on-created',
+          filters: Object.fromEntries(
+            Object.entries(SCHEDULE_SESSION_METADATA).map(([key, value]) => [
+              `input.session_metadata.${key}`,
+              { $eq: value },
+            ]),
+          ),
+        },
         (event) => {
           const awaited = awaitedSession.current
           if (!awaited || !event?.session_id) return
@@ -314,14 +321,13 @@ export function CronSchedulesPage({
   )
 
   useEffect(() => {
-    // A schedule can be registered from any session, so this listens to all of
+    // A schedule can be created from any session, so this listens to all of
     // them; the doorbell rings twice per change, hence the trailing coalesce.
     let timer = 0
     const off = subscribe(
       host,
-      `iii::cron_ui_triggers_changed_${instanceId.current}`,
-      'harness::triggers-changed',
-      {},
+      `iii::cron_ui_observers_changed_${instanceId.current}`,
+      { function_id: 'harness::on-observers-changed' },
       () => {
         window.clearTimeout(timer)
         timer = window.setTimeout(() => void refreshTasks(), 250)
@@ -344,7 +350,7 @@ export function CronSchedulesPage({
       const model = requireModel()
       if (!model) return
       const instruction = replacing
-        ? replaceSchedulePrompt(replacing.subscriptionId, taskRequest)
+        ? replaceSchedulePrompt(replacing.observerId, taskRequest)
         : createSchedulePrompt(taskRequest)
 
       if (replacing) {
@@ -358,8 +364,8 @@ export function CronSchedulesPage({
           instruction,
           model,
         })
-        // Usually the subscription got there first; this covers a console too
-        // old to deliver session::created.
+        // Usually the observer got there first; this covers a session-manager
+        // that does not host session::on-created.
         awaitedSession.current = null
         openConversation(sessionId)
       }
@@ -369,8 +375,8 @@ export function CronSchedulesPage({
       setFeedback({
         tone: 'success',
         message: replacing
-          ? 'Safe replacement request sent. The old task is retired only after the new registration succeeds.'
-          : 'Request sent to Harness. This list updates when the task is registered.',
+          ? 'Safe replacement request sent. The old task is retired only after the new one is in place.'
+          : 'Request sent to Harness. This list updates when the task is created.',
       })
     } catch (error) {
       if (request !== sendRequest.current) return
@@ -385,16 +391,16 @@ export function CronSchedulesPage({
     setSending(true)
     setFeedback(null)
     try {
-      const registration: Record<string, unknown> = {
-        trigger_type: 'cron',
-        config: { expression: spec.expression },
+      const observation: Record<string, unknown> = {
+        function_id: ON_TICK_FN,
+        args: { expression: spec.expression },
         label: spec.label,
         once: false,
       }
-      if (spec.maxFires) registration.lifecycle = { max_fires: spec.maxFires }
+      if (spec.maxFires) observation.lifecycle = { max_fires: spec.maxFires }
       if (spec.delivery === 'call') {
-        registration.function_id = spec.functionId
-        registration.metadata = {
+        observation.target = {
+          function_id: spec.functionId,
           payload: spec.payload,
           event_into: spec.eventInto || '/cron_event',
         }
@@ -404,7 +410,7 @@ export function CronSchedulesPage({
       awaitedSession.current = { title: spec.label, since: Date.now() }
       const sessionId = await createSchedule(host, {
         title: spec.label,
-        instruction: manualSchedulePrompt(registration),
+        instruction: manualSchedulePrompt(observation),
         model,
       })
       awaitedSession.current = null
@@ -414,7 +420,7 @@ export function CronSchedulesPage({
       setFeedback({
         tone: 'success',
         message:
-          'Registration request sent. Harness will add the task after the active turn completes the call.',
+          'Schedule request sent. Harness will add the task after the active turn completes the call.',
       })
     } catch (error) {
       if (request !== sendRequest.current) return
@@ -440,7 +446,7 @@ export function CronSchedulesPage({
     setFeedback({
       tone: 'warn',
       message:
-        'Describe the complete replacement. Harness will retire the old task only after the new registration succeeds.',
+        'Describe the complete replacement. Harness will retire the old task only after the new one is in place.',
     })
     window.requestAnimationFrame(() => composerRef.current?.focus())
   }
@@ -450,7 +456,7 @@ export function CronSchedulesPage({
       const removed = await removeSessionCronTask(
         host,
         task.sessionId,
-        task.subscriptionId,
+        task.observerId,
       )
       setFeedback({
         tone: removed ? 'success' : 'warn',
@@ -475,7 +481,7 @@ export function CronSchedulesPage({
   const copyId = async (value: string) => {
     setFeedback(
       (await copyText(value))
-        ? { tone: 'success', message: 'Subscription id copied.' }
+        ? { tone: 'success', message: 'Observer id copied.' }
         : { tone: 'warn', message: 'Could not reach the clipboard.' },
     )
   }
@@ -511,7 +517,7 @@ export function CronSchedulesPage({
     }
   }
 
-  // A context from the palette source (a schedule by subscription id) or the
+  // A context from the palette source (a schedule by observer id) or the
   // setup-time "New schedule…" command (`{ action: 'new' }`). A schedule is
   // left unapplied until it shows up in `tasks` — the page can mount before
   // the first fetch resolves.
@@ -530,7 +536,7 @@ export function CronSchedulesPage({
       openInspector({ kind: 'new' })
       return
     }
-    const task = tasks.find((t) => t.subscriptionId === context.subscriptionId)
+    const task = tasks.find((t) => t.observerId === context.observerId)
     if (!task) return // wait for the list to load
     appliedContextRef.current = panelContext.id
     setView('tasks')
@@ -541,7 +547,7 @@ export function CronSchedulesPage({
   const orderedTasks = useMemo(() => {
     const runs = new Map(
       tasks.map((task) => [
-        task.subscriptionId,
+        task.observerId,
         nextCronRun(task.expression, now)?.getTime() ??
           Number.POSITIVE_INFINITY,
       ]),
@@ -553,18 +559,18 @@ export function CronSchedulesPage({
       )
       .sort(
         byNextRun(
-          (task) => runs.get(task.subscriptionId) ?? Number.POSITIVE_INFINITY,
+          (task) => runs.get(task.observerId) ?? Number.POSITIVE_INFINITY,
         ),
       )
   }, [tasks, statusFilter, query, now])
 
-  const orderedBindings = useMemo(
-    () => bindings.filter((binding) => matchesBindingQuery(binding, query)),
-    [bindings, query],
+  const orderedObservers = useMemo(
+    () => observers.filter((observer) => matchesObserverQuery(observer, query)),
+    [observers, query],
   )
 
-  const loading = view === 'tasks' ? tasksLoading : bindingsLoading
-  const error = view === 'tasks' ? tasksError : bindingsError
+  const loading = view === 'tasks' ? tasksLoading : observersLoading
+  const error = view === 'tasks' ? tasksError : observersError
   const showDetail = inspector !== null
   const detailOnly = narrow && showDetail
 
@@ -595,14 +601,14 @@ export function CronSchedulesPage({
         {
           id: 'search',
           title: 'Search schedules',
-          detail: 'Filter schedules and system bindings by name',
+          detail: 'Filter schedules and system observers by name',
           keywords: ['filter', 'find'],
           run: () => searchRef.current?.focus(),
         },
         {
           id: 'refresh',
           title: 'Refresh',
-          detail: 'Reload schedules and system bindings',
+          detail: 'Reload schedules and system observers',
           keywords: ['reload'],
           run: () => void refreshAll(),
         },
@@ -620,16 +626,16 @@ export function CronSchedulesPage({
       />
     ) : inspector.kind === 'task' ? (
       <TaskDetail
-        key={inspector.task.subscriptionId}
+        key={inspector.task.observerId}
         task={inspector.task}
         now={now}
         onReplace={() => requestTaskChange(inspector.task)}
         onRemove={() => void removeTask(inspector.task)}
-        onCopyId={() => void copyId(inspector.task.subscriptionId)}
+        onCopyId={() => void copyId(inspector.task.observerId)}
         onOpenConversation={() => openConversation(inspector.task.sessionId)}
       />
     ) : (
-      <BindingDetail binding={inspector.binding} now={now} />
+      <ObserverDetail observer={inspector.observer} now={now} />
     )
 
   const detailScroll = (
@@ -649,7 +655,7 @@ export function CronSchedulesPage({
       <PageHeader
         icon={<Clock />}
         title="Cron"
-        description="Schedules and system bindings."
+        description="Schedules and system observers."
         actions={
           <div className="cron-ui-header-actions">
             <SearchField
@@ -665,7 +671,7 @@ export function CronSchedulesPage({
             <IconButton
               label="Refresh schedules"
               onClick={() => void refreshAll()}
-              disabled={tasksLoading || bindingsLoading}
+              disabled={tasksLoading || observersLoading}
             >
               <RefreshCw
                 className={
@@ -767,9 +773,9 @@ export function CronSchedulesPage({
                       Schedules
                       <span className="cron-ui-count">{tasks.length}</span>
                     </TabsTrigger>
-                    <TabsTrigger value="bindings">
-                      System bindings
-                      <span className="cron-ui-count">{bindings.length}</span>
+                    <TabsTrigger value="observers">
+                      System observers
+                      <span className="cron-ui-count">{observers.length}</span>
                     </TabsTrigger>
                   </TabsList>
                   {view === 'tasks' ? (
@@ -846,13 +852,12 @@ export function CronSchedulesPage({
                     <List>
                       {orderedTasks.map((task) => (
                         <TaskListRow
-                          key={task.subscriptionId}
+                          key={task.observerId}
                           task={task}
                           now={now}
                           selected={
                             inspector?.kind === 'task' &&
-                            inspector.task.subscriptionId ===
-                              task.subscriptionId
+                            inspector.task.observerId === task.observerId
                           }
                           onOpen={() => openInspector({ kind: 'task', task })}
                         />
@@ -880,22 +885,19 @@ export function CronSchedulesPage({
                           <TableBody>
                             {orderedTasks.map((task) => (
                               <TaskRow
-                                key={task.subscriptionId}
+                                key={task.observerId}
                                 task={task}
                                 now={now}
                                 selected={
                                   inspector?.kind === 'task' &&
-                                  inspector.task.subscriptionId ===
-                                    task.subscriptionId
+                                  inspector.task.observerId === task.observerId
                                 }
                                 onOpen={() =>
                                   openInspector({ kind: 'task', task })
                                 }
                                 onReplace={() => requestTaskChange(task)}
                                 onRemove={() => void removeTask(task)}
-                                onCopyId={() =>
-                                  void copyId(task.subscriptionId)
-                                }
+                                onCopyId={() => void copyId(task.observerId)}
                                 onOpenConversation={() =>
                                   openConversation(task.sessionId)
                                 }
@@ -908,33 +910,33 @@ export function CronSchedulesPage({
                   )}
                 </TabsContent>
 
-                <TabsContent value="bindings" className="cron-ui-tab-content">
-                  {bindingsError ? (
+                <TabsContent value="observers" className="cron-ui-tab-content">
+                  {observersError ? (
                     <StatusPanel
                       variant="alert"
-                      headline="Could not read system bindings"
-                      detail={bindingsError}
+                      headline="Could not read system observers"
+                      detail={observersError}
                     />
                   ) : null}
-                  {orderedBindings.length === 0 ? (
+                  {orderedObservers.length === 0 ? (
                     <EmptyState
                       icon={Clock}
-                      title="No system bindings"
+                      title="No system observers"
                       description="Workers that schedule their own functions appear here."
                     />
                   ) : narrow ? (
                     <List>
-                      {orderedBindings.map((binding) => (
-                        <BindingListRow
-                          key={binding.id}
-                          binding={binding}
+                      {orderedObservers.map((observer) => (
+                        <ObserverListRow
+                          key={observer.id}
+                          observer={observer}
                           now={now}
                           selected={
-                            inspector?.kind === 'binding' &&
-                            inspector.binding.id === binding.id
+                            inspector?.kind === 'observer' &&
+                            inspector.observer.id === observer.id
                           }
                           onOpen={() =>
-                            openInspector({ kind: 'binding', binding })
+                            openInspector({ kind: 'observer', observer })
                           }
                         />
                       ))}
@@ -959,17 +961,17 @@ export function CronSchedulesPage({
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {orderedBindings.map((binding) => (
-                              <BindingRow
-                                key={binding.id}
-                                binding={binding}
+                            {orderedObservers.map((observer) => (
+                              <ObserverRow
+                                key={observer.id}
+                                observer={observer}
                                 now={now}
                                 selected={
-                                  inspector?.kind === 'binding' &&
-                                  inspector.binding.id === binding.id
+                                  inspector?.kind === 'observer' &&
+                                  inspector.observer.id === observer.id
                                 }
                                 onOpen={() =>
-                                  openInspector({ kind: 'binding', binding })
+                                  openInspector({ kind: 'observer', observer })
                                 }
                               />
                             ))}
@@ -991,7 +993,7 @@ export function CronSchedulesPage({
                   ? 'New schedule'
                   : inspector?.kind === 'task'
                     ? 'Schedule'
-                    : 'System binding'}
+                    : 'System observer'}
               </Eyebrow>
               <IconButton label="Close details" onClick={closeInspector}>
                 <X className={uiClasses.icon} aria-hidden />
