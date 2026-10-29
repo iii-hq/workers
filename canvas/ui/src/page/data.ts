@@ -1,6 +1,6 @@
 /**
  * Thin typed wrappers over the worker's own `canvas::*` functions — the page
- * acts by invoking them through the tab's bus client (`host.iii.trigger`).
+ * acts by invoking them through the tab's bus client (`host.iii.call`).
  * Results may arrive inside the harness content/details envelope when a
  * session relays them; `unwrapEnvelope` normalizes both shapes.
  */
@@ -19,7 +19,7 @@ async function call<T>(
   functionId: string,
   payload: Record<string, unknown>,
 ): Promise<T> {
-  return unwrapEnvelope(await host.iii.trigger(functionId, payload)) as T
+  return unwrapEnvelope(await host.iii.call(functionId, payload)) as T
 }
 
 export function listCanvases(host: Host): Promise<CanvasListResponse> {
