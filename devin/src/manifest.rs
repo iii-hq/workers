@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-const DESCRIPTION: &str = "Devin CLI + API as an iii worker — devin::run drives the local devin CLI and delivers AgentEvent frames on the devin::agent-event trigger type (raw stdout on devin::raw-event); devin::session::* wrap the Devin cloud session lifecycle and devin::api reaches any v3 endpoint.";
+const DESCRIPTION: &str = "Devin CLI + API as an iii worker — devin::run drives the local devin CLI and delivers AgentEvent frames on the devin::agent-event trigger type (raw stdout on devin::raw-event), also observable on iii 0.25 as devin::on-agent-event / devin::on-raw-event; devin::session::* wrap the Devin cloud session lifecycle and devin::api reaches any v3 endpoint.";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {

@@ -34,8 +34,9 @@ cli_extra_args: ["--permission-mode", "dangerous"]
 
 # Event feeds are fixed trigger types, not configurable streams: bind
 # `devin::agent-event` (terminal AgentEvent frames) or `devin::raw-event`
-# (verbatim CLI stdout lines) with { session_id }. The retired events_stream /
-# raw_events_stream keys are ignored if still present.
+# (verbatim CLI stdout lines) with { session_id }, or on iii 0.25 observe
+# devin::on-agent-event / devin::on-raw-event with the same args. The retired
+# events_stream / raw_events_stream keys are ignored if still present.
 
 # Prepend the iii runtime context to a devin::run prompt so the agent discovers
 # engine functions through the iii CLI, the same as the grok and codex workers.

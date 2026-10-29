@@ -133,6 +133,15 @@ fn schema_manifest_and_seed_carry_no_stream_keys() {
         .as_str()
         .unwrap()
         .contains("agent::events"));
+    let description = manifest["description"].as_str().unwrap();
+    for name in [
+        "devin::agent-event",
+        "devin::raw-event",
+        "devin::on-agent-event",
+        "devin::on-raw-event",
+    ] {
+        assert!(description.contains(name), "description omits {name}");
+    }
     for file in ["config.yaml", "iii.worker.yaml"] {
         let path = format!("{}/{file}", env!("CARGO_MANIFEST_DIR"));
         let text = std::fs::read_to_string(&path).unwrap();

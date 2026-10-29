@@ -94,7 +94,7 @@ The worker follows the same base surface as the grok, codex, claude-code, and op
 | Function | Surface | Purpose |
 | --- | --- | --- |
 | `devin::run` | CLI | Run one local CLI turn, wait, return the result |
-| `devin::start` | CLI | Start a turn and return immediately; progress on the streams |
+| `devin::start` | CLI | Start a turn and return immediately; progress on the event feeds |
 | `devin::stop` | CLI | Interrupt a live CLI run |
 | `devin::status` | CLI | A recorded run's state: live flag, status, linked Devin session id |
 | `devin::sessions::list` | CLI | Every run this worker has recorded (each linked to its Devin session) |
@@ -135,7 +135,7 @@ Or ask it to map the whole engine by capability area, and it groups what it find
 
 `devin::run` records every turn as a `session-manager` session under its `session_id`, writing the same records a harness turn does: `session::ensure` (title from the prompt and `{ agent: "devin" }` metadata; a run with `parent_session_id` carries it and nests under that parent, a run without one is created as an `automation` session rather than a human chat), the user prompt, an assistant entry streamed with the CLI output as it prints, a `custom` `error` entry when the run fails, and the session status (`working`, then `done`, `done` + `stopped` after `devin::stop`, or `error` with the cause). The run therefore appears in the console's session list and transcript like a harness session, and can be replayed after it ends with `session::messages`. The `--print` CLI output is plain text, so tool calls appear inside that text, not as separate function rows.
 
-It also delivers every stdout line verbatim on the `devin::raw-event` trigger type and the terminal AgentEvent frames on `devin::agent-event` (see Event feeds). Recording is on by default and switched off with `session_recording: false` (config, or per turn). Both are best-effort: when `session-manager` is not installed the worker logs that once, skips those writes, re-checks once a minute, and the run itself is unaffected; a feed with no binding delivers nothing, and a failing consumer never fails the run. The cloud functions return their JSON directly and do not stream; poll `devin::session::get` for progress, or bind a `cron` trigger to poll on a schedule instead of looping.
+It also delivers every stdout line verbatim on the `devin::raw-event` trigger type and the terminal AgentEvent frames on `devin::agent-event` (see Event feeds). Recording is on by default and switched off with `session_recording: false` (config, or per turn). Both are best-effort: when `session-manager` is not installed the worker logs that once, skips those writes, re-checks once a minute, and the run itself is unaffected; a feed with no binding or observer delivers nothing, and a failing consumer never fails the run. The cloud functions return their JSON directly and do not stream; poll `devin::session::get` for progress, or bind a `cron` trigger to poll on a schedule instead of looping.
 
 Every `devin::*` call is a traced invocation on the engine with no extra instrumentation: the input payload, output, duration, and ok/error land in the console's trace explorer, including the `iii trigger` calls a `devin::run` agent makes on its own.
 
@@ -220,8 +220,8 @@ session_recording: true                       # record each CLI turn as a consol
 | --- | --- |
 | one local `devin --print -- <prompt>` turn (SWE-1.6 agent) | `devin::run` invocation |
 | one `devin::run` session (prompt, output, status) | `session-manager` session, listed in the console |
-| every CLI stdout line, verbatim | `devin::raw-event` delivery |
-| turn end | `turn_end` + `agent_end` frames on `devin::agent-event`, function return value |
+| every CLI stdout line, verbatim | `devin::raw-event` delivery (`devin::on-raw-event` observers on iii 0.25) |
+| turn end | `turn_end` + `agent_end` frames on `devin::agent-event` (and `devin::on-agent-event` observers), function return value |
 | a Devin cloud session | `devin::session::create` / `::get` / `::message` |
 | a Devin PR review | `devin::pr-review::trigger` / `::status` |
 | any other v1/v3 endpoint | `devin::api` passthrough |
