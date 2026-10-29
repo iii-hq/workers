@@ -458,41 +458,48 @@ pub fn refuse_invocation(function_id: &str) -> Error {
     }
 }
 
-/// Registers `kind`'s observable function with its event type as the request
-/// format.
-fn register_observable(iii: &IIIClient, kind: EventKind, sets: &TriggerSets) {
-    match kind {
-        EventKind::Transcript => register_observable_as::<TranscriptEvent>(iii, kind, sets),
-        EventKind::SessionStarted => register_observable_as::<SessionStartedEvent>(iii, kind, sets),
-        EventKind::SessionStopped => register_observable_as::<SessionStoppedEvent>(iii, kind, sets),
-        EventKind::ModelProgress => register_observable_as::<Progress>(iii, kind, sets),
-        EventKind::SpeechEnded => register_observable_as::<SpeechEndedEvent>(iii, kind, sets),
-    }
+/// Draft-07 root schema of `T`, generated as iii-sdk does for a typed handler.
+fn schema_for<T: JsonSchema>() -> Value {
+    serde_json::to_value(
+        schemars::r#gen::SchemaSettings::draft07()
+            .into_generator()
+            .into_root_schema_for::<T>(),
+    )
+    .unwrap_or(Value::Null)
 }
 
-/// Registers one observable function, owner-delivered, with args
-/// [`BindingConfig`] (the trigger config) and hooks filing observers in the
-/// trigger type's subscriber set. On an engine without observe it registers
-/// as a plain function and its hooks never run.
-fn register_observable_as<E>(iii: &IIIClient, kind: EventKind, sets: &TriggerSets)
-where
-    E: JsonSchema,
-{
+/// The request and response schemas `kind`'s observable function registers
+/// with: the event its observers receive, and `()` (it never answers). Both
+/// are set explicitly because the handler takes any JSON (see
+/// [`observable_handler`]), which would otherwise publish an untyped request.
+pub fn observable_formats(kind: EventKind) -> (Value, Value) {
+    let request = match kind {
+        EventKind::Transcript => schema_for::<TranscriptEvent>(),
+        EventKind::SessionStarted => schema_for::<SessionStartedEvent>(),
+        EventKind::SessionStopped => schema_for::<SessionStoppedEvent>(),
+        EventKind::ModelProgress => schema_for::<Progress>(),
+        EventKind::SpeechEnded => schema_for::<SpeechEndedEvent>(),
+    };
+    (request, schema_for::<()>())
+}
+
+/// Registers `kind`'s observable function, owner-delivered, with args
+/// [`BindingConfig`] (the trigger config), the typed formats of
+/// [`observable_formats`], and hooks filing observers in the trigger type's
+/// subscriber set. On an engine without observe it registers as a plain
+/// function and its hooks never run.
+fn register_observable(iii: &IIIClient, kind: EventKind, sets: &TriggerSets) {
     let function_id = kind.observable_function();
     // The event type is only the documented request format: the handler takes
     // any JSON, so every invocation (empty or malformed input included) is
     // refused with FORBIDDEN rather than failing to deserialize first.
-    let event_schema = serde_json::to_value(
-        schemars::r#gen::SchemaSettings::draft07()
-            .into_generator()
-            .into_root_schema_for::<E>(),
-    )
-    .unwrap_or(Value::Null);
+    let (request, response) = observable_formats(kind);
     iii.register_function(
         function_id,
         RegisterFunction::new(observable_handler(kind))
             .description(kind.observable_description())
-            .request_format(event_schema)
+            .request_format(request)
+            .response_format(response)
             .observe(Observe::owner().args_format::<BindingConfig>().handler(
                 VoiceObserveHandler {
                     set: sets.for_kind(kind).clone(),
@@ -807,7 +814,7 @@ mod tests {
 
     #[test]
     fn the_registered_handler_refuses_empty_and_malformed_input_with_forbidden() {
-        // `observable_handler(kind)` is exactly what `register_observable_as`
+        // `observable_handler(kind)` is exactly what `register_observable`
         // hands to RegisterFunction::new: it takes a serde_json::Value, so the
         // SDK's input deserialization cannot fail first (no Error::Serde) and
         // every input reaches the FORBIDDEN refusal.
@@ -860,6 +867,42 @@ mod tests {
                 kind.observable_description().contains("refused"),
                 "{}",
                 kind.observable_function()
+            );
+        }
+    }
+
+    /// The interface boot smoke fails any function whose request or response
+    /// schema is untyped (AnyValue or empty).
+    fn assert_typed(function_id: &str, which: &str, schema: &Value) {
+        let typed = schema.as_object().is_some_and(|o| {
+            [
+                "type",
+                "properties",
+                "$ref",
+                "allOf",
+                "anyOf",
+                "oneOf",
+                "enum",
+            ]
+            .iter()
+            .any(|k| o.contains_key(*k))
+        });
+        assert!(typed, "{function_id} {which} schema is untyped: {schema}");
+    }
+
+    #[test]
+    fn each_on_function_registers_typed_request_and_response_schemas() {
+        for kind in EventKind::all() {
+            let function_id = kind.observable_function();
+            let (request, response) = observable_formats(kind);
+            assert_typed(function_id, "request", &request);
+            assert_typed(function_id, "response", &response);
+            assert_eq!(response["type"], "null", "{function_id}");
+            assert!(
+                request["properties"]
+                    .as_object()
+                    .is_some_and(|p| !p.is_empty()),
+                "{function_id}: the request names the event's fields: {request}"
             );
         }
     }
