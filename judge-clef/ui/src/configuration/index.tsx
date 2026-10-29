@@ -27,11 +27,11 @@ interface ModelCard {
   release_date: string
 }
 type ModelsReply = { status: 'ok'; models: ModelCard[] } | { status: 'error'; code: string }
-type Engine = Pick<ExtensionIii, 'trigger'>
+type Engine = Pick<ExtensionIii, 'call'>
 
 /** What the running worker loaded; throws the typed code on refusal. */
 export async function loadedModel(iii: Engine): Promise<ModelCard> {
-  const reply = await iii.trigger<ModelsReply>('judge-clef::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
+  const reply = await iii.call<ModelsReply>('judge-clef::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
   if (reply?.status === 'ok' && reply.models?.[0]) return reply.models[0]
   throw new Error(reply?.status === 'error' && reply.code ? reply.code : 'invalid_response')
 }
