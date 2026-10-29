@@ -16,7 +16,7 @@ pub fn build_manifest() -> ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         description:
-            "Policy and decision surface for human-held function calls — pre_trigger gate, pending inbox, per-session permission settings, and two notification trigger types."
+            "Policy and decision surface for human-held function calls — pre_trigger gate, pending inbox, per-session permission settings, and two notification trigger types with an observable function next to each (iii 0.25)."
                 .to_string(),
         // The shipped configuration defaults, straight from the source of
         // truth so the published manifest can never drift from the worker.

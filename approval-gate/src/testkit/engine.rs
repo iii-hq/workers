@@ -1,12 +1,37 @@
-//! Engine-backed test bootstrap (llm-router / integration.rs pattern).
-//! Self-skips when no `iii` binary is on PATH or `III_ENGINE_BIN` is set.
+//! Engine-backed test bootstrap, booted the way iii 0.25 accepts it.
+//!
+//! iii 0.25 refuses `iii-state` / `configuration` inline in a `config.yaml`
+//! (`[UNSUPPORTED_CONFIG_WORKERS]`), so each test writes a throwaway
+//! `worker-compose.yaml` and runs `iii compose --up` on it: the managed
+//! engine (on a free port) carries the built-in `configuration` worker under
+//! `engine.workers` (fs adapter in the temp dir), and the repo's standalone
+//! `state` worker runs as the only container (in-memory kv), like
+//! harness/worker-compose.yaml declares it. No `namespace:` is set, so the
+//! project's functions live in the engine's default namespace.
+//!
+//! Self-skips only when no `iii` binary is found (`III_ENGINE_BIN`, else
+//! `iii` on PATH). Any other boot failure is a test failure, with the tail
+//! of the compose log. `III_STATE_BIN` names a prebuilt `state` binary;
+//! otherwise the container builds and runs `../state` with `cargo run`.
+//!
+//! The compose daemon and every worker it or the testkit starts run without
+//! the ambient supervisor variables (`III_URL`, `III_CONFIG_NAME`, ...), and
+//! the testkit's own connections use an explicit identity (no ambient
+//! `III_NAMESPACE` / `III_WORKER_NAME`), so a test never joins or renames
+//! anything outside its own project. The in-process approval-gate still reads
+//! `III_CONFIG_NAME` (the test process environment cannot be changed safely
+//! while other test threads run); tests address its entry by
+//! `configuration::config_id()`, inside the isolated project.
+//! `EngineOpts::with_queue` adds the repo's `queue` worker, which the real
+//! `harness` worker (`III_HARNESS_BIN`, else built from `../harness`) needs.
 
 use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction, WorkerIdentityMode};
 use serde_json::{json, Value};
 use tokio::sync::{OnceCell, RwLock};
 
@@ -14,18 +39,48 @@ use crate::configuration::{self, ConfigCell};
 use crate::events::{self, Emitter, PENDING_CREATED, PENDING_RESOLVED};
 use crate::functions::{self, Deps};
 
+/// Boot budget: the first run may compile the `state` worker.
+const BOOT_TIMEOUT: Duration = Duration::from_secs(600);
+
 pub struct Engine {
     pub url: String,
+    /// The `iii compose --up` daemon; it owns the managed engine and the
+    /// `state` (and `queue`) containers.
     child: std::process::Child,
-    dir: std::path::PathBuf,
+    dir: PathBuf,
+    /// Whether the project runs the `queue` worker.
+    queue: bool,
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        stop_compose(&mut self.child);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// Interrupt the compose daemon so it stops its engine and workers, then
+/// kill whatever is left of its process group.
+fn stop_compose(child: &mut std::process::Child) {
+    let pid = child.id().to_string();
+    let _ = std::process::Command::new("kill")
+        .args(["-s", "INT", &pid])
+        .stderr(std::process::Stdio::null())
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The daemon was spawned as its own process-group leader.
+    let _ = std::process::Command::new("kill")
+        .args(["-s", "KILL", "--", &format!("-{pid}")])
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 pub fn engine_bin() -> Option<std::path::PathBuf> {
@@ -42,6 +97,42 @@ pub fn engine_bin() -> Option<std::path::PathBuf> {
     on_path.then(|| "iii".into())
 }
 
+/// What a supervisor (an enclosing `iii compose`, an agent shell) sets for
+/// its own worker. Inherited by the test project, `III_URL` makes compose
+/// join that engine instead of starting its own (DAEMON_ALREADY_SERVING),
+/// and the others would rename or re-home the children's identities.
+const AMBIENT_ENV: &[&str] = &[
+    "III_URL",
+    "III_NAMESPACE",
+    "III_CONFIG_NAME",
+    "III_WORKER_NAME",
+    "III_COMPOSE_NAMESPACE",
+    "III_COMPOSE_FILE",
+    "III_COMPOSE_DIR",
+];
+
+/// Strip [`AMBIENT_ENV`] from a child of the test project.
+fn isolate_from_ambient(command: &mut std::process::Command) -> &mut std::process::Command {
+    for key in AMBIENT_ENV {
+        command.env_remove(key);
+    }
+    command
+}
+
+/// A testkit connection (readiness probe, test stack) to the project's
+/// engine. Explicit identity: the SDK's managed default would adopt an
+/// ambient `III_NAMESPACE` / `III_WORKER_NAME` and leave the project's
+/// default namespace, where `state`, `queue` and the harness serve.
+fn connect(url: &str) -> IIIClient {
+    register_worker(
+        url,
+        InitOptions {
+            identity: WorkerIdentityMode::Explicit,
+            ..Default::default()
+        },
+    )
+}
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .expect("bind ephemeral port")
@@ -50,68 +141,183 @@ fn free_port() -> u16 {
         .port()
 }
 
-pub async fn spawn_engine() -> Option<Engine> {
-    let bin = engine_bin()?;
-    let port = free_port();
-    let dir = std::env::temp_dir().join(format!(
-        "approval-gate-it-{}-{}",
-        std::process::id(),
-        Instant::now().elapsed().as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).ok()?;
-    // The configuration worker's fs adapter writes one YAML file per id
-    // under this directory; create it up front so register/get never race
-    // a missing path (approval-gate now treats configuration as a required
-    // boot dependency).
-    std::fs::create_dir_all(dir.join("configuration")).ok()?;
+/// A repo worker crate next to this one (`state`, `queue`, `harness`).
+fn sibling_dir(name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(name);
+    dir.canonicalize().unwrap_or(dir)
+}
 
-    let config = format!(
-        r#"workers:
-  - name: iii-worker-manager
-    config:
-      port: {port}
-  - name: configuration
-    config:
+/// The `scripts.run` line of a repo worker container: the binary `bin_env`
+/// names when set, otherwise `cargo run` on the sibling crate.
+fn worker_command(name: &str, bin_env: &str, url: &str, seed: Option<&Path>) -> String {
+    let config = seed
+        .map(|seed| format!(" --config {}", seed.display()))
+        .unwrap_or_default();
+    match std::env::var_os(bin_env) {
+        Some(bin) => format!("{} --url {url}{config}", Path::new(&bin).display()),
+        None => format!(
+            "cargo run --quiet --manifest-path {} --bin {name} -- --url {url}{config}",
+            sibling_dir(name).join("Cargo.toml").display(),
+        ),
+    }
+}
+
+/// One `containers:` entry for the sibling worker `name`.
+fn worker_container(name: &str, dir: &Path, run: &str) -> String {
+    format!(
+        "  {name}:\n    worker: path://{worker}\n    working_dir: {dir}\n    required: true\n    environment:\n      RUST_LOG: warn\n    scripts:\n      run: {run}\n",
+        worker = sibling_dir(name).display(),
+        dir = dir.display(),
+    )
+}
+
+fn compose_file(port: u16, dir: &Path, containers: &str) -> String {
+    format!(
+        r#"startup_timeout: 10m
+stop_timeout: 10s
+
+engine:
+  url: ws://127.0.0.1:{port}
+  workers:
+    configuration:
       adapter:
         name: fs
         config:
           directory: {dir}/configuration
       ttl_seconds: 0
-  - name: iii-state
-    config:
-      adapter:
-        name: kv
-        config:
-          file_path: {dir}/state_store.db
-          store_method: file_based
-"#,
-        port = port,
-        dir = dir.display(),
-    );
-    let config_path = dir.join("config.yaml");
-    std::fs::File::create(&config_path)
-        .and_then(|mut f| f.write_all(config.as_bytes()))
-        .ok()?;
 
-    let mut child = std::process::Command::new(&bin)
-        .arg("--no-update-check")
-        .arg("--config")
-        .arg(&config_path)
-        .current_dir(&dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
+containers:
+{containers}"#,
+        dir = dir.display(),
+    )
+}
+
+fn log_tail(path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let tail = lines[lines.len().saturating_sub(40)..].join("\n");
+    if tail.trim().is_empty() {
+        format!("(empty log {})", path.display())
+    } else {
+        tail
+    }
+}
+
+/// What a test engine carries besides `configuration` and `state`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EngineOpts {
+    /// Also run the repo's `queue` worker (the real harness needs it).
+    pub queue: bool,
+}
+
+impl EngineOpts {
+    pub fn with_queue() -> Self {
+        Self { queue: true }
+    }
+}
+
+/// Boot an isolated compose project (managed engine + `configuration` +
+/// `state`). `None` only when no `iii` binary exists; any other failure
+/// panics with the compose log tail.
+pub async fn spawn_engine() -> Option<Engine> {
+    spawn_engine_with(EngineOpts::default()).await
+}
+
+/// [`spawn_engine`] plus what `opts` asks for.
+pub async fn spawn_engine_with(opts: EngineOpts) -> Option<Engine> {
+    let bin = engine_bin()?;
+    let port = free_port();
+    // Unique per process, boot and instant: the testkit feature has no uuid
+    // dependency (uuid is dev-only), so a counter + nanos stand in.
+    static BOOT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = BOOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let dir = std::env::temp_dir().join(format!(
+        "approval-gate-it-{}-{seq}-{nanos}",
+        std::process::id(),
+    ));
+    // The configuration worker's fs adapter writes one YAML file per id
+    // under this directory; create it up front so register/get never race
+    // a missing path (approval-gate treats configuration as a required boot
+    // dependency).
+    std::fs::create_dir_all(dir.join("configuration")).expect("create test engine dir");
 
     let url = format!("ws://127.0.0.1:{port}");
-    let probe = register_worker(&url, InitOptions::default());
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let seed = dir.join("state-config.yaml");
+    std::fs::write(
+        &seed,
+        "adapter:\n  name: kv\n  config:\n    store_method: in_memory\n",
+    )
+    .expect("write state seed config");
+    let mut containers = worker_container(
+        "state",
+        &dir,
+        &worker_command("state", "III_STATE_BIN", &url, Some(&seed)),
+    );
+    if opts.queue {
+        containers.push_str(&worker_container(
+            "queue",
+            &dir,
+            &worker_command("queue", "III_QUEUE_BIN", &url, None),
+        ));
+    }
+    let compose = compose_file(port, &dir, &containers);
+    let compose_path = dir.join("worker-compose.yaml");
+    std::fs::File::create(&compose_path)
+        .and_then(|mut f| f.write_all(compose.as_bytes()))
+        .expect("write worker-compose.yaml");
+
+    // A file, not a pipe: compose prints with bare `println!`, and nobody
+    // drains a pipe during the test.
+    let log_path = dir.join("compose.log");
+    let log = std::fs::File::create(&log_path).expect("create compose log");
+    let log_err = log.try_clone().expect("clone compose log handle");
+    let mut command = std::process::Command::new(&bin);
+    // Without this, an ambient III_URL makes compose join that engine
+    // instead of starting its own (DAEMON_ALREADY_SERVING).
+    isolate_from_ambient(&mut command)
+        .arg("--no-update-check")
+        .arg("compose")
+        .arg("--up")
+        .arg("--file")
+        .arg(&compose_path)
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_err));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    let child = command
+        .spawn()
+        .unwrap_or_else(|e| panic!("spawn `{} compose --up`: {e}", bin.display()));
+    // From here on, dropping `engine` (a panic included) stops the project.
+    let mut engine = Engine {
+        url,
+        child,
+        dir,
+        queue: opts.queue,
+    };
+
+    let probe = connect(&engine.url);
+    let deadline = Instant::now() + BOOT_TIMEOUT;
     loop {
-        // The engine core must be up AND the configuration worker must be
-        // serving — approval-gate treats configuration as a required boot
-        // dependency, so a test that boots before it is ready would fail
-        // spuriously. Probe a dummy id and accept any response (including
-        // NOT_FOUND) as "the worker is up".
+        if let Ok(Some(status)) = engine.child.try_wait() {
+            probe.shutdown();
+            panic!(
+                "iii compose exited during boot ({status}); compose log:\n{}",
+                log_tail(&log_path)
+            );
+        }
+        // Ready = the engine core answers, the configuration worker serves
+        // (any response, NOT_FOUND included, means it is up), the state
+        // container answers `state::get` and, when asked for, the queue
+        // container has registered `queue::define`.
         let core_ready = probe
             .trigger(TriggerRequest {
                 function_id: "engine::workers::list".into(),
@@ -121,7 +327,7 @@ pub async fn spawn_engine() -> Option<Engine> {
             })
             .await
             .is_ok();
-        let ready = core_ready
+        let config_ready = core_ready
             && match probe
                 .trigger(TriggerRequest {
                     function_id: "configuration::get".into(),
@@ -134,21 +340,51 @@ pub async fn spawn_engine() -> Option<Engine> {
                 Ok(_) => true,
                 Err(e) => e.to_string().to_ascii_uppercase().contains("NOT_FOUND"),
             };
-        if ready {
+        let state_ready = config_ready
+            && probe
+                .trigger(TriggerRequest {
+                    function_id: "state::get".into(),
+                    payload: json!({ "scope": "__readiness_probe__", "key": "ready" }),
+                    action: None,
+                    timeout_ms: Some(1000),
+                })
+                .await
+                .is_ok();
+        let queue_ready =
+            state_ready && (!opts.queue || function_listed(&probe, "queue::define").await);
+        if queue_ready {
             break;
         }
         if Instant::now() >= deadline {
             probe.shutdown();
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = std::fs::remove_dir_all(&dir);
-            return None;
+            panic!(
+                "iii compose project not ready within {}s (engine core: {core_ready}, configuration: {config_ready}, state: {state_ready}, queue wanted: {}); compose log:\n{}",
+                BOOT_TIMEOUT.as_secs(),
+                opts.queue,
+                log_tail(&log_path)
+            );
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     probe.shutdown();
 
-    Some(Engine { url, child, dir })
+    Some(engine)
+}
+
+/// Whether `function_id` is registered on the engine.
+async fn function_listed(probe: &IIIClient, function_id: &str) -> bool {
+    match probe
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(1000),
+        })
+        .await
+    {
+        Ok(list) => list.to_string().contains(&format!("\"{function_id}\"")),
+        Err(_) => false,
+    }
 }
 
 static BOOT_LOCK: OnceCell<tokio::sync::Mutex<()>> = OnceCell::const_new();
@@ -301,19 +537,62 @@ impl Drop for TestStack {
     }
 }
 
-fn spawn_harness_worker(engine_url: &str) -> Option<std::process::Child> {
-    let bin = std::env::var("CARGO_BIN_EXE_harness").ok()?;
-    std::process::Command::new(bin)
+/// The real `harness` worker binary: `III_HARNESS_BIN`, else
+/// `CARGO_BIN_EXE_harness`, else built once per test process from the
+/// sibling `harness` crate (its own target dir). A failed build is a test
+/// failure, never a skip.
+pub fn harness_bin() -> PathBuf {
+    static BIN: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        for key in ["III_HARNESS_BIN", "CARGO_BIN_EXE_harness"] {
+            if let Some(bin) = std::env::var_os(key).filter(|bin| !bin.is_empty()) {
+                return Ok(PathBuf::from(bin));
+            }
+        }
+        let dir = sibling_dir("harness");
+        let target = dir.join("target");
+        let output = std::process::Command::new("cargo")
+            .args(["build", "--quiet", "--bin", "harness", "--manifest-path"])
+            .arg(dir.join("Cargo.toml"))
+            .arg("--target-dir")
+            .arg(&target)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("run `cargo build` for the harness worker: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "`cargo build` of the harness worker failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(target
+            .join("debug")
+            .join(format!("harness{}", std::env::consts::EXE_SUFFIX)))
+    })
+    .clone()
+    .unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// Start the real harness worker against `engine`, isolated from the
+/// ambient supervisor environment, logging to `<engine dir>/harness.log`.
+fn spawn_harness_worker(bin: &Path, engine: &Engine) -> std::process::Child {
+    let log = std::fs::File::create(engine.dir.join("harness.log")).expect("create harness log");
+    let log_err = log.try_clone().expect("clone harness log handle");
+    let mut command = std::process::Command::new(bin);
+    isolate_from_ambient(&mut command)
         .arg("--url")
-        .arg(engine_url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .arg(&engine.url)
+        .current_dir(&engine.dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_err));
+    command
         .spawn()
-        .ok()
+        .unwrap_or_else(|e| panic!("spawn harness worker {}: {e}", bin.display()))
 }
 
 async fn wait_for_harness(iii: &IIIClient) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(120);
     while Instant::now() < deadline {
         if iii
             .trigger(TriggerRequest {
@@ -343,7 +622,7 @@ pub fn log_snapshot(log: &CallLog) -> Vec<Value> {
 /// Register the production surface + fakes + event recorders on one
 /// worker connection against the engine.
 pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
-    let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
+    let iii = Arc::new(connect(&engine.url));
 
     // `configuration` is a required boot dependency: register the schema
     // (seeding built-in defaults on first boot) and fetch the authoritative
@@ -450,12 +729,15 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
             }),
         );
     }
+    // Old-style consumers: the trigger types stay served on 0.25 engines.
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         PENDING_CREATED.to_string(),
         "recorder::on_created".to_string(),
         json!({}),
     ))
     .expect("bind pending_created");
+    #[allow(deprecated)]
     iii.register_trigger(RegisterTriggerInput::new(
         PENDING_RESOLVED.to_string(),
         "recorder::on_resolved".to_string(),
@@ -471,11 +753,22 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         .expect("register configuration change trigger");
 
     let harness_child = if opts.real_harness {
-        let child = spawn_harness_worker(&engine.url).expect("spawn harness worker");
         assert!(
-            wait_for_harness(&iii).await,
-            "harness worker did not become ready"
+            engine.queue,
+            "the real harness worker needs the queue worker: spawn the engine with EngineOpts::with_queue()"
         );
+        let bin = tokio::task::spawn_blocking(harness_bin)
+            .await
+            .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
+        let mut child = spawn_harness_worker(&bin, engine);
+        if !wait_for_harness(&iii).await {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "harness worker did not become ready; harness log:\n{}",
+                log_tail(&engine.dir.join("harness.log"))
+            );
+        }
         Some(child)
     } else {
         None
@@ -568,12 +861,69 @@ where
     F: FnOnce(TestStack) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
+    with_stack_using(EngineOpts::default(), opts, f).await;
+}
+
+/// [`with_stack`] on an engine carrying what `engine_opts` asks for (the
+/// real-harness tests need [`EngineOpts::with_queue`]). Skips only when no
+/// `iii` binary exists.
+pub async fn with_stack_using<F, Fut>(engine_opts: EngineOpts, opts: BootOpts, f: F)
+where
+    F: FnOnce(TestStack) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let _guard = boot_lock().await;
-    let Some(engine) = spawn_engine().await else {
+    let Some(engine) = spawn_engine_with(engine_opts).await else {
         eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
         return;
     };
     let stack = boot(&engine, opts).await;
     f(stack).await;
     // `engine` drops here — isolated state cleaned up with the temp dir.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn children_of_the_test_project_drop_the_ambient_supervisor_env() {
+        let mut command = std::process::Command::new("iii");
+        isolate_from_ambient(&mut command);
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for key in ["III_URL", "III_CONFIG_NAME", "III_COMPOSE_NAMESPACE"] {
+            assert!(
+                removed.iter().any(|k| k == key),
+                "{key} must not reach the compose daemon or the harness worker"
+            );
+        }
+    }
+
+    #[test]
+    fn the_compose_file_carries_the_queue_only_when_asked() {
+        let dir = Path::new("/tmp/approval-gate-it");
+        let url = "ws://127.0.0.1:4242";
+        let state = worker_container(
+            "state",
+            dir,
+            &worker_command("state", "III_STATE_BIN", url, None),
+        );
+        let plain = compose_file(4242, dir, &state);
+        assert!(plain.contains("url: ws://127.0.0.1:4242"));
+        assert!(plain.contains("\n  state:\n"));
+        assert!(!plain.contains("\n  queue:\n"));
+
+        let queue = worker_container(
+            "queue",
+            dir,
+            &worker_command("queue", "III_QUEUE_BIN", url, None),
+        );
+        let with_queue = compose_file(4242, dir, &format!("{state}{queue}"));
+        assert!(with_queue.contains("\n  queue:\n"));
+        assert!(with_queue.contains(&format!("--url {url}")));
+    }
 }

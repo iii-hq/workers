@@ -3,6 +3,7 @@
 
 use serde_json::json;
 
+use approval_gate::configuration::config_id;
 use approval_gate::testkit::{
     call, hook_input, log_snapshot, settle, wait_for, with_stack, BootOpts,
 };
@@ -128,7 +129,8 @@ async fn configuration_set_reloads_defaults_reactively() {
         call(
             iii,
             "configuration::set",
-            json!({ "id": "approval-gate", "value": { "default_mode": "full" } }),
+            // The entry this instance registered: III_CONFIG_NAME renames it.
+            json!({ "id": config_id(), "value": { "default_mode": "full" } }),
         )
         .await
         .expect("configuration set");

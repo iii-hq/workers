@@ -1,10 +1,13 @@
 //! Cross-worker integration: real `harness` + in-process approval-gate on a
-//! live engine. Self-skips when `iii` or the harness binary is unavailable.
+//! live engine with the `queue` worker the harness needs. Self-skips only
+//! when no `iii` binary exists; the harness binary is `III_HARNESS_BIN`, or
+//! built from `../harness` by the testkit.
 
 use std::collections::BTreeMap;
 
 use approval_gate::testkit::{
-    boot, call, engine_bin, hook_input, spawn_engine, state_get, state_set, BootOpts,
+    call, hook_input, log_push, log_snapshot, state_get, state_set, with_stack_using, BootOpts,
+    CallLog, EngineOpts,
 };
 use iii_sdk::RegisterFunction;
 use serde_json::json;
@@ -14,20 +17,7 @@ where
     F: FnOnce(approval_gate::testkit::TestStack) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    if engine_bin().is_none() {
-        eprintln!("skipping: no iii engine");
-        return;
-    }
-    let Some(engine) = spawn_engine().await else {
-        eprintln!("skipping: failed to spawn engine");
-        return;
-    };
-    if std::env::var("CARGO_BIN_EXE_harness").is_err() {
-        eprintln!("skipping: harness binary not built for integration tests");
-        return;
-    }
-    let stack = boot(&engine, opts).await;
-    f(stack).await;
+    with_stack_using(EngineOpts::with_queue(), opts, f).await;
 }
 
 async fn seed_held_turn(
@@ -61,6 +51,9 @@ async fn seed_held_turn(
             "functions": { "allow": ["*"], "expose": "agent_trigger" },
             "max_validation_retries": 2,
         },
+        // Required by harness's TurnRecord (no serde default).
+        "created_at": 1,
+        "updated_at": 1,
         "calls": calls,
     });
     state_set(&stack.iii, "harness_turn", session_id, record).await;
@@ -112,6 +105,9 @@ async fn harness_pre_trigger_hold_then_resolve_allow() {
                 "functions": { "allow": ["*"], "expose": "agent_trigger" },
                 "max_validation_retries": 2,
             },
+            // Required by harness's TurnRecord (no serde default).
+            "created_at": 1,
+            "updated_at": 1,
             "calls": {},
         });
         state_set(iii, "harness_turn", "s_1", turn).await;
@@ -157,6 +153,28 @@ async fn resolve_deny_delivers_is_error_through_harness() {
         |stack| async move {
             let iii = &stack.iii;
 
+            // The harness appends the delivered result to the session
+            // transcript: a fake session-manager records it.
+            let appended: CallLog = CallLog::default();
+            {
+                let appended = appended.clone();
+                iii.register_function(
+                    "session::append",
+                    RegisterFunction::new_async(move |req: serde_json::Value| {
+                        let appended = appended.clone();
+                        async move {
+                            let entry_id = req
+                                .get("entry_id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("e_1")
+                                .to_string();
+                            log_push(&appended, req);
+                            Ok::<_, iii_sdk::errors::Error>(json!({ "entry_id": entry_id }))
+                        }
+                    }),
+                );
+            }
+
             call(
                 iii,
                 "approval::gate",
@@ -194,6 +212,9 @@ async fn resolve_deny_delivers_is_error_through_harness() {
                     "functions": { "allow": ["*"], "expose": "agent_trigger" },
                     "max_validation_retries": 2,
                 },
+                // Required by harness's TurnRecord (no serde default).
+                "created_at": 1,
+                "updated_at": 1,
                 "calls": {
                     "c_deny": {
                         "state": "pending",
@@ -220,6 +241,12 @@ async fn resolve_deny_delivers_is_error_through_harness() {
             .await
             .expect("harness resolve deliver");
             assert_eq!(deliver["resolved"], json!(true));
+            assert!(
+                log_snapshot(&appended)
+                    .iter()
+                    .any(|entry| entry["session_id"] == json!("s_2")),
+                "the denied result must reach the session transcript"
+            );
         },
     )
     .await;

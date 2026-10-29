@@ -163,6 +163,7 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
 }
 
 /// Bind the fixed `harness::hook::pre-trigger` hook at worker startup.
+#[allow(deprecated)] // register_trigger: still served by 0.24 and 0.25 engines
 pub fn bind_hook(iii: &IIIClient) {
     match iii.register_trigger(RegisterTriggerInput::new(
         "harness::hook::pre-trigger".to_string(),
@@ -191,6 +192,7 @@ pub fn bind_hook(iii: &IIIClient) {
 /// `approval::filesystem-access-watch` at worker startup — beside `bind_hook`, same
 /// best-effort discipline (a standalone deployment without the harness
 /// still boots; a missing binding surfaces as a log, never an `Err` here).
+#[allow(deprecated)] // register_trigger: still served by 0.24 and 0.25 engines
 pub fn bind_filesystem_access_watch_hook(iii: &IIIClient) {
     match iii.register_trigger(RegisterTriggerInput::new(
         "harness::hook::post-trigger".to_string(),
@@ -278,6 +280,9 @@ pub struct OnConfigChangeResponse {
 /// Register the internal config-change handler and bind a `configuration`
 /// trigger. The handler re-fetches via `configuration::get` and ignores the
 /// trigger payload, so a direct call can never inject config.
+// `register_trigger` is deprecated in iii 0.25; 0.24 and 0.25 engines still
+// serve the `configuration` trigger, so the binding stays.
+#[allow(deprecated)]
 pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), Error> {
     let cell_for_fn = cell.clone();
     let engine = iii.clone();

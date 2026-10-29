@@ -324,3 +324,43 @@ pub fn trigger_catalog() -> Vec<TriggerSpec> {
         },
     ]
 }
+
+// ---------------------------------------------------------------------------
+// Observable-function wire-surface catalog (iii 0.25).
+// ---------------------------------------------------------------------------
+
+/// One observable function's agent-facing wire surface: id, description,
+/// the observers' args schema (`args_format`) and the event each observer
+/// receives (registered as the function's request format).
+pub struct ObservableSpec {
+    pub function_id: &'static str,
+    pub description: &'static str,
+    pub args_schema: schemars::schema::RootSchema,
+    pub event_schema: schemars::schema::RootSchema,
+}
+
+/// The observable functions, in registration order; each sits next to the
+/// trigger type of the same position in [`trigger_catalog`]. Keep in lockstep
+/// with `events::register_trigger_types`.
+pub fn observable_catalog() -> Vec<ObservableSpec> {
+    use crate::events::{
+        BindingConfig, ON_PENDING_CREATED, ON_PENDING_CREATED_DESC, ON_PENDING_RESOLVED,
+        ON_PENDING_RESOLVED_DESC,
+    };
+    use crate::types::{PendingApprovalRecord, PendingResolvedEvent};
+
+    vec![
+        ObservableSpec {
+            function_id: ON_PENDING_CREATED,
+            description: ON_PENDING_CREATED_DESC,
+            args_schema: schema_of::<BindingConfig>(),
+            event_schema: schema_of::<PendingApprovalRecord>(),
+        },
+        ObservableSpec {
+            function_id: ON_PENDING_RESOLVED,
+            description: ON_PENDING_RESOLVED_DESC,
+            args_schema: schema_of::<BindingConfig>(),
+            event_schema: schema_of::<PendingResolvedEvent>(),
+        },
+    ]
+}
