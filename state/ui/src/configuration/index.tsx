@@ -5,7 +5,7 @@
  * The form edits the working draft via `onChange`; dirty tracking,
  * save/reset, and error mapping stay host-owned (the console's SaveBar
  * below the form drives `configuration::set`). Mirrors StateConfig
- * (workers/state/src/config.rs): adapter {name, config}, triggers_enabled,
+ * (workers/state/src/config.rs): adapter {name, config}, events_enabled,
  * max_value_bytes, save_interval_ms.
  */
 
@@ -22,7 +22,13 @@ import {
   Switch,
 } from '@iii-dev/console-ui'
 import { useEffect, useRef } from 'react'
-import { type JsonObject, persistenceModeFor, withPersistenceMode } from './model'
+import {
+  eventsEnabledFor,
+  type JsonObject,
+  persistenceModeFor,
+  withEventsEnabled,
+  withPersistenceMode,
+} from './model'
 
 function asObject(value: JsonValue | undefined): JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
@@ -61,7 +67,7 @@ export function StateConfigForm(props: ConfigFormProps) {
   const adapterConfig = asObject(adapter.config)
   const storeMethod = asString(adapterConfig.store_method)
   const persistenceMode = persistenceModeFor(storeMethod)
-  const triggersEnabled = value.triggers_enabled !== false
+  const eventsEnabled = eventsEnabledFor(value)
 
   const commit = (next: JsonObject) => props.onChange(next)
 
@@ -247,22 +253,22 @@ export function StateConfigForm(props: ConfigFormProps) {
       >
         <SettingsList>
           <SettingsRow
-            data-field="triggers_enabled"
-            data-path="triggers_enabled"
-            label={<label htmlFor="state-cfg-triggers">State change triggers</label>}
+            data-field="events_enabled"
+            data-path="events_enabled"
+            label={<label htmlFor="state-cfg-events">State change events</label>}
             description={
-              <span id="state-cfg-triggers-description">
-                Notify the live State page and worker subscriptions after writes.
+              <span id="state-cfg-events-description">
+                Call state::on-changed after writes, which notifies the live State page and every observer.
               </span>
             }
             layout="inline"
             control={
               <Switch
-                id="state-cfg-triggers"
-                checked={triggersEnabled}
-                aria-label="State change triggers"
-                {...controlA11y(props.errors, '/triggers_enabled', 'state-cfg-triggers-description')}
-                onChange={(event) => commit({ ...value, triggers_enabled: event.currentTarget.checked })}
+                id="state-cfg-events"
+                checked={eventsEnabled}
+                aria-label="State change events"
+                {...controlA11y(props.errors, '/events_enabled', 'state-cfg-events-description')}
+                onChange={(event) => commit(withEventsEnabled(value, event.currentTarget.checked))}
               />
             }
           />

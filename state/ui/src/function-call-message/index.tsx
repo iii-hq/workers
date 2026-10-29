@@ -1,8 +1,8 @@
 /**
- * Injected function-trigger message renderer for `state::set` and
- * `state::get` — registered through `host.functionTriggers`, so it
+ * Injected function-call message renderer for `state::set` and
+ * `state::get` — registered through `host.functionCalls`, so it
  * dispatches BEFORE the console's built-in state family and overrides how
- * those two triggers render in chat and in the traces span tab.
+ * those two calls render in chat and in the traces span tab.
  *
  * Deliberately narrow: other `state::*` ids (delete/update/list/…) return
  * null and fall through to the console's built-in rendering, as do error
@@ -13,8 +13,8 @@
 
 import {
   Eyebrow,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   JsonHighlight,
   MetaRow,
@@ -92,7 +92,7 @@ function SettledView({
   message,
 }: {
   host: Host
-  message: FunctionTriggerMessage
+  message: FunctionCallMessage
 }) {
   const req = parseRequest(message.input)
   const op = message.functionId.slice('state::'.length)
@@ -128,7 +128,7 @@ function SettledView({
   )
 }
 
-function RunningView({ message }: { message: FunctionTriggerMessage }) {
+function RunningView({ message }: { message: FunctionCallMessage }) {
   const req = parseRequest(message.input)
   const op = message.functionId.slice('state::'.length)
   return (
@@ -144,7 +144,7 @@ function SetPreview({
   message,
 }: {
   host: Host
-  message: FunctionTriggerMessage
+  message: FunctionCallMessage
 }) {
   const req = parseRequest(message.input)
   return (
@@ -169,9 +169,9 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-export function createStateTriggerRenderer(host: Host): FunctionTriggerRenderer {
+export function createStateCallRenderer(host: Host): FunctionCallRenderer {
   const render = (
-    message: FunctionTriggerMessage,
+    message: FunctionCallMessage,
     running: boolean,
   ): React.ReactNode | null => {
     if (!RENDERED.has(message.functionId)) return null

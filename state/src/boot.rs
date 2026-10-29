@@ -1,20 +1,16 @@
-//! Boot sequence: builtin guard → build adapter → trigger table → register the
-//! `state` trigger type and `state::on-changed` → restore persisted
-//! private-namespace claims → register the state::* functions.
+//! Boot sequence: builtin guard → build adapter → register
+//! `state::on-changed` → restore persisted private-namespace claims →
+//! register the state::* functions.
 
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterTriggerType};
+use iii_sdk::{CallRequest, IIIClient};
 use tokio::sync::RwLock;
 
-use crate::TRIGGER_TYPE;
 use crate::adapters::{self, StateAdapter};
 use crate::config::StateConfig;
-use crate::events::{Invoker, SdkInvoker};
 use crate::functions::{self, ConfigCell, StateCtx};
-use crate::on_changed::{self, ChangeEmitter, Emissions, SdkChangeEmitter};
-use crate::trigger::{StateTriggerHandler, StateTriggerSpec, TriggerTable};
+use crate::on_changed::{self, ChangeEmitter, SdkChangeEmitter};
 
 const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
 const BUILTIN_III_STATE_WORKER_ID: &str = "iii-state";
@@ -23,7 +19,6 @@ pub type ApplyLock = Arc<tokio::sync::Mutex<()>>;
 
 pub struct BootHandle {
     pub ctx: Arc<StateCtx>,
-    pub triggers: TriggerTable,
     pub config: ConfigCell,
     pub apply_lock: ApplyLock,
 }
@@ -46,26 +41,11 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
     let config = config.normalized();
     let adapter: Arc<dyn StateAdapter> = adapters::build_adapter(&config).await?;
 
-    let handler = StateTriggerHandler::new();
-    let triggers = handler.triggers.clone();
-
-    // Registering the trigger type makes the engine deliver every `state`
-    // trigger binding through `handler`, which populates the fan-out table.
-    // Kept until the trigger type is retired; old consumers bind it on 0.24
-    // and 0.25 engines.
-    #[allow(deprecated)]
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(TRIGGER_TYPE, "State trigger", handler)
-            .trigger_request_format::<StateTriggerSpec>(),
-    );
-
-    // The same change events as an observable function (iii 0.25). On an
-    // engine without observe it is a plain function nobody observes.
-    let emissions = Arc::new(Emissions::default());
+    // The change events: a private function whose handler returns the
+    // event, called after every committed write.
     let on_changed: Arc<dyn ChangeEmitter> = Arc::new(SdkChangeEmitter {
         iii: iii.clone(),
-        function: on_changed::register(&iii, emissions.clone()),
-        emissions,
+        function: on_changed::register(&iii),
     });
 
     // Private namespaces are CLAIMED at runtime (`state::claim-namespace`),
@@ -73,12 +53,9 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
     // ledger below.
     let private = Arc::new(functions::PrivateNamespaces::default());
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(config)));
-    let invoker: Arc<dyn Invoker> = Arc::new(SdkInvoker { iii: iii.clone() });
     let ctx = Arc::new(StateCtx {
         adapter,
-        triggers: triggers.clone(),
         config: cell.clone(),
-        invoker,
         on_changed,
         private,
     });
@@ -89,15 +66,14 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
     functions::restore_persisted_claims(&iii, &ctx).await?;
     functions::register_functions(&iii, ctx.clone());
 
-    // Injectable console UI: content function + console:script trigger.
-    // Ordering doesn't matter for the console side (the engine parks the
-    // registration until a console owns the type), but the content function
-    // must exist before the trigger names it.
+    // Injectable console UI: content function + one `console::ui::asset`
+    // observer per asset. The observers stay pending until a console hosts
+    // the function; the content function is registered first so it exists
+    // whenever the console calls it.
     crate::ui::register(&iii);
 
     Ok(BootHandle {
         ctx,
-        triggers,
         config: cell,
         apply_lock: Arc::new(tokio::sync::Mutex::new(())),
     })
@@ -105,7 +81,7 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
 
 async fn guard_against_builtin_state(iii: &Arc<IIIClient>) -> anyhow::Result<()> {
     let workers_list = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: LIST_WORKERS_FUNCTION_ID.to_string(),
             payload: serde_json::json!({}),
             action: None,
@@ -117,7 +93,7 @@ async fn guard_against_builtin_state(iii: &Arc<IIIClient>) -> anyhow::Result<()>
     if builtin_iii_state_active(&workers_list) {
         anyhow::bail!(
             "cannot start the state worker: the built-in iii-state worker is active and owns the \
-             'state' trigger type and the state::* functions. Remove iii-state from the engine \
+             state::* functions. Remove iii-state from the engine \
              config (a config.yaml that doesn't list it won't run it), then start this worker. \
              If the builtin used a file_based kv store, point this worker's adapter at the same \
              file_path — the on-disk format is identical."
