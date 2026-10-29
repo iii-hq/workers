@@ -105,7 +105,7 @@ describe('executeRun', () => {
     expect(final.total_cost_usd).toBe(0.01);
   });
 
-  it('mirrors every SDK message verbatim onto claude::raw-event', async () => {
+  it('mirrors every SDK message verbatim onto claude::on-raw-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
     const raw = fake.feedFrames(ON_RAW_EVENT_FN).map((f) => f.event);
     expect(raw).toEqual(fullTurn);
@@ -113,7 +113,7 @@ describe('executeRun', () => {
     expect(new Set(sessionIds)).toEqual(new Set(['s1']));
   });
 
-  it('emits the translated AgentEvent sequence on claude::agent-event', async () => {
+  it('emits the translated AgentEvent sequence on claude::on-agent-event', async () => {
     const { fake } = await runTurn({ prompt: 'x', session_id: 's1' });
     const types = fake.feedFrames(ON_AGENT_EVENT_FN).map((f) => (f.event as { type: string }).type);
     expect(types).toEqual([
