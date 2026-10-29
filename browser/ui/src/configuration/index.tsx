@@ -1604,7 +1604,7 @@ export function BrowserConfigEditor({
                 <CheckField
                   field={['scrapling', 'inject_guidance']}
                   label="Inject scraping guidance into agent system prompts"
-                  hint="Hot-applies on save: turning this off unbinds the pre-generate hook immediately, without a worker restart."
+                  hint="Hot-applies on save: turning this off disposes the pre-generate hook observer immediately, without a worker restart."
                   value={asObject(value.scrapling).inject_guidance}
                   fallback={DEFAULTS.scrapling.inject_guidance}
                   error={fieldError(errors, ['scrapling', 'inject_guidance'])}

@@ -1,6 +1,6 @@
 /**
- * Injected function-trigger renderer for every `browser::*` call —
- * registered through `host.functionTriggers`, so it dispatches BEFORE the
+ * Injected function-call renderer for every `browser::*` call —
+ * registered through `host.functionCalls`, so it dispatches BEFORE the
  * console's built-in families and owns how browser calls render in chat and
  * in the traces span tab. Ported from the console's `components/chat/browser`
  * family; the "open in browser tab" action opens the injected page through
@@ -10,8 +10,8 @@
 
 import {
   EmptyState,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   JsonHighlight,
   Skeleton,
@@ -74,7 +74,7 @@ function ScreenshotBody({ output }: { output: unknown }) {
 }
 
 function renderScreenshot(
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
 ): React.ReactNode | null {
   if (
     message.functionId !== 'browser::screenshot' ||
@@ -95,7 +95,7 @@ function renderScreenshot(
  * payload doesn't parse, in which case the caller falls back to the
  * decoded-JSON rendering.
  */
-function renderBody(message: FunctionTriggerMessage): React.ReactNode | null {
+function renderBody(message: FunctionCallMessage): React.ReactNode | null {
   const input = message.input
   const output = message.output
   switch (message.functionId) {
@@ -145,7 +145,7 @@ function BrowserCallView({
   message,
 }: {
   host: Host
-  message: FunctionTriggerMessage
+  message: FunctionCallMessage
 }) {
   const sessionId = browserSessionIdFromCall(message.input, message.output)
   const running = !!message.running
@@ -197,7 +197,7 @@ function BrowserCallView({
 
 function renderCall(
   host: Host,
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
 ): React.ReactNode | null {
   if (!isBrowserFunction(message.functionId)) return null
   if (message.pendingApproval) return null
@@ -215,7 +215,7 @@ function renderCall(
   return <BrowserCallView host={host} message={message} />
 }
 
-export function createBrowserRenderer(host: Host): FunctionTriggerRenderer {
+export function createBrowserRenderer(host: Host): FunctionCallRenderer {
   return {
     id: 'browser/page.js#calls',
     isMatch: isBrowserFunction,
@@ -231,7 +231,7 @@ export function createBrowserRenderer(host: Host): FunctionTriggerRenderer {
  * Keeping it separate means other browser calls retain the compact card and
  * a malformed/error response safely falls through to the general renderer.
  */
-export function createBrowserScreenshotRenderer(): FunctionTriggerRenderer {
+export function createBrowserScreenshotRenderer(): FunctionCallRenderer {
   return {
     id: 'browser/page.js#screenshot-display',
     isMatch: (functionId) => functionId === 'browser::screenshot',

@@ -1,8 +1,8 @@
 /** Chromium missing on the engine (design §8.4): install, progress, failure with the hint, done → the tabs. */
 import { describe, expect, it } from 'vitest'
-import { callsOf, exists, FakeBrowser, rows, start, subsOf } from './fake'
+import { callsOf, EVERY_CALL, exists, FakeBrowser, rows, start, subsOf } from './fake'
 
-const PROGRESS = 'browser::chromium-install-progress'
+const PROGRESS = 'browser::on-chromium-install-progress'
 
 describe('Chromium missing', () => {
   it('shows the install instead of the tabs, without listening to tabs', async () => {
@@ -15,22 +15,22 @@ describe('Chromium missing', () => {
     })
     expect(exists(host, 'tabs')).toBe(false)
     expect(exists(host, 'new-tab')).toBe(false)
-    expect(subsOf(host, 'browser::session-started')).toEqual([])
+    expect(subsOf(host, 'browser::on-session-started')).toEqual([])
   })
 
-  it('installs: binds the progress first, shows phase and megabytes, then lists the tabs', async () => {
+  it('installs: observes the progress first, shows phase and megabytes, then lists the tabs', async () => {
     const fake = new FakeBrowser([])
     fake.chromium = { found: false }
     const { host } = await start({ fake })
     await host.press('chromium-install')
-    expect(subsOf(host, PROGRESS)).toEqual([{}])
-    const bound = host.requests.findIndex((r) => r.method === 'on' && r.args.trigger === PROGRESS)
+    expect(subsOf(host, PROGRESS)).toEqual([EVERY_CALL])
+    const observed = host.requests.findIndex((r) => r.method === 'on' && r.args.fn === PROGRESS)
     const install = host.requests.findIndex((r) => r.args.fn === 'browser::chromium::install')
-    expect(install).toBeGreaterThan(bound)
+    expect(install).toBeGreaterThan(observed)
     expect(host.find('chromium-phase').props?.text).toBe('Finding the latest Chrome for Testing…')
     expect(host.find('chromium-progress').props?.value).toBeUndefined()
 
-    await host.emitTrigger(PROGRESS, {
+    await host.emitObserved(PROGRESS, {
       job_id: 'job1',
       phase: 'downloading',
       version: '131.0.6778.85',
@@ -41,12 +41,12 @@ describe('Chromium missing', () => {
     expect(host.find('chromium-phase').props?.text).toBe('Downloading Chrome for Testing 131.0.6778.85 · 82 of 150 MB')
     expect(host.find('chromium-progress').props?.value).toBeCloseTo(0.5467, 3)
 
-    await host.emitTrigger(PROGRESS, { job_id: 'job1', phase: 'extracting', bytes_done: 10_000_000, timestamp: 2 })
+    await host.emitObserved(PROGRESS, { job_id: 'job1', phase: 'extracting', bytes_done: 10_000_000, timestamp: 2 })
     expect(host.find('chromium-phase').props?.text).toBe('Unpacking · 10 MB')
 
     fake.chromium = { found: true }
     fake.tabs.push({ session_id: 's1', url: 'https://example.com/', title: 'Example' })
-    await host.emitTrigger(PROGRESS, { job_id: 'job1', phase: 'done', bytes_done: 1, path: '/c/chrome', timestamp: 3 })
+    await host.emitObserved(PROGRESS, { job_id: 'job1', phase: 'done', bytes_done: 1, path: '/c/chrome', timestamp: 3 })
     expect(exists(host, 'chromium')).toBe(false)
     expect(subsOf(host, PROGRESS)).toEqual([])
     expect(rows(host).map((r) => r.key)).toEqual(['header:tabs', 's1'])
@@ -57,7 +57,7 @@ describe('Chromium missing', () => {
     fake.chromium = { found: false }
     const { host } = await start({ fake })
     await host.press('chromium-install')
-    await host.emitTrigger(PROGRESS, {
+    await host.emitObserved(PROGRESS, {
       job_id: 'job1',
       phase: 'failed',
       bytes_done: 0,

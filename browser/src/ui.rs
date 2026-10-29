@@ -4,17 +4,17 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `browser/page.js` (`console:script`) — the `browser` page (session
+//! - `browser/page.js` (a `script` asset) — the `browser` page (session
 //!   rail, screencast-fed live viewport, console/network feeds) AND the
-//!   function-trigger renderer for every `browser::*` call in chat and the
+//!   function-call renderer for every `browser::*` call in chat and the
 //!   traces span tab.
-//! - `browser/styles.css` (`console:style`) — the stylesheet, every rule
+//! - `browser/styles.css` (a `style` asset) — the stylesheet, every rule
 //!   scoped under `[data-iii-ui="browser"]`; the console mounts it as a
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `browser::ui-content`, one
-//! Message-path trigger per asset, `III_BROWSER_UI_WATCH` hot-reload watcher)
-//! lives in the shared `iii-console-ui` crate (path-linked from
+//! `console::ui::asset` observer per asset, `III_BROWSER_UI_WATCH` hot-reload
+//! watcher) lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and embeds
 //! their bytes.
 //!
@@ -22,8 +22,8 @@
 //! external — they resolve through the console's import map at runtime) and
 //! embedded at compile time so the worker stays one self-contained binary.
 //! For the dev loop, set `III_BROWSER_UI_WATCH` to the build output directory
-//! (or `1` for `ui/dist`): the worker polls both files and re-registers a
-//! changed asset's trigger — every open console tab hot-swaps it.
+//! (or `1` for `ui/dist`): the worker polls both files and observes a
+//! changed asset afresh — every open console tab hot-swaps it.
 
 use std::sync::Arc;
 

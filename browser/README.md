@@ -111,10 +111,10 @@ visited pages, back/forward stack) and come back after a worker restart.
 ## Install
 
 ```bash
-iii trigger compose::add worker=browser
+iii call compose::add worker=browser
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose
 project. By default the worker drives a Chromium/Chrome already installed on
 the machine; point `executable` at a specific binary if auto-detection picks
@@ -128,8 +128,8 @@ worker is installed and no Chromium is found (Set up the harness → Browser).
 From anywhere else:
 
 ```bash
-iii trigger browser::chromium::status        # what is found, and where it looked
-iii trigger browser::chromium::install       # returns { job_id, status } at once
+iii call browser::chromium::status        # what is found, and where it looked
+iii call browser::chromium::install       # returns { job_id, status } at once
 ```
 
 `browser::chromium::install` downloads the Stable
@@ -143,8 +143,9 @@ unpacks it into a staging folder, runs the binary with `--version`, then
 moves it into place in one rename, so a failed or interrupted install never
 leaves a half-installed browser behind. One job runs per worker (a second
 call returns the running job) and a lock file in the cache keeps two workers
-sharing it apart. Progress arrives on the `browser::chromium-install-progress`
-trigger and in `browser::chromium::status` (`job`). On Linux, a machine
+sharing it apart. Progress arrives as calls of
+`browser::on-chromium-install-progress` (observe it) and in
+`browser::chromium::status` (`job`). On Linux, a machine
 missing Chromium's shared libraries fails at the `--version` step with a
 `hint` listing the Debian packages to install. When a Chromium is already
 found it does nothing unless `force: true`. Agents need approval to call it;
@@ -217,15 +218,14 @@ browser → Launch).
 Start a session, read the page, act on it, then read the console:
 
 ```rust
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    let started = iii.trigger(TriggerRequest {
+    let started = iii.call(CallRequest {
         function_id: "browser::sessions::start".into(),
         payload: json!({ "url": "http://localhost:3000" }),
         action: None,
@@ -234,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
     let session_id = started["session_id"].as_str().unwrap();
 
     // The page as text: an a11y outline with [ref=eN] handles.
-    let snapshot = iii.trigger(TriggerRequest {
+    let snapshot = iii.call(CallRequest {
         function_id: "browser::snapshot".into(),
         payload: json!({ "session_id": session_id }),
         action: None,
@@ -243,7 +243,7 @@ async fn main() -> anyhow::Result<()> {
     println!("{}", snapshot["tree"].as_str().unwrap());
 
     // What did the page log? Errors only, no dump.
-    let console = iii.trigger(TriggerRequest {
+    let console = iii.call(CallRequest {
         function_id: "browser::console::read".into(),
         payload: json!({ "session_id": session_id, "level": "error" }),
         action: None,
@@ -304,7 +304,7 @@ where it came from (`chromium_source`), version, capacity — with an
 `browser::chromium::install` find and fetch Chromium (see
 [No Chrome on the machine?](#no-chrome-on-the-machine)).
 
-`browser::sessions::attach` binds a session to an already-running browser
+`browser::sessions::attach` attaches a session to an already-running browser
 over CDP (start Chrome with `--remote-debugging-port`) instead of launching
 one, so it reaches the real profile with its logins and extensions. It opens
 a fresh tab the session owns, or adopts an existing tab by URL substring and
@@ -315,8 +315,8 @@ browser's tabs. Attach reaches logged-in state, so it is off unless
 `browser::handoff` pauses a session for a step only a human can do (CAPTCHA,
 2FA, payment): it mounts an in-page continue banner and blocks the call until
 the human clicks it, a `browser::handoff::confirm` call resolves it, or the
-timeout elapses, emitting `browser::handoff-requested` for the console to
-surface. Human acknowledgment is not proof, so the caller verifies the
+timeout elapses, calling `browser::on-handoff-requested` for the console to
+surface (and `browser::on-handoff-resolved` once it ends). Human acknowledgment is not proof, so the caller verifies the
 expected page state after it returns.
 
 `browser::recording::start` / `browser::recording::stop` capture a session's
@@ -341,7 +341,7 @@ they persist relocation identities in the configured SQLite database. They pair 
 (navigate, read the page, then parse it), but they don't need one.
 
 ```bash
-iii trigger browser::css --payload '{
+iii call browser::css --payload '{
   "html": "<ul><li><a class=\"product\" href=\"/sku/1\">Widget</a></li><li><a class=\"product\" href=\"/sku/2\">Gadget</a></li></ul>",
   "query": "a.product",
   "attr": "href",
@@ -354,7 +354,7 @@ iii trigger browser::css --payload '{
 instead of just the first.
 
 ```bash
-iii trigger browser::extract --payload '{
+iii call browser::extract --payload '{
   "html": "<div class=\"card\"><h3>Widget</h3><span class=\"price\">$19.99</span><a href=\"/sku/1\">buy</a></div>",
   "selectors": [
     { "name": "title", "css": "h3" },
@@ -389,7 +389,7 @@ Three fetch tiers, cheapest first; escalate only when the cheaper one fails:
 | `stealthy-fetch` | frozen Chrome with the Patchright command/launch sequence | the site sniffs for automation |
 
 ```bash
-iii trigger browser::fetch --json '{
+iii call browser::fetch --json '{
   "url": "https://example.com/",
   "selectors": [{ "name": "title", "css": "h1" }],
   "format": "text"
@@ -419,7 +419,7 @@ process. Compat mode supports request proxies, remote `cdp_url`, and
 stays on the seed domain by default (`www.` folded), strips URL fragments when
 deduping, and stops at `max_pages` (20) or `max_depth` (2). The RPC response carries
 `stats` and only a ≤10-item sample; `crawl: { id, items_function,
-trigger_type, retained, dropped_events }` says where the rest is:
+function_id, retained, dropped_events }` says where the rest is:
 
 - **All items, after the call:** `browser::crawl::items { crawl_id, after?,
   limit? }` pages through every retained item in crawl order (`seq` 1..n,
@@ -427,20 +427,20 @@ trigger_type, retained, dropped_events }` says where the rest is:
   in memory: the last 32 crawls, for 1 h after they finish, 32 MiB per crawl
   and 128 MiB in total, not across worker restarts. A crawl that hit a cap
   reports `retained` below `stats.crawled` and the read says `truncated`.
-- **Live, while it runs:** bind the `browser::crawl-item` trigger type
-  (filter `{ crawl_id }`) *before* calling `browser::crawl { crawl_id }`.
-  Each bound function receives `{ crawl_id, event: "item", seq, item,
-  truncated }` per page, in `seq` order, then one `{ event: "done", seq: n+1,
-  stats, retained, dropped_events }`. Event items cut page content to 64 KiB
+- **Live, while it runs:** observe `browser::on-crawl-item` with args
+  `{ crawl_id }` *before* calling `browser::crawl { crawl_id }`. Each target
+  receives `{ crawl_id, event: "item", seq, item, truncated }` per page, in
+  `seq` order, then one `{ event: "done", seq: n+1, stats, retained,
+  dropped_events }`. Event items cut page content to 64 KiB
   (`truncated: true`); the full item is in `browser::crawl::items`. Delivery
   goes through a bounded per-crawl queue and never slows the crawl: when a
   slow consumer fills it, events are dropped and counted in `dropped_events`,
   and the consumer reads the missing `seq`s back with `browser::crawl::items`.
 
 `crawl_id` is optional (default: a random id) and must not name a crawl that
-is still running. The legacy `group_id` input still works as the crawl id.
-`stream_name` is deprecated and ignored: items are no longer written to a
-stream, the call still succeeds, and the response gains a `warnings` entry.
+is still running. The legacy `group_id` input works as the crawl id.
+`stream_name` is deprecated and ignored: the crawl writes to no stream, the
+call succeeds, and the response gains a `warnings` entry.
 `stream: { name, group_id }` is still echoed for older callers; read
 `crawl.id` instead. The crawl works on an engine without any stream worker.
 
@@ -624,29 +624,92 @@ The declared production envelope is 4 GiB memory and 2 CPUs. Tier-1 release
 validation budgets for five concurrent browser processes; that is a release
 test envelope, not permission to exceed configured session caps.
 
-## Custom trigger types
+## Event functions
 
-Sibling workers (and the console UI) can subscribe to session activity. All
-session bindings accept an optional `{ "session_id": "..." }` filter;
-`browser::crawl-item` takes `{ "crawl_id": "..." }` instead.
+The worker hosts one function per kind of browser event. Each is private
+(only this worker calls it), and its handler returns the event it is called
+with, so an observer receives the event. The worker calls a function only
+while something observes it. Other workers and the console UI observe them
+with `iii.observe`:
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `browser::session-started` | A tab opened and is ready | `{ session_id, url, headless, preview, timestamp }` — `preview: false` when the opener passed `preview: false` to `sessions::start` (the console's own tab controls do) |
-| `browser::session-stopped` | A tab closed for good | `{ session_id, reason: "stopped" \| "idle" \| "expired" \| "crashed", timestamp }` |
-| `browser::session-updated` | A tab woke (`active: true`), went to sleep (`active: false`), or its live page's title changed (`active: true`) | `{ session_id, active, url, title, timestamp }` |
-| `browser::navigated` | The page committed a navigation | `{ session_id, url, timestamp }` |
-| `browser::console-event` | A console/log/exception entry was captured | `{ session_id, entry }` |
-| `browser::picked` | The human picked an element in inspect mode | `{ session_id, element, timestamp }` |
-| `browser::handoff-requested` | A session paused for a human step (CAPTCHA, 2FA, payment) | `{ session_id, handoff_id, instructions, timestamp }` |
-| `browser::frame-event` | Internal: a live screencast frame of a watched tab (console viewport plumbing) | `{ session_id, frame, width, height, frame_seq, timestamp }` |
-| `browser::chromium-install-progress` | A `browser::chromium::install` job entered a phase or moved ~1 % (at most every 250 ms) | `{ job_id, phase: "resolving" \| "downloading" \| "extracting" \| "verifying" \| "done" \| "failed", version?, bytes_done, bytes_total?, path?, error?, hint?, timestamp }` — not a session event: bind it without a `session_id` filter |
-| `browser::crawl-item` | A `browser::crawl` page was crawled, or the crawl ended | `{ crawl_id, event: "item", seq, item, truncated }` per page in `seq` order, then `{ crawl_id, event: "done", seq, stats, retained, dropped_events }` — filter is `{ crawl_id }` instead of `session_id`; see Fetching, sessions and crawl |
+| Function | Args | Called when | Event (what observers receive) |
+|---|---|---|---|
+| `browser::on-session-started` | none; filter on `input.session_id` | A tab opened and is ready | `{ session_id, url, headless, preview, timestamp }` — `preview: false` when the opener passed `preview: false` to `sessions::start` (the console's own tab controls do) |
+| `browser::on-session-stopped` | none; filter on `input.session_id` | A tab closed for good | `{ session_id, reason: "stopped" \| "idle" \| "expired" \| "crashed", timestamp }` |
+| `browser::on-session-updated` | none; filter on `input.session_id` | A tab woke (`active: true`), went to sleep (`active: false`), or its live page's title changed (`active: true`) | `{ session_id, active, url, title, timestamp }` |
+| `browser::on-navigated` | none; filter on `input.session_id` | The page committed a navigation | `{ session_id, url, timestamp }` |
+| `browser::on-console-event` | none; filter on `input.session_id` | A console/log/exception entry was captured | `{ session_id, entry }` |
+| `browser::on-network-event` | none; filter on `input.session_id` | A network request completed or failed | `{ session_id, entry }` |
+| `browser::on-picked` | none; filter on `input.session_id` | The human picked an element in inspect mode | `{ session_id, element, timestamp }` |
+| `browser::on-handoff-requested` | none; filter on `input.session_id` | A session paused for a human step (CAPTCHA, 2FA, payment) | `{ session_id, handoff_id, instructions, timestamp }` |
+| `browser::on-handoff-resolved` | none; filter on `input.session_id` | A paused handoff finished | `{ session_id, handoff_id, via: "in_page" \| "confirm_call" \| "timeout" \| "cancelled", timestamp }` |
+| `browser::on-download-changed` | none; filter on `input.session_id` | A download started, progressed, or finished (re-read `browser::downloads::list`) | `{ session_id, timestamp }` |
+| `browser::on-frame-event` | `{ session_id? }` | Internal: a live screencast frame of a watched tab (console viewport plumbing) | `{ session_id, frame, width, height, frame_seq, timestamp }` |
+| `browser::on-chromium-install-progress` | none; filter on `input.job_id` or `input.phase` | A `browser::chromium::install` job entered a phase or moved ~1 % (at most every 250 ms) | `{ job_id, phase: "resolving" \| "downloading" \| "extracting" \| "verifying" \| "done" \| "failed", version?, bytes_done, bytes_total?, path?, error?, hint?, timestamp }` |
+| `browser::on-crawl-item` | `{ crawl_id? }` (at most 256 bytes) | A `browser::crawl` page was crawled, or the crawl ended | `{ crawl_id, event: "item", seq, item, truncated }` per page in `seq` order, then `{ crawl_id, event: "done", seq, stats, retained, dropped_events }`; see Fetching, sessions and crawl |
 
-`browser::console-event` is high-volume; bind it with a `session_id` filter
-and treat `browser::console::read` as the durable record. `browser::picked`
-elements carry a `ref` that `browser::act` accepts directly, so a human pick
-flows straight into agent action.
+Delivery. iii delivers each call to every observer whose filters match, with
+two exceptions:
+
+- `browser::on-frame-event` gives each frame to the observers of its tab
+  (args `{ session_id }`) and to the observers without args, and the frame
+  pump copies no frame for a tab nobody observes. Viewers observe with
+  `max_in_flight: 1`: one still painting a frame skips the frames that
+  arrive meanwhile.
+- `browser::on-crawl-item` calls each matching observer's target itself, with
+  the event as its payload, and waits for the answer (5 s each), so a
+  consumer's events arrive in `seq` order and a slow one fills its crawl's
+  bounded queue. `deliver` does not apply. The worker accepts at most 64
+  observers (`OBSERVER_LIMIT`); an empty or longer than 256 bytes `crawl_id`
+  is `INVALID_ARGS`.
+
+Every other function takes no args: an observer that passes args gets
+`INVALID_ARGS` from the engine.
+
+```ts
+// one tab's console entries, as they are captured
+iii.observe(
+  {
+    function_id: 'browser::on-console-event',
+    filters: { 'input.session_id': { $eq: sessionId } },
+    deliver: 'output',
+  },
+  'my-worker::on-console-entry',
+)
+
+// every tab opening and closing
+iii.observe({ function_id: 'browser::on-session-started', deliver: 'output' }, 'my-worker::on-tab')
+iii.observe({ function_id: 'browser::on-session-stopped', deliver: 'output' }, 'my-worker::on-tab')
+
+// one tab's live frames
+iii.observe(
+  { function_id: 'browser::on-frame-event', args: { session_id: sessionId }, deliver: 'output' },
+  'my-viewer::paint',
+  { max_in_flight: 1 },
+)
+
+// one crawl's items: observe first, then crawl
+iii.observe({ function_id: 'browser::on-crawl-item', args: { crawl_id: 'docs' } }, 'my-worker::on-crawl-item')
+await iii.call({ function_id: 'browser::crawl', payload: { url: 'https://example.com/', crawl_id: 'docs' } })
+```
+
+`browser::on-console-event` is high-volume; observe it with an
+`input.session_id` filter and treat `browser::console::read` as the durable
+record. `browser::on-picked` elements carry a `ref` that `browser::act`
+accepts directly, so a human pick flows straight into agent action.
+
+### What the worker observes
+
+- `configuration::on-updated`, filtered to the `configuration:updated`
+  events of its own entry (`input.id`, `input.event_type`), with
+  `browser::on-config-change` as the target, which re-reads the entry and
+  applies it.
+- `harness::hook::on-pre-generate`, with args
+  `{ on_error: "fail_open", inject_prompt }` and `browser::inject-guidance`
+  as the target, while `scrapling.inject_guidance` is on: the harness appends
+  the scraping guidance to agent system prompts. Turning the setting off
+  disposes the observer; turning it on observes again, without a restart.
+  The observer stays `pending` while no harness runs.
 
 ## Live view for native viewers
 
@@ -715,6 +778,6 @@ answers `moved: false` at once.
 
 `browser::pick::start` puts the page in DevTools inspect mode (native hover
 highlight); the human's click resolves to tag, attributes, outer HTML, text,
-bounds, and recent console errors, emitted as `browser::picked`. The pick,
+bounds, and recent console errors, emitted as a call of `browser::on-picked`. The pick,
 hint, screencast, and frame functions are internal: console-UI plumbing, not
 agent surface, and they stay out of agent tool lists.

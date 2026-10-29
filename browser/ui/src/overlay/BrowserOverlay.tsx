@@ -11,8 +11,8 @@ import {
   useSyncExternalStore,
 } from 'react'
 import {
-  BROWSER_SESSION_STARTED_TRIGGER,
-  BROWSER_SESSION_STOPPED_TRIGGER,
+  BROWSER_ON_SESSION_STARTED_FUNCTION_ID,
+  BROWSER_ON_SESSION_STOPPED_FUNCTION_ID,
 } from '../lib/browser'
 import { cn } from '../lib/cn'
 import { useBrowserEvent } from '../lib/events'
@@ -129,7 +129,7 @@ export function BrowserOverlay({ host }: { host: Host }) {
   useBrowserEvent({
     host,
     enabled: true,
-    triggerType: BROWSER_SESSION_STARTED_TRIGGER,
+    functionId: BROWSER_ON_SESSION_STARTED_FUNCTION_ID,
     fnId: 'iii::browser-ui::overlay-started',
     onEvent: (payload) => {
       const event = payload as {
@@ -149,7 +149,7 @@ export function BrowserOverlay({ host }: { host: Host }) {
   useBrowserEvent({
     host,
     enabled: true,
-    triggerType: BROWSER_SESSION_STOPPED_TRIGGER,
+    functionId: BROWSER_ON_SESSION_STOPPED_FUNCTION_ID,
     fnId: 'iii::browser-ui::overlay-stopped',
     onEvent: (payload) => {
       const id = (payload as { session_id?: unknown } | null)?.session_id

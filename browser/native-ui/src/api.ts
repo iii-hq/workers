@@ -1,40 +1,58 @@
 /**
- * Typed wrappers over the browser worker's functions and trigger types, as
+ * Typed wrappers over the browser worker's functions and event functions, as
  * the native app uses them (design §8; the wire source is
  * browser/src/functions/*.rs and browser/src/events.rs, the same ids and
  * payloads the console UI uses in ui/src/lib/browser.ts).
  */
 
-import { IiiError, iii, type JsonObject, type JsonValue, type Unsubscribe } from '@iii-dev/native-ui'
+import {
+  IiiError,
+  iii,
+  type JsonObject,
+  type JsonValue,
+  type ObserveSource,
+  type Unsubscribe,
+} from '@iii-dev/native-ui'
 
-export const TRIGGER = {
-  sessionStarted: 'browser::session-started',
-  sessionStopped: 'browser::session-stopped',
-  sessionUpdated: 'browser::session-updated',
-  navigated: 'browser::navigated',
-  consoleEvent: 'browser::console-event',
-  networkEvent: 'browser::network-event',
-  handoffRequested: 'browser::handoff-requested',
-  handoffResolved: 'browser::handoff-resolved',
-  installProgress: 'browser::chromium-install-progress',
+/**
+ * The worker's event functions: each returns the event it is called with.
+ * None takes args here; an observer picks a tab with a filter on
+ * `input.session_id` ({@link forSession}).
+ */
+export const EVENT = {
+  sessionStarted: 'browser::on-session-started',
+  sessionStopped: 'browser::on-session-stopped',
+  sessionUpdated: 'browser::on-session-updated',
+  navigated: 'browser::on-navigated',
+  consoleEvent: 'browser::on-console-event',
+  networkEvent: 'browser::on-network-event',
+  handoffRequested: 'browser::on-handoff-requested',
+  handoffResolved: 'browser::on-handoff-resolved',
+  installProgress: 'browser::on-chromium-install-progress',
 } as const
 
 /** The tab list re-reads on these: opened, closed, slept/woke/retitled, navigated. */
 export const LIFECYCLE = [
-  TRIGGER.sessionStarted,
-  TRIGGER.sessionStopped,
-  TRIGGER.sessionUpdated,
-  TRIGGER.navigated,
+  EVENT.sessionStarted,
+  EVENT.sessionStopped,
+  EVENT.sessionUpdated,
+  EVENT.navigated,
 ] as const
 
+/** Observes the calls of an event function for tab `session` only. */
+export function forSession(session: string): ObserveSource {
+  return { filters: { 'input.session_id': { $eq: session } } }
+}
+
 /**
- * The RemoteScreen wire of the browser (design §6.7, exact): frames by
- * trigger, a seed read, a leased viewer that renews every 6 s, the resize
- * that makes the tab a phone the size of the view, and the input gestures
- * (a person's own: the worker draws no agent cursor for them).
+ * The RemoteScreen wire of the browser (design §6.7, exact): frames by an
+ * observer of `browser::on-frame-event` with the tab as its args, a seed
+ * read, a leased viewer that renews every 6 s, the resize that makes the tab
+ * a phone the size of the view, and the input gestures (a person's own: the
+ * worker draws no agent cursor for them).
  */
 export const WIRE = {
-  frames: { trigger: 'browser::frame-event', config: { session_id: '$session' } },
+  frames: { fn: 'browser::on-frame-event', args: { session_id: '$session' } },
   seed: { fn: 'browser::frame', args: { session_id: '$session', since_frame: '$seq' } },
   start: {
     fn: 'browser::screencast::start',
@@ -171,7 +189,7 @@ export interface ScreenshotResult {
 
 export type InstallPhase = 'resolving' | 'downloading' | 'extracting' | 'verifying' | 'done' | 'failed'
 
-/** `browser::chromium-install-progress` and `chromium::status().job`. */
+/** `browser::on-chromium-install-progress` and `chromium::status().job`. */
 export interface InstallProgress {
   job_id: string
   phase: InstallPhase
@@ -350,17 +368,17 @@ function compact(fields: Record<string, JsonValue | undefined>): JsonObject {
 }
 
 /**
- * Binds trigger `type` of the browser (bind first, read after `ready`).
- * A failed binding is reported once and left unbound.
+ * Observes event function `functionId` of the browser (observe first, read
+ * after `ready`). A failed observer is reported once and left disposed.
  */
 export function listen<P>(
-  type: string,
-  config: JsonObject,
+  functionId: string,
+  source: ObserveSource,
   handler: (payload: P) => void,
 ): Unsubscribe & {
   ready: Promise<boolean>
 } {
-  const off = iii.on<P>(type, config, (payload) => {
+  const off = iii.on<P>(functionId, source, (payload) => {
     if (payload && typeof payload === 'object') handler(payload)
   })
   const ready = off.ready.then(

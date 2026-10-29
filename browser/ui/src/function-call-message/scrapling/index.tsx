@@ -1,6 +1,6 @@
 import type {
-  FunctionTriggerMessage,
-  FunctionTriggerRenderer,
+  FunctionCallMessage,
+  FunctionCallRenderer,
   Host,
 } from '@iii-dev/console-ui'
 import { InfraErrorView, parseInfraErrorDisplay } from '../../lib/errors'
@@ -60,7 +60,7 @@ function redactProxyValues(
 }
 
 function tryRender(
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
   host?: Host,
 ): React.ReactNode | null {
   if (!isScraplingFunction(message.functionId) || message.pendingApproval) {
@@ -129,7 +129,7 @@ function tryRender(
 }
 
 function tryRenderPreview(
-  message: FunctionTriggerMessage,
+  message: FunctionCallMessage,
 ): React.ReactNode | null {
   if (!isScraplingFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)
@@ -157,8 +157,8 @@ function tryRenderPreview(
 
 export function createScraplingRenderer(
   host: Host,
-): FunctionTriggerRenderer {
-  const render = (message: FunctionTriggerMessage) => tryRender(message, host)
+): FunctionCallRenderer {
+  const render = (message: FunctionCallMessage) => tryRender(message, host)
   return {
     id: 'browser/page.js#scraping-calls',
     isMatch: isScraplingFunction,

@@ -571,11 +571,11 @@ fn crawl_request() -> Value {
         ("impersonate", json!({"type": "string"})),
         (
             "crawl_id",
-            json!({"type": "string", "description": "id for this crawl (default: random). Bind browser::crawl-item with this crawl_id before calling to receive items live; must not match a running crawl"}),
+            json!({"type": "string", "description": "id for this crawl (default: random). Observe browser::on-crawl-item with args { crawl_id } before calling to receive items live; must not match a running crawl"}),
         ),
         (
             "stream_name",
-            json!({"type": "string", "description": "deprecated, ignored (adds a warning): items are no longer written to a stream; use browser::crawl::items or the browser::crawl-item trigger"}),
+            json!({"type": "string", "description": "deprecated, ignored (adds a warning): the crawl writes to no stream; use browser::crawl::items or observe browser::on-crawl-item"}),
         ),
     ]);
     json!({"type": "object", "properties": obj(props)})
@@ -603,9 +603,9 @@ fn crawl_response() -> Value {
             "crawl": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "pass to browser::crawl::items, or as the browser::crawl-item crawl_id filter"},
+                    "id": {"type": "string", "description": "pass to browser::crawl::items, or as the crawl_id arg of a browser::on-crawl-item observer"},
                     "items_function": {"type": "string", "description": "browser::crawl::items: paginated read of every retained item"},
-                    "trigger_type": {"type": "string", "description": "browser::crawl-item: live per-item events"},
+                    "function_id": {"type": "string", "description": "browser::on-crawl-item: observe it for live per-item events"},
                     "retained": {"type": "integer", "description": "items readable with browser::crawl::items (less than stats.crawled when a retention cap was hit)"},
                     "dropped_events": {"type": "integer", "description": "live events dropped because a slow consumer filled the bounded queue; read those items back"},
                 },
@@ -638,7 +638,7 @@ fn crawl_items_response() -> Value {
                     "type": "object",
                     "properties": {"seq": {"type": "integer"}, "item": {"type": "object"}},
                 },
-                "description": "retained items in crawl order; seq matches the browser::crawl-item events",
+                "description": "retained items in crawl order; seq matches the browser::on-crawl-item events",
             },
             "next_after": {"type": "integer", "description": "present when more retained items follow"},
             "retained": {"type": "integer"},

@@ -1,34 +1,41 @@
-//! The custom trigger types this worker emits, and the fan-out behind
-//! them. Consumers bind handlers with the standard two-step pattern; the
-//! engine routes each registration to our [`TriggerHandler`]. Delivery is
-//! fire-and-forget (`TriggerAction::Void`) and at-least-once; per-binding
-//! `config` filters are evaluated here by the emitting worker, and malformed
-//! configs are rejected at registration time.
+//! The event functions this worker hosts, one per kind of browser event.
+//! Each is private (only this worker calls it) and its handler returns the
+//! event it is called with, so its observers observe the event. The worker
+//! emits an event by calling its function with `CallAction::Void`; iii
+//! delivers the call to every observer whose filters match, and the emitter
+//! never waits for them.
+//!
+//! `browser::on-frame-event` takes `{ session_id? }` args: an observer with a
+//! `session_id` receives that tab's frames only, and the frame pump encodes
+//! nothing for a tab nobody watches. Every other function takes no args;
+//! observers select a tab with a filter on `input.session_id`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{Call, CallAction, CallRequest, IIIClient, Keys, Match, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-pub const SESSION_STARTED: &str = "browser::session-started";
-pub const SESSION_STOPPED: &str = "browser::session-stopped";
-pub const SESSION_UPDATED: &str = "browser::session-updated";
-pub const NAVIGATED: &str = "browser::navigated";
-pub const CONSOLE_EVENT: &str = "browser::console-event";
-pub const NETWORK_EVENT: &str = "browser::network-event";
-pub const PICKED: &str = "browser::picked";
-pub const HANDOFF_REQUESTED: &str = "browser::handoff-requested";
-pub const HANDOFF_RESOLVED: &str = "browser::handoff-resolved";
-pub const DOWNLOAD_CHANGED: &str = "browser::download-changed";
-pub const FRAME_EVENT: &str = "browser::frame-event";
-pub const CHROMIUM_INSTALL_PROGRESS: &str = "browser::chromium-install-progress";
+pub const ON_SESSION_STARTED_FN: &str = "browser::on-session-started";
+pub const ON_SESSION_STOPPED_FN: &str = "browser::on-session-stopped";
+pub const ON_SESSION_UPDATED_FN: &str = "browser::on-session-updated";
+pub const ON_NAVIGATED_FN: &str = "browser::on-navigated";
+pub const ON_CONSOLE_EVENT_FN: &str = "browser::on-console-event";
+pub const ON_NETWORK_EVENT_FN: &str = "browser::on-network-event";
+pub const ON_PICKED_FN: &str = "browser::on-picked";
+pub const ON_HANDOFF_REQUESTED_FN: &str = "browser::on-handoff-requested";
+pub const ON_HANDOFF_RESOLVED_FN: &str = "browser::on-handoff-resolved";
+pub const ON_DOWNLOAD_CHANGED_FN: &str = "browser::on-download-changed";
+pub const ON_FRAME_EVENT_FN: &str = "browser::on-frame-event";
+pub const ON_CHROMIUM_INSTALL_PROGRESS_FN: &str = "browser::on-chromium-install-progress";
+
+/// The key an observer of `browser::on-frame-event` without a `session_id`
+/// is filed under: every frame call lists it.
+const ALL_SESSIONS: &str = "*";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -47,20 +54,21 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub fn trigger_type(&self) -> &'static str {
+    /// The function this worker calls to emit the event.
+    pub fn function_id(&self) -> &'static str {
         match self {
-            EventKind::SessionStarted => SESSION_STARTED,
-            EventKind::SessionStopped => SESSION_STOPPED,
-            EventKind::SessionUpdated => SESSION_UPDATED,
-            EventKind::Navigated => NAVIGATED,
-            EventKind::ConsoleEvent => CONSOLE_EVENT,
-            EventKind::NetworkEvent => NETWORK_EVENT,
-            EventKind::Picked => PICKED,
-            EventKind::HandoffRequested => HANDOFF_REQUESTED,
-            EventKind::HandoffResolved => HANDOFF_RESOLVED,
-            EventKind::DownloadChanged => DOWNLOAD_CHANGED,
-            EventKind::FrameEvent => FRAME_EVENT,
-            EventKind::ChromiumInstallProgress => CHROMIUM_INSTALL_PROGRESS,
+            EventKind::SessionStarted => ON_SESSION_STARTED_FN,
+            EventKind::SessionStopped => ON_SESSION_STOPPED_FN,
+            EventKind::SessionUpdated => ON_SESSION_UPDATED_FN,
+            EventKind::Navigated => ON_NAVIGATED_FN,
+            EventKind::ConsoleEvent => ON_CONSOLE_EVENT_FN,
+            EventKind::NetworkEvent => ON_NETWORK_EVENT_FN,
+            EventKind::Picked => ON_PICKED_FN,
+            EventKind::HandoffRequested => ON_HANDOFF_REQUESTED_FN,
+            EventKind::HandoffResolved => ON_HANDOFF_RESOLVED_FN,
+            EventKind::DownloadChanged => ON_DOWNLOAD_CHANGED_FN,
+            EventKind::FrameEvent => ON_FRAME_EVENT_FN,
+            EventKind::ChromiumInstallProgress => ON_CHROMIUM_INSTALL_PROGRESS_FN,
         }
     }
 
@@ -80,32 +88,174 @@ impl EventKind {
             EventKind::ChromiumInstallProgress,
         ]
     }
+
+    /// Whether observers choose the event's session with args
+    /// (`{ session_id? }`) rather than with a filter.
+    pub fn matched_by_session(&self) -> bool {
+        matches!(self, EventKind::FrameEvent)
+    }
+
+    /// The registration description: what happened, and how to observe it.
+    pub fn description(&self) -> &'static str {
+        match self {
+            EventKind::SessionStarted => {
+                "A browser tab opened and is ready. Returns the SessionStartedEvent it is called \
+                 with. No args; filter on input.session_id. Private: only the browser worker \
+                 calls it."
+            }
+            EventKind::SessionStopped => {
+                "A browser tab closed for good (stopped, idle, expired, or crashed). Returns the \
+                 SessionStoppedEvent it is called with. No args; filter on input.session_id. \
+                 Private: only the browser worker calls it."
+            }
+            EventKind::SessionUpdated => {
+                "A browser tab woke up (page open again), went to sleep (page closed, tab kept), \
+                 or its page's title changed. Returns the SessionUpdatedEvent it is called with. \
+                 No args; filter on input.session_id. Private: only the browser worker calls it."
+            }
+            EventKind::Navigated => {
+                "A tab's page committed a navigation. Returns the NavigatedEvent it is called \
+                 with. No args; filter on input.session_id. Private: only the browser worker \
+                 calls it."
+            }
+            EventKind::ConsoleEvent => {
+                "A console/log/exception entry was captured on a tab's page (high volume). \
+                 Returns the ConsoleEventPayload it is called with. No args; filter on \
+                 input.session_id. Private: only the browser worker calls it."
+            }
+            EventKind::NetworkEvent => {
+                "A network request was captured (completed or failed) on a tab's page. Returns \
+                 the NetworkEventPayload it is called with. No args; filter on input.session_id. \
+                 Private: only the browser worker calls it."
+            }
+            EventKind::Picked => {
+                "The human picked an element in inspect mode. Returns the PickedEvent it is \
+                 called with. No args; filter on input.session_id. Private: only the browser \
+                 worker calls it."
+            }
+            EventKind::HandoffRequested => {
+                "A tab is paused waiting for a human to complete a step (CAPTCHA, 2FA, payment). \
+                 Returns the HandoffRequestedEvent it is called with. No args; filter on \
+                 input.session_id. Private: only the browser worker calls it."
+            }
+            EventKind::HandoffResolved => {
+                "A paused handoff finished (confirmed in page, by call, timed out, or \
+                 cancelled). Returns the HandoffResolvedEvent it is called with. No args; filter \
+                 on input.session_id. Private: only the browser worker calls it."
+            }
+            EventKind::DownloadChanged => {
+                "A download started, progressed, or finished in a tab. Returns the \
+                 DownloadChangedEvent it is called with. No args; filter on input.session_id. \
+                 Private: only the browser worker calls it."
+            }
+            EventKind::FrameEvent => {
+                "Internal: a live screencast frame of a watched tab (console viewport plumbing, \
+                 high volume). Returns the FrameEventPayload it is called with. Args \
+                 { session_id? }: an observer with a session_id receives that tab's frames only; \
+                 observe with max_in_flight: 1 so a slow viewer skips frames. Private: only the \
+                 browser worker calls it."
+            }
+            EventKind::ChromiumInstallProgress => {
+                "A browser::chromium::install job moved: a new phase (resolving, downloading, \
+                 extracting, verifying, done, failed) or about 1% more bytes. Returns the \
+                 InstallProgress it is called with. No args; filter on input.job_id or \
+                 input.phase. Private: only the browser worker calls it."
+            }
+        }
+    }
+
+    /// The function's registration: private, its handler returns the event
+    /// it is called with, and its request and response format are the
+    /// event's schema.
+    fn registration(&self) -> RegisterFunction {
+        let source = match self {
+            EventKind::SessionStarted => event_source::<SessionStartedEvent>(),
+            EventKind::SessionStopped => event_source::<SessionStoppedEvent>(),
+            EventKind::SessionUpdated => event_source::<SessionUpdatedEvent>(),
+            EventKind::Navigated => event_source::<NavigatedEvent>(),
+            EventKind::ConsoleEvent => event_source::<ConsoleEventPayload>(),
+            EventKind::NetworkEvent => event_source::<NetworkEventPayload>(),
+            EventKind::Picked => event_source::<PickedEvent>(),
+            EventKind::HandoffRequested => event_source::<HandoffRequestedEvent>(),
+            EventKind::HandoffResolved => event_source::<HandoffResolvedEvent>(),
+            EventKind::DownloadChanged => event_source::<DownloadChangedEvent>(),
+            EventKind::FrameEvent => {
+                event_source::<FrameEventPayload>().args_format::<FrameEventArgs>()
+            }
+            EventKind::ChromiumInstallProgress => event_source::<ChromiumInstallProgressEvent>(),
+        };
+        source.description(self.description())
+    }
 }
 
-/// Config accepted by every `browser::*` trigger binding. The only filter is
-/// an optional session-id equality match; unknown fields fail at registration
-/// so a misspelled filter key fails loudly instead of silently receiving
-/// nothing.
+/// Args of a `browser::on-frame-event` observer. Unknown fields are refused
+/// (`INVALID_ARGS`), so a misspelled key fails at `observe` instead of
+/// receiving every tab's frames.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BindingConfig {
-    /// Only deliver events for this browser session.
+pub struct FrameEventArgs {
+    /// Only this tab's frames. Without it, the observer receives every
+    /// watched tab's frames.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 }
 
-pub fn binding_matches(filter: &BindingConfig, session_id: &str) -> bool {
-    match &filter.session_id {
-        Some(want) => want == session_id,
-        None => true,
+/// The JSON Schema of `T`, built the way iii-sdk builds a typed handler's
+/// formats at registration.
+fn schema_of<T: JsonSchema>() -> Value {
+    serde_json::to_value(
+        schemars::r#gen::SchemaSettings::draft07()
+            .into_generator()
+            .into_root_schema_for::<T>(),
+    )
+    .unwrap_or(Value::Null)
+}
+
+/// A private function whose handler returns the event it is called with.
+/// The handler passes the JSON through untouched (a frame is ~100 KB of
+/// base64), and the formats carry the event's schema.
+fn event_source<E: JsonSchema>() -> RegisterFunction {
+    let schema = schema_of::<E>();
+    RegisterFunction::new(|event: Value| Ok::<_, Error>(event))
+        .request_format(schema.clone())
+        .response_format(schema)
+        .private()
+}
+
+/// `browser::on-frame-event`: an observer with a `session_id` is filed under
+/// it, one without under [`ALL_SESSIONS`]; a frame matches both its tab's
+/// key and [`ALL_SESSIONS`].
+fn frame_match() -> Match {
+    Match::keys(
+        |obs| match obs.args_value().get("session_id").and_then(Value::as_str) {
+            Some(session_id) => Keys::from(session_id),
+            None => Keys::from(ALL_SESSIONS),
+        },
+        |call| match call.input.get("session_id").and_then(Value::as_str) {
+            Some(session_id) => Keys::from(vec![session_id, ALL_SESSIONS]),
+            None => Keys::from(ALL_SESSIONS),
+        },
+    )
+}
+
+/// Register the event functions. The frame function's match hook is set by
+/// id first, so it files every observer.
+pub fn register_event_functions(iii: &IIIClient) {
+    iii.on_observer_match_for(ON_FRAME_EVENT_FN, frame_match());
+    for kind in EventKind::all() {
+        iii.register_function(kind.function_id(), kind.registration());
+        tracing::debug!(
+            function_id = kind.function_id(),
+            "registered event function"
+        );
     }
 }
 
 // ---------------------------------------------------------------------------
-// Event payloads (what subscribers receive)
+// Events (what each function returns, and its observers observe)
 // ---------------------------------------------------------------------------
 
-/// `browser::session-started` — a Chromium session is up and ready.
+/// `browser::on-session-started` — a Chromium session is up and ready.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStartedEvent {
     pub session_id: String,
@@ -117,7 +267,7 @@ pub struct SessionStartedEvent {
     pub timestamp: i64,
 }
 
-/// `browser::session-stopped` — a tab closed for good; see `reason`.
+/// `browser::on-session-stopped` — a tab closed for good; see `reason`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStoppedEvent {
     pub session_id: String,
@@ -126,12 +276,12 @@ pub struct SessionStoppedEvent {
     pub timestamp: i64,
 }
 
-/// `browser::session-updated` — a tab woke up (`active: true`, its page is
+/// `browser::on-session-updated` — a tab woke up (`active: true`, its page is
 /// open again), went to sleep (`active: false`, page closed, tab kept), or
 /// its live page's title changed (`active: true`; reported by an in-page
 /// title watcher the page cannot see). The tab strip re-reads
 /// `browser::sessions::list` on this; URL moves arrive as
-/// `browser::navigated`.
+/// `browser::on-navigated`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionUpdatedEvent {
     pub session_id: String,
@@ -141,7 +291,7 @@ pub struct SessionUpdatedEvent {
     pub timestamp: i64,
 }
 
-/// `browser::navigated` — the session's page committed a navigation.
+/// `browser::on-navigated` — the session's page committed a navigation.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NavigatedEvent {
     pub session_id: String,
@@ -149,7 +299,7 @@ pub struct NavigatedEvent {
     pub timestamp: i64,
 }
 
-/// `browser::download-changed` — a download in the session started,
+/// `browser::on-download-changed` — a download in the session started,
 /// progressed, or finished. The durable record is `browser::downloads::list`;
 /// this is the nudge to re-list.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -158,11 +308,11 @@ pub struct DownloadChangedEvent {
     pub timestamp: i64,
 }
 
-/// `browser::frame-event` — one live screencast frame of a watched tab, the
-/// picture the console viewport paints. Internal console-UI plumbing and
-/// high-volume (up to 30 a second, base64 JPEG): bind with a `session_id`
-/// filter only while a viewer is on screen. `browser::frame` reads the newest
-/// frame once for the first paint.
+/// `browser::on-frame-event` — one live screencast frame of a watched tab,
+/// the picture the console viewport paints. Internal console-UI plumbing and
+/// high-volume (up to 30 a second, base64 JPEG): observe with
+/// `{ session_id }` args and `max_in_flight: 1` only while a viewer is on
+/// screen. `browser::frame` reads the newest frame once for the first paint.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FrameEventPayload {
     pub session_id: String,
@@ -177,25 +327,26 @@ pub struct FrameEventPayload {
     pub timestamp: i64,
 }
 
-/// `browser::console-event` — one console/log/exception entry was captured.
-/// High-volume: bind with a `session_id` filter and debounce on the consumer
-/// side; the durable record is the ring buffer behind `browser::console::read`.
+/// `browser::on-console-event` — one console/log/exception entry was
+/// captured. High-volume: observe with an `input.session_id` filter and
+/// debounce on the consumer side; the durable record is the ring buffer
+/// behind `browser::console::read`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConsoleEventPayload {
     pub session_id: String,
     pub entry: crate::session::ConsoleEntry,
 }
 
-/// `browser::network-event` — one network request was captured (completed or
-/// failed). Symmetric with `browser::console-event`; the durable record is the
-/// ring buffer behind `browser::network::read`.
+/// `browser::on-network-event` — one network request was captured (completed
+/// or failed). Symmetric with `browser::on-console-event`; the durable record
+/// is the ring buffer behind `browser::network::read`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NetworkEventPayload {
     pub session_id: String,
     pub entry: crate::session::NetworkEntry,
 }
 
-/// `browser::picked` — the human picked an element in inspect mode
+/// `browser::on-picked` — the human picked an element in inspect mode
 /// (`browser::pick::start`). Carries everything a chat composer needs to
 /// describe the element, plus a `ref` that `browser::act` and
 /// `browser::evaluate` accept directly.
@@ -206,7 +357,7 @@ pub struct PickedEvent {
     pub timestamp: i64,
 }
 
-/// `browser::handoff-requested` — a session is paused waiting for a human to
+/// `browser::on-handoff-requested` — a session is paused waiting for a human to
 /// complete a step (CAPTCHA, 2FA, payment). The console surfaces this beside
 /// the live viewport; resolve it with `browser::handoff::confirm` (or the
 /// human clicks the in-page continue control).
@@ -219,7 +370,7 @@ pub struct HandoffRequestedEvent {
     pub timestamp: i64,
 }
 
-/// `browser::handoff-resolved` — a paused handoff finished, however it
+/// `browser::on-handoff-resolved` — a paused handoff finished, however it
 /// finished. The console clears its banner on this; `via` is `in_page`,
 /// `confirm_call`, `timeout`, or `cancelled`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -230,13 +381,13 @@ pub struct HandoffResolvedEvent {
     pub timestamp: i64,
 }
 
-/// `browser::chromium-install-progress` carries
+/// `browser::on-chromium-install-progress` returns
 /// [`crate::chromium::install::InstallProgress`]: `{ job_id, phase, version?,
 /// bytes_done, bytes_total?, path?, error?, hint?, timestamp }`. It is not a
-/// session event, so it reaches only bindings without a `session_id` filter.
+/// session event and carries no `session_id`.
 pub use crate::chromium::install::InstallProgress as ChromiumInstallProgressEvent;
 
-/// The element payload inside `browser::picked`.
+/// The element payload inside `browser::on-picked`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PickedElement {
     /// Stable ref usable with `browser::act` / `browser::evaluate` until the
@@ -267,420 +418,262 @@ pub struct Bounds {
 }
 
 // ---------------------------------------------------------------------------
-// Subscriber registry + trigger type registration
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub struct Binding {
-    pub id: String,
-    pub function_id: String,
-    pub filter: BindingConfig,
-}
-
-/// Thread-safe subscriber registry for one trigger type.
-#[derive(Clone)]
-pub struct SubscriberSet {
-    kind: EventKind,
-    inner: Arc<Mutex<HashMap<String, Binding>>>,
-}
-
-impl SubscriberSet {
-    pub fn new(kind: EventKind) -> Self {
-        Self {
-            kind,
-            inner: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    /// Parse + insert a binding. Rejects malformed configs at registration.
-    pub fn add(&self, config: TriggerConfig) -> Result<(), String> {
-        let raw = if config.config.is_null() {
-            Value::Object(serde_json::Map::new())
-        } else {
-            config.config.clone()
-        };
-        let filter: BindingConfig = serde_json::from_value(raw)
-            .map_err(|e| format!("invalid {} config: {e}", self.kind.trigger_type()))?;
-        let binding = Binding {
-            id: config.id.clone(),
-            function_id: config.function_id,
-            filter,
-        };
-        self.lock().insert(config.id, binding);
-        Ok(())
-    }
-
-    pub fn remove(&self, id: &str) {
-        self.lock().remove(id);
-    }
-
-    /// Snapshot so the mutex is never held across awaits.
-    pub fn snapshot(&self) -> Vec<Binding> {
-        self.lock().values().cloned().collect()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Binding>> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-/// The subscriber sets, one per trigger type.
-#[derive(Clone)]
-pub struct TriggerSets {
-    inner: HashMap<&'static str, SubscriberSet>,
-}
-
-impl TriggerSets {
-    pub fn new() -> Self {
-        let mut inner = HashMap::new();
-        for kind in EventKind::all() {
-            inner.insert(kind.trigger_type(), SubscriberSet::new(kind));
-        }
-        Self { inner }
-    }
-
-    pub fn for_kind(&self, kind: EventKind) -> &SubscriberSet {
-        self.inner
-            .get(kind.trigger_type())
-            .expect("all kinds are populated at construction")
-    }
-}
-
-impl Default for TriggerSets {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-struct BrowserTriggerHandler {
-    set: SubscriberSet,
-}
-
-#[async_trait]
-impl TriggerHandler for BrowserTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let id = config.id.clone();
-        let function_id = config.function_id.clone();
-        self.set.add(config).map_err(Error::Handler)?;
-        tracing::info!(id = %id, function_id = %function_id, "trigger subscription registered");
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        tracing::info!(id = %config.id, "trigger subscription unregistered");
-        self.set.remove(&config.id);
-        Ok(())
-    }
-}
-
-/// Register the custom trigger types with the engine. Must run before
-/// `functions::register_all` so handlers can capture the subscriber sets.
-pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
-    let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 12] = [
-        (
-            EventKind::SessionStarted,
-            "A browser tab opened and is ready.",
-        ),
-        (
-            EventKind::SessionStopped,
-            "A browser tab closed for good (stopped, idle, expired, or crashed).",
-        ),
-        (
-            EventKind::SessionUpdated,
-            "A browser tab woke up (page open again), went to sleep (page closed, tab kept), or its \
-             page's title changed.",
-        ),
-        (
-            EventKind::Navigated,
-            "The session's page committed a navigation.",
-        ),
-        (
-            EventKind::ConsoleEvent,
-            "A console/log/exception entry was captured on a session's page.",
-        ),
-        (
-            EventKind::NetworkEvent,
-            "A network request was captured (completed or failed) on a session's page.",
-        ),
-        (
-            EventKind::Picked,
-            "The human picked an element in inspect mode.",
-        ),
-        (
-            EventKind::HandoffRequested,
-            "A session is paused waiting for a human to complete a step (CAPTCHA, 2FA, payment).",
-        ),
-        (
-            EventKind::HandoffResolved,
-            "A paused handoff finished (confirmed in page, by call, or timed out).",
-        ),
-        (
-            EventKind::DownloadChanged,
-            "A download started, progressed, or finished in a session.",
-        ),
-        (
-            EventKind::FrameEvent,
-            "Internal: a live screencast frame of a watched tab (console viewport plumbing, high volume).",
-        ),
-        (
-            EventKind::ChromiumInstallProgress,
-            "A browser::chromium::install job moved: a new phase (resolving, downloading, \
-             extracting, verifying, done, failed) or about 1% more bytes. Not a session event: \
-             bind without a session_id filter.",
-        ),
-    ];
-    for (kind, description) in descriptions {
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                kind.trigger_type(),
-                description,
-                BrowserTriggerHandler {
-                    set: sets.for_kind(kind).clone(),
-                },
-            )
-            .trigger_request_format::<BindingConfig>(),
-        );
-        tracing::info!(
-            trigger_type = kind.trigger_type(),
-            "registered trigger type"
-        );
-    }
-    sets
-}
-
-// ---------------------------------------------------------------------------
 // Emission
 // ---------------------------------------------------------------------------
 
-/// How a matched event reaches a subscriber. Production delivers over the
-/// bus; tests record.
+/// Where emitted events go: the event functions on the bus in production, a
+/// recorder in tests.
 #[async_trait]
-pub trait EventDeliverer: Send + Sync {
-    /// Fire-and-forget delivery.
-    async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value);
-    /// Delivery that returns once the bus accepted the event, for producers
-    /// that want back-pressure (the frame pump). Defaults to `deliver`.
-    async fn deliver_awaited(&self, trigger_type: &str, function_id: &str, payload: Value) {
-        self.deliver(trigger_type, function_id, payload).await;
-    }
+pub trait EventSink: Send + Sync {
+    /// Whether an event of `kind` for `session_id` would reach any observer.
+    fn is_observed(&self, kind: EventKind, session_id: &str) -> bool;
+    /// Call `kind`'s function with `event`. Returns without waiting for the
+    /// observers.
+    async fn call(&self, kind: EventKind, event: Value);
 }
 
-/// Fire-and-forget bus delivery so the page-event pump that produced the
-/// event is never blocked on subscriber latency. Failures are logged and
-/// swallowed.
-pub struct IiiDeliverer {
+/// Calls the event functions on the bus with `CallAction::Void`. The
+/// functions are this worker's own, so each call runs in-process and the
+/// observers are reported to the engine without waiting for them. Failures
+/// are logged and swallowed: an event is never worth failing the pump that
+/// produced it.
+pub struct IiiSink {
     iii: Arc<IIIClient>,
 }
 
-impl IiiDeliverer {
+impl IiiSink {
     pub fn new(iii: Arc<IIIClient>) -> Self {
         Self { iii }
     }
 }
 
 #[async_trait]
-impl EventDeliverer for IiiDeliverer {
-    async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value) {
-        let iii = self.iii.clone();
-        let trigger_type = trigger_type.to_string();
-        let function_id = function_id.to_string();
-        tokio::spawn(async move {
-            let res = iii
-                .trigger(TriggerRequest {
-                    function_id: function_id.clone(),
-                    payload,
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                })
-                .await;
-            if let Err(e) = res {
-                tracing::warn!(trigger_type, function_id, error = %e, "event fan-out failed");
-            }
-        });
+impl EventSink for IiiSink {
+    fn is_observed(&self, kind: EventKind, session_id: &str) -> bool {
+        if kind.matched_by_session() {
+            let call = Call {
+                input: json!({ "session_id": session_id }),
+                ..Call::default()
+            };
+            self.iii.is_observed_for(kind.function_id(), &call)
+        } else {
+            self.iii.is_observed(kind.function_id())
+        }
     }
 
-    async fn deliver_awaited(&self, trigger_type: &str, function_id: &str, payload: Value) {
+    async fn call(&self, kind: EventKind, event: Value) {
         let res = self
             .iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: Some(TriggerAction::Void),
-                timeout_ms: Some(5_000),
+            .call(CallRequest {
+                function_id: kind.function_id().to_string(),
+                payload: event,
+                action: Some(CallAction::Void),
+                timeout_ms: None,
             })
             .await;
         if let Err(e) = res {
-            tracing::debug!(trigger_type, function_id, error = %e, "event delivery failed");
+            tracing::warn!(function_id = kind.function_id(), error = %e, "event call failed");
         }
     }
 }
 
-/// Evaluates each binding's session filter against each event and delivers
-/// the payload to every match.
+/// Emits events: nothing is serialized or called for an event nobody
+/// observes.
 pub struct Emitter {
-    sets: TriggerSets,
-    deliverer: Arc<dyn EventDeliverer>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl Emitter {
-    pub fn new(sets: TriggerSets, deliverer: Arc<dyn EventDeliverer>) -> Self {
-        Self { sets, deliverer }
+    pub fn new(sink: Arc<dyn EventSink>) -> Self {
+        Self { sink }
     }
 
+    /// The production emitter: [`IiiSink`] over `iii`.
+    pub fn for_iii(iii: Arc<IIIClient>) -> Self {
+        Self::new(Arc::new(IiiSink::new(iii)))
+    }
+
+    /// Whether an event of `kind` for this session would reach anyone, so a
+    /// producer can skip building it (copying a frame, say).
+    pub fn is_observed(&self, kind: EventKind, session_id: &str) -> bool {
+        self.sink.is_observed(kind, session_id)
+    }
+
+    /// Call `kind`'s function with `payload` when anyone observes it.
+    /// `session_id` is the tab the event belongs to (`""` for an event of no
+    /// tab); it picks the observers of a function matched by session.
     pub async fn emit<T: Serialize>(&self, kind: EventKind, session_id: &str, payload: &T) {
-        self.emit_inner(kind, session_id, payload, false).await;
-    }
-
-    /// `emit`, returning once every matching binding accepted the event, so
-    /// the caller is paced by the bus instead of flooding it.
-    pub async fn emit_awaited<T: Serialize>(&self, kind: EventKind, session_id: &str, payload: &T) {
-        self.emit_inner(kind, session_id, payload, true).await;
-    }
-
-    /// Whether anyone is bound to `kind` for this session — lets a producer
-    /// skip work (a JPEG decode, say) nobody would see.
-    pub fn has_subscribers(&self, kind: EventKind, session_id: &str) -> bool {
-        self.sets
-            .for_kind(kind)
-            .snapshot()
-            .iter()
-            .any(|b| binding_matches(&b.filter, session_id))
-    }
-
-    async fn emit_inner<T: Serialize>(
-        &self,
-        kind: EventKind,
-        session_id: &str,
-        payload: &T,
-        awaited: bool,
-    ) {
-        let bindings = self.sets.for_kind(kind).snapshot();
-        // Filter before serializing: on the high-volume console-event pump,
-        // a session with no matching binding must not pay the payload
-        // serialization cost (a console panel open on session A means every
-        // session-B log line would otherwise serialize for nothing).
-        let mut matched = bindings
-            .into_iter()
-            .filter(|b| binding_matches(&b.filter, session_id))
-            .peekable();
-        if matched.peek().is_none() {
+        // Check before serializing: on the high-volume console pump, an
+        // unobserved session must not pay the payload serialization cost.
+        if !self.sink.is_observed(kind, session_id) {
             return;
         }
-        let payload = match serde_json::to_value(payload) {
+        let event = match serde_json::to_value(payload) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, "event payload failed to serialize");
+                tracing::warn!(function_id = kind.function_id(), error = %e, "event failed to serialize");
                 return;
             }
         };
-        for binding in matched {
-            if awaited {
-                self.deliverer
-                    .deliver_awaited(kind.trigger_type(), &binding.function_id, payload.clone())
-                    .await;
-            } else {
-                self.deliverer
-                    .deliver(kind.trigger_type(), &binding.function_id, payload.clone())
-                    .await;
-            }
-        }
+        self.sink.call(kind, event).await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use std::sync::Mutex;
 
-    fn trigger_config(config: Value) -> TriggerConfig {
-        TriggerConfig {
-            id: "t1".to_string(),
-            function_id: "console::on-event".to_string(),
-            config,
-            metadata: None,
-            namespace: None,
+    /// Observes the kinds in `observed` (for the kind matched by session,
+    /// only the sessions in `sessions`) and records every call.
+    #[derive(Default)]
+    struct Recorder {
+        observed: Vec<EventKind>,
+        sessions: Vec<String>,
+        calls: Mutex<Vec<(String, Value)>>,
+    }
+
+    #[async_trait]
+    impl EventSink for Recorder {
+        fn is_observed(&self, kind: EventKind, session_id: &str) -> bool {
+            self.observed.contains(&kind)
+                && (!kind.matched_by_session() || self.sessions.iter().any(|s| s == session_id))
+        }
+
+        async fn call(&self, kind: EventKind, event: Value) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((kind.function_id().to_string(), event));
+        }
+    }
+
+    fn navigated(session_id: &str) -> NavigatedEvent {
+        NavigatedEvent {
+            session_id: session_id.to_string(),
+            url: "http://localhost:3000".to_string(),
+            timestamp: 0,
         }
     }
 
     #[test]
-    fn empty_filter_matches_everything() {
-        assert!(binding_matches(&BindingConfig::default(), "b1"));
+    fn function_ids_are_the_on_form_of_each_event() {
+        let ids: Vec<&str> = EventKind::all()
+            .iter()
+            .map(EventKind::function_id)
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "browser::on-session-started",
+                "browser::on-session-stopped",
+                "browser::on-session-updated",
+                "browser::on-navigated",
+                "browser::on-console-event",
+                "browser::on-network-event",
+                "browser::on-picked",
+                "browser::on-handoff-requested",
+                "browser::on-handoff-resolved",
+                "browser::on-download-changed",
+                "browser::on-frame-event",
+                "browser::on-chromium-install-progress",
+            ]
+        );
     }
 
     #[test]
-    fn session_filter_is_equality() {
-        let filter = BindingConfig {
-            session_id: Some("b1".to_string()),
-        };
-        assert!(binding_matches(&filter, "b1"));
-        assert!(!binding_matches(&filter, "b2"));
+    fn only_the_frame_function_takes_args() {
+        for kind in EventKind::all() {
+            assert_eq!(
+                kind.matched_by_session(),
+                kind == EventKind::FrameEvent,
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]
-    fn add_rejects_unknown_filter_keys() {
-        let set = SubscriberSet::new(EventKind::ConsoleEvent);
-        let err = set
-            .add(trigger_config(json!({ "sesion_id": "b1" })))
-            .unwrap_err();
-        assert!(err.contains("browser::console-event"), "{err}");
+    fn frame_args_refuse_unknown_keys() {
+        let err = serde_json::from_value::<FrameEventArgs>(json!({ "sesion_id": "b1" }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("sesion_id"), "{err}");
+        let args: FrameEventArgs = serde_json::from_value(json!({})).unwrap();
+        assert!(args.session_id.is_none());
+        let schema = schema_of::<FrameEventArgs>();
+        assert_eq!(schema["additionalProperties"], json!(false));
     }
 
     #[test]
-    fn add_accepts_null_config() {
-        let set = SubscriberSet::new(EventKind::Picked);
-        set.add(trigger_config(Value::Null)).unwrap();
-        assert_eq!(set.snapshot().len(), 1);
+    fn event_schemas_are_typed() {
+        let schema = schema_of::<NavigatedEvent>();
+        assert_eq!(schema["type"], "object");
+        let mut required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        required.sort_unstable();
+        assert_eq!(required, ["session_id", "timestamp", "url"]);
     }
 
     #[tokio::test]
-    async fn emit_delivers_only_to_matching_bindings() {
-        struct Recorder(Mutex<Vec<(String, String)>>);
-
-        #[async_trait]
-        impl EventDeliverer for Recorder {
-            async fn deliver(&self, trigger_type: &str, function_id: &str, _payload: Value) {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push((trigger_type.to_string(), function_id.to_string()));
-            }
-        }
-
-        let sets = TriggerSets::new();
-        let set = sets.for_kind(EventKind::Navigated);
-        set.add(TriggerConfig {
-            id: "match".to_string(),
-            function_id: "fn::match".to_string(),
-            config: json!({ "session_id": "b1" }),
-            metadata: None,
-            namespace: None,
-        })
-        .unwrap();
-        set.add(TriggerConfig {
-            id: "other".to_string(),
-            function_id: "fn::other".to_string(),
-            config: json!({ "session_id": "b2" }),
-            metadata: None,
-            namespace: None,
-        })
-        .unwrap();
-
-        let recorder = Arc::new(Recorder(Mutex::new(Vec::new())));
-        let emitter = Emitter::new(sets, recorder.clone());
+    async fn emit_calls_the_function_of_an_observed_event() {
+        let recorder = Arc::new(Recorder {
+            observed: vec![EventKind::Navigated],
+            ..Recorder::default()
+        });
+        let emitter = Emitter::new(recorder.clone());
+        emitter
+            .emit(EventKind::Navigated, "b1", &navigated("b1"))
+            .await;
         emitter
             .emit(
-                EventKind::Navigated,
+                EventKind::DownloadChanged,
                 "b1",
-                &NavigatedEvent {
+                &DownloadChangedEvent {
                     session_id: "b1".to_string(),
-                    url: "http://localhost:3000".to_string(),
                     timestamp: 0,
                 },
             )
             .await;
 
-        let seen = recorder.0.lock().unwrap().clone();
-        assert_eq!(seen, vec![(NAVIGATED.to_string(), "fn::match".to_string())]);
+        let calls = recorder.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "an unobserved event is not called");
+        assert_eq!(calls[0].0, ON_NAVIGATED_FN);
+        assert_eq!(calls[0].1["session_id"], "b1");
+    }
+
+    #[tokio::test]
+    async fn frames_are_emitted_only_for_watched_sessions() {
+        let recorder = Arc::new(Recorder {
+            observed: vec![EventKind::FrameEvent],
+            sessions: vec!["b1".to_string()],
+            ..Recorder::default()
+        });
+        let emitter = Emitter::new(recorder.clone());
+        assert!(emitter.is_observed(EventKind::FrameEvent, "b1"));
+        assert!(!emitter.is_observed(EventKind::FrameEvent, "b2"));
+        for session_id in ["b1", "b2"] {
+            emitter
+                .emit(
+                    EventKind::FrameEvent,
+                    session_id,
+                    &FrameEventPayload {
+                        session_id: session_id.to_string(),
+                        frame: String::new(),
+                        width: 1,
+                        height: 1,
+                        frame_seq: 1,
+                        timestamp: 0,
+                    },
+                )
+                .await;
+        }
+        let calls = recorder.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, ON_FRAME_EVENT_FN);
+        assert_eq!(calls[0].1["session_id"], "b1");
     }
 }

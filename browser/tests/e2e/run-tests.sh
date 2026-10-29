@@ -13,7 +13,7 @@ WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/browser}"
 
 # Port isolation. This machine commonly runs a shared dev engine on the iii
 # default port (49134) that already has a `browser` worker registered — some
-# other build, from some other worktree. Triggering against it would silently
+# other build, from some other worktree. Calling into it would silently
 # test the wrong binary while reporting a pass. (The namespace rename to
 # root `browser::*` ids do not collide with the PYTHON scrapling worker's
 # `scrapling::*` ids, but "wrong build of the same
@@ -213,7 +213,7 @@ echo "[run-tests] browser worker pid=$WORKER_PID"
 # 9. Wait for browser::css to succeed (worker startup + function registration).
 deadline=$(( $(date +%s) + 30 ))
 while :; do
-  if "$III_BIN" trigger --port "$E2E_PORT" browser::css html='<p>x</p>' query='p' >/dev/null 2>&1; then
+  if "$III_BIN" call --port "$E2E_PORT" browser::css html='<p>x</p>' query='p' >/dev/null 2>&1; then
     break
   fi
   if ! kill -0 "$WORKER_PID" 2>/dev/null; then

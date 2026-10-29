@@ -1420,7 +1420,7 @@
   width: min(260px, 100%);
 }
 
-/* ── function-trigger cards ─────────────────────────────────────────── */
+/* ── function-call cards ───────────────────────────────────────────── */
 
 [data-iii-ui="browser"] .br-ui-call,
 [data-iii-ui="browser"] .br-ui-err {

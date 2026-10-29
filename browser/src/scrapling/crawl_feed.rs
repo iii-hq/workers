@@ -1,27 +1,32 @@
-//! Where a crawl's items go besides the RPC sample: a worker-owned
-//! `browser::crawl-item` trigger type for live observers, and a bounded
-//! store read back through `browser::crawl::items` for recovery.
+//! Where a crawl's items go besides the RPC sample: the worker's private
+//! `browser::on-crawl-item` function, called once per event so its observers
+//! receive the crawl live, and a bounded store read back through
+//! `browser::crawl::items` for recovery.
 //!
-//! This replaces the old optional `stream::set` feed (one stream group per
-//! crawl, write failures ignored). Live delivery and the retained records are
-//! both owned here, so the crawl works the same on an engine that runs no
-//! stream worker.
+//! Live delivery and the retained records are both owned here, so the crawl
+//! works the same on an engine that runs no stream worker.
 //!
-//! Bounds, all enforced here: at most [`MAX_BINDINGS`] bindings; one drain
+//! `browser::on-crawl-item` delivers its calls itself: each event goes to the
+//! observers of its crawl (args `{ crawl_id }`) and to the observers of every
+//! crawl (no args), and the call returns once each of their targets answered
+//! or timed out. One drain task per crawl makes the calls in `seq` order, so
+//! a slow consumer slows its crawl's queue, never the crawl.
+//!
+//! Bounds, all enforced here: at most [`MAX_OBSERVERS`] observers; one drain
 //! task per crawl reading a queue of [`QUEUE_CAPACITY`] events (a full queue
 //! drops the event and counts it, the crawl never waits on a consumer); event
 //! items cut to [`EVENT_ITEM_BUDGET`]; and the store's crawl/byte/age limits.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType};
+use iii_sdk::{
+    Call, CallRequest, IIIClient, Keys, Match, ObserveRejection, Observer, RegisterFunction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -29,20 +34,23 @@ use tokio::sync::mpsc;
 
 use crate::scrapling::page::budget_page_derived_fields;
 
-/// The trigger type live observers bind.
-pub const CRAWL_ITEM: &str = "browser::crawl-item";
+/// The function live observers observe.
+pub const ON_CRAWL_ITEM_FN: &str = "browser::on-crawl-item";
 /// The paginated read that recovers a crawl's retained items.
 pub const ITEMS_FUNCTION: &str = "browser::crawl::items";
 
-/// Bindings accepted across all crawls; registration fails above this.
-pub const MAX_BINDINGS: usize = 64;
+/// Observers accepted across all crawls; `observe` fails above this.
+pub const MAX_OBSERVERS: usize = 64;
 /// Events buffered per crawl for live delivery. A slow consumer fills it;
 /// further events are dropped (and counted) instead of growing the queue.
 pub const QUEUE_CAPACITY: usize = 256;
 /// Page-derived fields of an event's `item` are cut to this many bytes.
 pub const EVENT_ITEM_BUDGET: usize = 65_536;
-/// Per-binding delivery timeout.
+/// Per-observer delivery timeout.
 pub const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the drain waits for one call of `browser::on-crawl-item`: the
+/// observers are called concurrently, each bounded by [`DELIVERY_TIMEOUT`].
+const CALL_TIMEOUT: Duration = Duration::from_secs(6);
 /// How long a finished crawl waits for its queue to drain before returning.
 pub const FLUSH_DEADLINE: Duration = Duration::from_secs(10);
 /// Longest accepted crawl id.
@@ -54,8 +62,11 @@ pub const MAX_PAGE_LIMIT: usize = 100;
 /// fits, however large).
 pub const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
 
-/// Validate a caller-chosen crawl id (the `crawl_id` input and the binding
-/// filter).
+/// The key an observer of every crawl is filed under: every call lists it.
+const ALL_CRAWLS: &str = "*";
+
+/// Validate a caller-chosen crawl id (the `crawl_id` input and the observer
+/// arg).
 pub fn validate_crawl_id(id: &str) -> Result<(), String> {
     if id.is_empty() {
         return Err("`crawl_id` must not be empty".into());
@@ -69,22 +80,24 @@ pub fn validate_crawl_id(id: &str) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Trigger type: bindings
+// The function: observers
 // ---------------------------------------------------------------------------
 
-/// Config of a `browser::crawl-item` binding. Without `crawl_id` the binding
-/// receives every crawl's items. Unknown keys are rejected so a misspelled
-/// filter fails at registration instead of silently matching everything.
+/// Args of a `browser::on-crawl-item` observer. Without `crawl_id` the
+/// observer receives every crawl's items. Unknown keys are refused
+/// (`INVALID_ARGS`) so a misspelled key fails at `observe` instead of
+/// silently matching everything.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct CrawlItemBindingConfig {
-    /// Only deliver events of this crawl (the `crawl_id` passed to, or
-    /// returned as `crawl.id` by, `browser::crawl`).
+pub struct CrawlItemArgs {
+    /// Only this crawl's events (the `crawl_id` passed to, or returned as
+    /// `crawl.id` by, `browser::crawl`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crawl_id: Option<String>,
 }
 
-/// What a `browser::crawl-item` binding receives.
+/// What `browser::on-crawl-item` returns, and what its observers' targets
+/// receive.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CrawlItemEvent {
     pub crawl_id: String,
@@ -111,54 +124,38 @@ pub struct CrawlItemEvent {
     pub dropped_events: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
-pub struct FeedBinding {
-    pub id: String,
-    pub function_id: String,
-    pub crawl_id: Option<String>,
-    pub namespace: Option<String>,
-    pub metadata: Option<Value>,
-}
-
-/// The live `browser::crawl-item` bindings.
+/// The accepted observers of `browser::on-crawl-item`, by id: what the cap
+/// counts. The engine holds everything else about them.
 #[derive(Clone, Default)]
-pub struct FeedBindings {
-    inner: Arc<Mutex<HashMap<String, FeedBinding>>>,
+pub struct CrawlObservers {
+    inner: Arc<Mutex<HashSet<String>>>,
 }
 
-impl FeedBindings {
-    /// Validate and insert a binding (re-registering an id replaces it).
-    pub fn add(&self, config: TriggerConfig) -> Result<(), String> {
-        let raw = if config.config.is_null() {
-            json!({})
-        } else {
-            config.config.clone()
-        };
-        let filter: CrawlItemBindingConfig =
-            serde_json::from_value(raw).map_err(|e| format!("invalid {CRAWL_ITEM} config: {e}"))?;
-        if let Some(id) = &filter.crawl_id {
-            validate_crawl_id(id).map_err(|e| format!("invalid {CRAWL_ITEM} config: {e}"))?;
+impl CrawlObservers {
+    /// Validate an observer's args and accept it (accepting an id again is
+    /// not a new observer). `INVALID_ARGS` for a bad `crawl_id`,
+    /// `OBSERVER_LIMIT` past [`MAX_OBSERVERS`].
+    pub fn admit(&self, id: &str, args: &CrawlItemArgs) -> Result<(), ObserveRejection> {
+        if let Some(crawl_id) = &args.crawl_id {
+            validate_crawl_id(crawl_id).map_err(|e| {
+                ObserveRejection::new("INVALID_ARGS", format!("{ON_CRAWL_ITEM_FN}: {e}"))
+            })?;
         }
-        let mut bindings = self.lock();
-        if !bindings.contains_key(&config.id) && bindings.len() >= MAX_BINDINGS {
-            return Err(format!(
-                "too many {CRAWL_ITEM} bindings (max {MAX_BINDINGS}); unregister unused ones"
+        let mut observers = self.lock();
+        if !observers.contains(id) && observers.len() >= MAX_OBSERVERS {
+            return Err(ObserveRejection::new(
+                "OBSERVER_LIMIT",
+                format!(
+                    "too many {ON_CRAWL_ITEM_FN} observers (max {MAX_OBSERVERS}); dispose unused \
+                     ones"
+                ),
             ));
         }
-        bindings.insert(
-            config.id.clone(),
-            FeedBinding {
-                id: config.id,
-                function_id: config.function_id,
-                crawl_id: filter.crawl_id,
-                namespace: config.namespace,
-                metadata: config.metadata,
-            },
-        );
+        observers.insert(id.to_string());
         Ok(())
     }
 
-    pub fn remove(&self, id: &str) {
+    pub fn release(&self, id: &str) {
         self.lock().remove(id);
     }
 
@@ -170,146 +167,179 @@ impl FeedBindings {
         self.len() == 0
     }
 
-    /// Snapshot of the bindings that want `crawl_id`, so the lock is never
-    /// held across a delivery.
-    pub fn matching(&self, crawl_id: &str) -> Vec<FeedBinding> {
-        self.lock()
-            .values()
-            .filter(|b| b.crawl_id.as_deref().is_none_or(|want| want == crawl_id))
-            .cloned()
-            .collect()
-    }
-
-    fn any_matching(&self, crawl_id: &str) -> bool {
-        self.lock()
-            .values()
-            .any(|b| b.crawl_id.as_deref().is_none_or(|want| want == crawl_id))
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, FeedBinding>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
-struct CrawlItemTriggerHandler {
-    bindings: FeedBindings,
+/// The key an observer with these args is filed under: its crawl, or
+/// [`ALL_CRAWLS`].
+fn observer_key(args: &Value) -> &str {
+    args.get("crawl_id")
+        .and_then(Value::as_str)
+        .unwrap_or(ALL_CRAWLS)
 }
 
-#[async_trait]
-impl TriggerHandler for CrawlItemTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let id = config.id.clone();
-        let function_id = config.function_id.clone();
-        self.bindings.add(config).map_err(Error::Handler)?;
-        tracing::info!(id = %id, function_id = %function_id, "crawl-item binding registered");
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.bindings.remove(&config.id);
-        tracing::info!(id = %config.id, "crawl-item binding unregistered");
-        Ok(())
+/// The keys an event with this input matches: its crawl's and
+/// [`ALL_CRAWLS`].
+fn call_keys(input: &Value) -> Vec<&str> {
+    match input.get("crawl_id").and_then(Value::as_str) {
+        Some(crawl_id) => vec![crawl_id, ALL_CRAWLS],
+        None => vec![ALL_CRAWLS],
     }
 }
 
-/// Register `browser::crawl-item` with the engine.
-pub fn register_trigger_type(iii: &Arc<IIIClient>, hub: &CrawlFeedHub) {
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            CRAWL_ITEM,
-            "One page of a browser::crawl was crawled (event: item, in seq order), or the crawl \
-             ended (event: done). Filter with crawl_id; bind before calling browser::crawl. \
-             Dropped or missed items are read back with browser::crawl::items.",
-            CrawlItemTriggerHandler {
-                bindings: hub.bindings.clone(),
-            },
-        )
-        .trigger_request_format::<CrawlItemBindingConfig>()
-        .call_request_format::<CrawlItemEvent>(),
+/// Calls each matching observer's target with the event, concurrently, each
+/// bounded by [`DELIVERY_TIMEOUT`], and returns once they all answered or
+/// timed out. The caller (the crawl's drain) gets `null`.
+async fn deliver(iii: &IIIClient, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
+    let event = call.output.clone().unwrap_or_else(|| call.input.clone());
+    let deliveries = observers
+        .iter()
+        .filter(|obs| obs.matches(&call))
+        .map(|obs| {
+            let request = CallRequest::observer(obs, event.clone()).timeout(DELIVERY_TIMEOUT);
+            async move {
+                match tokio::time::timeout(DELIVERY_TIMEOUT, iii.call(request)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => tracing::debug!(
+                        observer_id = obs.id(),
+                        target = obs.target(),
+                        error = %e,
+                        "crawl-item delivery failed"
+                    ),
+                    Err(_) => tracing::debug!(
+                        observer_id = obs.id(),
+                        target = obs.target(),
+                        "crawl-item delivery timed out"
+                    ),
+                }
+            }
+        });
+    futures::future::join_all(deliveries).await;
+    Ok(Value::Null)
+}
+
+/// Register `browser::on-crawl-item`: private, its handler returns the event
+/// it is called with, args `{ crawl_id? }`. Its hooks are set by id first, so
+/// they see every observer: the added hook validates `crawl_id` and caps the
+/// observers, the match hook gives each event to the observers of its crawl
+/// and of every crawl, and the deliver hook calls their targets.
+pub fn register_function(iii: &Arc<IIIClient>, hub: &CrawlFeedHub) {
+    let observers = hub.observers.clone();
+    iii.on_observer_added_for(ON_CRAWL_ITEM_FN, move |obs: Observer| {
+        let observers = observers.clone();
+        async move {
+            let args: CrawlItemArgs = obs.args()?;
+            observers.admit(obs.id(), &args)?;
+            tracing::info!(
+                observer_id = obs.id(),
+                target = obs.target(),
+                "crawl-item observer added"
+            );
+            Ok(())
+        }
+    });
+    let observers = hub.observers.clone();
+    iii.on_observer_removed_for(ON_CRAWL_ITEM_FN, move |obs: Observer| {
+        let observers = observers.clone();
+        async move {
+            observers.release(obs.id());
+            tracing::info!(observer_id = obs.id(), "crawl-item observer removed");
+        }
+    });
+    iii.on_observer_match_for(
+        ON_CRAWL_ITEM_FN,
+        Match::keys(
+            |obs| Keys::from(observer_key(obs.args_value())),
+            |call| Keys::from(call_keys(&call.input)),
+        ),
     );
-    tracing::info!(trigger_type = CRAWL_ITEM, "registered trigger type");
+    let engine = iii.clone();
+    iii.on_observer_deliver_for(
+        ON_CRAWL_ITEM_FN,
+        move |call: Call, observers: Vec<Observer>| {
+            let engine = engine.clone();
+            async move { deliver(&engine, call, observers).await }
+        },
+    );
+    iii.register_function(
+        ON_CRAWL_ITEM_FN,
+        RegisterFunction::new(|event: CrawlItemEvent| Ok::<_, Error>(event))
+            .args_format::<CrawlItemArgs>()
+            .private()
+            .description(
+                "One page of a browser::crawl was crawled (event: item, in seq order), or the \
+                 crawl ended (event: done). Returns the CrawlItemEvent it is called with. Args \
+                 { crawl_id? }: observe with the crawl_id before calling browser::crawl; without \
+                 it, every crawl. Each target receives the CrawlItemEvent, and a slow target \
+                 slows its crawl's live feed. Dropped or missed items are read back with \
+                 browser::crawl::items. Private: only the browser worker calls it.",
+            ),
+    );
+    tracing::info!(function_id = ON_CRAWL_ITEM_FN, "registered event function");
 }
 
 // ---------------------------------------------------------------------------
 // Delivery
 // ---------------------------------------------------------------------------
 
-/// How one event reaches one binding. Production invokes over the bus;
+/// Where a crawl's live events go. Production calls `browser::on-crawl-item`;
 /// tests record.
 #[async_trait]
-pub trait FeedDelivery: Send + Sync {
-    async fn deliver(&self, binding: &FeedBinding, payload: Value) -> Result<(), String>;
+pub trait FeedSink: Send + Sync {
+    /// Whether an event of `crawl_id` would reach any observer.
+    fn is_observed(&self, crawl_id: &str) -> bool;
+    /// Deliver one event; returns once every matching observer's target
+    /// answered (or timed out).
+    async fn deliver(&self, event: Value) -> Result<(), String>;
 }
 
-/// Awaited invocation of the bound function, in the binding's namespace and
-/// with its metadata. Awaiting (rather than fire-and-forget) is what keeps a
-/// consumer's events in `seq` order and lets a slow consumer fill the bounded
-/// queue instead of an unbounded one elsewhere.
-pub struct IiiFeedDelivery {
+/// Awaited calls of `browser::on-crawl-item`. Awaiting (rather than
+/// fire-and-forget) is what keeps a consumer's events in `seq` order and lets
+/// a slow consumer fill the bounded queue instead of an unbounded one
+/// elsewhere.
+pub struct IiiFeedSink {
     iii: Arc<IIIClient>,
 }
 
-impl IiiFeedDelivery {
+impl IiiFeedSink {
     pub fn new(iii: Arc<IIIClient>) -> Self {
         Self { iii }
     }
 }
 
 #[async_trait]
-impl FeedDelivery for IiiFeedDelivery {
-    async fn deliver(&self, binding: &FeedBinding, payload: Value) -> Result<(), String> {
-        let mut request = TriggerRequestWithMetadata::from(TriggerRequest {
-            function_id: binding.function_id.clone(),
-            payload,
-            action: None,
-            timeout_ms: Some(DELIVERY_TIMEOUT.as_millis() as u64),
-        });
-        if let Some(namespace) = &binding.namespace {
-            request = request.namespace(namespace.clone());
-        }
-        if let Some(metadata) = &binding.metadata {
-            request = request.metadata(metadata.clone());
-        }
+impl FeedSink for IiiFeedSink {
+    fn is_observed(&self, crawl_id: &str) -> bool {
+        let call = Call {
+            input: json!({ "crawl_id": crawl_id }),
+            ..Call::default()
+        };
+        self.iii.is_observed_for(ON_CRAWL_ITEM_FN, &call)
+    }
+
+    async fn deliver(&self, event: Value) -> Result<(), String> {
         self.iii
-            .trigger(request)
+            .call(CallRequest {
+                function_id: ON_CRAWL_ITEM_FN.to_string(),
+                payload: event,
+                action: None,
+                timeout_ms: Some(CALL_TIMEOUT.as_millis() as u64),
+            })
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
 }
 
-/// One task per crawl: events in queue order, each to every matching binding
-/// (concurrently across bindings, sequentially across events).
-async fn drain(
-    mut rx: mpsc::Receiver<Value>,
-    crawl_id: String,
-    bindings: FeedBindings,
-    delivery: Arc<dyn FeedDelivery>,
-) {
+/// One task per crawl: events in queue order, each delivered before the
+/// next.
+async fn drain(mut rx: mpsc::Receiver<Value>, crawl_id: String, sink: Arc<dyn FeedSink>) {
     while let Some(event) = rx.recv().await {
-        let targets = bindings.matching(&crawl_id);
-        let deliveries = targets.iter().map(|binding| {
-            let delivery = delivery.clone();
-            let event = event.clone();
-            async move {
-                match tokio::time::timeout(DELIVERY_TIMEOUT, delivery.deliver(binding, event)).await
-                {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => tracing::debug!(
-                        binding = %binding.id,
-                        function_id = %binding.function_id,
-                        error = %e,
-                        "crawl-item delivery failed"
-                    ),
-                    Err(_) => tracing::debug!(
-                        binding = %binding.id,
-                        function_id = %binding.function_id,
-                        "crawl-item delivery timed out"
-                    ),
-                }
-            }
-        });
-        futures::future::join_all(deliveries).await;
+        if let Err(e) = sink.deliver(event).await {
+            tracing::debug!(crawl_id = %crawl_id, error = %e, "crawl-item delivery failed");
+        }
     }
 }
 
@@ -551,34 +581,36 @@ impl CrawlStore {
 // Hub + per-crawl feed
 // ---------------------------------------------------------------------------
 
-/// Shared by every crawl: the bindings, the store, and how to deliver.
+/// Shared by every crawl: the accepted observers, the store, and where live
+/// events go.
 pub struct CrawlFeedHub {
-    bindings: FeedBindings,
+    observers: CrawlObservers,
     store: Arc<CrawlStore>,
-    delivery: Arc<dyn FeedDelivery>,
+    sink: Arc<dyn FeedSink>,
     queue_capacity: usize,
 }
 
 impl CrawlFeedHub {
-    pub fn new(delivery: Arc<dyn FeedDelivery>) -> Self {
-        Self::with_limits(delivery, StoreLimits::default(), QUEUE_CAPACITY)
+    pub fn new(sink: Arc<dyn FeedSink>) -> Self {
+        Self::with_limits(sink, StoreLimits::default(), QUEUE_CAPACITY)
     }
 
     pub fn with_limits(
-        delivery: Arc<dyn FeedDelivery>,
+        sink: Arc<dyn FeedSink>,
         limits: StoreLimits,
         queue_capacity: usize,
     ) -> Self {
         Self {
-            bindings: FeedBindings::default(),
+            observers: CrawlObservers::default(),
             store: Arc::new(CrawlStore::new(limits)),
-            delivery,
+            sink,
             queue_capacity: queue_capacity.max(1),
         }
     }
 
-    pub fn bindings(&self) -> &FeedBindings {
-        &self.bindings
+    /// The accepted `browser::on-crawl-item` observers.
+    pub fn observers(&self) -> &CrawlObservers {
+        &self.observers
     }
 
     /// Open the feed of one crawl. Must run inside a tokio runtime (it spawns
@@ -586,16 +618,11 @@ impl CrawlFeedHub {
     pub fn start(&self, crawl_id: &str) -> Result<CrawlFeed, String> {
         self.store.begin(crawl_id)?;
         let (tx, rx) = mpsc::channel(self.queue_capacity);
-        let drain = tokio::spawn(drain(
-            rx,
-            crawl_id.to_string(),
-            self.bindings.clone(),
-            self.delivery.clone(),
-        ));
+        let drain = tokio::spawn(drain(rx, crawl_id.to_string(), self.sink.clone()));
         Ok(CrawlFeed {
             crawl_id: crawl_id.to_string(),
             store: self.store.clone(),
-            bindings: self.bindings.clone(),
+            sink: self.sink.clone(),
             tx: Some(tx),
             drain: Some(drain),
             seq: 0,
@@ -641,7 +668,7 @@ pub struct FeedSummary {
 pub struct CrawlFeed {
     crawl_id: String,
     store: Arc<CrawlStore>,
-    bindings: FeedBindings,
+    sink: Arc<dyn FeedSink>,
     tx: Option<mpsc::Sender<Value>>,
     drain: Option<tokio::task::JoinHandle<()>>,
     seq: u64,
@@ -659,7 +686,7 @@ impl CrawlFeed {
     pub fn push(&mut self, item: &Value) {
         self.seq += 1;
         self.store.push(&self.crawl_id, item);
-        if !self.bindings.any_matching(&self.crawl_id) {
+        if !self.sink.is_observed(&self.crawl_id) {
             return;
         }
         let event = match serde_json::to_value(item_event(&self.crawl_id, self.seq, item)) {
@@ -688,7 +715,7 @@ impl CrawlFeed {
         };
         let deadline = tokio::time::Instant::now() + FLUSH_DEADLINE;
         if let Some(tx) = self.tx.take() {
-            if self.bindings.any_matching(&self.crawl_id) {
+            if self.sink.is_observed(&self.crawl_id) {
                 let done = CrawlItemEvent {
                     crawl_id: self.crawl_id.clone(),
                     event: "done".into(),
@@ -733,9 +760,9 @@ impl Drop for CrawlFeed {
 // ---------------------------------------------------------------------------
 
 /// The response warning for a caller that still passes `stream_name`.
-pub const STREAM_NAME_WARNING: &str = "stream_name is deprecated and ignored: browser::crawl no \
-     longer writes items to a stream. Read every item with browser::crawl::items using crawl.id, \
-     or bind the browser::crawl-item trigger (filter crawl_id) before calling for live items.";
+pub const STREAM_NAME_WARNING: &str = "stream_name is deprecated and ignored: browser::crawl \
+     writes items to no stream. Read every item with browser::crawl::items using crawl.id, or \
+     observe browser::on-crawl-item (args { crawl_id }) before calling for live items.";
 
 static STREAM_NAME_LOGGED: AtomicBool = AtomicBool::new(false);
 
@@ -757,39 +784,38 @@ mod tests {
     use super::*;
     use tokio::sync::Notify;
 
-    fn binding(id: &str, function_id: &str, config: Value) -> TriggerConfig {
-        TriggerConfig {
-            id: id.into(),
-            function_id: function_id.into(),
-            config,
-            metadata: Some(json!({"tenant": "t1"})),
-            namespace: Some("ns-a".into()),
-        }
-    }
-
-    /// Records (function_id, payload, namespace, metadata); optionally
-    /// blocks every delivery until released, to play a slow consumer.
-    /// (function_id, payload, namespace, metadata) per delivery.
-    type Delivered = (String, Value, Option<String>, Option<Value>);
-
+    /// Observes the crawls in `watched` (`*` for every crawl) and records
+    /// every delivered event; optionally blocks every delivery until
+    /// released, to play a slow consumer.
     #[derive(Default)]
     struct Recorder {
-        seen: Mutex<Vec<Delivered>>,
+        watched: Vec<&'static str>,
+        seen: Mutex<Vec<Value>>,
         gate: Option<Arc<Notify>>,
     }
 
+    impl Recorder {
+        fn watching(watched: &[&'static str]) -> Self {
+            Self {
+                watched: watched.to_vec(),
+                ..Self::default()
+            }
+        }
+    }
+
     #[async_trait]
-    impl FeedDelivery for Recorder {
-        async fn deliver(&self, binding: &FeedBinding, payload: Value) -> Result<(), String> {
+    impl FeedSink for Recorder {
+        fn is_observed(&self, crawl_id: &str) -> bool {
+            self.watched
+                .iter()
+                .any(|w| *w == ALL_CRAWLS || *w == crawl_id)
+        }
+
+        async fn deliver(&self, event: Value) -> Result<(), String> {
             if let Some(gate) = &self.gate {
                 gate.notified().await;
             }
-            self.seen.lock().unwrap().push((
-                binding.function_id.clone(),
-                payload,
-                binding.namespace.clone(),
-                binding.metadata.clone(),
-            ));
+            self.seen.lock().unwrap().push(event);
             Ok(())
         }
     }
@@ -799,55 +825,90 @@ mod tests {
     }
 
     #[test]
-    fn binding_config_is_validated() {
-        let set = FeedBindings::default();
-        let err = set
-            .add(binding("b", "f", json!({"crawl": "x"})))
-            .unwrap_err();
-        assert!(err.contains(CRAWL_ITEM), "{err}");
-        let err = set
-            .add(binding("b", "f", json!({"crawl_id": ""})))
-            .unwrap_err();
-        assert!(err.contains("must not be empty"), "{err}");
-        let err = set
-            .add(binding("b", "f", json!({"crawl_id": 3})))
-            .unwrap_err();
-        assert!(err.contains(CRAWL_ITEM), "{err}");
-        set.add(binding("b", "f", Value::Null)).unwrap();
-        set.add(binding("c", "f", json!({"crawl_id": "c1"})))
+    fn observer_args_are_validated() {
+        for bad in [json!({"crawl": "x"}), json!({"crawl_id": 3})] {
+            assert!(
+                serde_json::from_value::<CrawlItemArgs>(bad.clone()).is_err(),
+                "{bad} must be refused"
+            );
+        }
+        let schema = serde_json::to_value(schemars::schema_for!(CrawlItemArgs)).unwrap();
+        assert_eq!(schema["additionalProperties"], json!(false));
+
+        let observers = CrawlObservers::default();
+        let empty = CrawlItemArgs {
+            crawl_id: Some(String::new()),
+        };
+        let err = observers.admit("o", &empty).unwrap_err();
+        assert_eq!(err.code, "INVALID_ARGS");
+        assert!(err.message.contains("must not be empty"), "{}", err.message);
+        let long = CrawlItemArgs {
+            crawl_id: Some("x".repeat(MAX_CRAWL_ID_BYTES + 1)),
+        };
+        assert_eq!(
+            observers.admit("o", &long).unwrap_err().code,
+            "INVALID_ARGS"
+        );
+        assert!(observers.is_empty(), "a refused observer is not counted");
+
+        observers.admit("a", &CrawlItemArgs::default()).unwrap();
+        observers
+            .admit(
+                "b",
+                &CrawlItemArgs {
+                    crawl_id: Some("c1".into()),
+                },
+            )
             .unwrap();
-        assert_eq!(set.len(), 2);
-        set.remove("b");
-        assert_eq!(set.len(), 1);
+        assert_eq!(observers.len(), 2);
+        observers.release("a");
+        assert_eq!(observers.len(), 1);
     }
 
     #[test]
-    fn bindings_are_capped() {
-        let set = FeedBindings::default();
-        for i in 0..MAX_BINDINGS {
-            set.add(binding(&format!("b{i}"), "f", json!({}))).unwrap();
+    fn observers_are_capped() {
+        let observers = CrawlObservers::default();
+        for i in 0..MAX_OBSERVERS {
+            observers
+                .admit(&format!("o{i}"), &CrawlItemArgs::default())
+                .unwrap();
         }
-        let err = set.add(binding("one-more", "f", json!({}))).unwrap_err();
-        assert!(err.contains("too many"), "{err}");
-        // Re-registering an existing id is a replacement, not a new binding.
-        set.add(binding("b0", "g", json!({}))).unwrap();
-        assert_eq!(set.len(), MAX_BINDINGS);
+        let err = observers
+            .admit("one-more", &CrawlItemArgs::default())
+            .unwrap_err();
+        assert_eq!(err.code, "OBSERVER_LIMIT");
+        // Accepting an id again is not a new observer.
+        observers.admit("o0", &CrawlItemArgs::default()).unwrap();
+        assert_eq!(observers.len(), MAX_OBSERVERS);
+        observers.release("o1");
+        observers
+            .admit("one-more", &CrawlItemArgs::default())
+            .unwrap();
+    }
+
+    #[test]
+    fn an_event_matches_the_observers_of_its_crawl_and_of_every_crawl() {
+        assert_eq!(observer_key(&json!({"crawl_id": "c1"})), "c1");
+        assert_eq!(observer_key(&json!({})), ALL_CRAWLS);
+        assert_eq!(
+            call_keys(&json!({"crawl_id": "c1", "seq": 1})),
+            ["c1", ALL_CRAWLS]
+        );
+        assert_eq!(call_keys(&json!({})), [ALL_CRAWLS]);
     }
 
     #[tokio::test]
-    async fn items_reach_the_bound_consumer_in_order_filtered_by_crawl_id() {
-        let recorder = Arc::new(Recorder::default());
+    async fn items_of_an_observed_crawl_are_delivered_in_order() {
+        let recorder = Arc::new(Recorder::watching(&["c1"]));
         let hub = CrawlFeedHub::new(recorder.clone());
-        hub.bindings()
-            .add(binding("mine", "consumer::mine", json!({"crawl_id": "c1"})))
-            .unwrap();
-        hub.bindings()
-            .add(binding(
-                "other",
-                "consumer::other",
-                json!({"crawl_id": "c2"}),
-            ))
-            .unwrap();
+
+        let mut other = hub.start("c2").unwrap();
+        other.push(&page_item(1));
+        other.finish(&json!({})).await;
+        assert!(
+            recorder.seen.lock().unwrap().is_empty(),
+            "nobody observes c2: nothing delivered"
+        );
 
         let mut feed = hub.start("c1").unwrap();
         for n in 1..=50 {
@@ -864,19 +925,8 @@ mod tests {
         );
 
         let seen = recorder.seen.lock().unwrap().clone();
-        assert_eq!(
-            seen.len(),
-            51,
-            "50 items + done, nothing for consumer::other"
-        );
-        for (i, (function_id, payload, namespace, metadata)) in seen.iter().enumerate() {
-            assert_eq!(function_id, "consumer::mine");
-            assert_eq!(namespace.as_deref(), Some("ns-a"), "binding namespace kept");
-            assert_eq!(
-                metadata,
-                &Some(json!({"tenant": "t1"})),
-                "binding metadata kept"
-            );
+        assert_eq!(seen.len(), 51, "50 items + done");
+        for (i, payload) in seen.iter().enumerate() {
             assert_eq!(payload["crawl_id"], "c1");
             assert_eq!(payload["seq"], json!(i + 1), "delivered in seq order");
             if i < 50 {
@@ -893,12 +943,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unfiltered_binding_sees_every_crawl() {
-        let recorder = Arc::new(Recorder::default());
+    async fn an_observer_of_every_crawl_sees_every_crawl() {
+        let recorder = Arc::new(Recorder::watching(&[ALL_CRAWLS]));
         let hub = CrawlFeedHub::new(recorder.clone());
-        hub.bindings()
-            .add(binding("all", "consumer::all", json!({})))
-            .unwrap();
         for id in ["a", "b"] {
             let mut feed = hub.start(id).unwrap();
             feed.push(&page_item(1));
@@ -909,7 +956,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .map(|(_, p, _, _)| {
+            .map(|p| {
                 format!(
                     "{}:{}",
                     p["crawl_id"].as_str().unwrap(),
@@ -921,16 +968,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_binding_means_nothing_is_queued_but_everything_is_retained() {
-        let recorder = Arc::new(Recorder::default());
+    async fn no_observer_means_nothing_is_queued_but_everything_is_retained() {
+        let recorder = Arc::new(Recorder::watching(&["zzz"]));
         let hub = CrawlFeedHub::new(recorder.clone());
-        hub.bindings()
-            .add(binding(
-                "other",
-                "consumer::other",
-                json!({"crawl_id": "zzz"}),
-            ))
-            .unwrap();
         let mut feed = hub.start("c1").unwrap();
         for n in 1..=5 {
             feed.push(&page_item(n));
@@ -948,13 +988,11 @@ mod tests {
     async fn slow_consumer_fills_a_bounded_queue_and_recovers_from_the_store() {
         let gate = Arc::new(Notify::new());
         let recorder = Arc::new(Recorder {
+            watched: vec!["c1"],
             seen: Mutex::default(),
             gate: Some(gate.clone()),
         });
         let hub = CrawlFeedHub::with_limits(recorder.clone(), StoreLimits::default(), 4);
-        hub.bindings()
-            .add(binding("slow", "consumer::slow", json!({"crawl_id": "c1"})))
-            .unwrap();
 
         let mut feed = hub.start("c1").unwrap();
         // Let the drain task pick up the first event and block on the gate.
@@ -992,16 +1030,13 @@ mod tests {
         assert_eq!(summary.dropped_events, 25);
 
         let seen = recorder.seen.lock().unwrap().clone();
-        let seqs: Vec<u64> = seen
-            .iter()
-            .map(|(_, p, _, _)| p["seq"].as_u64().unwrap())
-            .collect();
+        let seqs: Vec<u64> = seen.iter().map(|p| p["seq"].as_u64().unwrap()).collect();
         assert_eq!(
             seqs,
             [1, 2, 3, 4, 5, 31],
             "still in order; done reports the gap"
         );
-        assert_eq!(seen.last().unwrap().1["dropped_events"], 25);
+        assert_eq!(seen.last().unwrap()["dropped_events"], 25);
 
         // Recovery: the consumer reads the missing seqs back.
         let page = hub
@@ -1140,6 +1175,6 @@ mod tests {
         let warnings = deprecated_input_warnings(&json!({"stream_name": "mine"}), truthy);
         assert_eq!(warnings, [STREAM_NAME_WARNING]);
         assert!(STREAM_NAME_WARNING.contains(ITEMS_FUNCTION));
-        assert!(STREAM_NAME_WARNING.contains(CRAWL_ITEM));
+        assert!(STREAM_NAME_WARNING.contains(ON_CRAWL_ITEM_FN));
     }
 }

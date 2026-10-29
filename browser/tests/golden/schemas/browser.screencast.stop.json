@@ -34,7 +34,7 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "AckOutput",
-    "description": "Neutral acknowledgement returned by the fire-and-forget internal functions (pick start/stop/resolve, screencast start/stop): they emit their result as a trigger event, so the direct return is just `{ ok }`.",
+    "description": "Neutral acknowledgement returned by the fire-and-forget internal functions (pick start/stop/resolve, screencast start/stop): they emit their result as an event function call, so the direct return is just `{ ok }`.",
     "type": "object",
     "required": [
       "ok"

@@ -1,6 +1,6 @@
 import type {
-  FunctionTriggerMessage,
-  FunctionTriggerRenderer,
+  FunctionCallMessage,
+  FunctionCallRenderer,
   Host,
 } from '@iii-dev/console-ui'
 import { describe, expect, it, vi } from 'vitest'
@@ -52,7 +52,7 @@ describe('scraping renderer', () => {
   it('offers open-in-browser on a fetched url', async () => {
     const { renderToStaticMarkup } = await import('react-dom/server')
     const withHost = {
-      iii: { trigger: () => Promise.resolve({}) },
+      iii: { call: () => Promise.resolve({}) },
     } as unknown as Host
     const renderer = createScraplingRenderer(withHost)
     const done = {
@@ -60,7 +60,7 @@ describe('scraping renderer', () => {
       input: { url: 'https://example.com' },
       output: { status: 200, url: 'https://example.com', content: 'hi' },
       running: false,
-    } as unknown as FunctionTriggerMessage
+    } as unknown as FunctionCallMessage
     const html = renderToStaticMarkup(<>{renderer.tryRender?.(done)}</>)
     expect(html).toContain('Open in browser')
     expect(html).toContain('br-ui-open-in-browser')
@@ -72,12 +72,12 @@ describe('scraping renderer', () => {
       functionId: 'browser::fetch',
       input: { url: 'https://example.com' },
       pendingApproval: true,
-    } as FunctionTriggerMessage
+    } as FunctionCallMessage
     const result = {
       functionId: 'browser::css',
       input: { html: '<p>x</p>', query: 'p' },
       output: { result: ['x'] },
-    } as FunctionTriggerMessage
+    } as FunctionCallMessage
     expect(renderer.tryRenderPreview?.(preview)).not.toBeNull()
     expect(renderer.tryRender(result)).not.toBeNull()
   })
@@ -141,7 +141,7 @@ describe('scraping renderer', () => {
             'proxy failed: http://user:pass@proxy.example is unavailable',
         },
       },
-    } as FunctionTriggerMessage)
+    } as FunctionCallMessage)
     const serialized = JSON.stringify(rendered)
     expect(serialized).toContain('[redacted]')
     expect(serialized).not.toContain('user:pass')
@@ -154,14 +154,14 @@ describe('scraping renderer', () => {
         functionId: 'browser::fetch',
         input: { url: 'https://example.com', urls: [] },
         output: { status: 200, url: 'https://example.com' },
-      } as FunctionTriggerMessage),
+      } as FunctionCallMessage),
     ).not.toBeNull()
     expect(
       renderer.tryRender({
         functionId: 'browser::fetch',
         input: { urls: [] },
         output: { status: 200, url: 'https://example.com' },
-      } as FunctionTriggerMessage),
+      } as FunctionCallMessage),
     ).toBeNull()
   })
 
@@ -176,12 +176,12 @@ describe('scraping renderer', () => {
         functionId,
         input,
         pendingApproval: true,
-      } as FunctionTriggerMessage)
+      } as FunctionCallMessage)
       const running = renderer.tryRenderRunning?.({
         functionId,
         input,
         running: true,
-      } as FunctionTriggerMessage)
+      } as FunctionCallMessage)
       expect(preview).not.toBeNull()
       expect(running).not.toBeNull()
       if (functionId === 'browser::session-close') {
@@ -205,7 +205,7 @@ describe('scraping renderer', () => {
           functionId,
           input,
           output,
-        } as FunctionTriggerMessage),
+        } as FunctionCallMessage),
       ).not.toBeNull()
     }
 
@@ -218,7 +218,7 @@ describe('scraping renderer', () => {
           functionId,
           input,
           output,
-        } as unknown as FunctionTriggerMessage),
+        } as unknown as FunctionCallMessage),
       ).toBeNull()
     }
   })
@@ -260,7 +260,7 @@ describe('scraping renderer', () => {
         functionId,
         input,
         output,
-      } as FunctionTriggerMessage),
+      } as FunctionCallMessage),
     ).toBeNull()
   })
 
@@ -271,7 +271,7 @@ describe('scraping renderer', () => {
         functionId: 'browser::fetch',
         input: {},
         output: {},
-      } as FunctionTriggerMessage),
+      } as FunctionCallMessage),
     ).toBeNull()
   })
 
@@ -282,14 +282,14 @@ describe('scraping renderer', () => {
         functionId: 'browser::css',
         input: { html: '<p>x</p>' },
         output: { result: ['x'] },
-      } as FunctionTriggerMessage),
+      } as FunctionCallMessage),
     ).toBeNull()
     expect(
       renderer.tryRender({
         functionId: 'browser::css',
         input: { query: 'p' },
         output: { result: ['x'] },
-      } as FunctionTriggerMessage),
+      } as FunctionCallMessage),
     ).toBeNull()
   })
 
@@ -303,7 +303,7 @@ describe('scraping renderer', () => {
           content: [{ type: 'image', mime: 'image/png', data: 'aGk=' }],
           url: 'https://example.com',
         },
-      } as unknown as FunctionTriggerMessage),
+      } as unknown as FunctionCallMessage),
     ).toBeNull()
   })
 
@@ -318,12 +318,12 @@ describe('scraping renderer', () => {
         functionId: 'browser::screenshot-url',
         input,
         pendingApproval: true,
-      } as FunctionTriggerMessage),
+      } as FunctionCallMessage),
       renderer.tryRenderRunning?.({
         functionId: 'browser::screenshot-url',
         input,
         running: true,
-      } as FunctionTriggerMessage),
+      } as FunctionCallMessage),
       renderer.tryRender({
         functionId: 'browser::screenshot-url',
         input,
@@ -331,7 +331,7 @@ describe('scraping renderer', () => {
           content: [{ type: 'image', mime: 'image/png', data: 'aGk=' }],
           url: 'https://example.com',
         },
-      } as FunctionTriggerMessage),
+      } as FunctionCallMessage),
     ]
     for (const state of states) {
       const serialized = JSON.stringify(state)
@@ -353,7 +353,7 @@ describe('scraping renderer', () => {
           functionId: 'browser::screenshot-url',
           input: { url: 'https://example.com' },
           output: { content, url: 'https://example.com' },
-        } as FunctionTriggerMessage),
+        } as FunctionCallMessage),
       ).toBeNull()
     }
   })
@@ -365,17 +365,17 @@ describe('scraping renderer', () => {
         functionId: 'browser::css',
         input: { html: '<p>x</p>', query: 'p' },
         output: { result: 42 },
-      } as unknown as FunctionTriggerMessage),
+      } as unknown as FunctionCallMessage),
     ).toBeNull()
   })
 
   it('registers the exact scraping renderer before the broad browser renderer', () => {
-    const renderers: FunctionTriggerRenderer[] = []
+    const renderers: FunctionCallRenderer[] = []
     setup({
       pages: { register: () => () => {} },
       configForms: { register: () => () => {} },
-      functionTriggers: {
-        register: (renderer: FunctionTriggerRenderer) => {
+      functionCalls: {
+        register: (renderer: FunctionCallRenderer) => {
           renderers.push(renderer)
           return () => {}
         },

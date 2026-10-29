@@ -83,7 +83,7 @@ async function boundedImageUrl(dataUrl: string): Promise<string> {
 async function readIndex(iii: ExtensionIii): Promise<SavedSetSummary[] | null> {
   let failed = false
   const res = await iii
-    .trigger<unknown>('state::get', { scope: ANNOTATION_SETS_SCOPE, key: INDEX_KEY })
+    .call<unknown>('state::get', { scope: ANNOTATION_SETS_SCOPE, key: INDEX_KEY })
     .catch(() => {
       failed = true
       return null
@@ -106,7 +106,7 @@ async function updateIndex(
     }
     const next = change(current)
     if (attempt === CAS_RETRIES) {
-      await iii.trigger('state::set', {
+      await iii.call('state::set', {
         scope: ANNOTATION_SETS_SCOPE,
         key: INDEX_KEY,
         value: next,
@@ -114,7 +114,7 @@ async function updateIndex(
       return
     }
     const res = await iii
-      .trigger<unknown>('state::compare-and-set', {
+      .call<unknown>('state::compare-and-set', {
         scope: ANNOTATION_SETS_SCOPE,
         key: INDEX_KEY,
         // An empty read means absent or empty; expect-absent covers the
@@ -135,7 +135,7 @@ export async function saveAnnotationSet(
 ): Promise<string> {
   const key = savedSetKey(set)
   const imageUrl = await boundedImageUrl(set.imageUrl)
-  await iii.trigger('state::set', {
+  await iii.call('state::set', {
     scope: ANNOTATION_SETS_SCOPE,
     key,
     value: {
@@ -164,7 +164,7 @@ export async function readAnnotationSet(
   iii: ExtensionIii,
   key: string,
 ): Promise<AnnotationSet | null> {
-  const res = await iii.trigger<unknown>('state::get', {
+  const res = await iii.call<unknown>('state::get', {
     scope: ANNOTATION_SETS_SCOPE,
     key,
   })
@@ -187,7 +187,7 @@ export async function deleteAnnotationSet(
   iii: ExtensionIii,
   key: string,
 ): Promise<void> {
-  await iii.trigger('state::delete', {
+  await iii.call('state::delete', {
     scope: ANNOTATION_SETS_SCOPE,
     key,
   })

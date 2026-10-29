@@ -61,11 +61,11 @@ export function RootPage() {
   createEffect(() => tabs.set(rowsOf(sessions(), selected())))
 
   // Live only while some page of the app is on screen: the four lifecycle
-  // triggers, unfiltered, then one read; visible again binds and reads again.
+  // functions, unfiltered, then one read; visible again observes and reads again.
   createEffect(() => {
     if (!iii.env.visible || !ready()) return
-    const offs = LIFECYCLE.map((type) =>
-      listen<SessionStopped | SessionUpdated | Navigated>(type, {}, (p) => lifecycle(type, p)),
+    const offs = LIFECYCLE.map((fn) =>
+      listen<SessionStopped | SessionUpdated | Navigated>(fn, {}, (p) => lifecycle(fn, p)),
     )
     let bound = true
     onCleanup(() => {

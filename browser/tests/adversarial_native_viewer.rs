@@ -16,7 +16,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
@@ -155,7 +155,7 @@ async fn connect(h: &Harness) -> IIIClient {
 async fn try_call(client: &IIIClient, function_id: &str, payload: Value) -> Result<Value, String> {
     timeout(
         Duration::from_secs(60),
-        client.trigger(TriggerRequest {
+        client.call(CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
