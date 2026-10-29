@@ -9,7 +9,7 @@ import type { IIIClient, InvocationError } from 'iii-sdk'
  * case with a capacity error that says nothing about the real cause.
  */
 export interface CaseContext {
-  /** Trigger any engine function. Returns parsed JSON; throws on engine error. */
+  /** Call any engine function. Returns parsed JSON; throws on engine error. */
   call: (functionId: string, payload?: unknown) => Promise<any>
   /** Direct SDK access, for anything `call` cannot express. */
   iii: IIIClient

@@ -1,5 +1,5 @@
 /**
- * Injected function-trigger renderer for `code-runner::register_function`.
+ * Injected function-call renderer for `code-runner::register_function`.
  *
  * The default card prints the request as JSON, which turns `source` — the
  * whole point of the call — into one escaped single-line string, and buries
@@ -45,8 +45,8 @@ import {
   Chip,
   CodeHighlight,
   Eyebrow,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   uiClasses,
 } from '@iii-dev/console-ui'
@@ -314,7 +314,7 @@ function SourceBlock({ req, clipped }: { req: RegisterRequest; clipped: boolean 
 
 /* --- cards --------------------------------------------------------------- */
 
-function SettledView({ message }: { message: FunctionTriggerMessage }) {
+function SettledView({ message }: { message: FunctionCallMessage }) {
   const req = parseRequest(message.input)
   const res = asRecord(unwrapEnvelope(message.output)) ?? {}
   const registered = typeof res.registered === 'boolean' ? res.registered : undefined
@@ -353,7 +353,7 @@ function SettledView({ message }: { message: FunctionTriggerMessage }) {
  * arbitrary code publication onto the bus, so a clipped source is labelled an
  * excerpt rather than presented as the whole program.
  */
-function PendingView({ message, running }: { message: FunctionTriggerMessage; running: boolean }) {
+function PendingView({ message, running }: { message: FunctionCallMessage; running: boolean }) {
   const req = parseRequest(message.input)
   const clipped = looksClipped(req.source)
   const anyClipped = clipped || looksClipped(req.description) || looksClipped(req.functionId)
@@ -375,11 +375,11 @@ function PendingView({ message, running }: { message: FunctionTriggerMessage; ru
   )
 }
 
-export function createRegisterFunctionRenderer(host: Host): FunctionTriggerRenderer {
+export function createRegisterFunctionRenderer(host: Host): FunctionCallRenderer {
   void host // this card reads nothing off the host
   const isMatch = (functionId: string) => functionId === FUNCTION_ID
 
-  const render = (message: FunctionTriggerMessage, running: boolean): React.ReactNode | null => {
+  const render = (message: FunctionCallMessage, running: boolean): React.ReactNode | null => {
     if (!isMatch(message.functionId)) return null
     // The host draws the approval bar around `tryRenderPreview`.
     if (message.pendingApproval) return null

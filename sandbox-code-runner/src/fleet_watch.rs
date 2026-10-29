@@ -1,30 +1,38 @@
-//! The fleet watcher: ONE server-side observer of `sandbox::list` for the
-//! whole deployment, pushing change-only snapshots onto the bus as
-//! `sandbox-code-runner::event { kind: "fleet" }`.
+//! The fleet watcher: ONE server-side reader of `sandbox::list` for the
+//! whole deployment, pushing change-only snapshots onto the bus as calls of
+//! `sandbox-code-runner::on-event { kind: "fleet" }`.
 //!
 //! The daemon emits no lifecycle events of its own, so SOMETHING has to
-//! observe it — this centralizes that into a single reader (instead of one
-//! per open console tab) and turns everything downstream into push. The
-//! whole module is deleted the day `sandbox::*` emits its own events.
+//! read it — this centralizes that into a single reader (instead of one per
+//! open console tab) and turns everything downstream into push. The whole
+//! module is deleted the day `sandbox::*` emits its own events.
+//!
+//! It runs only while `sandbox-code-runner::on-event` has observers: the
+//! function's added hook retains it (the first observer starts the loop) and
+//! its removed hook releases it (the last one stops it), so an unwatched
+//! deployment never polls the daemon.
 //!
 //! Cadence: 2s while the daemon answers, 10s while it is absent. Emission
-//! is change-only — a quiet fleet costs subscribers nothing. Transient read
+//! is change-only — a quiet fleet costs observers nothing. Transient read
 //! errors (timeouts, engine hiccups) emit nothing: stale-but-truthful beats
 //! flapping between real and empty snapshots.
 
-use std::sync::Arc;
+use std::future::Future;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use iii_sdk::{IIIClient, ObserveRejection, Observer};
 use serde_json::Value;
+use tokio::task::JoinHandle;
 
 use crate::engine::Engine;
-use crate::events::{Emitter, Event};
+use crate::events::{Emitter, Event, ON_EVENT_FN};
 
 const WATCH_INTERVAL: Duration = Duration::from_millis(2_000);
 const ABSENT_RECHECK: Duration = Duration::from_millis(10_000);
 const LIST_TIMEOUT_MS: u64 = 10_000;
 
-/// What the watcher last told subscribers, so it only speaks on change.
+/// What the watcher last told observers, so it only speaks on change.
 #[derive(PartialEq, Clone)]
 enum Reported {
     Nothing,
@@ -52,7 +60,7 @@ fn normalize(list_response: &Value) -> Option<Value> {
 /// it grows on EVERY read — left in, consecutive snapshots always differ
 /// and change-only emission degrades to a 2s firehose. Equality runs on
 /// this age-stripped copy; the emitted payload keeps the full rows so
-/// subscribers still get fresh ages.
+/// observers still get fresh ages.
 fn strip_ages(fleet: &Value) -> Value {
     let Some(rows) = fleet.as_array() else {
         return fleet.clone();
@@ -103,36 +111,120 @@ fn step(
     }
 }
 
-pub fn spawn(engine: Arc<dyn Engine>, emitter: Emitter) {
-    tokio::spawn(async move {
-        let mut reported = Reported::Nothing;
-        loop {
-            let read = engine
-                .call(
-                    "sandbox::list".to_string(),
-                    serde_json::json!({}),
-                    LIST_TIMEOUT_MS,
-                )
-                .await;
-            let (next, delay) = step(&reported, read, &emitter);
-            reported = next;
-            tokio::time::sleep(delay).await;
+/// The watch loop: read, compare, maybe emit, sleep — until aborted. Starts
+/// from `Reported::Nothing`, so its first read always emits the fleet.
+async fn watch(engine: Arc<dyn Engine>, emitter: Emitter) {
+    let mut reported = Reported::Nothing;
+    loop {
+        let read = engine
+            .call(
+                "sandbox::list".to_string(),
+                serde_json::json!({}),
+                LIST_TIMEOUT_MS,
+            )
+            .await;
+        let (next, delay) = step(&reported, read, &emitter);
+        reported = next;
+        tokio::time::sleep(delay).await;
+    }
+}
+
+/// The watch loop, run while `sandbox-code-runner::on-event` has observers.
+pub struct FleetWatch {
+    engine: Arc<dyn Engine>,
+    emitter: Emitter,
+    state: Mutex<Watching>,
+}
+
+#[derive(Default)]
+struct Watching {
+    observers: usize,
+    task: Option<JoinHandle<()>>,
+}
+
+impl FleetWatch {
+    pub fn new(engine: Arc<dyn Engine>, emitter: Emitter) -> Arc<Self> {
+        Arc::new(Self {
+            engine,
+            emitter,
+            state: Mutex::new(Watching::default()),
+        })
+    }
+
+    /// One more observer. The first starts the loop, whose opening read
+    /// waits for `active` (that observer accepted), so the observer receives
+    /// the opening snapshot.
+    pub fn retain(&self, active: impl Future<Output = ()> + Send + 'static) {
+        let mut watching = self.lock();
+        watching.observers += 1;
+        if watching.observers == 1 {
+            let (engine, emitter) = (self.engine.clone(), self.emitter.clone());
+            watching.task = Some(tokio::spawn(async move {
+                active.await;
+                watch(engine, emitter).await;
+            }));
+            tracing::info!("fleet watcher started: {ON_EVENT_FN} is observed");
         }
+    }
+
+    /// One observer fewer. The last stops the loop.
+    pub fn release(&self) {
+        let mut watching = self.lock();
+        watching.observers = watching.observers.saturating_sub(1);
+        if watching.observers == 0 {
+            if let Some(task) = watching.task.take() {
+                task.abort();
+                tracing::info!("fleet watcher stopped: {ON_EVENT_FN} has no observers");
+            }
+        }
+    }
+
+    /// Whether the loop is running (tests).
+    pub fn is_running(&self) -> bool {
+        self.lock().task.is_some()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Watching> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// Set `sandbox-code-runner::on-event`'s added and removed hooks by id, before
+/// the function registers: each accepted observer retains the watcher, and
+/// its removal releases it.
+pub fn run_while_observed(iii: &IIIClient, engine: Arc<dyn Engine>, emitter: Emitter) {
+    let fleet = FleetWatch::new(engine, emitter);
+    let on_added = fleet.clone();
+    iii.on_observer_added_for(ON_EVENT_FN, move |obs: Observer| {
+        let fleet = on_added.clone();
+        async move {
+            fleet.retain(async move {
+                let _ = obs.accepted().await;
+            });
+            Ok::<(), ObserveRejection>(())
+        }
+    });
+    iii.on_observer_removed_for(ON_EVENT_FN, move |_obs: Observer| {
+        let fleet = fleet.clone();
+        async move { fleet.release() }
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{EventDeliverer, SubscriberSet};
+    use crate::events::EventDeliverer;
     use serde_json::json;
-    use std::sync::Mutex;
 
     struct Recorder {
         seen: Mutex<Vec<Value>>,
     }
 
     impl EventDeliverer for Recorder {
+        fn is_observed(&self, _function_id: &str) -> bool {
+            true
+        }
+
         fn deliver(&self, _function_id: &str, payload: Value) {
             self.seen.lock().unwrap().push(payload);
         }
@@ -142,9 +234,7 @@ mod tests {
         let recorder = Arc::new(Recorder {
             seen: Mutex::new(vec![]),
         });
-        let subscribers = SubscriberSet::new();
-        subscribers.insert("t1".into(), "sub::fn".into());
-        (Emitter::new(subscribers, recorder.clone()), recorder)
+        (Emitter::new(recorder.clone()), recorder)
     }
 
     fn fleet_of(ids: &[&str]) -> Value {
@@ -168,6 +258,35 @@ mod tests {
                 }))
                 .collect::<Vec<_>>()
         })
+    }
+
+    #[tokio::test]
+    async fn the_first_observer_starts_the_watcher_and_the_last_stops_it() {
+        let (emitter, recorder) = harness();
+        let fake = crate::engine::FakeEngine::new();
+        fake.with_response("sandbox::list", Ok(fleet_of(&["a"])));
+        let fleet = FleetWatch::new(fake, emitter);
+        assert!(!fleet.is_running());
+
+        fleet.retain(std::future::ready(()));
+        fleet.retain(std::future::ready(()));
+        assert!(fleet.is_running());
+        // The opening read emits the current fleet.
+        for _ in 0..50 {
+            if !recorder.seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(recorder.seen.lock().unwrap()[0]["kind"], "fleet");
+
+        fleet.release();
+        assert!(fleet.is_running(), "one observer is left");
+        fleet.release();
+        assert!(!fleet.is_running(), "the last observer stops the watcher");
+        // A release with no observer left changes nothing.
+        fleet.release();
+        assert!(!fleet.is_running());
     }
 
     #[tokio::test]

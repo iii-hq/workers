@@ -12,7 +12,7 @@
  * through its import map).
  */
 
-import type { FunctionTriggerMessage, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, Host } from '@iii-dev/console-ui'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { truncateRuntimeId } from '../lib/shared'
@@ -81,11 +81,11 @@ const SOURCE = 'export function handler(payload) {\n  return payload\n}\n'
 const renderer = createRegisterFunctionRenderer({} as Host)
 
 function msg(
-  over: Partial<FunctionTriggerMessage> = {},
-): FunctionTriggerMessage {
+  over: Partial<FunctionCallMessage> = {},
+): FunctionCallMessage {
   return {
     id: 'm1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: FUNCTION_ID,
     createdAt: 0,
     input: {

@@ -1,8 +1,8 @@
 //! Integration with the `configuration` worker (docs/sops/configuration.md,
 //! Tier 1) — register the JSON Schema + optional seed at boot, read the
-//! authoritative (env-expanded) value, and bind a `configuration` trigger so
-//! `configuration:updated` re-fetches and swaps the snapshot. Mirrors
-//! [`browser`](../../browser/src/configuration.rs).
+//! authoritative (env-expanded) value, and observe `configuration::on-updated`
+//! so every `configuration:updated` of the entry re-fetches and swaps the
+//! snapshot. Mirrors [`browser`](../../browser/src/configuration.rs).
 //!
 //! The output caps and timeout knobs are read per call and hot-apply on the
 //! swap; the engine-structural fields are boot-captured, so the reload
@@ -13,8 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 use crate::config::{CodeRunnerConfig, SharedConfig};
@@ -37,6 +36,7 @@ pub fn config_id() -> &'static str {
 /// seeded into the runtime-id registry (functions::seeded_ids) so a guest
 /// `register_function` cannot claim it.
 pub const CONFIG_FN_ID: &str = "code-runner::on-config-change";
+const ON_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 
@@ -75,7 +75,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<CodeRunnerConfig, String> {
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -86,7 +86,7 @@ mod initialization;
 /// `Ok(None)` when the entry does not exist yet. The engine's missing-entry
 /// codes vary in case, so match case-insensitively.
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -103,9 +103,12 @@ struct OnConfigChangeResponse {
     ok: bool,
 }
 
-/// Register the internal reload hook and bind the `configuration` trigger.
-/// Call LAST in boot, after every function and the console UI exist.
-pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<(), Error> {
+/// Register the internal reload hook and observe `configuration::on-updated`
+/// with it, for this entry's `configuration:updated` events delivered as
+/// output. Call LAST in boot, after every function and the console UI exist.
+/// The observer stays `pending` while the configuration source is not
+/// registered.
+pub fn observe_config_changes(iii: &IIIClient, config: SharedConfig) {
     let cfg = config.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -126,12 +129,17 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({ "configuration_id": config_id(), "event_types": ["configuration:updated"] }),
-    ))?;
-    Ok(())
+    // The observer lives as long as the worker's connection; dropping the
+    // handle does not dispose it.
+    iii.observe(
+        Source::function(ON_UPDATED_FN)
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
 }
 
 /// Serializes every refresh's fetch→store. The fetch happens INSIDE the
@@ -139,15 +147,15 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
 /// `configuration::get` response can never overwrite a newer snapshot.
 static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Re-fetch the AUTHORITATIVE value and swap the snapshot. The trigger
-/// payload is deliberately ignored: `on-config-change` is a discoverable bus
+/// Re-fetch the AUTHORITATIVE value and swap the snapshot. The delivered
+/// event is deliberately ignored: `on-config-change` is a discoverable bus
 /// function, and trusting a caller-supplied value would let anyone inject
 /// config without updating persisted state.
 ///
-/// Called by the `configuration` trigger, and once more at the end of boot:
-/// an update landing between the boot fetch and the trigger registration
-/// fires into nothing, and without the boot refresh it would stay invisible
-/// until the NEXT update or a restart.
+/// Called on every `configuration::on-updated` of the entry, and once more at
+/// the end of boot: an update landing between the boot fetch and the observer
+/// becoming active reaches no one, and without the boot refresh it would stay
+/// invisible until the NEXT update or a restart.
 pub async fn refresh(iii: &IIIClient, config: &SharedConfig) {
     let _serialized = REFRESH_LOCK.lock().await;
     match fetch_config(iii).await {
@@ -165,7 +173,7 @@ pub async fn refresh(iii: &IIIClient, config: &SharedConfig) {
     }
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -173,8 +181,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,

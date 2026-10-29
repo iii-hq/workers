@@ -4,18 +4,18 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `worktree/page.js` (`console:script`) — the `worktree` page: a
+//! - `worktree/page.js` (a `script` asset) — the `worktree` page: a
 //!   live repo → worktree → session topology graph with a per-worktree detail
 //!   panel, reading the live worker over `worktree::list` and refreshing on
-//!   the six lifecycle trigger types. Read-only; create / claim / land stay in
-//!   agent + CLI flows.
-//! - `worktree/styles.css` (`console:style`) — the stylesheet, every rule
+//!   calls of the six `worktree::on-*` functions it observes. Read-only;
+//!   create / claim / land stay in agent + CLI flows.
+//! - `worktree/styles.css` (a `style` asset) — the stylesheet, every rule
 //!   scoped under `[data-iii-ui="worktree"]`; the console mounts it as a
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `worktree::ui-content`, one
-//! Message-path trigger per asset, `III_WORKTREE_UI_WATCH` hot-reload watcher)
-//! lives in the shared `iii-console-ui` crate (path-linked from
+//! observer of `console::ui::asset` per asset, `III_WORKTREE_UI_WATCH`
+//! hot-reload watcher) lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and embeds
 //! their bytes.
 //!
@@ -23,8 +23,8 @@
 //! external — they resolve through the console's import map at runtime) and
 //! embedded at compile time so the worker stays one self-contained binary.
 //! For the dev loop, set `III_WORKTREE_UI_WATCH` to the build output directory
-//! (or `1` for `ui/dist`): the worker polls both files and re-registers a
-//! changed asset's trigger — every open console tab hot-swaps it.
+//! (or `1` for `ui/dist`): the worker polls both files and observes a changed
+//! asset again — every open console tab hot-swaps it.
 
 use std::sync::Arc;
 

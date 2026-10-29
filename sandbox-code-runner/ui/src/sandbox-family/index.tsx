@@ -1,7 +1,7 @@
 /**
  * The sandbox::* family renderer — the console's first-party sandbox
  * chat family (ade/web/src/components/chat/sandbox/) ported into
- * this worker as ONE injected `FunctionTriggerRenderer`, so the daemon
+ * this worker as ONE injected `FunctionCallRenderer`, so the daemon
  * calls this worker's runtimes are built from render as cards wherever
  * the worker's UI is installed, console version notwithstanding.
  *
@@ -11,13 +11,13 @@
  * per-op views (`parseSandboxErrorDisplay`), and every unparseable
  * payload falls through with `null` to the console's default JSON card.
  *
- * Unlike the worker's own three renderers (../function-trigger-message),
+ * Unlike the worker's own three renderers (../function-call-message),
  * this family does NOT redact ids: a daemon `sandbox_id` is the
  * operator-visible address of a fleet-page row, not a capability like
  * `runtime_id` — deliberate design decision. No `redactRaw` here.
  */
 
-import type { FunctionTriggerMessage, FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
+import type { FunctionCallMessage, FunctionCallRenderer, Host } from '@iii-dev/console-ui'
 import { Component, type ReactNode } from 'react'
 import { CreateView } from './CreateView'
 import { SandboxErrorView } from './ErrorView'
@@ -76,7 +76,7 @@ export function SandboxFunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function renderSettled(message: FunctionTriggerMessage, running: boolean): ReactNode | null {
+function renderSettled(message: FunctionCallMessage, running: boolean): ReactNode | null {
   if (!isSandboxFunction(message.functionId)) return null
   if (message.pendingApproval) return null // tryRenderPreview handles it
 
@@ -129,7 +129,7 @@ function renderSettled(message: FunctionTriggerMessage, running: boolean): React
   }
 }
 
-function renderPreview(message: FunctionTriggerMessage): ReactNode | null {
+function renderPreview(message: FunctionCallMessage): ReactNode | null {
   if (!message.pendingApproval) return null
   if (!isSandboxFunction(message.functionId)) return null
   const input = unwrapEnvelope(message.input)
@@ -170,7 +170,7 @@ function fenced(render: () => ReactNode | null): ReactNode | null {
   }
 }
 
-export function createSandboxFamilyRenderer(host: Host): FunctionTriggerRenderer {
+export function createSandboxFamilyRenderer(host: Host): FunctionCallRenderer {
   void host // the family reads nothing off the host
 
   return {

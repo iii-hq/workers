@@ -1,11 +1,11 @@
 /**
- * The code-runner function-trigger renderers — one module per rendered op:
+ * The code-runner function-call renderers — one module per rendered op:
  *
  *   code-runner::run               → ./run
  *   code-runner::register_function → ./register-function
  *   code-runner::teardown          → ./teardown
  *
- * Registered through `host.functionTriggers`, so they dispatch BEFORE the
+ * Registered through `host.functionCalls`, so they dispatch BEFORE the
  * console's first-party families and override how those calls render in chat
  * and in the traces span tab.
  *
@@ -25,7 +25,7 @@
  * console's default card.
  */
 
-import type { FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
+import type { FunctionCallRenderer, Host } from '@iii-dev/console-ui'
 import { redactRuntimeIdsDeep } from '../lib/shared'
 import { createRegisterFunctionRenderer } from './register-function'
 import { createRunRenderer } from './run'
@@ -33,14 +33,14 @@ import { createTeardownRenderer } from './teardown'
 
 /**
  * `redactRaw` is attached here rather than card by card: the console's
- * function-trigger card mounts a `raw json` tab (and a copy button) that
+ * function-call card mounts a `raw json` tab (and a copy button) that
  * renders `input`/`output` verbatim whatever the card does, and EVERY
  * code-runner payload can carry a `runtime_id` — in a field, in a line of
  * program output, in a returned completion value, in one of the error messages
  * that quote it by design (error.rs). It is a property of the worker's
  * payloads, not of any one op, so a renderer cannot opt out by omission.
  */
-export function createCodeRunnerRenderers(host: Host): FunctionTriggerRenderer[] {
+export function createCodeRunnerRenderers(host: Host): FunctionCallRenderer[] {
   return [createRunRenderer(host), createRegisterFunctionRenderer(host), createTeardownRenderer(host)].map(
     (renderer) => ({ ...renderer, redactRaw: redactRuntimeIdsDeep }),
   )

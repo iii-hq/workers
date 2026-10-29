@@ -1,12 +1,12 @@
 /**
- * The sandbox-code-runner function-trigger renderers — one module per
+ * The sandbox-code-runner function-call renderers — one module per
  * rendered op:
  *
  *   sandbox-code-runner::run               → ./run
  *   sandbox-code-runner::register_function → ./register-function
  *   sandbox-code-runner::teardown          → ./teardown
  *
- * Registered through `host.functionTriggers`, so they dispatch BEFORE the
+ * Registered through `host.functionCalls`, so they dispatch BEFORE the
  * console's first-party families and override how those calls render in chat
  * and in the traces span tab.
  *
@@ -28,7 +28,7 @@
  * console's default card.
  */
 
-import type { FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
+import type { FunctionCallRenderer, Host } from '@iii-dev/console-ui'
 import { redactRuntimeIdsDeep } from '../lib/shared'
 import { createListRuntimesRenderer } from './list-runtimes'
 import { createRegisterFunctionRenderer } from './register-function'
@@ -37,7 +37,7 @@ import { createTeardownRenderer } from './teardown'
 
 /**
  * `redactRaw` is attached here rather than card by card: the console's
- * function-trigger card mounts a `raw json` tab (and a copy button) that
+ * function-call card mounts a `raw json` tab (and a copy button) that
  * renders `input`/`output` verbatim whatever the card does, and EVERY
  * sandbox-code-runner payload can carry a `runtime_id` — in a field, in a
  * line of program output, in one of the error messages that quote it by
@@ -46,7 +46,7 @@ import { createTeardownRenderer } from './teardown'
  */
 export function createSandboxCodeRunnerRenderers(
   host: Host,
-): FunctionTriggerRenderer[] {
+): FunctionCallRenderer[] {
   return [
     createRunRenderer(host),
     createRegisterFunctionRenderer(host),

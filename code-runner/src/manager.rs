@@ -40,8 +40,8 @@ struct PyNamespace {
 }
 
 pub struct Manager {
-    /// Live config snapshot, swapped by `configuration::register_config_trigger`
-    /// on `configuration:updated`. Per-call knobs (output caps, timeouts) are
+    /// Live config snapshot, swapped by the `code-runner::on-config-change`
+    /// observer of `configuration::on-updated`. Per-call knobs (output caps, timeouts) are
     /// `load()`ed at each use so they hot-reload; the engine-structural fields
     /// were captured when the engines were built and a change to them applies
     /// at the next restart.
@@ -818,7 +818,7 @@ mod router_tests {
     }
 
     /// Also returns the live config handle, for tests that hot-swap it the
-    /// way the configuration trigger does.
+    /// way the configuration reload does.
     fn manager_with_shared(
         cfg: CodeRunnerConfig,
     ) -> (Arc<Manager>, Arc<TestBus>, crate::config::SharedConfig) {

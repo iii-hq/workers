@@ -31,8 +31,8 @@
 
 import {
   Chip,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   uiClasses,
 } from '@iii-dev/console-ui'
@@ -95,7 +95,7 @@ function goneIds(result: Record<string, unknown> | undefined) {
   return raw.map((v, i) => (typeof v === 'string' ? v : `⟨malformed entry ${i + 1}⟩`))
 }
 
-function SettledView({ message }: { message: FunctionTriggerMessage }) {
+function SettledView({ message }: { message: FunctionCallMessage }) {
   const [expanded, setExpanded] = useState(false)
   const result = asRecord(unwrapEnvelope(message.output))
   const gone = goneIds(result)
@@ -142,7 +142,7 @@ function SettledView({ message }: { message: FunctionTriggerMessage }) {
   )
 }
 
-function RunningView({ message }: { message: FunctionTriggerMessage }) {
+function RunningView({ message }: { message: FunctionCallMessage }) {
   // `input` is the only source of the target here, and a non-record one simply
   // means no chip — the card claims nothing either way. Falling through
   // instead would hand the raw request to the default card, which prints the
@@ -155,7 +155,7 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
 }
 
 /** Pending approval: what is about to be destroyed. */
-function PreviewView({ message }: { message: FunctionTriggerMessage }) {
+function PreviewView({ message }: { message: FunctionCallMessage }) {
   // The approval gate clips string arguments to 256 code points; a
   // `rt-<uuid>` is 39 and a namespace is short, so the value shown (and
   // copied) here is always whole.
@@ -171,9 +171,9 @@ function PreviewView({ message }: { message: FunctionTriggerMessage }) {
   )
 }
 
-export function createTeardownRenderer(host: Host): FunctionTriggerRenderer {
+export function createTeardownRenderer(host: Host): FunctionCallRenderer {
   void host
-  const render = (message: FunctionTriggerMessage, running: boolean): React.ReactNode | null => {
+  const render = (message: FunctionCallMessage, running: boolean): React.ReactNode | null => {
     if (message.functionId !== FUNCTION_ID) return null
     if (message.pendingApproval) return null // tryRenderPreview handles it
     if (running) return <RunningView message={message} />

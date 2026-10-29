@@ -15,10 +15,10 @@ name = "worktree"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
+iii-sdk = "=0.26.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
-# Worker-side injectable console UI (content function + console:script/style
-# triggers + hot-reload watcher) — direct path link, never published.
+# Worker-side injectable console UI (content function + console::ui::asset
+# observers + hot-reload watcher) — direct path link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "fs"] }
 serde = { version = "1", features = ["derive"] }
@@ -32,8 +32,8 @@ clap = { version = "4", features = ["derive", "env"] }
 async-trait = "0.1"
 globset = "0.4"
 # Must stay on the same schemars major as iii-sdk so the derived
-# `JsonSchema` impls satisfy `RegisterFunction::new_async` /
-# `RegisterTriggerType::trigger_request_format`.
+# `JsonSchema` impls satisfy `RegisterFunction::new` / `new_async` and
+# `RegisterFunction::args_format`.
 schemars = "0.8"
 uuid = { version = "1", features = ["v4"] }
 dirs = "5"

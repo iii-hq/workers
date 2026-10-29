@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 use crate::config::{SharedConfig, WorkerConfig};
@@ -22,6 +21,7 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FUNCTION_ID: &str = "tailscale::on-config-change";
+const ON_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 
@@ -56,14 +56,14 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_with_retry(iii, function, payload)
+        call_with_retry(iii, function, payload)
     })
     .await
 }
 
 /// Read the authoritative entry without converting service errors into absence.
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({"id": config_id()})).await {
+    match call_with_retry(iii, "configuration::get", json!({"id": config_id()})).await {
         Ok(response) => Ok(response.get("value").cloned()),
         Err(error) if is_not_found(&error) => Ok(None),
         Err(error) => Err(error),
@@ -78,8 +78,11 @@ struct OnConfigChangeOutput {
     ok: bool,
 }
 
-/// Reapply Tailscale settings when this instance's resolved configuration entry changes.
-pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<(), Error> {
+/// Reapply Tailscale settings when this instance's resolved configuration entry changes:
+/// registers `tailscale::on-config-change` and observes `configuration::on-updated`
+/// for this entry's `configuration:updated` events, delivered as output. The
+/// observer stays `pending` while the configuration source is not registered.
+pub fn observe_config_changes(iii: &IIIClient, config: SharedConfig) {
     let shared = config.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -106,15 +109,17 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
         .metadata(json!({"internal": true})),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FUNCTION_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"]
-        }),
-    ))?;
-    Ok(())
+    // The observer lives as long as the worker's connection; dropping the
+    // handle does not dispose it.
+    iii.observe(
+        Source::function(ON_UPDATED_FN)
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
+        CONFIG_FUNCTION_ID,
+    );
 }
 
 /// `true` only when the error carries the configuration worker's standalone
@@ -140,7 +145,7 @@ fn is_not_found(error: &str) -> bool {
         || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
-async fn trigger_with_retry(
+async fn call_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -148,8 +153,8 @@ async fn trigger_with_retry(
     let mut last_error = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,

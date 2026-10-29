@@ -104,8 +104,7 @@ async fn main() -> Result<()> {
         .into_shared();
 
     functions::register_all(&iii, config.clone());
-    configuration::register_config_trigger(&iii, config)
-        .context("registering tailscale configuration trigger")?;
+    configuration::observe_config_changes(&iii, config);
     ui::register(&iii);
 
     tracing::info!(

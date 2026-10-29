@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -89,7 +89,7 @@ async fn browser(
     timeout_ms: u64,
 ) -> Result<Value, String> {
     ctx.iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function.to_string(),
             payload,
             action: None,
@@ -136,7 +136,7 @@ async fn console_origin(ctx: &Ctx) -> Result<String, String> {
     }
     let status = ctx
         .iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "console::status".to_string(),
             payload: json!({}),
             action: None,

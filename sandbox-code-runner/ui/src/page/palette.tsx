@@ -20,7 +20,7 @@ export function registerSandboxPalette(host: Host): void {
     kind: 'item',
     minQuery: 2,
     async search(query, { signal }) {
-      const sandboxes = parseSandboxList(await host.iii.trigger(LIST_FN, {}))
+      const sandboxes = parseSandboxList(await host.iii.call(LIST_FN, {}))
       if (signal.aborted) return []
       const needle = query.toLowerCase()
       return sandboxes

@@ -10,21 +10,21 @@ connected to the engine ([details below](#the-iii-global)).
 
 sandbox-code-runner delegates every execution to the
 [iii-sandbox daemon](https://workers.iii.dev/workers/iii-sandbox)
-(`sandbox::*` triggers) rather than running an in-process interpreter — you
+(`sandbox::*` functions) rather than running an in-process interpreter — you
 get Python, npm/pip, and a real OS per call, at the cost of heavier runtimes.
 sandbox-code-runner itself executes nothing and touches no host filesystem.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=sandbox-code-runner
+iii call compose::add worker=sandbox-code-runner
 ```
 
 sandbox-code-runner delegates every execution to the iii-sandbox daemon, so
 install that too:
 
 ```bash
-iii trigger compose::add worker=iii-sandbox
+iii call compose::add worker=iii-sandbox
 ```
 
 Missing iii-sandbox is not fatal — sandbox-code-runner warns loudly at boot
@@ -43,7 +43,7 @@ persists — no files, no installed packages — and the response carries no
 `runtime_id`, because there is nothing left to address.
 
 ```bash
-iii trigger sandbox-code-runner::run lang=python code='print(2+2)'
+iii call sandbox-code-runner::run lang=python code='print(2+2)'
 # → { "stdout": "4\n", "stderr": "", "exit_code": 0, "success": true, "duration_ms": … }
 ```
 
@@ -52,11 +52,11 @@ Pass `keep=true` to leave the VM running instead. The response's
 capability `sandbox-code-runner::teardown` needs to stop it:
 
 ```bash
-iii trigger sandbox-code-runner::run lang=python code='print(2+2)' keep=true
+iii call sandbox-code-runner::run lang=python code='print(2+2)' keep=true
 # → { "runtime_id": "rt-…", "stdout": "4\n", … }
 
 # run more code in the SAME runtime (same filesystem, fresh process)
-iii trigger sandbox-code-runner::run runtime_id=rt-… code='print(open("/tmp/x").read())'
+iii call sandbox-code-runner::run runtime_id=rt-… code='print(open("/tmp/x").read())'
 ```
 
 Passing `runtime_id` back in a later run reuses that VM: **variables do
@@ -84,14 +84,14 @@ first registration and reusing it for every later one in the same
 namespace and `lang`:
 
 ```bash
-iii trigger sandbox-code-runner::register_function \
+iii call sandbox-code-runner::register_function \
   function_id=my-app::double \
   lang=python \
   description='Double a number. Payload: { n: number }.' \
   source='def handler(payload):
     return {"doubled": payload["n"] * 2}'
 
-iii trigger my-app::double n=21
+iii call my-app::double n=21
 # → { "doubled": 42 }
 ```
 
@@ -118,21 +118,21 @@ lazily — nothing dials the engine until the first use, so code that never
 touches `iii` pays nothing.
 
 ```js
-// node — the SDK's IIIClient; trigger returns a Promise
-const rows = await iii.trigger({
+// node — the SDK's IIIClient; call returns a Promise
+const rows = await iii.call({
   function_id: "database::query",
   payload: { sql: "SELECT 1" },
 });
 ```
 
 ```python
-# python — synchronous (the SDK's trigger_async exists too)
-rows = iii.trigger({'function_id': 'database::query',
-                    'payload': {'sql': 'SELECT 1'}})
+# python — synchronous (the SDK's call_async exists too)
+rows = iii.call({'function_id': 'database::query',
+                 'payload': {'sql': 'SELECT 1'}})
 ```
 
-- **The full SDK surface is available** — `trigger`, `registerFunction`,
-  `registerTrigger`, connection-state listeners, `shutdown` (the wrapper
+- **The full SDK surface is available** — `call`, `registerFunction`,
+  `observe`, connection-state listeners, `shutdown` (the wrapper
   calls it for you after the run) — exactly as the reference documents it.
   The global explains itself: `console.log(iii)` / `repr(iii)` print a
   usage hint before anything has connected, and after first use
@@ -140,15 +140,15 @@ rows = iii.trigger({'function_id': 'database::query',
   none of which opens a connection by itself.
 - **SDK registrations are ephemeral.** `iii.registerFunction` registers
   THIS guest process, and a run's process exits moments later — its
-  registrations (and trigger bindings) go with it. They are genuinely live
-  while it runs (a run can trigger its own registration through the
+  registrations (and its observers) go with it. They are genuinely live
+  while it runs (a run can call its own registration through the
   engine); for a function that outlives the process, call
-  `sandbox-code-runner::register_function` through `iii.trigger` —
+  `sandbox-code-runner::register_function` through `iii.call` —
   everything in the section above applies.
 - **Delivery.** Node runtimes get the SDK planted at
   `/node_modules/iii-sdk` from a bundle embedded in sandbox-code-runner —
   no registry, no `npm install`, works offline. Python runtimes
-  `pip install iii-sdk` once at runtime creation (its pydantic-core
+  `pip install 'iii-sdk>=0.26.0'` once at runtime creation (its pydantic-core
   dependency is compiled per-platform, so planting is not an option); if
   that install fails — no PyPI route, say — the runtime still works and
   `iii` raises a clear "not installed" error on first use.
@@ -160,7 +160,7 @@ rows = iii.trigger({'function_id': 'database::query',
   worker process you run yourself. The VM's network also reaches the
   internet and, via the gateway, services on the engine host's loopback —
   do not run code you would not run as a worker.
-- **Self-calls stall.** A registered handler that triggers a function
+- **Self-calls stall.** A registered handler that calls a function
   living on ITS OWN runtime waits on that runtime's one-exec-at-a-time
   slot — the very slot its own call is holding — so it can only time out.
   Calls to functions on other runtimes, to other workers, and from runs
@@ -174,10 +174,10 @@ Pass **exactly one** of `runtime_id` (a kept run's runtime) or
 `register_function` namespace):
 
 ```bash
-iii trigger sandbox-code-runner::teardown runtime_id=rt-…
+iii call sandbox-code-runner::teardown runtime_id=rt-…
 # → { "runtime_id": "rt-…", "torn_down": true, "unregistered": [] }
 
-iii trigger sandbox-code-runner::teardown namespace=my-app
+iii call sandbox-code-runner::teardown namespace=my-app
 # → { "namespace": "my-app::", "torn_down": true, "unregistered": ["my-app::double"] }
 ```
 
@@ -230,14 +230,44 @@ refusal (e.g. capacity) maps to `sandbox-code-runner::capacity`.
 Separate from that file config, the builtin `configuration` worker owns the
 `sandbox-code-runner` entry with the worker's one live knob:
 `inject_guidance` (ON by default) appends the usage guidance to every agent
-system prompt via the harness `pre-generate` hook. Turn it off in the
+system prompt: the worker observes `harness::hook::on-pre-generate` with
+args `{ on_error: "fail_open", inject_prompt }`. Turn it off in the
 Console's explicit worker form in global Settings or via
 `configuration::set` to shrink prompts — the harness's `# Granted functions`
 catalog still advertises the `sandbox-code-runner::*` ids. It hot-applies:
-the worker binds or unbinds the hook on change, no restart. The entry
+the worker observes the hook point or disposes that observer on change, no
+restart. The entry
 persists under `./data/configuration/sandbox-code-runner.yaml`, and a
 configuration-worker outage at boot is non-fatal (the worker warns and runs
 on the defaults).
+
+## Lifecycle events
+
+`sandbox-code-runner::on-event` carries the worker's lifecycle events. It is
+private (only this worker calls it), takes no args, and returns the event it
+is called with; iii delivers every call to each observer whose filters match,
+so observers select kinds with a filter on `input.kind`. The worker calls it
+only while something observes it, and runs its fleet watcher (one
+`sandbox::list` read every 2 s, 10 s while the daemon is absent, emitting
+only on change) only while it has observers.
+
+| `kind` | Called when | Fields |
+|---|---|---|
+| `runtime_created` | a runtime that outlives its call came up (`keep: true`, or a namespace's first registration) | `runtime_id`, `lang`, `sandbox_id` |
+| `run_settled` | a run returned | `lang`, and `runtime_id` when the runtime persists |
+| `function_registered` | `register_function` published a function | `function_id`, `runtime_id`, `lang` |
+| `teardown` | a runtime was destroyed (teardown, or found reaped) | `runtime_id` |
+| `fleet` | the daemon fleet changed | `daemon_absent`, `sandboxes` (the full `sandbox::list` snapshot) |
+
+Event: `{ kind, runtime_id?, lang?, sandbox_id?, function_id?, daemon_absent?, sandboxes? }`.
+
+```ts
+// fleet snapshots only, the event itself as the target's input
+iii.observe(
+  { function_id: 'sandbox-code-runner::on-event', filters: { 'input.kind': { $eq: 'fleet' } }, deliver: 'output' },
+  'ops::fleet-changed',
+)
+```
 
 ## Errors
 

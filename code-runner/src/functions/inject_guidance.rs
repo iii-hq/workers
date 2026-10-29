@@ -1,6 +1,6 @@
 //! `code-runner::inject-guidance` — a `pre_generate` hook that contributes the
 //! `code-runner::*` usage guidance to the agent's system prompt, ONLY while this
-//! worker is connected. The binding dies with the worker, so the guidance is
+//! worker is connected. The observer dies with the worker, so the guidance is
 //! presence-gated for free: a deployment without code-runner never pays for it,
 //! and the text is never hand-duplicated into a static harness prompt.
 //!
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub const GUIDANCE_HOOK_ID: &str = "code-runner::inject-guidance";
 pub const GUIDANCE_HOOK_DESC: &str =
     "Internal pre_generate hook: appends code-runner usage guidance to the agent system \
-     prompt. Bound to harness::hook::pre-generate at worker startup; not called directly. \
+     prompt. Observes harness::hook::on-pre-generate from worker startup; not called directly. \
      Silenced by inject_guidance: false in the code-runner configuration.";
 
 /// The single canonical copy of the code-runner usage guidance. Pure USAGE
@@ -77,8 +77,8 @@ fn mutations_for(base: &str, enabled: bool) -> PreGenerateMutations {
 /// `enabled` is the live `inject_guidance` config knob, read per call by the
 /// registration closure so a configuration save applies to the very next
 /// turn.
-// ponytail: the hook stays bound while disabled — one no-op roundtrip per
-// generation; re-bind the trigger on config change if that ever matters.
+// ponytail: the observer stays while disabled — one no-op roundtrip per
+// generation; dispose it on config change if that ever matters.
 pub async fn handle(
     event: PreGenerateEvent,
     enabled: bool,

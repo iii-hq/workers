@@ -1,80 +1,74 @@
 /**
- * Injected function-trigger renderer for `code-runner::run`.
+ * Injected function-call renderer for `sandbox-code-runner::run`.
  *
  * The default card prints the request as JSON, which turns `code` into one
- * escaped single-line string and `stdout`/`stderr` into two more —
- * unreadable, and this is the worker's highest-traffic call. Here the source
- * is highlighted in the language it will actually run as, and the response is
- * rendered as what it is: a process result PLUS a completion value.
+ * escaped single-line string and `stdout`/`stderr` into two more — unreadable,
+ * and this is the worker's highest-traffic call. Here the source is
+ * highlighted in the language it will actually run as, and the response is
+ * rendered as what it is: a PROCESS result.
  *
  * What this card exists to make obvious:
  *
- *  - A NON-ZERO EXIT IS NOT AN ERROR. code-runner reserves errors for
+ *  - A NON-ZERO EXIT IS NOT AN ERROR. sandbox-code-runner reserves errors for
  *    infrastructure failures (`error.rs`); a script that throws comes back as
- *    an ordinary response with its own traceback in `stderr`. So a failing
- *    exit reads as "your code exited N, here is stderr" (warn), never as a
- *    system fault (alert) — see `ExitStatus` in ../lib/shared.
- *  - `result` — the completion value, and the field
- *    `sandbox-code-runner`'s wire does not have. It is always present and
- *    never skipped, because a null result is information rather than an
- *    absence (run.rs). A null one shows the engine's return convention,
- *    because the usual cause is the convention mismatch: node code is a
- *    FUNCTION BODY (`return 2 + 2`), python code is a MODULE (assign
- *    `result`). A bare `2 + 2` in node returns nothing and is the single most
- *    common "it worked but I got null" call.
+ *    an ordinary response with its own compiler/runtime message in `stderr`.
+ *    So a failing exit reads as "your code exited N, here is stderr" (warn),
+ *    never as a system fault (alert) — see `ExitStatus` in ../lib/shared.
  *  - Which runtime the call ran in, and for how long. Three cases, and the
  *    card names exactly which one applies: a `runtime_id` in the request
  *    means a REUSE of a runtime the caller already holds; `keep: true` with
- *    none means the call is minting one to keep; neither means ONE-SHOT — the
- *    default — which creates a runtime, runs the code, and destroys it before
- *    this response is even sent. A one-shot response carries no `runtime_id`
- *    (there is nothing left to address).
- *  - That `runtime_id` is a capability: only ever shown through
- *    `RuntimeChip` (truncated, full value on an explicit copy), and every
- *    other string on the card — stdout, stderr, an error message, the
- *    completion value, even the submitted source — routed through
- *    `redactRuntimeIds` first.
- *
- * There is deliberately NO network chip: unlike `sandbox-code-runner`, this
- * worker's request has no `network` field at all, because neither engine has
- * any network. Rendering an "off" chip would imply a knob exists.
+ *    none means the call is minting one to keep; neither means ONE-SHOT —
+ *    the default — which boots a VM, runs the code, and destroys it before
+ *    this response is even sent. A one-shot response carries no
+ *    `runtime_id` (there is nothing left to address), which is why
+ *    `RunResponse.runtime_id` is optional on the wire now.
+ *  - `network` — create-time only, and the flag that makes `npm install` /
+ *    `pip install` possible inside the guest. `sandbox::run` — which now
+ *    backs both the one-shot and `keep: true` paths — has no way to enable
+ *    it at all, so `network: true` without an explicit `runtime_id` is
+ *    always refused by the worker, never silently ignored. It is the
+ *    security-relevant field of the request, so it is a chip rather than a
+ *    boolean buried in JSON. See `NetworkChip` for what it may and may not
+ *    claim.
+ *  - That `runtime_id` is a capability: only ever shown through `RuntimeChip`
+ *    (truncated, full value on an explicit copy), and every other string on
+ *    the card — stdout, stderr, an error message, even the submitted source —
+ *    routed through `redactRuntimeIds` first.
  *
  * Error outputs render their own compact card rather than falling through:
- * code-runner's error messages quote the `runtime_id` BY DESIGN (`unknown
- * runtime_id {id}` — error.rs), so the console's default view would print the
- * capability verbatim on an ordinary mistake.
+ * sandbox-code-runner's error messages quote the runtime_id BY DESIGN
+ * (`unknown runtime_id {id}`, `runtime {id} expired: …` — error.rs), so the
+ * console's default view would print the capability verbatim on an ordinary
+ * mistake.
  */
 
 import {
   Chip,
   CodeHighlight,
-  Eyebrow,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
-  uiClasses,
+  TerminalStream,
 } from '@iii-dev/console-ui'
-import { unwrapEnvelope } from '@iii-dev/console-ui/format'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
 import { useState } from 'react'
 import {
   asRecord,
   CardShell,
   DeniedCard,
-  deniedInfo,
   ErrorCard,
   ExitStatus,
+  deniedInfo,
   errorInfo,
   langToPrism,
   opName,
-  ResultValue,
   RuntimeChip,
   redactRuntimeIds,
-  resultConvention,
-  Stream,
   TimeoutChip,
+  unwrapEnvelope,
 } from '../lib/shared'
 
-const FUNCTION_ID = 'code-runner::run'
+const FUNCTION_ID = 'sandbox-code-runner::run'
 
 /** Lines of source shown before the block collapses behind a toggle… */
 const CODE_CLAMP_LINES = 14
@@ -86,11 +80,12 @@ type Lang = 'node' | 'python'
 interface RunRequest {
   code?: string
   runtimeId?: string
-  /** Only ever a value `langToPrism` can honestly map; anything else is
-   * dropped rather than echoed as a claim about what will execute. */
+  /** Only ever a value `langToPrism` can honestly map; anything else is dropped
+   * rather than echoed as a claim about what will execute. */
   lang?: Lang
   /** Only meaningful when `runtimeId` is absent — see `Chips`. */
   keep: boolean
+  network: boolean
   timeoutMs?: number
 }
 
@@ -101,6 +96,7 @@ function parseRequest(input: unknown): RunRequest {
     runtimeId: typeof obj.runtime_id === 'string' ? obj.runtime_id : undefined,
     lang: obj.lang === 'node' || obj.lang === 'python' ? obj.lang : undefined,
     keep: obj.keep === true,
+    network: obj.network === true,
     timeoutMs: typeof obj.timeout_ms === 'number' ? obj.timeout_ms : undefined,
   }
 }
@@ -110,7 +106,13 @@ function parseRequest(input: unknown): RunRequest {
  * to the request's) and is absent on the one-shot path — nothing was left
  * running to address.
  */
-function Chips({ req, runtimeId }: { req: RunRequest; runtimeId?: string }) {
+function Chips({
+  req,
+  runtimeId,
+}: {
+  req: RunRequest
+  runtimeId?: string
+}) {
   return (
     <>
       {runtimeId ? <RuntimeChip runtimeId={runtimeId} /> : null}
@@ -119,26 +121,60 @@ function Chips({ req, runtimeId }: { req: RunRequest; runtimeId?: string }) {
       ) : req.keep ? (
         <Chip
           tone="warning"
-          title="No runtime_id, keep: true: creates a runtime and leaves it running — the response's runtime_id addresses it for later runs. You own it until teardown."
+          title="No runtime_id, keep: true: boots a fresh VM and leaves it running — the response's runtime_id addresses it for later runs."
         >
-          keeps the runtime
+          keeps the VM
         </Chip>
       ) : (
         <Chip
           tone="warning"
-          title="No runtime_id, no keep: one-shot — creates a runtime, runs the code, and destroys it before this response is sent. Nothing persists: no globals, no files."
+          title="No runtime_id, no keep: one-shot — boots a fresh VM, runs the code, and destroys the VM before this response is sent. Nothing persists: no files, no installed packages."
         >
           one-shot
         </Chip>
       )}
       {req.lang ? (
         <Chip>
-          <span className="cr-ui-k">lang </span>
+          <span className={uiClasses.eyebrow}>lang</span>
           {req.lang}
         </Chip>
       ) : null}
+      <NetworkChip req={req} />
       <TimeoutChip ms={req.timeoutMs} />
     </>
+  )
+}
+
+/**
+ * `network` is create-time only ("Ignored when `runtime_id` is set" —
+ * run.rs), so on an explicitly reused runtime it is reported as ignored
+ * rather than as a capability this run has.
+ *
+ * Without a `runtime_id`, `sandbox::run` — which now backs both the
+ * one-shot and `keep: true` paths — has no way to enable networking at
+ * all, so the worker always REFUSES `network: true` there rather than
+ * silently dropping it. `network: false` needs no chip: it is simply
+ * guaranteed, the same way it always was on this path.
+ */
+function NetworkChip({ req }: { req: RunRequest }) {
+  if (!req.runtimeId) {
+    if (!req.network) return null
+    return (
+      <Chip
+        tone="warning"
+        title="Neither a one-shot run nor keep: true can create a networked VM — sandbox::run has no network flag at all. This request will be refused; pass an explicit runtime_id for a runtime that already has network."
+      >
+        <span className={uiClasses.eyebrow}>network</span>
+        refused: no runtime_id
+      </Chip>
+    )
+  }
+  if (!req.network) return null
+  return (
+    <Chip>
+      <span className={uiClasses.eyebrow}>network</span>
+      ignored on reuse
+    </Chip>
   )
 }
 
@@ -154,7 +190,15 @@ function Chips({ req, runtimeId }: { req: RunRequest; runtimeId?: string }) {
  * `arguments_excerpt`, already truncated: its line count is not the program's,
  * so no count is quoted from it.
  */
-function CodeSection({ code, lang, clipped }: { code: string; lang?: Lang; clipped?: boolean }) {
+function CodeSection({
+  code,
+  lang,
+  clipped,
+}: {
+  code: string
+  lang?: Lang
+  clipped?: boolean
+}) {
   const [expanded, setExpanded] = useState(false)
 
   // Source can embed a runtime id — a script that calls back into the engine
@@ -167,19 +211,29 @@ function CodeSection({ code, lang, clipped }: { code: string; lang?: Lang; clipp
   const lines = safe.split('\n')
   const long = lines.length > CODE_CLAMP_LINES || safe.length > CODE_CLAMP_CHARS
   const collapsed = long && !expanded
-  const shown = collapsed ? lines.slice(0, CODE_CLAMP_LINES).join('\n').slice(0, CODE_CLAMP_CHARS) : safe
+  const shown = collapsed
+    ? lines.slice(0, CODE_CLAMP_LINES).join('\n').slice(0, CODE_CLAMP_CHARS)
+    : safe
 
   return (
     <div className="cr-ui-section">
-      <Eyebrow as="div" className="cr-ui-section-label">
+      <div className={uiClasses.eyebrow}>
         {clipped ? 'code (excerpt)' : 'code'}
-      </Eyebrow>
+      </div>
       <div className="cr-ui-code">
         <CodeHighlight code={shown} language={langToPrism(lang) ?? 'text'} />
       </div>
       {long ? (
-        <button type="button" className="cr-ui-toggle" onClick={() => setExpanded((v) => !v)}>
-          {collapsed ? (clipped ? 'expand' : `expand · ${lines.length} lines, ${safe.length} chars`) : 'collapse'}
+        <button
+          type="button"
+          className="cr-ui-toggle"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {collapsed
+            ? clipped
+              ? 'expand'
+              : `expand · ${lines.length} lines, ${safe.length} chars`
+            : 'collapse'}
         </button>
       ) : null}
     </div>
@@ -188,12 +242,27 @@ function CodeSection({ code, lang, clipped }: { code: string; lang?: Lang; clipp
 
 /**
  * One process stream. A present-but-not-a-string field is a malformed
- * response, which gets a placeholder — dropping it silently would show a card
- * that quietly disagrees with the payload.
+ * response, which gets a placeholder — dropping it silently would show a
+ * card that quietly disagrees with the payload.
  */
-function StreamOrNote({ label, value, tone }: { label: string; value: unknown; tone?: 'out' | 'err' }) {
+function StreamOrNote({
+  label,
+  value,
+  tone,
+}: {
+  label: string
+  value: unknown
+  tone?: 'out' | 'err'
+}) {
   if (typeof value === 'string') {
-    return <Stream label={label} text={value} tone={tone} />
+    return (
+      <TerminalStream
+        label={label}
+        text={redactRuntimeIds(value)}
+        tone={tone}
+        className="cr-ui-stream"
+      />
+    )
   }
   if (value === undefined || value === null) return null
   return (
@@ -203,33 +272,26 @@ function StreamOrNote({ label, value, tone }: { label: string; value: unknown; t
   )
 }
 
-function SettledView({ message }: { message: FunctionTriggerMessage }) {
+function SettledView({ message }: { message: FunctionCallMessage }) {
   const req = parseRequest(message.input)
   const res = asRecord(unwrapEnvelope(message.output)) ?? {}
-  const runtimeId = typeof res.runtime_id === 'string' ? res.runtime_id : req.runtimeId
-  // The language that actually ran: the request's when it said, otherwise
-  // unknown (a reuse inherits it from the runtime). Only used to explain a
-  // null result, so an unknown one simply explains nothing.
-  const convention = resultConvention(req.lang)
+  const runtimeId =
+    typeof res.runtime_id === 'string' ? res.runtime_id : req.runtimeId
 
   return (
-    <CardShell op={opName(message.functionId)} chips={<Chips req={req} runtimeId={runtimeId} />}>
+    <CardShell
+      op={opName(message.functionId)}
+      chips={<Chips req={req} runtimeId={runtimeId} />}
+    >
       {/* The verdict first: in a chat feed you want "did it run?" before you
           want the source, and a failing exit points at the stderr below. */}
       <ExitStatus
         exitCode={typeof res.exit_code === 'number' ? res.exit_code : undefined}
         success={typeof res.success === 'boolean' ? res.success : undefined}
-        durationMs={typeof res.duration_ms === 'number' ? res.duration_ms : undefined}
+        durationMs={
+          typeof res.duration_ms === 'number' ? res.duration_ms : undefined
+        }
       />
-      {/* Then what it returned. `result` is always on the wire, so its absence
-          from the response is itself worth reporting rather than hiding. */}
-      {'result' in res ? (
-        <ResultValue value={res.result} hint={convention} />
-      ) : (
-        <div className="cr-ui-msg-note cr-ui-warn">
-          · the response carried no `result` field — it is always present on this wire, so this response is malformed
-        </div>
-      )}
       {req.code === undefined ? (
         <div className="cr-ui-msg-note">· the request carried no code</div>
       ) : (
@@ -245,12 +307,18 @@ function SettledView({ message }: { message: FunctionTriggerMessage }) {
 }
 
 /** In-flight: what is being run, and where. No verdict to show yet. */
-function RunningView({ message }: { message: FunctionTriggerMessage }) {
+function RunningView({ message }: { message: FunctionCallMessage }) {
   const req = parseRequest(message.input)
   return (
-    <CardShell op={opName(message.functionId)} running chips={<Chips req={req} runtimeId={req.runtimeId} />}>
+    <CardShell
+      op={opName(message.functionId)}
+      running
+      chips={<Chips req={req} runtimeId={req.runtimeId} />}
+    >
       <div className={`cr-ui-msg-note ${uiClasses.pulse}`}>· running…</div>
-      {req.code === undefined ? null : <CodeSection code={req.code} lang={req.lang} />}
+      {req.code === undefined ? null : (
+        <CodeSection code={req.code} lang={req.lang} />
+      )}
     </CardShell>
   )
 }
@@ -259,20 +327,31 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
  * Pending approval: the source that is about to run, before saying yes.
  *
  * The approval gate may hand this renderer `arguments_excerpt` instead of the
- * real request — every string clipped to 256 code points with a trailing `…`.
- * A trailing `…` is that marker, so the code is labeled a possibly-partial
- * excerpt rather than presented as the whole program on the one card gating
- * arbitrary code execution.
+ * real request — every string clipped to 256 code points with a trailing `…`
+ * (approval-gate/src/redact.rs `ARGS_EXCERPT_LEN_CAP`). A trailing `…` is that
+ * marker, so the code is labeled a possibly-partial excerpt rather than
+ * presented as the whole program on the one card gating arbitrary code
+ * execution.
  */
-function PreviewView({ message, code }: { message: FunctionTriggerMessage; code: string }) {
+function PreviewView({
+  message,
+  code,
+}: {
+  message: FunctionCallMessage
+  code: string
+}) {
   const req = parseRequest(message.input)
   const clipped = code.endsWith('…')
   return (
-    <CardShell op={opName(message.functionId)} chips={<Chips req={req} runtimeId={req.runtimeId} />}>
+    <CardShell
+      op={opName(message.functionId)}
+      chips={<Chips req={req} runtimeId={req.runtimeId} />}
+    >
       <div className="cr-ui-msg-note">will run this code:</div>
       {clipped ? (
         <div className="cr-ui-msg-note cr-ui-warn">
-          · clipped to 256 characters by the approval gate — an excerpt, not necessarily the whole program
+          · clipped to 256 characters by the approval gate — an excerpt, not
+          necessarily the whole program
         </div>
       ) : null}
       <CodeSection code={code} lang={req.lang} clipped={clipped} />
@@ -280,10 +359,13 @@ function PreviewView({ message, code }: { message: FunctionTriggerMessage; code:
   )
 }
 
-export function createRunRenderer(host: Host): FunctionTriggerRenderer {
+export function createRunRenderer(host: Host): FunctionCallRenderer {
   void host // the run card reads nothing off the host
 
-  const render = (message: FunctionTriggerMessage, running: boolean): React.ReactNode | null => {
+  const render = (
+    message: FunctionCallMessage,
+    running: boolean,
+  ): React.ReactNode | null => {
     if (message.functionId !== FUNCTION_ID) return null
     if (message.pendingApproval) return null // tryRenderPreview handles it
     // Not a record — e.g. a double-encoded (stringified) payload, which the
@@ -296,11 +378,17 @@ export function createRunRenderer(host: Host): FunctionTriggerRenderer {
     // before `errorInfo`: a denial is also `'error' in output`-shaped.
     const denied = deniedInfo(message.output)
     if (denied) {
-      return <DeniedCard op={opName(message.functionId)} reason={denied.reason} deniedBy={denied.deniedBy} />
+      return (
+        <DeniedCard
+          op={opName(message.functionId)}
+          reason={denied.reason}
+          deniedBy={denied.deniedBy}
+        />
+      )
     }
-    // Our own error card, never a fall-through: code-runner's error messages
-    // carry the runtime_id capability by design (error.rs), so the console's
-    // default view would print it unredacted.
+    // Our own error card, never a fall-through: sandbox-code-runner's error
+    // messages carry the runtime_id capability by design (error.rs), so the
+    // console's default view would print it unredacted.
     const err = errorInfo(message.output)
     if (err) {
       return (
@@ -320,7 +408,7 @@ export function createRunRenderer(host: Host): FunctionTriggerRenderer {
   }
 
   return {
-    id: 'code-runner/page.js#run',
+    id: 'sandbox-code-runner/page.js#run',
     isMatch: (functionId) => functionId === FUNCTION_ID,
     tryRender: (message) => render(message, !!message.running),
     tryRenderRunning: (message) => render(message, true),

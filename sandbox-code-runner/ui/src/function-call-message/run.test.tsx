@@ -21,8 +21,8 @@
  */
 
 import type {
-  FunctionTriggerMessage,
-  FunctionTriggerRenderer,
+  FunctionCallMessage,
+  FunctionCallRenderer,
   Host,
 } from '@iii-dev/console-ui'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -90,12 +90,12 @@ const FUNCTION_ID = 'sandbox-code-runner::run'
 const RUNTIME_ID = 'rt-3f9a2c1e-7b64-4d0a-9c11-5e8ab2d4f077'
 const TRUNCATED = truncateRuntimeId(RUNTIME_ID)
 
-const renderer: FunctionTriggerRenderer = createRunRenderer({} as Host)
+const renderer: FunctionCallRenderer = createRunRenderer({} as Host)
 
-function msg(extra: Partial<FunctionTriggerMessage>): FunctionTriggerMessage {
+function msg(extra: Partial<FunctionCallMessage>): FunctionCallMessage {
   return {
     id: 'm1',
-    role: 'function-trigger',
+    role: 'function-call',
     functionId: FUNCTION_ID,
     input: {},
     createdAt: 0,

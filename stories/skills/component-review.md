@@ -132,16 +132,16 @@ channel can show images.
 
 ## 6. Keep watching
 
-To react to later edits without polling, bind the trigger in the
-conversation:
+To react to later edits without polling, observe `stories::on-changed` from
+the conversation with `harness::observe`:
 
 ```json
-{ "trigger_type": "stories:changed", "config": { "workspace": "<ws>", "kinds": ["direct", "indirect"] },
-  "label": "stories-changes", "metadata": { "action": "components changed in the working tree" } }
+{ "function_id": "stories::on-changed", "args": { "workspace": "<ws>", "kinds": ["direct", "indirect"] },
+  "label": "stories-changes" }
 ```
 
-Each delivery carries the classified `changes` against the previous build;
-run steps 4–5 for the components it names.
+Each delivery carries the classified `changes` against the previous build,
+narrowed to the args; run steps 4–5 for the components it names.
 
 ## Pitfalls
 
@@ -151,4 +151,4 @@ run steps 4–5 for the components it names.
 - Two hosts with different fonts disagree at the pixel level; run both
   lines' renders on the same host, which `stories::diff` always does.
 - `worktree` is rebuilt by the watcher after saves; when a rebuild is in
-  flight, `stories:build` reports it and calls return "still building".
+  flight, `stories::on-build` reports it and calls return "still building".

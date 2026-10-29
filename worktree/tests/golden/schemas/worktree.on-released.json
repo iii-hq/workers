@@ -1,0 +1,57 @@
+{
+  "function_id": "worktree::on-released",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`worktree::on-released` — a claim was released.",
+    "properties": {
+      "repo_path": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "worktree_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "repo_path",
+      "session_id",
+      "timestamp",
+      "worktree_id"
+    ],
+    "title": "ReleasedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`worktree::on-released` — a claim was released.",
+    "properties": {
+      "repo_path": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "worktree_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "repo_path",
+      "session_id",
+      "timestamp",
+      "worktree_id"
+    ],
+    "title": "ReleasedEvent",
+    "type": "object"
+  }
+}
