@@ -348,7 +348,7 @@ pub fn find(id: &str) -> Option<&'static ModelSpec> {
 }
 
 /// Download progress, one report per megabyte and a final `done`.
-#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Progress {
     pub id: String,
     pub file: String,

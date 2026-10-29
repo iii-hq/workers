@@ -2,6 +2,7 @@
 //! publish pipeline reads. A change here is a change callers see.
 
 use voice::config::WorkerConfig;
+use voice::events::{refuse_invocation, EventKind};
 use voice::functions;
 use voice::manifest;
 
@@ -25,6 +26,36 @@ fn the_catalog_lists_every_public_function_in_order() {
             "voice::doctor",
         ]
     );
+}
+
+#[test]
+fn every_trigger_type_has_an_observable_function_outside_the_call_catalog() {
+    let callable: Vec<&str> = functions::catalog().iter().map(|s| s.function_id).collect();
+    let observable: Vec<&str> = EventKind::all()
+        .iter()
+        .map(|kind| kind.observable_function())
+        .collect();
+    assert_eq!(
+        observable,
+        [
+            "voice::on-transcript",
+            "voice::on-session-started",
+            "voice::on-session-stopped",
+            "voice::on-model-progress",
+            "voice::on-speech-ended",
+        ]
+    );
+    let readme =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    for kind in EventKind::all() {
+        let id = kind.observable_function();
+        assert!(!callable.contains(&id), "{id} is observed, never called");
+        assert!(readme.contains(id), "{id} missing from README.md");
+        match refuse_invocation(id) {
+            iii_sdk::errors::Error::Remote { code, .. } => assert_eq!(code, "FORBIDDEN"),
+            other => panic!("{id}: expected FORBIDDEN, got {other:?}"),
+        }
+    }
 }
 
 #[test]

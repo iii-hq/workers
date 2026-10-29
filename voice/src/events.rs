@@ -1,10 +1,16 @@
-//! The custom trigger types this worker emits, and the fan-out behind them.
+//! The custom trigger types this worker emits, the observable `voice::on-*`
+//! function next to each one, and the fan-out behind them.
 //!
-//! Consumers bind handlers with the standard two-step pattern; the engine
-//! routes each registration to our [`TriggerHandler`]. Delivery is
-//! fire-and-forget (`TriggerAction::Void`) and at-least-once; the optional
-//! per-binding `session_id` filter is evaluated here by the emitting worker,
-//! and malformed configs are rejected at registration time.
+//! Old consumers bind a trigger type with the standard two-step pattern; the
+//! engine routes each registration to our [`TriggerHandler`]. New consumers
+//! observe the function (iii 0.25) with the same config as args; its
+//! [`ObserveHandler`] files observers in the same subscriber set. Delivery is
+//! fire-and-forget and at-least-once for bindings (`TriggerAction::Void`),
+//! fire-and-forget `obs.call` for observers; the optional `session_id` /
+//! `speech_id` filter is evaluated here by the emitting worker, and malformed
+//! configs or args are rejected at registration time. Events are routed
+//! in-process: invoking an on-* function is refused with FORBIDDEN, so nobody
+//! can forge one.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -13,16 +19,56 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{
+    IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
+    RegisterTriggerType, TriggerAction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::models::Progress;
 
 pub const TRANSCRIPT: &str = "voice::transcript";
 pub const SESSION_STARTED: &str = "voice::session-started";
 pub const SESSION_STOPPED: &str = "voice::session-stopped";
 pub const MODEL_PROGRESS: &str = "voice::model-progress";
 pub const SPEECH_ENDED: &str = "voice::speech-ended";
+
+pub const ON_TRANSCRIPT: &str = "voice::on-transcript";
+pub const ON_SESSION_STARTED: &str = "voice::on-session-started";
+pub const ON_SESSION_STOPPED: &str = "voice::on-session-stopped";
+pub const ON_MODEL_PROGRESS: &str = "voice::on-model-progress";
+pub const ON_SPEECH_ENDED: &str = "voice::on-speech-ended";
+pub const ON_TRANSCRIPT_DESC: &str =
+    "A dictation session produced text. Observe it with args { session_id? }; each observer \
+     receives { session_id, seq, kind: partial | final | closed | error, text, segment, \
+     timestamp_ms, reason? }. Only the voice worker emits it: invoking it directly is refused.";
+pub const ON_SESSION_STARTED_DESC: &str =
+    "A dictation session is ready for audio. Observe it with args { session_id? }; each \
+     observer receives { session_id, model, timestamp_ms }. Only the voice worker emits it: \
+     invoking it directly is refused.";
+pub const ON_SESSION_STOPPED_DESC: &str =
+    "A dictation session ended. Observe it with args { session_id? }; each observer receives \
+     { session_id, reason: stopped | discarded | idle | shutdown, timestamp_ms }. Only the \
+     voice worker emits it: invoking it directly is refused.";
+pub const ON_MODEL_PROGRESS_DESC: &str =
+    "Bytes received while a speech model downloads, one event per megabyte and a final done \
+     event. Observe it with args {} (a session_id filter never matches); each observer \
+     receives { id, file, received_bytes, total_bytes, done, error? }. Only the voice worker \
+     emits it: invoking it directly is refused.";
+pub const ON_SPEECH_ENDED_DESC: &str =
+    "Legacy: the end of a host read-aloud, kept for compatibility and no longer emitted. \
+     Observe it with args { speech_id? }; each observer would receive { speech_id, reason: \
+     ended | stopped | failed, timestamp_ms }. Invoking it directly is refused.";
+
+/// Codes the `voice::on-*` functions refuse with.
+pub mod codes {
+    /// Invoking an on-* function directly.
+    pub const FORBIDDEN: &str = "FORBIDDEN";
+    /// An observer's args the trigger type would refuse as a config.
+    pub const INVALID_ARGS: &str = "INVALID_ARGS";
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -41,6 +87,28 @@ impl EventKind {
             EventKind::SessionStopped => SESSION_STOPPED,
             EventKind::ModelProgress => MODEL_PROGRESS,
             EventKind::SpeechEnded => SPEECH_ENDED,
+        }
+    }
+
+    /// The observable function next to the trigger type.
+    pub fn observable_function(&self) -> &'static str {
+        match self {
+            EventKind::Transcript => ON_TRANSCRIPT,
+            EventKind::SessionStarted => ON_SESSION_STARTED,
+            EventKind::SessionStopped => ON_SESSION_STOPPED,
+            EventKind::ModelProgress => ON_MODEL_PROGRESS,
+            EventKind::SpeechEnded => ON_SPEECH_ENDED,
+        }
+    }
+
+    /// The description of [`Self::observable_function`].
+    pub fn observable_description(&self) -> &'static str {
+        match self {
+            EventKind::Transcript => ON_TRANSCRIPT_DESC,
+            EventKind::SessionStarted => ON_SESSION_STARTED_DESC,
+            EventKind::SessionStopped => ON_SESSION_STOPPED_DESC,
+            EventKind::ModelProgress => ON_MODEL_PROGRESS_DESC,
+            EventKind::SpeechEnded => ON_SPEECH_ENDED_DESC,
         }
     }
 
@@ -155,11 +223,20 @@ pub struct Binding {
     pub filter: BindingConfig,
 }
 
-/// Thread-safe subscriber registry for one trigger type.
+/// One observer of a `voice::on-*` function with its parsed args.
+#[derive(Clone)]
+pub struct ObserverBinding {
+    pub observer: Arc<dyn EventObserver>,
+    pub filter: BindingConfig,
+}
+
+/// Thread-safe subscriber registry for one trigger type: its bindings and the
+/// observers of its `voice::on-*` function, kept apart by id.
 #[derive(Clone)]
 pub struct SubscriberSet {
     kind: EventKind,
     inner: Arc<Mutex<HashMap<String, Binding>>>,
+    observers: Arc<Mutex<HashMap<String, ObserverBinding>>>,
 }
 
 impl SubscriberSet {
@@ -167,6 +244,7 @@ impl SubscriberSet {
         Self {
             kind,
             inner: Arc::new(Mutex::new(HashMap::new())),
+            observers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -179,14 +257,19 @@ impl SubscriberSet {
         self.add_binding(&config.id, &config.function_id, config.config)
     }
 
-    pub fn add_binding(&self, id: &str, function_id: &str, config: Value) -> Result<(), String> {
+    /// A binding's config or an observer's args; null means no filter.
+    fn parse_filter(&self, config: Value) -> Result<BindingConfig, String> {
         let raw = if config.is_null() {
             Value::Object(serde_json::Map::new())
         } else {
             config
         };
-        let filter: BindingConfig = serde_json::from_value(raw)
-            .map_err(|e| format!("invalid {} binding config: {e}", self.kind.trigger_type()))?;
+        serde_json::from_value(raw)
+            .map_err(|e| format!("invalid {} binding config: {e}", self.kind.trigger_type()))
+    }
+
+    pub fn add_binding(&self, id: &str, function_id: &str, config: Value) -> Result<(), String> {
+        let filter = self.parse_filter(config)?;
         let binding = Binding {
             id: id.to_string(),
             function_id: function_id.to_string(),
@@ -201,6 +284,29 @@ impl SubscriberSet {
 
     pub fn remove(&self, id: &str) {
         self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
+    }
+
+    /// Parse an observer's args (the trigger config) and file it. Malformed
+    /// args reject the observer.
+    pub fn add_observer(
+        &self,
+        observer: Arc<dyn EventObserver>,
+        args: Value,
+    ) -> Result<(), String> {
+        let filter = self.parse_filter(args)?;
+        let id = observer.id().to_string();
+        self.observers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, ObserverBinding { observer, filter });
+        Ok(())
+    }
+
+    pub fn remove_observer(&self, id: &str) {
+        self.observers
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
@@ -221,6 +327,17 @@ impl SubscriberSet {
             .unwrap_or_else(|p| p.into_inner())
             .values()
             .filter(|b| binding_matches(&b.filter, self.kind, session_id))
+            .cloned()
+            .collect()
+    }
+
+    /// Observers whose args accept `session_id`.
+    pub fn observers_matching(&self, session_id: Option<&str>) -> Vec<ObserverBinding> {
+        self.observers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter(|o| binding_matches(&o.filter, self.kind, session_id))
             .cloned()
             .collect()
     }
@@ -274,7 +391,135 @@ impl TriggerHandler for VoiceTriggerHandler {
     }
 }
 
-/// Register the custom trigger types with the engine. Must run before
+/// One observer of a `voice::on-*` function, as the emitter sees it.
+/// Production wraps the SDK's [`Observer`]; tests record.
+#[async_trait]
+pub trait EventObserver: Send + Sync {
+    fn id(&self) -> &str;
+    /// Hand one event to the observer. Fire-and-forget like a binding's
+    /// delivery: never blocks the caller that produced the event.
+    async fn deliver(&self, payload: Value);
+}
+
+#[async_trait]
+impl EventObserver for Observer {
+    fn id(&self) -> &str {
+        Observer::id(self)
+    }
+
+    async fn deliver(&self, payload: Value) {
+        let obs = self.clone();
+        tokio::spawn(async move {
+            match obs.call::<Value>(payload).await {
+                Ok(_) => {}
+                // The observer's own filters declined this event.
+                Err(Error::Remote { code, .. }) if code == "FILTERS_NOT_MATCHED" => {}
+                Err(e) => {
+                    tracing::warn!(observer = %obs.id(), function_id = %obs.function_id(), error = %e, "observer delivery failed");
+                }
+            }
+        });
+    }
+}
+
+/// Files each observer of a `voice::on-*` function in the subscriber set its
+/// trigger type uses, and takes it out again when the engine removes it.
+struct VoiceObserveHandler {
+    set: SubscriberSet,
+}
+
+#[async_trait]
+impl ObserveHandler for VoiceObserveHandler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        self.set
+            .add_observer(Arc::new(obs.clone()), obs.args_value().clone())
+            .map_err(|e| ObserveRejection::new(codes::INVALID_ARGS, e))?;
+        tracing::info!(observer = %obs.id(), target = %obs.target(), function_id = %obs.function_id(), "observer added");
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        self.set.remove_observer(obs.id());
+        tracing::info!(observer = %obs.id(), function_id = %obs.function_id(), "observer removed");
+    }
+}
+
+/// The error every `voice::on-*` handler returns: events come only from this
+/// worker, in-process, never by invoking the function.
+pub fn refuse_invocation(function_id: &str) -> Error {
+    Error::Remote {
+        code: codes::FORBIDDEN.to_string(),
+        message: format!(
+            "{function_id} is an event source: observe it \
+             (iii.observe({{ function_id: '{function_id}', args }}, target)) instead of invoking \
+             it; only the voice worker emits its events"
+        ),
+        stacktrace: None,
+    }
+}
+
+/// Draft-07 root schema of `T`, generated as iii-sdk does for a typed handler.
+fn schema_for<T: JsonSchema>() -> Value {
+    serde_json::to_value(
+        schemars::r#gen::SchemaSettings::draft07()
+            .into_generator()
+            .into_root_schema_for::<T>(),
+    )
+    .unwrap_or(Value::Null)
+}
+
+/// The request and response schemas `kind`'s observable function registers
+/// with: the event its observers receive, and `()` (it never answers). Both
+/// are set explicitly because the handler takes any JSON (see
+/// [`observable_handler`]), which would otherwise publish an untyped request.
+pub fn observable_formats(kind: EventKind) -> (Value, Value) {
+    let request = match kind {
+        EventKind::Transcript => schema_for::<TranscriptEvent>(),
+        EventKind::SessionStarted => schema_for::<SessionStartedEvent>(),
+        EventKind::SessionStopped => schema_for::<SessionStoppedEvent>(),
+        EventKind::ModelProgress => schema_for::<Progress>(),
+        EventKind::SpeechEnded => schema_for::<SpeechEndedEvent>(),
+    };
+    (request, schema_for::<()>())
+}
+
+/// Registers `kind`'s observable function, owner-delivered, with args
+/// [`BindingConfig`] (the trigger config), the typed formats of
+/// [`observable_formats`], and hooks filing observers in the trigger type's
+/// subscriber set. On an engine without observe it registers as a plain
+/// function and its hooks never run.
+fn register_observable(iii: &IIIClient, kind: EventKind, sets: &TriggerSets) {
+    let function_id = kind.observable_function();
+    // The event type is only the documented request format: the handler takes
+    // any JSON, so every invocation (empty or malformed input included) is
+    // refused with FORBIDDEN rather than failing to deserialize first.
+    let (request, response) = observable_formats(kind);
+    iii.register_function(
+        function_id,
+        RegisterFunction::new(observable_handler(kind))
+            .description(kind.observable_description())
+            .request_format(request)
+            .response_format(response)
+            .observe(Observe::owner().args_format::<BindingConfig>().handler(
+                VoiceObserveHandler {
+                    set: sets.for_kind(kind).clone(),
+                },
+            )),
+    );
+    tracing::info!(function_id, "registered observable function");
+}
+
+/// The handler registered for `kind`'s observable function: takes any JSON
+/// input and refuses it with [`refuse_invocation`] (FORBIDDEN).
+pub fn observable_handler(
+    kind: EventKind,
+) -> impl Fn(Value) -> Result<(), Error> + Send + Sync + 'static {
+    move |_input: Value| Err(refuse_invocation(kind.observable_function()))
+}
+
+/// Register the custom trigger types with the engine, and the observable
+/// `voice::on-*` function next to each one, sharing one subscriber set per
+/// type. Must run before
 /// `functions::register_all` so handlers can capture the subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
@@ -304,6 +549,9 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
         ),
     ];
     for (kind, description) in descriptions {
+        // Kept for consumers that bind the trigger type, on 0.24 and 0.25
+        // engines alike.
+        #[allow(deprecated)]
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
                 kind.trigger_type(),
@@ -318,6 +566,7 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
             trigger_type = kind.trigger_type(),
             "registered trigger type"
         );
+        register_observable(iii, kind, &sets);
     }
     sets
 }
@@ -382,10 +631,14 @@ impl Emitter {
                 return;
             }
         };
-        for binding in self.sets.for_kind(kind).matching(session_id) {
+        let set = self.sets.for_kind(kind);
+        for binding in set.matching(session_id) {
             self.deliverer
                 .deliver(kind.trigger_type(), &binding.function_id, payload.clone())
                 .await;
+        }
+        for observer in set.observers_matching(session_id) {
+            observer.observer.deliver(payload.clone()).await;
         }
     }
 
@@ -511,6 +764,259 @@ mod tests {
         assert_eq!(deliveries.len(), 1);
         assert_eq!(deliveries[0].1, "fn-y");
         assert_eq!(deliveries[0].0, SESSION_STOPPED);
+    }
+
+    /// Stands in for the SDK observer: records what `obs.call` would carry
+    /// to its target.
+    struct ObserverRecorder {
+        id: String,
+        seen: Mutex<Vec<Value>>,
+    }
+
+    impl ObserverRecorder {
+        fn new(id: &str) -> Arc<Self> {
+            Arc::new(Self {
+                id: id.into(),
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn seen(&self) -> Vec<Value> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl EventObserver for ObserverRecorder {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        async fn deliver(&self, payload: Value) {
+            self.seen.lock().unwrap().push(payload);
+        }
+    }
+
+    #[test]
+    fn each_on_function_refuses_direct_invocation() {
+        for kind in EventKind::all() {
+            let function_id = kind.observable_function();
+            match refuse_invocation(function_id) {
+                Error::Remote { code, message, .. } => {
+                    assert_eq!(code, codes::FORBIDDEN);
+                    assert_eq!(code, iii_sdk::protocol::observe_codes::FORBIDDEN);
+                    assert!(message.contains(function_id), "{message}");
+                }
+                other => panic!("expected FORBIDDEN, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_registered_handler_refuses_empty_and_malformed_input_with_forbidden() {
+        // `observable_handler(kind)` is exactly what `register_observable`
+        // hands to RegisterFunction::new: it takes a serde_json::Value, so the
+        // SDK's input deserialization cannot fail first (no Error::Serde) and
+        // every input reaches the FORBIDDEN refusal.
+        for kind in EventKind::all() {
+            let handler = observable_handler(kind);
+            for input in [
+                serde_json::json!({}),
+                Value::Null,
+                serde_json::json!("not an event"),
+                serde_json::json!([1, 2, 3]),
+                serde_json::json!({ "session_id": 7, "seq": "x" }),
+                serde_json::json!({
+                    "session_id": "s1",
+                    "seq": 1,
+                    "kind": "final",
+                    "text": "hi",
+                    "segment": 0,
+                    "timestamp_ms": 1
+                }),
+            ] {
+                match handler(input.clone()) {
+                    Err(Error::Remote { code, message, .. }) => {
+                        assert_eq!(code, codes::FORBIDDEN, "{kind:?} {input}");
+                        assert!(message.contains(kind.observable_function()), "{message}");
+                    }
+                    other => panic!("{kind:?} {input}: expected FORBIDDEN, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn function_ids_sit_next_to_their_trigger_types() {
+        let pairs: Vec<(&str, &str)> = EventKind::all()
+            .iter()
+            .map(|kind| (kind.trigger_type(), kind.observable_function()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("voice::transcript", "voice::on-transcript"),
+                ("voice::session-started", "voice::on-session-started"),
+                ("voice::session-stopped", "voice::on-session-stopped"),
+                ("voice::model-progress", "voice::on-model-progress"),
+                ("voice::speech-ended", "voice::on-speech-ended"),
+            ]
+        );
+        for kind in EventKind::all() {
+            assert!(
+                kind.observable_description().contains("refused"),
+                "{}",
+                kind.observable_function()
+            );
+        }
+    }
+
+    /// The interface boot smoke fails any function whose request or response
+    /// schema is untyped (AnyValue or empty).
+    fn assert_typed(function_id: &str, which: &str, schema: &Value) {
+        let typed = schema.as_object().is_some_and(|o| {
+            [
+                "type",
+                "properties",
+                "$ref",
+                "allOf",
+                "anyOf",
+                "oneOf",
+                "enum",
+            ]
+            .iter()
+            .any(|k| o.contains_key(*k))
+        });
+        assert!(typed, "{function_id} {which} schema is untyped: {schema}");
+    }
+
+    #[test]
+    fn each_on_function_registers_typed_request_and_response_schemas() {
+        for kind in EventKind::all() {
+            let function_id = kind.observable_function();
+            let (request, response) = observable_formats(kind);
+            assert_typed(function_id, "request", &request);
+            assert_typed(function_id, "response", &response);
+            assert_eq!(response["type"], "null", "{function_id}");
+            assert!(
+                request["properties"]
+                    .as_object()
+                    .is_some_and(|p| !p.is_empty()),
+                "{function_id}: the request names the event's fields: {request}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_receives_the_event_a_binding_receives() {
+        for kind in EventKind::all() {
+            let sets = TriggerSets::new();
+            let set = sets.for_kind(kind);
+            let field = if kind == EventKind::SpeechEnded {
+                "speech_id"
+            } else {
+                "session_id"
+            };
+            let config = serde_json::json!({ field: "s1" });
+            set.add_binding("b1", "fn-b1", config.clone()).unwrap();
+            let matching = ObserverRecorder::new("o1");
+            let every = ObserverRecorder::new("o2");
+            let other = ObserverRecorder::new("o3");
+            set.add_observer(matching.clone(), config).unwrap();
+            set.add_observer(every.clone(), Value::Null).unwrap();
+            set.add_observer(other.clone(), serde_json::json!({ field: "s2" }))
+                .unwrap();
+
+            let recorder = Arc::new(RecordingDeliverer::default());
+            let emitter = Emitter::new(sets.clone(), recorder.clone());
+            let event = serde_json::json!({ field: "s1", "timestamp_ms": 1 });
+            emitter.emit(kind, Some("s1"), &event).await;
+
+            let deliveries = recorder.deliveries.lock().unwrap().clone();
+            assert_eq!(deliveries.len(), 1, "{kind:?}");
+            assert_eq!(deliveries[0].0, kind.trigger_type());
+            assert_eq!(deliveries[0].1, "fn-b1");
+            let bound = deliveries[0].2.clone();
+            assert_eq!(bound, event);
+            assert_eq!(matching.seen(), vec![bound.clone()], "{kind:?}");
+            assert_eq!(every.seen(), vec![bound], "{kind:?}");
+            assert!(other.seen().is_empty(), "{kind:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn observers_follow_the_binding_filter_rules() {
+        let sets = TriggerSets::new();
+        let set = sets.for_kind(EventKind::Transcript);
+        // A filter on the other kind's field never matches, as for a binding.
+        let stray = ObserverRecorder::new("stray");
+        set.add_observer(stray.clone(), serde_json::json!({ "speech_id": "s1" }))
+            .unwrap();
+        // A session filter does not match an event without a session.
+        let session = ObserverRecorder::new("session");
+        set.add_observer(session.clone(), serde_json::json!({ "session_id": "s1" }))
+            .unwrap();
+        assert!(set.observers_matching(Some("s1")).len() == 1);
+        assert!(set.observers_matching(None).is_empty());
+
+        // Malformed args are refused like a malformed binding config.
+        let err = set
+            .add_observer(
+                ObserverRecorder::new("bad"),
+                serde_json::json!({ "sesion_id": "x" }),
+            )
+            .unwrap_err();
+        assert!(err.contains("unknown field"), "{err}");
+        assert!(set
+            .add_binding("bad", "fn-bad", serde_json::json!({ "sesion_id": "x" }))
+            .is_err());
+
+        let emitter = Emitter::new(sets.clone(), Arc::new(NoopDeliverer));
+        emitter
+            .emit(
+                EventKind::Transcript,
+                Some("s1"),
+                &serde_json::json!({ "seq": 1 }),
+            )
+            .await;
+        assert!(stray.seen().is_empty());
+        assert_eq!(session.seen().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_removed_observer_stops_receiving_and_bindings_stay() {
+        let sets = TriggerSets::new();
+        let set = sets.for_kind(EventKind::SessionStarted);
+        set.add_binding("same", "fn-same", Value::Null).unwrap();
+        let observer = ObserverRecorder::new("same");
+        set.add_observer(observer.clone(), Value::Null).unwrap();
+        // Observer and binding ids live apart: removing one keeps the other.
+        set.remove_observer("same");
+        assert_eq!(set.len(), 1);
+        assert!(set.observers_matching(None).is_empty());
+
+        let recorder = Arc::new(RecordingDeliverer::default());
+        Emitter::new(sets.clone(), recorder.clone())
+            .emit(
+                EventKind::SessionStarted,
+                Some("d1"),
+                &serde_json::json!({}),
+            )
+            .await;
+        assert!(observer.seen().is_empty());
+        assert_eq!(recorder.deliveries.lock().unwrap().len(), 1);
+
+        // Observers of one type never receive another type's events.
+        let started = ObserverRecorder::new("o1");
+        set.add_observer(started.clone(), Value::Null).unwrap();
+        Emitter::new(sets.clone(), Arc::new(NoopDeliverer))
+            .emit(
+                EventKind::SessionStopped,
+                Some("d1"),
+                &serde_json::json!({}),
+            )
+            .await;
+        assert!(started.seen().is_empty());
     }
 }
 
