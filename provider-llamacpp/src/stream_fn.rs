@@ -3,7 +3,7 @@
 //! the router-owned channel, terminal done/error last, then close.
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
-use crate::request::{build_body, build_headers, BodyArgs};
+use crate::request::{build_body, build_headers, enable_thinking, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::state;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
@@ -100,12 +100,9 @@ async fn run_stream_call(
         }
     };
 
-    // Any requested level but `off` means "think"; absent or `off` means
-    // "off". Mapped onto the `enable_thinking` chat-template kwarg in
-    // build_body — llama.cpp's only per-request reasoning lever.
-    let enable_thinking = input
-        .thinking_level
-        .is_some_and(|level| level != llm_router::types::model::ThinkingLevel::Off);
+    // Mapped onto the `enable_thinking` chat-template kwarg in build_body —
+    // llama.cpp's only per-request reasoning lever.
+    let enable_thinking = enable_thinking(input.thinking_level);
 
     // Best-effort: the kwarg only bites if the model's chat template gates its
     // reasoning channel on it; otherwise reasoning stays whatever the server's

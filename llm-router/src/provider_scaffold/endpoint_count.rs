@@ -1,7 +1,8 @@
 //! Counting against an upstream that meters prompts for us.
 //!
 //! Several providers answer "how many tokens is this prompt" themselves —
-//! Anthropic and llama.cpp through `POST …/v1/messages/count_tokens`, Moonshot
+//! Anthropic through `POST …/v1/messages/count_tokens`, llama.cpp through
+//! `POST …/v1/chat/completions/input_tokens`, Moonshot
 //! through `…/tokenizers/estimate-token-count`, xAI by tokenizing text through
 //! `…/tokenize-text`. What they share is everything around the call: a bounded
 //! timeout, a status check that keeps the upstream's own words, and a JSON
