@@ -21,6 +21,7 @@ const FORBIDDEN: &[&str] = &[
     "harness::state::get",
     "harness::state::compare-and-set",
     "state::claim-namespace",
+    "engine::observers::dispose",
 ];
 
 async fn denied<T: std::fmt::Debug>(
@@ -45,7 +46,7 @@ async fn node_and_python_reject_operator_calls_including_queued_and_void_calls()
     for &target in FORBIDDEN {
         for action in [
             None,
-            Some("void".into()),
+            Some(r#"{"type":"void"}"#.into()),
             Some(r#"{"type":"enqueue","queue":"q"}"#.into()),
         ] {
             denied(target, node.call(target.into(), json!({}), 10_000, action)).await;
@@ -54,37 +55,30 @@ async fn node_and_python_reject_operator_calls_including_queued_and_void_calls()
     }
 }
 
+/// A guest observer can neither observe an operator-only function (its
+/// inputs and outputs would reach the guest's target) nor target one (it
+/// would run on every call of the guest's source).
 #[tokio::test]
-async fn guest_and_raw_trigger_registration_cannot_bind_operator_targets() {
+async fn guest_observers_cannot_observe_or_target_operator_functions() {
     let iii = Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:0"));
-    let node = IIIEngine::new(iii.clone());
-    let python = IIIBridge::new(iii);
-    for target in FORBIDDEN
-        .iter()
-        .copied()
-        .chain(["engine::register_trigger", "engine::unregister_trigger"])
-    {
+    let node = IIIEngine::new(iii);
+    for &operator in FORBIDDEN {
         denied(
-            target,
-            node.register_trigger(json!({
-                "type": "state", "function_id": target, "config": {}
+            operator,
+            node.observe(json!({
+                "source": { "function_id": operator },
+                "target": "app::react",
+                "options": { "id": "app::watch" },
             })),
         )
         .await;
-        let payload = json!({"trigger_type": "state", "function_id": target, "config": {}});
         denied(
-            target,
-            node.call(
-                "engine::register_trigger".into(),
-                payload.clone(),
-                10_000,
-                None,
-            ),
-        )
-        .await;
-        denied(
-            target,
-            python.call("engine::register_trigger".into(), payload, 10_000),
+            operator,
+            node.observe(json!({
+                "source": { "function_id": "state::on-changed" },
+                "target": operator,
+                "options": { "id": "app::watch" },
+            })),
         )
         .await;
     }
