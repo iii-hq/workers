@@ -4,7 +4,7 @@
 //! with the guidance as the observer's `inject_prompt` arg, and the engine
 //! disposes the observer once the worker stays disconnected, so the guidance is
 //! presence-gated: a deployment without the workflow worker never pays for it,
-//! and there is one copy of it instead of one per static prompt variant.
+//! and every static prompt variant shares this one copy.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
