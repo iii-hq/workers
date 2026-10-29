@@ -1,6 +1,6 @@
 import type {
-  FunctionTriggerMessage,
-  FunctionTriggerRenderer,
+  FunctionCallMessage,
+  FunctionCallRenderer,
 } from '@iii-dev/console-ui'
 
 interface ViewableImage {
@@ -56,7 +56,7 @@ function requestUrl(input: unknown): string | undefined {
   return typeof details?.url === 'string' ? details.url : undefined
 }
 
-function renderImage(message: FunctionTriggerMessage): React.ReactNode | null {
+function renderImage(message: FunctionCallMessage): React.ReactNode | null {
   if (
     message.functionId !== 'web::fetch' ||
     message.pendingApproval ||
@@ -94,7 +94,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-export function createWebImageRenderer(): FunctionTriggerRenderer {
+export function createWebImageRenderer(): FunctionCallRenderer {
   return {
     id: 'web/page.js#image-display',
     isMatch: (functionId) => functionId === 'web::fetch',
