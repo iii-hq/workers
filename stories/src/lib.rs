@@ -10,11 +10,11 @@
 //! - [`store`] — the data folder: lines, content-addressed files, history.
 //! - [`lines`] — resolving a line spec (working tree, ref, sha, chat turn)
 //!   to a source tree on disk.
-//! - [`builder`] — building a line end to end and emitting `stories:changed`.
+//! - [`builder`] — building a line end to end and calling `stories::on-changed`.
 //! - [`watch`] — the working-tree watcher.
 //! - [`render`] — screenshots and DOM/React trees through the browser worker.
 //! - [`pixels`] / [`treediff`] — the deterministic diff halves.
-//! - [`events`] — the `stories:changed` and `stories:build` trigger types.
+//! - [`events`] — the `stories::on-changed` and `stories::on-build` event functions.
 //! - [`functions`] — the typed `stories::*` catalog.
 //! - [`ui`] — the injected console page and the `/ui-files` content function.
 
