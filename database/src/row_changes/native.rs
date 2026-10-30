@@ -31,6 +31,13 @@ use crate::connector::Connector;
 /// function raises on.
 pub(crate) const CHANNEL: &str = "iii_row_changed";
 
+/// Taken inside every install's transaction, before [`install_sql`]. Every
+/// install replaces the SAME notify function, installs for different tables
+/// included, and concurrent `CREATE OR REPLACE FUNCTION` fails with `tuple
+/// concurrently updated`; a database-scoped lock coordinates separate pools
+/// and processes too.
+pub(crate) const INSTALL_LOCK_SQL: &str = "SELECT pg_advisory_xact_lock(1768515886, 1919907683)";
+
 /// The DDL that makes one table announce its changes: a shared trigger
 /// function (idempotent to reinstall) plus three statement-level triggers.
 /// Statement-level with transition tables gives a real row count without a
@@ -670,7 +677,10 @@ mod tests {
                 .await
                 .unwrap();
             listener
-                .batch_execute(&install_sql(&table).unwrap())
+                .batch_execute(&format!(
+                    "BEGIN; {INSTALL_LOCK_SQL}; {} COMMIT;",
+                    install_sql(&table).unwrap()
+                ))
                 .await
                 .unwrap();
             listener
