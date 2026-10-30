@@ -4,12 +4,11 @@
 //!
 //! Why this exists. Providers re-declare (and re-push their catalog) when they
 //! handle `provider::<id>::on_router_ready`, the target of their observer of
-//! `router::on-ready`. The router calls `router::on-ready` once per start and
-//! sends it to every observer added after that, but a provider that
-//! reconnects to the engine while the router stays up replays the same
-//! observer, which the engine re-attaches without adding it again: the
-//! provider hears nothing, and its availability stays where the outage left
-//! it.
+//! `router::on-ready`. The router sends `router::on-ready` to each observer
+//! once it is ready, and again when the engine adds the observer again (its
+//! worker came back within the observer grace period). A provider that comes
+//! back after the grace period finds its observer disposed: the provider
+//! hears nothing, and its availability stays where the outage left it.
 //!
 //! Such a provider recovers only on its own periodic catalog timer (three
 //! minutes for openai-codex), and until then every model it serves is

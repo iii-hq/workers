@@ -30,9 +30,10 @@ use crate::types::router::{
 
 pub const ON_READY_ID: &str = "router::on-ready";
 pub const ON_READY_DESC: &str =
-    "The router finished booting: called once per router start, and sent through \
-     each observer added after that once it is accepted. Providers observe it to \
-     re-declare. Takes no args; the event is {}.";
+    "The router is ready: each observer receives the event once the router has \
+     booted and the observer is accepted, once per router start, and once more \
+     when its worker reconnects. Providers observe it to re-declare. Takes no \
+     args; the event is {}.";
 
 pub const ON_MODELS_CHANGED_ID: &str = "router::models::on-changed";
 pub const ON_MODELS_CHANGED_DESC: &str =

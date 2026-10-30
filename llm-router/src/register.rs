@@ -1,6 +1,6 @@
 //! Wiring: restore stores → register and fetch configuration → build the live
 //! in-memory snapshot and the secret-reference cache → register functions →
-//! observe and reconcile the configuration entry → call `router::on-ready` →
+//! observe and reconcile the configuration entry → send `router::on-ready` →
 //! observe the (optional) secrets worker's `secrets::on-changed`.
 //!
 //! Function registrations use `iii_sdk` directly, with the shared typed
@@ -341,9 +341,9 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     }
 
     // 7. ready — providers re-declare on this. Their observers of
-    // `router::on-ready` outlive a router restart (pending while it is down),
-    // so this one call reaches every provider, and one that observes later
-    // receives the event through its observer (`events::RouterEvents`).
+    // `router::on-ready` outlive a router restart (pending while it is down):
+    // each one, and each one added later, receives the ready event once
+    // (`events::RouterEvents`).
     events.ready().await;
 
     // A provider that reconnects to the engine while the router stays up gets

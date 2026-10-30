@@ -714,58 +714,97 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
     second.shutdown();
 }
 
-/// A probe worker with one `router::on-ready` target per name, each counting
-/// its deliveries. The targets are not `provider::<id>::on_router_ready`, so
-/// the router's rediscovery sweep never calls them: every count is a delivery
-/// through an observer.
-fn ready_probe(url: &str, names: &[&str]) -> (IIIClient, Vec<Arc<AtomicU64>>) {
+/// A probe worker with one `router::on-ready` target per name, each recording
+/// what it receives. The targets are not `provider::<id>::on_router_ready`,
+/// so the router's rediscovery sweep never calls them: every payload is a
+/// delivery to one of their observers.
+fn ready_probe(url: &str, names: &[&str]) -> (IIIClient, Vec<Received>) {
     let probe = register_worker(url, test_init_options());
-    let counters = names
+    let received = names
         .iter()
         .map(|name| {
-            let count = Arc::new(AtomicU64::new(0));
-            let sink = count.clone();
+            let received = Received::default();
+            let sink = received.clone();
             probe.register_function(
-                format!("probe::{name}::on_ready"),
-                RegisterFunction::new_async(move |mut input: Value| {
-                    let sink = sink.clone();
-                    async move {
-                        // The event itself, not an envelope. A call through
-                        // an observer carries the engine's caller stamp, as
-                        // every call a worker makes does.
-                        if let Some(event) = input.as_object_mut() {
-                            event.remove("_caller_worker_id");
-                        }
-                        assert_eq!(input, json!({}), "the ready event is delivered as output");
-                        sink.fetch_add(1, Ordering::SeqCst);
-                        Ok::<Value, Error>(json!({}))
-                    }
+                ready_target(name),
+                RegisterFunction::new(move |input: Value| {
+                    sink.lock().unwrap().push(input);
+                    Ok::<Value, Error>(json!({}))
                 }),
             );
-            count
+            received
         })
         .collect();
-    (probe, counters)
+    (probe, received)
 }
 
-/// Waits until `counter` reaches `want`, then holds for a quiet period and
-/// checks it stayed there.
-async fn assert_count_settles(counter: &AtomicU64, want: u64, what: &str) {
+/// What one probe target received, in order.
+type Received = Arc<std::sync::Mutex<Vec<Value>>>;
+
+fn ready_target(name: &str) -> String {
+    format!("probe::{name}::on_ready")
+}
+
+/// Observes `router::on-ready` with the default envelope.
+fn observe_router_ready_envelope(iii: &IIIClient, target: &str) -> iii_sdk::ObserverHandle {
+    iii.observe(Source::function("router::on-ready"), target)
+}
+
+async fn wait_active(observer: &iii_sdk::ObserverHandle, what: &str) {
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .unwrap_or_else(|_| panic!("{what}: router::on-ready observer active in time"))
+        .unwrap_or_else(|error| panic!("{what}: router::on-ready observer accepted: {error}"));
+}
+
+/// Waits until `received` holds `want` payloads, then holds for a quiet
+/// period and checks no more arrive.
+async fn assert_count_settles(received: &Received, want: usize, what: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while counter.load(Ordering::SeqCst) < want {
+    while received.lock().unwrap().len() < want {
         assert!(
             Instant::now() < deadline,
             "{what}: {} of {want} deliveries",
-            counter.load(Ordering::SeqCst)
+            received.lock().unwrap().len()
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert_eq!(counter.load(Ordering::SeqCst), want, "{what}");
+    let got = received.lock().unwrap().clone();
+    assert_eq!(got.len(), want, "{what}: {got:?}");
 }
 
+/// Every payload a `deliver: output` target received is the ready event itself.
+fn assert_ready_events(received: &Received, what: &str) {
+    for payload in received.lock().unwrap().iter() {
+        assert_eq!(
+            payload,
+            &json!({}),
+            "{what}: the ready event is delivered as output"
+        );
+    }
+}
+
+/// Every payload a default-envelope target received is an `Observed` envelope
+/// of a successful `router::on-ready` call, for `observer_id`, carrying the
+/// ready event as input and output.
+fn assert_ready_envelopes(received: &Received, observer_id: &str, what: &str) {
+    for envelope in received.lock().unwrap().iter() {
+        assert_eq!(
+            envelope["function_id"], "router::on-ready",
+            "{what}: {envelope}"
+        );
+        assert_eq!(envelope["observer_id"], observer_id, "{what}: {envelope}");
+        assert_eq!(envelope["output"], json!({}), "{what}: {envelope}");
+        assert_eq!(envelope["input"], json!({}), "{what}: {envelope}");
+        assert!(envelope.get("error").is_none(), "{what}: {envelope}");
+    }
+}
+
+/// Observers added after the router is ready: each receives the ready event
+/// once, in the shape its `deliver` names, and no other observer receives it.
 #[tokio::test(flavor = "multi_thread")]
-async fn router_ready_reaches_a_late_observer_once_through_itself() {
+async fn router_ready_reaches_each_late_observer_once_in_its_shape() {
     let engine = engine_or_skip!();
 
     let router_iii = register_worker(&engine.url, test_init_options());
@@ -773,56 +812,140 @@ async fn router_ready_reaches_a_late_observer_once_through_itself() {
         .await
         .expect("router boots");
 
-    let (probe, counts) = ready_probe(&engine.url, &["first", "second"]);
-    let first = observe_router_ready(&probe, "probe::first::on_ready");
-    tokio::time::timeout(Duration::from_secs(10), first.ready())
-        .await
-        .expect("router::on-ready observer active in time")
-        .expect("router::on-ready observer accepted");
-    assert_count_settles(&counts[0], 1, "observer added after the router is ready").await;
+    let (probe, received) = ready_probe(&engine.url, &["first", "envelope", "second"]);
+    let first = observe_router_ready(&probe, &ready_target("first"));
+    wait_active(&first, "first").await;
+    assert_count_settles(&received[0], 1, "observer added after the router is ready").await;
+    assert_ready_events(&received[0], "first");
 
-    // A second late observer gets its own event, and the first gets nothing
-    // more: the router calls through the new observer alone.
-    let second = observe_router_ready(&probe, "probe::second::on_ready");
-    tokio::time::timeout(Duration::from_secs(10), second.ready())
-        .await
-        .expect("second router::on-ready observer active in time")
-        .expect("second router::on-ready observer accepted");
-    assert_count_settles(&counts[1], 1, "second late observer").await;
+    let envelope = observe_router_ready_envelope(&probe, &ready_target("envelope"));
+    wait_active(&envelope, "envelope").await;
+    assert_count_settles(&received[1], 1, "default-envelope observer").await;
+    assert_ready_envelopes(&received[1], envelope.id(), "envelope");
+
+    let second = observe_router_ready(&probe, &ready_target("second"));
+    wait_active(&second, "second").await;
+    assert_count_settles(&received[2], 1, "second late observer").await;
+    assert_ready_events(&received[2], "second");
+
+    // Each event went to the observer it was for.
     assert_eq!(
-        counts[0].load(Ordering::SeqCst),
+        received[0].lock().unwrap().len(),
         1,
-        "the first observer received the second observer's ready event"
+        "first received another's event"
+    );
+    assert_eq!(
+        received[1].lock().unwrap().len(),
+        1,
+        "envelope received another's event"
     );
 
     probe.shutdown();
     router_iii.shutdown();
 }
 
+/// Observers added before any router hosts `router::on-ready` wait pending;
+/// each router start sends each of them the ready event once, in its shape.
 #[tokio::test(flavor = "multi_thread")]
 async fn router_ready_reaches_a_pending_observer_once_per_router_start() {
     let engine = engine_or_skip!();
 
-    // Observed before any router hosts router::on-ready: the observer waits
-    // pending, and each router start's boot-time call reaches it once.
-    let (probe, counts) = ready_probe(&engine.url, &["early"]);
-    let _observer = observe_router_ready(&probe, "probe::early::on_ready");
+    let (probe, received) = ready_probe(&engine.url, &["early", "envelope"]);
+    let _early = observe_router_ready(&probe, &ready_target("early"));
+    let envelope = observe_router_ready_envelope(&probe, &ready_target("envelope"));
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(counts[0].load(Ordering::SeqCst), 0, "no router has started");
+    assert!(
+        received[0].lock().unwrap().is_empty(),
+        "no router has started"
+    );
+    assert!(
+        received[1].lock().unwrap().is_empty(),
+        "no router has started"
+    );
 
     let first = register_worker(&engine.url, test_init_options());
     register_router(first.clone()).await.expect("router boots");
-    assert_count_settles(&counts[0], 1, "first router start").await;
+    assert_count_settles(&received[0], 1, "first router start").await;
+    assert_count_settles(&received[1], 1, "first router start, envelope").await;
     first.shutdown();
 
     let second = register_worker(&engine.url, test_init_options());
     register_router(second.clone())
         .await
         .expect("router reboots");
-    assert_count_settles(&counts[0], 2, "second router start").await;
+    assert_count_settles(&received[0], 2, "second router start").await;
+    assert_count_settles(&received[1], 2, "second router start, envelope").await;
+    assert_ready_events(&received[0], "early");
+    assert_ready_envelopes(&received[1], envelope.id(), "envelope");
 
     probe.shutdown();
     second.shutdown();
+}
+
+/// Observers added while the router boots (pending before it registers
+/// `router::on-ready`, added before it is ready, added after) each receive
+/// the ready event exactly once.
+#[tokio::test(flavor = "multi_thread")]
+async fn router_ready_reaches_each_observer_once_while_the_router_boots() {
+    let engine = engine_or_skip!();
+
+    const MAX: usize = 48;
+    let names: Vec<String> = (0..MAX).map(|i| format!("boot{i}")).collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (probe, received) = ready_probe(&engine.url, &name_refs);
+    // Let the probe's targets register before observers name them.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    let boot = tokio::spawn(register_router(router_iii.clone()));
+    let mut observers = Vec::new();
+    while !boot.is_finished() && observers.len() < MAX - 2 {
+        observers.push(observe_router_ready(
+            &probe,
+            &ready_target(&names[observers.len()]),
+        ));
+        tokio::time::sleep(Duration::from_millis(3)).await;
+    }
+    boot.await.expect("router boot task").expect("router boots");
+    // Two more once it is ready.
+    for _ in 0..2 {
+        observers.push(observe_router_ready(
+            &probe,
+            &ready_target(&names[observers.len()]),
+        ));
+    }
+    assert!(
+        observers.len() >= 3,
+        "the router booted before observers were added"
+    );
+    eprintln!(
+        "{} observers added while the router booted, 2 after",
+        observers.len() - 2
+    );
+
+    for (i, observer) in observers.iter().enumerate() {
+        wait_active(observer, &names[i]).await;
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while received[..observers.len()]
+        .iter()
+        .any(|r| r.lock().unwrap().is_empty())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "not every observer received the ready event"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    for (i, r) in received.iter().enumerate() {
+        let want = usize::from(i < observers.len());
+        assert_eq!(r.lock().unwrap().len(), want, "{}", names[i]);
+        assert_ready_events(r, &names[i]);
+    }
+
+    probe.shutdown();
+    router_iii.shutdown();
 }
 
 /// The provider protocol carries the registration token, and `resolve`'s

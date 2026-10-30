@@ -305,11 +305,15 @@ the event; none takes args, so observers select events with filters on
 |---|---|---|---|
 | `router::models::on-changed` | a provider reconciles its catalog slice | `{ "provider": "<id>", "count": <n> }` | `input.provider` |
 | `router::provider::on-changed` | the registry changes: a declaration, a discovery result or an availability flip | `{ "provider": "<id>", "op": "register" \| "discovery" \| "available" \| "unavailable" }` | `input.provider`, `input.op` |
-| `router::on-ready` | the router finishes booting, once per start; an observer added after that receives the event through itself once it is accepted | `{}` | — |
+| `router::on-ready` | the router is ready: each observer receives the event once the router has booted and the observer is accepted, once per router start and once more when its worker reconnects | `{}` | — |
 
 Delivery is iii's: every call reaches each observer whose filters match, and
-the router calls a function only while it is observed. Observe with
-`deliver: 'output'` so the target receives the event itself:
+the router calls a function only while it is observed. The ready event is a
+call for one observer: the router calls `router::on-ready` with metadata
+`{ "for_observer": "<observer id>" }`, and only that observer matches it, so
+its target receives the event in the shape its `deliver` names, like any
+other event. Observe with `deliver: 'output'` so the target receives the
+event itself:
 
 ```ts
 iii.registerFunction('my-worker::on-models-changed', async (event) => {

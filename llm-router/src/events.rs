@@ -3,10 +3,11 @@
 //! Each is a private function whose handler returns the event it is called
 //! with, so its observers observe the event and only this worker can call it:
 //!
-//! - [`ON_READY_ID`] — once per router start, after boot. An observer added
-//!   after that receives the ready event through itself once it is accepted,
-//!   so a provider that starts (or observes again) after the router still
-//!   re-declares.
+//! - [`ON_READY_ID`] — the router is ready. Each observer receives the event
+//!   once the router has booted and the observer is accepted: once per router
+//!   start for an observer that stays, and once more each time it is added
+//!   again (its worker reconnected). So a provider that starts, or observes
+//!   again, after the router still re-declares.
 //! - [`ON_MODELS_CHANGED_ID`] — a provider reconciled its catalog slice.
 //! - [`ON_PROVIDER_CHANGED_ID`] — the provider registry changed.
 //!
@@ -14,44 +15,78 @@
 //! (`CallAction::Void`): iii delivers each call to every observer whose
 //! filters match. Failures are logged and swallowed so a misbehaving observer
 //! never breaks the write path.
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+//!
+//! The ready event is a call for one observer: a call of [`ON_READY_ID`] with
+//! metadata `{ "for_observer": <observer id> }`, which the function's match
+//! hook gives to that observer alone. iii delivers it like every call, with
+//! the observer's `deliver`, `capture` and filters.
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallAction, CallRequest, IIIClient, Observer, RegisterFunction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, Match, Observer, RegisterFunction};
 use serde::Serialize;
+use serde_json::json;
+use tokio::sync::watch;
+use tokio::task::AbortHandle;
 
 use crate::surface::{ON_MODELS_CHANGED_DESC, ON_PROVIDER_CHANGED_DESC, ON_READY_DESC};
 pub use crate::surface::{ON_MODELS_CHANGED_ID, ON_PROVIDER_CHANGED_ID, ON_READY_ID};
 use crate::types::router::{ModelsChangedEvent, ProviderChangedEvent, RouterReadyEvent};
 
+/// The metadata key of a call for one observer.
+const FOR_OBSERVER: &str = "for_observer";
+
 /// Calls the router's event functions; register once at boot, clone into the
 /// handlers that report changes.
 pub struct RouterEvents {
     iii: IIIClient,
-    ready: Arc<AtomicBool>,
+    ready: watch::Sender<bool>,
 }
 
-impl RouterEvents {
-    /// Registers the three event functions, and the added hook of
-    /// [`ON_READY_ID`] that sends the ready event to an observer added once
-    /// the router is ready.
-    pub fn register(iii: &IIIClient) -> Arc<Self> {
-        let ready = Arc::new(AtomicBool::new(false));
+/// The task that sends one observer of [`ON_READY_ID`] its ready event, by
+/// observer id. An observer removed before its event went out has its task
+/// aborted, so an observer added again (its worker reconnected) receives the
+/// event once.
+type ReadyTasks = Arc<Mutex<HashMap<String, AbortHandle>>>;
 
-        // Set by id before registering, so it runs for every observer.
+impl RouterEvents {
+    /// Registers the three event functions, and the hooks of [`ON_READY_ID`]
+    /// that send each of its observers the ready event once the router is
+    /// ready.
+    pub fn register(iii: &IIIClient) -> Arc<Self> {
+        let (ready, is_ready) = watch::channel(false);
+        let tasks: ReadyTasks = Arc::default();
+
+        // Set by id before registering, so they run for every observer.
         {
-            let (iii_for_hook, ready) = (iii.clone(), ready.clone());
+            let (iii_for_hook, tasks) = (iii.clone(), tasks.clone());
             iii.on_observer_added_for(ON_READY_ID, move |observer: Observer| {
-                let (iii, ready) = (iii_for_hook.clone(), ready.clone());
+                let (iii, ready, tasks) = (iii_for_hook.clone(), is_ready.clone(), tasks.clone());
                 async move {
-                    // A call through the observer reaches it only once it is
+                    // A call for the observer reaches it only once it is
                     // active, which is after this hook returns.
-                    tokio::spawn(send_ready(iii, ready, observer));
+                    let id = observer.id().to_string();
+                    let task = tokio::spawn(send_ready(iii, ready, observer)).abort_handle();
+                    if let Some(earlier) = lock(&tasks).insert(id, task) {
+                        earlier.abort();
+                    }
                     Ok(())
                 }
             });
         }
+        {
+            let tasks = tasks.clone();
+            iii.on_observer_removed_for(ON_READY_ID, move |observer: Observer| {
+                let tasks = tasks.clone();
+                async move {
+                    if let Some(task) = lock(&tasks).remove(observer.id()) {
+                        task.abort();
+                    }
+                }
+            });
+        }
+        iii.on_observer_match_for(ON_READY_ID, Match::predicate(for_this_observer));
 
         iii.register_function(
             ON_READY_ID,
@@ -82,16 +117,11 @@ impl RouterEvents {
         })
     }
 
-    /// The router finished booting: mark it ready and call [`ON_READY_ID`]
-    /// once. Observers added from here on receive the event through
-    /// themselves.
+    /// The router finished booting: every observer of [`ON_READY_ID`] that is
+    /// accepted, and every one accepted from here on, receives the ready
+    /// event once.
     pub async fn ready(&self) {
-        // Before the call: an observer accepted after it was made finds the
-        // flag set and receives the event through itself.
-        self.ready.store(true, Ordering::SeqCst);
-        if self.iii.is_observed(ON_READY_ID) {
-            self.call(ON_READY_ID, RouterReadyEvent {}).await;
-        }
+        self.ready.send_replace(true);
     }
 
     /// A provider reconciled its catalog slice to `count` models.
@@ -140,24 +170,40 @@ impl RouterEvents {
     }
 }
 
-/// Sends the ready event to `observer` alone once it is active, when the
-/// router is already ready. An observer accepted before that receives the
-/// boot-time call of [`ON_READY_ID`] instead.
-async fn send_ready(iii: IIIClient, ready: Arc<AtomicBool>, observer: Observer) {
+/// The match hook of [`ON_READY_ID`]: a call for one observer goes to that
+/// observer alone, any other call to every observer.
+fn for_this_observer(observer: &Observer, call: &iii_sdk::Call) -> bool {
+    call.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(FOR_OBSERVER))
+        .and_then(|id| id.as_str())
+        .is_none_or(|id| id == observer.id())
+}
+
+/// Sends `observer` its ready event once it is accepted and the router is
+/// ready: a call of [`ON_READY_ID`] for this observer alone. A rejected
+/// observer gets nothing.
+async fn send_ready(iii: IIIClient, mut ready: watch::Receiver<bool>, observer: Observer) {
     if let Err(error) = observer.accepted().await {
         tracing::debug!(observer_id = %observer.id(), %error, "router::on-ready observer not accepted");
         return;
     }
-    if !ready.load(Ordering::SeqCst) {
+    if ready.wait_for(|ready| *ready).await.is_err() {
         return;
     }
     let Ok(payload) = serde_json::to_value(RouterReadyEvent {}) else {
         return;
     };
-    let request = CallRequest::observer(&observer, payload).action(CallAction::Void);
+    let request = CallRequest::new(ON_READY_ID, payload)
+        .metadata(json!({ FOR_OBSERVER: observer.id() }))
+        .action(CallAction::Void);
     if let Err(error) = iii.call(request).await {
         tracing::warn!(observer_id = %observer.id(), %error, "router ready event not delivered");
     }
+}
+
+fn lock(tasks: &ReadyTasks) -> std::sync::MutexGuard<'_, HashMap<String, AbortHandle>> {
+    tasks.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]
@@ -182,7 +228,8 @@ mod tests {
         assert!(!iii.is_observed(ON_MODELS_CHANGED_ID));
         events.models_changed("openai", 3).await;
         events.provider_changed("openai", "register").await;
+        assert!(!*events.ready.borrow());
         events.ready().await;
-        assert!(events.ready.load(Ordering::SeqCst));
+        assert!(*events.ready.borrow());
     }
 }
