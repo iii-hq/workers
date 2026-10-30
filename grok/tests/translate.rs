@@ -122,7 +122,7 @@ async fn push(
 ) {
     feed.emit_with(
         session,
-        event,
+        || event,
         |session_id| session_id == observed,
         |payload| {
             sink.lock().unwrap().push(payload);
