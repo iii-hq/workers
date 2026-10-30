@@ -552,7 +552,7 @@ describe('injectable UI script updates', () => {
   })
 })
 
-describe('console:module assets', () => {
+describe('module assets (console::ui::asset kind module)', () => {
   const base = 'http://console.test/base/ui'
   // Lets queued `delete`/`sync` pushes apply; neither has a visible effect.
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0))

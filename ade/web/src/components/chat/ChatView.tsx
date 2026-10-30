@@ -1722,7 +1722,7 @@ export function ChatView({
       // `harness::send` carries `idempotency_key: messageId`, so the harness
       // appends the user message with the deterministic entry id
       // `e_idem_<messageId>`; using the same id here lets the
-      // session::message-added snapshot reconcile this optimistic row in place.
+      // session::on-message-added snapshot reconcile this optimistic row in place.
       const messageId = newMessageId()
       const trimmed = payload.text.trim()
       // `/compact` starts no turn (the harness runs it as a compaction), so

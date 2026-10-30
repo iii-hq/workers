@@ -300,7 +300,7 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
 
 /**
  * A validation nudge (`validation: true`): the harness re-prompting the turn
- * after the output contract or a `harness::hook::post-turn` validator
+ * after the output contract or a `harness::hook::on-post-turn` validator
  * rejected its result. Labeled and left-aligned like the other
  * machine-authored user entries so it never reads as something the human
  * typed — the loop is visible AS a loop.

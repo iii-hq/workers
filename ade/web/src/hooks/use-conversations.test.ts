@@ -1258,7 +1258,7 @@ describe('appendMessageToConversation', () => {
 
   it('a client-handled command row never marks the session working', () => {
     // `/compact` is answered by the console, not the harness: no turn follows,
-    // so no `session::status-changed` would ever clear a `working` flip.
+    // so no `session::on-status-changed` would ever clear a `working` flip.
     const next = appendMessageToConversation(
       conversation({ status: 'idle', messages: [] }),
       {

@@ -777,7 +777,7 @@ interface HarnessCompactOutcome {
  * next turn would assemble, lets the router resolve the summariser's limits,
  * persists the `compaction` record, refreshes the context snapshot and tells
  * every client watching the session (a "compacting…" notice, then the marker
- * or a notice saying why not, and `harness::compaction`). Nothing here
+ * or a notice saying why not, and `harness::on-compaction`). Nothing here
  * depends on this browser staying connected; `contextWindow` is unused — a
  * catalog window with a made-up output allowance oversized the summariser's
  * requests.
