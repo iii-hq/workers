@@ -492,7 +492,7 @@ impl Sessions {
 
     /// Connect a new desktop session. Enforces the concurrency cap, resolves
     /// the target ([`target`]), verifies the connection with a `screen_size`
-    /// probe, persists the record, and emits `computer::session-started`.
+    /// probe, persists the record, and calls `computer::on-session-started`.
     pub async fn start(
         &self,
         image: Option<String>,

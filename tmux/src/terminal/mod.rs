@@ -625,6 +625,10 @@ impl TerminalManager {
     }
 }
 
+/// Registers one `tmux::terminal::*` function. None of them can be observed
+/// (`NOT_OBSERVABLE`): `open` returns the terminal's `access_key`, every other
+/// call carries it, and `write` carries the keystrokes typed into the
+/// terminal.
 macro_rules! register_terminal_fn {
     ($iii:expr, $manager:expr, $id:expr, $desc:expr, $req:ty, $method:ident) => {{
         let manager = $manager.clone();
@@ -635,7 +639,8 @@ macro_rules! register_terminal_fn {
                 async move { manager.$method(request).await.map_err(Error::Handler) }
             })
             .description($desc)
-            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
+            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true }))
+            .observable(false),
         );
     }};
 }

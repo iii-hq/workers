@@ -166,17 +166,17 @@ impl Events {
                 )
                 .private(),
         );
-        // Set before registering, so it files every observer.
+        // Set before registering, so it files every observer. The engine
+        // validated the args against `FrameArgs`; args that do not parse
+        // file the observer under no key.
         iii.on_observer_match_for(
             ON_FRAME_EVENT_FN,
             Match::keys(
                 |obs| {
-                    let args = obs.args_value();
-                    key(
-                        args["tenant"].as_str().unwrap_or(ANY),
-                        args["udid"].as_str().unwrap_or(ANY),
-                    )
-                    .into()
+                    obs.args::<FrameArgs>()
+                        .ok()
+                        .map(|args| observer_key(&args))
+                        .into()
                 },
                 |call| {
                     let input = &call.input;

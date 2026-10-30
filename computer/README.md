@@ -183,7 +183,9 @@ tree with live refs. Text comes only from `inputs`, keyed by field label.
 Without a judge worker it returns `judge_unavailable` and the tree; with a
 dialog already open it returns `blocked` and touches nothing. The judge
 it asks is `judge_provider` in this worker's configuration when set, else the
-calling session's pick, else the judge hub's default.
+calling session's pick, else the judge hub's default. `computer::run` cannot
+be observed (`NOT_OBSERVABLE`): its `inputs` carry what is typed into fields,
+passwords included.
 
 ## Console
 

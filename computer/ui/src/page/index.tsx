@@ -14,8 +14,8 @@
  * desktop or, with none open, the launcher. Under 720px (useContainerNarrow)
  * it becomes a drill-in flow: the session list fills the width, and opening a
  * session (or +) swaps it for the full-width stage with a ← back button. The
- * screencast subscription only runs while the viewport is actually visible,
- * so a narrow pane parked on the list streams nothing.
+ * screencast and its frame observer only run while the viewport is actually
+ * visible, so a narrow pane parked on the list streams nothing.
  */
 
 import {
@@ -150,7 +150,7 @@ export function ComputerPage({
     error: frameError,
   } = useLiveFrames(host, selectedId, stageVisible && !showLauncher)
   // The desktop shown here gets no corner preview in this window, even when
-  // its own viewport input fires computer::activity.
+  // its own viewport input calls computer::on-activity.
   useEffect(() => {
     if (stageVisible && !showLauncher && selectedId)
       return claimOnPage(selectedId)

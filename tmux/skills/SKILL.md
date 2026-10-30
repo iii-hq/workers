@@ -49,7 +49,9 @@ client that only the Console drives.
 - `subagents::transcript` returns a sub-agent's conversation, tool calls and
   their output; it needs approval for the same reason.
 - The worker never types into panes. `tmux::terminal::*` is the Console
-  page's own terminal and is denied to agents.
+  page's own terminal: it is denied to agents and cannot be observed
+  (`NOT_OBSERVABLE`), since its calls carry the terminal's access key and
+  what the person types.
 - Agent state is a reading of the screen: `waiting` means a prompt that needs
   the person is visible, not that the agent's process is blocked. Patterns
   live in the worker configuration and can be tuned per agent.

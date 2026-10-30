@@ -1,6 +1,7 @@
 //! `tmux::on-changed` against a scripted engine: the registration, the first
 //! overview sent through a new observer, and the poll loop's calls while the
-//! function is observed.
+//! function is observed: one per change, none for the state the new observer
+//! already received.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -78,6 +79,22 @@ async fn next_matching(
     .unwrap()
 }
 
+/// Fails on any frame `predicate` matches during `within`.
+async fn none_matching(
+    rx: &mut mpsc::UnboundedReceiver<Value>,
+    within: Duration,
+    predicate: impl Fn(&Value) -> bool,
+) {
+    let deadline = tokio::time::Instant::now() + within;
+    while let Ok(Some(value)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+        assert!(!predicate(&value), "unexpected frame: {value}");
+    }
+}
+
+fn is_feed_call(frame: &Value) -> bool {
+    frame["type"] == "invokefunction" && frame["function_id"] == ON_CHANGED_FN
+}
+
 fn is_overview(data: &Value) -> bool {
     data["sessions"]["sessions"].is_array() && data["ports"]["listeners"].is_array()
 }
@@ -86,14 +103,17 @@ fn is_overview(data: &Value) -> bool {
 async fn observers_get_the_current_overview_and_every_change() {
     let (address, wire, mut captured) = engine().await;
     let iii = register_worker(&address, InitOptions::default());
-    // A server nobody else uses: the overview is empty, or reports tmux missing.
-    let config = WorkerConfig {
+    // A server nobody else uses: the overview is empty, or reports tmux
+    // missing. Listening ports are scanned once, so the host's own ports
+    // coming and going do not change the overview during the test.
+    let base = WorkerConfig {
         socket_name: Some(format!("iii-tmux-feed-{}", uuid::Uuid::new_v4().simple())),
         poll_interval_ms: 50,
+        ports_interval_ms: 3_600_000,
         ..WorkerConfig::default()
-    }
-    .into_shared();
-    let collector = Arc::new(Collector::new(config, ConsoleClients::default()));
+    };
+    let config = base.clone().into_shared();
+    let collector = Arc::new(Collector::new(config.clone(), ConsoleClients::default()));
     let monitor = Monitor::new(iii.clone(), collector);
     events::register(&iii, monitor.clone());
     monitor.spawn();
@@ -122,8 +142,10 @@ async fn observers_get_the_current_overview_and_every_change() {
     assert_eq!(ack["id"], "page");
     assert!(ack["error"].is_null(), "{ack}");
 
-    // The new observer alone receives the current overview, through itself.
+    // The new observer alone receives the current overview, through itself,
+    // before any call of the function.
     let first = next_matching(&mut captured, |v| {
+        assert!(!is_feed_call(v), "a call before the first overview: {v}");
         v["type"] == "invokefunction" && v["activation"]["observer_id"] == "page"
     })
     .await;
@@ -131,13 +153,25 @@ async fn observers_get_the_current_overview_and_every_change() {
     assert_eq!(first["action"]["type"], "void");
     assert!(is_overview(&first["data"]), "{first}");
 
-    // While observed, the poll loop calls the function with each new overview.
-    let call = next_matching(&mut captured, |v| {
-        v["type"] == "invokefunction" && v["function_id"] == ON_CHANGED_FN
-    })
-    .await;
+    // The poll loop runs every 50 ms while observed, and does not call the
+    // function again with the overview the observer already has.
+    none_matching(&mut captured, Duration::from_millis(600), is_feed_call).await;
+
+    // A change: the poll loop calls the function with the new overview, once.
+    let missing = format!("iii-tmux-missing-{}", uuid::Uuid::new_v4().simple());
+    config.store(Arc::new(WorkerConfig {
+        tmux_binary: missing.clone(),
+        ..base
+    }));
+    monitor.poke();
+    let call = next_matching(&mut captured, is_feed_call).await;
     assert!(call["invocation_id"].is_null(), "a void call: {call}");
     assert!(is_overview(&call["data"]), "{call}");
+    let error = call["data"]["sessions"]["tmux"]["error"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(error.contains(&missing), "{call}");
+    none_matching(&mut captured, Duration::from_millis(300), is_feed_call).await;
 
     wire.send(json!({
         "type": "observerremoved",
