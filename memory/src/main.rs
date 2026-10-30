@@ -274,10 +274,7 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let d = d.clone();
             async move { hooks::pre_generate(&d, input).await }
         })
-        .description(
-            "Internal: harness pre-generate hook — injects the session bank's rules into the \
-             system prompt and recalled memories as one appended message. Never denies.",
-        )
+        .description(hooks::PRE_GENERATE_DESC)
         // Deliberately NOT trace_hidden: seeing memory feed each turn (which
         // bank, which memories) in the trace timeline is a product requirement,
         // not plumbing noise.
@@ -291,11 +288,7 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let d = d.clone();
             async move { hooks::turn_completed(&d, input).await }
         })
-        .description(
-            "Internal: harness turn-completed handler — enqueues one durable extraction job \
-             (a single router::complete call) for the finished turn; inline fallback without \
-             a queue.",
-        )
+        .description(hooks::TURN_COMPLETED_DESC)
         .metadata(json!({ "internal": true })),
     );
 
@@ -306,10 +299,7 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let d = d.clone();
             async move { hooks::extract_job(&d, input).await }
         })
-        .description(
-            "Internal: queue-delivered extraction job — errors propagate so the queue retries \
-             and dead-letters instead of losing the pass.",
-        )
+        .description(hooks::EXTRACT_JOB_DESC)
         .metadata(json!({ "internal": true })),
     );
 
@@ -320,7 +310,7 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let d = d.clone();
             async move { hooks::session_deleted(&d, input).await }
         })
-        .description("Internal: session::deleted handler — drops the session's extraction cursor.")
+        .description(hooks::SESSION_DELETED_DESC)
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 }
@@ -359,6 +349,32 @@ mod tests {
                 ("queue::on-message".to_string(), hooks::EXTRACT_JOB_FN),
             ]
         );
+    }
+
+    #[test]
+    fn each_seam_target_describes_the_function_it_observes() {
+        let description = |target: &str| match target {
+            hooks::PRE_GENERATE_FN => hooks::PRE_GENERATE_DESC,
+            hooks::TURN_COMPLETED_FN => hooks::TURN_COMPLETED_DESC,
+            hooks::SESSION_DELETED_FN => hooks::SESSION_DELETED_DESC,
+            hooks::EXTRACT_JOB_FN => hooks::EXTRACT_JOB_DESC,
+            other => panic!("no description for {other}"),
+        };
+        for (source, target) in seam_observers() {
+            let text = description(target);
+            assert!(
+                text.contains(&format!("target of the {} observer", source.function_id())),
+                "{target}: {text}"
+            );
+            for removed in [
+                "harness::hook::pre-generate",
+                "harness::turn-completed",
+                "session::deleted",
+                "durable:subscriber",
+            ] {
+                assert!(!text.contains(removed), "{target} names {removed}: {text}");
+            }
+        }
     }
 
     #[test]

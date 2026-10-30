@@ -1,6 +1,7 @@
 //! Post-turn memory extraction: one `router::complete` call per completed
 //! turn (one per run of a long span, [`chunks`]), off the hot path (spawned
-//! from the `harness::turn-completed` handler, never inside a turn).
+//! from the target of the `harness::on-turn-completed` observer, never
+//! inside a turn).
 //!
 //! Extraction adds; it never edits a memory in place or deletes one. The
 //! model sees what the bank already holds about the excerpt, so it returns
@@ -1558,7 +1559,8 @@ async fn cursor_set(iii: &IIIClient, session_id: &str, entry_id: &str) {
     }
 }
 
-/// Drop a session's cursor (bound to `session::deleted`).
+/// Drop a session's cursor (from the target of the `session::on-deleted`
+/// observer).
 pub async fn cursor_delete(iii: &IIIClient, session_id: &str) {
     let _ = iii
         .call(CallRequest {

@@ -35,6 +35,22 @@ pub const PRE_GENERATE_FN: &str = "memory::hook::pre-generate";
 pub const TURN_COMPLETED_FN: &str = "memory::on-turn-completed";
 pub const EXTRACT_JOB_FN: &str = "memory::extract-job";
 pub const SESSION_DELETED_FN: &str = "memory::on-session-deleted";
+
+pub const PRE_GENERATE_DESC: &str =
+    "Internal: target of the harness::hook::on-pre-generate observer — injects the session \
+     bank's rules into the system prompt and recalled memories as one appended message. \
+     Never denies.";
+pub const TURN_COMPLETED_DESC: &str =
+    "Internal: target of the harness::on-turn-completed observer — enqueues one durable \
+     extraction job (a single router::complete call) for the finished turn; inline fallback \
+     without a queue.";
+pub const EXTRACT_JOB_DESC: &str =
+    "Internal: target of the queue::on-message observer on the memory-extraction topic — \
+     runs one extraction job; errors propagate so the queue retries and dead-letters instead \
+     of losing the pass.";
+pub const SESSION_DELETED_DESC: &str =
+    "Internal: target of the session::on-deleted observer — drops the session's extraction \
+     cursor.";
 /// Durable queue (iii-queue builtin or the queue worker) carrying one
 /// extraction job per completed turn: retries + DLQ instead of a lost
 /// pass when this worker restarts mid-extraction.
