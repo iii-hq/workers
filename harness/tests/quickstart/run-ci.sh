@@ -639,7 +639,7 @@ run_compose_add() {
       operation_id=$(jq -r '.operation_id // empty' <<<"$response" 2>/dev/null || true)
       [[ -n "$operation_id" ]] \
         || die "compose::add $spec was accepted without an operation_id"
-      log_command "iii call compose::operation --port $engine_port --json '{\"operation_id\":\"$operation_id\"}' (until terminal)"
+      log_command "iii call compose::operation --engine ws://127.0.0.1:$engine_port --json '{\"operation_id\":\"$operation_id\"}' (until terminal)"
       if ! terminal_snapshot=$(python3 "$script_dir/wait_for_compose_operation.py" \
         --iii-bin "$iii_bin" \
         --engine-port "$engine_port" \

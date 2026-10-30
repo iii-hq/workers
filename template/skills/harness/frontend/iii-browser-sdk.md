@@ -174,7 +174,12 @@ iii
 With many observers, match by keys (`{ observer: (obs) => key, call: (call) => key }`): the SDK
 keeps an index, one lookup per key. `iii.isObserved(id, { input })` says whether a call would
 reach anyone, so a source skips building an event nobody receives. `onObserverDeliver` delivers
-each call itself through `iii.call({ observer, payload })` and returns what the caller gets back.
+each call itself through `iii.call({ observer, payload })` and returns what the caller gets back;
+a call through an observer belongs there. To send one observer its current state, call the
+function with `metadata: { for_observer: obs.id }` once `obs.accepted()` resolves (catch the
+rejection: a rejected observer gets nothing), and have the match hook give such a call to that
+observer alone (`!call.metadata?.for_observer || call.metadata.for_observer === obs.id`); iii
+delivers it like every call, so the target receives every event in one shape.
 A function that sets `args_format`, `private`, `observable: false`, a match hook or a deliver
 hook needs an engine with `observe.v2`; against an older one it stays unregistered and the SDK logs
 `UNSUPPORTED` once.

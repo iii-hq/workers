@@ -316,10 +316,10 @@ jobs:
           engine_pid=$!
           for _ in $(seq 1 60); do
             kill -0 "$engine_pid" 2>/dev/null || { cat interface-work/engine.log; exit 1; }
-            iii call --port "$engine_port" 'engine::workers::list' --json '{}' >/dev/null 2>&1 && break
+            iii call --engine "$engine_url" 'engine::workers::list' --json '{}' >/dev/null 2>&1 && break
             sleep 1
           done
-          iii call --port "$engine_port" 'engine::workers::list' --json '{}' >interface-work/workers-baseline.json
+          iii call --engine "$engine_url" 'engine::workers::list' --json '{}' >interface-work/workers-baseline.json
 
           if [[ "$KIND" == oci-image ]]; then
             container_name="deployment-interface-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"

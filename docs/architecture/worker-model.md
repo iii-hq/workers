@@ -32,6 +32,22 @@ function that needs setup per observer (a cron job, an HTTP route, a queue
 consumer, a database trigger) takes `args` described by its `args_format` and
 sets that up in its `onObserverAdded` hook.
 
+A worker sends one observer something of its own (its current state when the
+observer is added, or an event it missed) with a call of its function that
+carries metadata `{ for_observer: <observer id> }`, made once
+`obs.accepted()` resolves. The function's match hook gives that call to that
+observer alone, and iii delivers it like every call, so the observer's target
+receives every event of the function in one shape. A call through an observer
+(`iii.call({ observer, payload })`) belongs in the function's
+`onObserverDeliver` hook.
+
+An observer created under a stable id (`{ id }` in the observe options) keeps
+its identity across a restart of the worker that created it: the restarted
+worker's `observe` with that id, under the same worker name in the same
+namespace, replaces the observer its previous connection left suspended, so a
+queue consumer keeps its unacked messages. Any other worker gets
+`OBSERVER_ID_CONFLICT` for that id until the engine's grace period ends.
+
 Function ids are `::`-separated paths, conventionally prefixed by the worker's
 domain: `shell::exec`, `session::append` (session-manager), `shell::fs::read`.
 
