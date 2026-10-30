@@ -893,6 +893,9 @@ impl Backend for LocalBackend {
         reject_version(req.version_id.as_deref())?;
         let metadata = self.metadata(&req.key).await?;
         Ok(HeadResp {
+            metadata: (!metadata.metadata.is_empty()).then_some(metadata.metadata),
+            checksum_sha256: None,
+            checksum_type: None,
             content_type: metadata.content_type,
             etag: metadata.etag,
             last_modified: metadata.last_modified,
@@ -1911,6 +1914,7 @@ mod tests {
                 .head(HeadReq {
                     key: "limited.bin".into(),
                     version_id: None,
+                    checksum_mode: false,
                 })
                 .await,
             Err(BackendError::NotFound)

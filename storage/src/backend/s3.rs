@@ -189,7 +189,13 @@ impl S3Backend {
         version_id: Option<String>,
         range: ByteRange,
     ) -> Result<GetResp, BackendError> {
-        let head = self.head(HeadReq { key, version_id }).await?;
+        let head = self
+            .head(HeadReq {
+                key,
+                version_id,
+                checksum_mode: false,
+            })
+            .await?;
         let (start, _) = range.span(head.size)?;
         Ok(GetResp {
             body: Vec::new(),
@@ -428,12 +434,199 @@ impl Backend for S3Backend {
         })
     }
 
+    async fn multipart_create(
+        &self,
+        req: &crate::handlers::multipart::CreateReq,
+    ) -> Result<crate::handlers::multipart::CreateResp, BackendError> {
+        use aws_sdk_s3::types::{ChecksumAlgorithm, ChecksumType};
+        let r = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(&req.key)
+            .content_type(&req.content_type)
+            .set_metadata(Some(req.metadata.clone()))
+            .checksum_algorithm(ChecksumAlgorithm::Sha256)
+            .checksum_type(ChecksumType::Composite)
+            .send()
+            .await
+            .map_err(map_s3_error)?;
+        Ok(crate::handlers::multipart::CreateResp {
+            upload_id: r
+                .upload_id()
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| multipart_invalid("missing upload id"))?
+                .into(),
+        })
+    }
+    async fn multipart_presign(
+        &self,
+        req: &crate::handlers::multipart::PresignReq,
+    ) -> Result<crate::handlers::multipart::PresignResp, BackendError> {
+        let cfg = PresigningConfig::expires_in(Duration::from_secs(req.expires_in_seconds))
+            .map_err(|e| multipart_invalid(&e.to_string()))?;
+        let size = i64::try_from(req.size).map_err(|_| multipart_invalid("invalid size"))?;
+        let signed = self
+            .client
+            .upload_part()
+            .bucket(&self.bucket)
+            .key(&req.key)
+            .upload_id(&req.upload_id)
+            .part_number(req.part_number as i32)
+            .content_length(size)
+            .checksum_sha256(&req.checksum_sha256)
+            .presigned(cfg)
+            .await
+            .map_err(map_s3_error)?;
+        let mut headers = HashMap::new();
+        for (name, value) in signed.headers() {
+            if !name.eq_ignore_ascii_case("host") && !name.eq_ignore_ascii_case("content-length") {
+                headers.insert(name.to_string(), value.to_string());
+            }
+        }
+        Ok(crate::handlers::multipart::PresignResp {
+            url: signed.uri().to_string(),
+            headers,
+            expires_at: Utc::now() + chrono::Duration::seconds(req.expires_in_seconds as i64),
+        })
+    }
+    async fn multipart_list(
+        &self,
+        req: &crate::handlers::multipart::Identity,
+    ) -> Result<crate::handlers::multipart::ListResp, BackendError> {
+        let mut parts = Vec::new();
+        let mut marker = None;
+        loop {
+            let r = self
+                .client
+                .list_parts()
+                .bucket(&self.bucket)
+                .key(&req.key)
+                .upload_id(&req.upload_id)
+                .set_part_number_marker(marker.clone())
+                .send()
+                .await
+                .map_err(map_s3_error)?;
+            for p in r.parts() {
+                let part_number = p
+                    .part_number()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| multipart_invalid("missing part number"))?;
+                let size = p
+                    .size()
+                    .and_then(|n| u64::try_from(n).ok())
+                    .ok_or_else(|| multipart_invalid("missing part size"))?;
+                parts.push(crate::handlers::multipart::Part {
+                    part_number,
+                    size,
+                    etag: p
+                        .e_tag()
+                        .ok_or_else(|| multipart_invalid("missing ETag"))?
+                        .into(),
+                    checksum_sha256: p
+                        .checksum_sha256()
+                        .ok_or_else(|| multipart_invalid("missing checksum"))?
+                        .into(),
+                });
+            }
+            if !r.is_truncated().unwrap_or(false) {
+                break;
+            }
+            let next = r
+                .next_part_number_marker()
+                .ok_or_else(|| multipart_invalid("missing list marker"))?
+                .to_string();
+            if marker.as_ref() == Some(&next) {
+                return Err(multipart_invalid("repeated list marker"));
+            }
+            marker = Some(next);
+        }
+        Ok(crate::handlers::multipart::ListResp { parts })
+    }
+    async fn multipart_complete(
+        &self,
+        req: &crate::handlers::multipart::CompleteReq,
+    ) -> Result<crate::handlers::multipart::CompleteResp, BackendError> {
+        use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
+        let parts = req
+            .parts
+            .iter()
+            .map(|p| {
+                CompletedPart::builder()
+                    .part_number(p.part_number as i32)
+                    .e_tag(&p.etag)
+                    .checksum_sha256(&p.checksum_sha256)
+                    .build()
+            })
+            .collect();
+        let r = self
+            .client
+            .complete_multipart_upload()
+            .bucket(&self.bucket)
+            .key(&req.key)
+            .upload_id(&req.upload_id)
+            .if_none_match("*")
+            .multipart_upload(
+                CompletedMultipartUpload::builder()
+                    .set_parts(Some(parts))
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(map_s3_error)?;
+        let checksum = r
+            .checksum_sha256()
+            .ok_or_else(|| multipart_invalid("missing completion checksum"))?;
+        composite_checksum(
+            checksum,
+            r.checksum_type().map(|v| v.as_str()),
+            Some(req.parts.len()),
+        )?;
+        Ok(crate::handlers::multipart::CompleteResp {
+            etag: r
+                .e_tag()
+                .ok_or_else(|| multipart_invalid("missing completion ETag"))?
+                .into(),
+            checksum_sha256: checksum.into(),
+            checksum_type: "COMPOSITE".into(),
+        })
+    }
+    async fn multipart_abort(
+        &self,
+        req: &crate::handlers::multipart::Identity,
+    ) -> Result<(), BackendError> {
+        match self
+            .client
+            .abort_multipart_upload()
+            .bucket(&self.bucket)
+            .key(&req.key)
+            .upload_id(&req.upload_id)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) if e.as_service_error().and_then(|e| e.code()) == Some("NoSuchUpload") => Ok(()),
+            Err(e) => Err(map_s3_error(e)),
+        }
+    }
+
     async fn head(&self, req: HeadReq) -> Result<HeadResp, BackendError> {
         let mut h = self.client.head_object().bucket(&self.bucket).key(&req.key);
         if let Some(v) = req.version_id {
             h = h.version_id(v);
         }
+        if req.checksum_mode {
+            h = h.checksum_mode(aws_sdk_s3::types::ChecksumMode::Enabled);
+        }
         let resp = h.send().await.map_err(map_s3_error)?;
+        let checksum_type = match (resp.checksum_sha256.as_deref(), resp.checksum_type.as_ref()) {
+            (Some(value), kind) => {
+                composite_checksum(value, kind.map(|v| v.as_str()), None)?;
+                Some("COMPOSITE".to_string())
+            }
+            (None, None) => None,
+            (None, Some(_)) => return Err(multipart_invalid("missing HEAD checksum")),
+        };
         let last_modified = resp
             .last_modified
             .and_then(|dt| {
@@ -451,6 +644,9 @@ impl Backend for S3Backend {
             _ => 0,
         };
         Ok(HeadResp {
+            metadata: resp.metadata.clone(),
+            checksum_sha256: resp.checksum_sha256.clone(),
+            checksum_type,
             content_type,
             etag,
             last_modified,
@@ -635,6 +831,40 @@ impl Backend for S3Backend {
 /// Map an aws-sdk-s3 SdkError into a BackendError. NoSuchKey/NotFound responses
 /// fold into BackendError::NotFound; auth issues into AuthFailed; everything
 /// else surfaces with a stable code in `inner_code`.
+fn composite_checksum(
+    value: &str,
+    kind: Option<&str>,
+    expected_parts: Option<usize>,
+) -> Result<(), BackendError> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let (digest, count) = value
+        .rsplit_once('-')
+        .ok_or_else(|| multipart_invalid("invalid composite checksum"))?;
+    let bytes = STANDARD
+        .decode(digest)
+        .map_err(|_| multipart_invalid("invalid composite checksum"))?;
+    let parts = count
+        .parse::<usize>()
+        .map_err(|_| multipart_invalid("invalid composite checksum"))?;
+    if kind.is_some_and(|k| k != "COMPOSITE")
+        || bytes.len() != 32
+        || STANDARD.encode(&bytes) != digest
+        || !(1..=10000).contains(&parts)
+        || count != parts.to_string()
+        || expected_parts.is_some_and(|n| n != parts)
+    {
+        return Err(multipart_invalid("invalid composite checksum"));
+    }
+    Ok(())
+}
+
+fn multipart_invalid(message: &str) -> BackendError {
+    BackendError::Provider {
+        inner_code: Some("INVALID_INTEGRITY".into()),
+        message: message.into(),
+    }
+}
+
 fn map_s3_error<E>(
     err: aws_sdk_s3::error::SdkError<E, aws_smithy_runtime_api::http::Response>,
 ) -> BackendError
@@ -650,7 +880,7 @@ where
             // changes its derive(Debug) output.
             let inner_code = svc.err().code().map(|s| s.to_string());
             match status {
-                404 => BackendError::NotFound,
+                404 if inner_code.as_deref() != Some("NoSuchUpload") => BackendError::NotFound,
                 401 | 403 => BackendError::AuthFailed(describe_sdk_error(&err)),
                 _ => BackendError::Provider {
                     inner_code,
@@ -672,6 +902,76 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composite_checksum_requires_canonical_digest_and_consistent_type_and_count() {
+        let value = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=-2";
+        assert!(composite_checksum(value, None, Some(2)).is_ok());
+        assert!(composite_checksum(value, Some("COMPOSITE"), None).is_ok());
+        assert!(composite_checksum(value, Some("FULL_OBJECT"), Some(2)).is_err());
+        assert!(composite_checksum(value, None, Some(1)).is_err());
+        assert!(composite_checksum("invalid-2", None, None).is_err());
+        assert!(
+            composite_checksum("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", None, None).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn multipart_list_consumes_all_pages() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for number in 1..=2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut buf = [0; 4096];
+                    let n = stream.read(&mut buf).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&buf[..n]);
+                    if bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                if number == 2 {
+                    assert!(request.contains("part-number-marker=1"));
+                }
+                let body = format!("<ListPartsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><IsTruncated>{}</IsTruncated>{}<Part><PartNumber>{}</PartNumber><ETag>\"opaque{}\"</ETag><Size>1</Size><ChecksumSHA256>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</ChecksumSHA256></Part></ListPartsResult>", number == 1, if number == 1 { "<NextPartNumberMarker>1</NextPartNumberMarker>" } else { "" }, number, number);
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+            }
+        });
+        let backend = S3Backend::build(
+            S3BackendOpts {
+                region: "us-east-1",
+                credentials: Some(S3StaticCreds {
+                    access_key_id: "test".into(),
+                    secret_access_key: "test".into(),
+                    session_token: None,
+                }),
+                endpoint_url: Some(format!("http://{addr}")),
+                force_path_style: true,
+                provider_tag: "s3",
+                fast_fail: true,
+            },
+            "bucket".into(),
+        )
+        .await
+        .unwrap();
+        let result = backend
+            .multipart_list(&crate::handlers::multipart::Identity {
+                bucket: "alias".into(),
+                key: "key".into(),
+                upload_id: "id".into(),
+            })
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(result.parts.len(), 2);
+        assert_eq!(result.parts[0].etag, "\"opaque1\"");
+        assert_eq!(result.parts[1].part_number, 2);
+    }
 
     #[tokio::test]
     async fn build_with_static_creds_does_not_panic() {

@@ -17,6 +17,46 @@ pub mod s3;
 
 #[async_trait]
 pub trait Backend: Send + Sync {
+    async fn multipart_create(
+        &self,
+        _req: &crate::handlers::multipart::CreateReq,
+    ) -> Result<crate::handlers::multipart::CreateResp, BackendError> {
+        Err(BackendError::PresignUnsupported(
+            "multipart unsupported".into(),
+        ))
+    }
+    async fn multipart_presign(
+        &self,
+        _req: &crate::handlers::multipart::PresignReq,
+    ) -> Result<crate::handlers::multipart::PresignResp, BackendError> {
+        Err(BackendError::PresignUnsupported(
+            "multipart unsupported".into(),
+        ))
+    }
+    async fn multipart_list(
+        &self,
+        _req: &crate::handlers::multipart::Identity,
+    ) -> Result<crate::handlers::multipart::ListResp, BackendError> {
+        Err(BackendError::PresignUnsupported(
+            "multipart unsupported".into(),
+        ))
+    }
+    async fn multipart_complete(
+        &self,
+        _req: &crate::handlers::multipart::CompleteReq,
+    ) -> Result<crate::handlers::multipart::CompleteResp, BackendError> {
+        Err(BackendError::PresignUnsupported(
+            "multipart unsupported".into(),
+        ))
+    }
+    async fn multipart_abort(
+        &self,
+        _req: &crate::handlers::multipart::Identity,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::PresignUnsupported(
+            "multipart unsupported".into(),
+        ))
+    }
     async fn put(&self, req: PutReq) -> Result<PutResp, BackendError>;
     async fn get(&self, req: GetReq) -> Result<GetResp, BackendError>;
     async fn head(&self, req: HeadReq) -> Result<HeadResp, BackendError>;
@@ -203,10 +243,14 @@ pub struct GetResp {
 pub struct HeadReq {
     pub key: String,
     pub version_id: Option<String>,
+    pub checksum_mode: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct HeadResp {
+    pub metadata: Option<HashMap<String, String>>,
+    pub checksum_sha256: Option<String>,
+    pub checksum_type: Option<String>,
     pub content_type: String,
     pub etag: String,
     pub last_modified: DateTime<Utc>,
@@ -558,6 +602,9 @@ mod backend_tests {
     async fn mock_head_records_call_and_returns_canned_response() {
         let m = MockBackend::default();
         let canned = HeadResp {
+            metadata: None,
+            checksum_sha256: None,
+            checksum_type: None,
             content_type: "image/png".to_string(),
             etag: "\"abc123\"".to_string(),
             last_modified: Utc::now(),
@@ -568,6 +615,7 @@ mod backend_tests {
             .head(HeadReq {
                 key: "img.png".into(),
                 version_id: None,
+                checksum_mode: false,
             })
             .await
             .unwrap();

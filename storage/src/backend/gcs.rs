@@ -258,6 +258,9 @@ impl Backend for GcsBackend {
             .content_type
             .unwrap_or_else(|| "application/octet-stream".to_string());
         Ok(HeadResp {
+            metadata: object.metadata,
+            checksum_sha256: None,
+            checksum_type: None,
             content_type,
             etag: object.etag,
             last_modified,
