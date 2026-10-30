@@ -2183,6 +2183,21 @@ async fn late_titles_and_handoff_clicks_arrive_as_events() {
         .as_str()
         .expect("session_id")
         .to_string();
+    // `sessions::start` answers before the worker's navigation pump records
+    // the load, and that record reads `document.title` too: a title set
+    // before it lands would be read there, not reported by the watcher. The
+    // page has loaded, for this test, once its visit is in the history.
+    let recorded = timeout(Duration::from_secs(20), async {
+        loop {
+            let history = call("browser::history::list", json!({ "session_id": sid })).await;
+            if history["visits"][0]["url"] == page.as_str() {
+                return;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(recorded.is_ok(), "the page's load was never recorded");
     let updated = client.observe(
         Source::function("browser::on-session-updated")
             .filters(json!({ "input.session_id": { "$eq": sid } }))
