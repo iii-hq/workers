@@ -7,6 +7,10 @@ import { test } from 'node:test';
 import { isPromoteClassFunctionId } from '@jeger-ai/opengantry/kernel';
 
 import { GantryDenied } from '../src/denied.js';
+import {
+  FunctionRegistrationRequestSchema,
+  FunctionRegistrationResponseSchema,
+} from '../src/formats.js';
 import { LEASE_STATES } from '../src/lease-store.js';
 import {
   isReservedGovernanceFunctionId,
@@ -75,6 +79,36 @@ test('onFunctionRegistration denies reserved ids', () => {
     (err) => err instanceof GantryDenied && err.code === 'REGISTRATION_DENIED',
     'reserved function ids should be denied',
   );
+});
+
+test('onFunctionRegistration answers with the function id alone, so private, observable and args_format stay as declared', () => {
+  // What the engine sends (engine/src/engine/mod.rs, RegisterFunction).
+  const input = {
+    function_id: 'orders::on-created',
+    description: 'Called once per created order.',
+    metadata: { team: 'orders' },
+    namespace: 'default',
+    private: true,
+    observable: false,
+    args_format: {
+      type: 'object',
+      properties: { region: { type: 'string' } },
+      required: ['region'],
+    },
+    context: { tenant: 't-1' },
+  };
+  assert.deepEqual(FunctionRegistrationRequestSchema.parse(input), input);
+  const answer = onFunctionRegistration(input);
+  assert.deepEqual(answer, { function_id: 'orders::on-created' });
+  assert.deepEqual(FunctionRegistrationResponseSchema.parse(answer), answer);
+
+  // The engine replaces only the keys the answer carries.
+  const registered = { ...input, ...answer };
+  assert.equal(registered.private, true);
+  assert.equal(registered.observable, false);
+  assert.deepEqual(registered.args_format, input.args_format);
+  assert.equal(registered.description, input.description);
+  assert.deepEqual(registered.metadata, input.metadata);
 });
 
 test('onObserverRegistration denies observers that target the gantry namespace', () => {
