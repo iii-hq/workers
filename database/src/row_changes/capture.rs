@@ -8,7 +8,9 @@
 //! * [`NativeCapture`] is its added and removed hook. For each observer added
 //!   it validates the args against the live config and, on a `capture:
 //!   native` database, installs capture for the table; for each observer
-//!   removed it releases that hold.
+//!   removed it releases that hold. After a config reload it serves each
+//!   observer as the new config says, installing capture again where it
+//!   must, or late-rejects it ([`NativeCapture::revalidate`]).
 //! * Its match hook files each observer under the keys of its db, table and
 //!   ops ([`observer_keys`]), and looks each call up under the keys of the
 //!   event's db, table and op, wildcards included ([`call_keys`]). The
@@ -33,7 +35,7 @@ use super::bus::{RowChangedArgs, RowChangedEvent};
 use super::native;
 use super::sql;
 use crate::config::{CaptureMode, WorkerConfig};
-use crate::pool::Pool;
+use crate::pool::{Pool, PoolId};
 
 /// The function this worker announces its writes through.
 pub const ROW_CHANGED_FN: &str = "database::on-row-changed";
@@ -63,7 +65,7 @@ pub fn register(iii: &IIIClient, capture: &Arc<NativeCapture>) -> FunctionRef {
     let removed = capture.clone();
     iii.on_observer_removed_for(ROW_CHANGED_FN, move |obs: Observer| {
         let capture = removed.clone();
-        async move { capture.removed(&obs) }
+        async move { capture.removed(&obs).await }
     });
     iii.on_observer_match_for(
         ROW_CHANGED_FN,
@@ -137,6 +139,25 @@ pub fn call_keys(input: &Value) -> Vec<String> {
 /// The `(db, table)` whose native capture an observer holds.
 type Installed = (String, String);
 
+/// Late-rejects one observer: its `obs.reject`.
+type Reject = Arc<dyn Fn(&str, String) + Send + Sync>;
+
+/// An observer this worker accepted: its args, the native capture it holds,
+/// and how to reject it when a reload leaves it unserved.
+struct Admitted {
+    args: RowChangedArgs,
+    holds: Option<Installed>,
+    reject: Reject,
+}
+
+/// Native capture for one `(db, table)`: how many observers hold it, and the
+/// pool it was installed through. `None`: the database had no pool when a
+/// reload looked, so the next reload that gives it one installs it again.
+struct Holding {
+    holders: usize,
+    pool: Option<PoolId>,
+}
+
 /// Native capture for the function's observers, and its call.
 pub struct NativeCapture {
     iii: Arc<IIIClient>,
@@ -145,12 +166,18 @@ pub struct NativeCapture {
     /// Live pools: a native observer installs its database triggers through
     /// the bound database's pool.
     pools: Arc<tokio::sync::RwLock<HashMap<String, Pool>>>,
-    /// Accepted observers by id, each with the native capture it holds.
-    observers: Mutex<HashMap<String, Option<Installed>>>,
-    /// `(db, table)` → observers holding its native capture. The first
-    /// installs; the DDL stays when the last one leaves (it is idempotent to
-    /// reinstall and an orphan notify per write is near-free).
-    installed: Mutex<HashMap<Installed, usize>>,
+    /// Held by the added and removed hooks and by
+    /// [`revalidate`](Self::revalidate), so a reload sees every observer an
+    /// added hook admitted, and no hook changes a hold while a reload moves
+    /// it.
+    admission: tokio::sync::Mutex<()>,
+    /// Accepted observers by id.
+    observers: Mutex<HashMap<String, Admitted>>,
+    /// `(db, table)` → the observers holding its native capture. The first
+    /// installs it. The database triggers stay when the last one leaves:
+    /// every process and connection that captures the table shares them, and
+    /// this worker cannot tell whether another one still does.
+    installed: Mutex<HashMap<Installed, Holding>>,
     function: OnceLock<FunctionRef>,
     call_timeout_ms: u64,
 }
@@ -166,6 +193,7 @@ impl NativeCapture {
             iii,
             config,
             pools,
+            admission: tokio::sync::Mutex::new(()),
             observers: Mutex::new(HashMap::new()),
             installed: Mutex::new(HashMap::new()),
             function: OnceLock::new(),
@@ -268,8 +296,9 @@ impl NativeCapture {
     }
 
     /// Validates `args` against the live config and, on a native database,
-    /// installs capture for the table (once per `(db, table)`). Returns the
-    /// `(db, table)` whose capture the observer holds, to release on removal.
+    /// takes a hold on the table's capture ([`hold`](Self::hold)). Returns
+    /// the `(db, table)` whose capture the observer holds, to release on
+    /// removal.
     pub async fn admit(
         &self,
         args: &RowChangedArgs,
@@ -302,63 +331,98 @@ impl NativeCapture {
                 ),
             ));
         };
-        let key = (args.db.clone(), table.to_string());
-        let held = self
+        self.hold(&args.db, table).await.map(Some)
+    }
+
+    /// Takes a hold on native capture for `(db, table)`, installing it
+    /// through the database's current pool unless this worker already did.
+    /// Fails when the database has no pool or the install fails.
+    async fn hold(&self, db: &str, table: &str) -> Result<Installed, ObserveRejection> {
+        let key = (db.to_string(), table.to_string());
+        let pool = self.pools.read().await.get(db).cloned();
+        let pool_id = pool.as_ref().map(Pool::id);
+        let installed_through = self
             .installed
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
-            .copied()
-            .unwrap_or(0);
-        if held == 0 {
-            // Hooks run one at a time per function, so no second install of
-            // the same table races this one in this worker; the advisory lock
-            // in `install` covers other processes.
-            self.install(&args.db, table).await?;
+            .and_then(|holding| holding.pool);
+        if pool_id.is_none() || installed_through != pool_id {
+            // Admission is serialized (`admission`), so no second install of
+            // the same table races this one in this worker; the advisory
+            // lock in `install` covers other processes.
+            self.install(db, table, pool.as_ref()).await?;
         }
-        *self
-            .installed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(key.clone())
-            .or_default() += 1;
-        Ok(Some(key))
+        let mut installed = self.installed.lock().unwrap_or_else(|e| e.into_inner());
+        let holding = installed.entry(key.clone()).or_insert(Holding {
+            holders: 0,
+            pool: pool_id,
+        });
+        holding.holders += 1;
+        holding.pool = pool_id;
+        Ok(key)
     }
 
-    /// Records an observer admitted with [`admit`](Self::admit). An id
-    /// accepted again releases what it held before.
-    pub fn accept(&self, observer_id: &str, installed: Option<Installed>) {
+    /// Records an observer admitted with [`admit`](Self::admit), with what
+    /// rejects it. An id accepted again releases what it held before.
+    fn accept(
+        &self,
+        observer_id: &str,
+        args: RowChangedArgs,
+        holds: Option<Installed>,
+        reject: Reject,
+    ) {
         let replaced = self
             .observers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(observer_id.to_string(), installed);
-        if let Some(Some(old)) = replaced {
+            .insert(
+                observer_id.to_string(),
+                Admitted {
+                    args,
+                    holds,
+                    reject,
+                },
+            );
+        if let Some(Admitted {
+            holds: Some(old), ..
+        }) = replaced
+        {
             self.release(&old);
         }
     }
 
-    /// Forgets an observer and releases its hold on native capture.
-    pub fn forget(&self, observer_id: &str) {
+    /// Forgets an observer and releases its hold on native capture. Returns
+    /// what it was admitted with.
+    fn forget(&self, observer_id: &str) -> Option<Admitted> {
         let removed = self
             .observers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(observer_id);
-        if let Some(Some(key)) = removed {
-            self.release(&key);
+        if let Some(Admitted {
+            holds: Some(key), ..
+        }) = &removed
+        {
+            self.release(key);
+        }
+        removed
+    }
+
+    /// Late-rejects an accepted observer: forgets it now, and its removed
+    /// hook finds nothing left to release.
+    fn reject(&self, observer_id: &str, code: &str, message: String) {
+        if let Some(admitted) = self.forget(observer_id) {
+            tracing::info!(observer = %observer_id, code, %message, "row-changed observer rejected");
+            (admitted.reject)(code, message);
         }
     }
 
     fn release(&self, key: &Installed) {
         let mut installed = self.installed.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(count) = installed.get_mut(key) {
-            *count -= 1;
-            if *count == 0 {
-                // ponytail: native-capture database triggers stay installed —
-                // an orphan pg_notify per write statement is near-free and
-                // idempotent to reinstall; add DDL teardown when someone
-                // actually needs it.
+        if let Some(holding) = installed.get_mut(key) {
+            holding.holders -= 1;
+            if holding.holders == 0 {
                 installed.remove(key);
             }
         }
@@ -371,7 +435,8 @@ impl NativeCapture {
     pub async fn added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         let args = obs.args::<RowChangedArgs>()?; // db required: checked by the engine
         Self::check_canonical(&args)?;
-        let installed = self.admit(&args).await?;
+        let _admission = self.admission.lock().await;
+        let holds = self.admit(&args).await?;
         tracing::info!(
             observer = %obs.id(),
             target = %obs.target(),
@@ -379,54 +444,164 @@ impl NativeCapture {
             table = ?args.table,
             "row-changed observer added"
         );
-        self.accept(obs.id(), installed);
+        let id = obs.id().to_string();
+        self.accept(
+            &id,
+            args,
+            holds,
+            Arc::new(move |code: &str, message: String| obs.reject(code, message)),
+        );
         Ok(())
     }
 
     /// The function's removed hook.
-    pub fn removed(&self, obs: &Observer) {
+    pub async fn removed(&self, obs: &Observer) {
+        let _admission = self.admission.lock().await;
         self.forget(obs.id());
         tracing::info!(observer = %obs.id(), "row-changed observer removed");
     }
 
-    /// After a config reload: late-rejects every observer the reloaded config
-    /// cannot serve (its database is gone, or is native while the observer
-    /// names no table). The rejection removes it, which runs the removed
-    /// hook.
+    /// After a config reload, every accepted observer is served as the
+    /// reloaded config says, or late-rejected (which removes it):
+    ///
+    /// * its database is gone: `UNKNOWN_DB`;
+    /// * its database is native and it names no table:
+    ///   `NATIVE_CAPTURE_REQUIRES_TABLE`;
+    /// * its database is native and its table's capture is not installed
+    ///   through the database's current pool (the database was
+    ///   `statements`, or its connection changed): capture is installed
+    ///   through that pool, or it is rejected with `CAPTURE_INSTALL_FAILED`.
+    ///   A database without a pool (its connection cannot be built) keeps
+    ///   its observers, and the reload that gives it one installs capture;
+    /// * its database is `statements`: its hold on native capture is
+    ///   released, and the statements path serves it.
     pub async fn revalidate(&self) {
-        let Some(function) = self.function.get() else {
-            return;
-        };
-        let live = self.config.read().await;
-        for obs in function.observers() {
-            let Ok(args) = obs.args::<RowChangedArgs>() else {
-                continue;
+        let _admission = self.admission.lock().await;
+        let modes: HashMap<String, CaptureMode> = self
+            .config
+            .read()
+            .await
+            .databases
+            .iter()
+            .map(|(name, db)| (name.clone(), db.capture))
+            .collect();
+        let pools = self.pools.read().await.clone();
+
+        // Capture installed through a pool its database no longer has.
+        let moved: Vec<(Installed, Option<Pool>)> = self
+            .installed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|((db, _), holding)| {
+                modes.get(db) == Some(&CaptureMode::Native)
+                    && pools.get(db).map(Pool::id) != holding.pool
+            })
+            .map(|(key, _)| (key.clone(), pools.get(&key.0).cloned()))
+            .collect();
+        for (key, pool) in moved {
+            let installed = match &pool {
+                None => Ok(None),
+                Some(pool) => self
+                    .install(&key.0, &key.1, Some(pool))
+                    .await
+                    .map(|()| Some(pool.id())),
             };
-            match live.databases.get(&args.db) {
-                None => obs.reject(
+            match installed {
+                Ok(pool_id) => {
+                    if let Some(holding) = self
+                        .installed
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get_mut(&key)
+                    {
+                        holding.pool = pool_id;
+                    }
+                }
+                Err(rejection) => {
+                    for id in self.holders_of(&key) {
+                        self.reject(&id, &rejection.code, rejection.message.clone());
+                    }
+                }
+            }
+        }
+
+        let admitted: Vec<(String, RowChangedArgs, bool)> = self
+            .observers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(id, a)| (id.clone(), a.args.clone(), a.holds.is_some()))
+            .collect();
+        for (id, args, holds) in admitted {
+            match (modes.get(&args.db), args.table.as_deref()) {
+                (None, _) => self.reject(
+                    &id,
                     codes::UNKNOWN_DB,
                     format!("db `{}` was removed from the configuration", args.db),
                 ),
-                Some(db) if db.capture == CaptureMode::Native && args.table.is_none() => obs
-                    .reject(
-                        codes::NATIVE_CAPTURE_REQUIRES_TABLE,
-                        format!(
-                            "db `{}` uses `capture: native`, which requires args.table",
-                            args.db
-                        ),
+                (Some(CaptureMode::Native), None) => self.reject(
+                    &id,
+                    codes::NATIVE_CAPTURE_REQUIRES_TABLE,
+                    format!(
+                        "db `{}` uses `capture: native`, which requires args.table",
+                        args.db
                     ),
-                Some(_) => {}
+                ),
+                (Some(CaptureMode::Native), Some(table)) => {
+                    if holds || !pools.contains_key(&args.db) {
+                        continue;
+                    }
+                    match self.hold(&args.db, table).await {
+                        Ok(key) => self.set_holds(&id, Some(key)),
+                        Err(rejection) => self.reject(&id, &rejection.code, rejection.message),
+                    }
+                }
+                (Some(CaptureMode::Statements), _) => {
+                    if holds {
+                        self.set_holds(&id, None);
+                    }
+                }
             }
         }
     }
 
+    /// The observers holding `key`'s capture.
+    fn holders_of(&self, key: &Installed) -> Vec<String> {
+        self.observers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, a)| a.holds.as_ref() == Some(key))
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Replaces what an accepted observer holds, releasing its old hold.
+    fn set_holds(&self, observer_id: &str, holds: Option<Installed>) {
+        let old = self
+            .observers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(observer_id)
+            .and_then(|a| std::mem::replace(&mut a.holds, holds));
+        if let Some(old) = old {
+            self.release(&old);
+        }
+    }
+
     /// Install the NOTIFY function and per-table triggers for a native
-    /// observer. Fails loudly — an observer whose DDL did not land would sit
-    /// there hearing nothing, which is the failure mode this worker refuses.
-    async fn install(&self, db: &str, table: &str) -> Result<(), ObserveRejection> {
+    /// observer through `pool`, the database's. Fails loudly — an observer
+    /// whose DDL did not land would sit there hearing nothing, which is the
+    /// failure mode this worker refuses.
+    async fn install(
+        &self,
+        db: &str,
+        table: &str,
+        pool: Option<&Pool>,
+    ) -> Result<(), ObserveRejection> {
         let install_error =
             |message: String| ObserveRejection::new(codes::CAPTURE_INSTALL_FAILED, message);
-        let pool = self.pools.read().await.get(db).cloned();
         match pool {
             Some(Pool::Postgres(pg)) => {
                 let sql = native::install_sql(table).map_err(install_error)?;
@@ -654,18 +829,46 @@ mod tests {
         )
     }
 
+    /// The rejections a test observer received, as `(code, message)`.
+    type Rejections = Arc<Mutex<Vec<(String, String)>>>;
+
+    /// A `Reject` that records into the returned list.
+    fn recorded() -> (Reject, Rejections) {
+        let rejections = Rejections::default();
+        let sink = rejections.clone();
+        let reject: Reject = Arc::new(move |code: &str, message: String| {
+            sink.lock().unwrap().push((code.to_string(), message));
+        });
+        (reject, rejections)
+    }
+
+    fn args(db: &str, table: Option<&str>) -> RowChangedArgs {
+        RowChangedArgs {
+            db: db.into(),
+            table: table.map(Into::into),
+            ops: None,
+        }
+    }
+
     #[test]
     fn accepting_an_id_again_releases_its_previous_hold() {
         let capture = capture_with("databases:\n  p:\n    url: \"sqlite::memory:\"\n");
         let key = ("p".to_string(), "orders".to_string());
-        *capture
-            .installed
-            .lock()
-            .unwrap()
-            .entry(key.clone())
-            .or_default() += 1;
-        capture.accept("o1", Some(key.clone()));
-        capture.accept("o1", None);
+        capture.installed.lock().unwrap().insert(
+            key.clone(),
+            Holding {
+                holders: 1,
+                pool: None,
+            },
+        );
+        let (reject, _) = recorded();
+        capture.accept(
+            "o1",
+            args("p", Some("orders")),
+            Some(key.clone()),
+            reject.clone(),
+        );
+        capture.accept("o1", args("p", None), None, reject);
         assert_eq!(capture.observer_count(), 1);
         assert!(capture.installed.lock().unwrap().get(&key).is_none());
         capture.forget("o1");
@@ -735,74 +938,342 @@ mod tests {
         assert!(err.message.contains("no pool"), "{}", err.message);
     }
 
+    /// A sqlite file with an `orders` table (or none), and its path.
+    fn sqlite_file(dir: &tempfile::TempDir, name: &str, with_orders: bool) -> std::path::PathBuf {
+        let file = dir.path().join(name);
+        let conn = rusqlite::Connection::open(&file).unwrap();
+        if with_orders {
+            conn.execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)")
+                .unwrap();
+        }
+        file
+    }
+
+    /// How many capture triggers `orders` has in `file`.
+    fn capture_triggers(file: &std::path::Path) -> i64 {
+        rusqlite::Connection::open(file)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'orders'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn sqlite_config(entries: &[(&str, &std::path::Path, bool)]) -> WorkerConfig {
+        let mut yaml = "databases:\n".to_string();
+        for (name, file, native) in entries {
+            yaml.push_str(&format!(
+                "  {name}:\n    url: \"sqlite:{}\"\n",
+                file.display()
+            ));
+            if *native {
+                yaml.push_str("    capture: native\n");
+            }
+        }
+        WorkerConfig::from_yaml(&yaml).unwrap()
+    }
+
+    /// A capture over `cfg` and pools built from it.
+    async fn capture_over(cfg: WorkerConfig) -> NativeCapture {
+        let pools = crate::configuration::build_pools(&cfg).await.unwrap();
+        NativeCapture::new(
+            Arc::new(IIIClient::new("ws://127.0.0.1:9")),
+            Arc::new(tokio::sync::RwLock::new(cfg)),
+            Arc::new(tokio::sync::RwLock::new(pools)),
+            100,
+        )
+    }
+
+    /// What `apply_config` does: swap the config, keep the pools whose entry
+    /// did not change and build the others (`build: false` leaves a changed
+    /// entry without a pool, as a connection that cannot be built), then
+    /// revalidate.
+    async fn reload(capture: &NativeCapture, cfg: WorkerConfig, build: bool) {
+        let old_cfg = capture.config.read().await.clone();
+        let old_pools = capture.pools.read().await.clone();
+        let mut pools = HashMap::new();
+        for (name, db) in &cfg.databases {
+            let unchanged = old_cfg.databases.get(name).map(|old| {
+                serde_json::to_string(old).unwrap() == serde_json::to_string(db).unwrap()
+            });
+            if unchanged == Some(true) {
+                if let Some(pool) = old_pools.get(name) {
+                    pools.insert(name.clone(), pool.clone());
+                    continue;
+                }
+            }
+            if build {
+                pools.insert(name.clone(), crate::pool::build(name, db).await.unwrap());
+            }
+        }
+        *capture.pools.write().await = pools;
+        *capture.config.write().await = cfg;
+        capture.revalidate().await;
+    }
+
+    /// Admits and accepts an observer as the added hook does.
+    async fn observe(
+        capture: &NativeCapture,
+        id: &str,
+        args: RowChangedArgs,
+    ) -> Result<Rejections, ObserveRejection> {
+        let holds = capture.admit(&args).await?;
+        let (reject, rejections) = recorded();
+        capture.accept(id, args, holds, reject);
+        Ok(rejections)
+    }
+
+    fn holds(capture: &NativeCapture, id: &str) -> Option<Installed> {
+        capture.observers.lock().unwrap()[id].holds.clone()
+    }
+
+    fn holders(capture: &NativeCapture, db: &str) -> Option<usize> {
+        capture
+            .installed
+            .lock()
+            .unwrap()
+            .get(&(db.to_string(), "orders".to_string()))
+            .map(|holding| holding.holders)
+    }
+
     /// The direct refcount test: two observers on one native table share one
     /// install; removing one leaves the capture in place for the other.
     #[tokio::test]
     async fn native_capture_is_installed_once_and_outlives_one_holder() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("watched.db");
-        rusqlite::Connection::open(&file)
-            .unwrap()
-            .execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)")
-            .unwrap();
-        let cfg = WorkerConfig::from_yaml(&format!(
-            "databases:\n  watched:\n    url: \"sqlite:{}\"\n    capture: native\n",
-            file.display()
-        ))
-        .unwrap();
-        let pools = crate::configuration::build_pools(&cfg).await.unwrap();
-        let capture = NativeCapture::new(
-            Arc::new(IIIClient::new("ws://127.0.0.1:9")),
-            Arc::new(tokio::sync::RwLock::new(cfg)),
-            Arc::new(tokio::sync::RwLock::new(pools)),
-            100,
-        );
-        let capture_triggers = || -> i64 {
-            rusqlite::Connection::open(&file)
-                .unwrap()
-                .query_row(
-                    "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'orders'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap()
-        };
-        let holders = |capture: &NativeCapture| {
-            capture
-                .installed
-                .lock()
-                .unwrap()
-                .get(&("watched".to_string(), "orders".to_string()))
-                .copied()
-        };
-        let args = RowChangedArgs {
-            db: "watched".into(),
-            table: Some("orders".into()),
-            ops: None,
-        };
+        let file = sqlite_file(&dir, "watched.db", true);
+        let capture = capture_over(sqlite_config(&[("watched", &file, true)])).await;
         for id in ["first", "second"] {
-            let installed = capture.admit(&args).await.unwrap();
+            observe(&capture, id, args("watched", Some("orders")))
+                .await
+                .unwrap();
             assert_eq!(
-                installed,
+                holds(&capture, id),
                 Some(("watched".to_string(), "orders".to_string()))
             );
-            capture.accept(id, installed);
         }
-        assert_eq!(holders(&capture), Some(2));
+        assert_eq!(holders(&capture, "watched"), Some(2));
         assert_eq!(capture.observer_count(), 2);
-        assert_eq!(capture_triggers(), 3, "one insert/update/delete set");
+        assert_eq!(capture_triggers(&file), 3, "one insert/update/delete set");
 
         capture.forget("first");
-        assert_eq!(holders(&capture), Some(1));
-        assert_eq!(capture_triggers(), 3);
+        assert_eq!(holders(&capture, "watched"), Some(1));
+        assert_eq!(capture_triggers(&file), 3);
 
         capture.forget("second");
-        assert_eq!(holders(&capture), None);
-        // The DDL stays when the last holder leaves; installing again is a no-op.
-        assert_eq!(capture_triggers(), 3);
-        capture.admit(&args).await.unwrap();
-        assert_eq!(holders(&capture), Some(1));
-        assert_eq!(capture_triggers(), 3);
+        assert_eq!(holders(&capture, "watched"), None);
+        // The database triggers stay when the last holder leaves; installing
+        // again is a no-op.
+        assert_eq!(capture_triggers(&file), 3);
+        capture
+            .admit(&args("watched", Some("orders")))
+            .await
+            .unwrap();
+        assert_eq!(holders(&capture, "watched"), Some(1));
+        assert_eq!(capture_triggers(&file), 3);
+    }
+
+    /// A reload that makes a `statements` database native installs capture
+    /// for the observers admitted under `statements`, so they hear other
+    /// clients' writes.
+    #[tokio::test]
+    async fn a_reload_to_native_installs_capture_for_existing_observers() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = sqlite_file(&dir, "p.db", true);
+        let capture = capture_over(sqlite_config(&[("p", &file, false)])).await;
+        let rejections = observe(&capture, "o1", args("p", Some("orders")))
+            .await
+            .unwrap();
+        assert_eq!(holds(&capture, "o1"), None);
+        assert_eq!(capture_triggers(&file), 0);
+
+        reload(&capture, sqlite_config(&[("p", &file, true)]), true).await;
+        assert!(rejections.lock().unwrap().is_empty());
+        assert_eq!(
+            holds(&capture, "o1"),
+            Some(("p".to_string(), "orders".to_string()))
+        );
+        assert_eq!(holders(&capture, "p"), Some(1));
+        assert_eq!(capture_triggers(&file), 3);
+
+        // A reload that changes nothing installs nothing more.
+        let pool = capture.installed.lock().unwrap()[&("p".to_string(), "orders".to_string())].pool;
+        reload(&capture, sqlite_config(&[("p", &file, true)]), true).await;
+        assert_eq!(holders(&capture, "p"), Some(1));
+        assert_eq!(
+            capture.installed.lock().unwrap()[&("p".to_string(), "orders".to_string())].pool,
+            pool
+        );
+    }
+
+    /// A native database whose connection moves to another database file
+    /// gets its observers' capture installed there; when the install fails
+    /// there, they are rejected.
+    #[tokio::test]
+    async fn a_reload_that_moves_a_native_database_installs_capture_again_or_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = sqlite_file(&dir, "first.db", true);
+        let second = sqlite_file(&dir, "second.db", true);
+        let bare = sqlite_file(&dir, "bare.db", false);
+        let capture = capture_over(sqlite_config(&[("p", &first, true)])).await;
+        let rejections = observe(&capture, "o1", args("p", Some("orders")))
+            .await
+            .unwrap();
+        observe(&capture, "o2", args("p", Some("orders")))
+            .await
+            .unwrap();
+        assert_eq!(capture_triggers(&first), 3);
+
+        reload(&capture, sqlite_config(&[("p", &second, true)]), true).await;
+        assert!(rejections.lock().unwrap().is_empty());
+        assert_eq!(capture_triggers(&second), 3);
+        assert_eq!(holders(&capture, "p"), Some(2));
+
+        // No `orders` table on the new connection: the install fails, and
+        // both holders are rejected with its reason.
+        reload(&capture, sqlite_config(&[("p", &bare, true)]), true).await;
+        let got = rejections.lock().unwrap().clone();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, codes::CAPTURE_INSTALL_FAILED);
+        assert!(got[0].1.contains("orders"), "{}", got[0].1);
+        assert_eq!(capture.observer_count(), 0);
+        assert_eq!(holders(&capture, "p"), None);
+    }
+
+    /// A native database whose connection cannot be built keeps its
+    /// observers; the reload that gives it a pool installs their capture.
+    #[tokio::test]
+    async fn a_native_database_without_a_pool_keeps_its_observers_until_it_has_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = sqlite_file(&dir, "first.db", true);
+        let second = sqlite_file(&dir, "second.db", true);
+        let capture = capture_over(sqlite_config(&[("p", &first, false)])).await;
+        let rejections = observe(&capture, "o1", args("p", Some("orders")))
+            .await
+            .unwrap();
+        reload(&capture, sqlite_config(&[("p", &first, true)]), true).await;
+        let fresh = observe(&capture, "o2", args("p", Some("orders")))
+            .await
+            .unwrap();
+        assert_eq!(holders(&capture, "p"), Some(2));
+
+        // The connection moves and its pool cannot be built.
+        reload(&capture, sqlite_config(&[("p", &second, true)]), false).await;
+        assert!(rejections.lock().unwrap().is_empty());
+        assert!(fresh.lock().unwrap().is_empty());
+        assert_eq!(capture.observer_count(), 2);
+        assert_eq!(capture_triggers(&second), 0);
+
+        // The next reload builds it: capture is installed there.
+        let cfg = sqlite_config(&[("p", &second, true)]);
+        let pool = crate::pool::build("p", &cfg.databases["p"]).await.unwrap();
+        capture.pools.write().await.insert("p".into(), pool);
+        capture.revalidate().await;
+        assert_eq!(capture_triggers(&second), 3);
+        assert_eq!(holders(&capture, "p"), Some(2));
+        assert!(rejections.lock().unwrap().is_empty());
+    }
+
+    /// A reload that makes a native database `statements` releases its
+    /// observers' holds (the statements path serves them), and one that
+    /// removes a database, or makes it native under a table-less observer,
+    /// rejects those observers.
+    #[tokio::test]
+    async fn a_reload_releases_or_rejects_what_the_new_config_cannot_serve() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = sqlite_file(&dir, "p.db", true);
+        let other = sqlite_file(&dir, "q.db", true);
+        let gone = sqlite_file(&dir, "gone.db", true);
+        let capture = capture_over(sqlite_config(&[
+            ("p", &file, true),
+            ("q", &other, false),
+            ("gone", &gone, false),
+        ]))
+        .await;
+        let native = observe(&capture, "native", args("p", Some("orders")))
+            .await
+            .unwrap();
+        let tableless = observe(&capture, "tableless", args("q", None))
+            .await
+            .unwrap();
+        let removed = observe(&capture, "removed", args("gone", None))
+            .await
+            .unwrap();
+
+        reload(
+            &capture,
+            sqlite_config(&[("p", &file, false), ("q", &other, true)]),
+            true,
+        )
+        .await;
+        assert!(native.lock().unwrap().is_empty());
+        assert_eq!(holds(&capture, "native"), None);
+        assert_eq!(holders(&capture, "p"), None);
+        assert_eq!(
+            tableless.lock().unwrap()[0].0,
+            codes::NATIVE_CAPTURE_REQUIRES_TABLE
+        );
+        assert_eq!(removed.lock().unwrap()[0].0, codes::UNKNOWN_DB);
+        assert_eq!(capture.observer_count(), 1);
+    }
+
+    /// The reload path on postgres: a database that becomes native gets its
+    /// existing observer's triggers. Requires TEST_POSTGRES_URL, like the
+    /// pool tests.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reload_to_native_installs_postgres_capture() {
+        let Some(url) = std::env::var("TEST_POSTGRES_URL").ok() else {
+            eprintln!("skipping: TEST_POSTGRES_URL not set");
+            return;
+        };
+        let table = format!("iii_revalidate_{}", std::process::id());
+        let config = |native: bool| {
+            WorkerConfig::from_yaml(&format!(
+                "databases:\n  p:\n    url: {url}\n    tls:\n      mode: disable\n{}",
+                if native { "    capture: native\n" } else { "" }
+            ))
+            .unwrap()
+        };
+        let capture = capture_over(config(false)).await;
+        let Some(Pool::Postgres(pg)) = capture.pools.read().await.get("p").cloned() else {
+            panic!("a postgres pool");
+        };
+        let client = pg.acquire().await.unwrap();
+        client
+            .batch_execute(&format!(
+                "DROP TABLE IF EXISTS {table}; CREATE TABLE {table} (id int PRIMARY KEY)"
+            ))
+            .await
+            .unwrap();
+        let triggers = || async {
+            client
+                .query_one(
+                    "SELECT count(*) FROM pg_trigger WHERE tgrelid = $1::text::regclass \
+                     AND tgname LIKE 'iii_row_changed_%'",
+                    &[&table],
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0)
+        };
+        let rejections = observe(&capture, "o1", args("p", Some(&table)))
+            .await
+            .unwrap();
+        assert_eq!(triggers().await, 0);
+
+        reload(&capture, config(true), true).await;
+        assert!(rejections.lock().unwrap().is_empty());
+        assert_eq!(
+            holds(&capture, "o1"),
+            Some(("p".to_string(), table.clone()))
+        );
+        assert_eq!(triggers().await, 3);
+        client
+            .batch_execute(&format!("DROP TABLE {table}"))
+            .await
+            .unwrap();
     }
 
     #[test]

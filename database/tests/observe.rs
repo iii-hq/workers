@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use database::config::WorkerConfig;
+use database::config::{CaptureMode, WorkerConfig};
 use database::configuration;
 use database::handle::HandleRegistry;
 use database::handlers::{execute, AppState};
@@ -80,7 +80,7 @@ struct DatabaseWorker {
     capture: Arc<NativeCapture>,
     row_changed: FunctionRef,
     dir: tempfile::TempDir,
-    _listeners: Arc<row_changes::NativeListeners>,
+    listeners: Arc<row_changes::NativeListeners>,
 }
 
 impl DatabaseWorker {
@@ -161,7 +161,7 @@ impl DatabaseWorker {
             capture,
             row_changed,
             dir,
-            _listeners: listeners,
+            listeners,
         }
     }
 
@@ -505,6 +505,78 @@ async fn config_reload_late_rejects_observers_on_a_removed_database() {
         db.capture.observer_count() == 1
     })
     .await;
+    consumer.shutdown_async().await;
+    db.iii.shutdown_async().await;
+}
+
+/// A reload that makes a `statements` database native installs capture for
+/// the observers it already has, and one that moves the native database to
+/// another file installs it there: the observer hears other clients' writes
+/// and the worker's own, each once.
+#[tokio::test(flavor = "multi_thread")]
+async fn config_reload_installs_capture_for_existing_observers() {
+    let Some(url) = engine_url() else {
+        return eprintln!("skipping: III_TEST_ENGINE_URL not set");
+    };
+    let ns = namespace("to-native");
+    let db = DatabaseWorker::start(&url, &ns, &[]).await;
+    db.sql(
+        "primary",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)",
+    )
+    .await;
+    let consumer = client(&url, &ns, "consumer");
+    let mut events = sink(&consumer, "consumer::sink");
+    let handle = consumer.observe(
+        Source::function("database::on-row-changed")
+            .args(json!({ "db": "primary", "table": "orders" }))
+            .deliver(iii_sdk::Deliver::Input),
+        "consumer::sink",
+    );
+    handle.ready().await.unwrap();
+    db.sql("primary", "INSERT INTO orders (n) VALUES (1)").await;
+    assert_eq!(next(&mut events, "statements write").await["op"], "insert");
+
+    let reload = |cfg: WorkerConfig| {
+        let state = db.state.clone();
+        let listeners = db.listeners.clone();
+        async move {
+            configuration::apply_config(&state, cfg, Some(&listeners))
+                .await
+                .unwrap();
+        }
+    };
+    let mut cfg = db.state.config.read().await.clone();
+    cfg.databases.get_mut("primary").unwrap().capture = CaptureMode::Native;
+    reload(cfg.clone()).await;
+    assert_eq!(handle.state(), ObserverState::Active);
+
+    external_insert(db.dir.path().join("primary.db"), 2).await;
+    assert_eq!(
+        next(&mut events, "another client's write after the reload").await["returning"][0]["id"],
+        2
+    );
+    db.sql("primary", "INSERT INTO orders (n) VALUES (3)").await;
+    assert_eq!(
+        next(&mut events, "the worker's own write after the reload").await["returning"][0]["id"],
+        3
+    );
+    silent(&mut events, "one event per write").await;
+
+    // The native database moves to another file.
+    let moved = db.dir.path().join("moved.db");
+    rusqlite::Connection::open(&moved)
+        .unwrap()
+        .execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)")
+        .unwrap();
+    cfg.databases.get_mut("primary").unwrap().url = format!("sqlite:{}", moved.display()).into();
+    reload(cfg).await;
+    assert_eq!(handle.state(), ObserverState::Active);
+    external_insert(moved, 7).await;
+    let event = next(&mut events, "a write on the file the database moved to").await;
+    assert_eq!(event["returning"][0]["id"], 1);
+    assert_eq!(event["op"], "insert");
+    silent(&mut events, "one event per write").await;
     consumer.shutdown_async().await;
     db.iii.shutdown_async().await;
 }

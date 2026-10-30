@@ -429,9 +429,21 @@ serve is refused when it is created, and its `ready()` says why:
 |---|---|
 | `INVALID_ARGS` | A missing `db`, or an unknown arg (`tabel`). |
 | `NON_CANONICAL_TABLE` | `table` is not canonical; the message names the canonical value. |
-| `UNKNOWN_DB` | No such connection. A configuration reload that removes a connection rejects its observers the same way. |
+| `UNKNOWN_DB` | No such connection. |
 | `NATIVE_CAPTURE_REQUIRES_TABLE` | A `native` database and no `table`. |
 | `CAPTURE_INSTALL_FAILED` | Native capture could not be installed (privileges, a table that does not exist under that name, a MySQL server without a ROW binlog). |
+
+A configuration reload serves each observer as the new configuration says.
+When its database becomes `native`, or a `native` database's connection
+changes, the worker installs capture for its table through the new
+connection; when its database becomes `statements`, the statements path
+serves it. An observer the new configuration cannot serve is rejected with
+the code for the reason: its database was removed (`UNKNOWN_DB`), its
+database became `native` and it names no table
+(`NATIVE_CAPTURE_REQUIRES_TABLE`), or capture cannot be installed through
+the new connection (`CAPTURE_INSTALL_FAILED`). A `native` database whose
+connection cannot be built keeps its observers, and the worker installs
+their capture once the connection builds.
 
 **Event** (`input`, and `output`: the handler returns it): `{ db, schema,
 table, op, affected_rows, returning?, truncated?, at }`. `schema` is
