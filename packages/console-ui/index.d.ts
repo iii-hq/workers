@@ -656,7 +656,8 @@ export interface Host {
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
   /**
-   * Import a `console:module` asset on demand, e.g.
+   * Import a `module` asset (a `console::ui::asset` observer with
+   * `{ kind: 'module', path }`) on demand, e.g.
    * `host.importModule<typeof import('./xterm')>('ide/xterm.js')`. The
    * console serves modules but never imports them at mount, so code only
    * one view needs stays out of every tab's first load. Resolves to the
