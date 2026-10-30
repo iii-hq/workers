@@ -7,8 +7,9 @@
 //! fail when both are there and the stack does not come up.
 
 use std::io::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iii_sdk::{
     register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle,
@@ -70,6 +71,23 @@ pub fn stack_unavailable() -> Option<&'static str> {
     None
 }
 
+/// A working directory of its own for one stack: the process id, a
+/// per-process sequence number and the wall clock, so no two stacks (in one
+/// test process or across runs) share the directory one of them removes on
+/// drop.
+fn stack_dir() -> std::path::PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!(
+        "approval-gate-it-{}-{seq}-{nanos}",
+        std::process::id()
+    ))
+}
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .expect("bind ephemeral port")
@@ -85,11 +103,7 @@ pub async fn spawn_engine() -> Option<Engine> {
     let bin = engine_bin()?;
     let state_bin = state_bin()?;
     let port = free_port();
-    let dir = std::env::temp_dir().join(format!(
-        "approval-gate-it-{}-{}",
-        std::process::id(),
-        Instant::now().elapsed().as_nanos()
-    ));
+    let dir = stack_dir();
     std::fs::create_dir_all(&dir).ok()?;
     // The configuration worker's fs adapter writes one YAML file per id
     // under this directory; create it up front so register/get never race
@@ -657,4 +671,15 @@ where
     let stack = boot(&engine, opts).await;
     f(stack).await;
     // `engine` drops here — isolated state cleaned up with the temp dir.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stack_dir;
+
+    #[test]
+    fn every_stack_gets_its_own_directory() {
+        let dirs: std::collections::HashSet<_> = (0..64).map(|_| stack_dir()).collect();
+        assert_eq!(dirs.len(), 64);
+    }
 }
