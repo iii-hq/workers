@@ -4,7 +4,7 @@ members = ["crates/*"]
 [package]
 name = "sandbox-libkrun"
 # 0.2.x implements sandbox contract 1; iii-compose's ADAPTER_RANGE ("^0.2") must match.
-version = "0.2.0"
+version = "0.2.2"
 edition = "2024"
 license = "Elastic-2.0"
 publish = false
