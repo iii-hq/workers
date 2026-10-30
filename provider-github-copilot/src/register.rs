@@ -202,10 +202,13 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         ))
         .description(surface::REFRESH_MODELS_DESC),
     );
+    // Both carry the device code, which exchanges for the GitHub OAuth token:
+    // registered with `observable: false` so no observer receives it.
     iii.register_function(
         surface::LOGIN_START_ID,
         RegisterFunction::new_async(make_login_start(http.clone()))
-            .description(surface::LOGIN_START_DESC),
+            .description(surface::LOGIN_START_DESC)
+            .observable(false),
     );
     // login::poll refreshes the catalog on success so the picker fills the
     // moment the operator finishes signing in.
@@ -234,7 +237,8 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
                     Ok::<_, Error>(resp)
                 }
             })
-            .description(surface::LOGIN_POLL_DESC),
+            .description(surface::LOGIN_POLL_DESC)
+            .observable(false),
         );
     }
 
