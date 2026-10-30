@@ -537,9 +537,10 @@ Worth knowing:
   database the database itself reports the write, whichever path it took.
 - **Native capture stays installed.** The database triggers native capture
   installs on a table stay when the table's last observer leaves, and when
-  the database leaves the configuration or `capture: native`: every worker
-  and connection that captures the table shares them, and the worker cannot
-  tell whether another one still relies on them. While they stay, each write
+  the database leaves the configuration, leaves `capture: native` or moves
+  to another server: every worker and connection that captures the table
+  shares them, and the worker cannot tell whether another one still relies
+  on them. While they stay, each write
   statement on the table raises a notification (Postgres) or appends
   changelog rows (SQLite); a worker deletes the changelog rows only while it
   has the database configured `capture: native`. To remove capture from a
