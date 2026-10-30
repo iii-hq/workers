@@ -5,8 +5,9 @@
 //!
 //! What we exercise: a `storage::putObject` round-trip against the native
 //! local backend (no cloud credentials or sidecar needed), a `getObject` to
-//! confirm the bytes round-trip, and an observer of
-//! `storage::on-object-created` for the bucket receiving the next write.
+//! confirm the bytes round-trip, an observer of
+//! `storage::on-object-created` for the bucket receiving the next write, and
+//! the credential functions refusing observers.
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -231,6 +232,19 @@ async fn put_then_get_round_trips_via_native_local_storage() {
         .expect("the observe is answered")
         .unwrap_err();
     assert!(error.to_string().contains("CONFIG_ERROR"), "{error}");
+
+    // Their input may carry credentials: nobody may observe them.
+    for function in ["storage::saveBucket", "storage::testBucket"] {
+        let refused = client.observe(function, "integration::on-object-created");
+        let error = timeout(Duration::from_secs(10), refused.ready())
+            .await
+            .expect("the observe is answered")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("NOT_OBSERVABLE"),
+            "{function}: {error}"
+        );
+    }
 
     client.shutdown_async().await;
 }
