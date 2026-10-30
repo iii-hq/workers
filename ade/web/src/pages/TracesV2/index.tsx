@@ -315,7 +315,7 @@ export function TracesV2({
 
   // Span activity per trace (start + close with engine live_spans on): keeps
   // the strip's bars live/growing while a trace is still doing work (the rows
-  // above only carry the root span, which for queue-triggered traces ends
+  // above only carry the root span, which for queue-driven traces ends
   // instantly).
   const traceActivity = useTraceActivity(isPaused)
 

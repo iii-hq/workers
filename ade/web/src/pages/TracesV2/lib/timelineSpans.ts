@@ -12,7 +12,7 @@
  *
  * `isTraceLive` (per-trace last span-close activity from the engine's
  * `observability::on-span` source) also lives here: the trace LIST's rows are root spans
- * that close instantly for queue-triggered traces, so the rows' pulsing
+ * that close instantly for queue-driven traces, so the rows' pulsing
  * status dot needs the activity signal to know the trace is still working.
  */
 
