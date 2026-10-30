@@ -123,6 +123,15 @@ impl Scheduler {
         self.jobs.lock().await.by_expression.len()
     }
 
+    /// Whether `observer_id` retains a job.
+    pub async fn retains(&self, observer_id: &str) -> bool {
+        self.jobs
+            .lock()
+            .await
+            .expression_of
+            .contains_key(observer_id)
+    }
+
     /// Stops every job and forgets every observer.
     pub async fn shutdown(&self) {
         let mut jobs = self.jobs.lock().await;
@@ -366,9 +375,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn an_observer_retained_again_keeps_one_place() {
         let (s, ticker) = recording_scheduler();
+        assert!(!s.retains("o1").await);
         s.retain("o1", "0 0 9 * * Mon-Fri").await.unwrap();
         s.retain("o1", "0 0 9 * * Mon-Fri").await.unwrap();
         assert_eq!(s.job_count().await, 1);
+        assert!(s.retains("o1").await);
 
         s.retain("o1", EVERY_SECOND).await.unwrap();
         assert_eq!(s.job_count().await, 1, "it left its old expression");
@@ -376,6 +387,7 @@ pub(crate) mod tests {
 
         assert!(s.release("o1").await);
         assert_eq!(s.job_count().await, 0);
+        assert!(!s.retains("o1").await);
         assert!(!s.release("o1").await, "released once");
     }
 
