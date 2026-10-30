@@ -96,7 +96,7 @@ export function MermaidDiagram({ source }: { source: string }) {
   return (
     <figure
       ref={figureRef}
-      className="my-4 min-w-0 max-w-full rounded-md border border-rule-2 bg-bg"
+      className="my-4 min-w-0 max-w-full rounded-xl border border-rule-2 bg-bg"
       data-mermaid-diagram=""
     >
       <figcaption className="flex flex-wrap items-center justify-between gap-2 border-b border-rule-2 px-4 py-2 text-xs text-ink-faint">

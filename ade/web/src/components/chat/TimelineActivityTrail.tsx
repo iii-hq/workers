@@ -1,4 +1,4 @@
-import { BookOpen, ChevronRight, Folder, RadioTower } from 'lucide-react'
+import { BookOpen, ChevronDown, Folder, RadioTower } from 'lucide-react'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
 
 export type TimelineActivityKind =
@@ -47,14 +47,17 @@ export function TimelineActivityTrail({ kind }: TimelineActivityTrailProps) {
   )
 }
 
-/** Hover/focus disclosure chevron kept at the trailing edge of the row. */
-export function TimelineActivityDisclosure() {
+/** Disclosure chevron at the trailing edge of a row; turns over when open. */
+export function TimelineActivityDisclosure({ open }: { open?: boolean }) {
   return (
     <div
       aria-hidden="true"
       className="relative flex w-8 shrink-0 items-center justify-center"
     >
-      <ChevronRight className="size-4 shrink-0 stroke-ink-ghost opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 group-hover/fchdr:opacity-100 group-focus-within/fchdr:opacity-100" />
+      <ChevronDown
+        className="chat-tool-row__chevron size-4 shrink-0 stroke-ink-ghost"
+        data-open={open ? 'true' : undefined}
+      />
     </div>
   )
 }

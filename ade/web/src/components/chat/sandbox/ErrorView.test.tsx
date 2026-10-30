@@ -28,7 +28,8 @@ describe('SandboxErrorView', () => {
     const html = renderToStaticMarkup(<SandboxErrorView display={wireError} />)
 
     expect(html).toContain('data-error-card=""')
-    expect(html).toContain('class="iii-ui-card @container"')
+    expect(html).toContain('data-slot="card"')
+    expect(html).toMatch(/class="[^"]*\biii-ui-card\b[^"]*@container"/)
     expect(html).toContain('role="alert"')
     expect(html).toContain('S200')
     expect(html).toContain('data-error-retryable="true"')

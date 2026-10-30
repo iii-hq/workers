@@ -4,9 +4,10 @@
    front loads anything. */
 
 import type { Host } from '@iii-dev/console-ui'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@iii-dev/console-ui'
+import { Tabs, TabsContent, TabsList, TabsTrigger, Tooltip } from '@iii-dev/console-ui'
 import { GitBranch } from 'lucide-react'
 import { useState } from 'react'
+import { BranchName } from './BranchName'
 import { CommitView } from './CommitView'
 import type { DiffSource } from './diff-source'
 import { HistoryView } from './HistoryView'
@@ -38,6 +39,8 @@ interface SourceControlTabProps {
   host: Host
   root: string | null
   conversationId?: string | null
+  /** The pane, for what the commit box keeps across a view switch. */
+  memoryKey?: string
   scm: SourceControlState
   /** Bumped whenever git state may have moved. */
   refreshEpoch: number
@@ -53,6 +56,8 @@ interface SourceControlTabProps {
   onShowHistory: (paths: string[]) => void
   /** "Delete…" from a change's menu: the Explorer's delete, so tabs on the file close. */
   onDeleteFile: (path: string) => Promise<void>
+  /** The repository setup's terminal steps (`gh auth login`, installing gh). */
+  onRunInTerminal?: (command: string) => void
   onChanged: () => void
 }
 
@@ -60,6 +65,7 @@ export function SourceControlTab({
   host,
   root,
   conversationId,
+  memoryKey,
   scm,
   refreshEpoch,
   activeDiff,
@@ -68,6 +74,7 @@ export function SourceControlTab({
   onCompare,
   onShowHistory,
   onDeleteFile,
+  onRunInTerminal,
   onChanged,
 }: SourceControlTabProps) {
   const [tab, setTab] = useState<ScmTab>(readTab)
@@ -98,10 +105,13 @@ export function SourceControlTab({
         </TabsList>
         <span className="spacer" />
         {scm.branch ? (
-          <span className="shui-scm-branch" title={`On branch ${scm.branch}`}>
-            <GitBranch aria-hidden />
-            {scm.branch}
-          </span>
+          <Tooltip label={`On branch ${scm.branch}`}>
+            {/* biome-ignore lint/a11y/noNoninteractiveTabindex: focusable so the full name's tooltip reaches the keyboard */}
+            <span className="shui-scm-branch" tabIndex={0} aria-label={`On branch ${scm.branch}`}>
+              <GitBranch aria-hidden />
+              <BranchName name={scm.branch} />
+            </span>
+          </Tooltip>
         ) : null}
       </div>
       <TabsContent value="commit" className="shui-scm-panel">
@@ -109,6 +119,7 @@ export function SourceControlTab({
           host={host}
           root={root}
           conversationId={conversationId}
+          memoryKey={memoryKey}
           scm={scm}
           activePath={activeSource?.type === 'uncommitted' ? activePath : null}
           onOpenChange={(entry, pin) =>
@@ -118,6 +129,7 @@ export function SourceControlTab({
           onCompare={onCompare}
           onShowHistory={onShowHistory}
           onDeleteFile={onDeleteFile}
+          onRunInTerminal={onRunInTerminal}
         />
       </TabsContent>
       <TabsContent value="stash" className="shui-scm-panel">

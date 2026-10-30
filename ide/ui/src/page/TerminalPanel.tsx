@@ -1,18 +1,15 @@
-import { Tooltip } from '@iii-dev/console-ui'
 import {
-  PanelBottom,
-  PanelRight,
-  SquareTerminal,
-  Trash2,
-  X,
-} from 'lucide-react'
-import { type Dispatch, memo, useRef } from 'react'
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+} from '@iii-dev/console-ui'
+import { ChevronDown, ChevronRight, PanelBottom, PanelRight, SquareTerminal } from 'lucide-react'
+import { type Dispatch, memo } from 'react'
 import { DockPanel } from './DockPanel'
 import type { TerminalDock } from './persist'
-import {
-  TerminalWorkspace,
-  type TerminalWorkspaceHandle,
-} from './TerminalWorkspace'
+import { TerminalWorkspace } from './TerminalWorkspace'
 import type {
   TerminalWorkspaceAction,
   TerminalWorkspaceState,
@@ -47,58 +44,32 @@ interface TerminalPanelProps extends TerminalPanelSharedProps {
   connectionCoordinators: Map<string, TerminalConnectionCoordinator>
 }
 
-function DockActions({
-  dock,
-  onDockChange,
-  onClose,
-}: Pick<TerminalPanelSharedProps, 'dock' | 'onDockChange' | 'onClose'>) {
+/** The panel's rows at the end of the terminal menu: where it docks, and hiding it. */
+function PanelMenuItems({ dock, onDockChange, onClose }: Pick<TerminalPanelSharedProps, 'dock' | 'onDockChange' | 'onClose'>) {
+  const Hide = dock === 'right' ? ChevronRight : ChevronDown
   return (
     <>
-      <span className="shui-terminal-dock-group">
-      <Tooltip label="Dock terminal at bottom">
-        <button
-          type="button"
-          className={`shui-terminal-action${dock === 'bottom' ? ' active' : ''}`}
-          onClick={() => onDockChange('bottom')}
-          aria-label="Dock terminal at bottom"
-          aria-pressed={dock === 'bottom'}
-        >
+      <DropdownMenuSeparator />
+      <DropdownMenuLabel>Position</DropdownMenuLabel>
+      <DropdownMenuRadioGroup value={dock} onValueChange={(next) => onDockChange(next as TerminalDock)}>
+        <DropdownMenuRadioItem value="bottom">
           <PanelBottom aria-hidden />
-        </button>
-      </Tooltip>
-      <Tooltip label="Dock terminal on right">
-        <button
-          type="button"
-          className={`shui-terminal-action${dock === 'right' ? ' active' : ''}`}
-          onClick={() => onDockChange('right')}
-          aria-label="Dock terminal on right"
-          aria-pressed={dock === 'right'}
-        >
+          Bottom
+        </DropdownMenuRadioItem>
+        <DropdownMenuRadioItem value="right">
           <PanelRight aria-hidden />
-        </button>
-      </Tooltip>
-      <Tooltip label="Open terminal as an editor tab">
-        <button
-          type="button"
-          className={`shui-terminal-action${dock === 'editor' ? ' active' : ''}`}
-          onClick={() => onDockChange('editor')}
-          aria-label="Open terminal as an editor tab"
-          aria-pressed={dock === 'editor'}
-        >
+          Right
+        </DropdownMenuRadioItem>
+        <DropdownMenuRadioItem value="editor">
           <SquareTerminal aria-hidden />
-        </button>
-      </Tooltip>
-      </span>
-      <Tooltip label="Hide terminal">
-        <button
-          type="button"
-          className="shui-terminal-action"
-          onClick={onClose}
-          aria-label="Hide terminal"
-        >
-          <X aria-hidden />
-        </button>
-      </Tooltip>
+          Editor tab
+        </DropdownMenuRadioItem>
+      </DropdownMenuRadioGroup>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem onSelect={onClose}>
+        <Hide aria-hidden />
+        Hide terminal
+      </DropdownMenuItem>
     </>
   )
 }
@@ -106,31 +77,11 @@ function DockActions({
 function TerminalPanelView(props: TerminalPanelProps) {
   const { dock, size, onDockChange, onSizeChange, onClose, narrow, hidden } =
     props
-  const workspaceRef = useRef<TerminalWorkspaceHandle>(null)
 
   return (
     <DockPanel dock={dock} size={size} narrow={narrow} hidden={hidden} label="Terminal" noun="terminal" onSizeChange={onSizeChange}>
       <TerminalWorkspace
-        ref={workspaceRef}
-        actions={
-          <>
-            <Tooltip label="Close disconnected terminals">
-              <button
-                type="button"
-                className="shui-terminal-action"
-                onClick={() => void workspaceRef.current?.closeDisconnected()}
-                aria-label="Close disconnected terminals"
-              >
-                <Trash2 aria-hidden />
-              </button>
-            </Tooltip>
-            <DockActions
-              dock={dock}
-              onDockChange={onDockChange}
-              onClose={onClose}
-            />
-          </>
-        }
+        menuItems={<PanelMenuItems dock={dock} onDockChange={onDockChange} onClose={onClose} />}
         state={props.state}
         dispatch={props.dispatch}
         root={props.root}

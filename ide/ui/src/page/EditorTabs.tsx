@@ -10,7 +10,7 @@
    The terminal, when docked in the editor area, is one more tab. */
 
 import { Tooltip } from '@iii-dev/console-ui'
-import { GitBranch, GitCompareArrows, SquareTerminal, X } from 'lucide-react'
+import { Ellipsis, GitBranch, GitCompareArrows, SquareTerminal, X } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef } from 'react'
 import { anchorFromEvent, type ContextMenuItem, useContextMenu } from './ContextMenu'
 import { diffSourceLabel } from './diff-source'
@@ -143,7 +143,9 @@ function EditorTabsView({
     ],
   )
 
+  const activeOpenTab = tabs.tabs.find((tab) => tab.id === tabs.active) ?? null
   return (
+    <div className="shui-editor-tabbar">
     <div
       ref={stripRef}
       className="shui-editor-tabs"
@@ -231,7 +233,6 @@ function EditorTabsView({
                   onClose(tab.id)
                 }}
               >
-                {dirty ? <span className="shui-dirty" aria-hidden /> : null}
                 <X aria-hidden className="shui-x-icon" />
               </button>
             </Tooltip>
@@ -253,6 +254,35 @@ function EditorTabsView({
           <Tooltip label="Close terminal">
             <button type="button" className="close" aria-label="Close terminal" onClick={terminal.onClose}>
               <X aria-hidden className="shui-x-icon" />
+            </button>
+          </Tooltip>
+        </div>
+      ) : null}
+    </div>
+      {/* VS Code's group actions at the strip's end: the ⋯ holds what a
+          right click on the active tab offers (close others / saved / all,
+          copy path, reveal, compare), for people who never right-click. */}
+      {tabs.tabs.length > 0 ? (
+        <div className="shui-editor-tabbar-actions">
+          <Tooltip label="More editor actions">
+            <button
+              type="button"
+              className="shui-editor-tabbar-btn"
+              aria-label="More editor actions"
+              aria-haspopup="menu"
+              onClick={(event) =>
+                menu.open(
+                  anchorFromEvent({ currentTarget: event.currentTarget }),
+                  activeOpenTab
+                    ? itemsFor(activeOpenTab)
+                    : [
+                        { id: 'close-saved', label: 'Close saved', onSelect: onCloseSaved },
+                        { id: 'close-all', label: 'Close all', onSelect: onCloseAll },
+                      ],
+                )
+              }
+            >
+              <Ellipsis aria-hidden />
             </button>
           </Tooltip>
         </div>

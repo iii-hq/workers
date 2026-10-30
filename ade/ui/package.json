@@ -9,7 +9,9 @@
     "watch": "node build.mjs --watch"
   },
   "dependencies": {
-    "@iii-dev/console-ui": "workspace:*"
+    "@iii-dev/console-ui": "workspace:*",
+    "@iii-workers/editor-prefs": "workspace:*",
+    "@iii-workers/terminal-font": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "catalog:",

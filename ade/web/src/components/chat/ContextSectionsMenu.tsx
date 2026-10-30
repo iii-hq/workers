@@ -81,7 +81,7 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
                     {section.label}
                   </span>
                   {section.source ? (
-                    <span className="shrink-0 font-mono text-[11px] text-ink-ghost">
+                    <span className="shrink-0 font-mono text-xs text-ink-faint">
                       {section.source}
                     </span>
                   ) : null}
@@ -121,7 +121,7 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
           <BottomSheetContent
             heading="Sections"
             description="Hold a handle to move a section."
-            className="mx-auto max-w-[460px] font-sans"
+            className="mx-auto max-w-[460px] font-inter"
           >
             <div className="flex flex-col gap-1 px-2 pb-1">
               <button
@@ -157,14 +157,12 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
             aria-label="Sections"
             className={cn(
               uiClasses.panel,
-              'iii-ui-motion-dropdown z-50 flex w-72 max-w-[calc(100vw-1rem)] flex-col bg-panel-raised p-1.5 font-sans text-sm shadow-floating',
+              'iii-ui-motion-dropdown z-50 flex w-72 max-w-[calc(100vw-1rem)] flex-col bg-panel-raised p-1.5 font-inter text-sm shadow-floating',
             )}
           >
             <div className="flex items-baseline gap-2 px-2 pt-1 pb-1.5">
               <span className="font-semibold">Sections</span>
-              <span className="text-[11px] text-ink-ghost">
-                Drag to reorder
-              </span>
+              <span className="text-xs text-ink-faint">Drag to reorder</span>
             </div>
             {list}
             <div className="-mx-1.5 my-1 h-px bg-ink/5" />

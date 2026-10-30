@@ -334,7 +334,7 @@ export function Selector<T extends string>({
             aria-invalid={invalidState}
             aria-describedby={describedBy || undefined}
             className={cn(
-              'iii-ui-motion-control inline-flex h-12 w-full min-w-0 items-center justify-between gap-2 rounded-sm border border-transparent bg-surface px-3 font-sans text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:text-[13px]',
+              'iii-ui-motion-control inline-flex h-12 w-full min-w-0 items-center justify-between gap-2 rounded-sm border border-transparent bg-surface px-3 font-inter text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:text-sm',
               open && 'border-rule-focus',
               invalidVisual && 'bg-alert-muted',
             )}
@@ -371,7 +371,7 @@ export function Selector<T extends string>({
               }}
               className={cn(
                 uiClasses.panel,
-                'iii-ui-motion-dropdown z-50 flex max-h-[min(28rem,calc(100dvh-1rem))] w-(--radix-popover-trigger-width) max-w-[calc(100vw-1rem)] min-w-[min(18rem,calc(100vw-1rem))] flex-col bg-panel-raised font-sans shadow-floating',
+                'iii-ui-motion-dropdown z-50 flex max-h-[min(28rem,calc(100dvh-1rem))] w-(--radix-popover-trigger-width) max-w-[calc(100vw-1rem)] min-w-[min(18rem,calc(100vw-1rem))] flex-col bg-panel-raised font-inter shadow-floating',
                 contentClassName,
               )}
             >
@@ -577,7 +577,7 @@ function SelectorStatus({
       id={id}
       role={alert ? 'alert' : 'status'}
       className={cn(
-        'flex min-h-12 items-center justify-center gap-2 px-3 py-2 text-center text-[12px]',
+        'flex min-h-12 items-center justify-center gap-2 px-3 py-2 text-center text-sm',
         tone === 'danger' ? 'text-alert' : 'text-ink-faint',
       )}
     >

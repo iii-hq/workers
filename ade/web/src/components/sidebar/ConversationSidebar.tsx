@@ -1,12 +1,21 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
+import {
+  CircleQuestionMark,
+  Download,
+  FolderPlus,
+  Search,
+  Settings,
+  SquarePen,
+} from 'lucide-react'
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
+import { Hint } from '@/components/ui/Hint'
+import { hashForSettingsLanding } from '@/hooks/use-hash-route'
 import { hideSideChats } from '@/lib/chat-aside'
-import { filterConversations } from '@/lib/conversation-filter'
 import {
   countConversations,
   groupConversationRoots,
+  NO_PROJECT_GROUP_KEY,
 } from '@/lib/conversation-groups'
 import {
   buildConversationTree,
@@ -21,10 +30,22 @@ import {
   parseConversationListView,
   sortConversationRoots,
 } from '@/lib/conversation-view'
+import { formatBinding, shortcutPlatform } from '@/lib/keybindings/bindings'
+import {
+  bindingsFor,
+  hoverTitle,
+  type KeybindingActionId,
+} from '@/lib/keybindings/registry'
+import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
+import { requestPaletteOpen } from '@/lib/palette/open-request'
+import { usePinnedConversations } from '@/lib/pinned-conversations'
+import { requestShortcutsDialog } from '@/lib/shortcuts-request'
+import { cn } from '@/lib/utils'
 import type { Conversation } from '@/types/chat'
 import { ConversationFilterMenu } from './ConversationFilterMenu'
 import { ConversationGroupHeader } from './ConversationGroupHeader'
 import { ConversationRow } from './ConversationRow'
+import './conversation-tree.css'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -35,6 +56,14 @@ interface ConversationSidebarProps {
   activeId: string | null
   /** Touch-sized rows and always-visible actions when the list is the whole narrow page. */
   narrow?: boolean
+  /** Start a conversation — the New chat row at the top of the sidebar. */
+  onCreate?: () => void
+  /** Browse for a folder to remember as a project — the Add project row. */
+  onAddProject?: () => void
+  /** Import conversations from a file — a quiet action beside the list title. */
+  onImport?: () => void
+  /** Start a chat scoped to a project folder — a project header's plus. */
+  onCreateInProject?: (path: string) => void
   onSelect: (id: string) => void
   onRename: (id: string, title: string) => void
   onRemove: (id: string) => void
@@ -45,6 +74,37 @@ const GROUPS_COLLAPSED_KEY = 'iii-chat-groups-collapsed'
 const LIST_VIEW_KEY = 'iii-chat-list-view'
 /** The grouping-only key this view record replaced; read as a fallback. */
 const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
+
+/**
+ * A navigation row at the top of the sidebar (New chat, Search): an icon
+ * and a label on a rounded-xl wash that only paints on hover or focus.
+ */
+const NAV_ROW =
+  'group/row flex w-full min-w-0 items-center gap-2.5 rounded-xl px-2.5 text-left font-inter font-medium text-neutral-600 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-900 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
+
+/**
+ * A row's shortcut, spelled plainly (⌘K, ⌃N) and shown only while the row
+ * is hovered or focused: it slides in from the right so the hint reads as
+ * an answer to the pointer, not as a second label.
+ */
+function ShortcutHint({ id }: { id: KeybindingActionId }) {
+  const platform = shortcutPlatform()
+  const binding = bindingsFor(id, platform)[0]
+  if (!binding) return null
+  const caps = formatBinding(binding, platform)
+  return (
+    <span
+      aria-hidden
+      className="ml-auto shrink-0 translate-x-1 pl-2 font-inter text-[11px] font-medium text-neutral-400 opacity-0 transition-[opacity,transform] duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] group-hover/row:translate-x-0 group-hover/row:opacity-100 group-focus-visible/row:translate-x-0 group-focus-visible/row:opacity-100 dark:text-neutral-500"
+    >
+      {platform === 'mac' ? caps.join('') : caps.join('+')}
+    </span>
+  )
+}
+
+/** The quiet icon buttons beside the list title and along the bottom row. */
+const QUIET_ACTION =
+  'inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200/70 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400'
 
 function loadStringSet(storageKey: string): Set<string> {
   if (typeof window === 'undefined') return new Set()
@@ -86,6 +146,10 @@ export function ConversationSidebar({
   conversations,
   activeId,
   narrow = false,
+  onCreate,
+  onAddProject,
+  onImport,
+  onCreateInProject,
   onSelect,
   onRename,
   onRemove,
@@ -110,6 +174,7 @@ export function ConversationSidebar({
 
   /* Kinds shown, grouping and order — one record, one Clear filters. */
   const [view, setView] = useState<ConversationListView>(loadListView)
+  const { pinned, togglePin } = usePinnedConversations()
   useEffect(() => {
     if (typeof window === 'undefined') return
     try {
@@ -137,8 +202,6 @@ export function ConversationSidebar({
     })
   }, [])
 
-  const [query, setQuery] = useState('')
-
   /* A chat joins the list on its first send: an unsent "new chat" is a
      local draft with nothing to show yet. The kind filter runs on the flat
      list before the tree is built, judging each row by its root's kind, so
@@ -161,21 +224,12 @@ export function ConversationSidebar({
      show the tag would just repeat the filter. */
   const tagKinds = view.kinds.length > 1
 
-  const roots = useMemo<ConvNode[]>(() => {
-    const q = query.trim()
-    const nodes: ConvNode[] = q
-      ? /* Flat matches while searching: a matched child under an unmatched
-           parent has no tree context to render, so no indent/caret. Sections
-           still apply — they are what tells a match from last month apart
-           from one from this morning. */
-        filterConversations(visible, q).map((conversation) => ({
-          conversation,
-          children: [],
-          depth: 0,
-        }))
-      : buildConversationTree(visible)
-    return sortConversationRoots(nodes, view.sort)
-  }, [visible, query, view.sort])
+  /* Finding a chat by name is the palette's job (the Search row opens it);
+     the list itself always shows the whole tree. */
+  const roots = useMemo<ConvNode[]>(
+    () => sortConversationRoots(buildConversationTree(visible), view.sort),
+    [visible, view.sort],
+  )
 
   /* `Date.now()` is read here rather than held in state: the bucket a chat
      falls into is only ever read beside its own relative timestamp, which the
@@ -183,59 +237,113 @@ export function ConversationSidebar({
      update. */
   const sections = useMemo(
     () =>
-      groupConversationRoots(roots, view.grouping, Date.now()).map((group) => ({
-        group,
-        count: countConversations(group.roots),
-        rows: collapsedGroups.has(group.key)
-          ? []
-          : flattenConversationTree(group.roots, collapsedNodes),
-      })),
-    [roots, view.grouping, collapsedGroups, collapsedNodes],
+      groupConversationRoots(roots, view.grouping, Date.now(), pinned).map(
+        (group) => ({
+          group,
+          count: countConversations(group.roots),
+          rows: collapsedGroups.has(group.key)
+            ? []
+            : flattenConversationTree(group.roots, collapsedNodes),
+        }),
+      ),
+    [roots, view.grouping, collapsedGroups, collapsedNodes, pinned],
   )
-  /* The flat list has one section and no header to collapse it by. */
-  const headers = view.grouping !== 'none'
+  /* The flat list has one section and no header to collapse it by — unless
+     pins split it, when both halves need naming. */
+  const headers = view.grouping !== 'none' || pinned.size > 0
   /* Once any row carries a sub-agent caret at its end, every row keeps that
      column so timestamps and actions line up down the list. */
   const caretColumn = sections.some((section) =>
     section.rows.some((row) => row.hasChildren),
   )
 
-  /* The 8px gutter plus the tree row's own 10px inset puts every glyph,
-     the heading and the empty copy on one 18px column. */
+  /* The 8px gutter plus the nav row's own 10px inset puts every glyph, the
+     heading and the empty copy on one 18px column. */
   return (
-    <>
-      <div className="flex flex-col gap-2 px-2 pt-2 pb-1">
-        <div className="flex items-center justify-between gap-2 pr-0.5 pl-[10px]">
-          <h2 className="min-w-0 truncate font-sans text-base font-medium text-ink-faint sm:text-[13px]">
-            Conversations
-          </h2>
+    <div
+      className={cn('flex min-h-0 flex-1 flex-col font-inter', NEUTRAL_SURFACE)}
+    >
+      <nav
+        aria-label="Conversation actions"
+        className="flex flex-col gap-0.5 px-2 pt-1"
+      >
+        {onCreate ? (
+          <button
+            type="button"
+            onClick={onCreate}
+            title={hoverTitle('New chat', 'chat.new')}
+            className={cn(
+              NAV_ROW,
+              narrow ? 'h-12 text-base' : 'h-9 text-[13px]',
+            )}
+          >
+            {/* A compose mark, not a plus: the header's plus already means
+                "new workspace", and the phone header spells new chat this
+                way too. */}
+            <SquarePen className="size-4 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">New chat</span>
+            {narrow ? null : <ShortcutHint id="chat.new" />}
+          </button>
+        ) : null}
+        {onAddProject ? (
+          <button
+            type="button"
+            onClick={onAddProject}
+            title={hoverTitle('Add project', 'project.add')}
+            className={cn(
+              NAV_ROW,
+              narrow ? 'h-12 text-base' : 'h-9 text-[13px]',
+            )}
+          >
+            <FolderPlus className="size-4 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">Add project</span>
+            {narrow ? null : <ShortcutHint id="project.add" />}
+          </button>
+        ) : null}
+        {/* Search is the console's one search: the ⌘K palette, which lists
+            every chat by name beside pages and commands. */}
+        <button
+          type="button"
+          onClick={() => requestPaletteOpen()}
+          aria-label="Search and commands"
+          title={hoverTitle('Search and commands', 'palette.toggle')}
+          className={cn(NAV_ROW, narrow ? 'h-12 text-base' : 'h-9 text-[13px]')}
+        >
+          <Search className="size-4 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate">Search</span>
+          {narrow ? null : <ShortcutHint id="palette.toggle" />}
+        </button>
+      </nav>
+
+      <div className="flex items-center justify-between gap-2 px-2 pt-4 pb-1 pl-[18px]">
+        <h2 className="min-w-0 truncate font-inter text-base font-medium text-neutral-500 sm:text-[13px] dark:text-neutral-400">
+          Conversations
+        </h2>
+        <div className="flex items-center gap-0.5">
+          {onImport ? (
+            <Hint label="Import conversations" disabled={narrow}>
+              <button
+                type="button"
+                onClick={onImport}
+                aria-label="Import conversations"
+                className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-7')}
+              >
+                <Download className="size-4" aria-hidden />
+              </button>
+            </Hint>
+          ) : null}
           <ConversationFilterMenu
             view={view}
             onViewChange={setView}
             narrow={narrow}
           />
         </div>
-        <Input
-          name="conversation-search"
-          type="search"
-          value={query}
-          onChange={setQuery}
-          placeholder="Search conversations"
-          aria-label="search conversations"
-          data-conversation-search=""
-          className="h-12 font-sans text-base normal-case sm:h-8 sm:text-[13px]"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setQuery('')
-          }}
-        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
         {sections.length === 0 ? (
           <div className="flex flex-col items-start gap-2 px-[10px] py-6 font-sans text-base text-ink-ghost sm:text-[13px]">
-            {query.trim() ? (
-              'No matches.'
-            ) : started.length === 0 ? (
+            {started.length === 0 ? (
               'No conversations yet. Start one above.'
             ) : (
               <>
@@ -254,20 +362,22 @@ export function ConversationSidebar({
             )}
           </div>
         ) : (
-          <div className={uiClasses.tree} data-narrow={narrow || undefined}>
-            {sections.map(({ group, count, rows }) => (
-              <Fragment key={group.key}>
-                {headers ? (
-                  <ConversationGroupHeader
-                    label={group.label}
-                    title={group.title}
-                    count={count}
-                    collapsed={collapsedGroups.has(group.key)}
-                    onToggle={() => toggleGroup(group.key)}
-                    narrow={narrow}
-                  />
-                ) : null}
-                {rows.map(({ conversation: c, depth, hasChildren }) => (
+          <div
+            className={cn(
+              uiClasses.tree,
+              // 14px titles on the nav rows' 36px box, 12px timestamps and
+              // the shared neutral-900 selected wash (conversation-tree.css).
+              'conversation-tree',
+            )}
+            data-narrow={narrow || undefined}
+          >
+            {sections.map(({ group, count, rows }) => {
+              // A project folder heads its own chats; date buckets stay labels.
+              const project =
+                group.key.startsWith('project:') &&
+                group.key !== NO_PROJECT_GROUP_KEY
+              const rowList = rows.map(
+                ({ conversation: c, depth, hasChildren }) => (
                   <ConversationRow
                     key={c.id}
                     conversation={c}
@@ -283,13 +393,82 @@ export function ConversationSidebar({
                     onSelect={() => onSelect(c.id)}
                     onRename={(title) => onRename(c.id, title)}
                     onRemove={() => onRemove(c.id)}
+                    pinned={pinned.has(c.id)}
+                    onTogglePin={() => togglePin(c.id)}
                   />
-                ))}
-              </Fragment>
-            ))}
+                ),
+              )
+              return (
+                <Fragment key={group.key}>
+                  {headers ? (
+                    <ConversationGroupHeader
+                      label={group.label}
+                      title={group.title}
+                      count={count}
+                      collapsed={collapsedGroups.has(group.key)}
+                      onToggle={() => toggleGroup(group.key)}
+                      narrow={narrow}
+                      project={project}
+                      onCreate={
+                        project && group.title && onCreateInProject
+                          ? () => onCreateInProject(group.title as string)
+                          : undefined
+                      }
+                    />
+                  ) : null}
+                  {project && rowList.length ? (
+                    <div className="conversation-project-rows">{rowList}</div>
+                  ) : (
+                    rowList
+                  )}
+                </Fragment>
+              )
+            })}
           </div>
         )}
       </div>
-    </>
+
+      {/* The bottom row: help on the left of settings, nothing else. Help
+          opens the shortcuts reference outright, not a palette search. */}
+      <div className="flex shrink-0 items-center justify-end gap-1 px-2 py-2">
+        <Hint
+          label="Keyboard shortcuts"
+          shortcut="app.shortcuts"
+          side="top"
+          disabled={narrow}
+        >
+          <button
+            type="button"
+            onClick={() => requestShortcutsDialog()}
+            aria-label="Help and keyboard shortcuts"
+            className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-8')}
+          >
+            <CircleQuestionMark className="size-4" aria-hidden />
+          </button>
+        </Hint>
+        <Hint
+          label="Settings"
+          shortcut="app.settings"
+          side="top"
+          disabled={narrow}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              window.location.hash = hashForSettingsLanding(narrow)
+            }}
+            aria-label="ADE settings"
+            // learn-iii-settings: tour anchor (workers/learn-iii). Do not remove.
+            className={cn(
+              'learn-iii-settings',
+              QUIET_ACTION,
+              narrow ? 'size-12' : 'size-8',
+            )}
+          >
+            <Settings className="size-4" aria-hidden />
+          </button>
+        </Hint>
+      </div>
+    </div>
   )
 }

@@ -1,4 +1,4 @@
-import { Menu, Plus, Search, SettingsIcon, SquarePen } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import {
   type CSSProperties,
   Fragment,
@@ -17,19 +17,16 @@ import { EmailPrompt } from '@/components/EmailPrompt'
 import { ExtOverlays } from '@/components/ExtOverlays'
 import { OnboardingWizardHost } from '@/components/onboarding/OnboardingWizard'
 import { PaletteHost, type PaletteWorkspace } from '@/components/PaletteHost'
-import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ShortcutsDialog } from '@/components/ShortcutsDialog'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
-} from '@/components/ui/Dialog'
-import { Eyebrow } from '@/components/ui/Eyebrow'
-import { KeyCombo } from '@/components/ui/KeyCombo'
+} from '@/components/shadcn/dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Sheet } from '@/components/ui/Sheet'
-import { Wordmark } from '@/components/ui/Wordmark'
 import { EmptyPane } from '@/components/workspace/EmptyPane'
-import { MobileWorkspaceMenu } from '@/components/workspace/MobileWorkspaceMenu'
 import {
   EdgeAddZone,
   PanelDragHandle,
@@ -44,8 +41,8 @@ import {
   type PanelMotionDirection,
   panelMotionDirection,
 } from '@/components/workspace/panel-motion'
-import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
+import { WorkspaceHeader } from '@/components/workspace/WorkspaceHeader'
 import {
   hashForSettingsLanding,
   replaceHash,
@@ -53,32 +50,34 @@ import {
 } from '@/hooks/use-hash-route'
 import { useKeybindings } from '@/hooks/use-keybindings'
 import { REDUCED_MOTION_QUERY, useMediaQuery } from '@/hooks/use-media-query'
-import { useTheme } from '@/hooks/use-theme'
+import { useTabLimit } from '@/hooks/use-tab-limit'
 import {
+  type ThemePreference,
+  useTheme,
+  useThemePreference,
+} from '@/hooks/use-theme'
+import {
+  type SplitTarget,
   type UseWorkspaceTabsReturn,
   useWorkspaceTabs,
 } from '@/hooks/use-workspace-tabs'
+import { requestChatDialog } from '@/lib/chat-requests'
 import { armCompletionBell } from '@/lib/completion-bell'
 import {
   ConversationsProvider,
   type InjectableUiRuntime,
   useConversationsCtx,
 } from '@/lib/conversations-context'
-import { shortcutPlatform } from '@/lib/keybindings/bindings'
-import {
-  bindingsFor,
-  hoverTitle,
-  keybindingGroups,
-  resolveBindings,
-} from '@/lib/keybindings/registry'
 import { registerPageCommands } from '@/lib/page-commands'
 import { onPaletteOpenRequest } from '@/lib/palette/open-request'
+import { PaneActionsProvider } from '@/lib/pane-actions'
 import {
   focusPane,
   requestPaneFocus,
   takePaneFocusRequest,
 } from '@/lib/pane-focus'
 import { subscribePanelOpen, subscribeScreenOpen } from '@/lib/panel-context'
+import { onShortcutsDialogRequest } from '@/lib/shortcuts-request'
 import { loadEdgeAddDiscovered, saveEdgeAddDiscovered } from '@/lib/storage'
 import { trackScreens } from '@/lib/telemetry'
 import { cn } from '@/lib/utils'
@@ -109,6 +108,7 @@ import {
   tabPaneIds,
   tabSizes,
   type WorkspaceTab,
+  withPaneSplit,
 } from '@/lib/workspace-tabs'
 import { Configuration } from '@/pages/Configuration'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
@@ -141,7 +141,9 @@ function focusRequestedPane(tab: WorkspaceTab): void {
   const paneId = tabPaneIds(tab)[tab.screens.indexOf(screen)]
   if (!paneId) return
   const root = paneRoot(paneId)
-  if (root) focusPane(root)
+  // Already inside it (the chat's composer takes the caret as it mounts):
+  // moving focus to the pane's root would only take it away again.
+  if (root && !root.contains(document.activeElement)) focusPane(root)
 }
 
 /**
@@ -191,7 +193,16 @@ function paneIdsByTab(tabs: WorkspaceTab[]): Map<string, Set<string>> {
 
 interface WorkspacePanelCommands {
   openScreen: (screen: TabScreen, placement?: ScreenPlacement) => void
-  split: (side: 'left' | 'right') => void
+  split: (side: 'left' | 'right', beside?: SplitTarget) => void
+}
+
+/** The pane of `tab` that holds focus, if any. */
+function focusedPaneId(tab: WorkspaceTab): string | null {
+  const active = document.activeElement
+  if (!active) return null
+  return (
+    tabPaneIds(tab).find((paneId) => paneRoot(paneId)?.contains(active)) ?? null
+  )
 }
 
 export function App({
@@ -199,13 +210,18 @@ export function App({
 }: {
   injectableUiRuntime?: Promise<InjectableUiRuntime>
 }) {
-  const [theme, setTheme] = useTheme()
+  // The preference (light / dark / system) is what the switch and settings
+  // edit; the resolved theme is what surfaces that only know two render in.
+  const [themePreference, setThemePreference] = useThemePreference()
+  const [theme] = useTheme()
   useEffect(() => armCompletionBell(), [])
   const { setDirty: setSettingsDirty, tryNavigate: trySettingsNavigation } =
     useUnsavedGuard({ guardHashNavigation: true })
   const [view] = useHashRoute()
   const narrowSettings = useMediaQuery('(max-width: 639px)')
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  // The sidebar's help button and any worker page open the same dialog.
+  useEffect(() => onShortcutsDialogRequest(() => setShortcutsOpen(true)), [])
   // Held here, not in `PaletteHost`: ⌘K is one way in and the phone header's
   // search affordance is the other, so the state has to sit above both.
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -218,7 +234,8 @@ export function App({
       }),
     [],
   )
-  const workspace = useWorkspaceTabs()
+  const tabLimit = useTabLimit()
+  const workspace = useWorkspaceTabs({ tabLimit })
   const { activeTabId, layoutSource } = workspace
   // One report per change of what the active workspace shows: switching tabs
   // or changing a panel's screen.
@@ -272,7 +289,6 @@ export function App({
   const dirtyEntries = useDirtyEntries()
   const [discardPrompt, setDiscardPrompt] = useState<{
     title: string
-    details: string[]
     proceed: () => void
   } | null>(null)
   const discardPromptRef = useRef(discardPrompt)
@@ -301,16 +317,17 @@ export function App({
     }
     setDiscardPrompt({
       title: 'Close this workspace?',
-      details: reasons,
       proceed,
     })
   }, [])
-  const requestClosePane = useCallback(
-    (tabId: string, paneId: string, close: () => void) => {
+  const requestClosePanes = useCallback(
+    (tabId: string, paneIds: readonly string[], close: () => void) => {
       if (discardPromptRef.current) return
-      const reasons = dirtyReasonsForPane(tabId, paneId)
+      const reasons = paneIds.flatMap((paneId) =>
+        dirtyReasonsForPane(tabId, paneId),
+      )
       const proceed = () => {
-        setPaneDirty(tabId, paneId, false)
+        for (const paneId of paneIds) setPaneDirty(tabId, paneId, false)
         close()
       }
       if (reasons.length === 0) {
@@ -318,8 +335,10 @@ export function App({
         return
       }
       setDiscardPrompt({
-        title: 'Close this panel?',
-        details: reasons,
+        title:
+          paneIds.length === 1
+            ? 'Close this panel?'
+            : `Close ${paneIds.length} panels?`,
         proceed,
       })
     },
@@ -354,13 +373,15 @@ export function App({
       current === -1 ? start : (current + delta + roots.length) % roots.length
     focusPane(roots[next])
   }, [])
+  // The keys split the pane you are in, the way an editor splits the group
+  // it is in; with focus outside every pane, the tab grows at that edge.
   const splitWorkspacePanel = useCallback((side: 'left' | 'right') => {
+    const current = workspaceRef.current
+    const paneId = focusedPaneId(current.activeTab)
+    const beside = paneId ? { paneId } : undefined
     const commands = panelCommandsRef.current
-    if (commands) commands.split(side)
-    else {
-      const current = workspaceRef.current
-      current.addColumn(current.activeTab.id, side)
-    }
+    if (commands) commands.split(side, beside)
+    else current.addColumn(current.activeTab.id, side, beside)
   }, [])
   useEffect(
     () =>
@@ -422,6 +443,7 @@ export function App({
       tabs: workspace.tabs,
       activeTabId: workspace.activeTabId,
       activate: (id) => workspaceRef.current.activateTab(id),
+      canCreate: workspace.canCreateTab,
       create: () => workspaceRef.current.createTab({ columns: 1 }),
       close: requestCloseTab,
       step: (delta) => workspaceRef.current.activateAdjacent(delta),
@@ -431,6 +453,7 @@ export function App({
     [
       workspace.tabs,
       workspace.activeTabId,
+      workspace.canCreateTab,
       requestCloseTab,
       splitWorkspacePanel,
       stepPaneFocus,
@@ -446,6 +469,16 @@ export function App({
       setPaletteOpen((current) => !current)
     },
     'app.settings': toggleSettings,
+    'app.shortcuts': () => setShortcutsOpen((current) => !current),
+    // Both open the chat pane first: the dialogs live in it.
+    'chat.new': () => {
+      openWorkspaceScreen(CHAT_SCREEN)
+      requestChatDialog('new-chat')
+    },
+    'project.add': () => {
+      openWorkspaceScreen(CHAT_SCREEN)
+      requestChatDialog('add-project')
+    },
     'page.chat': () => openWorkspaceScreen(CHAT_SCREEN),
     'page.workers': () => openWorkspaceScreen('workers'),
     'page.traces': () => openWorkspaceScreen('traces'),
@@ -476,7 +509,7 @@ export function App({
       }}
     >
       <Sheet>
-        <Header
+        <WorkspaceHeader
           workspace={workspace}
           onOpenScreen={openWorkspaceScreen}
           mobilePanelIndex={mobilePanelIndex}
@@ -487,6 +520,8 @@ export function App({
             setPaletteQuery('')
             setPaletteOpen(true)
           }}
+          theme={themePreference}
+          onThemeChange={setThemePreference}
         />
         <ConnectionNotice />
         <WorkspacePanes
@@ -494,7 +529,7 @@ export function App({
           commandsRef={panelCommandsRef}
           mobilePanelIndex={mobilePanelIndex}
           onMobilePanelIndexChange={setMobilePanelIndex}
-          onRequestClosePane={requestClosePane}
+          onRequestClosePanes={requestClosePanes}
         />
         <ExtOverlays />
         <ConfirmDialog
@@ -504,15 +539,14 @@ export function App({
           }}
           title={discardPrompt?.title ?? ''}
           description="Unsaved work in it will be lost."
-          details={discardPrompt?.details}
           confirmLabel="Close and discard"
           cancelLabel="Keep working"
           onConfirm={() => discardPrompt?.proceed()}
         />
         {view === 'configuration' ? (
           <ConfigurationOverlay
-            theme={theme}
-            onThemeChange={setTheme}
+            theme={themePreference}
+            onThemeChange={setThemePreference}
             onDirtyChange={setSettingsDirty}
             tryNavigate={trySettingsNavigation}
             onClose={requestCloseSettings}
@@ -529,7 +563,7 @@ export function App({
           onOpenSettings={openSettings}
           onOpenShortcuts={() => setShortcutsOpen(true)}
           theme={theme}
-          onThemeChange={setTheme}
+          onThemeChange={setThemePreference}
           initialQuery={paletteQuery}
         />
       </Sheet>
@@ -542,8 +576,12 @@ interface WorkspacePanesProps {
   commandsRef: MutableRefObject<WorkspacePanelCommands | null>
   mobilePanelIndex: number
   onMobilePanelIndexChange: (index: number) => void
-  /** Close a pane after the dirty-work guard has had its say. */
-  onRequestClosePane: (tabId: string, paneId: string, close: () => void) => void
+  /** Close panes after the dirty-work guard has had its say. */
+  onRequestClosePanes: (
+    tabId: string,
+    paneIds: readonly string[],
+    close: () => void,
+  ) => void
 }
 
 interface PanelPresence {
@@ -588,7 +626,7 @@ function WorkspacePanes({
   commandsRef,
   mobilePanelIndex,
   onMobilePanelIndexChange,
-  onRequestClosePane,
+  onRequestClosePanes,
 }: WorkspacePanesProps) {
   const { screenOptions } = useScreenOptions()
   const { activeTab } = workspace
@@ -1175,6 +1213,35 @@ function WorkspacePanes({
 
       const side = command.side
       const target = current.tabs.find((tab) => tab.id === command.tabId)
+      const beside = command.beside
+      if (beside) {
+        if (!target) return false
+        const split = withPaneSplit(
+          target,
+          beside.paneId,
+          side,
+          beside.screen ?? null,
+        )
+        if (split === target) return false
+        const anchor = tabPaneIds(target).indexOf(beside.paneId)
+        if (
+          current.activeTab.id === command.tabId &&
+          !reducedMotion &&
+          tabColumns(split) > tabColumns(target)
+        ) {
+          pendingPanelEntryRef.current = {
+            tabId: target.id,
+            column: side === 'left' ? anchor : anchor + 1,
+            direction: side,
+          }
+        }
+        if (edgeNudge) {
+          saveEdgeAddDiscovered()
+          setEdgeNudge(false)
+        }
+        current.addColumn(command.tabId, side, beside)
+        return true
+      }
       if (!target || tabColumns(target) >= MAX_COLUMNS) {
         if (
           command.type === 'add' &&
@@ -1270,8 +1337,13 @@ function WorkspacePanes({
           tabId: activeTab.id,
           placement,
         }),
-      split: (side) =>
-        dispatchPanelCommand({ type: 'add', tabId: activeTab.id, side }),
+      split: (side, beside) =>
+        dispatchPanelCommand({
+          type: 'add',
+          tabId: activeTab.id,
+          side,
+          beside,
+        }),
     }
     commandsRef.current = commands
     return () => {
@@ -1312,6 +1384,38 @@ function WorkspacePanes({
     panelCommandQueued ||
     panelRemovalQueued ||
     isResizing
+
+  // "Close other panes": one write, no exit motion (several panes leaving
+  // at once would only be noise), behind the unsaved-work guard.
+  const requestOnlyPane = useCallback(
+    (paneId: string) => {
+      const others = paneIds.filter((id) => id !== paneId)
+      if (others.length === 0) return
+      onRequestClosePanes(activeTab.id, others, () => {
+        const current = workspaceRef.current
+        const tab = current.tabs.find(
+          (candidate) => candidate.id === activeTab.id,
+        )
+        if (!tab || !tabPaneIds(tab).includes(paneId)) return
+        setPanelCommandInFlight(workspaceSignatureRef.current)
+        current.keepOnlyPane(activeTab.id, paneId)
+      })
+    },
+    [activeTab.id, onRequestClosePanes, paneIds, setPanelCommandInFlight],
+  )
+
+  const openScreens = activeTab.screens.filter(
+    (candidate): candidate is TabScreen => candidate !== null,
+  )
+
+  const resetSizes = () => {
+    if (enteringPanel || exitingPanelRef.current) return
+    const equal = Array.from({ length: columns }, () => 1 / columns)
+    commitPendingRef.current = false
+    dragSizesRef.current = equal
+    setDragSizes(equal)
+    commitResize()
+  }
 
   const requestPanelReorder = useCallback(
     (paneId: string, targetPaneId: string) => {
@@ -1355,7 +1459,7 @@ function WorkspacePanes({
       <section
         ref={containerRef}
         onScroll={(event) => handleMobileScroll(event.currentTarget)}
-        className="relative flex min-h-0 min-w-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden pb-0 sm:snap-none sm:px-4 sm:pb-1.5"
+        className="relative flex min-h-0 min-w-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden pb-0 sm:snap-none sm:px-1 sm:pb-1.5"
         aria-label="workspace panels"
       >
         {Array.from({ length: columns }, (_, column) => {
@@ -1384,7 +1488,7 @@ function WorkspacePanes({
           // last column detaches its screen instead (back to the attach
           // affordance) — a tab never loses its final pane.
           const closePane = () =>
-            onRequestClosePane(activeTab.id, paneId, () =>
+            onRequestClosePanes(activeTab.id, [paneId], () =>
               columns > 1
                 ? requestPanelRemoval(column)
                 : workspace.detachScreen(activeTab.id, column),
@@ -1487,21 +1591,43 @@ function WorkspacePanes({
                     onRemove={
                       columns > 1
                         ? () =>
-                            onRequestClosePane(activeTab.id, paneId, () =>
+                            onRequestClosePanes(activeTab.id, [paneId], () =>
                               requestPanelRemoval(column),
                             )
                         : undefined
                     }
                   />
                 ) : (
-                  <ScreenBody
-                    key={screen}
-                    screen={screen}
-                    panelSide={panelSide}
-                    tabId={activeTab.id}
-                    paneId={paneId}
-                    onClose={closePane}
-                  />
+                  <PaneActionsProvider
+                    actions={
+                      desktopPanelMotion
+                        ? {
+                            split: (side, next) =>
+                              dispatchPanelCommand({
+                                type: 'add',
+                                tabId: activeTab.id,
+                                side,
+                                beside: { paneId, screen: next },
+                              }),
+                            closeOthers:
+                              columns > 1
+                                ? () => requestOnlyPane(paneId)
+                                : undefined,
+                            openScreens: openScreens,
+                            busy: panelInteractionDisabled,
+                          }
+                        : undefined
+                    }
+                  >
+                    <ScreenBody
+                      key={screen}
+                      screen={screen}
+                      panelSide={panelSide}
+                      tabId={activeTab.id}
+                      paneId={paneId}
+                      onClose={closePane}
+                    />
+                  </PaneActionsProvider>
                 )}
               </div>
             </section>
@@ -1522,6 +1648,7 @@ function WorkspacePanes({
                   }
                   onResize={(delta) => resizePair(column - 1, delta)}
                   onCommit={commitResize}
+                  onReset={resetSizes}
                   onResizeStart={startResize}
                   onResizeEnd={endResize}
                   containerWidth={() =>
@@ -1656,178 +1783,9 @@ function ScreenBody({
   return <TracesV2 onRequestClose={onClose} commands={commands} />
 }
 
-interface HeaderProps {
-  workspace: UseWorkspaceTabsReturn
-  /** Close a workspace after the dirty-work guard has had its say. */
-  onCloseTab: (id: string) => void
-  onOpenScreen: (screen: TabScreen) => void
-  mobilePanelIndex: number
-  settingsOpen: boolean
-  onToggleSettings: () => void
-  onOpenPalette: () => void
-}
-
-function Header({
-  workspace,
-  onCloseTab,
-  onOpenScreen,
-  mobilePanelIndex,
-  settingsOpen,
-  onToggleSettings,
-  onOpenPalette,
-}: HeaderProps) {
-  const { extPageTitles } = useScreenOptions()
-  const { createNew } = useConversationsCtx()
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const columns = tabColumns(workspace.activeTab)
-  const mobileScreen = workspace.activeTab.screens[mobilePanelIndex] ?? null
-  const mobileIsChat = mobileScreen !== null && isChatScreen(mobileScreen)
-
-  return (
-    <>
-      <header className="grid h-16 shrink-0 grid-cols-[1fr_auto_1fr] items-center px-3 sm:hidden">
-        <button
-          type="button"
-          onClick={() => setMobileMenuOpen(true)}
-          aria-label="open workspace menu"
-          className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-        >
-          <Menu className="size-6" aria-hidden />
-        </button>
-
-        <div className="flex size-12 items-center justify-center">
-          {columns > 1 ? (
-            <span
-              className="flex items-center gap-1.5"
-              role="status"
-              aria-label={`panel ${mobilePanelIndex + 1} of ${columns}`}
-            >
-              {columns <= 7 ? (
-                Array.from({ length: columns }, (_, index) => (
-                  <span
-                    // biome-ignore lint/suspicious/noArrayIndexKey: panel dots are positional
-                    key={index}
-                    className={cn(
-                      'size-1.5 rounded-full',
-                      index === mobilePanelIndex ? 'bg-ink' : 'bg-ink-ghost/60',
-                    )}
-                    aria-hidden
-                  />
-                ))
-              ) : (
-                <span className="font-mono text-sm text-ink-faint" aria-hidden>
-                  {mobilePanelIndex + 1} / {columns}
-                </span>
-              )}
-            </span>
-          ) : null}
-        </div>
-
-        <div className="flex items-center justify-end">
-          {/* A phone has no ⌘K. Search is the console's way of reaching
-              anything, so it gets a first-class affordance rather than a row
-              buried in the workspace menu. */}
-          <button
-            type="button"
-            onClick={onOpenPalette}
-            aria-label="search the ADE"
-            className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-          >
-            <Search className="size-6" aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (mobileScreen === CHAT_SCREEN) {
-                createNew()
-              } else if (mobileIsChat) {
-                createNew()
-                onOpenScreen(CHAT_SCREEN)
-              } else {
-                workspace.createTab({ columns: 1 })
-              }
-            }}
-            aria-label={mobileIsChat ? 'new chat' : 'new workspace'}
-            className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-          >
-            {mobileIsChat ? (
-              <SquarePen className="size-6" aria-hidden />
-            ) : (
-              <Plus className="size-6" aria-hidden />
-            )}
-          </button>
-        </div>
-      </header>
-
-      <MobileWorkspaceMenu
-        open={mobileMenuOpen}
-        onOpenChange={setMobileMenuOpen}
-        workspace={workspace}
-        extPageTitles={extPageTitles}
-        settingsOpen={settingsOpen}
-        onActivate={workspace.activateTab}
-        onCloseTab={onCloseTab}
-        onToggleSettings={onToggleSettings}
-        onOpenPalette={onOpenPalette}
-      />
-
-      {/* learn-iii-menu-bar: tour anchor (workers/learn-iii) — a selector,
-          not styling. Do not remove. */}
-      <header className="learn-iii-menu-bar hidden h-14 shrink-0 items-center justify-between gap-3 pr-6 pl-3 sm:flex">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <Wordmark />
-          <TabStrip
-            tabs={workspace.tabs}
-            activeTabId={workspace.activeTabId}
-            extPageTitles={extPageTitles}
-            onActivate={workspace.activateTab}
-            onClose={onCloseTab}
-            onCreate={() => workspace.createTab({ columns: 1 })}
-            onRename={workspace.renameTab}
-            onReorder={workspace.reorderTab}
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          {/* The key itself is the button: the console is reached through
-              the palette, and the cap teaches the chord on sight. */}
-          <button
-            type="button"
-            onClick={onOpenPalette}
-            aria-label={hoverTitle('Search and commands', 'palette.toggle')}
-            title={hoverTitle('Search and commands', 'palette.toggle')}
-            /* learn-iii-palette: tour anchor (workers/learn-iii). Do not remove. */
-            className="learn-iii-palette relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-[transform,color,background-color] [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:bg-surface-hover hover:text-ink focus-visible:border-rule-focus focus-visible:outline-none active:scale-[0.97]"
-          >
-            <KeyCombo
-              binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}
-              capClassName="min-w-6 px-1.5 py-0.5 text-[0.72rem] text-current"
-            />
-          </button>
-          <button
-            type="button"
-            onClick={onToggleSettings}
-            aria-pressed={settingsOpen}
-            aria-label="ADE settings"
-            title="ADE settings"
-            className={cn(
-              // learn-iii-settings: tour anchor (workers/learn-iii). Do not remove.
-              'learn-iii-settings relative flex size-10 items-center justify-center rounded-md border font-sans text-sm',
-              settingsOpen
-                ? 'border-transparent bg-ink text-bg'
-                : 'border-transparent bg-transparent text-ink-faint hover:bg-surface-hover hover:text-ink',
-            )}
-          >
-            <SettingsIcon className="size-4 shrink-0" aria-hidden />
-          </button>
-        </div>
-      </header>
-    </>
-  )
-}
-
 interface ConfigurationOverlayProps {
-  theme: ReturnType<typeof useTheme>[0]
-  onThemeChange: (next: ReturnType<typeof useTheme>[0]) => void
+  theme: ThemePreference
+  onThemeChange: (next: ThemePreference) => void
   onDirtyChange: (dirty: boolean) => void
   tryNavigate: (action: () => void) => boolean
   onClose: () => void
@@ -1853,7 +1811,14 @@ export function ConfigurationOverlay({
         if (!open) onClose()
       }}
     >
-      <DialogContent className="flex h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-6xl flex-col overflow-hidden rounded-xl p-0 shadow-floating sm:h-[min(52rem,calc(100dvh-3rem))] sm:max-h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)]">
+      <DialogContent
+        showCloseButton={false}
+        initialFocus={() =>
+          document.querySelector<HTMLElement>('[data-settings-focus-root]') ??
+          true
+        }
+        className="fixed inset-0 top-0 left-0 flex h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-white p-0 ring-0 sm:max-w-none data-open:animate-none data-closed:animate-none dark:bg-black"
+      >
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
           Configure the ADE and registered workers.
@@ -1863,79 +1828,8 @@ export function ConfigurationOverlay({
           onThemeChange={onThemeChange}
           onDirtyChange={onDirtyChange}
           tryNavigate={tryNavigate}
+          onClose={onClose}
         />
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-interface ShortcutsDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
-
-/* Generated from the registry, so the overlay cannot drift from what the
-   keys actually do, and each chord is spelled for the reader's keyboard. */
-function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
-  const platform = shortcutPlatform()
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogTitle className="text-[11px] font-semibold text-ink-faint">
-          Keyboard shortcuts
-        </DialogTitle>
-        <DialogDescription className="mt-1">
-          Every row in{' '}
-          <KeyCombo binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'} />{' '}
-          shows its key, so this list is a reference, not homework.
-        </DialogDescription>
-        {keybindingGroups()
-          .map(
-            ([group, entries]) =>
-              [
-                group,
-                entries.filter(
-                  (entry) =>
-                    resolveBindings(entry.bindings, platform).length > 0,
-                ),
-              ] as const,
-          )
-          .filter(([, entries]) => entries.length > 0)
-          .map(([group, entries]) => (
-            <section key={group} className="mt-4">
-              <Eyebrow as="h3" size="lg" className="text-ink-ghost">
-                {group}
-              </Eyebrow>
-              <ul className="mt-1 divide-y divide-rule-2 border-t border-b border-rule-2">
-                {entries.map((entry) => (
-                  <li
-                    key={entry.id}
-                    className="flex items-center justify-between gap-6 py-2 font-mono text-[12px] text-ink"
-                  >
-                    <span className="text-ink-faint">{entry.title}</span>
-                    {/* Alternatives, not one chord: without a separator `tab`
-                      and `shift tab` read as a single four-key press. */}
-                    <span className="flex shrink-0 items-center gap-2">
-                      {resolveBindings(entry.bindings, platform).map(
-                        (binding, index) => (
-                          <Fragment key={binding}>
-                            {index > 0 ? (
-                              <span className="text-ink-ghost">or</span>
-                            ) : null}
-                            <KeyCombo
-                              binding={binding}
-                              platform={platform}
-                              digitRange={entry.digitIndex}
-                            />
-                          </Fragment>
-                        ),
-                      )}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
       </DialogContent>
     </Dialog>
   )

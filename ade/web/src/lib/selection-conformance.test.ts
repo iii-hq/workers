@@ -36,7 +36,7 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   ['browser/ui/styles.css', '.br-ui-tab.is-active'],
   ['browser/ui/styles.css', '.br-ui-chrome-btn.is-on'],
   ['ade/web/src/styles/ui-recipes.css', '.iii-ui-tab[aria-selected="true"]'],
-  ['browser/ui/styles.css', '.br-cfg-nav-row.active::before'],
+  ['browser/ui/styles.css', '.br-cfg-nav-row.active'],
   ['github/ui/styles.css', '.gh-ui-node-selected'],
   ['github/ui/styles.css', '.gh-ui-graph-row.selected'],
   // The monitor rebuild (a8ed4889f) split eval/ui/styles.css into imports and
@@ -49,7 +49,9 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   ['eval/ui/src/styles/shell.css', '.eval-ui-oa-compare[aria-pressed="true"]'],
   ['eval/ui/src/styles/validation.css', '.eval-ui-rv-option[data-checked]'],
   ['ide/ui/styles.css', '.shui-etab.active'],
-  ['ide/ui/styles.css', '.shui-terminal-tab.active'],
+  // The terminal tabs mark the open one with an attribute since the tab-row
+  // redesign.
+  ['ide/ui/styles.css', '.shui-terminal-tab[data-active]'],
   ['ade/ui/styles.css', '.console-catalog-header-toggle[aria-pressed="true"]'],
   ['sandbox-code-runner/ui/src/styles/page.css', '.cr-page-toggle.on'],
 ]
@@ -106,10 +108,20 @@ describe('neutral selection contract', () => {
       join(repoRoot, 'ade/web/src/lib/monaco.ts'),
       'utf8',
     )
-    expect(source).toContain("'editor.selectionBackground': surfaceSelected")
+    expect(source).toContain("'editor.selectionBackground': p.selection")
     expect(source).toContain(
-      "'editorSuggestWidget.selectedBackground': surfaceSelected",
+      "'editorSuggestWidget.selectedBackground': p.listSelected",
     )
-    expect(source).not.toMatch(/selectedBackground': `\$\{accent\}/)
+    // Every palette's selection colors are greys: equal r, g and b.
+    const values = [
+      ...source.matchAll(
+        /^\s*(?:selection|selectionInactive|listSelected): '#([0-9a-f]{6})/gm,
+      ),
+    ].map((match) => match[1])
+    expect(values.length).toBeGreaterThanOrEqual(6)
+    for (const hex of values) {
+      expect(hex.slice(0, 2), hex).toBe(hex.slice(2, 4))
+      expect(hex.slice(2, 4), hex).toBe(hex.slice(4, 6))
+    }
   })
 })

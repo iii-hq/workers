@@ -106,6 +106,8 @@ interface ResizeHandleProps {
   onResize: (leftDelta: number) => void
   /** Gesture over — persist the current fractions. */
   onCommit: () => void
+  /** Double-click: every pane back to the same width. */
+  onReset?: () => void
   /** Container width in px, for px→fraction conversion. */
   containerWidth: () => number
   /** Temporarily remove all resize interaction during panel presence motion. */
@@ -121,7 +123,8 @@ interface ResizeHandleProps {
  * The 6px gap between two panes, promoted to a col-resize grip. Deltas
  * are reported as FRACTIONS of the container width; the parent clamps
  * and re-renders, so the handle itself stays stateless. Focusable:
- * arrow keys nudge the split by 2% a press.
+ * arrow keys nudge the split by 2% a press. A double-click (or Enter while
+ * focused) evens every pane out, the way an editor's sash does.
  */
 export function ResizeHandle({
   value,
@@ -132,6 +135,7 @@ export function ResizeHandle({
   motionState,
   onResizeStart,
   onResizeEnd,
+  onReset,
 }: ResizeHandleProps) {
   const [active, setActive] = useState(false)
   const pointerIdRef = useRef<number | null>(null)
@@ -175,6 +179,14 @@ export function ResizeHandle({
       role="separator"
       aria-orientation="vertical"
       aria-label="resize panels"
+      aria-keyshortcuts={onReset ? 'ArrowLeft ArrowRight Enter' : undefined}
+      title={
+        disabled || motionState
+          ? undefined
+          : onReset
+            ? 'Drag to resize. Double-click to even out.'
+            : 'Drag to resize'
+      }
       aria-valuenow={Math.round(value)}
       aria-valuemin={0}
       aria-valuemax={100}
@@ -193,8 +205,16 @@ export function ResizeHandle({
           ? 'after:bg-accent'
           : 'after:bg-transparent hover:after:bg-edge focus-visible:after:bg-accent',
       )}
+      onDoubleClick={() => {
+        if (!disabled) onReset?.()
+      }}
       onKeyDown={(e) => {
         if (disabled) return
+        if (e.key === 'Enter' && onReset) {
+          e.preventDefault()
+          onReset()
+          return
+        }
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
         e.preventDefault()
         onResize(e.key === 'ArrowLeft' ? -KEY_STEP : KEY_STEP)
@@ -297,7 +317,7 @@ export function SplitPreview({
         'group/preview absolute top-0 bottom-1.5 flex w-[7.25rem] flex-col items-center justify-center gap-2.5 px-3 text-center',
         // Overlay grammar: one surface step up and the floating shadow — no
         // frame. It sits over the neighbouring pane, not beside it.
-        'rounded-sm bg-panel-raised font-sans shadow-floating select-none',
+        'rounded-sm bg-panel-raised font-inter shadow-floating select-none',
         'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
         side === 'left' ? 'left-1.5' : 'right-1.5',
         closing
@@ -449,7 +469,10 @@ export function EdgeAddZone({
         'absolute inset-y-0 z-20 hidden pb-1.5 sm:flex',
         disabled && 'pointer-events-none',
         side === 'left' ? 'left-0' : 'right-0',
-        revealed ? 'w-32' : 'w-3 sm:w-4',
+        // Idle, the strip is the 4px gutter plus the panel's outermost
+        // 4px — a mouse resting on the edge still finds it, and nothing
+        // interactive lives under that sliver of panel.
+        revealed ? 'w-32' : 'w-1.5 sm:w-2',
       )}
       onPointerEnter={(e) => {
         if (disabled) return
@@ -535,7 +558,7 @@ export function EdgeAddZone({
                 className={cn(
                   // rounded-[3px]: the system's one-radius 6px reads pill-like
                   // on a 16px sliver — deliberately tighter here.
-                  'flex w-3 items-center justify-center rounded-[3px] sm:w-4',
+                  'flex w-1.5 items-center justify-center rounded-[3px] sm:w-2',
                   'border border-edge bg-panel/85 backdrop-blur-[2px]',
                   'edge-nudge',
                   side === 'right' && '[animation-delay:-5s]',

@@ -43,3 +43,10 @@ export function formatFileReference(path: string, range: LineRange): string {
   const lines = range.from === range.to ? `${range.from}` : `${range.from}-${range.to}`
   return `#file(${path}:${lines})`
 }
+
+/** How a reference is named to the person: `index.ts:12–40`, `index.ts:12`. */
+export function referenceLabel(path: string, range: LineRange): string {
+  const name = path.slice(path.lastIndexOf('/') + 1) || path
+  const lines = range.from === range.to ? `${range.from}` : `${range.from}–${range.to}`
+  return `${name}:${lines}`
+}

@@ -23,8 +23,9 @@ const failureSummary = 'The provider rejected this request.'
 // Every fixture reason names a billing wall, so the console classifies the
 // failure as the user's provider account (not iii) and swaps the harness's
 // generic "review the provider settings" advice for account-specific steps.
-const failureTitle = 'Provider credit or quota exhausted'
-const ownerLabel = 'Needs your attention'
+// The title names the provider as people do ("Your OpenAI account …").
+const failureTitle = /^Your .+ account is out of credit$/
+const ownerLabel = 'Action needed'
 const recoveryMessage =
   'Confirm the chat can continue after the provider issue is corrected.'
 
@@ -35,9 +36,12 @@ async function expectFailureNotice(page: Page) {
   await expect(notice).toHaveCount(1)
   await expect(notice).toHaveAttribute('data-failure-category', 'billing')
   await expect(notice).toHaveAttribute('data-failure-owner', 'user')
-  await expect(notice.getByRole('heading')).toHaveText(failureTitle)
+  await expect(notice.getByRole('heading', { level: 3 })).toHaveText(
+    failureTitle,
+  )
   await expect(notice.getByText(ownerLabel)).toBeVisible()
-  await expect(notice.locator('[data-message-summary]')).toHaveText(
+  // The harness's own words sit under Technical details, with the raw error.
+  await expect(notice.locator('[data-technical-detail="message"]')).toHaveText(
     failureSummary,
   )
   await expect(notice.locator('[data-failure-ownership]')).toContainText(

@@ -28,6 +28,10 @@ describe('Console icon size contract', () => {
     const offenders: string[] = []
     for (const path of sourceRoots.flatMap(sourceFiles)) {
       if (path.endsWith('icon-size-conformance.test.ts')) continue
+      // shadcn registry components (components/shadcn) are vendored as
+      // generated: their xs button and icon sizes carry 12px glyphs by
+      // design, and the contract applies to the console's own icons.
+      if (path.includes('/components/shadcn/')) continue
       const source = readFileSync(path, 'utf8')
       if (
         /<[A-Z][^>]*\bsize=(?:\{(?:[0-9]|1[0-5])\}|["'](?:[0-9]|1[0-5])["'])/.test(

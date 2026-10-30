@@ -1,20 +1,24 @@
 import {
   Activity,
-  Blocks,
-  Boxes,
-  Braces,
-  BrainCircuit,
+  Box,
+  Brain,
+  Clock,
   Code,
   Database,
   FileText,
-  FolderTree,
   Gauge,
   GitBranch,
   GitPullRequest,
   Globe,
+  HardDrive,
+  Library,
   type LucideIcon,
   MessageSquareText,
+  Mic,
   Monitor,
+  Puzzle,
+  SquareCode,
+  SquareFunction,
   SquareTerminal,
 } from 'lucide-react'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
@@ -54,7 +58,7 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
     description: 'Database connections and queries.',
   },
   directory: {
-    icon: FolderTree,
+    icon: Library,
     description: 'Skills and agent profiles.',
     keywords: ['skills', 'agents', 'agent profiles', 'profiles'],
   },
@@ -62,12 +66,22 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
     icon: Code,
     description: 'Files and code editing.',
   },
+  cron: {
+    icon: Clock,
+    description: 'Scheduled jobs.',
+    keywords: ['schedule', 'jobs'],
+  },
   'eval-benchmarks': {
     icon: Gauge,
     description: 'Evaluation runs and benchmarks.',
   },
+  ide: {
+    icon: SquareCode,
+    description: 'Files, editor, git and terminal.',
+    keywords: ['editor', 'code', 'files', 'git'],
+  },
   functions: {
-    icon: Braces,
+    icon: SquareFunction,
     description: 'Registered runtime functions.',
   },
   github: {
@@ -75,7 +89,7 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
     description: 'Repositories and pull requests.',
   },
   memory: {
-    icon: BrainCircuit,
+    icon: Brain,
     description: 'Stored agent memory.',
   },
   'pdf-reader': {
@@ -87,16 +101,21 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
     description: 'Files, git, search and terminal.',
   },
   state: {
-    icon: Database,
+    icon: HardDrive,
     description: 'Shared runtime state.',
   },
   'state-manager': {
-    icon: Database,
+    icon: HardDrive,
     description: 'Shared runtime state.',
   },
   triggers: {
     icon: TriggerIcon,
     description: 'Event and schedule triggers.',
+  },
+  voice: {
+    icon: Mic,
+    description: 'Dictation and voice input.',
+    keywords: ['microphone', 'speech', 'dictation'],
   },
   worktree: {
     icon: GitBranch,
@@ -134,15 +153,15 @@ export function useScreenOptions(): {
       }
       return {
         ...option,
-        icon: Boxes,
+        icon: Box,
         description: 'Connected runtime workers.',
         keywords: ['runtimes', 'services'],
       }
     }),
     ...extPages.map((page) => {
       const presentation = EXT_PAGE_PRESENTATION[page.id] ?? {
-        icon: Blocks,
-        description: 'Worker-provided page.',
+        icon: Puzzle,
+        description: `From the ${page.scope} worker.`,
       }
       return {
         value: screenForExtPage(page.id),

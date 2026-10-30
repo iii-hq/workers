@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatFileReference, mentionPathFor, selectionLines } from '../reference'
+import { formatFileReference, mentionPathFor, referenceLabel, selectionLines } from '../reference'
 
 describe('selectionLines', () => {
   it('covers the lines of a forward selection', () => {
@@ -33,5 +33,13 @@ describe('formatFileReference', () => {
   it('writes the token with a range or a single line', () => {
     expect(formatFileReference('src/a.ts', { from: 12, to: 40 })).toBe('#file(src/a.ts:12-40)')
     expect(formatFileReference('src/a.ts', { from: 12, to: 12 })).toBe('#file(src/a.ts:12)')
+  })
+})
+
+describe('referenceLabel', () => {
+  it('names the file and its lines the way a person reads them', () => {
+    expect(referenceLabel('/repo/src/page/index.tsx', { from: 12, to: 40 })).toBe('index.tsx:12–40')
+    expect(referenceLabel('src/a.ts', { from: 7, to: 7 })).toBe('a.ts:7')
+    expect(referenceLabel('a.ts', { from: 1, to: 2 })).toBe('a.ts:1–2')
   })
 })

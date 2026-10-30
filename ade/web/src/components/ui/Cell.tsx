@@ -1,5 +1,10 @@
 import type * as React from 'react'
-import { cn } from '@/lib/utils'
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from '@/components/shadcn/card'
 
 interface CellProps {
   title?: React.ReactNode
@@ -7,17 +12,19 @@ interface CellProps {
   className?: string
 }
 
+/** A titled note on the canvas, set as a shadcn Card: Inter 14px, the copy in
+ *  faint ink under a medium title. */
 export function Cell({ title, children, className }: CellProps) {
   return (
-    <div className={cn('rounded-md bg-surface p-5', className)}>
+    <Card className={className}>
       {title ? (
-        <div className="mb-3 font-sans text-[16px] font-semibold tracking-[-0.01em] text-ink">
-          {title}
-        </div>
+        <CardHeader>
+          <CardTitle className="text-ink">{title}</CardTitle>
+        </CardHeader>
       ) : null}
-      <div className="max-w-[34ch] font-sans text-[13px] leading-[1.7] text-ink-faint">
+      <CardContent className="max-w-[34ch] leading-relaxed text-ink-faint">
         {children}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   )
 }

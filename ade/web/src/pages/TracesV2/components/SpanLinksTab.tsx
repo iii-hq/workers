@@ -50,9 +50,14 @@ export function SpanLinksTab({
   }
 
   return (
-    <div className="p-3 space-y-2">
-      <div className="iii-ui-eyebrow px-1 mb-2">
-        linked traces ({links.length})
+    <div className="flex flex-col gap-2 p-4 font-inter">
+      <div className="flex h-6 items-center gap-1.5">
+        <span className="text-xs font-semibold text-foreground">
+          Linked traces
+        </span>
+        <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+          {links.length}
+        </span>
       </div>
       {links.map(({ link, id }) => {
         const isSameTrace = link.trace_id === span.trace_id
@@ -71,19 +76,23 @@ export function SpanLinksTab({
             key={id}
             type="button"
             onClick={handleClick}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-sm bg-surface hover:bg-surface-hover transition-colors text-left group"
+            className="group/link flex w-full items-center gap-2.5 rounded-lg border border-border px-3 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
-            <ExternalLink className="size-4 text-ink-faint group-hover:text-accent flex-shrink-0" />
-            <div className="flex-1 min-w-0">
-              <div className="font-mono text-[11px] text-ink-faint truncate group-hover:text-ink tabular-nums">
+            <ExternalLink
+              className="size-4 shrink-0 text-muted-foreground transition-colors group-hover/link:text-foreground"
+              aria-hidden
+            />
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-mono text-xs text-foreground tabular-nums">
                 {link.trace_id.slice(0, 16)}…
               </div>
-              <div className="font-mono text-[11px] text-ink-ghost tabular-nums">
-                Span: {link.span_id.slice(0, 12)}
+              <div className="font-mono text-[11px] text-muted-foreground tabular-nums">
+                span {link.span_id.slice(0, 12)}
+                {isSameTrace ? ' · this trace' : ''}
               </div>
             </div>
             {attrCount > 0 && (
-              <span className="iii-ui-eyebrow rounded-xs bg-paper-2 px-1.5 py-0.5 flex-shrink-0 tabular-nums">
+              <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground tabular-nums">
                 +{attrCount} attrs
               </span>
             )}

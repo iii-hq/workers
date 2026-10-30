@@ -65,6 +65,8 @@ const RECENCY_BUCKETS = [
 ] as const
 
 export const NO_PROJECT_GROUP_KEY = 'project:none'
+/** Chats the reader pinned sit above every grouping, in pin order. */
+export const PINNED_GROUP_KEY = 'pinned'
 
 /** The single section of the flat list; never drawn as a header. */
 export const UNGROUPED_KEY = 'none:all'
@@ -185,15 +187,31 @@ export function groupConversationRoots(
   roots: ConvNode[],
   grouping: ConversationGrouping,
   now: number,
+  pinned: ReadonlySet<string> = new Set(),
 ): ConversationGroup[] {
-  if (grouping === 'none') {
-    return roots.length > 0
-      ? [{ key: UNGROUPED_KEY, label: 'All conversations', roots }]
-      : []
+  const pinnedRoots: ConvNode[] = []
+  const rest: ConvNode[] = []
+  for (const node of roots) {
+    ;(pinned.has(node.conversation.id) ? pinnedRoots : rest).push(node)
   }
-  return grouping === 'project'
-    ? groupByProject(roots)
-    : groupByRecency(roots, now)
+  const head: ConversationGroup[] =
+    pinnedRoots.length > 0
+      ? [{ key: PINNED_GROUP_KEY, label: 'Pinned', roots: pinnedRoots }]
+      : []
+  if (grouping === 'none') {
+    return rest.length > 0
+      ? [
+          ...head,
+          { key: UNGROUPED_KEY, label: 'All conversations', roots: rest },
+        ]
+      : head
+  }
+  return [
+    ...head,
+    ...(grouping === 'project'
+      ? groupByProject(rest)
+      : groupByRecency(rest, now)),
+  ]
 }
 
 /** Every session a section holds, sub-agents included. */

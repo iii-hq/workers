@@ -119,14 +119,15 @@ export function XaiDiscoveryStatus({
               ) : null}
               {retryFailed ? (
                 <p>
-                  The check could not be completed. The last diagnostic has been kept.
+                  The check could not be completed. The last diagnostic has been
+                  kept.
                 </p>
               ) : null}
               <div className="flex min-w-0 flex-col items-stretch gap-2">
                 {onRetry ? (
                   <Button
                     type="button"
-                    variant="ghost"
+                    variant="secondary"
                     size="lg"
                     disabled={pending || unavailable}
                     aria-busy={pending}
@@ -135,7 +136,7 @@ export function XaiDiscoveryStatus({
                     {pending ? 'Checking…' : 'Check again'}
                   </Button>
                 ) : null}
-                <Button asChild variant="ghost" size="lg">
+                <Button asChild variant="secondary" size="lg">
                   <a
                     href="https://console.x.ai"
                     target="_blank"

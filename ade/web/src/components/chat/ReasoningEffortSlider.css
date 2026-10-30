@@ -31,12 +31,20 @@
   row-gap: 8px;
 }
 
+/* The stop names sit on a row of their own under the track. */
+.reasoning-effort--with-stops {
+  grid-template-areas:
+    "label value"
+    "track track"
+    "stops stops";
+}
+
 /* The thumb reads as the light object on the dark track, like a switch knob. */
 [data-theme="dark"] .reasoning-effort {
   --effort-thumb-bg: var(--color-ink);
 }
 
-/* viewport: phone chrome — one row in the desktop popover, stacked in the phone sheet */
+/* viewport: phone chrome — one row on a wide sheet page, stacked in the phone sheet */
 @media (min-width: 640px) {
   .reasoning-effort {
     grid-template-columns: auto minmax(0, 1fr) auto;
@@ -44,6 +52,33 @@
     column-gap: 14px;
     row-gap: 0;
   }
+
+  .reasoning-effort--with-stops {
+    grid-template-areas:
+      "label track value"
+      ". stops .";
+    row-gap: 6px;
+  }
+}
+
+/* The menu's slider stays stacked at every width: label and value above,
+   the track across the full 360px, the stop names under it. */
+.reasoning-effort--stacked,
+.reasoning-effort--stacked.reasoning-effort--with-stops {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "label value"
+    "track track";
+  column-gap: 12px;
+  row-gap: 8px;
+}
+
+.reasoning-effort--stacked.reasoning-effort--with-stops {
+  grid-template-areas:
+    "label value"
+    "track track"
+    "stops stops";
+  row-gap: 6px;
 }
 
 .reasoning-effort__label {
@@ -93,6 +128,53 @@
   border-radius: var(--radius-full);
   background: color-mix(in oklab, var(--color-ink) 32%, transparent);
   transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* One name per stop, centred under its dot; the first and last hug the
+   track's ends so nothing hangs past it. */
+.reasoning-effort__stops {
+  position: relative;
+  grid-area: stops;
+  height: 16px;
+}
+
+.reasoning-effort__stop {
+  position: absolute;
+  top: 0;
+  left: calc(
+    var(--effort-thumb-w) /
+    2 +
+    var(--effort-stop, 0) *
+    (100% - var(--effort-thumb-w))
+  );
+  max-width: 40%;
+  overflow: hidden;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+  transition: color var(--motion-duration-control) ease;
+}
+
+.reasoning-effort__stop:first-child {
+  left: 0;
+  transform: none;
+}
+
+.reasoning-effort__stop:last-child {
+  right: 0;
+  left: auto;
+  transform: none;
+}
+
+.reasoning-effort__stop:focus-visible {
+  outline: none;
+  text-decoration: underline;
+}
+
+.reasoning-effort__stop--disabled {
+  opacity: 0.45;
   pointer-events: none;
 }
 

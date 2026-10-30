@@ -2,15 +2,16 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { PreviewMessage } from '@/lib/conversation-import'
 import {
-  argumentsDigest,
+  callSummary,
   DiscoveryFailed,
   HistoryRow,
+  homePath,
   ImportFooter,
   mergePages,
   PreviewPane,
   previewCounts,
   previewRows,
-  projectLabel,
+  previewTitle,
   SourceUnavailable,
   summaryText,
   whenLabel,
@@ -67,10 +68,10 @@ describe('summaryText', () => {
 })
 
 describe('row copy', () => {
-  it('names a project by its last path segment', () => {
-    expect(projectLabel('/home/layon/workspaces/workers')).toBe('workers')
-    expect(projectLabel('C:\\src\\harness-e2e\\')).toBe('harness-e2e')
-    expect(projectLabel(null)).toBe('No project')
+  it('shortens a source directory under the home folder', () => {
+    expect(homePath('/Users/layon/.codex')).toBe('~/.codex')
+    expect(homePath('/home/layon/.claude')).toBe('~/.claude')
+    expect(homePath('/srv/codex')).toBe('/srv/codex')
   })
 
   it('renders elapsed time the way the sidebar does', () => {
@@ -79,23 +80,62 @@ describe('row copy', () => {
     expect(whenLabel(now - 3000, now)).toBe('just now')
   })
 
-  it('digests call arguments like the chat function rows', () => {
+  it('sums a call up as a verb and the argument that says the most', () => {
     expect(
-      argumentsDigest({
-        command: 'pnpm -C ade/web test',
+      callSummary('Bash', {
+        command: 'cd /repo/web && pnpm test\nmore',
         description: 'Run the web tests',
-        extra: true,
       }),
-    ).toBe('command: "pnpm -C ade/web test", description: "Run the web tests"')
-    expect(argumentsDigest({ changes: { a: 1 }, paths: [1, 2, 3] })).toBe(
-      'changes: {…}, paths: [3]',
-    )
-    expect(argumentsDigest(null)).toBe('')
+    ).toEqual({ kind: 'run', verb: 'Ran', detail: 'pnpm test' })
+    expect(callSummary('exec', null)).toEqual({
+      kind: 'run',
+      verb: 'Ran a command',
+      detail: '',
+    })
+    expect(callSummary('Read', { file_path: '/repo/src/App.tsx' })).toEqual({
+      kind: 'read',
+      verb: 'Read',
+      detail: 'App.tsx',
+    })
+    expect(
+      callSummary('apply_patch', {
+        changes: { '/repo/a.ts': {}, '/repo/b.ts': {}, '/repo/c.ts': {} },
+      }),
+    ).toEqual({ kind: 'edit', verb: 'Edited', detail: 'a.ts and 2 more files' })
+    expect(callSummary('Grep', { pattern: 'TODO' })).toMatchObject({
+      verb: 'Searched',
+      detail: 'TODO',
+    })
+    expect(callSummary('mcp__github__create_issue', {})).toMatchObject({
+      kind: 'mcp',
+      verb: 'create_issue',
+      detail: 'github',
+    })
+    expect(callSummary('linear::search', {})).toMatchObject({ kind: 'mcp' })
+    expect(callSummary('update_plan', { plan: [] })).toMatchObject({
+      verb: 'Updated the plan',
+    })
+    expect(callSummary('Custom', { target: 'x', n: 2 })).toEqual({
+      kind: 'other',
+      verb: 'Custom',
+      detail: 'x',
+    })
   })
 })
 
 const transcript: PreviewMessage[] = [
-  { id: 'u1', role: 'user', text: 'Run the tests', timestamp: 1 },
+  {
+    id: 'u0',
+    role: 'user',
+    text: '<environment_context>\n<cwd>/repo</cwd>\n</environment_context>',
+    timestamp: 0,
+  },
+  {
+    id: 'u1',
+    role: 'user',
+    text: '<system-reminder>be brief</system-reminder>\nRun the tests',
+    timestamp: 1,
+  },
   {
     id: 'a1',
     role: 'assistant',
@@ -138,20 +178,27 @@ describe('previewRows', () => {
       'call',
       'text',
     ])
+    // A prompt shows the person's words; a turn of pure context is left out.
+    expect(rows[0]).toMatchObject({ role: 'user', text: 'Run the tests' })
     expect(rows[1]).toEqual({
       kind: 'call',
       id: 'a1:toolu_1',
       functionId: 'Bash',
-      digest: 'command: "pnpm test"',
+      call: 'run',
+      verb: 'Ran',
+      detail: 'pnpm test',
       failed: true,
-      answered: true,
     })
     // A result whose call fell outside the preview window still shows.
-    expect(rows[2]).toMatchObject({ functionId: 'Read', failed: false })
+    expect(rows[2]).toMatchObject({
+      functionId: 'Read',
+      verb: 'Read a file',
+      failed: false,
+    })
   })
 
   it('counts text turns and commands separately', () => {
-    expect(previewCounts(transcript)).toEqual({ messages: 2, commands: 2 })
+    expect(previewCounts(transcript)).toEqual({ messages: 3, commands: 2 })
   })
 })
 
@@ -165,7 +212,7 @@ describe('preview pane', () => {
     updated_at: 2,
   }
 
-  it('renders commands as the console function row', () => {
+  it('renders commands as quiet one-line rows under the conversation header', () => {
     const html = renderToStaticMarkup(
       <PreviewPane
         source="claude-code"
@@ -175,11 +222,62 @@ describe('preview pane', () => {
         loading={false}
       />,
     )
+    expect(html).toContain('Group the sidebar')
     expect(html).toContain('data-function-id="Bash"')
     expect(html).toContain('data-function-status="error"')
-    expect(html).toContain('Failed <span class="text-ink">Bash</span>')
-    expect(html).toContain('2 messages · 2 commands')
+    expect(html).toContain('pnpm test')
+    expect(html).not.toContain('Triggered')
+    expect(html).toContain('3 messages · 2 commands')
     expect(html).toContain('data-preview-role="user"')
+    expect(html).not.toContain('environment_context')
+  })
+
+  it('says the preview window once, quietly, and keeps warn tone for real problems', () => {
+    const html = renderToStaticMarkup(
+      <PreviewPane
+        source="codex"
+        conversation={{ ...conversation, message_count: 48, command_count: 9 }}
+        preview={{
+          conversation,
+          messages: transcript,
+          warnings: [
+            'Reasoning, attachments, and subagent activity are not imported.',
+            'Preview shows the last 50 messages; import includes the full history.',
+            'The last record is still being written and was omitted.',
+          ],
+        }}
+        error=""
+        loading={false}
+      />,
+    )
+    expect(html).toContain('Showing the last 3 of 48 messages')
+    expect(html).toContain('48 messages · 9 commands')
+    expect(html).not.toContain('Reasoning, attachments')
+    expect(html).toContain('text-warn')
+    expect(html).toContain('The last record is still being written')
+  })
+
+  it('titles an untitled history by its first prompt when the preview starts there', () => {
+    const untitled = {
+      ...conversation,
+      title: '<system_instruction> You are working inside Conductor, a Mac',
+      created_at: Date.UTC(2026, 9, 25),
+    }
+    expect(
+      previewTitle(untitled, {
+        conversation: untitled,
+        messages: transcript,
+        warnings: [],
+      }),
+    ).toBe('Run the tests')
+    expect(
+      previewTitle(untitled, {
+        conversation: untitled,
+        messages: transcript,
+        truncated: true,
+        warnings: [],
+      }),
+    ).toBe('workers · Oct 25')
   })
 
   it('asks for a selection before there is anything to show', () => {
@@ -192,7 +290,7 @@ describe('preview pane', () => {
         loading={false}
       />,
     )
-    expect(html).toContain('Select a conversation to preview it.')
+    expect(html).toContain('Nothing to preview')
   })
 })
 
@@ -225,19 +323,46 @@ describe('history row', () => {
     expect(html).toContain('checked=""')
     expect(html).toContain('aria-current="true"')
     expect(html).toContain('data-status="failed"')
-    expect(html).toContain('workers')
-    expect(html).toContain('5h ago')
+    expect(html).toContain('workers · 5h ago')
     expect(html).toContain('history moved during import')
     expect(html).toContain('Failed')
+  })
+
+  it('titles a row by the person’s words and counts its messages', () => {
+    const html = renderToStaticMarkup(
+      <HistoryRow
+        conversation={{
+          ...conversation,
+          title:
+            '<system_instruction>\nYou are in Conductor.\n</system_instruction>\nFix the release lane',
+          message_count: 12,
+        }}
+        selected={false}
+        open={false}
+        busy={false}
+        now={1_800_000_000_000}
+        onToggle={vi.fn()}
+        onOpen={vi.fn()}
+      />,
+    )
+    expect(html).toContain('Fix the release lane')
+    expect(html).not.toContain('system_instruction')
+    expect(html).toContain('workers · 5h ago · 12 messages')
   })
 })
 
 describe('discovery states', () => {
   it('offers the other source when one has no history', () => {
     const html = renderToStaticMarkup(
-      <SourceUnavailable source="codex" onSwitch={vi.fn()} onRetry={vi.fn()} />,
+      <SourceUnavailable
+        source="codex"
+        directory="/Users/layon/.codex"
+        onSwitch={vi.fn()}
+        onRetry={vi.fn()}
+      />,
     )
     expect(html).toContain('No Codex history on this machine')
+    expect(html).toContain('~/.codex')
     expect(html).toContain('Try Claude Code')
     expect(html).toContain('Check again')
   })
@@ -280,7 +405,24 @@ describe('footer', () => {
     )
     expect(html).toContain('Import 3 conversations')
     expect(html).toContain('Cancel')
+    expect(html).toContain('stay behind')
     expect(html).not.toContain('Open conversation')
+  })
+
+  it('names the count on the primary action, and disables it with none', () => {
+    const footer = (selectedCount: number) =>
+      renderToStaticMarkup(
+        <ImportFooter
+          phase="browse"
+          selectedCount={selectedCount}
+          canImport={selectedCount > 0}
+          progress={{ done: 0, total: 0, title: '' }}
+          summary={null}
+          {...handlers}
+        />,
+      )
+    expect(footer(1)).toContain('Import 1 conversation<')
+    expect(footer(0)).toMatch(/disabled=""[^>]*>Import</)
   })
 
   it('reports determinate progress while importing', () => {
@@ -366,8 +508,12 @@ describe('mergePages', () => {
   })
 
   it('keeps a conversation once when a history that is being written shifts onto the next page', () => {
-    const merged = mergePages(page(['a', 'b'], '2'), page(['b', 'c'], null))
+    const merged = mergePages(
+      { ...page(['a', 'b'], '2'), skipped: 1 },
+      { ...page(['b', 'c'], null), skipped: 2 },
+    )
     expect(merged.conversations.map((c) => c.id)).toEqual(['a', 'b', 'c'])
     expect(merged.next_cursor).toBeNull()
+    expect(merged.skipped).toBe(3)
   })
 })

@@ -34,7 +34,9 @@ describe('imageZoomTarget', () => {
   })
 
   it('ignores anything that is not an image', () => {
-    expect(imageZoomTarget({ tagName: 'DIV' } as unknown as EventTarget)).toBeNull()
+    expect(
+      imageZoomTarget({ tagName: 'DIV' } as unknown as EventTarget),
+    ).toBeNull()
     expect(imageZoomTarget(null)).toBeNull()
   })
 

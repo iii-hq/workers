@@ -305,6 +305,10 @@ pub struct WorkerConfig {
     // pixel (the console, no scale, still gets CSS-sized frames).
     #[schemars(range(min = 1, max = 3))]
     pub frame_density: f64,
+    /// JPEG quality of the live view's frames (1-100). Separate from
+    /// `screenshot_quality`: agents' screenshots stay small, the view people
+    /// watch stays sharp.
+    pub live_view_quality: u64,
     /// URL schemes `browser::navigate` accepts.
     ///
     /// `file` ships enabled so a local document can be opened and rendered —
@@ -363,6 +367,7 @@ impl Default for WorkerConfig {
             inactive_after_ms: 1_800_000,
             screenshot_quality: 60,
             frame_density: DEFAULT_FRAME_DENSITY,
+            live_view_quality: 85,
             allowed_schemes: vec!["http".to_string(), "https".to_string(), "file".to_string()],
             max_snapshot_nodes: 2_000,
             default_origin_policy: None,
@@ -432,6 +437,10 @@ impl WorkerConfig {
         }
     }
 
+    pub fn live_view_quality(&self) -> i64 {
+        self.live_view_quality.clamp(1, 100) as i64
+    }
+
     /// Clamp a caller-supplied timeout to the configured ceiling, defaulting
     /// when omitted.
     pub fn clamp_timeout(&self, requested: Option<u64>) -> u64 {
@@ -457,6 +466,7 @@ mod tests {
         assert_eq!(c.network_buffer, 500);
         assert_eq!(c.viewport_width, 1280);
         assert_eq!(c.viewport_height, 800);
+        assert_eq!(c.live_view_quality(), 85);
         assert_eq!(c.default_timeout_ms, 30_000);
         assert_eq!(c.max_timeout_ms, 120_000);
         assert_eq!(c.inactive_after_ms, 1_800_000);

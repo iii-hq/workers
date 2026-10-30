@@ -19,14 +19,16 @@ import {
   uiClasses,
 } from '@iii-dev/console-ui'
 import { copyText } from '@iii-dev/console-ui/format'
-import { Archive, ChevronsDownUp, ChevronsUpDown, CircleAlert, Eye, RefreshCw, Undo2 } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { Archive, Check, ChevronsDownUp, ChevronsUpDown, CircleAlert, CloudUpload, Eye, RefreshCw, Undo2, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChangesTree } from './ChangesTree'
 import { CommitBox } from './CommitBox'
 import { useContextMenu } from './ContextMenu'
 import { type ChangeGroup, changeRows, changeSummary, expandableKeys } from './commit-tree'
 import type { GitComparisonEntry } from './git'
 import { basename } from './paths'
+import { RepoSetup } from './RepoSetup'
+import { gitRemotes } from './repo-setup'
 import { RollbackDialog } from './RollbackDialog'
 import { changeMenu } from './scm-menus'
 import { readScmShowUnversioned, readScmViewMode, writeScmShowUnversioned, writeScmViewMode } from './scm-view'
@@ -38,6 +40,8 @@ interface CommitViewProps {
   host: Host
   root: string | null
   conversationId?: string | null
+  /** The pane, for what the commit box keeps across a view switch. */
+  memoryKey?: string
   scm: SourceControlState
   /** The change whose diff is in front. */
   activePath: string | null
@@ -50,6 +54,29 @@ interface CommitViewProps {
   onShowHistory: (paths: string[]) => void
   /** Deletes the file the way the Explorer does: tabs on it close, the tree updates. */
   onDeleteFile: (path: string) => Promise<void>
+  /** Opens a terminal in the folder with `command` typed into it. */
+  onRunInTerminal?: (command: string) => void
+}
+
+const PUBLISH_DISMISSED_KEY = 'iii::ide::publish-dismissed'
+
+function readPublishDismissed(root: string): boolean {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(PUBLISH_DISMISSED_KEY) ?? '[]') as unknown
+    return Array.isArray(stored) && stored.includes(root)
+  } catch {
+    return false
+  }
+}
+
+function writePublishDismissed(root: string): void {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(PUBLISH_DISMISSED_KEY) ?? '[]') as unknown
+    const roots = Array.isArray(stored) ? stored.filter((value): value is string => typeof value === 'string') : []
+    window.localStorage.setItem(PUBLISH_DISMISSED_KEY, JSON.stringify([...roots.filter((r) => r !== root), root].slice(-50)))
+  } catch {
+    // Storage may be blocked; the row stays hidden until the folder changes.
+  }
 }
 
 /** Hands `text` to the browser as a file download. */
@@ -71,6 +98,7 @@ export function CommitView({
   host,
   root,
   conversationId,
+  memoryKey,
   scm,
   activePath,
   onOpenChange,
@@ -78,6 +106,7 @@ export function CommitView({
   onCompare,
   onShowHistory,
   onDeleteFile,
+  onRunInTerminal,
 }: CommitViewProps) {
   // Grouped by directory until told otherwise.
   const [byDirectory, setByDirectory] = useState(() => readScmViewMode(undefined, 'tree') === 'tree')
@@ -121,11 +150,54 @@ export function CommitView({
 
   const total = scm.changes.length + scm.unversioned.length
 
+  // The repository setup, latched per folder: `git init` turns the folder
+  // into a repository halfway through, and the steps after it stay up.
+  const [setup, setSetup] = useState<{ root: string; start: 'init' | 'publish' } | null>(null)
+  const setupStart =
+    root === null ? null : setup?.root === root ? setup.start : scm.phase === 'not-a-repo' ? 'init' : null
+  useEffect(() => {
+    if (scm.phase === 'not-a-repo' && root !== null) {
+      setSetup((current) => (current?.root === root ? current : { root, start: 'init' }))
+    }
+  }, [scm.phase, root])
+
+  // A repository with no remote is offered a way onto GitHub, once per folder.
+  const [noRemote, setNoRemote] = useState<string | null>(null)
+  const [dismissedFor, setDismissedFor] = useState<string | null>(null)
+  const ready = scm.phase === 'ready'
+  useEffect(() => {
+    if (!ready || root === null || setupStart !== null || readPublishDismissed(root)) return
+    let live = true
+    void gitRemotes(host, root)
+      .then((remotes) => live && setNoRemote(remotes.length === 0 ? root : null))
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [host, root, ready, setupStart])
+  const offerPublish = ready && root !== null && noRemote === root && dismissedFor !== root && setupStart === null
+
   // Without a status to show, the view is hidden rather than unmounted:
   // the commit box keeps the message being typed for when one reads again.
   return (
     <>
-      {scm.phase === 'not-a-repo' ? (
+      {setupStart !== null && root !== null ? (
+        <div className="shui-repo-setup-scroll">
+          <RepoSetup
+            key={root}
+            host={host}
+            root={root}
+            start={setupStart}
+            onInitialized={scm.reload}
+            onRunInTerminal={onRunInTerminal}
+            onClose={() => {
+              setSetup(null)
+              setNoRemote(null)
+              scm.reload()
+            }}
+          />
+        </div>
+      ) : scm.phase === 'not-a-repo' ? (
         <div className="shui-side-empty">
           <EmptyState title="No repository" description="This folder is not inside a Git repository." />
         </div>
@@ -144,7 +216,7 @@ export function CommitView({
           />
         </div>
       ) : null}
-      <div className="shui-commit" hidden={scm.phase === 'not-a-repo' || scm.phase === 'error'}>
+      <div className="shui-commit" hidden={setupStart !== null || scm.phase === 'not-a-repo' || scm.phase === 'error'}>
         <div className="shui-commit-toolbar" role="toolbar" aria-label="Changes">
           <IconButton label="Refresh" disabled={scm.busy} onClick={scm.reload} aria-busy={spinning}>
             <RefreshCw aria-hidden className={spinning ? uiClasses.spin : undefined} />
@@ -211,6 +283,29 @@ export function CommitView({
           </IconButton>
         </div>
 
+        {offerPublish ? (
+          <div className="shui-repo-publish">
+            <CloudUpload aria-hidden className="shui-repo-publish-icon" />
+            <span className="shui-repo-publish-text">
+              <span className="shui-repo-publish-title">Not on GitHub yet</span>
+              <span className="shui-repo-publish-detail">Publish it to back it up and share it.</span>
+            </span>
+            <Button type="button" variant="secondary" size="sm" onClick={() => root && setSetup({ root, start: 'publish' })}>
+              Publish
+            </Button>
+            <IconButton
+              label="Dismiss for this folder"
+              onClick={() => {
+                if (!root) return
+                writePublishDismissed(root)
+                setDismissedFor(root)
+              }}
+            >
+              <X aria-hidden />
+            </IconButton>
+          </div>
+        ) : null}
+
         <div className="shui-commit-tree">
           {scm.phase === 'loading' || scm.phase === 'idle' ? (
             <div className="shui-commit-skeleton" role="status" aria-label="Reading git status">
@@ -220,8 +315,21 @@ export function CommitView({
             </div>
           ) : total === 0 ? (
             <div className="shui-commit-clean">
+              <span className="shui-commit-clean-mark" aria-hidden>
+                <Check />
+              </span>
               <span className="title">No changes</span>
-              <span className="detail">The working tree matches {scm.branch ? `HEAD on ${scm.branch}` : 'HEAD'}.</span>
+              <span className="detail">
+                Everything is committed
+                {scm.branch ? (
+                  <>
+                    {' on '}
+                    <code className="shui-commit-clean-branch">{scm.branch}</code>
+                  </>
+                ) : (
+                  '.'
+                )}
+              </span>
             </div>
           ) : (
             <ChangesTree
@@ -282,7 +390,16 @@ export function CommitView({
           )}
         </div>
 
-        <CommitBox host={host} root={root} conversationId={conversationId} scm={scm} messageRef={messageRef} />
+        {/* Keyed by folder: each repository's message is its own. */}
+        <CommitBox
+          key={root ?? ''}
+          host={host}
+          root={root}
+          conversationId={conversationId}
+          memoryKey={memoryKey}
+          scm={scm}
+          messageRef={messageRef}
+        />
         {menu.element}
 
         <RollbackDialog
@@ -300,11 +417,10 @@ export function CommitView({
           title={deleteEntry ? `Delete ${basename(deleteEntry.path)}?` : 'Delete file?'}
           description={
             deleteEntry?.status === 'untracked'
-              ? "It was never committed: this can't be undone."
-              : 'The deletion shows as a change until it is committed or rolled back.'
+              ? "It was never committed, so this can't be undone."
+              : 'The deletion shows as a change until you commit it or roll it back.'
           }
-          details={deleteEntry ? [deleteEntry.path] : undefined}
-          confirmLabel="Delete"
+          confirmLabel="Delete file"
           tone="danger"
           onCancel={() => setDeleteEntry(null)}
           onConfirm={() => {
@@ -326,7 +442,7 @@ export function CommitView({
               : undefined
           }
           label="Message"
-          placeholder="What these changes are"
+          placeholder="WIP: login form"
           allowEmpty
           confirmLabel="Stash"
           onCancel={() => setStashEntries(null)}

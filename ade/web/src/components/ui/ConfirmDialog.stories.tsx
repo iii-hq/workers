@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Button } from './Button'
 import { ConfirmDialog } from './ConfirmDialog'
 
-function Demo({ details }: { details?: string[] }) {
+function Demo() {
   const [open, setOpen] = useState(true)
   const [outcome, setOutcome] = useState<string>('')
   return (
@@ -17,7 +17,6 @@ function Demo({ details }: { details?: string[] }) {
         onOpenChange={setOpen}
         title="Close this workspace?"
         description="Unsaved work in it will be lost."
-        details={details}
         confirmLabel="Close and discard"
         cancelLabel="Keep working"
         onConfirm={() => setOutcome('Closed and discarded.')}
@@ -37,9 +36,5 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const UnsavedWork: Story = {
-  args: { details: ['src/main.rs', 'notes/release.md'] },
-}
-
-export const Plain: Story = {
   args: {},
 }

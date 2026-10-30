@@ -1,0 +1,493 @@
+/* The tool group: one raised card per phase of agent activity. A header
+   names the batch ("Using 3 tools" while live, "Used 3 tools" once settled,
+   with a failure count when any call errored) and the rows under it are the
+   calls themselves, each a 40px line with its status at the trailing edge.
+   Everything that changes state crossfades in place; rows grow in, nothing
+   pops. */
+
+.chat-tool-group {
+  --tool-row-radius: 10px;
+  position: relative;
+  /* The card radius (`rounded-xl`), shared with every card in the console. */
+  border-radius: var(--radius-xl);
+  background: var(--color-panel-raised);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+  font-family: var(--font-inter);
+}
+
+.chat-tool-group__head {
+  display: flex;
+  width: 100%;
+  min-height: 46px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 8px 14px;
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--color-ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 160ms ease-out;
+}
+
+.chat-tool-group__head[aria-disabled="true"] {
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .chat-tool-group__head:not([aria-disabled="true"]):hover {
+    background: var(--color-surface);
+  }
+}
+
+.chat-tool-group__head:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+/* Stacked worker marks, newest trailing, each sliding in on first sight. */
+.chat-tool-group__icons {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+.chat-tool-group__icon {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  margin-left: -7px;
+  border-radius: 999px;
+  background: var(--color-surface-hover);
+  box-shadow: 0 0 0 2px var(--color-panel-raised);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--color-ink);
+  animation: chat-tool-icon-in var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+}
+
+.chat-tool-group__icon:first-child {
+  margin-left: 0;
+}
+
+.chat-tool-group__icon[data-kind="function"] {
+  font-family: var(--font-mono);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--color-accent);
+}
+
+@keyframes chat-tool-icon-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.chat-tool-group__label {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1;
+  align-items: baseline;
+  gap: 0.3em;
+  white-space: nowrap;
+}
+
+.chat-tool-group__count {
+  position: relative;
+  display: inline-grid;
+  min-width: 1ch;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-tool-group__count > * {
+  grid-area: 1 / 1;
+}
+
+.chat-tool-group__failed {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-alert);
+  animation: chat-tool-fade-in var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+}
+
+@keyframes chat-tool-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-tool-group__chevron {
+  flex-shrink: 0;
+  color: var(--color-ink-ghost);
+  transition:
+    transform var(--acc-chevron, 250ms) var(--ease-smooth-out),
+    opacity var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.chat-tool-group[data-expanded="true"] .chat-tool-group__chevron {
+  transform: rotate(180deg);
+}
+
+.chat-tool-group[data-can-collapse="false"] .chat-tool-group__chevron {
+  opacity: 0;
+}
+
+.chat-tool-group__list {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 6px 6px;
+  border-top: 1px solid var(--color-edge);
+}
+
+/* Rows stack 2px apart; the hidden-history tracks collapse to nothing. */
+.chat-tool-group__list .chat-activity-item[data-stacked="true"] {
+  margin-top: 2px;
+}
+
+/* A row appended live grows from a zero-height track; the outer row's
+   presence flag flips a frame after mount, so this transition runs. */
+.chat-activity-item[data-visible="true"]:has(
+  > .chat-activity-item-inner > .chat-live-row[data-presence="entering"]
+) {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(calc(var(--chat-text-distance) * -1));
+}
+
+/* ── one call ───────────────────────────────────────────────────────── */
+
+.chat-tool-row {
+  overflow: hidden;
+  border-radius: var(--tool-row-radius);
+  transition: background-color var(--motion-duration-control)
+    var(--motion-ease-standard);
+}
+
+.chat-tool-row[data-function-status="running"],
+.chat-tool-row[data-function-status="pending"],
+.chat-tool-row[data-expanded="true"] {
+  background: var(--color-surface);
+}
+
+.chat-tool-row__head {
+  display: flex;
+  align-items: stretch;
+  min-height: 40px;
+  border-radius: var(--tool-row-radius);
+  transition: background-color var(--motion-duration-control)
+    var(--motion-ease-standard);
+}
+
+@media (hover: hover) {
+  .chat-tool-row__head:hover {
+    background: var(--color-surface);
+  }
+
+  .chat-tool-row[data-expanded="true"] .chat-tool-row__head:hover {
+    background: var(--color-surface-hover);
+  }
+}
+
+.chat-tool-row__main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px 6px 10px;
+  border-radius: var(--tool-row-radius) 0 0 var(--tool-row-radius);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-tool-row__main:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.chat-tool-row__text {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.chat-tool-row__title {
+  overflow: hidden;
+  font-family: var(--font-inter);
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--color-ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-tool-row[data-function-status="running"] .chat-tool-row__title {
+  color: var(--color-ink);
+}
+
+/* The second line opens its own track so a failure reason can arrive
+   under a title that was already on screen. */
+.chat-tool-row__subtitle {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--motion-duration-panel) var(--motion-ease-enter),
+    opacity var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.chat-tool-row__subtitle[data-visible="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.chat-tool-row__subtitle > span {
+  display: block;
+  min-height: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--color-ink-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-tool-row[data-function-status="error"] .chat-tool-row__subtitle > span {
+  color: var(--color-ink-faint);
+}
+
+.chat-tool-row__subtitle > span[data-mono="true"] {
+  font-family: var(--font-geist-mono);
+  font-size: 12px;
+}
+
+.chat-tool-row__meta {
+  flex-shrink: 0;
+  padding-left: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--color-ink-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  animation: chat-tool-fade-in var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+}
+
+.chat-tool-row__status {
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+
+.chat-tool-row__caret {
+  display: flex;
+  width: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0 var(--tool-row-radius) var(--tool-row-radius) 0;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+}
+
+.chat-tool-row__chevron {
+  transition: transform var(--acc-chevron, 250ms) var(--ease-smooth-out);
+}
+
+.chat-tool-row[data-expanded="true"] .chat-tool-row__chevron,
+.chat-tool-row__chevron[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+/* A renderer with an expandable display rides the shared collapsible card;
+   inside the group it sits flat, like every other row. */
+.chat-tool-row > .chat-tool-row__collapsible {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* ── the opened call ────────────────────────────────────────────────── */
+
+.chat-tool-row__body {
+  border-top: 1px solid var(--color-edge);
+  animation: chat-tool-body-in var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+}
+
+@keyframes chat-tool-body-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-tool-row__foot {
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-tool-row__foot-bar {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 12px;
+  font-family: var(--font-geist-mono);
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+.chat-tool-row__fn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-tool-row__fn-copy {
+  opacity: 0;
+  transition: opacity var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.chat-tool-row__foot-bar:hover .chat-tool-row__fn-copy,
+.chat-tool-row__foot-bar:focus-within .chat-tool-row__fn-copy,
+.chat-tool-row__fn-copy:focus-visible {
+  opacity: 1;
+}
+
+.chat-tool-row__raw-toggle {
+  margin-left: auto;
+  padding: 4px 8px;
+  border-radius: 7px;
+  font-family: var(--font-inter);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+@media (hover: hover) {
+  .chat-tool-row__raw-toggle:hover {
+    background: var(--color-surface-hover);
+    color: var(--color-ink);
+  }
+}
+
+.chat-tool-row__raw-toggle:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* Raw request/response stay mounted behind a zero-height track so the
+   toggle opens them with a height transition rather than a pop. */
+.chat-tool-row__raw {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--acc-expand, 250ms) var(--ease-smooth-out),
+    opacity var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.chat-tool-row__raw[data-visible="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.chat-tool-row__raw-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* A worker's own view sits inset from the row's edge, whatever it draws. */
+.chat-tool-row__body > [data-function-terminal],
+.chat-tool-row__body > [data-function-renderer-details-slot] {
+  padding: 10px 10px 4px;
+}
+
+.chat-tool-row__body > [data-function-terminal] > *,
+.chat-tool-row__body > [data-function-renderer-details-slot] > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Worker-owned terminal cards inherit the row's materials. */
+.chat-tool-row__body [data-iii-ui] .shui-card {
+  margin: 0 0 6px;
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  background: var(--color-panel);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+  font-family: var(--font-inter);
+  font-size: 13px;
+}
+
+.chat-tool-row__body [data-iii-ui] .shui-card-head,
+.chat-tool-row__body [data-iii-ui] .shui-card-foot {
+  background: var(--color-surface);
+}
+
+/* ── the prose that announces a batch sits close to it ───────────────── */
+
+/* The copy / quote actions under an assistant reply would otherwise hold
+   a band of empty space between the prose and the card it introduces. The
+   actions still paint into the gap on hover; they just stop reserving it. */
+.chat-message-stack > .chat-live-row:has(
+    + .chat-live-row > [data-function-trigger-group]
+  )
+  > .chat-message[data-message-role="assistant"]
+  > .chat-message-actions {
+  height: 0;
+  margin-top: 0;
+  overflow: visible;
+}
+
+.chat-message-stack
+  > .chat-live-row:has(> .chat-message[data-message-role="assistant"])
+  + .chat-live-row:has(> [data-function-trigger-group]) {
+  margin-top: calc(var(--chat-stack-gap) * -1 + 18px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-tool-group__icon,
+  .chat-tool-group__failed,
+  .chat-tool-row__meta,
+  .chat-tool-row__body {
+    animation: none;
+  }
+
+  .chat-tool-group__chevron,
+  .chat-tool-row__chevron,
+  .chat-tool-row__subtitle,
+  .chat-tool-row__raw,
+  .chat-tool-row,
+  .chat-tool-row__head {
+    transition: none;
+  }
+}

@@ -226,13 +226,12 @@ export function RemoveWorktreeDialog({
       title={removing?.wt.prunable ? `Prune ${name}?` : removing?.reason ? `Remove ${name} anyway?` : `Remove ${name}?`}
       description={
         removing?.wt.prunable
-          ? 'Its folder is already gone; git forgets it.'
+          ? 'Its folder is already gone, so git just forgets it.'
           : removing?.reason
-            ? `${removing.reason}; removing it deletes that too. This cannot be undone.`
-            : `The folder is deleted. Its branch goes too once ${target ?? 'the default branch'} has it.`
+            ? `${removing.reason}. Removing it deletes that too. This can't be undone.`
+            : `The folder is deleted. Its branch is deleted too once ${target ?? 'the default branch'} has its commits.`
       }
-      details={removing ? [removing.wt.path] : undefined}
-      confirmLabel="Remove"
+      confirmLabel={removing?.wt.prunable ? 'Prune worktree' : 'Remove worktree'}
       tone={removing?.reason ? 'danger' : 'default'}
       onConfirm={onConfirm}
       onCancel={onCancel}
@@ -262,30 +261,30 @@ export function CheckoutQuestionDialog({
       <DialogContent className="shui-rollback-dialog">
         {question?.kind === 'diverged' ? (
           <>
-            <DialogTitle>Checkout {question.remoteBranch}?</DialogTitle>
+            <DialogTitle>Check out {question.remoteBranch}?</DialogTitle>
             <DialogDescription>
-              {question.branch} has {question.ahead} {question.ahead === 1 ? 'commit' : 'commits'}{' '}
-              {question.remoteBranch} lacks. Drop them to reset {question.branch} to it, or rebase them onto it; either
-              way {question.branch} then tracks it.
+              {question.branch} has {question.ahead} {question.ahead === 1 ? "commit that isn't" : "commits that aren't"}{' '}
+              on {question.remoteBranch}. Drop them to reset {question.branch} to the remote, or rebase them onto it.
+              Either way, {question.branch} then tracks {question.remoteBranch}.
             </DialogDescription>
             <div className="shui-rollback-actions">
-              <Button variant="ghost" size="sm" onClick={onCancel}>
+              <Button variant="secondary" size="md" onClick={onCancel}>
                 Cancel
               </Button>
-              <Button size="sm" className="shui-danger-button" onClick={() => onAnswer('drop')}>
-                Drop Local Commits
+              <Button variant="destructive" size="md" onClick={() => onAnswer('drop')}>
+                Drop local commits
               </Button>
-              <Button variant="primary" size="sm" onClick={() => onAnswer('rebase')}>
-                Rebase onto Remote
+              <Button variant="primary" size="md" onClick={() => onAnswer('rebase')}>
+                Rebase onto remote
               </Button>
             </div>
           </>
         ) : (
           <>
-            <DialogTitle>Checkout {question?.target.name ?? ''}?</DialogTitle>
+            <DialogTitle>Check out {question?.target.name ?? ''}?</DialogTitle>
             <DialogDescription>
-              It would overwrite your local changes to these files. Smart Checkout stashes them, checks out and brings
-              them back; Force Checkout discards them.
+              It would overwrite your uncommitted changes to these files. Stash and check out keeps them and brings them
+              back afterwards. Discard and check out throws them away.
             </DialogDescription>
             <ul className="shui-rollback-tree shui-checkout-files">
               {files.slice(0, LISTED_FILES).map((file) => (
@@ -294,14 +293,14 @@ export function CheckoutQuestionDialog({
               {files.length > LISTED_FILES ? <li>and {files.length - LISTED_FILES} more</li> : null}
             </ul>
             <div className="shui-rollback-actions">
-              <Button variant="ghost" size="sm" onClick={onCancel}>
+              <Button variant="secondary" size="md" onClick={onCancel}>
                 Cancel
               </Button>
-              <Button size="sm" className="shui-danger-button" onClick={() => onAnswer('force')}>
-                Force Checkout
+              <Button variant="destructive" size="md" onClick={() => onAnswer('force')}>
+                Discard and check out
               </Button>
-              <Button variant="primary" size="sm" onClick={() => onAnswer('smart')}>
-                Smart Checkout
+              <Button variant="primary" size="md" onClick={() => onAnswer('smart')}>
+                Stash and check out
               </Button>
             </div>
           </>
@@ -333,11 +332,13 @@ export function RemoveManyDialog({
       title={`Remove ${worktrees.length} ${worktrees.length === 1 ? 'worktree' : 'worktrees'}?`}
       description={
         losing === 0
-          ? `Each folder is deleted, and its branch too once ${target ?? 'the default branch'} has it.`
-          : `${losing} of them would lose work, as listed: removing them deletes that too. This cannot be undone.`
+          ? `Each folder is deleted, and its branch too once ${target ?? 'the default branch'} has its commits.`
+          : `${worktrees
+              .filter(({ reason }) => reason !== null)
+              .map(({ wt }) => basename(wt.path))
+              .join(', ')} ${losing === 1 ? 'holds' : 'hold'} work that exists nowhere else. Removing ${losing === 1 ? 'it' : 'them'} deletes that work. This can't be undone.`
       }
-      details={worktrees.map(({ wt, reason }) => (reason === null ? wt.path : `${wt.path}: ${reason}`))}
-      confirmLabel="Remove"
+      confirmLabel={worktrees.length === 1 ? 'Remove worktree' : 'Remove worktrees'}
       tone={losing === 0 ? 'default' : 'danger'}
       onConfirm={onConfirm}
       onCancel={onCancel}
@@ -366,12 +367,12 @@ export function DeleteBranchDialog({
       title={`Delete ${deleting?.branch ?? ''}?`}
       description={
         unmerged === 0
-          ? `${target} has its commits already.`
+          ? `${target} already has its commits.`
           : unmerged === null
-            ? 'With no default branch to compare, any commits no other branch has are lost with it. This cannot be undone.'
-            : `${unmerged} ${unmerged === 1 ? 'commit' : 'commits'} ${target} lacks go with it. This cannot be undone.`
+            ? "There's no default branch to compare with, so commits on no other branch are lost. This can't be undone."
+            : `${unmerged} ${unmerged === 1 ? "commit that isn't" : "commits that aren't"} on ${target} ${unmerged === 1 ? 'is' : 'are'} lost. This can't be undone.`
       }
-      confirmLabel="Delete"
+      confirmLabel="Delete branch"
       tone={unmerged === 0 ? 'default' : 'danger'}
       onConfirm={onConfirm}
       onCancel={onCancel}

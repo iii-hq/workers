@@ -45,9 +45,9 @@ export function RollbackDialog({ entries, busy, onCancel, onConfirm }: RollbackD
     <Dialog open={entries !== null} onOpenChange={(open) => (open ? undefined : onCancel())}>
       <DialogContent className="shui-rollback-dialog">
         <DialogTitle>
-          Rollback {offered.length} {offered.length === 1 ? 'change' : 'changes'}?
+          Roll back {offered.length} {offered.length === 1 ? 'change' : 'changes'}?
         </DialogTitle>
-        <DialogDescription>Working-tree changes to the ticked files are lost. This can't be undone.</DialogDescription>
+        <DialogDescription>Uncommitted changes to the selected files are lost. This can't be undone.</DialogDescription>
         {/* A windowed tree has no height of its own: up to 260px of rows, plus the 4px padding. */}
         <div className="shui-rollback-tree" style={{ height: Math.min(260, rows.length * ROW_HEIGHT) + 8 }}>
           <ChangesTree
@@ -83,17 +83,17 @@ export function RollbackDialog({ entries, busy, onCancel, onConfirm }: RollbackD
           <span className="shui-rollback-summary">{changeSummary(picked) || 'Nothing selected'}</span>
         </div>
         <div className="shui-rollback-actions">
-          <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+          <Button type="button" variant="secondary" size="md" onClick={onCancel}>
             Cancel
           </Button>
           <Button
             type="button"
-            size="sm"
-            className="shui-danger-button"
+            variant="destructive"
+            size="md"
             disabled={busy || count === 0}
             onClick={() => onConfirm(picked, { keepAdded: !deleteAdded })}
           >
-            {count > 1 ? `Rollback ${count} files` : 'Rollback'}
+            {count > 1 ? `Roll back ${count} files` : 'Roll back file'}
           </Button>
         </div>
       </DialogContent>

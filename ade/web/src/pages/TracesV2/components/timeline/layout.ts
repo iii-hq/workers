@@ -45,8 +45,10 @@ export interface TimelineSpan {
 
 /** detail-view bar geometry (`TraceTimeline`); the strip draws its own
  *  3px lines */
-export const BAR_HEIGHT = 16
-export const MIN_BAR_WIDTH = 18
+/** tall enough for an 11px label with room above and below it */
+export const BAR_HEIGHT = 24
+/** every bar holds its kind glyph: the edge, padding, 16px glyph, padding */
+export const MIN_BAR_WIDTH = 32
 
 export function effectiveEnd(span: TimelineSpan, now: number): number {
   return span.endTime ?? now

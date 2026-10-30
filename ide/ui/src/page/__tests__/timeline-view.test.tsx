@@ -10,6 +10,7 @@ vi.mock('@iii-dev/console-ui', () => ({
   IconButton: ({ label, children, ...rest }: { label: string; children: ReactNode }) =>
     <button aria-label={label} {...rest}>{children}</button>,
   ConfirmDialog: () => null,
+  Eyebrow: ({ children, ...rest }: { children: ReactNode }) => <span {...rest}>{children}</span>,
   EmptyState: ({ title, description }: { title: string; description: string }) => (
     <div>
       <strong>{title}</strong>

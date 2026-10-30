@@ -320,9 +320,9 @@ export function StashView({
       <TextDialog
         open={stashOpen}
         title="Stash changes"
-        description="Sets the working tree's changes aside and cleans it."
+        description="Sets your uncommitted changes aside and leaves a clean working tree."
         label="Message"
-        placeholder="What these changes are"
+        placeholder="WIP: login form"
         allowEmpty
         confirmLabel="Stash"
         onCancel={() => setStashOpen(false)}
@@ -343,9 +343,9 @@ export function StashView({
       <TextDialog
         open={unstashFor !== null}
         title={unstashFor ? `Unstash ${unstashFor.ref}` : 'Unstash'}
-        description="With a branch name, a new branch is checked out where the stash was made and the stash is popped there; the boxes below then do not apply."
-        label="As new branch"
-        placeholder="Leave empty to unstash here"
+        description="Leave the branch empty to apply the stash here. With a name, a new branch starts where the stash was made and the stash is applied there, and the options below don't apply."
+        label="New branch (optional)"
+        placeholder="feat/login-form"
         allowEmpty
         confirmLabel="Unstash"
         onCancel={() => setUnstashFor(null)}
@@ -381,8 +381,8 @@ export function StashView({
         open={clearOpen}
         onOpenChange={(open) => (open ? undefined : setClearOpen(false))}
         title="Clear all stashes?"
-        description={`Every stash (${stashes.length}) is deleted. This can't be undone.`}
-        confirmLabel="Clear"
+        description={`All ${stashes.length} stashes are deleted. This can't be undone.`}
+        confirmLabel="Clear stashes"
         tone="danger"
         onCancel={() => setClearOpen(false)}
         onConfirm={() => {
@@ -398,9 +398,8 @@ export function StashView({
         open={dropFor !== null}
         onOpenChange={(open) => (open ? undefined : setDropFor(null))}
         title={dropFor ? `Drop ${dropFor.ref}?` : 'Drop stash?'}
-        description="The stashed changes are deleted. This can't be undone."
-        details={dropFor ? [dropFor.message] : undefined}
-        confirmLabel="Drop"
+        description={`${dropFor ? `“${dropFor.message}”. ` : ''}The stashed changes are deleted. This can't be undone.`}
+        confirmLabel="Drop stash"
         tone="danger"
         onCancel={() => setDropFor(null)}
         onConfirm={() => {

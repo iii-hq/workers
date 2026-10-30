@@ -70,7 +70,7 @@ function InstallableSection({ worker }: { worker: DiscoverInstallableView }) {
           {fn.description.length > 0 ? <span className="dir-ui-search-fn-desc">{fn.description}</span> : null}
         </ActionLine>
       ))}
-      <TerminalCommandLine command={`compose::add { "worker": "${worker.name}" }`} copy />
+      <TerminalCommandLine command={`compose::add { "worker": "${worker.name}" }`} copy className="dir-ui-search-cmd" />
     </section>
   )
 }
@@ -89,7 +89,7 @@ function SkillBlock({ skill }: { skill: DiscoverSkillView }) {
         ) : null}
       </summary>
       {skill.description.length > 0 ? <div className="dir-ui-search-desc">{skill.description}</div> : null}
-      <TerminalCommandLine command={`directory::skills::get { "id": "${skill.id}" }`} copy />
+      <TerminalCommandLine command={`directory::skills::get { "id": "${skill.id}" }`} copy className="dir-ui-search-cmd" />
     </details>
   )
 }
@@ -111,7 +111,7 @@ function TriggerBlock({ trigger }: { trigger: DiscoverTriggerView }) {
         </span>
       </summary>
       {config !== '{}' ? <div className="dir-ui-search-desc">{config}</div> : null}
-      <TerminalCommandLine command={`engine::functions::info { "function_id": "${trigger.functionId}" }`} copy />
+      <TerminalCommandLine command={`engine::functions::info { "function_id": "${trigger.functionId}" }`} copy className="dir-ui-search-cmd" />
     </details>
   )
 }

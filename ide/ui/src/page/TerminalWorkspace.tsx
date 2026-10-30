@@ -1,12 +1,23 @@
-import { Toolbar, Tooltip, useConfirm } from '@iii-dev/console-ui'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+  IconButton,
+  Toolbar,
+  Tooltip,
+  useConfirm,
+} from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { Columns2, Pencil, Plus, Rows2, X } from 'lucide-react'
+import { Columns2, Ellipsis, Pencil, Plus, Rows2, SquareTerminal, Trash2, X } from 'lucide-react'
 import {
   type CSSProperties,
   type Dispatch,
   forwardRef,
   type ReactNode,
-  type KeyboardEvent,
   memo,
   useCallback,
   useEffect,
@@ -66,7 +77,8 @@ export interface TerminalWorkspaceProps {
   leaseStore: Storage | null
   storageKey: string
   connectionCoordinators: Map<string, TerminalConnectionCoordinator>
-  actions?: ReactNode
+  /** Rows the panel adds to the end of the terminal menu (position, hide). */
+  menuItems?: ReactNode
 }
 
 export interface TerminalWorkspaceHandle {
@@ -464,7 +476,7 @@ export const TerminalWorkspace = forwardRef<
     leaseStore,
     storageKey,
     connectionCoordinators,
-    actions,
+    menuItems,
   },
   ref,
 ) {
@@ -473,6 +485,7 @@ export const TerminalWorkspace = forwardRef<
     new Map<string, Promise<string | null>>(),
   )
   const [editingTabId, setEditingTabId] = useState<string | null>(null)
+  const renamingFromMenu = useRef(false)
   const [editingTitle, setEditingTitle] = useState('')
   const [error, setError] = useState<string | null>(null)
   const { confirm, dialog } = useConfirm()
@@ -590,8 +603,12 @@ export const TerminalWorkspace = forwardRef<
       const paneIds = paneIdsInLayout(tab.layout)
       if (
         !(await confirm({
-          title: `Close "${tab.title}" and ${paneIds.length} terminal session${paneIds.length === 1 ? '' : 's'}?`,
-          confirmLabel: 'Close',
+          title:
+            paneIds.length === 1
+              ? `Close "${tab.title}" and its terminal session?`
+              : `Close "${tab.title}" and its ${paneIds.length} terminal sessions?`,
+          description: 'Anything still running in them is stopped.',
+          confirmLabel: paneIds.length === 1 ? 'Close terminal' : 'Close terminals',
         }))
       ) {
         return
@@ -693,59 +710,104 @@ export const TerminalWorkspace = forwardRef<
     setEditingTabId(null)
   }
 
-  const selectTabByKey = (
-    event: KeyboardEvent<HTMLButtonElement>,
-    index: number,
-  ) => {
-    let targetIndex: number | null = null
-    switch (event.key) {
-      case 'ArrowLeft':
-        targetIndex = (index - 1 + state.tabs.length) % state.tabs.length
-        break
-      case 'ArrowRight':
-        targetIndex = (index + 1) % state.tabs.length
-        break
-      case 'Home':
-        targetIndex = 0
-        break
-      case 'End':
-        targetIndex = state.tabs.length - 1
-        break
-      default:
-        return
-    }
-    event.preventDefault()
-    const target = state.tabs[targetIndex]
-    if (!target) return
-    dispatch({ type: 'tab-selected', tabId: target.id })
-    const tablist = event.currentTarget.closest('[role="tablist"]')
-    window.requestAnimationFrame(() => {
-      const tabs = tablist?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
-      tabs?.[targetIndex]?.focus()
-    })
-  }
-
   return (
     <div className="shui-terminal-workspace">
       {dialog}
-      <Toolbar className="shui-terminal-tabs" aria-label="Terminals" end={actions}>
-        <div
-          className="shui-terminal-tab-strip"
-          role="tablist"
-          aria-label="Terminal tabs"
-        >
-        {state.tabs.map((tab, index) => {
-          const selected = tab.id === state.activeTabId
-          return (
-            <div
-              className={`shui-terminal-tab${selected ? ' active' : ''}`}
-              key={tab.id}
-            >
-              {editingTabId === tab.id ? (
+      <Toolbar
+        className="shui-terminal-tabs"
+        aria-label="Terminals"
+        end={
+          <>
+            <Tooltip label="New terminal">
+              <button
+                type="button"
+                className="shui-terminal-action"
+                onClick={createTab}
+                aria-label="New terminal"
+                disabled={totalPaneCount >= MAX_TERMINAL_SESSIONS}
+              >
+                <Plus aria-hidden />
+              </button>
+            </Tooltip>
+            {/* Everything else about the terminals lives behind one menu, so
+                the strip stays a name and two buttons at any width. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <IconButton label="Terminal options" className="shui-terminal-action">
+                  <Ellipsis aria-hidden />
+                </IconButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="shui-terminal-menu"
+                onCloseAutoFocus={(event) => {
+                  // Rename puts focus in the name field; the menu must not take it back.
+                  if (renamingFromMenu.current) {
+                    renamingFromMenu.current = false
+                    event.preventDefault()
+                  }
+                }}
+              >
+                <DropdownMenuLabel>Terminals</DropdownMenuLabel>
+                <DropdownMenuRadioGroup
+                  value={state.activeTabId ?? ''}
+                  onValueChange={(id) => {
+                    const tab = state.tabs.find((candidate) => candidate.id === id)
+                    if (tab) selectTab(tab)
+                  }}
+                >
+                  {state.tabs.map((tab) => (
+                    <DropdownMenuRadioItem key={tab.id} value={tab.id}>
+                      <SquareTerminal aria-hidden />
+                      <span className="shui-terminal-menu-name">{tab.title}</span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+                <DropdownMenuItem disabled={totalPaneCount >= MAX_TERMINAL_SESSIONS} onSelect={createTab}>
+                  <Plus aria-hidden />
+                  New terminal
+                </DropdownMenuItem>
+                {selectedTab ? (
+                  <>
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        renamingFromMenu.current = true
+                        beginRename(selectedTab.id, selectedTab.title)
+                      }}
+                    >
+                      <Pencil aria-hidden />
+                      Rename {selectedTab.title}…
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => void closeTab(selectedTab.id)}>
+                      <X aria-hidden />
+                      Close {selectedTab.title}
+                    </DropdownMenuItem>
+                  </>
+                ) : null}
+                <DropdownMenuItem onSelect={() => void closeDisconnected()}>
+                  <Trash2 aria-hidden />
+                  Close disconnected terminals
+                </DropdownMenuItem>
+                {menuItems}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      >
+        {/* Every terminal is a tab in the strip, as in VS Code's panel: the
+            one in front on the selected fill, a close on each, double-click
+            to rename. The menu keeps the same list for keyboards and
+            narrow strips. */}
+        <div className="shui-terminal-tab-row" role="tablist" aria-label="Open terminals">
+          {state.tabs.map((tab) => {
+            const active = tab.id === state.activeTabId
+            if (editingTabId === tab.id) {
+              return (
                 <input
+                  key={tab.id}
                   ref={(input) => input?.focus()}
                   className="shui-terminal-tab-input"
-                  aria-label="Rename terminal tab"
+                  aria-label="Rename terminal"
                   value={editingTitle}
                   onChange={(event) => setEditingTitle(event.target.value)}
                   onBlur={commitRename}
@@ -754,49 +816,33 @@ export const TerminalWorkspace = forwardRef<
                     if (event.key === 'Escape') setEditingTabId(null)
                   }}
                 />
-              ) : (
+              )
+            }
+            return (
+              <div key={tab.id} className="shui-terminal-tab" data-active={active ? '' : undefined}>
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={selected}
-                  className="shui-terminal-tab-select"
+                  aria-selected={active}
+                  className="shui-terminal-tab-open"
+                  title="Double-click to rename"
                   onClick={() => selectTab(tab)}
                   onDoubleClick={() => beginRename(tab.id, tab.title)}
-                  onKeyDown={(event) => selectTabByKey(event, index)}
                 >
-                  {tab.title}
+                  <SquareTerminal aria-hidden />
+                  <span className="label">{tab.title}</span>
                 </button>
-              )}
-              <button
-                type="button"
-                className="shui-terminal-tab-action"
-                aria-label={`Rename ${tab.title}`}
-                onClick={() => beginRename(tab.id, tab.title)}
-              >
-                <Pencil aria-hidden />
-              </button>
-              <button
-                type="button"
-                className="shui-terminal-tab-action"
-                aria-label={`Close ${tab.title}`}
-                onClick={() => void closeTab(tab.id)}
-              >
-                <X aria-hidden />
-              </button>
-            </div>
-          )
-        })}
-        <Tooltip label="New terminal">
-          <button
-            type="button"
-            className="shui-terminal-tab-new"
-            onClick={createTab}
-            aria-label="New terminal"
-            disabled={totalPaneCount >= MAX_TERMINAL_SESSIONS}
-          >
-            <Plus aria-hidden />
-          </button>
-        </Tooltip>
+                <button
+                  type="button"
+                  className="shui-terminal-tab-close"
+                  aria-label={`Close ${tab.title}`}
+                  onClick={() => void closeTab(tab.id)}
+                >
+                  <X aria-hidden />
+                </button>
+              </div>
+            )
+          })}
         </div>
       </Toolbar>
       {error ? (

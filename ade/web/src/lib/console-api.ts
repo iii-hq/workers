@@ -15,6 +15,13 @@ import sharedUiClasses from '@iii-dev/console-ui/ui-classes'
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { SecretKeyField } from '@/components/secrets/SecretKeyField'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/shadcn/popover'
+import { Separator } from '@/components/shadcn/separator'
+import { Toggle } from '@/components/shadcn/toggle'
 import { ActionLine, MetaRow } from '@/components/ui/ActivityMetadata'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
@@ -211,9 +218,13 @@ export const components: ConsoleApi['components'] = {
   Panel,
   PanelBody,
   PanelHeader,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   RawValueInput,
   Select,
   SegmentedControl,
+  Separator,
   Selector,
   SettingsDeck,
   SettingsField,
@@ -240,6 +251,7 @@ export const components: ConsoleApi['components'] = {
   TabsContent,
   TerminalCommandLine,
   TerminalStream,
+  Toggle,
   Tooltip,
   TooltipTrigger,
   TooltipContent,

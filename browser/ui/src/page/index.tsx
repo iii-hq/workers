@@ -392,6 +392,18 @@ export function BrowserPage({
 
   const banner = error ?? startError
 
+  // Tabs with a load this pane started in flight: the strip's spinners.
+  const [loadingIds, setLoadingIds] = useState<ReadonlySet<string>>(() => new Set())
+  const onLoadingChange = useCallback((sessionId: string, isLoading: boolean) => {
+    setLoadingIds((current) => {
+      if (current.has(sessionId) === isLoading) return current
+      const next = new Set(current)
+      if (isLoading) next.add(sessionId)
+      else next.delete(sessionId)
+      return next
+    })
+  }, [])
+
   return (
     <PageShell className="br-ui-shell">
       <PageHeader
@@ -425,6 +437,7 @@ export function BrowserPage({
           tabs={tabs}
           selectedId={selectedId}
           starting={starting}
+          loadingIds={loadingIds}
           onSelect={setSelectedId}
           onClose={closeTab}
           onNew={() => void handleNewTab(false)}
@@ -443,6 +456,7 @@ export function BrowserPage({
             actionsRef={sessionActionsRef}
             onSessionsRefresh={refresh}
             onNewTab={(incognito) => void handleNewTab(incognito)}
+            onLoadingChange={onLoadingChange}
           />
         ) : (
           <section className="br-ui-stage" aria-label="browser workspace">

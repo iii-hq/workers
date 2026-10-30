@@ -31,6 +31,7 @@ import {
   terminalOutputRouterHost,
   type TerminalOutputRouter,
 } from './terminal-output-router'
+import { takeTerminalStartupCommand } from './terminal-startup'
 import {
   createTerminalConnectionCoordinator,
   createTerminalSessionState,
@@ -830,6 +831,10 @@ export function useTerminalSession(
           queuedInputRef.current = []
           queuedInputBytesRef.current = 0
           for (const data of queuedInput) active.write(data)
+          // A fresh shell may have a command waiting for it; the pty holds
+          // the keystrokes until the shell reads them.
+          const startup = lease ? null : takeTerminalStartupCommand(paneId)
+          if (startup) active.write(new TextEncoder().encode(`${startup}\r`))
           const latest = dimensionsRef.current
           if (latest.cols !== cols || latest.rows !== rows) {
             sendResize(latest.cols, latest.rows)

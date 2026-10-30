@@ -1,10 +1,5 @@
 import { useMemo, useState } from 'react'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { isAutoAcceptable } from '@/lib/backend/auto-accept-policy'
 import type { FunctionEntry } from '@/lib/functions'
 import { cn } from '@/lib/utils'
@@ -337,46 +332,27 @@ function DestructiveConfirm({
   const open = functionId !== null
   const total = remaining + (functionId ? 1 : 0)
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onCancel()}>
-      <DialogContent className="max-w-md">
-        <DialogTitle className="text-[14px]">
-          allowlist a potentially destructive function?
-          {total > 1 ? (
-            <span className="ml-2 text-ink-faint text-[12px] tabular-nums">
-              {total - remaining}/{total}
-            </span>
-          ) : null}
-        </DialogTitle>
-        <DialogDescription className="mt-3 text-ink">
-          <code className="px-1 bg-paper-2 text-accent">{functionId}</code>{' '}
-          matches the potentially-destructive verb policy (write / delete / exec
-          / send / credential / …). adding it means the agent will run it
-          without asking while auto mode is on.
-        </DialogDescription>
-        {remaining > 0 ? (
-          <DialogDescription className="mt-2 text-ink-faint">
-            {remaining} more potentially destructive function
-            {remaining === 1 ? '' : 's'} queued from your select-all. cancel to
-            stop the chain.
-          </DialogDescription>
-        ) : null}
-        <div className="mt-6 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="font-mono text-[12px] px-3 py-1 rounded-sm bg-surface text-ink-faint hover:bg-surface-hover hover:text-ink transition-colors"
-          >
-            cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => functionId && onConfirm(functionId)}
-            className="font-mono text-[12px] px-3 py-1 rounded-sm bg-alert text-bg hover:bg-alert/90 transition-colors"
-          >
-            allow {functionId}
-          </button>
-        </div>
-      </DialogContent>
-    </Dialog>
+    <ConfirmDialog
+      open={open}
+      // The queue decides what opens next: closing only ever goes through
+      // Cancel (stop the chain) or the confirm (on to the next one).
+      onOpenChange={() => {}}
+      title={
+        total > 1
+          ? `Allowlist a destructive function? (${total - remaining} of ${total})`
+          : 'Allowlist a destructive function?'
+      }
+      description={`${functionId ?? ''} matches the destructive-action policy (write, delete, exec, send, credentials), so in auto mode the agent runs it without asking.${
+        remaining > 0
+          ? ` ${remaining} more from your selection ${remaining === 1 ? 'follows' : 'follow'}; Cancel stops there.`
+          : ''
+      }`}
+      confirmLabel="Allowlist"
+      tone="danger"
+      onCancel={onCancel}
+      onConfirm={() => {
+        if (functionId) onConfirm(functionId)
+      }}
+    />
   )
 }

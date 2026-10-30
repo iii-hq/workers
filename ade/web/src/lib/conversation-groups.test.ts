@@ -5,6 +5,7 @@ import {
   countConversations,
   groupConversationRoots,
   normalizeProjectPath,
+  PINNED_GROUP_KEY,
 } from './conversation-groups'
 import { buildConversationTree } from './conversation-tree'
 
@@ -189,5 +190,31 @@ describe('grouping none', () => {
     expect(groups[0]?.key).toBe('none:all')
     expect(ids(groups[0]?.roots ?? [])).toEqual(['b', 'a'])
     expect(groupConversationRoots([], 'none', NOW)).toEqual([])
+  })
+})
+
+describe('pinned conversations', () => {
+  it('lifts pinned roots into a leading section in every grouping', () => {
+    const roots = buildConversationTree([
+      conv('a'),
+      conv('b', { updatedAt: NOW - 2 * DAY }),
+      conv('c', { updatedAt: NOW - 40 * DAY }),
+    ])
+    const pinned = new Set(['c'])
+    for (const grouping of ['recent', 'project', 'none'] as const) {
+      const groups = groupConversationRoots(roots, grouping, NOW, pinned)
+      expect(groups[0]?.key).toBe(PINNED_GROUP_KEY)
+      expect(ids(groups[0]?.roots ?? [])).toEqual(['c'])
+      expect(groups.slice(1).flatMap((g) => ids(g.roots))).toEqual(['a', 'b'])
+    }
+  })
+
+  it('adds no section when nothing is pinned', () => {
+    const groups = groupConversationRoots(
+      buildConversationTree([conv('a')]),
+      'recent',
+      NOW,
+    )
+    expect(groups.map((g) => g.key)).not.toContain(PINNED_GROUP_KEY)
   })
 })

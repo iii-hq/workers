@@ -1,58 +1,67 @@
-/* The shell explorer and Codex both use @pierre/trees. Keep the shared
-   wrapper aligned with Codex's review-file tree: compact rows, neutral
-   filenames, sticky folders, and glyph-based git state. */
-
-function statusMask(mark: string): string {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="3.333" y="3.333" width="13.334" height="13.334" rx="3.333" stroke="currentColor" stroke-width="1.333"/>${mark}</svg>`
-  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`
-}
-
-const ADDED_MASK = statusMask(
-  '<path d="M10 6.418C10.367 6.418 10.665 6.716 10.665 7.083V9.335H12.916C13.283 9.335 13.581 9.633 13.581 10C13.581 10.367 13.283 10.665 12.916 10.665H10.665V12.916C10.665 13.283 10.367 13.581 10 13.581C9.633 13.581 9.335 13.283 9.335 12.916V10.665H7.083C6.716 10.665 6.418 10.367 6.418 10C6.418 9.633 6.716 9.335 7.083 9.335H9.335V7.083C9.335 6.716 9.633 6.418 10 6.418Z" fill="currentColor"/>',
-)
-const DELETED_MASK = statusMask(
-  '<path d="M12.916 9.335C13.283 9.335 13.581 9.633 13.581 10C13.581 10.367 13.283 10.665 12.916 10.665H7.083C6.716 10.665 6.418 10.367 6.418 10C6.418 9.633 6.716 9.335 7.083 9.335H12.916Z" fill="currentColor"/>',
-)
-const MODIFIED_MASK = statusMask(
-  '<path d="M10 8.333C10.921 8.333 11.667 9.08 11.667 10C11.667 10.921 10.921 11.667 10 11.667C9.08 11.667 8.334 10.92 8.334 10C8.334 9.08 9.08 8.333 10 8.333Z" fill="currentColor"/>',
-)
+/* The shell explorer and Codex both use @pierre/trees. The wrapper is
+   themed the way the reference sidebar reads: roomy 24px rows with the
+   name 8px off its glyph, a 12px step per level with an indent guide,
+   full-width hover and selection fills (the selected row wears a rail on
+   its outer edge), file names tinted by their git state and a small dot
+   in the lane at the right for a changed file or a folder holding one. */
 
 export const TREE_THEME: React.CSSProperties = {
   backgroundColor: 'var(--shui-explorer-bg, var(--color-panel-raised))',
   color: 'var(--color-ink)',
   width: '100%',
-  '--shui-explorer-bg': 'var(--color-panel-raised)',
-  '--shui-tree-file-muted': 'color-mix(in srgb, var(--color-ink-faint) 80%, var(--color-panel-raised))',
+  // The sidebar's canvas: the tree sits on the same black as the pane around it.
+  '--shui-explorer-bg': 'var(--color-bg)',
 } as React.CSSProperties
+
+/* The six glyph tones the design system allows beside a label, by icon
+   token: the same map `.shui-file-type-icon` applies to the tabs and
+   breadcrumbs, so one file wears one colour everywhere. Anything unlisted
+   stays faint. yml sits in purple, not rose: a red glyph beside a name
+   reads as a deleted file. */
+const ICON_TONES: Record<string, readonly string[]> = {
+  // Token names stay literal: the build checks every `--color-*` it finds.
+  '--color-glyph-blue': ['biome', 'c', 'cpp', 'docker', 'python', 'typescript', 'vscode', 'webpack'],
+  '--color-glyph-purple': ['astro', 'database', 'vite', 'bootstrap', 'css', 'eslint', 'terraform', 'wasm', 'bun', 'yml'],
+  '--color-glyph-teal': ['go', 'react', 'tailwind', 'mcp', 'prettier', 'table'],
+  '--color-glyph-green': ['bash', 'markdown', 'svgo', 'vue'],
+  '--color-glyph-amber': ['babel', 'browserslist', 'javascript', 'claude', 'html', 'json', 'rust', 'svg', 'swift', 'zig', 'zip'],
+  '--color-glyph-rose': ['graphql', 'image', 'sass', 'npm', 'postcss', 'ruby', 'svelte'],
+}
+const ICON_TONE_VARS = Object.entries(ICON_TONES)
+  .flatMap(([tone, tokens]) => tokens.map((token) => `    --trees-file-icon-color-${token}: var(${tone});`))
+  .join('\n')
 
 export const TREE_UNSAFE_CSS = `
   :host {
+    /* Icons tint through the library's per-token variables (set above). */
     --trees-bg-override: var(--shui-explorer-bg, var(--color-panel-raised));
     --trees-bg-muted-override: var(--color-surface-hover);
     --trees-border-color-override: var(--color-edge);
-    --trees-border-radius-override: 6px;
+    --trees-border-radius-override: 0px;
     --trees-fg-override: var(--color-ink);
-    --trees-fg-muted-override: var(--color-ink-ghost);
+    --trees-fg-muted-override: var(--color-ink-faint);
     --trees-font-family-override: var(--font-sans);
     --trees-font-size-override: 13px;
     --trees-focus-ring-color-override: var(--color-rule-focus);
     --trees-git-added-color-override: var(--color-ok);
     --trees-git-deleted-color-override: var(--color-alert);
     --trees-git-ignored-color-override: var(--color-ink-ghost);
-    --trees-git-lane-width-override: 20px;
+    --trees-git-lane-width-override: 16px;
     --trees-git-modified-color-override: var(--color-warn);
     --trees-git-renamed-color-override: var(--color-ok);
     --trees-git-untracked-color-override: var(--color-ok);
-    --trees-indent-guide-bg-override: color-mix(in srgb, var(--color-ink) 10%, transparent);
+    --trees-indent-guide-bg-override: color-mix(in srgb, var(--color-ink) 14%, transparent);
     --trees-item-margin-x-override: 0px;
-    --trees-item-padding-x-override: 6px;
-    --trees-item-row-gap-override: 10px;
-    --trees-level-gap-override: 0px;
+    --trees-item-padding-x-override: 12px;
+    --trees-item-row-gap-override: 8px;
+    --trees-level-gap-override: 12px;
     --trees-padding-inline-override: 0px;
     --trees-scrollbar-gutter-override: 0px;
     --trees-scrollbar-gutter-measured: 0px;
-    --trees-selected-bg-override: var(--color-surface);
+    --trees-selected-bg-override: var(--color-surface-selected);
     --trees-selected-fg-override: var(--color-ink);
+    --trees-selected-focused-border-color-override: transparent;
+${ICON_TONE_VARS}
   }
 
   [data-file-tree-sticky-overlay-content='true'],
@@ -69,67 +78,79 @@ export const TREE_UNSAFE_CSS = `
     cursor: pointer !important;
   }
 
+  /* Files and folders share one ink: a dimmed file name reads as disabled,
+     and the file is what the reader came to click. */
   [data-item-type='file'] {
-    color: var(--shui-tree-file-muted, var(--color-ink-faint));
+    color: var(--color-ink);
+  }
+
+  /* The chevron is a folder's only glyph: quiet until the row is hovered
+     or open, as in the reference. */
+  [data-item-type='folder'] > [data-item-section='icon'] {
+    color: var(--color-ink-faint);
+  }
+
+  /* The selected row runs edge to edge and wears a 2px rail on the
+     sidebar's outer edge; keyboard focus draws the console's ring. */
+  [data-type='item'][data-item-selected='true']::after {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 2px;
+    background: color-mix(in srgb, var(--color-ink) 45%, transparent);
+    pointer-events: none;
   }
 
   /* The row a context menu was opened on, and the rows a folder's actions
-     reach, while the menu is open (FilesTab marks them). */
+     reach, while the menu is open (FilesTab marks them): the neutral
+     selected fill with its edge rail, never the accent. */
   [data-type='item'][data-shui-menu='target'] {
-    background-color: color-mix(in oklab, var(--color-accent) 14%, transparent);
-    outline: 1px solid color-mix(in oklab, var(--color-accent) 55%, transparent);
+    background-color: var(--color-surface-selected);
+    outline: 1px solid var(--color-edge);
     outline-offset: -1px;
   }
 
   [data-type='item'][data-shui-menu='scope'] {
-    background-color: color-mix(in oklab, var(--color-accent) 7%, transparent);
-  }
-
-  [data-item-type='file']:hover,
-  [data-item-type='file'][aria-selected='true'] {
-    color: var(--color-ink);
+    background-color: var(--color-surface-hover);
   }
 
   [data-item-type='file']:has([data-item-section='content']:empty) {
     display: none;
   }
 
-  [data-item-git-status] > [data-item-section='content'] {
-    color: inherit;
+  /* Git state: a small dot in the lane at the right, for a changed file
+     (its own colour) and for a folder holding one (the modified tone, as
+     the library marks it). The library's letter and 6px icon are replaced
+     by the one dot so files and folders read alike. */
+  [data-item-git-status] > [data-item-section='git'] > span,
+  [data-item-contains-git-change='true'] > [data-item-section='git'] > span {
+    font-size: 0;
   }
 
-  [data-item-git-status='added'] > [data-item-section='git'] > span,
-  [data-item-git-status='deleted'] > [data-item-section='git'] > span,
-  [data-item-git-status='modified'] > [data-item-section='git'] > span,
-  [data-item-git-status='renamed'] > [data-item-section='git'] > span,
-  [data-item-git-status='untracked'] > [data-item-section='git'] > span {
-    font-size: 0;
+  [data-item-git-status] > [data-item-section='git'] > span > svg,
+  [data-item-contains-git-change='true'] > [data-item-section='git'] > span > svg {
+    display: none;
   }
 
   [data-item-git-status='added'] > [data-item-section='git'] > span::before,
   [data-item-git-status='deleted'] > [data-item-section='git'] > span::before,
   [data-item-git-status='modified'] > [data-item-section='git'] > span::before,
   [data-item-git-status='renamed'] > [data-item-section='git'] > span::before,
-  [data-item-git-status='untracked'] > [data-item-section='git'] > span::before {
-    width: 20px;
-    height: 20px;
-    background-color: currentColor;
+  [data-item-git-status='untracked'] > [data-item-section='git'] > span::before,
+  [data-item-contains-git-change='true'] > [data-item-section='git'] > span::before {
     content: '';
-    mask: var(--shui-tree-git-status-icon) center / contain no-repeat;
+    width: 7px;
+    height: 7px;
+    border-radius: 9999px;
+    background-color: currentColor;
   }
 
-  [data-item-git-status='added'] > [data-item-section='git'] > span::before,
-  [data-item-git-status='untracked'] > [data-item-section='git'] > span::before {
-    --shui-tree-git-status-icon: ${ADDED_MASK};
+  [data-item-contains-git-change='true'] > [data-item-section='git'] {
+    opacity: 0.7;
   }
 
-  [data-item-git-status='deleted'] > [data-item-section='git'] > span::before {
-    --shui-tree-git-status-icon: ${DELETED_MASK};
-  }
-
-  [data-item-git-status='modified'] > [data-item-section='git'] > span::before,
-  [data-item-git-status='renamed'] > [data-item-section='git'] > span::before {
-    --shui-tree-git-status-icon: ${MODIFIED_MASK};
+  [data-item-git-status='ignored'] > [data-item-section='content'] {
+    color: var(--color-ink-faint);
   }
 
   [data-type='item'][data-item-focused='true']::before {

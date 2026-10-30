@@ -1,30 +1,38 @@
-/* Go to file (Ctrl+P): a palette-shaped overlay inside the shell page.
+/* Go to file (⌘P): a palette-shaped overlay inside the shell page.
    One field, and under it the files of the pane's folder ranked by the
    worker's fuzzy scorer as you type — any characters of the path, in
-   order, so `ptofolder` finds `path/to/folder`. Each row is the file's
-   type icon, its name, and its folder in quieter ink, with the matched
-   characters emphasised. Enter opens the row pinned in this pane; the
-   empty query offers what this pane opened last. Built on the shared
+   order, so `ptofolder` finds `path/to/folder` — with the files this
+   folder's person actually works in (`file-use`) and names that start
+   with the query pulled to the top. Each row is the file's type icon, its
+   name, and its path in quieter ink, with the matched characters
+   emphasised; the active row carries ↵. Enter opens the row pinned in this
+   pane; the empty query offers the files in use. Built on the shared
    Dialog so the overlay, scrim, focus return and Escape are the console's;
    the rows are a listbox the field drives, which is why they are not the
    shared List (its rows take the focus themselves). */
 
-import { Dialog, DialogContent, DialogTitle, type Host, Kbd, StatusPanel } from '@iii-dev/console-ui'
-import { Search } from 'lucide-react'
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Dialog, DialogContent, DialogTitle, type Host, StatusPanel } from '@iii-dev/console-ui'
+import { CornerDownLeft, Search } from 'lucide-react'
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { coderSearch } from './coder'
 import { FileTypeIcon } from './file-type-icon'
+import { loadFileUse } from './file-use'
 import {
   highlightSegments,
+  inUseRows,
   normalizeQuickOpenQuery,
   type QuickOpenRow,
-  quickOpenRow,
+  rankQuickOpenRows,
   stepQuickOpenIndex,
   toQuickOpenRows,
 } from './quick-open'
 
 const ROWS = 40
+/** Files in use the empty query lists, before the folder's other files. */
+const IN_USE_ROWS = 12
+/** The folder's files the empty query adds under them. */
+const MORE_ROWS = 60
 const DEBOUNCE_MS = 80
 
 interface QuickOpenProps {
@@ -127,7 +135,10 @@ function QuickOpenView({ host, root, open, onOpenChange, recent, onOpenFile }: Q
       })
         .then((out) => {
           if (seq !== seqRef.current) return
-          const rows = toQuickOpenRows(root, out.path_matches, normalized, ROWS)
+          // Ranked over everything the worker sent, then cut: a file in use
+          // just past the cut still makes the list.
+          const candidates = toQuickOpenRows(root, out.path_matches, normalized, ROWS * 2)
+          const rows = rankQuickOpenRows(candidates, normalized, usesRef.current, Date.now()).slice(0, ROWS)
           setResults({ kind: 'rows', query: normalized, rows, truncated: out.truncated || out.path_matches.length > ROWS })
           setActive(0)
         })
@@ -142,9 +153,50 @@ function QuickOpenView({ host, root, open, onOpenChange, recent, onOpenFile }: Q
     return () => window.clearTimeout(timer)
   }, [open, root, normalized, host])
 
-  const recentRows = useMemo(() => recent.map((rel) => quickOpenRow(rel, '')), [recent])
+  // Read once per opening: what this folder's person works in.
+  const uses = useMemo(() => (open && root !== null ? loadFileUse(root) : {}), [open, root])
+  const usesRef = useRef(uses)
+  usesRef.current = uses
+  const recentRows = useMemo(() => inUseRows(uses, recent, Date.now(), IN_USE_ROWS), [uses, recent])
+  // Under them, more of the folder, so an empty query is a list to pick from
+  // rather than two rows: the worker's fuzzy pass over every file name.
+  const [moreRows, setMoreRows] = useState<QuickOpenRow[]>([])
+  useEffect(() => {
+    if (!open || root === null) return
+    let cancelled = false
+    coderSearch(host, {
+      query: '.',
+      regex: false,
+      ignoreCase: true,
+      path: root,
+      searchContent: false,
+      fuzzyPaths: true,
+      respectGitignore: true,
+      maxMatches: MORE_ROWS * 5,
+    })
+      .then((out) => {
+        if (cancelled) return
+        // Files a person opens: no hidden files or folders, the shallowest
+        // first (the folder's own files before what is nested deep).
+        const rows = toQuickOpenRows(root, out.path_matches, '', MORE_ROWS * 5)
+          .filter((row) => !row.rel.split('/').some((segment) => segment.startsWith('.')))
+          .sort((a, b) => a.rel.split('/').length - b.rel.split('/').length || a.rel.localeCompare(b.rel))
+        setMoreRows(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setMoreRows([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, root, host])
+  const listingRows = useMemo(() => {
+    const seen = new Set(recentRows.map((row) => row.rel))
+    const more = moreRows.filter((row) => !seen.has(row.rel)).slice(0, MORE_ROWS)
+    return { rows: [...recentRows, ...more], firstMore: more.length > 0 ? recentRows.length : -1 }
+  }, [recentRows, moreRows])
   const listing = normalized === ''
-  const rows: QuickOpenRow[] = listing ? recentRows : results.kind === 'rows' ? results.rows : []
+  const rows: QuickOpenRow[] = listing ? listingRows.rows : results.kind === 'rows' ? results.rows : []
 
   useEffect(() => {
     const list = listRef.current
@@ -201,7 +253,7 @@ function QuickOpenView({ host, root, open, onOpenChange, recent, onOpenFile }: Q
 
   let summary: string
   if (root === null) summary = ''
-  else if (listing) summary = rows.length > 0 ? 'Recently opened' : folder ?? ''
+  else if (listing) summary = rows.length > 0 ? `${rows.length} files` : folder ?? ''
   else if (searching || stale || results.kind === 'idle') summary = 'Searching…'
   else if (results.kind === 'error') summary = ''
   else if (results.truncated) summary = `First ${rows.length} matches — keep typing to narrow`
@@ -223,7 +275,7 @@ function QuickOpenView({ host, root, open, onOpenChange, recent, onOpenFile }: Q
               setActive(0)
             }}
             onKeyDown={onKeyDown}
-            placeholder={folder ? `Go to a file in ${folder}` : 'Go to file'}
+            placeholder="Search files…"
             aria-label="Go to file"
             role="combobox"
             aria-expanded={rows.length > 0}
@@ -239,12 +291,14 @@ function QuickOpenView({ host, root, open, onOpenChange, recent, onOpenFile }: Q
           />
         </div>
         <div ref={listRef} id={listId} role="listbox" aria-label="Files" className="shui-quick-open-list" data-stale={stale ? 'true' : undefined}>
-          {listing && rows.length > 0 ? <div className="shui-quick-open-group">Recently opened</div> : null}
+          {listing && recentRows.length > 0 ? <div className="shui-quick-open-group">Your files</div> : null}
           {rows.map((row, index) => {
             const selected = index === active
+            const groupLabel = listing && index === listingRows.firstMore ? <div className="shui-quick-open-group">Files</div> : null
             return (
+              <Fragment key={row.rel}>
+              {groupLabel}
               <button
-                key={row.rel}
                 type="button"
                 id={`${listId}-${index}`}
                 role="option"
@@ -262,29 +316,23 @@ function QuickOpenView({ host, root, open, onOpenChange, recent, onOpenFile }: Q
                 <span className="name">
                   <Highlighted text={row.name} indices={row.indices} offset={row.nameOffset} />
                 </span>
-                {row.dir !== '' ? (
-                  <span className="dir">
-                    <span className="dir-text">
-                      <Highlighted text={row.dir} indices={row.indices} offset={0} />
-                    </span>
+                <span className="dir">
+                  <span className="dir-text">
+                    <Highlighted text={row.rel} indices={row.indices} offset={0} />
                   </span>
-                ) : null}
+                </span>
+                {selected ? <CornerDownLeft aria-hidden className="enter" /> : null}
               </button>
+              </Fragment>
             )
           })}
           {note}
         </div>
-        <div className="shui-quick-open-foot">
-          <span className="hints">
-            <Kbd>↑</Kbd>
-            <Kbd>↓</Kbd> move
-            <Kbd>↵</Kbd> open
-            <Kbd>esc</Kbd> close
-          </span>
-          <span className="summary" role="status" aria-live="polite">
-            {summary}
-          </span>
-        </div>
+        {/* No visible footer (the design is the field and the rows); the
+            count still reaches a screen reader. */}
+        <span className="shui-quick-open-title" role="status" aria-live="polite">
+          {summary}
+        </span>
       </DialogContent>
     </Dialog>
   )

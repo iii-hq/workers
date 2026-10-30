@@ -63,7 +63,7 @@ export function SessionAddonsPickerPanel({
           disabled={disabled}
           onClick={onClear}
           className={cn(
-            'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40',
+            'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40',
             selected.size === 0 && 'bg-surface-selected',
           )}
         >
@@ -74,11 +74,11 @@ export function SessionAddonsPickerPanel({
         </button>
 
         {entries === null ? (
-          <div className="px-3 py-3 font-sans text-sm text-ink-faint">
+          <div className="px-3 py-3 font-inter text-sm text-ink-faint">
             Loading skills…
           </div>
         ) : entries.length === 0 ? (
-          <div className="px-3 py-3 font-sans text-sm text-ink-faint">
+          <div className="px-3 py-3 font-inter text-sm text-ink-faint">
             No skills available
           </div>
         ) : (
@@ -92,7 +92,7 @@ export function SessionAddonsPickerPanel({
                 disabled={disabled}
                 onClick={() => onToggle(entry.name)}
                 className={cn(
-                  'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40',
+                  'flex min-h-14 w-full min-w-0 items-center gap-3 px-3 py-2 text-left font-inter text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40',
                   checked && 'bg-surface-selected',
                 )}
               >
@@ -181,8 +181,8 @@ export function SessionAddonsPicker({
 
   const triggerClassName = cn(
     appearance === 'inline'
-      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-sans text-base font-medium text-ink hover:border-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:border-ink sm:text-[0.8125rem]'
-      : 'inline-flex h-9 w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 font-sans text-[0.8125rem] text-ink transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active',
+      ? 'relative inline-flex min-h-5.5 min-w-0 items-center border-dashed border-b border-ink-faint/50 px-0.5 font-inter text-base font-medium text-ink hover:border-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:border-ink sm:text-sm'
+      : 'inline-flex h-9 w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 font-inter text-sm text-ink transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active',
     disabled && 'pointer-events-none opacity-40',
     className,
   )
@@ -265,7 +265,7 @@ export function SessionAddonsPicker({
            sentences, and an uncapped popper sizes to the widest one — a
            viewport-wide panel that clips its own checkmarks at the screen
            edge. The cap is what makes the row-level truncation engage. */
-        className="min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[min(24rem,var(--radix-dropdown-menu-content-available-width))] max-h-[min(18rem,var(--radix-dropdown-menu-content-available-height))] overflow-x-hidden overflow-y-auto text-[13px]"
+        className="min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[min(24rem,var(--radix-dropdown-menu-content-available-width))] max-h-[min(18rem,var(--radix-dropdown-menu-content-available-height))] overflow-x-hidden overflow-y-auto text-sm"
       >
         <DropdownMenuCheckboxItem
           className="min-w-0"
@@ -315,7 +315,7 @@ export function SessionAddonsPicker({
               >
                 <div className="truncate">{e.name}</div>
                 {e.description ? (
-                  <div className="truncate text-[11px] leading-[1.5] text-ink-faint">
+                  <div className="truncate text-xs leading-[1.5] text-ink-faint">
                     {e.description}
                   </div>
                 ) : null}

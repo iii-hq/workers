@@ -6,23 +6,28 @@
 
    What this view owns, the way VS Code's explorer does:
    - single click previews a file, double click keeps it open;
+   - HTML, SVG and Markdown files offer Open preview, their tab showing
+     the rendered page (the editor's own Show preview toggle);
    - folders list lazily: expanding one the snapshot did not reach asks
      the page for its children;
    - a right-click menu per file, folder and on the empty space;
    - inline create and rename rows (F2), delete with confirmation;
-   - Git letters beside changed files, a dot on folders that hold one.
+   - a dot beside changed files and the folders that hold one;
+   - the file or folder under the pointer is read ahead, so the click
+     that follows opens it from memory.
 
    The FlatTree in props is the source of truth; the model is patched by
    diff so expansion, focus and selection survive a watcher burst. */
 
-import { ConfirmDialog, EmptyState, IconButton, SearchField } from '@iii-dev/console-ui'
+import { ConfirmDialog, EmptyState, IconButton } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import type { FileTreeDirectoryHandle, FileTreeRowDecoration, GitStatusEntry } from '@pierre/trees'
+import type { FileTreeDirectoryHandle, GitStatusEntry } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import {
   ChevronsDownUp,
   ClipboardCopy,
   Copy,
+  Eye,
   FileDiff,
   FilePlus,
   FolderPlus,
@@ -36,13 +41,13 @@ import {
   Undo2,
   X,
 } from 'lucide-react'
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FlatTree } from './coder'
 import { anchorFromEvent, type ContextMenuItem, useContextMenu } from './ContextMenu'
 import { type DeleteRequest, deleteAfterRefusal } from './file-actions'
 import type { GitFileStatus } from './git'
-import { statusLetter, statusTitle } from './git-actions'
 import { ancestorDirs, basename, dirname, joinRel, stripDirSlash } from './paths'
+import { isRichPreviewPath } from './rich-preview'
 import {
   markTreeMenuRows,
   reactivateSelectedFile,
@@ -50,11 +55,13 @@ import {
   treeItemFromEvent,
 } from './tree-activation'
 import { expandedDirectoryPaths } from './tree-expansion'
-import { visibleTruncations } from './tree-model'
 import { TREE_THEME, TREE_UNSAFE_CSS } from './tree-theme'
+import { TREE_ICONS } from './file-type-icon'
 import { ViewHeader } from './ViewHeader'
 
 const EXPAND_SNAPSHOT_MS = 250
+/** The pointer rests this long on an unlisted folder before it is listed ahead. */
+const HOVER_LIST_MS = 120
 /** Above this many path additions/removals the model is rebuilt instead of patched. */
 const BATCH_PATCH_LIMIT = 400
 const CREATE_PLACEHOLDER = 'untitled'
@@ -104,6 +111,14 @@ interface FilesTabProps {
   onActivateFile: (relPath: string) => void
   /** Double click on a file — pin clean files; keep changes in review. */
   onPinFile: (relPath: string) => void
+  /** Open preview on an HTML, SVG or Markdown file: its tab, rendered. */
+  onOpenPreview: (relPath: string) => void
+  /** The pointer is resting on a file: read it ahead of the click. */
+  onPrefetchFile: (relPath: string) => void
+  /** The pointer is resting on a folder not yet listed: list it ahead of the click. */
+  onPrefetchDir: (dir: string) => void
+  /** The pointer left the tree. */
+  onPrefetchCancel: () => void
   actions: ExplorerActions
 }
 
@@ -124,10 +139,15 @@ function FilesTabView({
   activePath,
   onActivateFile,
   onPinFile,
+  onOpenPreview,
+  onPrefetchFile,
+  onPrefetchDir,
+  onPrefetchCancel,
   actions,
 }: FilesTabProps) {
-  const filterId = useId()
   const [filter, setFilter] = useState('')
+  // The section folds under its name, as the reference sidebar's does.
+  const [folded, setFolded] = useState(false)
   const [filterMatchCount, setFilterMatchCount] = useState<number | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null)
@@ -144,7 +164,8 @@ function FilesTabView({
   const actionsRef = useRef(actions)
   actionsRef.current = actions
   const statusRef = useRef<ReadonlyMap<string, GitFileStatus>>(new Map())
-  const changedDirsRef = useRef<ReadonlySet<string>>(new Set())
+  // A folder the pointer rests on is listed before it is opened.
+  const hoverDirTimerRef = useRef<number | null>(null)
   // Placeholders of inline creates, keyed by the model path they occupy.
   const placeholdersRef = useRef(new Map<string, 'file' | 'folder'>())
   const treeRef = useRef(tree)
@@ -153,21 +174,13 @@ function FilesTabView({
   const { model } = useFileTree({
     fileTreeSearchMode: 'hide-non-matches',
     flattenEmptyDirectories: false,
-    icons: { set: 'complete', colored: true },
+    icons: TREE_ICONS,
     itemHeight: 24,
     paths: tree?.paths ?? [],
     search: false,
     stickyFolders: true,
     unsafeCSS: TREE_UNSAFE_CSS,
     onSelectionChange: (selected) => openRef.current(selected),
-    renderRowDecoration: ({ item }): FileTreeRowDecoration | null => {
-      const key = stripDirSlash(item.path)
-      if (item.kind === 'file') {
-        const status = statusRef.current.get(key)
-        return status ? { text: statusLetter(status), title: statusTitle(status) } : null
-      }
-      return changedDirsRef.current.has(key) ? { text: '•', title: 'Contains changes' } : null
-    },
     renaming: {
       canRename: () => true,
       onError: (error) => setNote(error),
@@ -358,17 +371,53 @@ function FilesTabView({
     setFilterMatchCount(query === '' ? null : model.getSearchMatchingPaths().length)
   }, [model, filter, tree])
 
+  // The library draws the state itself (a tinted name and a dot in the
+  // lane, a dot on each folder that holds a change); the map here is for
+  // the context menu's Discard.
   useEffect(() => {
     const byPath = new Map<string, GitFileStatus>()
-    const dirs = new Set<string>()
-    for (const entry of gitStatus) {
-      byPath.set(entry.path, entry.status)
-      for (const dir of ancestorDirs(entry.path)) dirs.add(dir)
-    }
+    for (const entry of gitStatus) byPath.set(entry.path, entry.status)
     statusRef.current = byPath
-    changedDirsRef.current = dirs
     model.setGitStatus(gitStatus.length > 0 ? gitStatus : undefined)
   }, [model, gitStatus])
+
+  // ── read-ahead ──
+  // A file under the pointer is read into the editor cache; a folder the
+  // snapshot never listed is listed. Both wait for the pointer to rest.
+  const clearHoverDir = useCallback(() => {
+    if (hoverDirTimerRef.current !== null) window.clearTimeout(hoverDirTimerRef.current)
+    hoverDirTimerRef.current = null
+  }, [])
+  const onTreePointerOver = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      const item = treeItemFromEvent(event)
+      if (item === null) {
+        clearHoverDir()
+        onPrefetchCancel()
+        return
+      }
+      if (item.kind === 'file') {
+        clearHoverDir()
+        onPrefetchFile(item.path)
+        return
+      }
+      onPrefetchCancel()
+      const dir = stripDirSlash(item.path)
+      const current = treeRef.current
+      if (!current || current.loaded.has(dir)) return
+      clearHoverDir()
+      hoverDirTimerRef.current = window.setTimeout(() => {
+        hoverDirTimerRef.current = null
+        onPrefetchDir(dir)
+      }, HOVER_LIST_MS)
+    },
+    [clearHoverDir, onPrefetchCancel, onPrefetchFile, onPrefetchDir],
+  )
+  const onTreePointerLeave = useCallback(() => {
+    clearHoverDir()
+    onPrefetchCancel()
+  }, [clearHoverDir, onPrefetchCancel])
+  useEffect(() => clearHoverDir, [clearHoverDir])
 
   // Reveal a path: expand every ancestor handle, scroll it into view,
   // then acknowledge. Expansion only ever OPENS dirs, so this can't fight
@@ -468,6 +517,9 @@ function FilesTabView({
       const changed = statusRef.current.has(rel)
       return [
         { id: 'open', label: 'Open', icon: <TextSearch />, onSelect: () => onPinFile(rel) },
+        ...(isRichPreviewPath(rel)
+          ? [{ id: 'preview', label: 'Open preview', icon: <Eye />, onSelect: () => onOpenPreview(rel) } satisfies ContextMenuItem]
+          : []),
         { id: 'compare', label: 'Compare with…', icon: <FileDiff />, onSelect: () => actionsRef.current.compare(rel) },
         ...(changed
           ? [
@@ -509,7 +561,7 @@ function FilesTabView({
         },
       ]
     },
-    [onPinFile, beginRename],
+    [onPinFile, onOpenPreview, beginRename],
   )
 
   const itemsForDir = useCallback(
@@ -603,14 +655,16 @@ function FilesTabView({
     [model, beginRename, openMenuAt],
   )
 
-  const truncations = useMemo(() => (tree ? visibleTruncations(tree.truncations) : []), [tree])
   const pendingDeleteName = pendingDelete ? basename(pendingDelete.path) : ''
 
   return (
     <div className="shui-tree-wrap">
+      {/* The section is the project: its name in small capitals, folding
+          the tree, with the explorer's verbs at the right. */}
       <ViewHeader
-        title="Explorer"
-        detail={<span className="shui-view-root" title={rootLabel}>{rootLabel}</span>}
+        title={rootLabel}
+        collapsed={folded}
+        onToggle={() => setFolded((value) => !value)}
         actions={
           <>
             <IconButton label="New file" onClick={() => beginCreate('file', dirOfFocus(model))}>
@@ -618,9 +672,6 @@ function FilesTabView({
             </IconButton>
             <IconButton label="New folder" onClick={() => beginCreate('folder', dirOfFocus(model))}>
               <FolderPlus aria-hidden />
-            </IconButton>
-            <IconButton label="New worker" onClick={() => actionsRef.current.newWorker(dirOfFocus(model) || 'workers')}>
-              <PackagePlus aria-hidden />
             </IconButton>
             <IconButton label="Refresh explorer" onClick={() => actions.refresh()}>
               <RefreshCw aria-hidden />
@@ -631,9 +682,6 @@ function FilesTabView({
           </>
         }
       />
-      <div className="shui-tree-filter">
-        <SearchField id={filterId} value={filter} onChange={setFilter} placeholder="Filter files…" aria-label="Filter files" />
-      </div>
       {note !== null ? (
         <div className="shui-tree-note warn" role="alert">
           <span>{note}</span>
@@ -647,6 +695,7 @@ function FilesTabView({
       <div
         ref={stageRef}
         className="shui-tree-stage"
+        hidden={folded}
         onContextMenu={(event) => {
           event.preventDefault()
           openMenuAt(anchorFromEvent(event), treeItemFromEvent(event))
@@ -673,6 +722,8 @@ function FilesTabView({
             style={{ ...TREE_THEME, colorScheme: theme }}
             data-autofocus=""
             onKeyDown={onTreeKeyDown}
+            onPointerOver={onTreePointerOver}
+            onPointerLeave={onTreePointerLeave}
             onClick={(event) => {
               const selectedPath = model.getSelectedPaths()[0] ?? null
               if (skipClickPathRef.current === selectedPath) {
@@ -688,14 +739,11 @@ function FilesTabView({
         )}
       </div>
 
+      {/* A folder being listed says so; a long listing the snapshot cut
+          short just fills in when its folder is opened. */}
       {loadingDirs.size > 0 ? (
         <div className="shui-side-note ghost" role="status">
           listing {loadingDirs.size === 1 ? basename([...loadingDirs][0] || rootLabel) : `${loadingDirs.size} folders`}…
-        </div>
-      ) : truncations.length > 0 ? (
-        <div className="shui-side-note ghost">
-          partial listing — {truncations.length} {truncations.length === 1 ? 'folder' : 'folders'} capped;
-          expand a folder to list it
         </div>
       ) : null}
 
@@ -719,9 +767,10 @@ function FilesTabView({
               ? 'The folder and everything inside it are removed from disk.'
               : 'The file is removed from disk.'
         }
-        details={pendingDelete ? [pendingDelete.path] : undefined}
-        confirmLabel={pendingDelete?.protectedInside ? 'Delete everything' : 'Delete'}
-        tone={pendingDelete?.protectedInside ? 'danger' : undefined}
+        confirmLabel={
+          pendingDelete?.protectedInside ? 'Delete everything' : pendingDelete?.isDir ? 'Delete folder' : 'Delete file'
+        }
+        tone="danger"
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
       />

@@ -58,10 +58,22 @@ describe('parseMarkdownFileLink', () => {
     expect(parseMarkdownFileLink(href)).toBeNull()
   })
   it('supports local file URLs, columns and encoded filename delimiters', () => {
-    expect(parseMarkdownFileLink('file:///tmp/no-extension#L3')).toEqual({ path: '/tmp/no-extension', range: { from: 3, to: 3 } })
-    expect(parseMarkdownFileLink('file://localhost/tmp/a.ts')).toEqual({ path: '/tmp/a.ts' })
-    expect(parseMarkdownFileLink('src/a.ts:2:3')).toEqual({ path: 'src/a.ts', range: { from: 2, to: 2 }, column: 3 })
-    expect(parseMarkdownFileLink('src/a%23b%3Fc%3A10.ts#L2')).toEqual({ path: 'src/a#b?c:10.ts', range: { from: 2, to: 2 } })
+    expect(parseMarkdownFileLink('file:///tmp/no-extension#L3')).toEqual({
+      path: '/tmp/no-extension',
+      range: { from: 3, to: 3 },
+    })
+    expect(parseMarkdownFileLink('file://localhost/tmp/a.ts')).toEqual({
+      path: '/tmp/a.ts',
+    })
+    expect(parseMarkdownFileLink('src/a.ts:2:3')).toEqual({
+      path: 'src/a.ts',
+      range: { from: 2, to: 2 },
+      column: 3,
+    })
+    expect(parseMarkdownFileLink('src/a%23b%3Fc%3A10.ts#L2')).toEqual({
+      path: 'src/a#b?c:10.ts',
+      range: { from: 2, to: 2 },
+    })
     expect(parseMarkdownFileLink('file://remote/tmp/a.ts')).toBeNull()
     expect(parseMarkdownFileLink('src/a.ts:2:0')).toBeNull()
   })

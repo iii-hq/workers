@@ -29,9 +29,15 @@ pub struct Selection {
 #[derive(Serialize, JsonSchema)]
 pub struct Preview {
     pub conversation: ConversationSummary,
+    /// The latest entries of the history, at most `PREVIEW_LIMIT`.
     pub messages: Vec<ExternalMessage>,
+    /// Whether older entries were left out of `messages`; the import still carries them.
+    pub truncated: bool,
     pub warnings: Vec<String>,
 }
+
+/// Entries one preview carries: enough to recognise a conversation, not to read it all.
+const PREVIEW_LIMIT: usize = 50;
 
 #[derive(Serialize, JsonSchema)]
 pub struct ImportResult {
@@ -71,17 +77,16 @@ pub fn register(iii: &Arc<IIIClient>) {
                     .await
                     .map_err(handler_error)?
                     .map_err(handler_error)?;
-            if transcript.messages.len() > 50 {
-                transcript.warnings.push(
-                    "Preview shows the last 50 messages; import includes the full history.".into(),
-                );
+            let truncated = transcript.messages.len() > PREVIEW_LIMIT;
+            if truncated {
                 transcript.messages = transcript
                     .messages
-                    .split_off(transcript.messages.len() - 50);
+                    .split_off(transcript.messages.len() - PREVIEW_LIMIT);
             }
             Ok::<_, Error>(Preview {
                 conversation: transcript.conversation,
                 messages: transcript.messages,
+                truncated,
                 warnings: transcript.warnings,
             })
         })
@@ -334,6 +339,8 @@ mod tests {
                 cwd: Some("/external/project".into()),
                 created_at: 1,
                 updated_at: 2,
+                message_count: 1,
+                command_count: 0,
             },
             messages: vec![ExternalMessage::new(
                 "original-message",

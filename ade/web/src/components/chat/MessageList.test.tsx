@@ -369,14 +369,14 @@ describe('MessageList paged history', () => {
     const loading = renderToStaticMarkup(
       <MessageList messages={[]} transcriptHydrated={false} />,
     )
-    expect(loading).not.toContain('What should we build in')
+    expect(loading).not.toContain('What would you like to build?')
     expect(loading).toContain('data-transcript-opening=""')
     expect(loading).toContain('data-transcript-loading=""')
 
     const hydrated = renderToStaticMarkup(
       <MessageList messages={[]} transcriptHydrated />,
     )
-    expect(hydrated).toContain('What should we build in')
+    expect(hydrated).toContain('What would you like to build?')
     expect(hydrated).not.toContain('data-transcript-loading=""')
   })
 

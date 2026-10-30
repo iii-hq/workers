@@ -531,6 +531,17 @@ export interface ComposerActionProps {
 }
 
 /**
+ * The keyboard and palette face of a composer action: the console lists it
+ * as `Chat: Title` and fires it while focus is in the chat pane, the same
+ * way a page's own commands work. `run` must not need the rendered
+ * component: it runs from the palette too, with nothing hovered or pressed.
+ */
+export type ComposerActionCommand = Pick<
+  PageCommand,
+  'title' | 'detail' | 'keywords' | 'shortcut' | 'firesWhileTyping' | 'enabled' | 'run'
+>
+
+/**
  * An icon-sized action rendered in the composer's toolbar, beside the
  * attach button. Duplicate `id`: last registration wins.
  */
@@ -538,6 +549,8 @@ export interface ComposerActionRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
   render: React.ComponentType<ComposerActionProps>
+  /** Optional palette row and shortcut for the same action. */
+  command?: ComposerActionCommand
 }
 
 /**
@@ -668,6 +681,11 @@ export interface MentionRendererRegistration {
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
+/** What `host.chat.compose` did: handed the draft to a composer (or held it
+    for the chat being opened), or, with `ifUnambiguous`, left it alone
+    because several chats are open. */
+export type ComposeResult = 'composed' | 'ambiguous'
+
 export interface Host {
   iii: ExtensionIii
   components: ConsoleApi['components']
@@ -747,11 +765,12 @@ export interface Host {
     /** Open a new, editable human chat draft without sending or creating a session. */
     openDraft(draft: { text: string; title?: string }): void
     /**
-     * Hand text and files to the active conversation's composer, the way a
-     * drop or a paste would, and put the caret there. Files become
-     * attachments. `inline` appends the text to the end of the draft's
-     * last line (a `#file(path:from-to)` reference, say) instead of
-     * starting a paragraph of its own.
+     * Hand text and files to a chat's composer, the way a drop or a paste
+     * would, and put the caret there: the only chat open, else the one used
+     * last (never several at once). Files become attachments. `inline`
+     * appends the text to the end of the draft's last line (a
+     * `#file(path:from-to)` reference, say) instead of starting a paragraph
+     * of its own.
      */
     compose(draft: {
       text?: string
@@ -764,7 +783,21 @@ export interface Host {
        * cannot send right now (streaming, blocked): the text stays a draft.
        */
       submit?: boolean
-    }): void
+      /**
+       * A screen (such as `ext:ide`) to open the chat beside when the
+       * workspace on screen shows none, so the text lands where the person
+       * can see it. Ignored where there is no workspace (`#/worker/…`).
+       */
+      beside?: string
+      /**
+       * Hand over only when the composer is beyond doubt. With more than
+       * one chat open nothing is inserted and `'ambiguous'` comes back, so
+       * the caller can offer another way (the clipboard) instead of
+       * guessing which chat was meant. Without it, the chat used last gets
+       * the text.
+       */
+      ifUnambiguous?: boolean
+    }): ComposeResult
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
     registerContextSection(section: ContextSectionRegistration): () => void

@@ -60,6 +60,8 @@ export const sessionInfoSchema = z.object({
   session_id: z.string(),
   url: z.string(),
   title: z.string().optional(),
+  /** The page's icon: a `data:` URL, or the icon's own http(s) URL. */
+  favicon: z.string().optional(),
   headless: z.boolean(),
   created_ms: z.number(),
   last_used_ms: z.number(),
@@ -613,15 +615,33 @@ const frameSchema = z.object({
 })
 export type BrowserFrame = z.infer<typeof frameSchema>
 
+/**
+ * A pane that names itself: the worker holds it as a viewer while its lease
+ * is renewed (a closed window drops out on its own) and streams frames up to
+ * `scale` device pixels per CSS pixel, capped by the `frame_density` setting.
+ */
+export interface ScreencastViewer {
+  id: string
+  /** Frame pixels per CSS pixel: the screen's devicePixelRatio. */
+  scale: number
+  leaseMs: number
+}
+
 export async function startBrowserScreencast(
   iii: ExtensionIii,
   sessionId: string,
   /** A corner thumbnail: streams, but never blocks a pane's auto-fit. */
   preview = false,
+  /** A named, leased viewer (a pane); omitted, an anonymous one. A repeat
+   * start with the same id only renews the lease. */
+  viewer?: ScreencastViewer,
 ): Promise<void> {
   await iii.trigger(BROWSER_SCREENCAST_START_FUNCTION_ID, {
     session_id: sessionId,
     ...(preview ? { preview: true } : {}),
+    ...(viewer
+      ? { viewer_id: viewer.id, scale: viewer.scale, lease_ms: viewer.leaseMs }
+      : {}),
   })
 }
 
@@ -630,10 +650,13 @@ export async function stopBrowserScreencast(
   sessionId: string,
   /** A corner thumbnail: streams, but never blocks a pane's auto-fit. */
   preview = false,
+  /** The named viewer to release; omitted, one anonymous viewer. */
+  viewerId?: string,
 ): Promise<void> {
   await iii.trigger(BROWSER_SCREENCAST_STOP_FUNCTION_ID, {
     session_id: sessionId,
     ...(preview ? { preview: true } : {}),
+    ...(viewerId ? { viewer_id: viewerId } : {}),
   })
 }
 

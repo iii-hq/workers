@@ -26,6 +26,7 @@ vi.mock('@iii-dev/console-ui', () => {
 vi.mock('../CommitBox', () => ({ CommitBox: () => <textarea aria-label="Commit message" /> }))
 vi.mock('../RollbackDialog', () => ({ RollbackDialog: () => null }))
 vi.mock('../TextDialog', () => ({ TextDialog: () => null }))
+vi.mock('../RepoSetup', () => ({ RepoSetup: ({ start }: { start: string }) => <p>setup:{start}</p> }))
 
 function render(phase: SourceControlPhase, unversioned: { path: string; status: 'untracked' }[] = []) {
   const scm = {
@@ -61,8 +62,13 @@ describe('the Commit tab', () => {
       /^<div class="shui-commit-error">.*<\/div><div class="shui-commit" hidden="">.*<textarea/,
     )
     expect(render('not-a-repo')).toMatch(
-      /^<div class="shui-side-empty">.*<\/div><div class="shui-commit" hidden="">.*<textarea/,
+      /^<div class="shui-repo-setup-scroll">.*<\/div><div class="shui-commit" hidden="">.*<textarea/,
     )
+  })
+
+  it('offers the repository setup in a folder without a repository', () => {
+    expect(render('not-a-repo')).toContain('setup:init')
+    expect(render('ready')).not.toContain('setup:')
   })
 
   it('mounts only the rows in view, however many files changed', () => {

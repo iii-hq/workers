@@ -58,10 +58,10 @@ export function TextDialog({
           <Input id={fieldId} value={value} onChange={setValue} placeholder={placeholder} autoFocus />
           {children}
           <div className="shui-text-dialog-actions">
-            <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+            <Button type="button" variant="secondary" size="md" onClick={onCancel}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary" size="sm" disabled={!ready}>
+            <Button type="submit" variant="primary" size="md" disabled={!ready}>
               {confirmLabel}
             </Button>
           </div>

@@ -18,6 +18,22 @@ vi.mock('@iii-dev/console-ui', () => ({
     </div>
   ),
   useConfirm: () => ({ confirm: async () => true, dialog: null }),
+  IconButton: ({ children }: { children: ReactNode }) => <button type="button">{children}</button>,
+  DropdownMenu: ({ children }: { children: ReactNode }) => children,
+  DropdownMenuTrigger: ({ children }: { children: ReactNode }) => children,
+  DropdownMenuContent: ({ children }: { children: ReactNode }) => <div role="menu">{children}</div>,
+  DropdownMenuLabel: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DropdownMenuItem: ({ children }: { children: ReactNode }) => <div role="menuitem">{children}</div>,
+  DropdownMenuRadioGroup: ({ children, value }: { children: ReactNode; value?: string }) => (
+    <div role="group" data-value={value}>
+      {children}
+    </div>
+  ),
+  DropdownMenuRadioItem: ({ children, value }: { children: ReactNode; value: string }) => (
+    <div role="menuitemradio" data-value={value}>
+      {children}
+    </div>
+  ),
 }))
 
 import {
@@ -100,9 +116,12 @@ describe('TerminalWorkspace', () => {
       />,
     )
 
-    expect(html).toContain('zsh 1')
-    expect(html).toContain('zsh 2')
-    expect(html).toContain('aria-selected="true"')
+    // The strip shows every terminal as a tab, the one in front selected;
+    // the menu lists the same set with the one in front chosen.
+    expect(html).toMatch(/class="shui-terminal-tab"[^>]*>.*aria-selected="false"[^>]*>.*zsh 1/)
+    expect(html).toMatch(/class="shui-terminal-tab" data-active=""[^>]*>.*aria-selected="true"[^>]*>.*zsh 2/)
+    expect(html).toContain('aria-label="Close zsh 1"')
+    expect(html).toContain('role="group" data-value="tab-2"')
   })
 
   it('keeps every tab mounted, the inactive one hidden', () => {

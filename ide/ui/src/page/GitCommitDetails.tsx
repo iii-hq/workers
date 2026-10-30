@@ -212,9 +212,9 @@ export const GitCommitDetails = memo(function GitCommitDetails({
       title: each.status === 'deleted' ? `Remove ${name}?` : `Replace ${name} with its version at ${short}?`,
       description:
         each.status === 'deleted'
-          ? `The commit deleted it: the working copy goes, uncommitted changes to it too.`
-          : 'Uncommitted changes to it are lost.',
-      confirmLabel: each.status === 'deleted' ? 'Remove' : 'Replace',
+          ? 'This commit deleted the file. Your copy is removed, with any uncommitted changes to it.'
+          : 'Any uncommitted changes to the file are lost.',
+      confirmLabel: each.status === 'deleted' ? 'Remove file' : 'Replace file',
       tone: 'danger',
     })
     // Only its own path, as WebStorm does: a rename's old name may hold

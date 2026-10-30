@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Button, type ButtonProps } from './Button'
-import { Tooltip, TooltipContent, TooltipTrigger } from './Tooltip'
+import { Hint } from './Hint'
 
 export interface IconButtonProps extends Omit<ButtonProps, 'size'> {
   label: string
@@ -37,10 +37,9 @@ export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
 
     if (tooltip === false) return button
     return (
-      <Tooltip>
-        <TooltipTrigger asChild>{button}</TooltipTrigger>
-        <TooltipContent side={tooltipSide}>{tooltip}</TooltipContent>
-      </Tooltip>
+      <Hint label={tooltip} side={tooltipSide}>
+        {button}
+      </Hint>
     )
   },
 )

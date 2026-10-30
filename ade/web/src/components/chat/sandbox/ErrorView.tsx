@@ -20,9 +20,7 @@ interface SandboxErrorViewProps {
  */
 export function SandboxErrorView({ display }: SandboxErrorViewProps) {
   const props = errorCardProps(display)
-  return (
-    <ErrorCard {...props} />
-  )
+  return <ErrorCard {...props} />
 }
 
 function errorCardProps(display: SandboxErrorDisplay): ErrorCardProps {
