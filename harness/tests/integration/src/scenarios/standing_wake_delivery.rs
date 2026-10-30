@@ -1,7 +1,7 @@
 //! INT-016 — a standing wake binding delivers EVERY fire: each one as a
 //! notification message AND an `observer_fired` record, on distinct entry ids.
 //!
-//! This pins the burst-loss bug chain found live with `database::row-changed`
+//! This pins the burst-loss bug chain found live with `database::on-row-changed`
 //! (one transaction committing three writes → three claims, two records, one
 //! notification). Two defects compounded:
 //!

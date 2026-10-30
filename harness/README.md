@@ -190,7 +190,7 @@ For an existing container, omitted settings stay in place. A supplied field repl
 whole field, including `scripts`, `environment`, and `config_override`; these are not
 partial map edits. Use `{}` or `[]` to clear maps or lists. A supplied `start_after` replaces
 the list while retaining required package dependencies. Changes can restart running workers.
-The acceptance response does not mean ready: finish the same `compose-operation` workflow
+The acceptance response does not mean ready: finish the same Compose operation wake flow
 before using the worker.
 
 ## Configuration

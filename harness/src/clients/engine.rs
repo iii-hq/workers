@@ -376,7 +376,7 @@ fn parse_engine_epoch(response: &Value) -> Option<u64> {
 ///
 /// Sampled once per engine worker change, never on a timer: a restarted
 /// engine is reconnected to by every worker, this one included — its SDK
-/// replays the `engine::workers-available` binding before announcing, so its
+/// replays its `engine::on-workers-changed` observer before announcing, so its
 /// own announce reaches [`crate::engine_events`] on the new engine.
 async fn engine_link_interrupted(
     iii: &IIIClient,

@@ -55,8 +55,8 @@ is optional; without it no call is held and every allowed call runs un-gated.
 
 ## Boundaries
 
-- Not a transcript feed. Render from `session-manager`'s `session::message-added`
-  / `message-updated` / `status-changed` (reconcile by `revision`); do not poll
+- Not a transcript feed. Render from `session-manager`'s `session::on-message-added`
+  / `on-message-updated` / `on-status-changed` (reconcile by `revision`); do not poll
   `harness::status` for content.
 - Not the approvals engine. The harness ships only the gate mechanics; the
   policy, decision RPCs (`approval::resolve`), inbox (`approval::list-pending`),

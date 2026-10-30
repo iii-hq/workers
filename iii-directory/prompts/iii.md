@@ -330,7 +330,7 @@ process patterns.
 `directory::search_functions` surfaces installable registry workers alongside installed functions.
 Review candidates with `directory::registry::workers::info { name: "<name>" }`, or browse with
 `directory::registry::workers::list { search: "<capability>" }`. These registry calls are documented.
-Installing runs new code: say what you are about to install and why, then use the compose-operation
+Installing runs new code: say what you are about to install and why, then use the Compose operation
 workflow. After install, confirm the new function ids appear with `engine::functions::list { prefix: "<worker>::" }`
 (or worker filter where required), then fetch contracts; registry detail is a preview, not the contract.
 If directory is absent, start declared `worker: "iii-directory"`, otherwise install it; if still

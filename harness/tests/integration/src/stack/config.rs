@@ -19,7 +19,7 @@ pub const WORKER_START_ORDER: [&str; 7] = [
     // metadata-sidecar seam MOT-4209 broke on. INT-006 drives a wake
     // through it; the builtin would mask exactly that path.
     "state",
-    // The database worker owns `database::row-changed` — the second real
+    // The database worker hosts `database::on-row-changed` — the second real
     // medium INT-014 proves the generic wake path over.
     "database",
 ];

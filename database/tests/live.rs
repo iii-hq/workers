@@ -1615,7 +1615,7 @@ async fn test_connection_reads_its_secrets_fresh() {
     assert!(r.ok, "re-created secret: {:?}", r.message);
 }
 
-/// A `secrets::changed` delivery rebuilds the stored connections that use
+/// A `secrets::on-changed` delivery rebuilds the stored connections that use
 /// the secret at once (corrected, deleted, re-created), and drops the cached
 /// value of a secret no stored connection uses.
 #[tokio::test(flavor = "multi_thread")]

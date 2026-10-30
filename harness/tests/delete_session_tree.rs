@@ -2083,7 +2083,7 @@ async fn session_deleted(deps: &Deps, event: Value) {
         .unwrap();
 }
 
-/// `session::deleted` purges the session's turn record with its other rows
+/// `session::on-deleted` purges the session's turn record with its other rows
 /// (MOT-5166); other sessions' records stay.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_deleted_removes_the_turn_record() {

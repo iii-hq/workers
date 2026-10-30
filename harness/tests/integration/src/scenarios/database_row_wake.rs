@@ -49,7 +49,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     Scenario::new(
         ID,
         "database-row-wake",
-        "A database::row-changed wake notifies the owner through the same generic delivery \
+        "A database::on-row-changed wake notifies the owner through the same generic delivery \
          path the state medium uses.",
         ScenarioDriver::Direct,
         model.clone(),
