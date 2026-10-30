@@ -575,6 +575,8 @@ cd kanban
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
+# the event functions' hooks against an engine (skipped when none answers)
+III_ENGINE_WS_URL=ws://127.0.0.1:49134 III_E2E_REQUIRE=1 cargo test --test e2e_events
 ```
 
 `build.rs` runs both builds when `ui/dist` or `native-ui/dist` is missing or
