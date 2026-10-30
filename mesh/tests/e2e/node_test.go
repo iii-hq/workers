@@ -53,6 +53,13 @@ func (c forwardedController) SetRuntime(ctx context.Context, rt node.Runtime) er
 }
 
 func (f *fixture) startNode(n *testNode, withIDE bool) *supervisor.Supervisor {
+	if withIDE {
+		return f.startWorker(n, "ide", "0.12.36", "MESH_TEST_IDE_BIN")
+	}
+	return f.startWorker(n, "", "", "")
+}
+
+func (f *fixture) startWorker(n *testNode, worker, version, binaryEnv string) *supervisor.Supervisor {
 	t := f.t
 	t.Helper()
 	u, err := user.Current()
@@ -67,8 +74,8 @@ func (f *fixture) startNode(n *testNode, withIDE bool) *supervisor.Supervisor {
 	if err = os.MkdirAll(cache, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if withIDE {
-		b, err := os.ReadFile(binary(t, "MESH_TEST_IDE_BIN"))
+	if worker != "" {
+		b, err := os.ReadFile(binary(t, binaryEnv))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,16 +99,18 @@ func (f *fixture) startNode(n *testNode, withIDE bool) *supervisor.Supervisor {
 			if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
 				return nil, err
 			}
-			if request.Worker != "ide" || request.Version != "0.12.36" {
+			if request.Worker != worker || request.Version != version {
 				return nil, fmt.Errorf("unexpected registry request: %+v", request)
 			}
-			body := mustJSON(map[string]any{"graph": []any{map[string]any{"name": "ide", "version": "0.12.36", "type": "binary", "binaries": map[string]any{request.Target: map[string]any{"url": "https://artifacts.example.invalid/ide", "sha256": digest}}}}})
+			body := mustJSON(map[string]any{"graph": []any{map[string]any{"name": worker, "version": version, "type": "binary", "binaries": map[string]any{request.Target: map[string]any{"url": "https://artifacts.example.invalid/" + worker, "sha256": digest}}}}})
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 		})}
 		f.restoreHTTP = func() { http.DefaultClient = original }
 		cfg := f.config.Nodes[n.name]
-		cfg.Workers = []string{"ide@0.12.36"}
-		cfg.Allow = []string{}
+		cfg.Workers = []string{worker + "@" + version}
+		if cfg.Allow == nil {
+			cfg.Allow = []string{}
+		}
 		f.config.Nodes[n.name] = cfg
 		f.reload()
 	}
@@ -109,9 +118,9 @@ func (f *fixture) startNode(n *testNode, withIDE bool) *supervisor.Supervisor {
 	t.Cleanup(func() {
 		s.Close()
 		if reports := os.Getenv("MESH_E2E_REPORT_DIR"); reports != "" {
-			b, _ := os.ReadFile(filepath.Join(f.dir, n.name+"-logs", "ide.log"))
+			b, _ := os.ReadFile(filepath.Join(f.dir, n.name+"-logs", worker+".log"))
 			if len(b) > 0 {
-				_ = os.WriteFile(filepath.Join(reports, strings.ReplaceAll(t.Name(), "/", "-")+"-supervised-ide.log"), b, 0600)
+				_ = os.WriteFile(filepath.Join(reports, strings.ReplaceAll(t.Name(), "/", "-")+"-supervised-"+worker+".log"), b, 0600)
 			}
 		}
 	})

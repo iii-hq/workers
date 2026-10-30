@@ -99,6 +99,9 @@ impl Tmux {
     pub fn command(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.path);
         command
+            // Service environments may have no UTF-8 locale; ASCII mode replaces
+            // the control separators in formatted output with underscores.
+            .arg("-u")
             .args(self.socket.args())
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")

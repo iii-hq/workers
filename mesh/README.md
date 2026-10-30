@@ -85,9 +85,11 @@ network links and trusted proxies are editable there.
 
 Node worker identity discovery was checked against a real engine and proxy in
 both `default` and project namespaces: `laptop::ide::configuration-id` resolves
-to `laptop__ide`, whose form family is `ide`. Remote IDE UI asset registrations
-are currently rejected by Mesh's trigger policy. A Console with an already
-loaded IDE form can reuse that family; node-only form delivery needs follow-up.
+to `laptop__ide`, whose form family is `ide`. Remote IDE, browser, computer and
+tmux Console script/style/module registrations are rejected by Mesh's trigger
+policy: an asset path prefix does not confine injected code or shared delivery.
+A Console with an already loaded IDE form can reuse that family; node-only
+form and page asset delivery remains unavailable.
 The exact configuration entry remains accessible through
 `configuration::get` / `configuration::set` with ID `<node>__<worker>`.
 
@@ -106,7 +108,7 @@ stun_port: 0                        # disabled; use a UDP port to enable STUN
 links: []                           # explicit pairs of nodes allowed to connect
 nodes:
   laptop:
-    workers: [ide]                  # worker names, optionally name@version
+    workers: [ide, browser, tmux]   # worker names, optionally name@version
     allow: []                       # extra hub function grants for this node
 drives:
   proj:
@@ -183,6 +185,61 @@ implemented boundaries.
 Workers run as the saved operator,
 using `ws://hub.iii.internal:49135` and the hub namespace; their configuration
 entry is `<node>__<worker>`. Self-updates restart through the service manager.
+
+
+## Node workers and default grants
+
+`ide`, `browser`, `computer` and `tmux` register functions under the node prefix,
+for example `laptop::browser::sessions::start`. Local integration checks run the
+actual binaries through signed node apply, the supervisor, a verified artifact
+cache, the gateway and the real engine/proxy. IDE shell commands, headless
+Chromium start/snapshot/stop, and tmux create/capture/kill on a private socket
+are exercised. Install Chromium and tmux on the node for those operations.
+The tmux worker forces UTF-8 output so a service's clean environment preserves
+its structured command responses.
+
+Configure each worker's owned entry, such as `laptop__browser`, before starting
+it. Browser `executable`, `data_dir` and `headless` select its browser and
+profile; tmux `tmux_binary` and `socket_path` select its server. Existing stored
+values remain authoritative when a worker registers its schema.
+
+The Linux supervisor does not pass `DISPLAY` or `XAUTHORITY` into workers.
+Computer bootstrap and RPC registration work, but native screen operations
+return a missing-display error in this environment. A separate local launch of
+the same binary through the gateway captured an isolated Xvfb display; this
+does not verify supervised desktop access or native machine acceptance.
+Remote desktop endpoints are supported by the computer worker but were not
+exercised in the Mesh integration check.
+
+`DefaultAllow()` and `DefaultTriggerTypes()` add no shared grants. Effective
+node grants still include owned configuration get/ensure/register/set calls in
+`default`, the ownership-checked configuration binding, and node-prefixed
+trigger types. Additional operator `nodes.<name>.allow` values are preserved.
+Configuration reads are raw and restricted to `<node>__*`; cross-node reads,
+non-owned `shell-ui` reads and template expansion remain refused.
+
+Observed optional requests do not become grants. The shared `state::*`,
+`stream::*`, `queue::*`, `http::*`, `cron::*` and `harness::hook::*` surfaces
+remain excluded from default grants. Computer session persistence/restore is unavailable because
+its `state::list`, `state::set` and `state::delete` calls use shared scope
+`computer_sessions`. Browser's harness guidance binding is refused, so its
+automatic prompt injection is unavailable. Console asset bindings are also
+refused; direct worker RPCs continue serving after those optional failures.
+Own trigger bindings accept only an empty config until a confined shape is
+established; shared configuration bindings accept only `configuration_id` and
+`event_types`. Condition callbacks and unknown config fields are refused.
+
+The local runner requires built worker binaries plus Chromium, Xvfb and tmux:
+
+```sh
+III_BIN=/path/to/iii MESH_TEST_CHROMIUM_BIN=/path/to/chromium mesh/tests/e2e/run-tests.sh
+```
+
+It allocates its own engine ports, browser profiles, display and tmux sockets.
+Observation JSON and process logs are written under `mesh/tests/e2e/reports`
+(or `MESH_E2E_REPORT_DIR`). These checks use controlled Registry resolve/cache
+fixtures; live publication, cross-network operation and native acceptance 11
+on Ubuntu/macOS/Windows remain unverified.
 
 ## Unattended enrollment
 

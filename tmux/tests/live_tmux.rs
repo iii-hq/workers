@@ -683,3 +683,42 @@ impl World {
         .into_shared()
     }
 }
+
+#[tokio::test]
+async fn session_output_survives_a_clean_service_environment() {
+    if !tmux_installed() {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    let server = Server {
+        socket: format!("iii-tmux-test-{}", uuid::Uuid::new_v4().simple()),
+    };
+    let tmux = tmux::tmux_cli::Tmux {
+        path: "tmux".into(),
+        socket: tmux::tmux_cli::Socket::Name(server.socket.clone()),
+        timeout: Duration::from_secs(5),
+    };
+    let output = tmux
+        .command()
+        .env_clear()
+        .args([
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "service-fixture",
+            "-P",
+            "-F",
+            &sessions::created_format(),
+            "sleep 30",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let created = sessions::parse_created(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(created.session, "service-fixture");
+    assert!(created.session_id.starts_with('$'));
+    assert!(created.pane_id.starts_with('%'));
+}

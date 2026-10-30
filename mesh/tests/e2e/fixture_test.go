@@ -35,6 +35,7 @@ type fixture struct {
 	admin                                              *iii.Client
 	config                                             hub.Config
 	identity                                           ed25519.PrivateKey
+	workerSeeds                                        map[string]map[string]any
 }
 
 func freePort(t *testing.T) int {

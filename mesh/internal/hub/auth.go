@@ -25,8 +25,7 @@ type AuthResult struct {
 	Context                      SessionContext      `json:"context"`
 }
 
-// Empty defaults are deliberate until supported workers have been observed.
-// Shared trigger types still require a confinement validator in TriggerHook.
+// Additional grants never bypass the payload and binding confinement checks.
 type GrantDefaults struct {
 	Allow        []string
 	TriggerTypes []string
