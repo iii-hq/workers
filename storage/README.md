@@ -137,7 +137,8 @@ not from a local file. On startup it:
 1. Registers its config schema with the `configuration` worker
    (`configuration::register`, id `storage`).
 2. Fetches the live, env-expanded config (`configuration::get`).
-3. Subscribes to `configuration:updated` events and hot-reloads.
+3. Observes `configuration::on-updated` (its entry's `configuration:updated`
+   events) and hot-reloads.
 
 `--config <path>` is an **optional seed**: when given, the file is loaded and
 sent as `initial_value` the first time the schema is registered (no stored value
@@ -335,7 +336,11 @@ Both functions are private: only this worker calls them, once per event its
 notifications source reports, and any worker may observe them. An observer
 names one worker bucket in `args.bucket`; `handler_timeout_ms` (default
 60000) bounds how long its target may take per event. An observer of a bucket
-without a running notifications source is rejected with `CONFIG_ERROR`.
+without a running notifications source is rejected with `CONFIG_ERROR`. A
+configuration change that removes a bucket, or its `notifications:`, rejects
+the observers of that bucket with `CONFIG_ERROR` as well; observers of a bucket
+whose source is configured but fails to start stay, and receive events once it
+runs again.
 
 Delivery is custom and at-least-once. For each event, the worker calls the
 target of every observer of its bucket whose filters match, concurrently, and

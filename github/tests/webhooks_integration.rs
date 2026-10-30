@@ -1,6 +1,7 @@
 //! Fully local integration: real HTTP listener -> SDK binary ChannelReader ->
 //! GitHub handlers -> SQLite inbox/outbox -> deterministic queue ->
-//! github::pr::on-event -> the observer's target.
+//! github::pr::on-event -> the observer's target. The github worker runs on
+//! its own connection, so a test can restart it.
 //! No external engine, GitHub, cloudflared, credentials, or skipped tests.
 //! Run: CARGO_TARGET_DIR=target-integration-82238077 cargo test --offline --test webhooks_integration
 
@@ -80,9 +81,31 @@ fn signature(secret: &str, body: &[u8]) -> String {
 
 type CallbackLog = Arc<Mutex<Vec<(Value, Option<Value>)>>>;
 
+/// The github worker's configuration: webhooks enabled, the fake gh, and the
+/// store at `db_path`.
+fn config_cell(gh_path: &std::path::Path, db_path: &std::path::Path) -> ConfigCell {
+    Arc::new(RwLock::new(Arc::new(Config {
+        token: gh_path.to_string_lossy().into_owned(),
+        gh_executable: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/integration-gh.py")
+            .to_string_lossy()
+            .into_owned(),
+        webhooks: WebhookConfig {
+            enabled: true,
+            storage_path: db_path.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })))
+}
+
 struct Fixture {
     engine: Engine,
+    /// The connection of the http worker and the mock sources; tests call
+    /// github functions from it.
     iii: Arc<IIIClient>,
+    /// The github worker's connection.
+    github: Arc<IIIClient>,
     boot: BootHandle,
     queue: Queue,
     tunnel: Tunnel,
@@ -90,6 +113,8 @@ struct Fixture {
     callback_fail: Arc<AtomicBool>,
     /// The id of the consumer's observer of github::pr::on-event.
     observer: String,
+    /// The consumer's observer of github::pr::on-event.
+    observer_handle: ObserverHandle,
     http: reqwest::Client,
     gh_path: PathBuf,
     db_path: PathBuf,
@@ -107,6 +132,7 @@ impl Fixture {
         let db_path = dir.path().join("private/store.sqlite3");
         let mut engine = Engine::start().await;
         let iii = engine.client(PROVIDER).await;
+        let github = engine.client(PROVIDER).await;
         let consumer = engine.client(CONSUMER).await;
         let queue = Queue::default();
         let tunnel = Tunnel::default();
@@ -126,20 +152,7 @@ impl Fixture {
         )
         .await
         .unwrap();
-        let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(Config {
-            token: gh_path.to_string_lossy().into_owned(),
-            gh_executable: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/integration-gh.py")
-                .to_string_lossy()
-                .into_owned(),
-            webhooks: WebhookConfig {
-                enabled: true,
-                storage_path: db_path.to_string_lossy().into_owned(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })));
-        github::webhooks::register(&iii, &cell, &engine.url).await;
+        github::webhooks::register(&github, &config_cell(&gh_path, &db_path), &engine.url).await;
         for (function, target) in [
             ("http::on-request", "github::webhooks::receive"),
             ("queue::on-message", "github::webhooks::process"),
@@ -195,11 +208,35 @@ impl Fixture {
             callbacks,
             callback_fail,
             observer: observer.id().to_owned(),
+            observer_handle: observer,
+            github,
             http,
             gh_path,
             db_path,
             _dir: dir,
         }
+    }
+    /// Restarts the github worker: its connection ends and a new process
+    /// registers. The engine keeps the old process's observers suspended
+    /// until the test calls `engine.release_departed()`, the end of the
+    /// engine's grace period. The old process's store stays locked inside
+    /// this test process, so the new one opens a store of its own.
+    async fn restart(&mut self) {
+        self.engine.hold_departed();
+        let departures = self.engine.departures();
+        let old = self.github.clone();
+        tokio::task::spawn_blocking(move || old.shutdown())
+            .await
+            .unwrap();
+        wait(|| self.engine.departures() > departures).await;
+        self.db_path = self._dir.path().join("restarted/store.sqlite3");
+        self.github = self.engine.client(PROVIDER).await;
+        github::webhooks::register(
+            &self.github,
+            &config_cell(&self.gh_path, &self.db_path),
+            &self.engine.url,
+        )
+        .await;
     }
     fn gh(&self) -> Value {
         serde_json::from_slice(&std::fs::read(&self.gh_path).unwrap()).unwrap()
@@ -671,7 +708,7 @@ async fn review_policy_filters_signed_ingress_and_delivers_compact_retryable_eve
         let error = tokio::time::timeout(Duration::from_secs(10), refused.ready()).await
             .expect("rejection in time").unwrap_err();
         assert!(error.to_string().contains("INVALID_ARGS"), "{error}");
-        assert!(fixture.database()["subscribers"].as_object().map_or(true, |s| !s.contains_key(refused.id())));
+        assert!(fixture.database()["subscribers"].as_object().is_none_or(|s| !s.contains_key(refused.id())));
         let check = |id, name, status, conclusion| json!({"repository":{"full_name":"owner/repo"},"action":"completed",
             "check_run":{"id":id,"name":name,"head_sha":"head-1","status":status,"conclusion":conclusion,
                 "completed_at":"2026-01-01T00:01:00Z","details_url":format!("https://ci.example/{id}")}});
@@ -706,6 +743,132 @@ async fn review_policy_filters_signed_ingress_and_delivers_compact_retryable_eve
         assert!(fixture.events().iter().all(|e| e.get("snapshot").is_some()));
         for number in [1,2] { call(&fixture.iii,"github::pr::unwatch",json!({"watch_id":format!("watch-{number}")})).await; }
     }).catch_unwind().await;
+    fixture.shutdown().await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// A restarted github worker finds its previous process's observers still
+/// there: the engine keeps them suspended for its grace period, and the http
+/// worker keeps their route meanwhile. The new process's route observer is
+/// refused with `HTTP_ROUTE_CONFLICT` and observed again until the route is
+/// free; its queue observer joins the same consumer group, so the jobs the
+/// previous process left queued reach the new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
+    let mut fixture = Fixture::start().await;
+    let outcome = std::panic::AssertUnwindSafe(async {
+        // A job the previous process published and never consumed.
+        call(
+            &fixture.iii,
+            "iii::durable::publish",
+            json!({"topic": WebhookConfig::default().queue, "data": {"job_id": "left-behind"}}),
+        )
+        .await;
+        assert_eq!(fixture.queue.len(), 1);
+
+        fixture.restart().await;
+        let route_refused =
+            || {
+                fixture.engine.frames().iter().any(|f| {
+                    f["type"] == "observerack" && f["error"]["code"] == "HTTP_ROUTE_CONFLICT"
+                })
+            };
+        wait(route_refused).await;
+        // The queue observer is accepted at once: a group has many members.
+        fixture
+            .engine
+            .observed("queue::on-message", "github::webhooks::process")
+            .await;
+
+        // The grace period ends: the engine disposes the old observers, and
+        // the http worker drops their route.
+        fixture.engine.release_departed();
+        for (function, target) in [
+            ("http::on-request", "github::webhooks::receive"),
+            (
+                "quick-tunnel::on-changed",
+                "github::webhooks::tunnel-changed",
+            ),
+            ("cron::on-tick", "github::webhooks::maintain"),
+            (ON_EVENT, CALLBACK),
+        ] {
+            fixture.engine.observed(function, target).await;
+        }
+        wait(|| fixture.database()["last_error"].is_null()).await;
+
+        // The backlog of the group reaches the new process.
+        fixture.queue.drain(&fixture.iii).await.unwrap();
+        assert_eq!(fixture.queue.len(), 0);
+        assert!(fixture.engine.dispatched().iter().any(|f| {
+            f["function_id"] == "github::webhooks::process" && f["data"]["job_id"] == "left-behind"
+        }));
+
+        // GitHub deliveries reach the new process through its route.
+        fixture.two_watches_ready().await;
+        fixture
+            .deliver("issue_comment", "after-restart", &comment(9100))
+            .await;
+        let events = fixture.events();
+        assert!(events.iter().any(|e| e["entity"] == "9100"), "{events:?}");
+    })
+    .catch_unwind()
+    .await;
+    fixture.shutdown().await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// The removed hook of `github::pr::on-event`: disposing an observer drops
+/// its subscriber, and marks the watches it was the last listener of as
+/// orphaned; they stop after `orphan_grace_minutes` unless an observer
+/// returns, and an observer that returns clears the mark.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disposing_an_observer_drops_its_subscriber_and_orphans_its_watches() {
+    let mut fixture = Fixture::start().await;
+    let outcome = std::panic::AssertUnwindSafe(async {
+        fixture.two_watches_ready().await;
+        assert!(fixture.database()["subscribers"][&fixture.observer].is_object());
+
+        fixture.observer_handle.dispose().await.unwrap();
+        wait(|| {
+            fixture.database()["subscribers"]
+                .get(&fixture.observer)
+                .is_none()
+        })
+        .await;
+        let database = fixture.database();
+        for number in [1, 2] {
+            let watch = &database["watches"][format!("watch-{number}")];
+            assert_eq!(watch["status"], "active", "{watch}");
+            assert!(watch["orphaned_at"].is_string(), "{watch}");
+        }
+        assert!(
+            fixture.tunnel.lease_count() == 2,
+            "the grace period keeps the leases"
+        );
+
+        let consumer = fixture.engine.client(CONSUMER).await;
+        let returned = observe_events(
+            &consumer,
+            json!({"repo":"owner/repo"}),
+            CALLBACK,
+            ObserverOptions::default().metadata(metadata()),
+        )
+        .await;
+        call(&fixture.iii, "github::webhooks::maintain", json!({})).await;
+        let database = fixture.database();
+        assert!(database["subscribers"][returned.id()].is_object());
+        for number in [1, 2] {
+            let watch = &database["watches"][format!("watch-{number}")];
+            assert_eq!(watch["status"], "active", "{watch}");
+            assert!(watch["orphaned_at"].is_null(), "{watch}");
+        }
+    })
+    .catch_unwind()
+    .await;
     fixture.shutdown().await;
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);

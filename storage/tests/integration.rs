@@ -5,8 +5,10 @@
 //!
 //! What we exercise: a `storage::putObject` round-trip against the native
 //! local backend (no cloud credentials or sidecar needed), a `getObject` to
-//! confirm the bytes round-trip, and an observer of
-//! `storage::on-object-created` for the bucket receiving the next write.
+//! confirm the bytes round-trip, an observer of
+//! `storage::on-object-created` for the bucket receiving the next write, the
+//! credential functions refusing observers, and removing the bucket rejecting
+//! its observer.
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -14,7 +16,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use iii_sdk::{register_worker, CallRequest, InitOptions, RegisterFunction, Source};
+use iii_sdk::{register_worker, CallRequest, InitOptions, ObserverState, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
 
@@ -231,6 +233,46 @@ async fn put_then_get_round_trips_via_native_local_storage() {
         .expect("the observe is answered")
         .unwrap_err();
     assert!(error.to_string().contains("CONFIG_ERROR"), "{error}");
+
+    // Their input may carry credentials: nobody may observe them.
+    for function in ["storage::saveBucket", "storage::testBucket"] {
+        let refused = client.observe(function, "integration::on-object-created");
+        let error = timeout(Duration::from_secs(10), refused.ready())
+            .await
+            .expect("the observe is answered")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("NOT_OBSERVABLE"),
+            "{function}: {error}"
+        );
+    }
+
+    // Removing the bucket from the configuration rejects its observer.
+    let deleted = timeout(
+        Duration::from_secs(10),
+        client.call(CallRequest {
+            function_id: "storage::deleteBucket".into(),
+            payload: json!({ "name": "scratch" }),
+            action: None,
+            timeout_ms: Some(8_000),
+        }),
+    )
+    .await
+    .expect("deleteBucket timed out")
+    .expect("deleteBucket failed");
+    assert_eq!(deleted["deleted"], true, "{deleted}");
+    timeout(Duration::from_secs(10), async {
+        while !matches!(
+            observer.state(),
+            ObserverState::Error | ObserverState::Disposed
+        ) {
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the observer of the removed bucket is rejected");
+    let reason = observer.reason().expect("a rejection carries its reason");
+    assert_eq!(reason.code, "CONFIG_ERROR", "{reason:?}");
 
     client.shutdown_async().await;
 }

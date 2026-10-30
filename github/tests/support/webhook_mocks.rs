@@ -3,11 +3,14 @@
 //! real SQLite inbox before the real registered process handler consumes it.
 //! Each mock source is a private function whose hooks keep its observers; the
 //! mock delivers by calling through them, as the real queue worker does.
+//! Like the queue worker, the queue keeps one durable subscription per
+//! observer outside a group (`observer:<id>`) and one per group (`@<group>`);
+//! a subscription and its backlog outlive the observers that consumed it.
 use iii_sdk::{Call, CallRequest, Error, IIIClient, ObserveRejection, Observer, RegisterFunction};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
@@ -67,11 +70,30 @@ struct SubscriberSpec {
     queue: String,
     max_retries: Option<u32>,
     backoff_ms: Option<u64>,
+    group: Option<String>,
+}
+impl SubscriberSpec {
+    fn of(obs: &Observer) -> Self {
+        serde_json::from_value(obs.args_value().clone()).unwrap()
+    }
+    /// The durable subscription the observer consumes, as the queue worker
+    /// keys it.
+    fn subscription(&self, obs: &Observer) -> String {
+        match self.group.as_deref().filter(|g| !g.is_empty()) {
+            Some(group) => format!("@{group}"),
+            None => format!("observer:{}", obs.id()),
+        }
+    }
+}
+/// One durable subscription of a topic and its backlog.
+struct Subscription {
+    topic: String,
+    backlog: VecDeque<Value>,
 }
 #[derive(Clone, Default)]
 pub struct Queue {
     pub observers: Observers,
-    pending: Arc<Mutex<VecDeque<(String, Value)>>>,
+    subscriptions: Arc<Mutex<BTreeMap<String, Subscription>>>,
     pub fail: Arc<AtomicBool>,
     pub failed_publications: Arc<AtomicUsize>,
     pub published: Arc<AtomicUsize>,
@@ -103,11 +125,28 @@ impl Queue {
                         "injected durable publication failure".into(),
                     ));
                 }
-                queue
-                    .pending
-                    .lock()
-                    .unwrap()
-                    .push_back((topic.into(), data.clone()));
+                // Every subscription of the topic gets the message: those
+                // of its current observers and those they left.
+                let mut subscriptions = queue.subscriptions.lock().unwrap();
+                for obs in queue.observers.values() {
+                    let spec = SubscriberSpec::of(&obs);
+                    if spec.queue == topic {
+                        subscriptions
+                            .entry(spec.subscription(&obs))
+                            .or_insert_with(|| Subscription {
+                                topic: topic.into(),
+                                backlog: VecDeque::new(),
+                            });
+                    }
+                }
+                let mut delivered = false;
+                for subscription in subscriptions.values_mut().filter(|s| s.topic == topic) {
+                    subscription.backlog.push_back(data.clone());
+                    delivered = true;
+                }
+                if !delivered {
+                    return Err(Error::Handler(format!("topic {topic} has no subscription")));
+                }
                 queue.published.fetch_add(1, Ordering::SeqCst);
                 // queue/src/functions.rs PublishAck is null, not {ok:true}.
                 Ok(Value::Null)
@@ -117,31 +156,48 @@ impl Queue {
             .response_format(json!({"type":"null"})),
         );
     }
+    /// Messages waiting in every subscription, consumed or not.
     pub fn len(&self) -> usize {
-        self.pending.lock().unwrap().len()
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .values()
+            .map(|s| s.backlog.len())
+            .sum()
     }
+    /// Delivers the backlog of every subscription that has an observer, one
+    /// message at a time; a subscription nobody consumes keeps its backlog.
     pub async fn drain(&self, iii: &IIIClient) -> Result<(), Error> {
         for _ in 0..100 {
-            let Some((topic, payload)) = self.pending.lock().unwrap().pop_front() else {
+            let next = {
+                let mut subscriptions = self.subscriptions.lock().unwrap();
+                let observers = self.observers.values();
+                subscriptions.iter_mut().find_map(|(key, subscription)| {
+                    let obs = observers.iter().find(|obs| {
+                        let spec = SubscriberSpec::of(obs);
+                        spec.queue == subscription.topic && spec.subscription(obs) == *key
+                    })?;
+                    let payload = subscription.backlog.pop_front()?;
+                    Some((key.clone(), obs.clone(), payload))
+                })
+            };
+            let Some((key, obs, payload)) = next else {
                 return Ok(());
             };
-            let mut matched = false;
-            for obs in self.observers.values() {
-                let spec: SubscriberSpec =
-                    serde_json::from_value(obs.args_value().clone()).unwrap();
-                if spec.queue != topic {
-                    continue;
+            let spec = SubscriberSpec::of(&obs);
+            assert_eq!(spec.max_retries, Some(5));
+            assert_eq!(spec.backoff_ms, Some(1000));
+            assert_eq!(
+                spec.group.as_deref(),
+                Some(github::webhooks::WEBHOOK_CONSUMER_GROUP)
+            );
+            if let Err(error) = iii.call(through(&obs, payload.clone())).await {
+                // A failed real handler is NOT ACKed. Explicit next drain retries it.
+                if let Some(subscription) = self.subscriptions.lock().unwrap().get_mut(&key) {
+                    subscription.backlog.push_front(payload);
                 }
-                matched = true;
-                assert_eq!(spec.max_retries, Some(5));
-                assert_eq!(spec.backoff_ms, Some(1000));
-                if let Err(error) = iii.call(through(&obs, payload.clone())).await {
-                    // A failed real handler is NOT ACKed. Explicit next drain retries it.
-                    self.pending.lock().unwrap().push_front((topic, payload));
-                    return Err(error);
-                }
+                return Err(error);
             }
-            assert!(matched, "publication has no observer");
         }
         panic!("queue dispatch exceeded bounded test budget");
     }

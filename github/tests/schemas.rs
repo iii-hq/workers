@@ -139,10 +139,9 @@ fn schemas_carry_field_descriptions() {
 /// handler returns (its request and response format).
 #[test]
 fn pr_on_event_schemas_match_goldens() {
-    let args =
-        serde_json::to_string_pretty(&schemars::schema_for!(github::webhooks::EventFilter))
-            .unwrap()
-            + "\n";
+    let args = serde_json::to_string_pretty(&schemars::schema_for!(github::webhooks::EventFilter))
+        .unwrap()
+        + "\n";
     let event = serde_json::to_string_pretty(&schemars::schema_for!(
         github::webhooks::notifications::NotificationEvent
     ))
