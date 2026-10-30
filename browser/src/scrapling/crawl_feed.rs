@@ -8,21 +8,23 @@
 //!
 //! `browser::on-crawl-item` delivers its calls itself: each event goes to the
 //! observers of its crawl (args `{ crawl_id }`) and to the observers of every
-//! crawl (no args), and the call returns once each of their targets answered
-//! or timed out. One drain task per crawl makes the calls in `seq` order, so
-//! a slow consumer slows its crawl's queue, never the crawl.
+//! crawl (no args), and the call returns `null` once each of their targets
+//! answered or timed out. The crawl calls it for every event, in `seq`
+//! order, and awaits the call before it goes on, so a slow consumer slows
+//! the crawl.
 //!
-//! Bounds, all enforced here: at most [`MAX_OBSERVERS`] observers; one drain
-//! task per crawl reading a queue of [`QUEUE_CAPACITY`] events (a full queue
-//! drops the event and counts it, the crawl never waits on a consumer); event
-//! items cut to [`EVENT_ITEM_BUDGET`]; and the store's crawl/byte/age limits.
+//! Bounds, all enforced here: at most [`MAX_OBSERVERS`] observers; each
+//! target answers within [`DELIVERY_TIMEOUT`] and each call within
+//! [`CALL_TIMEOUT`]; event items cut to [`EVENT_ITEM_BUDGET`]; and the
+//! store's crawl/byte/age limits.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 use iii_sdk::{
     Call, CallRequest, IIIClient, Keys, Match, ObserveRejection, Observer, RegisterFunction,
@@ -30,7 +32,6 @@ use iii_sdk::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
 
 use crate::scrapling::page::budget_page_derived_fields;
 
@@ -41,18 +42,13 @@ pub const ITEMS_FUNCTION: &str = "browser::crawl::items";
 
 /// Observers accepted across all crawls; `observe` fails above this.
 pub const MAX_OBSERVERS: usize = 64;
-/// Events buffered per crawl for live delivery. A slow consumer fills it;
-/// further events are dropped (and counted) instead of growing the queue.
-pub const QUEUE_CAPACITY: usize = 256;
 /// Page-derived fields of an event's `item` are cut to this many bytes.
 pub const EVENT_ITEM_BUDGET: usize = 65_536;
 /// Per-observer delivery timeout.
 pub const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long the drain waits for one call of `browser::on-crawl-item`: the
+/// How long the crawl waits for one call of `browser::on-crawl-item`: the
 /// observers are called concurrently, each bounded by [`DELIVERY_TIMEOUT`].
-const CALL_TIMEOUT: Duration = Duration::from_secs(6);
-/// How long a finished crawl waits for its queue to drain before returning.
-pub const FLUSH_DEADLINE: Duration = Duration::from_secs(10);
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(6);
 /// Longest accepted crawl id.
 pub const MAX_CRAWL_ID_BYTES: usize = 256;
 /// `browser::crawl::items` page size: default and ceiling.
@@ -119,7 +115,8 @@ pub struct CrawlItemEvent {
     /// `done` only: items retained for `browser::crawl::items`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retained: Option<usize>,
-    /// `done` only: item events dropped because this crawl's queue was full.
+    /// `done` only: item events whose call of `browser::on-crawl-item`
+    /// failed (the engine refused it or it outlived [`CALL_TIMEOUT`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dropped_events: Option<usize>,
 }
@@ -191,7 +188,7 @@ fn call_keys(input: &Value) -> Vec<&str> {
 
 /// Calls each matching observer's target with the event, concurrently, each
 /// bounded by [`DELIVERY_TIMEOUT`], and returns once they all answered or
-/// timed out. The caller (the crawl's drain) gets `null`.
+/// timed out. The caller (the crawl) gets `null`.
 async fn deliver(iii: &IIIClient, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
     let event = call.output.clone().unwrap_or_else(|| call.input.clone());
     let deliveries = observers
@@ -219,6 +216,17 @@ async fn deliver(iii: &IIIClient, call: Call, observers: Vec<Observer>) -> Resul
     futures::future::join_all(deliveries).await;
     Ok(Value::Null)
 }
+
+/// The registration description of `browser::on-crawl-item`: what targets
+/// receive and what the caller gets back.
+pub const DESCRIPTION: &str = "One page of a browser::crawl was crawled (event: item, in seq \
+     order), or the crawl ended (event: done). Its handler returns the CrawlItemEvent it is \
+     called with. Args { crawl_id? }: observe with the crawl_id before calling browser::crawl; \
+     without it, every crawl. The worker delivers each call itself: every matching target \
+     receives the CrawlItemEvent and has 5 s to answer, and the call returns null once each \
+     target answered or timed out. The crawl awaits every call, so a slow target slows the \
+     crawl. Missed items are read back with browser::crawl::items. Private: only the browser \
+     worker calls it.";
 
 /// Register `browser::on-crawl-item`: private, its handler returns the event
 /// it is called with, args `{ crawl_id? }`. Its hooks are set by id first, so
@@ -268,14 +276,7 @@ pub fn register_function(iii: &Arc<IIIClient>, hub: &CrawlFeedHub) {
         RegisterFunction::new(|event: CrawlItemEvent| Ok::<_, Error>(event))
             .args_format::<CrawlItemArgs>()
             .private()
-            .description(
-                "One page of a browser::crawl was crawled (event: item, in seq order), or the \
-                 crawl ended (event: done). Returns the CrawlItemEvent it is called with. Args \
-                 { crawl_id? }: observe with the crawl_id before calling browser::crawl; without \
-                 it, every crawl. Each target receives the CrawlItemEvent, and a slow target \
-                 slows its crawl's live feed. Dropped or missed items are read back with \
-                 browser::crawl::items. Private: only the browser worker calls it.",
-            ),
+            .description(DESCRIPTION),
     );
     tracing::info!(function_id = ON_CRAWL_ITEM_FN, "registered event function");
 }
@@ -295,10 +296,10 @@ pub trait FeedSink: Send + Sync {
     async fn deliver(&self, event: Value) -> Result<(), String>;
 }
 
-/// Awaited calls of `browser::on-crawl-item`. Awaiting (rather than
-/// fire-and-forget) is what keeps a consumer's events in `seq` order and lets
-/// a slow consumer fill the bounded queue instead of an unbounded one
-/// elsewhere.
+/// Awaited calls of `browser::on-crawl-item`, without an action: the call
+/// returns once the deliver hook heard from every matching target, which is
+/// what keeps a consumer's events in `seq` order and lets a slow consumer
+/// hold the crawl back.
 pub struct IiiFeedSink {
     iii: Arc<IIIClient>,
 }
@@ -330,16 +331,6 @@ impl FeedSink for IiiFeedSink {
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
-    }
-}
-
-/// One task per crawl: events in queue order, each delivered before the
-/// next.
-async fn drain(mut rx: mpsc::Receiver<Value>, crawl_id: String, sink: Arc<dyn FeedSink>) {
-    while let Some(event) = rx.recv().await {
-        if let Err(e) = sink.deliver(event).await {
-            tracing::debug!(crawl_id = %crawl_id, error = %e, "crawl-item delivery failed");
-        }
     }
 }
 
@@ -587,24 +578,18 @@ pub struct CrawlFeedHub {
     observers: CrawlObservers,
     store: Arc<CrawlStore>,
     sink: Arc<dyn FeedSink>,
-    queue_capacity: usize,
 }
 
 impl CrawlFeedHub {
     pub fn new(sink: Arc<dyn FeedSink>) -> Self {
-        Self::with_limits(sink, StoreLimits::default(), QUEUE_CAPACITY)
+        Self::with_limits(sink, StoreLimits::default())
     }
 
-    pub fn with_limits(
-        sink: Arc<dyn FeedSink>,
-        limits: StoreLimits,
-        queue_capacity: usize,
-    ) -> Self {
+    pub fn with_limits(sink: Arc<dyn FeedSink>, limits: StoreLimits) -> Self {
         Self {
             observers: CrawlObservers::default(),
             store: Arc::new(CrawlStore::new(limits)),
             sink,
-            queue_capacity: queue_capacity.max(1),
         }
     }
 
@@ -613,20 +598,15 @@ impl CrawlFeedHub {
         &self.observers
     }
 
-    /// Open the feed of one crawl. Must run inside a tokio runtime (it spawns
-    /// the crawl's drain task).
+    /// Open the feed of one crawl.
     pub fn start(&self, crawl_id: &str) -> Result<CrawlFeed, String> {
         self.store.begin(crawl_id)?;
-        let (tx, rx) = mpsc::channel(self.queue_capacity);
-        let drain = tokio::spawn(drain(rx, crawl_id.to_string(), self.sink.clone()));
         Ok(CrawlFeed {
             crawl_id: crawl_id.to_string(),
             store: self.store.clone(),
             sink: self.sink.clone(),
-            tx: Some(tx),
-            drain: Some(drain),
             seq: 0,
-            dropped_events: 0,
+            dropped_events: Arc::new(AtomicUsize::new(0)),
             finished: false,
         })
     }
@@ -669,10 +649,10 @@ pub struct CrawlFeed {
     crawl_id: String,
     store: Arc<CrawlStore>,
     sink: Arc<dyn FeedSink>,
-    tx: Option<mpsc::Sender<Value>>,
-    drain: Option<tokio::task::JoinHandle<()>>,
     seq: u64,
-    dropped_events: usize,
+    /// Item events whose delivery failed; shared with the deliveries
+    /// [`CrawlFeed::push`] hands out.
+    dropped_events: Arc<AtomicUsize>,
     finished: bool,
 }
 
@@ -681,64 +661,61 @@ impl CrawlFeed {
         &self.crawl_id
     }
 
-    /// Record the next item and queue its live event. Never waits on a
-    /// consumer: a full queue drops the event and counts it.
-    pub fn push(&mut self, item: &Value) {
+    /// Record the next item and return the delivery of its live event: a
+    /// call of `browser::on-crawl-item` that resolves once every matching
+    /// target answered or timed out. The crawl awaits it before it goes on,
+    /// so a slow consumer slows the crawl. A crawl nobody observes calls
+    /// nothing, and the delivery is ready at once. A failed call is counted
+    /// in `dropped_events`.
+    pub fn push(&mut self, item: &Value) -> BoxFuture<'static, ()> {
         self.seq += 1;
         self.store.push(&self.crawl_id, item);
         if !self.sink.is_observed(&self.crawl_id) {
-            return;
+            return Box::pin(std::future::ready(()));
         }
-        let event = match serde_json::to_value(item_event(&self.crawl_id, self.seq, item)) {
-            Ok(event) => event,
-            Err(e) => {
-                tracing::warn!(error = %e, "crawl-item event failed to serialize");
-                self.dropped_events += 1;
-                return;
+        let event = serde_json::to_value(item_event(&self.crawl_id, self.seq, item))
+            .map_err(|e| format!("crawl-item event failed to serialize: {e}"));
+        let sink = self.sink.clone();
+        let dropped_events = self.dropped_events.clone();
+        let crawl_id = self.crawl_id.clone();
+        Box::pin(async move {
+            let delivered = match event {
+                Ok(event) => sink.deliver(event).await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = delivered {
+                tracing::debug!(crawl_id = %crawl_id, error = %e, "crawl-item delivery failed");
+                dropped_events.fetch_add(1, Ordering::Relaxed);
             }
-        };
-        let queued = self.tx.as_ref().map(|tx| tx.try_send(event).is_ok());
-        if queued != Some(true) {
-            self.dropped_events += 1;
-        }
+        })
     }
 
-    /// Close the crawl: retain its stats, queue the `done` event, and wait up
-    /// to [`FLUSH_DEADLINE`] for live delivery to catch up. What is still
-    /// queued after that keeps draining in the background.
+    /// Close the crawl: retain its stats and, when anyone observes it,
+    /// deliver the `done` event, awaited like the items.
     pub async fn finish(mut self, stats: &Value) -> FeedSummary {
         self.finished = true;
         let retained = self.store.finish(&self.crawl_id, Some(stats.clone()));
         let summary = FeedSummary {
             retained,
-            dropped_events: self.dropped_events,
+            dropped_events: self.dropped_events.load(Ordering::Relaxed),
         };
-        let deadline = tokio::time::Instant::now() + FLUSH_DEADLINE;
-        if let Some(tx) = self.tx.take() {
-            if self.sink.is_observed(&self.crawl_id) {
-                let done = CrawlItemEvent {
-                    crawl_id: self.crawl_id.clone(),
-                    event: "done".into(),
-                    seq: self.seq + 1,
-                    item: None,
-                    truncated: None,
-                    stats: Some(stats.clone()),
-                    retained: Some(retained),
-                    dropped_events: Some(self.dropped_events),
-                };
-                if let Ok(done) = serde_json::to_value(done) {
-                    if tokio::time::timeout_at(deadline, tx.send(done))
-                        .await
-                        .is_err()
-                    {
-                        tracing::debug!(crawl_id = %self.crawl_id, "crawl-item done event not queued in time");
-                    }
-                }
-            }
-        }
-        if let Some(drain) = self.drain.take() {
-            if tokio::time::timeout_at(deadline, drain).await.is_err() {
-                tracing::debug!(crawl_id = %self.crawl_id, "crawl-item delivery continues in background");
+        if self.sink.is_observed(&self.crawl_id) {
+            let done = CrawlItemEvent {
+                crawl_id: self.crawl_id.clone(),
+                event: "done".into(),
+                seq: self.seq + 1,
+                item: None,
+                truncated: None,
+                stats: Some(stats.clone()),
+                retained: Some(retained),
+                dropped_events: Some(summary.dropped_events),
+            };
+            let delivered = match serde_json::to_value(done) {
+                Ok(done) => self.sink.deliver(done).await,
+                Err(e) => Err(format!("crawl-item event failed to serialize: {e}")),
+            };
+            if let Err(e) = delivered {
+                tracing::debug!(crawl_id = %self.crawl_id, error = %e, "crawl-item done delivery failed");
             }
         }
         summary
@@ -786,12 +763,14 @@ mod tests {
 
     /// Observes the crawls in `watched` (`*` for every crawl) and records
     /// every delivered event; optionally blocks every delivery until
-    /// released, to play a slow consumer.
+    /// released, to play a slow consumer, or fails every item call, to play
+    /// an engine that refuses them.
     #[derive(Default)]
     struct Recorder {
         watched: Vec<&'static str>,
         seen: Mutex<Vec<Value>>,
         gate: Option<Arc<Notify>>,
+        fail_items: bool,
     }
 
     impl Recorder {
@@ -814,6 +793,9 @@ mod tests {
         async fn deliver(&self, event: Value) -> Result<(), String> {
             if let Some(gate) = &self.gate {
                 gate.notified().await;
+            }
+            if self.fail_items && event["event"] == "item" {
+                return Err("engine unreachable".into());
             }
             self.seen.lock().unwrap().push(event);
             Ok(())
@@ -903,7 +885,7 @@ mod tests {
         let hub = CrawlFeedHub::new(recorder.clone());
 
         let mut other = hub.start("c2").unwrap();
-        other.push(&page_item(1));
+        other.push(&page_item(1)).await;
         other.finish(&json!({})).await;
         assert!(
             recorder.seen.lock().unwrap().is_empty(),
@@ -912,7 +894,7 @@ mod tests {
 
         let mut feed = hub.start("c1").unwrap();
         for n in 1..=50 {
-            feed.push(&page_item(n));
+            feed.push(&page_item(n)).await;
         }
         let stats = json!({"crawled": 50, "items": 50, "errors": 0, "stopped": "done"});
         let summary = feed.finish(&stats).await;
@@ -948,7 +930,7 @@ mod tests {
         let hub = CrawlFeedHub::new(recorder.clone());
         for id in ["a", "b"] {
             let mut feed = hub.start(id).unwrap();
-            feed.push(&page_item(1));
+            feed.push(&page_item(1)).await;
             feed.finish(&json!({})).await;
         }
         let crawls: Vec<String> = recorder
@@ -968,12 +950,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_observer_means_nothing_is_queued_but_everything_is_retained() {
+    async fn no_observer_means_nothing_is_called_but_everything_is_retained() {
         let recorder = Arc::new(Recorder::watching(&["zzz"]));
         let hub = CrawlFeedHub::new(recorder.clone());
         let mut feed = hub.start("c1").unwrap();
         for n in 1..=5 {
-            feed.push(&page_item(n));
+            feed.push(&page_item(n)).await;
         }
         let summary = feed.finish(&json!({"crawled": 5})).await;
         assert_eq!(summary.retained, 5);
@@ -985,70 +967,100 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slow_consumer_fills_a_bounded_queue_and_recovers_from_the_store() {
+    async fn a_slow_consumer_holds_each_delivery_until_it_answers() {
         let gate = Arc::new(Notify::new());
         let recorder = Arc::new(Recorder {
             watched: vec!["c1"],
-            seen: Mutex::default(),
             gate: Some(gate.clone()),
+            ..Recorder::default()
         });
-        let hub = CrawlFeedHub::with_limits(recorder.clone(), StoreLimits::default(), 4);
-
+        let hub = CrawlFeedHub::new(recorder.clone());
         let mut feed = hub.start("c1").unwrap();
-        // Let the drain task pick up the first event and block on the gate.
-        feed.push(&page_item(1));
-        tokio::task::yield_now().await;
-        for _ in 0..20 {
-            if feed.tx.as_ref().unwrap().capacity() == 4 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        // The crawl keeps going: 4 more fit the queue, the rest are dropped
-        // without blocking the producer.
-        for n in 2..=30 {
-            feed.push(&page_item(n));
-        }
-        assert_eq!(
-            feed.dropped_events, 25,
-            "queue holds 4 behind the in-flight one"
-        );
 
-        // Release the consumer while finish() waits for the drain.
-        let releaser = tokio::spawn({
-            let gate = gate.clone();
-            async move {
-                for _ in 0..64 {
-                    gate.notify_one();
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
+        let mut delivery = feed.push(&page_item(1));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut delivery)
+                .await
+                .is_err(),
+            "the item's delivery waits for the consumer"
+        );
+        assert!(recorder.seen.lock().unwrap().is_empty());
+        gate.notify_one();
+        delivery.await;
+        assert_eq!(recorder.seen.lock().unwrap().len(), 1);
+
+        let stats = json!({"crawled": 1});
+        let finish = feed.finish(&stats);
+        tokio::pin!(finish);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut finish)
+                .await
+                .is_err(),
+            "the done event waits for the consumer too"
+        );
+        gate.notify_one();
+        let summary = finish.await;
+        assert_eq!(
+            summary,
+            FeedSummary {
+                retained: 1,
+                dropped_events: 0
             }
+        );
+        let seqs: Vec<u64> = recorder
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|p| p["seq"].as_u64().unwrap())
+            .collect();
+        assert_eq!(seqs, [1, 2]);
+    }
+
+    #[tokio::test]
+    async fn failed_calls_are_counted_and_the_items_stay_readable() {
+        let recorder = Arc::new(Recorder {
+            watched: vec!["c1"],
+            fail_items: true,
+            ..Recorder::default()
         });
-        let summary = feed.finish(&json!({"crawled": 30})).await;
-        releaser.abort();
-        assert_eq!(summary.retained, 30, "the store kept every item");
-        assert_eq!(summary.dropped_events, 25);
-
-        let seen = recorder.seen.lock().unwrap().clone();
-        let seqs: Vec<u64> = seen.iter().map(|p| p["seq"].as_u64().unwrap()).collect();
+        let hub = CrawlFeedHub::new(recorder.clone());
+        let mut feed = hub.start("c1").unwrap();
+        for n in 1..=3 {
+            feed.push(&page_item(n)).await;
+        }
+        let summary = feed.finish(&json!({"crawled": 3})).await;
         assert_eq!(
-            seqs,
-            [1, 2, 3, 4, 5, 31],
-            "still in order; done reports the gap"
+            summary,
+            FeedSummary {
+                retained: 3,
+                dropped_events: 3
+            }
         );
-        assert_eq!(seen.last().unwrap()["dropped_events"], 25);
+        let seen = recorder.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "only done got through");
+        assert_eq!(seen[0]["event"], "done");
+        assert_eq!(seen[0]["seq"], 4);
+        assert_eq!(seen[0]["dropped_events"], 3);
 
         // Recovery: the consumer reads the missing seqs back.
-        let page = hub
-            .items(&json!({"crawl_id": "c1", "after": 5, "limit": 100}))
-            .unwrap();
+        let page = hub.items(&json!({"crawl_id": "c1", "limit": 100})).unwrap();
         let items = page["items"].as_array().unwrap();
-        assert_eq!(items.len(), 25);
-        assert_eq!(items[0]["seq"], 6);
-        assert_eq!(items[0]["item"], page_item(6));
-        assert_eq!(items[24]["seq"], 30);
-        assert!(page.get("next_after").is_none());
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["seq"], 1);
+        assert_eq!(items[0]["item"], page_item(1));
         assert_eq!(page["running"], false);
+    }
+
+    #[test]
+    fn the_description_says_what_targets_receive_and_what_the_caller_gets() {
+        for needle in [
+            "every matching target receives the CrawlItemEvent",
+            "returns null once each target answered or timed out",
+            "a slow target slows the crawl",
+        ] {
+            assert!(DESCRIPTION.contains(needle), "{needle}");
+        }
     }
 
     #[test]
@@ -1068,10 +1080,10 @@ mod tests {
         let mut feed = hub.start("same").unwrap();
         let err = hub.start("same").err().unwrap();
         assert!(err.contains("already running"), "{err}");
-        feed.push(&page_item(1));
+        feed.push(&page_item(1)).await;
         feed.finish(&json!({})).await;
         let mut again = hub.start("same").unwrap();
-        again.push(&page_item(9));
+        again.push(&page_item(9)).await;
         again.finish(&json!({})).await;
         let page = hub.items(&json!({"crawl_id": "same"})).unwrap();
         assert_eq!(page["items"], json!([{"seq": 1, "item": page_item(9)}]));
@@ -1081,7 +1093,7 @@ mod tests {
     async fn a_dropped_feed_releases_its_id() {
         let hub = CrawlFeedHub::new(Arc::new(Recorder::default()));
         let mut feed = hub.start("cancelled").unwrap();
-        feed.push(&page_item(1));
+        feed.push(&page_item(1)).await;
         drop(feed);
         let page = hub.items(&json!({"crawl_id": "cancelled"})).unwrap();
         assert_eq!(page["running"], false);

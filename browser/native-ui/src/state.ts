@@ -9,12 +9,12 @@ import { createList, createSignal, iii } from '@iii-dev/native-ui'
 import { displayUrl, isBlank, NOT_WEB, tabTitle, webUrl } from './address'
 import {
   browser,
+  EVENT,
   type HistoryResult,
   type Navigated,
   type SessionInfo,
   type SessionStopped,
   type SessionUpdated,
-  EVENT,
 } from './api'
 import { readable } from './format'
 

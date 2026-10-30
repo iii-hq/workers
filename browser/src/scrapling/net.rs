@@ -389,12 +389,10 @@ pub async fn op_crawl(ctx: &Ctx, payload: &Value) -> Result<Value, String> {
                 }
             }
         },
-        |item| {
-            // Never waits on a consumer: the feed stores the item and queues
-            // its live event (or counts it as dropped when the queue is full).
-            feed.push(item);
-            Box::pin(std::future::ready(()))
-        },
+        // The feed stores the item and hands back the call of
+        // browser::on-crawl-item; the crawl awaits it before it goes on, so
+        // a slow consumer slows the crawl.
+        |item| feed.push(item),
     )
     .await;
 

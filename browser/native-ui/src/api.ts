@@ -32,12 +32,7 @@ export const EVENT = {
 } as const
 
 /** The tab list re-reads on these: opened, closed, slept/woke/retitled, navigated. */
-export const LIFECYCLE = [
-  EVENT.sessionStarted,
-  EVENT.sessionStopped,
-  EVENT.sessionUpdated,
-  EVENT.navigated,
-] as const
+export const LIFECYCLE = [EVENT.sessionStarted, EVENT.sessionStopped, EVENT.sessionUpdated, EVENT.navigated] as const
 
 /** Observes the calls of an event function for tab `session` only. */
 export function forSession(session: string): ObserveSource {

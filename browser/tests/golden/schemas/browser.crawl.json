@@ -173,7 +173,7 @@
           },
           "dropped_events": {
             "type": "integer",
-            "description": "live events dropped because a slow consumer filled the bounded queue; read those items back"
+            "description": "item events whose browser::on-crawl-item call failed; read those items back"
           }
         }
       },

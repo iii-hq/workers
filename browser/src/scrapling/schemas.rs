@@ -607,7 +607,7 @@ fn crawl_response() -> Value {
                     "items_function": {"type": "string", "description": "browser::crawl::items: paginated read of every retained item"},
                     "function_id": {"type": "string", "description": "browser::on-crawl-item: observe it for live per-item events"},
                     "retained": {"type": "integer", "description": "items readable with browser::crawl::items (less than stats.crawled when a retention cap was hit)"},
-                    "dropped_events": {"type": "integer", "description": "live events dropped because a slow consumer filled the bounded queue; read those items back"},
+                    "dropped_events": {"type": "integer", "description": "item events whose browser::on-crawl-item call failed; read those items back"},
                 },
             },
             "warnings": {"type": "array", "items": {"type": "string"}, "description": "present when the request used deprecated input such as stream_name"},
