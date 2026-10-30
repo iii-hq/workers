@@ -240,63 +240,14 @@ fn entry_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
 
-    use async_trait::async_trait;
     use serde_json::Value;
 
-    use crate::events::{EventDeliverer, ON_CREATED_FN, ON_MESSAGE_UPDATED_FN, STORE_ON_EVENTS_FN};
+    use crate::events::recording::RecordingDeliverer;
+    use crate::events::{ON_CREATED_FN, ON_MESSAGE_UPDATED_FN, STORE_ON_EVENTS_FN};
     use crate::store::counting::CountingStore;
     use crate::store::FsStore;
     use crate::types::{AgentMessage, SessionKind, SessionStatus};
-
-    /// Observes the listed event functions (every one when `observed` is
-    /// `None`) and records the (function_id, payload) of every call.
-    struct RecordingDeliverer {
-        observed: Option<Vec<&'static str>>,
-        seen: Mutex<Vec<(String, Value)>>,
-    }
-
-    impl RecordingDeliverer {
-        fn observing_all() -> Arc<Self> {
-            Arc::new(Self {
-                observed: None,
-                seen: Mutex::new(Vec::new()),
-            })
-        }
-
-        fn observing(observed: &[&'static str]) -> Arc<Self> {
-            Arc::new(Self {
-                observed: Some(observed.to_vec()),
-                seen: Mutex::new(Vec::new()),
-            })
-        }
-
-        fn functions(&self) -> Vec<String> {
-            self.seen
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(f, _)| f.clone())
-                .collect()
-        }
-    }
-
-    #[async_trait]
-    impl EventDeliverer for RecordingDeliverer {
-        fn is_observed(&self, function_id: &str) -> bool {
-            self.observed
-                .as_ref()
-                .is_none_or(|ids| ids.contains(&function_id))
-        }
-
-        async fn call(&self, function_id: &str, payload: Value) {
-            self.seen
-                .lock()
-                .unwrap()
-                .push((function_id.to_string(), payload));
-        }
-    }
 
     fn meta(session_id: &str) -> SessionMeta {
         SessionMeta {

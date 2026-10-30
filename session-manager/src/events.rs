@@ -705,6 +705,9 @@ pub fn attach_bridge_relay(remote: &Arc<IIIClient>, local_emitter: Arc<Emitter>)
 }
 
 #[cfg(test)]
+pub(crate) mod recording;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

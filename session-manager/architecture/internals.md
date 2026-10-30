@@ -424,12 +424,16 @@ is one specific composition of those; the BDD world is another.
   RemotePublisher + relay + local emitter-with-recorder) against the same
   engine — that is how `engine_bridge.feature` proves the propagation matrix
   (B1 mutation → B1/B2/main observers exactly once, filters at each edge)
-  on a single engine. Engine observers and relays are disposed after each
-  scenario.
+  on a single engine. `tests/common/reload.rs` builds a second fs-mode
+  runtime on the same engine and changes its adapter through
+  `apply_runtime`: that is how `engine_adapter_reload.feature` proves a
+  hot-reload calls `session::on-deleted` for a session the new store lacks.
+  Engine observers and relays are disposed after each scenario.
 - Unit tests live next to what they pin: fs replay/encoding/truncation in
   `store/fs.rs`, envelope roundtrip + observation gating in `events.rs`, cursor codecs
   in `service.rs`, config resolution in `config.rs`, unreachable-main mapping
-  in `store/bridge.rs`.
+  in `store/bridge.rs`, the post-reload resync and what it reads per observed
+  event function in `resync.rs` and `configuration.rs`.
 - Conventions: every scenario asserts the full observable contract (response
   + events fired *and not fired* + state readback) and carries a
   `# Prevents:` comment naming the regression it catches. Gherkin gotcha: a

@@ -273,11 +273,19 @@ pub async fn apply_runtime(state: &AppState, cfg: WorkerConfig) -> Result<(), St
         return Ok(());
     }
 
-    // Adapter changed: build the new runtime, snapshot the pre-swap sessions
-    // (for delete signalling, only while `session::on-deleted` reaches
-    // anything), swap the runtime in, then replay current state through the
-    // new local emitter so open views reconcile in place.
+    // Adapter changed: build the new runtime, then swap it in.
     let new_runtime = build_runtime(&cfg, &state.ctx)?;
+    swap_runtime(state, new_runtime).await;
+    Ok(())
+}
+
+/// Swap `new_runtime` in for the live one and resync the session event
+/// observers: list the pre-swap sessions (for delete signalling, only while
+/// `session::on-deleted` reaches anything), swap the shared config snapshot
+/// and the runtime, replay the new store's state through the new local
+/// emitter so open views reconcile in place, then retire the previous
+/// runtime's bridge relay and connection, if any.
+async fn swap_runtime(state: &AppState, new_runtime: SessionRuntime) {
     let new_store = new_runtime.store.clone();
     let new_emitter = new_runtime.local_emitter.clone();
 
@@ -296,7 +304,7 @@ pub async fn apply_runtime(state: &AppState, cfg: WorkerConfig) -> Result<(), St
 
     // Swap the shared config snapshot first so any concurrent list call sees
     // limits consistent with the new runtime, then swap the runtime itself.
-    *state.ctx.config_cell.write().await = Arc::new(cfg);
+    *state.ctx.config_cell.write().await = new_runtime.config.clone();
     let old_runtime = {
         let mut guard = state.runtime.write().await;
         std::mem::replace(&mut *guard, new_runtime)
@@ -322,7 +330,6 @@ pub async fn apply_runtime(state: &AppState, cfg: WorkerConfig) -> Result<(), St
     // resync so any in-flight reads on it have drained.
     old_runtime.close_bridge().await;
     drop(old_runtime);
-    Ok(())
 }
 
 /// Run a config reload under the serialized reload lock. The `fetch` future is
@@ -557,6 +564,11 @@ mod tests {
 
     use super::*;
     use crate::config::{BridgeBackendConfig, FsBackendConfig, StorageAdapter};
+    use crate::events::recording::RecordingDeliverer;
+    use crate::events::{Emitter, ON_DELETED_FN};
+    use crate::store::counting::CountingStore;
+    use crate::store::{FsStore, SessionStore};
+    use crate::types::{SessionKind, SessionMeta, SessionStatus};
 
     const TEST_URL: &str = "ws://127.0.0.1:59611";
 
@@ -628,29 +640,119 @@ mod tests {
         );
     }
 
-    /// Nothing observes the session event functions (the engine handle never
-    /// connects): an adapter change reads neither the previous store nor the
-    /// new one for the resync.
-    #[tokio::test]
-    async fn an_unobserved_adapter_change_lists_no_sessions() {
-        use crate::store::counting::CountingStore;
-        use crate::store::FsStore;
+    fn session(session_id: &str, metadata: Option<serde_json::Value>) -> SessionMeta {
+        SessionMeta {
+            session_id: session_id.to_string(),
+            title: "t".to_string(),
+            description: "d".to_string(),
+            status: SessionStatus::Idle,
+            status_reason: None,
+            kind: SessionKind::User,
+            metadata: metadata.map(|m| m.as_object().unwrap().clone()),
+            forked_from: None,
+            draft: None,
+            draft_attachments: None,
+            created_at: 1,
+            updated_at: 1,
+            message_count: 0,
+        }
+    }
 
-        let tmp1 = tempfile::tempdir().unwrap();
-        let tmp2 = tempfile::tempdir().unwrap();
-        let state = fs_state(tmp1.path());
-        let previous = Arc::new(CountingStore::new(FsStore::new(tmp1.path()).unwrap()));
+    /// An adapter change from `previous_dir` (sessions s0, with metadata, and
+    /// s1) to `next_dir` (s1 alone), where the session event functions in
+    /// `observed` are observed. Counts the listings of both stores and
+    /// records the event-function calls.
+    struct AdapterChange {
+        state: AppState,
+        previous: Arc<CountingStore>,
+        next: Arc<CountingStore>,
+        next_runtime: SessionRuntime,
+        recorder: Arc<RecordingDeliverer>,
+        _dirs: (tempfile::TempDir, tempfile::TempDir),
+    }
+
+    async fn adapter_change(observed: &[&'static str]) -> AdapterChange {
+        let previous_dir = tempfile::tempdir().unwrap();
+        let next_dir = tempfile::tempdir().unwrap();
+        let state = fs_state(previous_dir.path());
+
+        let previous = Arc::new(CountingStore::new(
+            FsStore::new(previous_dir.path()).unwrap(),
+        ));
+        previous
+            .put_meta(&session("s0", Some(json!({ "owner": "u_1" }))))
+            .await
+            .unwrap();
+        previous.put_meta(&session("s1", None)).await.unwrap();
         state.runtime.write().await.store = previous.clone();
 
-        apply_runtime(&state, fs_config(tmp2.path()))
-            .await
-            .expect("adapter reload");
+        let next = Arc::new(CountingStore::new(FsStore::new(next_dir.path()).unwrap()));
+        next.put_meta(&session("s1", None)).await.unwrap();
+        let recorder = RecordingDeliverer::observing(observed);
+        let emitter = Arc::new(Emitter::feeding_bridges(recorder.clone()));
+        let mut next_runtime =
+            build_runtime(&fs_config(next_dir.path()), &state.ctx).expect("build fs runtime");
+        next_runtime.store = next.clone();
+        next_runtime.sink = emitter.clone();
+        next_runtime.local_emitter = emitter;
+
+        AdapterChange {
+            state,
+            previous,
+            next,
+            next_runtime,
+            recorder,
+            _dirs: (previous_dir, next_dir),
+        }
+    }
+
+    /// `session::on-deleted` is observed: the adapter change lists the
+    /// previous store once and calls `session::on-deleted` once, for the
+    /// session the new store lacks, with that session's metadata.
+    #[tokio::test]
+    async fn an_observed_adapter_change_signals_the_dropped_session() {
+        let change = adapter_change(&[ON_DELETED_FN]).await;
+        let next_store: Arc<dyn SessionStore> = change.next.clone();
+
+        swap_runtime(&change.state, change.next_runtime).await;
+
+        assert!(Arc::ptr_eq(
+            &change.state.runtime.read().await.store,
+            &next_store
+        ));
+        assert_eq!(
+            change.previous.reads(),
+            (1, 0),
+            "the previous store was listed once"
+        );
+        assert_eq!(
+            change.next.reads(),
+            (1, 0),
+            "the new store's sessions were listed once and its entries never"
+        );
+        let seen = change.recorder.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{seen:#?}");
+        assert_eq!(seen[0].0, ON_DELETED_FN);
+        assert_eq!(seen[0].1["session_id"], "s0");
+        assert_eq!(seen[0].1["session_metadata"], json!({ "owner": "u_1" }));
+    }
+
+    /// Nothing observes the session event functions, and no bridge observes
+    /// the feed: an adapter change reads neither the previous store nor the
+    /// new one, and calls nothing.
+    #[tokio::test]
+    async fn an_unobserved_adapter_change_lists_no_sessions() {
+        let change = adapter_change(&[]).await;
+
+        swap_runtime(&change.state, change.next_runtime).await;
 
         assert_eq!(
-            previous.reads(),
+            change.previous.reads(),
             (0, 0),
             "the previous store was not listed"
         );
+        assert_eq!(change.next.reads(), (0, 0), "the new store was not read");
+        assert!(change.recorder.functions().is_empty(), "nothing was called");
     }
 
     #[tokio::test]

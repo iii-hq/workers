@@ -11,8 +11,9 @@
 //!   directory (same ids/clock) to simulate a worker restart.
 //! - **@engine**: the shared engine connection (`None` when
 //!   unreachable, so `@engine` steps soft-skip), alias bookkeeping for
-//!   the real (random) ids, the scenario's engine observers, and named
+//!   the real (random) ids, the scenario's engine observers, named
 //!   in-process bridged-instance stacks for the bridge propagation
+//!   scenarios, and a second fs-mode runtime for the adapter hot-reload
 //!   scenarios.
 
 use std::collections::HashMap;
@@ -37,6 +38,7 @@ use session_manager::store::FsStore;
 use super::bridge::BridgeStack;
 use super::ids::{FakeClock, SeqIds};
 use super::recorder::{Recorder, RecorderDeliverer};
+use super::reload::ReloadableInstance;
 
 #[derive(World)]
 #[world(init = Self::new)]
@@ -70,6 +72,9 @@ pub struct SessionWorld {
     pub engine_observers: HashMap<String, EngineObserver>,
     /// Named in-process bridged-instance stacks (@engine bridge tests).
     pub bridges: HashMap<String, BridgeStack>,
+    /// A second fs-mode runtime whose adapter the scenario changes
+    /// (@engine hot-reload tests).
+    pub reloadable: Option<ReloadableInstance>,
 }
 
 /// An observer the scenario created on the engine, and the recorder
@@ -107,6 +112,7 @@ impl SessionWorld {
             engine: None,
             engine_observers: HashMap::new(),
             bridges: HashMap::new(),
+            reloadable: None,
         }
     }
 
@@ -138,6 +144,7 @@ impl SessionWorld {
         self.aliases.clear();
         self.engine_observers.clear();
         self.bridges.clear();
+        self.reloadable = None;
     }
 
     /// Mark the scenario as engine-dependent-but-skipped. Returns true
