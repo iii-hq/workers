@@ -297,10 +297,16 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         .await
         .expect("observer never became active")
         .expect("console::workspace::on-changed refused the observer");
-    let first = timeout(Duration::from_secs(5), rung_rx.recv())
+    let mut first = timeout(Duration::from_secs(5), rung_rx.recv())
         .await
         .expect("a new observer was not rung")
         .expect("ring channel closed");
+    // The ring is a call through the observer: the payload arrives as the
+    // console sent it, plus the `_caller_worker_id` stamp the engine adds to
+    // every call a worker makes.
+    if let Some(event) = first.as_object_mut() {
+        event.remove("_caller_worker_id");
+    }
     assert_eq!(first, serde_json::json!({}));
     observer.dispose().await.expect("dispose failed");
 
