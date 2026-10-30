@@ -2523,42 +2523,68 @@ async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
     router.shutdown();
 }
 
+/// The id of the auth function of the listener in
+/// [`internal_channel_creation_failure_still_emits_one_terminal_and_eof`].
+const NO_CHANNELS_AUTH: &str = "test::no_channels::auth";
+
 #[tokio::test(flavor = "multi_thread")]
 async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
-    let engine = engine_or_skip!();
-    let router = register_worker(&engine.url, test_init_options());
-    register_router(router.clone()).await.expect("router boots");
-    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
-
-    // Mint the consumer channel before adversarially shadowing the engine's
-    // channel factory. The chat pipeline must turn the later internal factory
-    // failure into a terminal frame on this already-valid caller channel.
-    let consumer = register_worker(&engine.url, test_init_options());
-    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
-    let saboteur = register_worker(&engine.url, test_init_options());
-    saboteur.register_function(
-        "engine::channels::create",
-        RegisterFunction::new_async(|_input: Value| async move {
-            Err::<Value, Error>(Error::Remote {
-                code: "injected/channel_unavailable".into(),
-                message: "injected channel factory failure".into(),
-                stacktrace: None,
-            })
+    // The router connects through a second listener whose auth denies its
+    // session `engine::channels::create`; everything else is exposed. The
+    // consumer and the provider use the main listener, so the consumer's
+    // channel is valid and only the router's internal channel creation fails.
+    let router_port = free_port();
+    let Some(engine) = spawn_engine_with_state(|port, _dir| {
+        format!(
+            r#"workers:
+  - name: iii-worker-manager
+    config:
+      port: {port}
+  - name: "iii-worker-manager#no-channels"
+    config:
+      host: 127.0.0.1
+      port: {router_port}
+      rbac:
+        auth_function_id: {NO_CHANNELS_AUTH}
+        expose_functions:
+          - match("*")
+"#
+        )
+    })
+    .await
+    else {
+        return;
+    };
+    let gate = register_worker(&engine.url, test_init_options());
+    gate.register_function(
+        NO_CHANNELS_AUTH,
+        RegisterFunction::new(|_input: Value| {
+            Ok::<Value, Error>(json!({ "forbidden_functions": ["engine::channels::create"] }))
         }),
     );
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match call(&saboteur, "engine::channels::create", json!({})).await {
-            Err(error) if remote_code(&error) == "injected/channel_unavailable" => break,
-            _ => {
-                assert!(
-                    Instant::now() < deadline,
-                    "adversarial channel factory did not become active"
-                );
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        }
+
+    let consumer = register_worker(&engine.url, test_init_options());
+    // The listener authenticates the router's connection with this function.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while call(&consumer, NO_CHANNELS_AUTH, json!({})).await.is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "auth function registered in time"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
+
+    let router = register_worker(
+        &format!("ws://127.0.0.1:{router_port}"),
+        test_init_options(),
+    );
+    register_router(router.clone()).await.expect("router boots");
+    let denied = call(&router, "engine::channels::create", json!({}))
+        .await
+        .expect_err("the router's session may not create channels");
+    assert_eq!(remote_code(&denied), "FORBIDDEN", "{denied:?}");
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
 
     let error = consumer
         .call(CallRequest {
@@ -2600,7 +2626,7 @@ async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
         "frames: {parsed:?}"
     );
 
-    saboteur.shutdown();
+    gate.shutdown();
     consumer.shutdown();
     provider.iii.shutdown();
     router.shutdown();
