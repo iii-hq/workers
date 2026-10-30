@@ -16,6 +16,7 @@ import (
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	"github.com/iii-hq/workers/mesh/internal/coordinator"
+	"github.com/iii-hq/workers/mesh/internal/gateway"
 	"github.com/iii-hq/workers/mesh/internal/join"
 	"github.com/iii-hq/workers/mesh/internal/meshnet"
 	"github.com/iii-hq/workers/mesh/internal/relay"
@@ -35,6 +36,8 @@ type Hooks struct {
 
 type Hub struct {
 	Coordinator     *coordinator.Coordinator
+	MeshGateway     *gateway.Gateway
+	Tickets         *gateway.Tickets
 	Client          *iii.Client
 	DefaultClient   *iii.Client
 	Version         string
@@ -90,6 +93,9 @@ func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *H
 	if err != nil {
 		return h, err
 	}
+	h.Tickets = gateway.NewTickets(10*time.Second, time.Now)
+	h.MeshGateway = gateway.New(h.Coordinator.Node, cfg.ProxyURL, h.Tickets)
+	h.SetHooks(Hooks{})
 	h.Coordinator.Gone = h.revoke
 	if client != nil {
 		if err = h.refreshNames(ctx); err != nil {
@@ -186,7 +192,42 @@ func (h *Hub) FrontURL() string {
 	}
 	return "http://" + h.frontListener.Addr().String()
 }
-func (h *Hub) SetHooks(hooks Hooks) { h.mu.Lock(); defer h.mu.Unlock(); h.hooks = hooks }
+func (h *Hub) SetHooks(hooks Hooks) {
+	// Always compose from the supplied bundle, never from previously wrapped hooks.
+	if g := h.MeshGateway; g != nil {
+		if hooks.Gateway == nil {
+			hooks.Gateway = g
+		}
+		revoke, changed, closeHook := hooks.RevokeNode, hooks.ConfigChanged, hooks.Close
+		hooks.RevokeNode = func(name string) {
+			g.CloseNode(name)
+			if revoke != nil {
+				revoke(name)
+			}
+		}
+		hooks.ConfigChanged = func(ctx context.Context, old, next Config) {
+			if old.GatewayPort != next.GatewayPort {
+				g.CloseConnections()
+			}
+			if old.ProxyURL != next.ProxyURL {
+				g.SetProxyURL(next.ProxyURL)
+			}
+			if changed != nil {
+				changed(ctx, old, next)
+			}
+		}
+		hooks.Close = func() error {
+			err := g.Close()
+			if closeHook != nil {
+				err = errors.Join(err, closeHook())
+			}
+			return err
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hooks = hooks
+}
 func (h *Hub) revoke(name string) {
 	h.mu.RLock()
 	f := h.hooks.RevokeNode

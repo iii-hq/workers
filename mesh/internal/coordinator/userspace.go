@@ -44,9 +44,11 @@ type userspace struct {
 func (u *userspace) close() {
 	u.once.Do(func() {
 		u.mu.Lock()
-		defer u.mu.Unlock()
 		u.closed = true
-		for _, l := range u.listeners {
+		listeners := u.listeners
+		u.listeners = nil
+		u.mu.Unlock()
+		for _, l := range listeners {
 			_ = l.Close()
 		}
 		if u.stack != nil {
@@ -178,12 +180,14 @@ func (c *Coordinator) Listen(ctx context.Context, control string, ports ...int) 
 		if err != nil {
 			return nil, err
 		}
-		u.listeners = append(u.listeners, l)
+		u.mu.Lock()
+		listeners = append(listeners, u.ownListenerLocked(l))
+		u.mu.Unlock()
 	}
 	u.address = address
 	c.backend = u
 	go func() { <-ctx.Done(); u.close(); stop(); cancel() }()
-	return append([]net.Listener(nil), u.listeners...), nil
+	return listeners, nil
 }
 
 // ListenTCP binds another port on the existing hub backend. The caller owns
@@ -207,6 +211,34 @@ func (c *Coordinator) ListenTCP(port int) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	u.listeners = append(u.listeners, l)
-	return l, nil
+	return u.ownListenerLocked(l), nil
+}
+
+type ownedListener struct {
+	net.Listener
+	owner *userspace
+	once  sync.Once
+	err   error
+}
+
+func (u *userspace) ownListenerLocked(l net.Listener) net.Listener {
+	owned := &ownedListener{Listener: l, owner: u}
+	u.listeners = append(u.listeners, owned)
+	return owned
+}
+func (l *ownedListener) Close() error {
+	l.once.Do(func() {
+		l.err = l.Listener.Close()
+		l.owner.mu.Lock()
+		defer l.owner.mu.Unlock()
+		for i, current := range l.owner.listeners {
+			if current == l {
+				copy(l.owner.listeners[i:], l.owner.listeners[i+1:])
+				l.owner.listeners[len(l.owner.listeners)-1] = nil
+				l.owner.listeners = l.owner.listeners[:len(l.owner.listeners)-1]
+				break
+			}
+		}
+	})
+	return l.err
 }

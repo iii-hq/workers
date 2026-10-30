@@ -104,6 +104,9 @@ func (h *Hub) Status() StatusResult {
 	}
 	if !closed && hooks.Gateway != nil && gateway != nil {
 		s.Gateway = "ok"
+		if status, ok := hooks.Gateway.(interface{ Status() string }); ok {
+			s.Gateway = status.Status()
+		}
 	}
 	if closed {
 		s.Gateway = "not running"
