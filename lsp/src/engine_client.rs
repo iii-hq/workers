@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use crate::engine_introspection::{self, FunctionInfo, ObserverInfo, WorkerInfo};
 
 /// The sources the engine hosts: private functions it calls once per event.
-/// `engine::functions::list` leaves them out, so the server knows them by id.
+/// `engine::functions::list` leaves the `engine::*` ones out and lists the
+/// others only while the engine worker that hosts them runs, so the server
+/// knows them all by id.
 pub const ENGINE_SOURCES: &[(&str, &str)] = &[
     (
         "engine::on-functions-changed",
