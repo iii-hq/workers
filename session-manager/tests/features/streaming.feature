@@ -13,8 +13,8 @@ Feature: the reactivity model — streaming a reply end to end
   the spec, pinned step by step.
 
   # Prevents: any regression in the exact event choreography a chat UI
-  # depends on: 1 created, 2 status changes, 2 message_added, N
-  # message_updated with increasing revisions.
+  # depends on: 1 created, 2 status changes, 2 messages added, N
+  # message updates with increasing revisions.
   Scenario: a full streamed turn delivers every event a chat UI renders from
     Given an observer "b1" of "session::on-created" delivering to "ui::chat"
     And an observer "b2" of "session::on-message-added" delivering to "ui::chat"
