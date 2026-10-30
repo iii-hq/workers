@@ -56,9 +56,11 @@ filters: { "input.scope": { "$eq": "agent_tasks" }, "input.key": { "$eq": "<chil
 Take the event's field names from `engine::functions::info function_id=state::on-changed`
 (its `response_format`), never from memory.
 
-The child's turns also stream onto `agent::events` under its `session_id`, and
-`session::get` returns its status and title. Those are for watching; the state
-write is what wakes you.
+The child's turns also arrive as AgentEvent frames on `claude::on-agent-event`
+(or `pi::on-agent-event`): `harness::observe { function_id: "claude::on-agent-event",
+args: { "session_id": "<child session_id>" } }`. `session::get` returns the
+child's status and title. Those are for watching; the state write is what wakes
+you.
 
 ## When blocking IS right
 
@@ -73,5 +75,6 @@ state write survives both.
 - **`claude::task`** — Claude Code with its own tools and login.
 - **`pi::task`** — the pi coding agent, provider-agnostic.
 
-Both stream their work onto `agent::events`, so the console renders a delegated
-run exactly like a native harness sub-agent's.
+Both publish their turns as AgentEvent frames (`claude::on-agent-event`,
+`pi::on-agent-event`), so the console renders a delegated run exactly like a
+native harness sub-agent's.
