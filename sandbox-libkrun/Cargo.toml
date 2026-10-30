@@ -3,8 +3,8 @@ members = ["crates/*"]
 
 [package]
 name = "sandbox-libkrun"
-# Major tracks the sandbox contract's CONTRACT_MAJOR.
-version = "1.0.0"
+# 0.2.x implements sandbox contract 1; iii-compose's ADAPTER_RANGE ("^0.2") must match.
+version = "0.2.0"
 edition = "2024"
 license = "Elastic-2.0"
 publish = false

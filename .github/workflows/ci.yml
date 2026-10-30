@@ -387,7 +387,7 @@ jobs:
   # rest. macOS: the Apple Silicon build and the platform crates the ubuntu
   # gate never compiles. Linux: real VMs on KVM, the integration-vm suite and
   # the isolation e2e. The Linux job has no continue-on-error: it gates
-  # every release, so a 1.x whose fixtures drifted from the contract or whose
+  # every release, so a 0.2.x whose fixtures drifted from the contract or whose
   # VMs do not boot cannot ship.
   # ──────────────────────────────────────────────────────────────
   sandbox-libkrun-macos:
@@ -510,7 +510,7 @@ jobs:
 
       # The copied fixtures pin this worker's wire shape to the contract's.
       # Comparing them with the contract's own copies on iii main keeps a
-      # later 1.x from shipping a shape the contract has moved past. It runs
+      # later 0.2.x from shipping a shape the contract has moved past. It runs
       # last so a drift (or a contract not on main yet) never hides the VM results.
       - name: Contract drift check
         run: |

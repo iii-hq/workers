@@ -652,7 +652,7 @@ mod registration_tests {
     fn adapter_info_names_the_package_and_the_contract() {
         let i = adapter_info();
         // The version tracks Cargo.toml, which sync-manifest-versions rewrites
-        // after each release; its major must stay the contract's (spec S2).
+        // after each release.
         assert_eq!(
             (
                 i.adapter.as_str(),
@@ -661,7 +661,14 @@ mod registration_tests {
             ),
             ("sandbox-libkrun", env!("CARGO_PKG_VERSION"), CONTRACT_MAJOR)
         );
-        assert_eq!(env!("CARGO_PKG_VERSION_MAJOR"), CONTRACT_MAJOR.to_string());
+        // iii-compose installs ADAPTER_RANGE "^0.2" for contract 1, so releases stay 0.2.x.
+        assert_eq!(
+            (
+                env!("CARGO_PKG_VERSION_MAJOR"),
+                env!("CARGO_PKG_VERSION_MINOR")
+            ),
+            ("0", "2")
+        );
     }
 
     /// With the engine gone the flush can never finish, so an exit skips it
