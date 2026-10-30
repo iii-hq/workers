@@ -408,7 +408,7 @@ fields where the name does not say them), and the consumers in this repo
 | 24 | browser | `browser::crawl-item` | `browser::on-crawl-item` | `{ crawl_id? }` (at most 256 bytes) | custom, with match(o: `args.crawl_id` or `*`, c: `[input.crawl_id, *]`) picks observers; the hook awaits `call({ observer, payload, timeout_ms })` for each matching observer in `seq` order, so a slow consumer slows the crawl; added: validates `crawl_id`, `OBSERVER_LIMIT` past 64 | `CrawlItemEvent` (the crawl result's `trigger_type` field becomes `function_id`) | browser:tests/crawl_feed_live.rs |
 | 25 | claude-code | `claude::agent-event` | `claude::on-agent-event` | `{ session_id }` (required, 1..512 chars) | match(o: `args.session_id`, c: `input.session_id`); added: `OBSERVER_LIMIT` past 256; emitter gates on `isObserved(ID, { input: { session_id } })` | `FeedPayload { session_id, event_id, seq, epoch, source, event }` | acp:src/handler.rs, acp:src/agent_feed.rs |
 | 26 | claude-code | `claude::raw-event` | `claude::on-raw-event` | `{ session_id }` | as row 25, its own `seq` | `FeedPayload` (raw CLI message) | none in repo |
-| 27 | code-runner | guest-defined (`iii.registerTriggerType` in guest code) | guest-defined, through the guest API of §4.4 | guest-defined `args_format` | default: iii's delivery (§4.4) | guest-defined | guest code (code-runner:src/node_bus.rs) |
+| 27 | code-runner | guest-defined (`iii.registerTriggerType` in guest code) | guest-defined, through the guest API of §4.4 | guest-defined `args_format` | default: iii's delivery; or custom: a guest that delivers its source itself calls through each observer from its own delivery code (§4.4) | guest-defined | guest code (code-runner:src/node_bus.rs) |
 | 28 | codex | `codex::agent-event` | `codex::on-agent-event` | `{ session_id }` | as row 25 | `FeedPayload` | acp:src/handler.rs, acp:src/agent_feed.rs |
 | 29 | codex | `codex::raw-event` | `codex::on-raw-event` | `{ session_id }` | as row 25 | `FeedPayload` (raw thread event) | none in repo |
 | 30 | computer | `computer::session-started` | `computer::on-session-started` | none; filters `input.session_id` | default | `SessionStartedEvent` | computer:ui/src/page/index.tsx |
@@ -677,7 +677,8 @@ that the test calls, and it waits on the observer handle's state
 Guest surface (`globalThis.iii`, pinned in `tests/golden/iii-surface.txt`):
 
 ```ts
-iii.call(request: { function_id: string; payload?: unknown; action?: { type: 'void' }; timeout_ms?: number }): Promise<unknown>
+iii.call(request: { function_id: string; payload?: unknown; action?: { type: 'void' }; timeout_ms?: number }
+               | { observer: GuestObserver; payload?: unknown; action?: { type: 'void' }; timeout_ms?: number }): Promise<unknown>
 iii.trigger                       // the same function as iii.call
 iii.registerFunction(id: string, handler: (input) => unknown, options?: {
   description?: string; request_format?: object; response_format?: object;
@@ -695,20 +696,33 @@ interface GuestObserver { id: string; function_id: string; args: object; filters
 ```
 
 A guest hook that throws rejects the observer (`OBSERVE_REJECTED`, or the
-thrown error's `code`). A guest source is delivered by iii. The guest
-surface has no match or deliver hook, and a call through an observer
-belongs in a deliver hook (decision 52), so the guest `iii.call` takes no
-`observer` and the host's `Engine` has no call through an observer. A guest
-source sends one observer nothing of its own: a call for one observer
-(§1.2) needs a match hook and call metadata, which the guest surface does
-not have. `registerTrigger`, `registerTriggerType` and
-`unregisterTriggerType` leave the surface.
+thrown error's `code`). A guest source is delivered by iii: each call of the
+function reaches every observer whose filters match. A guest can also
+deliver a source itself, from code that runs in place of a call of the
+function (iii delivers every call). That code is its deliver hook: it keeps
+the observers its `onObserverAdded` hook receives (and drops them in
+`onObserverRemoved`), calls each through itself with
+`iii.call({ observer, payload })`, and documents what its targets receive.
+A call through an observer belongs in that code (decision 52); the runtime
+calls only through observers its own hooks received. A host sends one
+observer its initial state, or an event it missed, only with a call for one
+observer (§1.2): after `obs.accepted()`, a call of its own function with
+metadata `{ for_observer: obs.id }`, which the function's match hook gives
+to that observer alone. That takes call metadata, `accepted()` and a match
+hook, which the guest surface does not have, so a guest source sends no
+observer anything of its own.
+`registerTrigger`, `registerTriggerType` and `unregisterTriggerType` leave
+the surface.
 
 Host side (`crates/node-core/src/engine.rs`):
 
 ```rust
 pub trait Engine: Send + Sync + 'static {
     fn call(&self, fn_id: String, payload: Value, timeout_ms: u64, action: Option<String>)
+        -> BoxFuture<'static, CallResult>;
+    // a call through an observer an observer hook received: its target runs with
+    // `payload` under the observer's policy and metadata
+    fn call_observer(&self, observer_id: String, payload: Value, timeout_ms: u64, action: Option<String>)
         -> BoxFuture<'static, CallResult>;
     fn register(&self, fn_id: String, description: Option<String>, request_format: Option<Value>,
                 response_format: Option<Value>, options: GuestFunctionOptions, handler: ProxyHandler)

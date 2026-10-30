@@ -118,7 +118,9 @@ Code you run gets a global `iii`:
   `observer` is `{ id, function_id, args, filters, target }`. A throw in the
   added hook rejects the observer with the thrown error's `code`, or
   `OBSERVE_REJECTED`; `null` removes a hook. `await iii.call({ observer,
-  payload })` runs that observer's target with `payload`.
+  payload })` runs that observer's target with `payload`, under the
+  observer's policy and metadata; it belongs in the delivery code of a source
+  the runtime delivers itself (below).
 - `iii.files` — a **private scratch directory** that lives exactly as long as
   the runtime: `write(name, contents)`, `read(name)`, `readText(name)`,
   `list()`, `remove(name)`. Names are one file each — no paths, no
@@ -149,6 +151,38 @@ await iii.observe(
 // and emit
 await iii.call({ function_id: 'app::on-order', payload: { id: 'o-1', total: 900 }, action: { type: 'void' } })
 ```
+
+A runtime can also deliver a source itself, from code that runs in place of
+a call of the function (iii delivers every call). That code is the source's
+deliver hook: it keeps the observers `onObserverAdded` hands it, drops them
+in `onObserverRemoved`, calls each through itself, and documents what its
+targets receive. A call through an observer belongs there:
+
+```js
+const observers = new Map()
+iii.registerFunction('app::on-readings', (readings) => readings, {
+  private: true,
+  args_format: { type: 'object', properties: { sensors: { type: 'array', items: { type: 'string' } } } },
+})
+iii.onObserverAdded('app::on-readings', (obs) => { observers.set(obs.id, obs) })
+iii.onObserverRemoved('app::on-readings', (obs) => { observers.delete(obs.id) })
+
+// the deliver hook: each observer receives the readings of the sensors its args name
+async function deliver(readings) {
+  for (const observer of observers.values()) {
+    const sensors = observer.args.sensors
+    const wanted = sensors ? readings.filter((r) => sensors.includes(r.sensor)) : readings
+    if (wanted.length > 0) await iii.call({ observer, payload: wanted })
+  }
+}
+```
+
+A worker sends one observer its initial state, or an event it missed, only
+with a call for one observer: after `obs.accepted()`, a call of its own
+function with metadata `{ for_observer: obs.id }`, which the function's match
+hook gives to that observer alone. Guest code has no call metadata,
+`accepted()` or match hook, so a runtime's source sends no observer anything
+of its own.
 
 Python's `iii` is narrower: `iii.call({...})` (with `iii.trigger` as the same
 function) and `iii.namespace`, and it is **synchronous** — the call blocks
