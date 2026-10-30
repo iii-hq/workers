@@ -37,7 +37,7 @@ describes when an agent should invoke evaluation.
 
 ## Configuration
 
-The hub requires `configuration` at startup (engine **`iii/v0.24.0-rc.2`** or
+The hub requires `configuration` at startup (engine **`iii/v0.26.0`** or
 later, with `configuration::ensure`). Its entry, `judge` by default or the
 worker's `III_CONFIG_NAME`, holds two fields:
 

@@ -16,7 +16,7 @@ iii call compose::add worker=judge-typesafe
 
 Compose starts the provider with its `configuration` dependency; installing
 `judge` pulls it in automatically. Use engine
-**`iii/v0.24.0-rc.2`**, the verified release with `configuration::ensure` used by
+**`iii/v0.26.0`**, the verified release with `configuration::ensure` used by
 this repository's CI. Wait for JEV's functions to register before making a call.
 
 ## Quickstart
