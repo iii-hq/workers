@@ -1,8 +1,12 @@
 //! Deterministic relevance tests for `reflex::discover` over a frozen
-//! snapshot of the live catalog (512 functions with their real
+//! snapshot of the live catalog (510 functions with their real
 //! descriptions and request schemas, captured 2026-08-28 via
 //! `engine::functions::info`; descriptions refreshed 2026-09-03 from the
-//! repo-wide description lint, MOT-4680). bm25 — the shipped
+//! repo-wide description lint, MOT-4680; the approval, compose, context,
+//! browser::act, database::history, directory, fp, gantry, publish, state,
+//! workflow and worktree entries re-captured 2026-10-29 from the observe v2
+//! registrations; gantry's type-registration hook and the retired
+//! `eval::start` have no current registration and left the snapshot). bm25 — the shipped
 //! default — is purely lexical, so no engine, no model, and no judge are
 //! involved: expectations pin exact function sets and run in
 //! milliseconds. If a rank change breaks one of these, either the scorer
@@ -36,7 +40,7 @@ fn fixture_catalog() -> Vec<ToolSchema> {
             parameters: entry["parameters"].clone(),
         })
         .collect();
-    assert_eq!(catalog.len(), 512, "fixture catalog count changed");
+    assert_eq!(catalog.len(), 510, "fixture catalog count changed");
     catalog
 }
 
