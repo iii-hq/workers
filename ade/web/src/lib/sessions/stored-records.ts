@@ -57,7 +57,10 @@ const recordOf = (value: unknown): Record<string, unknown> | null =>
 const stringOf = (value: unknown): string | undefined =>
   typeof value === 'string' && value.length > 0 ? value : undefined
 
-/** The functions that replaced the engine's and the workers' event types. */
+/**
+ * The functions that replaced the engine's and the workers' event types
+ * whose names the naming rule does not give (workers contract §1.1 and §3).
+ */
 const RENAMED_SOURCES: Readonly<Record<string, string>> = {
   cron: 'cron::on-tick',
   http: 'http::on-request',
@@ -65,6 +68,15 @@ const RENAMED_SOURCES: Readonly<Record<string, string>> = {
   'database::row-changed': 'database::on-row-changed',
   state: 'state::on-changed',
   subscribe: 'publish',
+  'compose-operation': 'compose::on-operation-progress',
+  'console:script': 'console::ui::asset',
+  'console:style': 'console::ui::asset',
+  'console:module': 'console::ui::asset',
+  'console:assets': 'console::ui::on-assets-changed',
+  timer: 'harness::on-timer',
+  'harness::triggers-changed': 'harness::on-observers-changed',
+  'harness::hook::pre-trigger': 'harness::hook::on-pre-call',
+  'harness::hook::post-trigger': 'harness::hook::on-post-call',
   log: 'observability::on-log',
   trace: 'observability::on-span',
   configuration: 'configuration::on-updated',
@@ -73,19 +85,49 @@ const RENAMED_SOURCES: Readonly<Record<string, string>> = {
   stream: 'stream::on-changed',
   'stream:join': 'stream::on-join',
   'stream:leave': 'stream::on-leave',
-  'compose-operation': 'compose::on-operation-progress',
-  timer: 'harness::on-timer',
-  'harness::triggers-changed': 'harness::on-observers-changed',
 }
 
-/** Functions whose observers read a stored config as their args. */
-const ARG_SOURCES = new Set([
+/**
+ * The functions whose observers pass args (workers contract §1.3), besides
+ * the agent feeds; every other function's observers pass filters.
+ */
+const ARG_FUNCTIONS: ReadonlySet<string> = new Set([
   'cron::on-tick',
   'http::on-request',
   'queue::on-message',
   'database::on-row-changed',
+  'harness::hook::on-pre-turn',
+  'harness::hook::on-pre-generate',
+  'harness::hook::on-post-generate',
+  'harness::hook::on-pre-call',
+  'harness::hook::on-post-call',
+  'harness::hook::on-post-turn',
   'harness::on-timer',
+  'console::ui::asset',
+  'shell::on-changed',
+  'shell::on-git-changed',
+  'shell::on-job-finished',
+  'github::pr::on-event',
+  'storage::on-object-created',
+  'storage::on-object-deleted',
+  'kanban::on-change',
+  'kanban::on-comment',
+  'stories::on-changed',
+  'computer::on-frame-changed',
+  'browser::on-frame-event',
+  'browser::on-crawl-item',
+  'ios-simulator::on-frame-event',
+  'demo::on-counter-changed',
 ])
+
+/** Whether a function's observers pass args: §1.3's list and the agent feeds. */
+export function takesArgs(functionId: string): boolean {
+  return (
+    ARG_FUNCTIONS.has(functionId) ||
+    functionId.endsWith('::on-agent-event') ||
+    functionId.endsWith('::on-raw-event')
+  )
+}
 
 /**
  * The function a stored event type names: the fixed table, then the naming
@@ -106,24 +148,153 @@ export function functionOfStoredType(type: string): string {
     : type
 }
 
-/**
- * A stored config as the observer's args (for a function that takes them) or
- * as `$eq` filters on the event's fields (for one that does not).
- */
-export function sourceOfStoredConfig(
-  functionId: string,
-  config: unknown,
-): { args?: Record<string, unknown>; filters?: Record<string, unknown> } {
-  const fields = recordOf(config)
-  if (!fields || Object.keys(fields).length === 0) return {}
-  if (ARG_SOURCES.has(functionId)) return { args: fields }
-  const filters: Record<string, unknown> = {}
-  for (const [field, value] of Object.entries(fields)) {
-    if (field === 'metadata' || field === 'condition_function_id') continue
-    if (value === null || typeof value === 'object') continue
-    filters[`input.${field}`] = { $eq: value }
+/** Config keys that only steered the old registration, never the event. */
+const DROPPED_KEYS: ReadonlySet<string> = new Set([
+  'metadata',
+  'condition_function_id',
+])
+
+type Fields = Record<string, unknown>
+
+/** The config without the keys that steered the old registration. */
+function argsOf(config: Fields): Fields | undefined {
+  const args = Object.fromEntries(
+    Object.entries(config).filter(([key]) => !DROPPED_KEYS.has(key)),
+  )
+  return Object.keys(args).length > 0 ? args : undefined
+}
+
+/** One `$eq` filter per present config field, at the path given for it. */
+function eqFilters(
+  config: Fields,
+  paths: Readonly<Record<string, string>>,
+): Fields | undefined {
+  const filters: Fields = {}
+  for (const [field, path] of Object.entries(paths)) {
+    const value = config[field]
+    if (value !== undefined && value !== null) filters[path] = { $eq: value }
   }
-  return Object.keys(filters).length > 0 ? { filters } : {}
+  return Object.keys(filters).length > 0 ? filters : undefined
+}
+
+/** A `$eq` filter on `input.<field>` for each scalar config field. */
+function fieldFilters(config: Fields): Fields | undefined {
+  const paths: Record<string, string> = {}
+  for (const [field, value] of Object.entries(config)) {
+    if (DROPPED_KEYS.has(field)) continue
+    if (value === null || typeof value === 'object') continue
+    paths[field] = `input.${field}`
+  }
+  return eqFilters(config, paths)
+}
+
+/** What an observer of a stored event type names: function, args, filters. */
+export interface StoredSource {
+  function_id: string
+  args?: Fields
+  filters?: Fields
+}
+
+function sourceOf(
+  function_id: string,
+  args?: Fields,
+  filters?: Fields,
+): StoredSource {
+  return {
+    function_id,
+    ...(args ? { args } : {}),
+    ...(filters ? { filters } : {}),
+  }
+}
+
+/**
+ * A stored event type and its config as the source an observer names: the
+ * function that replaced the type, with the config as its args (for a
+ * function that takes them) or as filters on its input, as the harness
+ * translates stored bindings (harness/src/bindings/migrate.rs).
+ */
+export function sourceOfStored(type: string, config: unknown): StoredSource {
+  const fields = recordOf(config) ?? {}
+  const functionId = functionOfStoredType(type)
+  switch (type) {
+    case 'timer':
+      return sourceOf(
+        functionId,
+        typeof fields.at === 'number' ? { at: fields.at } : undefined,
+      )
+    case 'cron':
+      return sourceOf(
+        functionId,
+        typeof fields.expression === 'string'
+          ? { expression: fields.expression }
+          : undefined,
+      )
+    case 'console:script':
+    case 'console:style':
+    case 'console:module':
+      return sourceOf(functionId, {
+        kind: type.slice('console:'.length),
+        ...argsOf(fields),
+      })
+    case 'state':
+      return sourceOf(
+        functionId,
+        undefined,
+        eqFilters(fields, { scope: 'input.scope', key: 'input.key' }),
+      )
+    case 'subscribe':
+      return sourceOf(
+        functionId,
+        undefined,
+        eqFilters(fields, { topic: 'input.topic' }),
+      )
+    case 'stream':
+    case 'stream:join':
+    case 'stream:leave':
+      return sourceOf(
+        functionId,
+        undefined,
+        eqFilters(fields, {
+          stream_name: 'input.stream_name',
+          group_id: 'input.group_id',
+        }),
+      )
+    case 'compose-operation': {
+      const filters: Fields = {
+        ...eqFilters(fields, { operation_id: 'input.operation_id' }),
+        ...(fields.terminal_only === true
+          ? { 'input.terminal': { $eq: true } }
+          : {}),
+      }
+      return sourceOf(
+        functionId,
+        undefined,
+        Object.keys(filters).length > 0 ? filters : undefined,
+      )
+    }
+    case 'log':
+      return sourceOf(
+        functionId,
+        undefined,
+        fields.level === 'error'
+          ? { 'input.severity_number': { $gte: 17 } }
+          : undefined,
+      )
+    case 'configuration':
+      return sourceOf(
+        functionId,
+        undefined,
+        eqFilters(fields, { configuration_id: 'input.id' }),
+      )
+    case 'trace':
+    case 'engine::functions-available':
+    case 'engine::workers-available':
+      return sourceOf(functionId)
+    default:
+      return takesArgs(functionId)
+        ? sourceOf(functionId, argsOf(fields))
+        : sourceOf(functionId, undefined, fieldFilters(fields))
+  }
 }
 
 /**
@@ -138,14 +309,10 @@ export function observerFiredOf(data: unknown): ObserverFiredData {
   }
   const storedType = stringOf(record.trigger_type)
   const isState = storedType === undefined && typeof record.key === 'string'
-  const functionId = storedType
-    ? functionOfStoredType(storedType)
-    : isState
-      ? 'state::on-changed'
-      : undefined
-  const source = functionId
-    ? sourceOfStoredConfig(
-        functionId,
+  const type = storedType ?? (isState ? 'state' : undefined)
+  const source = type
+    ? sourceOfStored(
+        type,
         record.config !== undefined
           ? record.config
           : isState
@@ -163,7 +330,6 @@ export function observerFiredOf(data: unknown): ObserverFiredData {
   return {
     ...(rest as unknown as Omit<ObserverFiredData, 'observer_id'>),
     observer_id: typeof subscription_id === 'string' ? subscription_id : '',
-    ...(functionId ? { function_id: functionId } : {}),
     ...source,
   }
 }
