@@ -122,7 +122,10 @@ The event, the function's input and what its observers observe:
   observer's target.
 - **One host.** The function registers as a standby: a second instance of the
   worker waits, and takes over the observers when the first one leaves. Each
-  expression fires once per scheduled time.
+  expression fires once per scheduled time. The engine admits one live worker
+  per worker name and namespace, so the second instance runs under its own
+  name (`III_WORKER_NAME=cron-standby`). An instance started under a name that
+  a live worker holds is refused (`WORKER_NAMESPACE_CONFLICT`) and exits.
 
 A target that needs to know which schedule fired reads `observer_id` from the
 envelope, or observes with its own target per schedule.

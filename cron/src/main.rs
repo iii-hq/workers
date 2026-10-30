@@ -59,9 +59,21 @@ async fn main() -> Result<()> {
     let boot = iii_cron::boot::start(iii.clone());
     tracing::info!("iii-cron ready");
 
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("iii-cron shutting down");
-    boot.shutdown().await;
-    iii.shutdown_async().await;
-    Ok(())
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            tracing::info!("iii-cron shutting down");
+            boot.shutdown().await;
+            iii.shutdown_async().await;
+            Ok(())
+        }
+        err = iii_cron::boot::refused(&iii) => {
+            boot.shutdown().await;
+            iii.shutdown_async().await;
+            Err(anyhow::Error::new(err).context(
+                "the engine refused this worker's registration; a second cron instance \
+                 (a standby) connects under its own worker name: set III_WORKER_NAME",
+            ))
+        }
+    }
 }

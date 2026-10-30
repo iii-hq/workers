@@ -384,3 +384,43 @@ async fn a_standby_instance_takes_over_the_observers_when_the_host_leaves() {
     consumer.shutdown_async().await;
     second.shutdown_async().await;
 }
+
+/// A second instance under the worker's own name never becomes a standby: the
+/// engine admits one live worker per name and namespace, so it refuses the
+/// registration (`WORKER_NAMESPACE_CONFLICT`) and the SDK stops. The binary
+/// exits on [`iii_cron::boot::refused`] instead of idling without a function.
+#[tokio::test]
+#[serial]
+async fn a_second_instance_under_the_same_worker_name_is_refused() {
+    let Some(first) = engine::connect_fresh_named("cron-e2e-same-name").await else {
+        return;
+    };
+    let first_boot = iii_cron::boot::start(first.clone());
+
+    let second = Arc::new(iii_sdk::register_worker(
+        &engine::ws_url(),
+        iii_sdk::InitOptions {
+            metadata: Some(iii_sdk::runtime::WorkerMetadata {
+                name: "cron-e2e-same-name".to_string(),
+                ..iii_sdk::runtime::WorkerMetadata::default()
+            }),
+            ..iii_sdk::InitOptions::default()
+        },
+    ));
+    let refused = tokio::time::timeout(Duration::from_secs(10), iii_cron::boot::refused(&second))
+        .await
+        .expect("the engine refuses the second instance within 10 s");
+    match refused {
+        Error::RegistrationRejected {
+            code, worker_name, ..
+        } => {
+            assert_eq!(code, "WORKER_NAMESPACE_CONFLICT");
+            assert_eq!(worker_name.as_deref(), Some("cron-e2e-same-name"));
+        }
+        other => panic!("expected a registration rejection, got {other:?}"),
+    }
+
+    second.shutdown_async().await;
+    first_boot.shutdown().await;
+    first.shutdown_async().await;
+}
