@@ -294,17 +294,34 @@ async fn next_event(rx: &mut UnboundedReceiver<Value>, what: &str) -> Value {
         .unwrap_or_else(|| panic!("channel closed waiting for {what}"))
 }
 
+/// Whether `event`, a `console::ui::on-assets-changed` event, is an `op`
+/// about `path`.
+fn is_asset_event(event: &Value, op: &str, path: &str) -> bool {
+    let about = match op {
+        "set" => &event["asset"]["path"],
+        _ => &event["path"],
+    };
+    event["op"] == op && about == path
+}
+
 /// The next `console::ui::on-assets-changed` event of `op` about `path`,
 /// skipping events about other assets (the console's own UI among them).
 async fn asset_event(rx: &mut UnboundedReceiver<Value>, op: &str, path: &str) -> Value {
     loop {
         let event = next_event(rx, &format!("an assets `{op}` of {path}")).await;
-        let about = match op {
-            "set" => &event["asset"]["path"],
-            _ => &event["path"],
-        };
-        if event["op"] == op && about == path {
+        if is_asset_event(&event, op, path) {
             return event;
+        }
+    }
+}
+
+/// [`asset_event`] for a default observer: the next envelope whose output is
+/// an `op` about `path`.
+async fn asset_envelope(rx: &mut UnboundedReceiver<Value>, op: &str, path: &str) -> Value {
+    loop {
+        let envelope = next_event(rx, &format!("an assets `{op}` envelope of {path}")).await;
+        if is_asset_event(&envelope["output"], op, path) {
+            return envelope;
         }
     }
 }
@@ -934,9 +951,12 @@ async fn connection(client: &IIIClient, connected: bool, what: &str) {
 /// console and announced to it again when the worker reattaches (iii
 /// decision 47); the console then sends it its current state again in a
 /// call for it alone (decision 52): a tab gets a new `sync` and a new ring,
-/// an asset's content is fetched again and the asset announced again. A tab
-/// on another connection gets none of the calls for those observers, and
-/// sees the asset deleted while its worker is away and set again after.
+/// an asset's content is fetched again and the asset announced again. The
+/// tab and the ring observer behind the proxy take the default envelope, and
+/// the new `sync` and ring reach them in the envelope of every other call of
+/// their function. A tab on another connection gets none of the calls for
+/// those observers, and sees the asset deleted while its worker is away and
+/// set again after.
 #[tokio::test]
 async fn an_observer_that_reattaches_gets_its_current_state_again() {
     let Some(harness) = boot().await else {
@@ -964,7 +984,8 @@ async fn an_observer_that_reattaches_gets_its_current_state_again() {
     active(&steady_ringer, "the steady ring observer").await;
     next_event(&mut steady_ring, "the steady ring observer's own ring").await;
 
-    // A worker behind the proxy: a tab, a ring observer and an asset.
+    // A worker behind the proxy: a tab and a ring observer, both taking the
+    // default envelope, and an asset.
     const PATH: &str = "integration/away.js";
     let proxy = DropProxy::start(&harness.engine_url).await;
     // Its own worker name: the engine admits one live worker per name.
@@ -982,18 +1003,17 @@ async fn an_observer_that_reattaches_gets_its_current_state_again() {
     let mut tab = recording_target(&away, "integration::away-tab");
     let mut ring = recording_target(&away, "integration::away-ring");
     let mut fetches = recording_content(&away, "integration::away-content", "1");
-    let away_tab = away.observe(
-        Source::function(ASSETS_CHANGED_FN).deliver(Deliver::Output),
-        "integration::away-tab",
-    );
+    let away_tab = away.observe(Source::function(ASSETS_CHANGED_FN), "integration::away-tab");
     let away_ringer = away.observe(
-        Source::function(WORKSPACE_CHANGED_FN).deliver(Deliver::Output),
+        Source::function(WORKSPACE_CHANGED_FN),
         "integration::away-ring",
     );
     active(&away_tab, "the tab behind the proxy").await;
     active(&away_ringer, "the ring observer behind the proxy").await;
-    assert_eq!(next_event(&mut tab, "the first sync").await["op"], "sync");
-    assert_eq!(next_event(&mut ring, "the first ring").await, json!({}));
+    // Their first sync and ring. The shape of a new observer's call is
+    // checked by a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event.
+    next_event(&mut tab, "the first sync").await;
+    next_event(&mut ring, "the first ring").await;
     let asset = away.observe(
         Source::function(ASSET_FN).args(json!({ "kind": "script", "path": PATH })),
         "integration::away-content",
@@ -1005,9 +1025,10 @@ async fn an_observer_that_reattaches_gets_its_current_state_again() {
     );
     let set = asset_event(&mut steady, "set", PATH).await;
     let hash = set["asset"]["hash"].clone();
-    // the tab behind the proxy sees the set too
-    let away_set = asset_event(&mut tab, "set", PATH).await;
-    assert_eq!(away_set["asset"]["hash"], hash);
+    // The tab behind the proxy sees the set too, in the envelope of every
+    // call of the function.
+    let away_set = asset_envelope(&mut tab, "set", PATH).await;
+    assert_eq!(away_set["output"]["asset"]["hash"], hash, "{away_set:#}");
 
     // The worker's connection drops and comes back.
     proxy.drop_connections();
@@ -1023,18 +1044,18 @@ async fn an_observer_that_reattaches_gets_its_current_state_again() {
     active(&away_tab, "the tab after it reattached").await;
     active(&asset, "the asset after it reattached").await;
 
-    // Each observer behind the proxy gets its current state again.
+    // Each observer behind the proxy gets its current state again, in the
+    // envelope of every call of its function. A bare `sync` ends the wait
+    // too, so the shape check names it.
     let sync = loop {
         let event = next_event(&mut tab, "the sync after the reattach").await;
-        if event["op"] == "sync" {
+        if event["output"]["op"] == "sync" || event["op"] == "sync" {
             break event;
         }
     };
-    assert!(sync["assets"].is_array(), "{sync}");
-    assert_eq!(
-        next_event(&mut ring, "the ring after the reattach").await,
-        json!({})
-    );
+    same_envelope(&sync, &away_set, ASSETS_CHANGED_FN, away_tab.id());
+    assert!(sync["output"]["assets"].is_array(), "{sync:#}");
+    let renewed_ring = next_event(&mut ring, "the ring after the reattach").await;
     assert_eq!(
         next_event(&mut fetches, "the fetch after the reattach").await,
         json!({ "path": PATH })
@@ -1054,6 +1075,23 @@ async fn an_observer_that_reattaches_gets_its_current_state_again() {
             "a sync for the reattached tab reached the steady one"
         );
     }
+
+    // A store write rings both ring observers once; the one behind the proxy
+    // receives it in the envelope of its renewed ring.
+    write_layout(client).await;
+    assert_eq!(
+        next_event(&mut steady_ring, "the steady ring after a write").await,
+        json!({})
+    );
+    let ordinary_ring = next_event(&mut ring, "the ring after a write").await;
+    same_envelope(
+        &renewed_ring,
+        &ordinary_ring,
+        WORKSPACE_CHANGED_FN,
+        away_ringer.id(),
+    );
+    assert_eq!(renewed_ring["output"], json!({}), "{renewed_ring:#}");
+    assert_eq!(ordinary_ring["output"], json!({}), "{ordinary_ring:#}");
 
     for observer in [steady_tab, steady_ringer] {
         let _ = observer.dispose().await;
