@@ -1,42 +1,52 @@
-//! `http::on-request`: one call per HTTP request that matches a route.
+//! `http::on-request`: one call per HTTP request.
 //!
 //! Each observer's args (`{ method, path, public_webhook?,
 //! middleware_function_ids? }`, see [`HttpRouteArgs`]) declare one route. The
-//! function's hooks keep the [`RouteTable`] the server matches requests
-//! against, and deliver each request to its route:
+//! server calls the function for every request it receives (the CORS layer
+//! answers `OPTIONS`), with the request as the server received it
+//! ([`InboundRequest`]) as input. The function's hooks keep the
+//! [`RouteTable`] and deliver each call to its route:
 //!
 //! - **added** files the observer's route, or rejects the observer with
 //!   `HTTP_ROUTE_CONFLICT` when another observer holds the same method and
 //!   path shape;
 //! - **removed** takes the route out;
-//! - **match** picks the observer whose route the server matched: the server
-//!   names it in the call's metadata ([`ROUTE_METADATA_KEY`]);
-//! - **deliver** answers `404` when that observer is gone and `422` when its
-//!   filters reject the request (`input` is the request), runs the route
-//!   middleware, then calls the target through the observer. Its result is
-//!   the call's result, which the server turns into the HTTP response.
+//! - **deliver** matches the request's method and path to a route. It
+//!   answers `404` when no route of an active observer has the path, and
+//!   `405` with `Allow` when routes have the path on other methods. A
+//!   matched request gets `413` when its body is over the server's limit and
+//!   `422` when the observer's filters reject the call. Then the global
+//!   middleware and the route's middleware run, the hook opens the
+//!   request-body and response channels, and it calls the target through the
+//!   observer with the [`HttpRequest`]. The target's result is the call's
+//!   result, which the server turns into the HTTP response.
 //!
-//! The handler returns the request it is called with: observers observe the
-//! request, and the call's result is the route target's response. The
-//! function is private: only this worker's server calls it.
+//! The deliver hook runs in the function's invocation context: the
+//! middleware, the channel calls and the call through the observer have
+//! `http::on-request` as their caller. The handler returns the request it is
+//! called with. The function is private: only this worker's server calls it.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
+use iii_sdk::helpers::create_channel;
 use iii_sdk::runtime::FunctionRef;
 use iii_sdk::{
-    AddedHook, Call, CallRequest, DeliverHook, IIIClient, Match, ObserveRejection, Observer,
+    AddedHook, Call, CallRequest, DeliverHook, IIIClient, ObserveRejection, Observer,
     RegisterFunction, RemovedHook,
 };
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use crate::configuration::ConfigCell;
+use crate::inflight::{InFlight, InFlightRequests, REQUEST_ID_KEY};
 use crate::middleware::{self, error_body, response_value, MiddlewareOutcome};
 use crate::routes::{log_registered, log_unregistered, Route, RouteTable};
-use crate::types::{HttpRequest, HttpRouteArgs};
+use crate::types::{HttpRequest, HttpRouteArgs, InboundRequest};
 
 /// The function observers declare routes on.
 pub const ON_REQUEST_FN: &str = "http::on-request";
@@ -44,18 +54,21 @@ pub const ON_REQUEST_FN: &str = "http::on-request";
 /// Rejection code of an observer whose route collides with a registered one.
 pub const HTTP_ROUTE_CONFLICT: &str = "HTTP_ROUTE_CONFLICT";
 
-/// Key of the call metadata that names the observer whose route the server
-/// matched.
-pub const ROUTE_METADATA_KEY: &str = "route";
+/// Channel buffer size for both request-body and response channels (matches
+/// the engine default in `views.rs`).
+const CHANNEL_BUFFER: usize = 64;
 
 pub const ON_REQUEST_DESCRIPTION: &str =
-    "One call per HTTP request that matches a route; observers observe the request. Observe \
-     it with args { method, path } (plus optional public_webhook and \
-     middleware_function_ids) to serve that route: each matching request calls the target \
-     with the HTTP request, and its return value ({ status_code, headers, body }, or null \
-     after streaming to the response channel) is the response. The observer's filters \
-     select requests by `input`; a request they reject gets 422. Only the http worker calls \
-     it.";
+    "One call per HTTP request the http worker receives (OPTIONS requests are answered by its \
+     CORS layer). Observe it with args { method, path } (plus optional public_webhook and \
+     middleware_function_ids) to serve that route: the worker calls the target with the \
+     HttpRequest (path template, path_params, query_params, headers, body, and the \
+     request_body and response channels), and its return value ({ status_code, headers, \
+     body }, or null after streaming to the response channel) is the response. A request \
+     without a route gets 404 (405 when the path has routes on other methods); a request the \
+     observer's filters reject gets 422. Filters read the request as the server received it: \
+     input.method, input.path, input.query_params, input.headers, input.body. Only the http \
+     worker calls it.";
 
 /// Registers [`ON_REQUEST_FN`] with [`RouteHooks`] over `routes` as its
 /// hooks. The hooks are set by id before the function registers, so they run
@@ -63,20 +76,17 @@ pub const ON_REQUEST_DESCRIPTION: &str =
 pub fn register(
     iii: &Arc<IIIClient>,
     routes: Arc<RwLock<RouteTable>>,
+    requests: InFlightRequests,
     config: ConfigCell,
 ) -> FunctionRef {
     let hooks = RouteHooks {
         routes,
+        requests,
         iii: iii.clone(),
         config,
     };
     iii.on_observer_added_for(ON_REQUEST_FN, hooks.clone());
     iii.on_observer_removed_for(ON_REQUEST_FN, hooks.clone());
-    // Each call goes to the observer whose route the server matched.
-    iii.on_observer_match_for(
-        ON_REQUEST_FN,
-        Match::keys(|obs| obs.id().into(), |call| matched_route(call).into()),
-    );
     iii.on_observer_deliver_for(ON_REQUEST_FN, hooks);
 
     iii.register_function(
@@ -94,23 +104,41 @@ pub fn register(
 pub fn clear_hooks(iii: &IIIClient) {
     iii.clear_observer_added_for(ON_REQUEST_FN);
     iii.clear_observer_removed_for(ON_REQUEST_FN);
-    iii.clear_observer_match_for(ON_REQUEST_FN);
     iii.clear_observer_deliver_for(ON_REQUEST_FN);
 }
 
-/// The observer id the server named in the call's metadata.
-fn matched_route(call: &Call) -> Option<&str> {
-    call.metadata.as_ref()?.get(ROUTE_METADATA_KEY)?.as_str()
+/// The id of the request in flight the server named in the call's metadata.
+fn request_id(call: &Call) -> Option<&str> {
+    call.metadata.as_ref()?.get(REQUEST_ID_KEY)?.as_str()
 }
 
-/// The call's input and what observers observe: the [`HttpRequest`].
+/// The call's input and output: the [`InboundRequest`].
 fn request_format() -> Value {
-    serde_json::to_value(schemars::schema_for!(HttpRequest)).unwrap_or(Value::Null)
+    serde_json::to_value(schemars::schema_for!(InboundRequest)).unwrap_or(Value::Null)
 }
 
-/// `404 NOT_FOUND`: the route's observer left after the server matched it.
+/// `404 NOT_FOUND`: no route of an active observer has the path.
 fn not_found() -> Value {
     response_value(404, error_body("NOT_FOUND", "Not Found", None))
+}
+
+/// `405 METHOD_NOT_ALLOWED`, with an `Allow` header listing the methods
+/// routes have on the path.
+fn method_not_allowed(allowed: &[String]) -> Value {
+    let mut response = response_value(
+        405,
+        error_body("METHOD_NOT_ALLOWED", "Method Not Allowed", None),
+    );
+    response["headers"] = json!({ "allow": allowed.join(", ") });
+    response
+}
+
+/// `413 PAYLOAD_TOO_LARGE`: the body is over the server's limit.
+fn payload_too_large() -> Value {
+    response_value(
+        413,
+        error_body("PAYLOAD_TOO_LARGE", "Request body too large", None),
+    )
 }
 
 /// `422 CONDITION_NOT_MET`: the observer's filters rejected the request.
@@ -120,13 +148,19 @@ fn filters_not_met() -> Value {
     response_value(422, body)
 }
 
+/// `500 INTERNAL_ERROR` with `message`.
+fn internal_error(message: &str) -> Value {
+    response_value(500, error_body("INTERNAL_ERROR", message, None))
+}
+
 /// The hooks of [`ON_REQUEST_FN`]: one route per observer in the shared
 /// [`RouteTable`], and delivery of each request to its route's observer.
 #[derive(Clone)]
 pub struct RouteHooks {
     pub routes: Arc<RwLock<RouteTable>>,
+    requests: InFlightRequests,
     iii: Arc<IIIClient>,
-    /// Read per request, for the middleware and target timeouts.
+    /// Read per call, for the global middleware and the timeouts.
     config: ConfigCell,
 }
 
@@ -142,6 +176,60 @@ impl RouteHooks {
             public_webhook: args.public_webhook,
             middleware_function_ids: args.middleware_function_ids,
         })
+    }
+
+    /// The route `method` and `path` match on the listener, with its path
+    /// params, or the response for a request without one.
+    async fn match_route(
+        &self,
+        method: &str,
+        path: &str,
+        public_webhooks_only: bool,
+    ) -> Result<(Route, HashMap<String, String>), Value> {
+        let routes = self.routes.read().await;
+        if let Some(matched) = routes.match_route_for_listener(method, path, public_webhooks_only) {
+            return Ok(matched);
+        }
+        let allowed = routes.allowed_methods_for_listener(path, public_webhooks_only);
+        Err(if allowed.is_empty() {
+            not_found()
+        } else {
+            method_not_allowed(&allowed)
+        })
+    }
+
+    /// Opens the request-body and response channels for a target about to
+    /// run: writes the request's bytes into the first and hands the second's
+    /// reader to the server. Returns the refs the target receives, or the
+    /// response for a failure.
+    async fn open_channels(
+        &self,
+        request: &InFlight,
+    ) -> Result<(StreamChannelRef, StreamChannelRef), Value> {
+        let request_body = create_channel(&self.iii, Some(CHANNEL_BUFFER))
+            .await
+            .map_err(|e| internal_error(&format!("failed to create request channel: {e}")))?;
+        let response = create_channel(&self.iii, Some(CHANNEL_BUFFER))
+            .await
+            .map_err(|e| internal_error(&format!("failed to create response channel: {e}")))?;
+
+        // The target reads the body concurrently; the writer closes the
+        // channel so the target's reader sees EOF.
+        let bytes = request.body().cloned().unwrap_or_default();
+        let writer = request_body.writer;
+        tokio::spawn(async move {
+            if !bytes.is_empty() {
+                let _ = writer.write(&bytes).await;
+            }
+            let _ = writer.close().await;
+        });
+
+        if !request.hand_over(response.reader) {
+            return Err(internal_error(
+                "the server stopped waiting for the response",
+            ));
+        }
+        Ok((request_body.reader_ref, response.writer_ref))
     }
 }
 
@@ -171,9 +259,29 @@ impl RemovedHook for RouteHooks {
 #[async_trait]
 impl DeliverHook for RouteHooks {
     async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
-        let Some(obs) = observers.into_iter().next() else {
+        let in_flight = request_id(&call).and_then(|id| self.requests.get(id));
+        let public_webhooks_only = in_flight.as_ref().is_some_and(|r| r.public_webhooks_only());
+        let field = |name: &str| call.input.get(name).and_then(Value::as_str).unwrap_or("");
+        let (route, path_params) = match self
+            .match_route(field("method"), field("path"), public_webhooks_only)
+            .await
+        {
+            Ok(matched) => matched,
+            Err(response) => return Ok(response),
+        };
+        // A route is filed before its observer is accepted.
+        let Some(obs) = observers.into_iter().find(|obs| obs.id() == route.id()) else {
             return Ok(not_found());
         };
+        let Some(in_flight) = in_flight else {
+            return Err(Error::Handler(format!(
+                "{ON_REQUEST_FN}: no request in flight for this call"
+            )));
+        };
+        in_flight.set_route(&route.http_path);
+        if in_flight.body().is_none() {
+            return Ok(payload_too_large());
+        }
         if !obs.matches(&call) {
             tracing::debug!(
                 observer_id = %obs.id(),
@@ -182,24 +290,59 @@ impl DeliverHook for RouteHooks {
             );
             return Ok(filters_not_met());
         }
-        let Some(route) = self.routes.read().await.get(obs.id()).cloned() else {
-            return Ok(not_found());
-        };
-        let timeout_ms = self.config.read().await.default_timeout;
-        let request = call.input;
+        let request: InboundRequest =
+            serde_json::from_value(call.input).map_err(|e| Error::Serde(e.to_string()))?;
 
-        // Route middleware runs after the global middleware (in the server)
-        // and before the target.
-        for mw_fn_id in &route.middleware_function_ids {
-            let input = middleware::middleware_input_for(&request);
-            match middleware::execute_middleware(&self.iii, mw_fn_id, input, timeout_ms).await {
+        // Global middleware (config-driven, sorted by priority at load time),
+        // then the route's own, in list order.
+        let (timeout_ms, global) = {
+            let config = self.config.read().await;
+            let global: Vec<String> = config
+                .middleware
+                .iter()
+                .filter(|mw| mw.phase == "preHandler")
+                .map(|mw| mw.function_id.clone())
+                .collect();
+            (config.default_timeout, global)
+        };
+        let middleware_input = middleware::build_middleware_input(
+            &path_params,
+            &request.query_params,
+            &request.headers,
+            &request.method,
+        );
+        for mw_fn_id in global.iter().chain(&route.middleware_function_ids) {
+            match middleware::execute_middleware(
+                &self.iii,
+                mw_fn_id,
+                middleware_input.clone(),
+                timeout_ms,
+            )
+            .await
+            {
                 Ok(MiddlewareOutcome::Continue) => {}
                 Err(response) => return Ok(response),
             }
         }
 
+        let (request_body, response) = match self.open_channels(&in_flight).await {
+            Ok(refs) => refs,
+            Err(response) => return Ok(response),
+        };
+        let target_request = HttpRequest {
+            query_params: request.query_params,
+            path_params,
+            headers: request.headers,
+            path: route.http_path,
+            method: request.method,
+            body: request.body,
+            request_body,
+            response,
+        };
+        let payload =
+            serde_json::to_value(&target_request).map_err(|e| Error::Serde(e.to_string()))?;
         self.iii
-            .call(CallRequest::observer(&obs, request).timeout(Duration::from_millis(timeout_ms)))
+            .call(CallRequest::observer(&obs, payload).timeout(Duration::from_millis(timeout_ms)))
             .await
     }
 }
@@ -209,44 +352,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_format_is_the_http_request() {
+    fn request_format_is_the_request_as_received() {
         let schema = request_format();
-        for field in [
-            "path",
-            "method",
-            "headers",
-            "body",
-            "request_body",
-            "response",
-        ] {
+        for field in ["method", "path", "query_params", "headers", "body"] {
             assert!(
                 schema["properties"].get(field).is_some(),
                 "request_format lacks {field}"
             );
         }
+        for field in ["path_params", "request_body", "response"] {
+            assert!(
+                schema["properties"].get(field).is_none(),
+                "request_format has {field}"
+            );
+        }
     }
 
     #[test]
-    fn the_matched_route_is_read_from_the_call_metadata() {
+    fn the_request_in_flight_is_read_from_the_call_metadata() {
         let call = Call {
-            metadata: Some(json!({ ROUTE_METADATA_KEY: "obs-1" })),
+            metadata: Some(json!({ REQUEST_ID_KEY: "req-1" })),
             ..Call::default()
         };
-        assert_eq!(matched_route(&call), Some("obs-1"));
-        assert_eq!(matched_route(&Call::default()), None);
+        assert_eq!(request_id(&call), Some("req-1"));
+        assert_eq!(request_id(&Call::default()), None);
         let other = Call {
-            metadata: Some(json!({ "route": 7 })),
+            metadata: Some(json!({ REQUEST_ID_KEY: 7 })),
             ..Call::default()
         };
-        assert_eq!(matched_route(&other), None);
+        assert_eq!(request_id(&other), None);
     }
 
     #[test]
     fn hook_answers_are_responses() {
-        let missing = crate::types::HttpResponse::from_function_return(not_found());
+        use crate::types::HttpResponse;
+        let missing = HttpResponse::from_function_return(not_found());
         assert_eq!(missing.status_code, 404);
         assert_eq!(missing.body["error"]["code"], "NOT_FOUND");
-        let rejected = crate::types::HttpResponse::from_function_return(filters_not_met());
+        assert!(missing.header("allow").is_none());
+        let wrong_method =
+            HttpResponse::from_function_return(method_not_allowed(&["GET".into(), "POST".into()]));
+        assert_eq!(wrong_method.status_code, 405);
+        assert_eq!(wrong_method.header("allow"), Some("GET, POST"));
+        assert_eq!(wrong_method.body["error"]["code"], "METHOD_NOT_ALLOWED");
+        let too_large = HttpResponse::from_function_return(payload_too_large());
+        assert_eq!(too_large.status_code, 413);
+        assert_eq!(too_large.body["error"]["code"], "PAYLOAD_TOO_LARGE");
+        let rejected = HttpResponse::from_function_return(filters_not_met());
         assert_eq!(rejected.status_code, 422);
         assert_eq!(rejected.body["error"]["code"], "CONDITION_NOT_MET");
         assert_eq!(rejected.body["skipped"], true);

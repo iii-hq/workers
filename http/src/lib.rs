@@ -2,6 +2,7 @@ pub mod boot;
 pub mod config;
 pub mod configuration;
 pub mod handler;
+pub mod inflight;
 pub mod logging;
 pub mod manifest;
 pub mod middleware;

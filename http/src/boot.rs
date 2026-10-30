@@ -11,6 +11,7 @@ use tokio::sync::RwLock;
 
 use crate::config::RestApiConfig;
 use crate::configuration::{self, ApplyLock, ConfigCell};
+use crate::inflight::InFlightRequests;
 use crate::on_request;
 use crate::routes::RouteTable;
 use crate::server::{self, HotRouter, RouterCell, ServerControlCell, ServerHandle};
@@ -88,16 +89,18 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
     ));
 
     // Observers of `http::on-request` add their routes to this table, which
-    // the server matches requests against.
+    // its deliver hook matches requests against. The server and the hook
+    // share the requests in flight.
     let routes: Arc<RwLock<RouteTable>> = Arc::default();
-    let on_request = on_request::register(&iii, routes.clone(), cell.clone());
+    let requests = InFlightRequests::default();
+    let on_request = on_request::register(&iii, routes.clone(), requests.clone(), cell.clone());
 
     let ServerHandle {
         local_addr,
         router,
         hot_router,
         control,
-    } = match server::serve(routes.clone(), iii.clone(), cell.clone()).await {
+    } = match server::serve(routes.clone(), requests, iii.clone(), cell.clone()).await {
         Ok(handle) => handle,
         Err(error) => {
             on_request.unregister();

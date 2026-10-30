@@ -17,10 +17,11 @@ args name the route, and the target is the function that answers it:
 
 Install it with `iii call compose::add worker=http`.
 
-The worker matches each HTTP request's method and path to a route. A matched
-request is one call of `http::on-request`, and the worker calls that route's
-target with the request: method, path template, headers, query params,
-extracted `:path` params, parsed body, and request/response stream channels.
+Every HTTP request is one call of `http::on-request`. The worker matches the
+request's method and path to a route and calls that route's target with the
+request: method, path template, headers, query params, extracted `:path`
+params, parsed body, and request/response stream channels. A path without a
+route gets `404`, and a path whose routes are on other methods gets `405`.
 Returning a JSON value yields a buffered response; writing to the response
 channel yields a chunked streaming response.
 
@@ -101,6 +102,9 @@ Unknown args are refused with `INVALID_ARGS`. Path segments prefixed with `:`
 are extracted into `path_params`; query string values arrive in
 `query_params`; request headers arrive in `headers`. A request the observer's
 `filters` reject gets `422 CONDITION_NOT_MET` without calling the handler.
+Filters read the request as the server received it: `input.method`,
+`input.path` (the request's path), `input.query_params`, `input.headers` and
+`input.body`.
 The handler receives the `HttpRequest` whatever the observer's `deliver`
 option, and the observer's `metadata` arrives as its metadata sidecar.
 
