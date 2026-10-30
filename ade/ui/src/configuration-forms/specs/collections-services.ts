@@ -357,7 +357,7 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
           number(
             'subscriber_retention_ms',
             'Subscriber retention (ms)',
-            "How long a removed subscriber's queue keeps receiving its topic, so a consumer back under the same observer id gets what was published while it was away. Zero stops it at once. Applies to the built-in transport.",
+            "How long a removed subscriber's queue keeps receiving its topic, so a consumer back under the same observer id gets what was published while it was away. Keep it at least the engine's observers.observer_grace_ms. Zero stops it at once. Applies to the built-in transport.",
             { min: 0, optional: true, placeholder: '30000' },
           ),
         ],

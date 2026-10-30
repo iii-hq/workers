@@ -42,7 +42,9 @@ pub struct QueueConfig {
     /// an observer with the same id (or group) within this time consumes
     /// everything the queue received. After it, the queue keeps only what it
     /// holds. `0` stops the queue receiving when the observer is removed.
-    /// The default is the engine's default `observers.observer_grace_ms`.
+    /// The default is the engine's default `observers.observer_grace_ms`;
+    /// keep it at least the engine's setting, so a worker that re-observes
+    /// within the grace period finds everything published while it was away.
     #[serde(default = "default_subscriber_retention_ms")]
     pub subscriber_retention_ms: u64,
 }

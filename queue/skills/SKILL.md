@@ -106,11 +106,13 @@ Each subscriber's durable queue is keyed by its observer id: pin the `id`
 option to keep the queue and its backlog across restarts of the observing
 worker. When the observer is removed (`dispose()`, or its worker
 disconnected), the consumer stops at once and the queue keeps receiving the
-topic for `subscriber_retention_ms` (30 s by default): a worker that restarts
-under the same name within the engine's grace period re-observes its id and
-receives its unacked backlog and everything published while it was away.
-After that the queue keeps only what it holds, for a later observer with the
-same id.
+topic for `subscriber_retention_ms` (30 s by default, like the engine's
+`observers.observer_grace_ms`): a worker that restarts under the same name
+within the engine's grace period re-observes its id; when it is back within
+the retention as well, it receives its unacked backlog and everything
+published while it was away. After the retention the queue keeps only what
+it holds, for a later observer with the same id. Keep
+`subscriber_retention_ms` at least the engine's `observers.observer_grace_ms`.
 
 ## Configuration
 

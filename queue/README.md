@@ -99,8 +99,10 @@ iii.observe_with(
   that time consumes it, including everything published meanwhile. After
   that the queue keeps only what it holds, for a later observer with the same
   id. A worker that restarts under the same name within the engine's grace
-  period re-observes its id and receives everything: its unacked backlog and
-  each message published while it was away, once. A group's queue keeps its
+  period re-observes its id. Back within `subscriber_retention_ms` as well
+  (with the defaults, both are 30 s), it receives everything: its unacked
+  backlog and each message published while it was away, once. Back after
+  the retention, it receives what its queue holds. A group's queue keeps its
   consumer while any member remains. A call through an observer that is not
   active (its target unregistered, say) fails with `OBSERVER_NOT_ACTIVE`: the
   message stays queued and is retried.
@@ -202,12 +204,15 @@ delivered at exactly its due time.
 `subscriber_retention_ms` (default `30000`, the engine's default
 `observers.observer_grace_ms`) is how long the queue of a `queue::on-message`
 subscriber whose observer is removed keeps receiving its topic (see
-**Lifecycle** above). `0` stops it receiving when the observer is removed. A
-change applies to the next observer removed. A retention lives in the
-running adapter: an adapter swap or a restart of the queue worker ends it. It
-applies to the `builtin` adapter; a `rabbitmq` subscriber queue stays bound to
-its topic, so it keeps receiving the topic whatever this setting, and `redis`
-holds no subscriber queue.
+**Lifecycle** above). `0` stops it receiving when the observer is removed.
+Keep it at least the engine's `observers.observer_grace_ms`: an engine whose
+grace period is raised needs this raised to the same value or more, or a
+worker that re-observes late in the grace period misses what was published
+after the retention ended. A change applies to the next observer removed. A
+retention lives in the running adapter: an adapter swap or a restart of the
+queue worker ends it. It applies to the `builtin` adapter; a `rabbitmq`
+subscriber queue stays bound to its topic, so it keeps receiving the topic
+whatever this setting, and `redis` holds no subscriber queue.
 
 ```yaml
 subscriber_retention_ms: 30000
