@@ -91,6 +91,13 @@ fn is_scoped_function(function_id: &str) -> bool {
         || function_id.starts_with("coder::")
 }
 
+fn remote_scoped(function_id: &str) -> bool {
+    !is_scoped_function(function_id)
+        && function_id
+            .match_indices("::")
+            .any(|(index, _)| is_scoped_function(&function_id[index + 2..]))
+}
+
 /// Functions that receive the trusted stamp: scoped calls themselves, plus
 /// fp::pipe and fp::batch, which carry the stamp on behalf of their steps.
 fn is_stamped_function(function_id: &str) -> bool {
@@ -105,12 +112,18 @@ pub fn inject(
     grants: &[String],
     boundary: FilesystemBoundary,
 ) -> Value {
-    if !is_stamped_function(function_id) {
+    let remote = remote_scoped(function_id);
+    if !remote && !is_stamped_function(function_id) {
         return args;
     }
     let Value::Object(mut map) = args else {
         return args;
     };
+
+    if remote {
+        map.remove(FS_SCOPE_FIELD);
+        return Value::Object(map);
+    }
 
     if let Some(root) = root {
         map.insert(
@@ -135,6 +148,79 @@ mod tests {
 
     fn workspace() -> FilesystemBoundary {
         FilesystemBoundary::Workspace
+    }
+
+    #[test]
+    fn remote_scoped_matches_shared_table() {
+        for (function_id, expected) in [
+            ("laptop::coder::read-file", true),
+            ("a::b::shell::exec", true),
+            ("coder::read-file", false),
+            ("laptop::shell::filesystem::read", false),
+        ] {
+            assert_eq!(remote_scoped(function_id), expected, "{function_id}");
+        }
+    }
+
+    #[test]
+    fn strips_model_fs_scope_from_node_prefixed_coder_call() {
+        let out = inject(
+            "laptop::coder::read-file",
+            json!({ "path": "a", "fs_scope": { "root": "/evil" } }),
+            Some("/work/session-7"),
+            &[],
+            workspace(),
+        );
+        assert_eq!(out, json!({ "path": "a" }));
+    }
+
+    #[test]
+    fn stamps_nothing_on_node_prefixed_shell_call() {
+        let out = inject(
+            "laptop::shell::exec",
+            json!({ "command": "ls" }),
+            Some("/work/session-7"),
+            &[],
+            workspace(),
+        );
+        assert_eq!(out, json!({ "command": "ls" }));
+    }
+
+    #[test]
+    fn strips_under_any_prefix_depth() {
+        let out = inject(
+            "a::b::coder::read-file",
+            json!({ "fs_scope": {} }),
+            None,
+            &[],
+            workspace(),
+        );
+        assert_eq!(out, json!({}));
+    }
+
+    #[test]
+    fn leaves_prefixed_unscoped_ids_alone() {
+        let args = json!({ "fs_scope": 1 });
+        assert_eq!(
+            inject(
+                "laptop::browser::open",
+                args.clone(),
+                Some("/w"),
+                &[],
+                workspace()
+            ),
+            args
+        );
+        assert_eq!(
+            inject(
+                "laptop::shell::filesystem::read",
+                args.clone(),
+                Some("/w"),
+                &[],
+                workspace()
+            ),
+            args
+        );
     }
 
     #[test]
