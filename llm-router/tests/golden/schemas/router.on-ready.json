@@ -1,5 +1,5 @@
 {
-  "description": "The router finished booting: called once per router start, and sent through each observer added after that once it is accepted. Providers observe it to re-declare. Takes no args; the event is {}.",
+  "description": "The router is ready: each observer receives the event once the router has booted and the observer is accepted, once per router start, and once more when its worker reconnects within the observer grace period. Providers observe it to re-declare. Takes no args; the event is {}.",
   "function_id": "router::on-ready",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

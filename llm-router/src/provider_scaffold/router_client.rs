@@ -24,8 +24,8 @@ pub async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<
 /// Observes `router::on-ready` with `target` (`provider::<id>::on_router_ready`),
 /// the event delivered as output, so the provider re-declares and refreshes its
 /// catalog whenever the router starts. The observer stays `pending` while
-/// llm-router is down; the router sends the ready event to an observer added
-/// after it is ready. Dropping the handle keeps the observer.
+/// llm-router is down; the router sends it the ready event once it is ready,
+/// whenever the observer is added. Dropping the handle keeps the observer.
 pub fn observe_router_ready(iii: &IIIClient, target: &str) -> ObserverHandle {
     iii.observe(
         Source::function(ON_READY_FN).deliver(Deliver::Output),
