@@ -1,6 +1,7 @@
 /**
  * Entry for the ios-simulator worker's console UI (src/ui.rs serves the
- * built dist/page.js over `console:script`, styles.css over `console:style`).
+ * built dist/page.js as a `script` asset of `console::ui::asset`, and
+ * styles.css as a `style` asset).
  *
  * - src/page/ — the Simulators page: a device rail and a live iPhone you
  *   drive with multi-touch, buttons and the keyboard, plus its media.
