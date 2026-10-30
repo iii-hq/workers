@@ -10,8 +10,8 @@ import {
 import type { CSSProperties } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
-import { StatusDot } from '@/components/ui/StatusDot'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
+import { StatusDot } from '@/components/ui/StatusDot'
 import { CONVERSATION_KIND_TAGS } from '@/lib/conversation-view'
 import { cn } from '@/lib/utils'
 import type {

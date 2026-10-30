@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { startSessionObserverLoader } from './session-observer-loader'
 import type { SessionObserverInfo } from './observers'
+import { startSessionObserverLoader } from './session-observer-loader'
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 

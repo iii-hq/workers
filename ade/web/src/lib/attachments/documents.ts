@@ -23,14 +23,14 @@ import {
   ATTACHED_FILE_PREFIX,
   type AttachmentFailure,
   type AttachmentReadSummary,
+  type CallFn,
+  callOr,
   describeWorkerFailure,
   escapeAttr,
   extensionOf,
   failureBlock,
   fileToBase64,
   reportDropped,
-  type CallFn,
-  callOr,
 } from './shared'
 
 export const TO_MARKDOWN_FUNCTION_ID = 'document::to-markdown'

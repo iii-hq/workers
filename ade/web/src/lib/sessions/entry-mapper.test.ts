@@ -6,10 +6,10 @@ import {
   clearTransientFlags,
   entrySegments,
   isCallSettled,
+  observerFiredSummary,
   prependTranscript,
   splitReactionTask,
   transcriptToMessages,
-  observerFiredSummary,
 } from './entry-mapper'
 import type { AgentMessage, TranscriptItem } from './types'
 

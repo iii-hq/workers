@@ -1,5 +1,5 @@
-import { serialRefresh } from './serial-refresh'
 import type { SessionObserverInfo } from './observers'
+import { serialRefresh } from './serial-refresh'
 
 export interface SessionObserverLoader {
   refresh: () => void

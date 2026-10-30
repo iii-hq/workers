@@ -58,13 +58,13 @@ import {
   predictedUserEntryId,
 } from '@/lib/backend/harness-send'
 import {
-  type SessionObserverLoader,
-  startSessionObserverLoader,
-} from '@/lib/backend/session-observer-loader'
-import {
   mergeFiredObservers,
   type SessionObserverInfo,
 } from '@/lib/backend/observers'
+import {
+  type SessionObserverLoader,
+  startSessionObserverLoader,
+} from '@/lib/backend/session-observer-loader'
 import type {
   ApprovalStreamEvent,
   CompactResult,
@@ -151,10 +151,10 @@ import {
   type MessagePatch,
   type ModelId,
   type ModelOption,
+  type ObserverFiredData,
   type SystemMessage,
   type ThinkingLevel,
   type ThoughtMessage,
-  type ObserverFiredData,
   type UserMessage,
   type WorkingDirScope,
 } from '@/types/chat'

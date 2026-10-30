@@ -41,15 +41,15 @@ import {
   toSystemPromptOptions,
 } from './harness-send'
 import {
-  isTerminalSource,
-  type TurnSourceEvent,
-  translateTurnSource,
-} from './translate'
-import {
   disposeSessionObserver,
   listSessionObservers,
   type SessionObserverInfo,
 } from './observers'
+import {
+  isTerminalSource,
+  type TurnSourceEvent,
+  translateTurnSource,
+} from './translate'
 import {
   startObserversChangedSubscription,
   startQueuedEventsSubscription,

@@ -20,19 +20,19 @@ import {
   rawRedactor,
   useFunctionCallRenderers,
 } from '@/components/function-call/renderer-registry'
-import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import {
   collapsedTimelineActivities,
   groupTimelineActivities,
+  observerActivityRows,
   type TimelineActivityGroupRow,
   timelineActivityPresentationKey,
-  observerActivityRows,
 } from '@/components/observer-activity/grouping'
 import {
+  type ObserverRegistration,
   registrationFromCall,
   registrationFromRow,
-  type ObserverRegistration,
 } from '@/components/observer-activity/model'
+import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { Button } from '@/components/ui/Button'
 import { ImageViewer } from '@/components/ui/ImageViewer'
 import { useMediaQuery } from '@/hooks/use-media-query'

@@ -1,5 +1,6 @@
 import { Check, ChevronRight, Copy, Loader2, Trash2, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useState } from 'react'
+import { filterChips } from '@/components/observer-activity/ObserverSource'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
@@ -8,7 +9,6 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
-import { filterChips } from '@/components/observer-activity/ObserverSource'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
 import { copyTextToClipboard } from '@/lib/clipboard'

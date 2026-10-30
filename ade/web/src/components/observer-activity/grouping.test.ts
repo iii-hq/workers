@@ -2,16 +2,16 @@ import { describe, expect, it } from 'vitest'
 import type { MessageListRow } from '@/components/chat/function-call-groups'
 import type {
   FunctionCallMessage,
+  ObserverFiredData,
   SystemMessage,
   ThoughtMessage,
-  ObserverFiredData,
   UserMessage,
 } from '@/types/chat'
 import {
   collapsedTimelineActivities,
   groupTimelineActivities,
-  timelineActivityPresentationKey,
   observerActivityRows,
+  timelineActivityPresentationKey,
 } from './grouping'
 
 function notification(id: string): UserMessage {

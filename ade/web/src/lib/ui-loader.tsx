@@ -39,13 +39,13 @@ import {
   registerExtConfigForm,
   registerExtContextSection,
   registerExtMentionRenderer,
+  registerExtObserverActivityRenderer,
   registerExtOverlay,
   registerExtPage,
   registerExtProviderConfigForm,
   registerExtRenderer,
   registerExtSessionChip,
   registerExtSessionTurnSummary,
-  registerExtObserverActivityRenderer,
   setUiAssetsStatus,
 } from '@/lib/ui-slots'
 import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'

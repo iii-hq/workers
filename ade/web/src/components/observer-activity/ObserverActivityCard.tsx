@@ -20,8 +20,8 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { timestampMilliseconds } from '@/lib/relative-time'
 import { cn } from '@/lib/utils'
 import type { SystemMessage, UserMessage } from '@/types/chat'
@@ -33,11 +33,6 @@ import {
   parseNotification,
 } from './model'
 import {
-  firstRenderedObserverActivitySlot,
-  observerActivityRawRedactor,
-  useObserverActivityRenderers,
-} from './renderer-registry'
-import {
   ObserverGlyph,
   ObserverJsonPane,
   ObserverStats,
@@ -45,6 +40,11 @@ import {
   ObserverTraceNode,
 } from './ObserverDetails'
 import { ObserverSource } from './ObserverSource'
+import {
+  firstRenderedObserverActivitySlot,
+  observerActivityRawRedactor,
+  useObserverActivityRenderers,
+} from './renderer-registry'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),

@@ -9,10 +9,6 @@ import {
 } from 'lucide-react'
 import { registrationFromCall } from '@/components/observer-activity/model'
 import {
-  firstRenderedObserverActivitySlot,
-  useObserverActivityRenderers,
-} from '@/components/observer-activity/renderer-registry'
-import {
   ObserverEyebrow,
   ObserverGlyph,
   ObserverJsonPane,
@@ -21,6 +17,10 @@ import {
   ObserverTraceNode,
 } from '@/components/observer-activity/ObserverDetails'
 import { ObserverSource } from '@/components/observer-activity/ObserverSource'
+import {
+  firstRenderedObserverActivitySlot,
+  useObserverActivityRenderers,
+} from '@/components/observer-activity/renderer-registry'
 import { ActivityMetadata } from '@/components/ui/ActivityMetadata'
 import { ActivityStatus } from '@/components/ui/ActivityStatus'
 import { OpenDetailsAffordance } from '@/components/ui/OpenDetailsAffordance'

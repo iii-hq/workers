@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { ObserveView } from '../ObserveView'
 import {
   coerceJsonObject,
   disposeObserverResponseSchema,
@@ -29,7 +30,6 @@ import {
   workersRegisterRequestSchema,
   workersRegisterResponseSchema,
 } from '../parsers'
-import { ObserveView } from '../ObserveView'
 import { UnobserveView } from '../UnobserveView'
 
 function wrap<T>(details: T) {
