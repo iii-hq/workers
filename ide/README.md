@@ -468,9 +468,19 @@ retained event and `{ "for_observer": "<observer id>" }` as the call's
 metadata, and the function's match hook gives that call to that observer
 alone. iii delivers it as it delivers a live completion: in the shape the
 observer's `deliver` asks for (the `Observed` envelope by default), through
-its filters and `on`. Each observer of a job receives its completion once,
-from the live call or from the replay. An observer without a `job_id`
-receives future completions only; it does not replay existing records.
+its filters and `on`. Each observer of a job receives its completion once
+each time iii adds it, from the live call or from the replay. An observer
+without a `job_id` receives future completions only; it does not replay
+existing records.
+
+iii removes an observer from this worker when the observing worker's
+connection drops, and adds it again when that worker comes back (it
+reattaches, or observes again under the same observer id). An observer
+added again after its job finished receives the retained completion from a
+replay: for the first time when the job ended while its worker was away,
+and a second time when it received the completion before the connection
+dropped. An observer with `max_fires: 1` ends with its first delivery, so it
+receives the completion once.
 
 For a harness agent, generate a new ID, such as `job-` followed by a UUID.
 Call `harness::observe` with that ID and wait for it to return before starting

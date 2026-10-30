@@ -19,7 +19,15 @@
 //! match hook gives to that observer alone, and iii delivers it as it
 //! delivers the first: with the observer's `deliver`, filters and `on`. The
 //! match hook claims a completion for an observer of its job under one
-//! lock, whichever call comes first, so the observer receives it once.
+//! lock, whichever call comes first, so the observer receives it once each
+//! time iii adds it.
+//!
+//! iii removes an observer from this worker when the observing worker's
+//! connection drops, and adds it again when that worker comes back
+//! (reattaching, or observing again under the same observer id). The
+//! removed hook drops the observer's claim, so an observer added again after
+//! its job finished receives the retained completion from a replay, whether
+//! or not it received it before the connection dropped.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -88,9 +96,9 @@ impl JobFinishedEvent {
     }
 }
 
-/// One run of a job ending: what each observer of the job receives once.
-/// A named job's id is free again once its record is pruned, so the times
-/// tell its runs apart.
+/// One run of a job ending: what each observer of the job receives once
+/// each time iii adds it. A named job's id is free again once its record is
+/// pruned, so the times tell its runs apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Completion {
     job_id: String,
@@ -130,8 +138,8 @@ static CLIENT: OnceLock<IIIClient> = OnceLock::new();
 
 /// The completion each observer of one job has taken, by observer id. The
 /// match hook claims it under this lock for the live call and the replay
-/// alike, so an observer receives a completion once. An entry goes with its
-/// observer.
+/// alike, so an observer receives a completion once each time iii adds it.
+/// [`release`] drops an observer's entry when iii removes the observer.
 static CLAIMED: OnceLock<Mutex<HashMap<String, Completion>>> = OnceLock::new();
 
 fn claimed() -> MutexGuard<'static, HashMap<String, Completion>> {
@@ -154,6 +162,14 @@ fn claim(id: &str, completion: &Completion) -> bool {
 /// Whether observer `id` has taken `completion`.
 fn has_claimed(id: &str, completion: &Completion) -> bool {
     claimed().get(id) == Some(completion)
+}
+
+/// Drops observer `id`'s claim when iii removes the observer. An observer
+/// added again under the same id (its worker back after its connection
+/// dropped) has taken nothing, so its added hook replays a retained
+/// completion to it.
+fn release(id: &str) {
+    claimed().remove(id);
 }
 
 /// The observer a call is for, from its metadata `for_observer`; `None`
@@ -294,7 +310,7 @@ impl AddedHook for JobFinishedSource {
 impl RemovedHook for JobFinishedSource {
     async fn on_removed(&self, obs: Observer) {
         tracing::info!(function_id = ON_JOB_FINISHED_FN, observer_id = %obs.id(), "job watch released");
-        claimed().remove(obs.id());
+        release(obs.id());
     }
 }
 
@@ -319,7 +335,11 @@ pub fn register_job_finished(iii: &IIIClient) {
                  An observer of one job added after the job finished receives its completion \
                  while the job is retained, from a call for that observer alone (metadata \
                  { for_observer: <observer id> }), delivered like every call. Each observer of \
-                 a job receives its completion once. Call shell::status for the job's output.",
+                 a job receives its completion once each time it is added: iii removes an \
+                 observer when its worker's connection drops and adds it again when the worker \
+                 comes back, and an observer added again after its job finished receives the \
+                 retained completion from a replay, whether or not it received it before. Call \
+                 shell::status for the job's output.",
             )
             .args_format::<JobFinishedArgs>()
             .private(),
@@ -475,6 +495,54 @@ mod tests {
         assert!(wants(&late, &args, &call));
         claimed().remove(&late);
         assert!(replayed(&never).is_empty(), "a job never retained");
+    }
+
+    // iii removes an observer when its worker's connection drops and adds it
+    // again under the same id when the worker comes back. The removed hook
+    // releases its claim, so the added hook replays a retained completion to
+    // it, whether it took the completion before the drop or its worker was
+    // away when the job ended.
+    #[tokio::test]
+    async fn an_observer_added_again_receives_the_retained_completion_again() {
+        let _test_guard = TEST_GUARD.lock().await;
+        let mut finished = record(JobStatus::Finished, Some(crate::jobs::now_ms()));
+        finished.id = format!("job-added-again-{}", uuid::Uuid::new_v4());
+        crate::jobs::JOBS
+            .map
+            .lock()
+            .await
+            .insert(finished.id.clone(), retain(finished.clone(), true));
+        let event = JobFinishedEvent::from_record(&finished).unwrap();
+        let args = json!({ "job_id": finished.id });
+        let (took_it, was_away) = (observer_id(), observer_id());
+
+        // Active when the job ended: it takes the live call, and its added
+        // hook's replay stays silent.
+        assert!(wants(&took_it, &args, &live_call(&event)));
+        replay(&took_it, &finished.id).await;
+        assert!(replayed(&took_it).is_empty(), "taken from the live call");
+
+        // Removed and added again: the replay reaches it a second time.
+        release(&took_it);
+        replay(&took_it, &finished.id).await;
+        let again = replayed(&took_it);
+        assert_eq!(again.len(), 1, "an observer added again is replayed");
+        assert_eq!(again[0].job_id, finished.id);
+        assert!(wants(&took_it, &args, &replay_call(&again[0], &took_it)));
+        assert!(!wants(&took_it, &args, &live_call(&event)));
+
+        // Removed before the job ended (the live call never matched it) and
+        // added again after: the replay is its first receipt.
+        release(&was_away);
+        replay(&was_away, &finished.id).await;
+        let first = replayed(&was_away);
+        assert_eq!(first.len(), 1, "an observer away at the end is replayed");
+        assert!(wants(&was_away, &args, &replay_call(&first[0], &was_away)));
+
+        crate::jobs::JOBS.map.lock().await.remove(&finished.id);
+        release(&took_it);
+        release(&was_away);
+        assert!(!has_claimed(&took_it, &Completion::from(&event)));
     }
 
     #[tokio::test]

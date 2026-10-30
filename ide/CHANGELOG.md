@@ -187,7 +187,9 @@
   completion from a call with metadata `{ for_observer: <observer id> }`,
   which the match hook gives to it alone, delivered with its `deliver`,
   filters and `on` like a live one; each observer of a job receives the
-  completion once. The worker observes
+  completion once each time iii adds it, and an observer added again after
+  its worker's connection dropped and came back receives a retained
+  completion from a replay. The worker observes
   `configuration::on-updated`, `harness::hook::on-pre-turn`, `on-post-turn`,
   `on-pre-call` and
   `on-post-call` (its handlers are `shell::turns::on-pre-call` and
