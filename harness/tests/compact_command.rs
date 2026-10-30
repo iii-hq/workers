@@ -20,7 +20,9 @@ use harness::hooks::HookRegistry;
 use harness::skills;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, RegisterFunction, Source};
+use iii_sdk::{
+    register_worker, Deliver, IIIClient, InitOptions, ObserverOptions, RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use tokio::sync::{Notify, RwLock};
 
@@ -373,13 +375,16 @@ impl Stack {
             TurnEvents::register(&iii),
             HookRegistry::register(&iii),
         );
-        // Another device watching the session.
+        // Another device watching the session. One activation at a time: the
+        // engine then runs the observer's deliveries in arrival order, so the
+        // device hears `started` before `completed`.
         let listener = register_worker(&engine.url, worker_options("listener"));
-        let observer = listener.observe(
+        let observer = listener.observe_with(
             Source::function(harness::events::ON_COMPACTION_FN)
                 .filters(json!({ "input.session_id": { "$eq": SESSION } }))
                 .deliver(Deliver::Output),
             "test::compaction-events",
+            ObserverOptions::default().max_in_flight(1),
         );
         tokio::time::timeout(Duration::from_secs(5), observer.ready())
             .await
