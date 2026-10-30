@@ -391,7 +391,8 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 	if machine.IsZero() || req.NodeKey.IsZero() {
 		return tailcfg.RegisterResponse{Error: "missing machine or node key"}
 	}
-	// The join callback may call Code or Identity; it must run outside mu.
+	// The join callback may reenter the coordinator; only enrollment unlocks.
+	// Accepted machine authority stays locked through key rotation.
 	c.mu.Lock()
 	if c.ctx.Err() != nil {
 		c.mu.Unlock()
@@ -399,9 +400,8 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 	}
 	n := c.byKey(req.NodeKey)
 	seed := c.st.CodeSeed
-	needsJoin := n == nil
+	needsJoin := n == nil && !c.authorized(c.byMachine(machine))
 	limit := c.limit
-	c.mu.Unlock()
 	reserved := ""
 	secret := ""
 	if req.Auth != nil {
@@ -409,6 +409,7 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 	}
 	tokenAuth := join.IsTokenSecret(secret)
 	if needsJoin {
+		c.mu.Unlock()
 		if limit != nil && secret != c.self {
 			if err := limit.Allow(addr); err != nil {
 				return tailcfg.RegisterResponse{Error: err.Error()}
@@ -434,8 +435,8 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 				return tailcfg.RegisterResponse{Error: "invalid reserved name"}
 			}
 		}
+		c.mu.Lock()
 	}
-	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.ctx.Err() != nil {
 		return tailcfg.RegisterResponse{Error: "coordinator closed"}

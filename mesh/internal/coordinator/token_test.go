@@ -541,3 +541,125 @@ func TestExpiredRestartInstallsHookConcurrently(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenAcceptedMachineRotatesKeys(t *testing.T) {
+	for _, credential := range []string{"consumed", "revoked", "expired"} {
+		t.Run(credential, func(t *testing.T) {
+			clock := asyncClock{tstest.NewClock(tstest.ClockOpts{})}
+			c, err := newWithClock(t.TempDir(), nil, clock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			c.join = func(secret, addr string) (string, error) { _, err := c.RedeemToken(secret); return "", err }
+			opts := join.TokenOptions{}
+			if credential != "consumed" {
+				opts = join.TokenOptions{Ephemeral: true, Reusable: true, ExpiresInSecs: 60}
+			}
+			id, _, secret := issueToken(t, c, opts)
+			machine := key.NewMachine().Public()
+			first := tokenRequest(secret, "runner")
+			if r := c.register(machine, "a", first); !r.MachineAuthorized {
+				t.Fatal(r.Error)
+			}
+			if err := c.SetOperator("runner", "alice"); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.SetRuntimeMetadata("runner", RuntimeMetadata{OS: "linux", Arch: "amd64", Version: "0.1.0"}); err != nil {
+				t.Fatal(err)
+			}
+			if credential == "revoked" {
+				if err := c.RevokeToken(id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if credential == "expired" {
+				clock.Advance(time.Minute)
+			}
+			if _, err := c.RedeemToken(secret); err == nil {
+				t.Fatal("credential still permits enrollment")
+			}
+			before := *c.byMachine(machine)
+			tokens, _ := json.Marshal(c.st.Tokens)
+			if r := c.register(machine, "a", tailcfg.RegisterRequest{NodeKey: first.NodeKey}); !r.MachineAuthorized {
+				t.Fatal("same-key reconnect failed", r.Error)
+			}
+			if r := c.register(key.NewMachine().Public(), "a", tokenRequest(secret, "runner")); r.MachineAuthorized {
+				t.Fatal("fresh machine reused enrollment credential")
+			}
+			previous := first.NodeKey
+			for _, withCredential := range []bool{true, false} {
+				req := tailcfg.RegisterRequest{NodeKey: key.NewNode().Public(), OldNodeKey: previous, Hostinfo: &tailcfg.Hostinfo{Hostname: "changed-hostname"}, Ephemeral: !opts.Ephemeral}
+				if withCredential {
+					req.Auth = &tailcfg.RegisterResponseAuth{AuthKey: secret}
+				}
+				if r := c.register(machine, "a", req); !r.MachineAuthorized {
+					t.Fatalf("accepted machine cannot rotate with credential=%t: %s", withCredential, r.Error)
+				}
+				current := c.byMachine(machine)
+				if current.ID != before.ID || current.Name != before.Name || current.TokenID != id || current.Ephemeral != before.Ephemeral || current.Operator != before.Operator || current.RuntimeMetadata != before.RuntimeMetadata || current.JoinedAt != before.JoinedAt || !slices.Contains(current.Keys, previous) || current.Key != req.NodeKey || len(c.Nodes()) != 1 {
+					t.Fatal("rotation replaced accepted-node identity, history or provenance")
+				}
+				if c.Nodes()[0].Addr != c.address(before.ID) {
+					t.Fatal("rotation changed address")
+				}
+				after, _ := json.Marshal(c.st.Tokens)
+				if !bytes.Equal(tokens, after) {
+					t.Fatal("rotation changed enrollment token authority")
+				}
+				previous = req.NodeKey
+			}
+			_, _, other := issueToken(t, c, join.TokenOptions{Ephemeral: true, Reusable: true})
+			attacker := key.NewMachine().Public()
+			foreign := tokenRequest(other, "other")
+			if r := c.register(attacker, "b", foreign); !r.MachineAuthorized {
+				t.Fatal(r.Error)
+			}
+			stolen := tailcfg.RegisterRequest{NodeKey: first.NodeKey, OldNodeKey: foreign.NodeKey}
+			if r := c.register(attacker, "b", stolen); r.MachineAuthorized || r.Error != "node key registered to another machine" {
+				t.Fatal("accepted machine stole foreign historical key", r.Error)
+			}
+			if err := c.Remove("runner"); err != nil {
+				t.Fatal(err)
+			}
+			for _, req := range []tailcfg.RegisterRequest{tokenRequest(other, "runner"), {NodeKey: previous, Auth: &tailcfg.RegisterResponseAuth{AuthKey: other}}} {
+				if r := c.register(machine, "a", req); r.MachineAuthorized || r.Error != "node keys refused" {
+					t.Fatal("removed machine reauthorized", r.Error)
+				}
+			}
+			if r := c.register(key.NewMachine().Public(), "b", tailcfg.RegisterRequest{NodeKey: first.NodeKey, Auth: &tailcfg.RegisterResponseAuth{AuthKey: other}}); r.MachineAuthorized || r.Error != "node keys refused" {
+				t.Fatal("removed historical key reauthorized", r.Error)
+			}
+		})
+	}
+}
+
+func TestTokenRotationSaveFailureKeepsAcceptedKey(t *testing.T) {
+	dir := t.TempDir()
+	c := newCoordinator(t, dir)
+	c.join = func(secret, addr string) (string, error) { _, err := c.RedeemToken(secret); return "", err }
+	_, _, secret := issueToken(t, c, join.TokenOptions{})
+	machine := key.NewMachine().Public()
+	first := tokenRequest(secret, "runner")
+	if r := c.register(machine, "a", first); !r.MachineAuthorized {
+		t.Fatal(r.Error)
+	}
+	next := tailcfg.RegisterRequest{NodeKey: key.NewNode().Public(), OldNodeKey: first.NodeKey}
+	file := c.file
+	c.file = filepath.Join(file, "impossible")
+	if r := c.register(machine, "a", next); r.Error == "" || r.MachineAuthorized {
+		t.Fatal("failed save accepted rotation")
+	}
+	if !c.Known(first.NodeKey) || c.Known(next.NodeKey) || slices.Contains(c.byMachine(machine).Keys, next.NodeKey) {
+		t.Fatal("failed rotation changed accepted key history")
+	}
+	c.file = file
+	if r := c.register(machine, "a", next); !r.MachineAuthorized {
+		t.Fatal("accepted machine could not retry rotation", r.Error)
+	}
+	c.Close()
+	c = newCoordinator(t, dir)
+	if !c.Known(next.NodeKey) || c.Known(first.NodeKey) || len(c.Nodes()) != 1 {
+		t.Fatal("rotation authority lost on restart")
+	}
+}

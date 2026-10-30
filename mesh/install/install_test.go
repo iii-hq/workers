@@ -223,3 +223,36 @@ func TestReturnedUnixTokenLineRunsCLI(t *testing.T) {
 		})
 	}
 }
+
+func TestReturnedUnixTokenLinePreservesURLSchemeCase(t *testing.T) {
+	for _, publicURL := range []string{"HTTPS://hub.example/CaseSensitive/Prefix", "hTtPs://hub.example/CaseSensitive/Prefix", "HtTp://hub.example/CaseSensitive/Prefix"} {
+		t.Run(strings.Split(publicURL, ":")[0], func(t *testing.T) {
+			cmd, dir, _ := executableInstallerFixture(t, "valid")
+			pub, _, _ := ed25519.GenerateKey(rand.Reader)
+			_, raw, err := join.NewToken(publicURL, pub, join.TokenOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			accepted, err := cli.ParseJoin([]string{"--token", raw})
+			if err != nil || accepted.PublicURL != publicURL {
+				t.Fatal("issuer/CLI rejected exact configured URL", err)
+			}
+			line, _ := hub.TokenInstallLines("0.1.0", raw)
+			cmd.Args = []string{"sh", "-c", line}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("returned installer rejected valid issued token: %v: %s", err, out)
+			}
+			b, err := os.ReadFile(filepath.Join(dir, "parsed"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var parsed cli.JoinArgs
+			if err = json.Unmarshal(b, &parsed); err != nil {
+				t.Fatal(err)
+			}
+			if parsed.Token != raw || parsed.PublicURL != publicURL {
+				t.Fatal("installer rewrote token or exact URL")
+			}
+		})
+	}
+}

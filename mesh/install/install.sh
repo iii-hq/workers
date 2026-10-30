@@ -28,7 +28,7 @@ if [ "$mode" = token ]; then
     printf '%s' "${token#iiimj_}" | jq -Re '
         try (gsub("-"; "+") | gsub("_"; "/") | @base64d | fromjson |
         (keys == ["identity", "public_url", "secret"]) and
-        (.public_url | test("^https?://[^/?#@[:space:]]+(/[^?#]*)?$")) and
+        (.public_url | test("^[Hh][Tt][Tt][Pp][Ss]?://[^/?#@[:space:]]+(/[^?#]*)?$")) and
         (.identity | test("^[A-Za-z0-9+/]{43}=$")) and
         (.secret | test("^iiimjs_[A-Za-z0-9_-]{43}$"))) catch false
     ' >/dev/null || fail 'invalid join token'

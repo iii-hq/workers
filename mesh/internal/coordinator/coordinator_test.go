@@ -747,3 +747,32 @@ func TestLastSeenNeverRegresses(t *testing.T) {
 		t.Fatal("authenticated activity regressed last_seen")
 	}
 }
+
+func TestAcceptedMachineRotationConcurrentLogout(t *testing.T) {
+	c := newCoordinator(t, t.TempDir())
+	for range 32 {
+		machine, old := registerNode(t, c, "runner")
+		c.join = func(string, string) (string, error) { return "", errors.New("new enrollment refused") }
+		before := c.st.Next
+		start := make(chan struct{})
+		results := make(chan tailcfg.RegisterResponse, 2)
+		go func() {
+			<-start
+			results <- c.register(machine, "a", tailcfg.RegisterRequest{NodeKey: key.NewNode().Public(), OldNodeKey: old})
+		}()
+		go func() {
+			<-start
+			results <- c.register(machine, "a", tailcfg.RegisterRequest{NodeKey: old, Expiry: time.Now().Add(-time.Minute)})
+		}()
+		close(start)
+		<-results
+		<-results
+		if c.st.Next != before {
+			t.Fatal("rotation recreated a logged-out node without enrollment authority")
+		}
+		if n := c.byMachine(machine); n != nil {
+			c.register(machine, "a", tailcfg.RegisterRequest{NodeKey: n.Key, Expiry: time.Now().Add(-time.Minute)})
+		}
+		c.join = func(secret, addr string) (string, error) { return "", nil }
+	}
+}
