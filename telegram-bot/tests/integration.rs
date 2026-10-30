@@ -107,7 +107,9 @@ async fn spawn_engine() -> Result<Engine, String> {
     let probe = register_worker(&engine.url, InitOptions::default());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let core = call(&probe, "engine::workers::list", json!({})).await.is_some();
+        let core = call(&probe, "engine::workers::list", json!({}))
+            .await
+            .is_some();
         let configuration = core
             && match probe
                 .call(CallRequest {

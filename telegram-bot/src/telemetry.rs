@@ -11,7 +11,7 @@ pub fn tracing_metadata(session_id: &str, message_id: &str) -> Value {
     })
 }
 
-/// Run an async block with session/turn baggage for harness binding handlers.
+/// Run an async block with session/turn baggage for the observer handlers.
 pub async fn with_session_baggage<F, Fut, T>(
     deps: &crate::deps::Deps,
     session_id: &str,

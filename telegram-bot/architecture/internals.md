@@ -53,7 +53,7 @@ session. Subsequent sends reuse it until `/start` resets the chat.
 
 **Outbound (agent → user).** Driving a turn makes `session-manager`/`harness`
 call their event functions, whose observers run this worker's handlers, which call into
-the render pipeline, which calls the Telegram API. See [§3](#3-reactive-bindings)
+the render pipeline, which calls the Telegram API. See [§3](#3-observers-of-sibling-events)
 and [§5](#5-the-render-state-machine).
 
 ## 3. Observers of sibling events
@@ -74,9 +74,9 @@ function:
 
 Two invariants:
 
-- **No chat → no-op.** Every binding resolves `chat_id` from
+- **No chat → no-op.** Every handler resolves `chat_id` from
   `kv::chat_id_for_session(session_id)`; if there's no mapping it returns
-  `ok: true` and does nothing. (Bindings only know `session_id`; the reverse
+  `ok: true` and does nothing. (Handlers only know `session_id`; the reverse
   KV mapping is how they find the chat to post into.)
 - **Role filtering is iii's job** (the observer's filters on
   `input.message.role`), but `on-message-added` re-checks the role defensively.
@@ -100,7 +100,7 @@ user taps a button ─► webhook handle_callback:
      w: → approval::approve-always(function_id) THEN approval::resolve(Allow)
      answerCallbackQuery(toast); delete cb token
 
-approval-gate emits pending-resolved ─► on-pending-resolved:
+approval-gate calls approval::on-pending-resolved ─► on-pending-resolved:
      clear the inline keyboard (editMessageReplyMarkup)
 ```
 
@@ -177,7 +177,7 @@ is the RPC timeout, not a key expiry; keys live until explicitly deleted.
 | Key | Value | Purpose |
 |---|---|---|
 | `chat:{chat_id}:session` | session_id | Forward chat → session mapping. |
-| `session:{session_id}:chat` | chat_id | Reverse mapping (bindings resolve chat from session). |
+| `session:{session_id}:chat` | chat_id | Reverse mapping (observer handlers resolve chat from session). |
 | `chat:{chat_id}:fsm` | `idle`\|`awaiting_model` | Per-chat FSM ([§7](#7-the-per-chat-fsm)). |
 | `chat:{chat_id}:model` | `{provider, id}` JSON | Selected model. |
 | `chat:{chat_id}:verbosity` | verbosity string | Per-chat verbosity override. |
@@ -213,13 +213,13 @@ override getter alone.
 
 ## 9. Trace correlation
 
-Telegram ingress and harness bindings share OpenTelemetry baggage so the console
+Telegram ingress and the observer handlers share OpenTelemetry baggage so the console
 can group traces by session and turn:
 
 - **`iii.session.id`** — the harness session id, or `pending-{chat_id}` before
   the first send in a chat.
 - **`iii.message.id`** — `tg-{update_id}` at ingress; the harness `turn_id` after
-  `harness::send` returns and for binding handlers (resolved by
+  `harness::send` returns and for the observer handlers (resolved by
   `message_id_for_binding`: `active_turns[session_id]` turn_id → entry_id →
   session_id).
 
