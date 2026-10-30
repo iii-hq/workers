@@ -17,8 +17,8 @@ Manter o monitor dentro do worker `eval`, usando o bus do Engine e as dependênc
 | `src/state.rs` | Persistência dos registros, evidências e índice de observações. |
 | `src/ids.rs` | Identidade da observação, da análise e da sessão de investigação. |
 | `src/diagnostics.rs` | Detectores determinísticos e preparação de prévias. |
-| `src/functions.rs` e `src/surface.rs` | Registrar a nova superfície e seus schemas. |
-| `src/main.rs` | Inicialização, observers, readiness e recuperação. |
+| `src/functions.rs` e `src/surface.rs` | Registrar a nova superfície, seus schemas e os observers. |
+| `src/main.rs` | Inicialização, readiness e recuperação. |
 | `src/queue.rs`, `src/locks.rs` e `src/events.rs` | Reutilizar fila e locks; ajustar eventos ao novo resultado. |
 | `src/comparison.rs` | Preservar comparação objetiva de sessões. |
 | `src/ui.rs`, `src/manifest.rs` e `iii.worker.yaml` | Atualizar descrição, integração e dependências. |
