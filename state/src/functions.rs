@@ -513,8 +513,8 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     let cfg = input.condition_config.ok_or_else(|| {
                         Error::Handler(
                             "BARRIER_CONFIG: state::barrier needs `condition_config` \
-                             { id, expect, key_from?, carry? } — as a binding it goes in \
-                             `conditions: [{ function_id, config }]`"
+                             { id, expect, key_from?, carry? } — on a harness::observe \
+                             observer it goes in `conditions: [{ function_id, config }]`"
                                 .to_string(),
                         )
                     })?;
@@ -527,7 +527,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                 }
             })
             .description(
-                "Fan-in gate for a binding condition: record one arrival and answer `skip` until \
+                "Fan-in gate for an observer condition: record one arrival and answer `skip` until \
                  the expected set has arrived, then `allow` exactly once carrying every \
                  arrival's payload.",
             ),

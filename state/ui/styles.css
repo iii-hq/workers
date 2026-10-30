@@ -1,5 +1,6 @@
 /*
- * The state worker's console stylesheet (`console:style` asset), scoped under
+ * The state worker's console stylesheet (the `console::ui::asset` observer
+ * with args `{ kind: 'style', path: 'state/styles.css' }`), scoped under
  * `[data-iii-ui="state"]` — page, function-call message and config form.
  * Layout only: chrome comes from @iii-dev/console-ui and the console's tokens.
  */
