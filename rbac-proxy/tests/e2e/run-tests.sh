@@ -122,7 +122,10 @@ if [[ ! -d "$ROOT_DIR/workers/harness/node_modules" ]]; then
   (cd "$ROOT_DIR/workers/harness" && npm install --silent)
 fi
 
-# 4. Start the engine.
+# 4. Start the engine. Its configuration store (./config/) keeps the
+#    `rbac-proxy` entry between runs, and the proxy seeds only an absent entry:
+#    every run starts without one, so the seed below applies.
+rm -rf "$ROOT_DIR/config"
 echo "[run-tests] starting iii engine"
 : > "$ENGINE_LOG"
 "$III_BIN" --no-update-check -c ./config.yaml > "$ENGINE_LOG" 2>&1 &
@@ -166,6 +169,7 @@ rbac:
   on_observer_registration_function_id: support::on-observer-reg
   expose_functions:
     - match("api::*")
+    - match("tenant1::shared::*")
     - match("engine::functions::*")
     - match("engine::workers::*")
 EOF

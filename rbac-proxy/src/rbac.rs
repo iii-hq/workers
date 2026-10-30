@@ -633,7 +633,31 @@ impl ProxySession {
     pub fn has_prefix(&self) -> bool {
         self.function_registration_prefix.is_some()
     }
+
+    /// The worker name the engine knows this session's connection by, for
+    /// the name it declared on `engine::workers::register`:
+    /// `rbac-proxy:<prefix>::<declared>` under a `function_registration_prefix`,
+    /// `rbac-proxy:<declared>` without one. The engine admits one live worker
+    /// per name and namespace, and an `observe` from a connection under the
+    /// same name and namespace replaces that worker's suspended observer
+    /// (decision 51). The prefix scopes a worker's name as it scopes the
+    /// worker's function ids: sessions under one prefix share their workers'
+    /// identities, and a session under another prefix declaring the same
+    /// name is another worker. A session without a prefix is scoped no more
+    /// than its function ids are (a declared `tenant1::queue` is tenant1's
+    /// `queue`). The `rbac-proxy:` start keeps proxied workers off the names
+    /// of workers connected to the engine directly.
+    pub fn proxied_worker_name(&self, declared: &str) -> String {
+        match &self.function_registration_prefix {
+            Some(prefix) => format!("{WORKER_NAME_PREFIX}{prefix}::{declared}"),
+            None => format!("{WORKER_NAME_PREFIX}{declared}"),
+        }
+    }
 }
+
+/// Start of every worker name a proxied connection declares
+/// ([`ProxySession::proxied_worker_name`]).
+pub const WORKER_NAME_PREFIX: &str = "rbac-proxy:";
 
 // ---------------------------------------------------------------------------
 // AuthResult — VENDORED defaults from rbac_session.rs (`AuthResult`).

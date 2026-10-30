@@ -113,7 +113,7 @@ message type, the direction it travels and what the proxy does.
 | `InvokeFunction` (`engine::observers::dispose`) | Forward only for an observer this connection created; else `FORBIDDEN`. |
 | `InvokeFunction` (`engine::*` carve-out, e.g. `engine::channels::create`) | Allowed by carve-out → forward unchanged. A queued `engine::*` call is refused: it would run later as the queue worker. |
 | `InvokeFunction` (other) | [Access resolution](rbac.md#access-resolution-order): deny → synthesize `InvocationResult{error: FORBIDDEN}` (matching the engine, which replies even for a `void` action — fabricate an `invocation_id` when it is `null`; the worker simply has no pending entry for it); allow + the session's own private function → forward (the middleware runs on the control connection, which a private function refuses); allow + middleware set → invoke middleware on the control connection, reply with its result; allow + no middleware → resolve [prefix](#prefix-resolution) → forward. |
-| `InvokeFunction` (`engine::workers::register`) | Carve-out. When the auth result scopes the session to namespaces, the declared `data.namespace` (absent = `default`) must be one of them, else the engine's refusal is reproduced: the call's `FORBIDDEN` result, `RegistrationRejected{ code: NAMESPACE_FORBIDDEN }`, then Close. The declared namespace is recorded (an id is the session's own only in it), `data.name` gets the `rbac-proxy:` prefix, and `data.features` is reduced to what the proxy enforces. |
+| `InvokeFunction` (`engine::workers::register`) | Carve-out. When the auth result scopes the session to namespaces, the declared `data.namespace` (absent = `default`) must be one of them, else the engine's refusal is reproduced: the call's `FORBIDDEN` result, `RegistrationRejected{ code: NAMESPACE_FORBIDDEN }`, then Close. The declared namespace is recorded (an id is the session's own only in it), `data.name` becomes `rbac-proxy:<prefix>::<name>` (`rbac-proxy:<name>` without a `function_registration_prefix`; see [Observers](#observers)), and `data.features` is reduced to what the proxy enforces. |
 | `InvocationResult` (worker answering a dispatched call) | Forward; correlation is by `invocation_id`, so the (bare) `function_id` is informational and passes through, and so do `observed` and the result (the engine checks every observer id). |
 | `RegisterService` | Forward unchanged (engine-internal service discovery; not gated). |
 | `Reattach` | Forward unchanged (carries the connection's own token). |
@@ -141,7 +141,7 @@ engine drops an item for a call it routed to the connection.
 |---|---|
 | `WorkerRegistered` | Reduce `features` to what the proxy enforces → forward. |
 | `RegistrationRejected` | The id stops being the session's own; strip `{prefix}::` from `function_id` → forward. |
-| `FunctionRegistered` | Record its observers as the ones this connection hosts; strip `{prefix}::` from `id` and from each `observers[].target`; set `local_dispatch: false` when middleware is configured → forward. |
+| `FunctionRegistered` | Record its observers as the ones this connection hosts; strip `{prefix}::` from `id` and from each `observers[].target`; set `local_dispatch: false` when middleware is configured, unless this connection registered the function `private: true` in its namespace → forward. |
 | `ObserverAdded` / `ObserverRemoved` | Add or remove the observer among the ones this connection hosts; strip `{prefix}::` from `function_id` (and `observer.target`) → forward. |
 | `ObserveResult` / `ObserverStateChanged` | Track the observers this connection created (accepted until `error` or `disposed`) → forward. |
 | `InvokeFunction` (engine dispatching a call **to** the worker) | Remember the call until the worker answers it (what a `caller` must name) → strip `{prefix}::` from `function_id` so the worker SDK finds its local handler; for an activation of an observer this connection created that delivers the `Observed` envelope, strip it from `data.function_id` too → forward. Middleware does **not** apply to inbound dispatch. |
@@ -164,12 +164,14 @@ runs them for a proxied connection with no RBAC session, so the proxy gates
 them from both sides.
 
 - **Features.** `data.features` of `engine::workers::register` and `features`
-  of `WorkerRegistered` keep `observe.v1` and `observe.v2`. `local-dispatch.v1`
-  is kept only when no `middleware_function_id` is set: an in-process call
-  never reaches the middleware. With middleware set, every `FunctionRegistered`
-  reaches the worker with `local_dispatch: false`, so the SDK routes its own
-  calls through the engine and the proxy. `large-messages.v1` is removed: the
-  proxy forwards text frames only.
+  of `WorkerRegistered` keep `observe.v1`, `observe.v2` and
+  `local-dispatch.v1`. With `middleware_function_id` set, a
+  `FunctionRegistered` reaches the worker with `local_dispatch: false` unless
+  the connection registered the function `private: true` (observe v2
+  decision 46). An in-process call never reaches the middleware, so the SDK
+  routes its own calls of every other function through the engine and the
+  proxy; its own calls of a private function skip the middleware on either
+  path. `large-messages.v1` is removed: the proxy forwards text frames only.
 - **Observing.** An `Observe` is gated like a call of both functions it names
   (see the flowchart below and [rbac.md § Observer registration RBAC](rbac.md#observer-registration-rbac)).
   On top of the engine's checks, the proxy refuses an `engine::*` target, since
@@ -189,6 +191,18 @@ them from both sides.
   this connection (in `FunctionRegistered` or `ObserverAdded`, until
   `ObserverRemoved`). The engine checks the rest: that the sender hosts the
   observed function, that the observer is active, and its policy.
+- **Back on a new connection.** An `Observe` that names the id of a
+  suspended observer replaces it when the engine knows both connections
+  under one worker name in one namespace (observe v2 decision 51), and is
+  refused with `OBSERVER_ID_CONFLICT` otherwise, until the grace period ends.
+  The proxy declares a session's worker as `rbac-proxy:<prefix>::<name>`, so
+  the replacement, like the engine's one live worker per name, stays within
+  the sessions of one `function_registration_prefix`: a restarted worker
+  takes its observers back (a queue consumer keeps its backlog by observer
+  id), and a session under another prefix is another worker. A session
+  without a prefix is declared as `rbac-proxy:<name>`; as with its function
+  ids, nothing scopes its names (a declared `tenant1::queue` is tenant1's
+  `queue`).
 - **Registrations.** `private`, `observable` and `args_format` on
   `RegisterFunction` pass to the engine and to the `on_function_registration`
   hook, whose answer may replace them. A 0.25 `observe` object passes as sent;

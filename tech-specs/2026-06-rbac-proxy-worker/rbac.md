@@ -263,9 +263,10 @@ retries must not double-charge or double-log.
 Two kinds of call never reach the middleware: a call through an observer
 (the host delivering a call, as an activation does), and the connection's
 call of its own private function (only its host may call it, and the
-middleware runs on the control connection). For the same reason
-`local-dispatch.v1` is kept only when no middleware is configured: a call
-that runs in-process never reaches it.
+middleware runs on the control connection), which therefore may also run
+in-process: its `FunctionRegistered` keeps `local_dispatch`. Every other
+function's `FunctionRegistered` says `local_dispatch: false` while middleware
+is configured, since a call that runs in-process never reaches it.
 
 ## Observer registration RBAC
 
@@ -481,7 +482,6 @@ strict parity can turn it off.
 | **Denied-discovery error code** | `engine::functions::info` distinguishes `FORBIDDEN` (denied) from `NOT_FOUND` (missing), leaking existence. | Defaults to engine parity (`FORBIDDEN`); a deployment may opt into collapsing denied → `NOT_FOUND` to also hide existence ([engine-overrides.md](engine-overrides.md)). | Hardening for hostile multi-tenant discovery. |
 | **Observer targets and sources** | The engine checks a session's access to an observer's function and target. | The proxy runs the same checks and also refuses `engine::*` targets and the sources whose calls carry what discovery filters ([Observer registration RBAC](#observer-registration-rbac)). | A proxied connection has no engine session: an `engine::*` target would run unrestricted, and those sources would deliver the unfiltered discovery view. |
 | **Call-chain claims** | The engine keeps the `caller` an SDK sets on a call or a report. | The proxy keeps it only when it names a call the engine routed to that connection and it has not answered, and writes it from that call ([protocol-interception.md § Downstream](protocol-interception.md#downstream--engine-frames-the-worker-sends)). | Observers filter on `caller`; a worker must not place its calls in another worker's call chain. |
-| **In-process calls** | `local-dispatch.v1` is negotiated per connection. | Kept only when no middleware is configured; `FunctionRegistered` then says `local_dispatch: false`. | An in-process call never reaches the middleware. |
 
 Everything else — the access-resolution order, the carve-out, `AuthResult`
 semantics, the middleware contract, the prefix apply/strip on `RegisterFunction`

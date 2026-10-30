@@ -4,9 +4,11 @@
  * exactly the functions a real deployment would register from any SDK:
  *
  *   - `support::auth`        — the RBAC auth function (validates the bearer
- *                              token, returns an AuthResult with a per-session
- *                              prefix + context).
- *   - `support::middleware`  — wraps every allowed, non-`engine::` call.
+ *                              token, returns an AuthResult with the token's
+ *                              tenant prefix + context: `TENANT1_TOKEN` gets
+ *                              `tenant1`, `TENANT2_TOKEN` gets `tenant2`).
+ *   - `support::middleware`  — wraps every allowed, non-`engine::` call and
+ *                              records its `function_id` in `middlewareCalls`.
  *   - `support::on-fn-reg`   — the on_function_registration hook (stamps
  *                              metadata).
  *   - `support::on-observer-reg` — the on_observer_registration hook (denies
@@ -29,6 +31,20 @@ import { registerWorker, type IIIClient } from 'iii-sdk'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any
 
+/** The `function_id` of every call the middleware received, in order. */
+export const middlewareCalls: string[] = []
+
+/** The bearer token of a `tenant1` session (the harness's `down` among them). */
+export const TENANT1_TOKEN = 'Bearer test-token'
+/** The bearer token of a `tenant2` session. */
+export const TENANT2_TOKEN = 'Bearer test-token-tenant2'
+
+/** The AuthResult each accepted token gets. */
+const TENANTS: Record<string, { context: Json; function_registration_prefix: string }> = {
+  [TENANT1_TOKEN]: { context: { tenant: 'itest' }, function_registration_prefix: 'tenant1' },
+  [TENANT2_TOKEN]: { context: { tenant: 'itest2' }, function_registration_prefix: 'tenant2' },
+}
+
 export function registerSupport(engineUrl: string): IIIClient {
   const support = registerWorker(engineUrl, {
     workerName: 'rbac-e2e-support',
@@ -38,18 +54,15 @@ export function registerSupport(engineUrl: string): IIIClient {
   // RBAC auth: the proxy invokes this once per upgrade with
   // { headers, query_params, ip_address }. Reject a missing/invalid token
   // (the proxy turns a thrown auth into an upgrade rejection); otherwise grant
-  // a per-tenant namespace + context.
+  // the token's tenant prefix + context.
   support.registerFunction(
     'support::auth',
     async (input: Json) => {
-      const authz = input?.headers?.authorization
-      if (authz !== 'Bearer test-token') {
+      const tenant = TENANTS[input?.headers?.authorization]
+      if (!tenant) {
         throw new Error('UNAUTHORIZED: missing or invalid bearer token')
       }
-      return {
-        context: { tenant: 'itest' },
-        function_registration_prefix: 'tenant1',
-      }
+      return tenant
     },
     { observable: false },
   )
@@ -64,10 +77,12 @@ export function registerSupport(engineUrl: string): IIIClient {
   // ran (mw:true) AND invokes the real target, returning its result wrapped —
   // the spec's "middleware must invoke the target itself" contract. The
   // `function_id` is the engine-resolved target (prefixed for own fns), so a
-  // direct invoke on the engine connection dispatches correctly.
+  // direct invoke on the engine connection dispatches correctly. Each call is
+  // recorded in `middlewareCalls`.
   support.registerFunction(
     'support::middleware',
     async (input: Json) => {
+      middlewareCalls.push(input.function_id)
       const result = await support.call({
         function_id: input.function_id,
         payload: input.payload,
