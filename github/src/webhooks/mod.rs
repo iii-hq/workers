@@ -12,7 +12,7 @@ mod tests;
 pub mod types;
 mod wiring;
 pub use types::*;
-pub use wiring::register;
+pub use wiring::{register, WEBHOOK_CONSUMER_GROUP};
 
 use crate::configuration::ConfigCell;
 use chrono::Utc;

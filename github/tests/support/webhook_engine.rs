@@ -1,16 +1,21 @@
 //! Loopback test transport, based on http/tests/common/fake_engine.rs.
 //! Only engine infrastructure is emulated: registration and routing by
 //! namespace, the observer lifecycle (`observe` → `observeradded` →
-//! `observerack` → `observerstatechanged`, and `unobserve`), and calls through
-//! an observer, which reach its stored target with its metadata. Registered
-//! function handlers and observer hooks run on their real SDK connections.
+//! `observerack` → `observerstatechanged`, and `unobserve`), calls through
+//! an observer, which reach its stored target with its metadata, and a
+//! departed connection: the observers of the functions it hosted go
+//! `pending` until a new host registers them, and the observers it made are
+//! `suspended` and disposed, at once or, after [`Engine::hold_departed`], when
+//! the test ends the grace period with [`Engine::release_departed`].
+//! Registered function handlers and observer hooks run on their real SDK
+//! connections.
 use futures::{SinkExt, StreamExt};
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -62,6 +67,12 @@ struct State {
     /// Every invocation the engine forwarded to a host.
     dispatched: Mutex<Vec<Value>>,
     bytes: Mutex<Vec<Vec<u8>>>,
+    /// Keep a departed connection's observers until `release_departed`.
+    hold_departed: AtomicBool,
+    /// Observers of departed connections, kept for their grace period.
+    held: Mutex<Vec<String>>,
+    /// Connections that ended.
+    departures: AtomicUsize,
 }
 
 pub struct Engine {
@@ -120,6 +131,24 @@ impl Engine {
     }
     pub fn bytes(&self) -> Vec<Vec<u8>> {
         self.state.bytes.lock().unwrap().clone()
+    }
+    /// From now on, the observers a departed connection made stay
+    /// `suspended` (the engine's grace period) until [`Self::release_departed`].
+    pub fn hold_departed(&self) {
+        self.state.hold_departed.store(true, Ordering::SeqCst);
+    }
+    /// Ends the grace period: disposes every held observer, and disposes the
+    /// observers of later departures at once.
+    pub fn release_departed(&self) {
+        self.state.hold_departed.store(false, Ordering::SeqCst);
+        let held = std::mem::take(&mut *self.state.held.lock().unwrap());
+        for id in held {
+            dispose(&self.state, &id);
+        }
+    }
+    /// How many connections ended so far.
+    pub fn departures(&self) -> usize {
+        self.state.departures.load(Ordering::SeqCst)
     }
     /// Waits until an observer of `function` with target `target` is active:
     /// its host acked it.
@@ -277,6 +306,75 @@ async fn connection(stream: TcpStream, state: Arc<State>) {
             }
         }
     }
+    departed(&state, &tx);
+}
+
+/// The connection `tx` ended. Its functions are unregistered and their
+/// observers go `pending` until a new host registers them; the observers it
+/// made are `suspended`, and disposed at once unless departures are held.
+fn departed(state: &State, tx: &Sender) {
+    let gone: Vec<Key> = {
+        let mut functions = state.functions.lock().unwrap();
+        let gone: Vec<Key> = functions
+            .iter()
+            .filter(|(_, host)| host.tx.same_channel(tx))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &gone {
+            functions.remove(key);
+        }
+        gone
+    };
+    let made: Vec<String> = {
+        let mut observers = state.observers.lock().unwrap();
+        for (id, observer) in observers.iter_mut() {
+            if gone.contains(&observer.function) && observer.state != "error" {
+                observer.state = "pending";
+                observer.announced = false;
+                let _ = observer.observing.send(state_changed(id, "pending", None));
+            }
+        }
+        observers
+            .iter_mut()
+            .filter(|(_, observer)| observer.observing.same_channel(tx))
+            .map(|(id, observer)| {
+                observer.state = "suspended";
+                id.clone()
+            })
+            .collect()
+    };
+    if state.hold_departed.load(Ordering::SeqCst) {
+        state.held.lock().unwrap().extend(made);
+    } else {
+        for id in made {
+            dispose(state, &id);
+        }
+    }
+    state.departures.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Removes the observer `id`. Its function's host hears `observerremoved` if
+/// it accepted the observer; its observing connection hears `disposed`.
+fn dispose(state: &State, id: &str) {
+    let Some(observer) = state.observers.lock().unwrap().remove(id) else {
+        return;
+    };
+    let host = state
+        .functions
+        .lock()
+        .unwrap()
+        .get(&observer.function)
+        .map(|h| h.tx.clone());
+    if let (true, Some(host)) = (observer.announced && observer.state != "error", host) {
+        let revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = host.send(json!({"type":"observerremoved",
+            "function_id":observer.function.1, "namespace":observer.function.0,
+            "revision":revision, "id":id}));
+    }
+    let reason = json!({"code":"UNOBSERVED", "message":"disposed"});
+    let _ = observer
+        .observing
+        .send(state_changed(id, "disposed", Some(reason)));
 }
 
 /// Sends `observeradded` to the host of `function` for each of its observers
@@ -412,26 +510,7 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                     .send(state_changed(&id, observer.state, refused));
             }
         }
-        "unobserve" => {
-            let id = text("id");
-            let removed = state.observers.lock().unwrap().remove(&id);
-            if let Some(observer) = removed {
-                let host = state
-                    .functions
-                    .lock()
-                    .unwrap()
-                    .get(&observer.function)
-                    .map(|h| h.tx.clone());
-                if let (true, Some(host)) = (observer.announced, host) {
-                    let revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
-                    let _ = host.send(json!({"type":"observerremoved",
-                        "function_id":observer.function.1, "namespace":observer.function.0,
-                        "revision":revision, "id":id}));
-                }
-                let reason = json!({"code":"UNOBSERVED", "message":"disposed"});
-                let _ = tx.send(state_changed(&id, "disposed", Some(reason)));
-            }
-        }
+        "unobserve" => dispose(state, &text("id")),
         "invocationresult" => {
             if let Some(target) = state.pending.lock().unwrap().remove(&text("invocation_id")) {
                 // The engine activates `observed` itself and strips it.

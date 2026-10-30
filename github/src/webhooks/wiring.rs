@@ -1,6 +1,5 @@
 use iii_sdk::{
-    Call, CallRequest, Deliver, Match, ObserveRejection, Observer, ObserverHandle,
-    RegisterFunction, Source,
+    Call, CallRequest, Deliver, Match, ObserveRejection, Observer, RegisterFunction, Source,
 };
 
 use super::*;
@@ -11,6 +10,23 @@ const TARGET_TIMEOUT_MS: u64 = 8_000;
 /// How long an observer of a source this worker consumes may stay pending
 /// before activation logs it.
 const ACTIVATION_WAIT_SECS: u64 = 60;
+
+/// The consumer group of the durable job queue. The group, not the observer
+/// id, names the queue worker's durable queue, so a restarted worker consumes
+/// the backlog its previous process left.
+pub const WEBHOOK_CONSUMER_GROUP: &str = "github-webhooks";
+
+/// Refusal codes that mean another observer still holds what this one asks
+/// for. After a restart the previous process's observers stay suspended for
+/// the engine's grace period (`observers.observer_grace_ms`, 30 s by
+/// default) and keep their HTTP route; once the engine disposes them the
+/// route is free again.
+const HELD_BY_ANOTHER_OBSERVER: &[&str] = &["HTTP_ROUTE_CONFLICT"];
+
+/// First wait before observing a refused source again; it doubles up to
+/// [`REOBSERVE_MAX_SECS`].
+const REOBSERVE_FIRST_SECS: u64 = 1;
+const REOBSERVE_MAX_SECS: u64 = 30;
 
 /// The SDK dispatches callbacks on a current-thread runtime. Drive service
 /// futures on the blocking pool while the original runtime keeps driving I/O.
@@ -375,38 +391,8 @@ pub(super) fn validate_config(config: &WebhookConfig) -> Result<()> {
 fn activate(s: &Arc<Service>) {
     // No private server. Only this route opts into the sibling HTTP worker's
     // separate public listener; all other functions remain on the private bus.
-    let observers = [
-        s.iii.observe(
-            Source::function("http::on-request").args(json!({
-                "method": "POST",
-                "path": "/webhooks/github/:endpoint_id",
-                "public_webhook": true,
-            })),
-            "github::webhooks::receive",
-        ),
-        s.iii.observe(
-            Source::function("queue::on-message").args(json!({
-                "topic": s.config.queue,
-                "max_retries": 5,
-                "backoff_ms": 1000,
-            })),
-            "github::webhooks::process",
-        ),
-        s.iii.observe(
-            Source::function("quick-tunnel::on-changed")
-                .filters(json!({ "input.tunnel_id": { "$eq": s.config.tunnel_id } }))
-                .deliver(Deliver::Output),
-            "github::webhooks::tunnel-changed",
-        ),
-        s.iii.observe(
-            Source::function("cron::on-tick")
-                .args(json!({ "expression": "*/10 * * * * *" }))
-                .deliver(Deliver::Output),
-            "github::webhooks::maintain",
-        ),
-    ];
-    for handle in observers {
-        tokio::spawn(report_activation(s.clone(), handle));
+    for (source, target) in observed_sources(&s.config) {
+        tokio::spawn(keep_observed(s.clone(), source, target));
     }
     let service = s.clone();
     tokio::spawn(async move {
@@ -428,32 +414,132 @@ fn activate(s: &Arc<Service>) {
     });
 }
 
-/// Log an observer that does not become active, and record a refused one as
-/// the webhook health's `last_error`. An observer stays `pending` while its
-/// source's worker is not running, and becomes active once it registers.
-async fn report_activation(s: Arc<Service>, handle: ObserverHandle) {
-    let wait = std::time::Duration::from_secs(ACTIVATION_WAIT_SECS);
-    match tokio::time::timeout(wait, handle.ready()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            let error = format!("webhook observer {} refused: {e}", handle.id());
-            tracing::error!(observer = handle.id(), error = %e, "webhook observer refused");
-            if let Err(storage_error) = storage_task(async move {
-                s.store()?.change(|d| {
-                    d.last_error = Some(error);
-                    Ok(())
-                })
-            })
-            .await
-            {
-                tracing::error!(error = %storage_error, "cannot persist activation failure");
-            }
-        }
-        Err(_) => tracing::warn!(
-            observer = handle.id(),
-            state = %handle.state(),
-            "webhook observer not active yet; its source's worker may not be running"
+/// The sources the webhook plumbing observes, with their targets.
+pub(super) fn observed_sources(config: &WebhookConfig) -> [(Source, &'static str); 4] {
+    [
+        (
+            Source::function("http::on-request").args(json!({
+                "method": "POST",
+                "path": "/webhooks/github/:endpoint_id",
+                "public_webhook": true,
+            })),
+            "github::webhooks::receive",
         ),
+        (
+            Source::function("queue::on-message").args(json!({
+                "topic": config.queue,
+                "group": WEBHOOK_CONSUMER_GROUP,
+                "max_retries": 5,
+                "backoff_ms": 1000,
+            })),
+            "github::webhooks::process",
+        ),
+        (
+            Source::function("quick-tunnel::on-changed")
+                .filters(json!({ "input.tunnel_id": { "$eq": config.tunnel_id } }))
+                .deliver(Deliver::Output),
+            "github::webhooks::tunnel-changed",
+        ),
+        (
+            Source::function("cron::on-tick")
+                .args(json!({ "expression": "*/10 * * * * *" }))
+                .deliver(Deliver::Output),
+            "github::webhooks::maintain",
+        ),
+    ]
+}
+
+/// Observe `source` with `target` until the observer is active, or refused
+/// for a reason another try cannot change.
+///
+/// An observer stays `pending` while its source's worker is not running and
+/// becomes active once it registers; one still pending after
+/// [`ACTIVATION_WAIT_SECS`] is logged. A refusal is recorded as the webhook
+/// health's `last_error`. A refusal in [`HELD_BY_ANOTHER_OBSERVER`] (the
+/// route still held by this worker's previous process) disposes the refused
+/// observer and observes again, waiting [`REOBSERVE_FIRST_SECS`] and then
+/// twice as long each time up to [`REOBSERVE_MAX_SECS`]; once the observer
+/// is active, the error it recorded is cleared.
+async fn keep_observed(s: Arc<Service>, source: Source, target: &'static str) {
+    let mut retry = std::time::Duration::from_secs(REOBSERVE_FIRST_SECS);
+    let mut recorded: Option<String> = None;
+    loop {
+        let handle = s.iii.observe(source.clone(), target);
+        let wait = std::time::Duration::from_secs(ACTIVATION_WAIT_SECS);
+        let outcome = match tokio::time::timeout(wait, handle.ready()).await {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                tracing::warn!(
+                    observer = handle.id(),
+                    function = source.function_id(),
+                    state = %handle.state(),
+                    "webhook observer not active yet; its source's worker may not be running"
+                );
+                handle.ready().await
+            }
+        };
+        let error = match outcome {
+            Ok(()) => {
+                if let Some(error) = recorded {
+                    tracing::info!(
+                        observer = handle.id(),
+                        function = source.function_id(),
+                        "webhook observer active after a refusal"
+                    );
+                    record_activation_error(&s, Some(error), None).await;
+                }
+                return;
+            }
+            Err(e) => e,
+        };
+        let code = handle
+            .reason()
+            .map(|reason| reason.code)
+            .unwrap_or_default();
+        let held = HELD_BY_ANOTHER_OBSERVER.contains(&code.as_str());
+        if recorded.is_none() {
+            tracing::error!(
+                observer = handle.id(),
+                function = source.function_id(),
+                error = %error,
+                retry = held,
+                "webhook observer refused"
+            );
+            let message = format!("webhook observer {} refused: {error}", handle.id());
+            record_activation_error(&s, None, Some(message.clone())).await;
+            recorded = Some(message);
+        } else {
+            tracing::debug!(observer = handle.id(), error = %error, "webhook observer refused again");
+        }
+        if !held {
+            return;
+        }
+        // A refused observer is kept and replayed by the SDK until disposed.
+        let _ = handle.dispose().await;
+        tokio::time::sleep(retry).await;
+        retry = (retry * 2).min(std::time::Duration::from_secs(REOBSERVE_MAX_SECS));
+    }
+}
+
+/// Set the webhook health's `last_error` to `error`, when it still is
+/// `expected` (`None`: whatever it is).
+async fn record_activation_error(
+    s: &Arc<Service>,
+    expected: Option<String>,
+    error: Option<String>,
+) {
+    let s = s.clone();
+    if let Err(storage_error) = storage_task(async move {
+        s.store()?.change(|d| {
+            if expected.is_none() || d.last_error == expected {
+                d.last_error = error;
+            }
+            Ok(())
+        })
+    })
+    .await
+    {
+        tracing::error!(error = %storage_error, "cannot persist webhook observer activation");
     }
 }
 
