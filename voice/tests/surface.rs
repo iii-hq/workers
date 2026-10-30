@@ -40,6 +40,7 @@ fn the_event_functions_are_pinned() {
             "voice::on-session-started",
             "voice::on-session-stopped",
             "voice::on-model-progress",
+            "voice::on-hotkey",
         ]
     );
 }

@@ -401,7 +401,7 @@ the `openai` backend with an empty `api_key`.
 
 ## Events
 
-The worker provides four event functions. Each is private (only the voice
+The worker provides five event functions. Each is private (only the voice
 worker calls it; anyone may observe it), takes no args, and returns the event
 it is called with, so observers observe the event. The worker calls them only
 while something observes them. Select events with filters on the event's
@@ -413,6 +413,7 @@ fields.
 | `voice::on-session-started` | none | `input.session_id` | `SessionStartedEvent { session_id, model, timestamp_ms }` |
 | `voice::on-session-stopped` | none | `input.session_id` | `SessionStoppedEvent { session_id, reason: stopped \| discarded \| idle \| shutdown, timestamp_ms }` |
 | `voice::on-model-progress` | none | `input.id`, `input.done` | `Progress { id, file, received_bytes, total_bytes, done, error? }` |
+| `voice::on-hotkey` | none | `input.action` | `HotkeyEvent { key: fn, action: down \| up \| chord, timestamp_ms }`; macOS only, with Input Monitoring for the app running iii (`voice::doctor` reports `fn_key`) |
 
 Follow one dictation session's transcript:
 
@@ -429,9 +430,9 @@ call, whether or not anything observes `voice::on-transcript`.
 The worker observes `configuration::on-updated` (filters on `input.id` and
 `input.event_type`) to hot-reload its settings, and `console::ui::asset`
 (through the shared console UI crate) to serve its console page. The console
-page observes `voice::on-model-progress`, `harness::on-turn-started`,
-`harness::on-turn-completed` and `session::on-message-*` with filters on
-`input.session_id`.
+page observes `voice::on-model-progress` and `voice::on-hotkey`, and
+`harness::on-turn-started`, `harness::on-turn-completed` and
+`session::on-message-*` with filters on `input.session_id`.
 
 ## Limits
 

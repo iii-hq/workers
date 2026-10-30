@@ -6,7 +6,7 @@
  * hands-free dictation and a second tap finishes it.
  *
  * Installed once by `setup`, so it works whatever is on screen, chat or
- * not. fn is heard by the worker (`voice::hotkey`; browsers never see a bare
+ * not. fn is heard by the worker (`voice::on-hotkey`; browsers never see a bare
  * fn), right Option by the page. While a key dictation runs and the
  * composer's own recording bar is not on screen, a small pill at the bottom
  * of the window shows it listening.
@@ -97,13 +97,9 @@ export function installDictationKeys(host: Host, controller: DictationController
   }
   const localFn = `${HOTKEY_FN}::${Math.random().toString(36).slice(2)}`
   const offHandler = host.iii.on<HotkeyEvent>(localFn, onHotkey)
-  let offTrigger: (() => void) | null = null
+  let offObserver: (() => void) | null = null
   try {
-    offTrigger = host.iii.registerTrigger({
-      type: 'voice::hotkey',
-      function_id: `${localFn}::${host.iii.browserId}`,
-      config: {},
-    })
+    offObserver = host.iii.observe('voice::on-hotkey', `${localFn}::${host.iii.browserId}`)
   } catch {
     // A worker without the fn key: the right Option key still works.
   }
@@ -147,7 +143,7 @@ export function installDictationKeys(host: Host, controller: DictationController
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('keyup', onKeyUp, true)
       window.removeEventListener('blur', onBlur)
-      offTrigger?.()
+      offObserver?.()
       offHandler()
       offStatus()
       root.unmount()

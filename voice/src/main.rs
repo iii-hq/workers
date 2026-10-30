@@ -159,11 +159,11 @@ async fn main() -> anyhow::Result<()> {
         let emitter = hotkey_emitter.clone();
         runtime.spawn(async move {
             let event = voice::hotkey::HotkeyEvent {
-                key: "fn",
+                key: "fn".into(),
                 action,
                 timestamp_ms: events::now_ms(),
             };
-            emitter.emit(events::EventKind::Hotkey, None, &event).await;
+            emitter.emit(events::EventKind::Hotkey, &event).await;
         });
     });
 

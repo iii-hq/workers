@@ -477,6 +477,7 @@ fields where the name does not say them), and the consumers in this repo
 | 93 | voice | `voice::session-stopped` | `voice::on-session-stopped` | none; filters `input.session_id` | default | `SessionStoppedEvent` | none in repo |
 | 94 | voice | `voice::model-progress` | `voice::on-model-progress` | none | default | `ModelProgressEvent` | voice:ui/src/lib/progress.ts |
 | 95 | voice | `voice::speech-ended` | removed: it has no emitter and no consumer | | | | |
+| 125 | voice | `voice::hotkey` | `voice::on-hotkey` | none; filters `input.action` | default; the fn-key listener (macOS, Input Monitoring) calls it only while something observes it | `HotkeyEvent { key: 'fn', action: down \| up \| chord, timestamp_ms }` | voice:ui/src/keys/index.tsx |
 | 96 | whatsapp | `whatsapp::events` | `whatsapp::on-events` | none; filters `input.session_id`, `input.kind` | default; the event loop calls only when `IsObserved` and the event is current | `Event { session_id, sequence, kind, timestamp_ms, data }` | whatsapp:ui/src/page.tsx |
 | 97 | whatsapp | `whatsapp::cloud::events` | `whatsapp::cloud::on-events` | none; filters `input.kind`, `input.chat_id`, `input.sender_id`, `input.message_type`, `input.status`, `input.business_account_id`, `input.phone_number_id`, `input.group_id`, `input.participant_id`, `input.field`, `input.event` | default | `CloudEvent` | none in repo |
 | 124 | workflow | `workflow::run-completed` | `workflow::on-run-completed` | none; filters `input.run_id`, `input.status` | default; finalize calls it once per terminal run, before the terminal status is stored (a crash in between calls it again) | `RunCompletedEvent { run_id, status: completed \| failed \| cancelled, result, result_error }` | none in repo |
@@ -533,8 +534,9 @@ Decisions 29 and 32. Every function is private.
 | 122 | ade | `console::workspace::changed` | `console::workspace::on-changed` | none | match(`(obs, call) => !call.metadata?.for_observer \|\| call.metadata.for_observer === obs.id`): a call for one observer reaches it alone, every other call every observer (§1.2); added: after `obs.accepted()`, call the function for that observer with `{}`; store writes call the function, throttled by `RING_GAP` | `WorkspaceChangedEvent {}` | ade:web/src/hooks/use-workspace-tabs.ts, onboarding:ui/src/use-tour.ts, onboarding:ui/src/spotlight.ts |
 | 123 | ade | `console::compose::changed` | `console::compose::on-changed` | none; filters `input.kind`, `input.file`, `input.namespace` | default; added: start the state watcher with the first observer; removed: close it with the last | `ComposeChangedEvent { kind, file, namespace, state_dir, path, captured_at }` | ade:web/src/pages/Workers/index.tsx |
 
-Rows: 104 from the worker map (§2.1, §2.2; row 124 follows the worker order,
-its number follows the ADE rows), 14 harness (§2.3) and 6 ADE (§2.4): **124**.
+Rows: 105 from the worker map (§2.1, §2.2; rows 124 and 125 follow the
+worker order, their numbers follow the ADE rows), 14 harness (§2.3) and 6 ADE
+(§2.4): **125**.
 
 ## 3. Engine and Compose sources workers observe
 
