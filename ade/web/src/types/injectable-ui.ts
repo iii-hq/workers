@@ -852,8 +852,9 @@ export interface UiAssetRef {
 
 /**
  * The events of `console::ui::on-assets-changed`, delivered to the tab's
- * `iii::console::ui-assets` handler: `sync` once through the tab's own
- * observer when it is accepted, then `set` and `delete` for every change.
+ * `iii::console::ui-assets` handler: `sync` once, in a call for the tab's
+ * observer alone when it is accepted, then `set` and `delete` for every
+ * change.
  */
 export type UiAssetsEvent =
   | { op: 'sync'; assets: UiAssetRef[] }

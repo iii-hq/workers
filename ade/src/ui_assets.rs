@@ -7,15 +7,17 @@
 //! - **`console::ui::asset`**: a worker ships one asset by observing it with
 //!   args `{ kind: "script" | "style" | "module", path }` and its *content
 //!   function* as the target. Once the observer is active, the console calls
-//!   the content function through it with `{ path }` and stores the source.
-//!   Modules are served like scripts but the SPA loader never imports them
-//!   at mount — pages pull them on demand via `host.importModule`. The
-//!   function itself is never called.
+//!   the function with `{ path }` for that observer alone (metadata
+//!   `for_observer`); the function's deliver hook calls the content function
+//!   through the observer and answers with what it returns, which the console
+//!   stores. Modules are served like scripts but the SPA loader never imports
+//!   them at mount — pages pull them on demand via `host.importModule`.
 //! - **`console::ui::on-assets-changed`**: console tabs observe it. Each new
-//!   observer receives `{ op: "sync", assets }` through itself once it is
-//!   active, and every later change is one call of the function with
-//!   `{ op: "set", asset }` or `{ op: "delete", path }`, which iii delivers
-//!   to every tab.
+//!   observer gets one call of its own once it is active,
+//!   `{ op: "sync", assets }` (metadata `for_observer`), and every later
+//!   change is one call of the function with `{ op: "set", asset }` or
+//!   `{ op: "delete", path }`. iii delivers each to the tabs it is for like
+//!   every call, so a tab receives every event in one shape.
 //!
 //! "Same path ⇒ override" is console-worker policy: a path-keyed
 //! last-writer-wins registry. A later observer of a path supersedes the
@@ -27,8 +29,12 @@
 //! per-worker toggles — drains through one single-consumer queue in the
 //! order the hooks saw them: an asset commit and a tab's `sync` are
 //! mutually ordered. The hooks return at once; the queue waits for each
-//! observer to be accepted before it calls through it (a call through an
-//! observer that is not active yet fails with `OBSERVER_NOT_ACTIVE`).
+//! observer to be accepted before it makes the call for it.
+//!
+//! An observer whose worker disconnects is withdrawn (its removed hook runs:
+//! the asset is deleted) and announced again when the worker reattaches (its
+//! added hook runs: the content is fetched again, or the tab gets a new
+//! `sync`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -36,15 +42,19 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::observe_codes;
-use iii_sdk::{CallAction, CallRequest, IIIClient, ObserveRejection, Observer, RegisterFunction};
+use iii_sdk::{
+    Call, CallAction, CallRequest, IIIClient, ObserveRejection, Observer, RegisterFunction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
-/// The asset function: one observer per asset, never called.
+use crate::for_observer;
+
+/// The asset function: one observer per asset; the console calls it once per
+/// observer to fetch the asset's content.
 pub const ASSET_FN: &str = "console::ui::asset";
 /// The tabs' live feed of asset changes.
 pub const ON_ASSETS_CHANGED_FN: &str = "console::ui::on-assets-changed";
@@ -68,6 +78,12 @@ const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 const FETCH_ATTEMPTS: u32 = 2;
 const FETCH_TIMEOUT_MS: u64 = 3_000;
 const FETCH_BACKOFF_MS: u64 = 250;
+/// What the console's call of `console::ui::asset` allows its deliver hook
+/// beyond the content function's own budget, so the content function's
+/// timeout is the one that answers.
+const FETCH_HOOK_MARGIN_MS: u64 = 500;
+/// Budget of a tab's `sync` call: it runs in the queue too.
+const SYNC_TIMEOUT_MS: u64 = 5_000;
 
 /// Args of a `console::ui::asset` observer (`additionalProperties` refused).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -129,7 +145,7 @@ pub struct AssetRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum UiAssetsEvent {
-    /// The whole served set, sent to one new observer through itself.
+    /// The whole served set, in a call for one new observer.
     Sync { assets: Vec<AssetRef> },
     /// An asset was added, or its content changed.
     Set { asset: AssetRef },
@@ -315,12 +331,13 @@ pub trait UiBus: Send + Sync + 'static {
     /// Resolves `true` once the observer is accepted (active), `false` when
     /// it was rejected or removed first.
     async fn accepted(&self, observer_id: &str) -> bool;
-    /// Call an asset observer's target (its worker's content function)
-    /// through the observer: `{path}` → `{content, content_type?}`.
+    /// Call `console::ui::asset` with `{path}` for one asset observer; its
+    /// deliver hook calls the observer's target (the worker's content
+    /// function) and answers `{content, content_type?}`.
     async fn fetch_content(&self, observer_id: &str, path: &str) -> Result<FetchedContent, String>;
-    /// Send one `console::ui::on-assets-changed` observer an event through
-    /// itself.
-    async fn send(&self, observer_id: &str, event: UiAssetsEvent);
+    /// Call `console::ui::on-assets-changed` with an event for one tab's
+    /// observer alone (metadata `for_observer`).
+    async fn publish_for(&self, observer_id: &str, event: UiAssetsEvent);
     /// Call `console::ui::on-assets-changed` with an event, which iii
     /// delivers to every tab observing it.
     async fn publish(&self, event: UiAssetsEvent);
@@ -349,17 +366,6 @@ impl Observers {
     }
 }
 
-/// Whether a call through an observer was refused because the observer is
-/// not active. The engine announces the observers of a worker that
-/// disconnected (`suspended` for `observers.observer_grace_ms`) to the
-/// function's host too, and refuses calls through them until that worker
-/// reconnects: a restarted console meets its previous process's asset
-/// observers this way. The fetch gives up on the first such refusal, since
-/// every later asset waits in the queue behind it.
-fn is_inactive_observer(error: &Error) -> bool {
-    matches!(error, Error::Remote { code, .. } if code == observe_codes::OBSERVER_NOT_ACTIVE)
-}
-
 struct SdkBus {
     iii: Arc<IIIClient>,
     observers: Arc<Observers>,
@@ -375,16 +381,17 @@ impl UiBus for SdkBus {
     }
 
     async fn fetch_content(&self, observer_id: &str, path: &str) -> Result<FetchedContent, String> {
-        let obs = self
+        let target = self
             .observers
             .get(observer_id)
+            .map(|obs| obs.target().to_string())
             .ok_or_else(|| format!("observer {observer_id} was removed"))?;
         let mut last_err = String::new();
-        let mut attempts = 0;
         for attempt in 1..=FETCH_ATTEMPTS {
-            attempts = attempt;
-            let request = CallRequest::observer(&obs, json!({ "path": path }))
-                .timeout(Duration::from_millis(FETCH_TIMEOUT_MS));
+            let request = for_observer::call(ASSET_FN, json!({ "path": path }), observer_id)
+                .timeout(Duration::from_millis(
+                    FETCH_TIMEOUT_MS + FETCH_HOOK_MARGIN_MS,
+                ));
             match self.iii.call(request).await {
                 Ok(resp) => {
                     let content = resp
@@ -393,9 +400,8 @@ impl UiBus for SdkBus {
                         .map(str::to_string)
                         .ok_or_else(|| {
                             format!(
-                                "content function '{}' returned no string `content` field \
-                                 for path '{path}'",
-                                obs.target()
+                                "content function '{target}' returned no string `content` field \
+                                 for path '{path}'"
                             )
                         })?;
                     let content_type = resp
@@ -409,9 +415,6 @@ impl UiBus for SdkBus {
                 }
                 Err(e) => {
                     last_err = e.to_string();
-                    if is_inactive_observer(&e) {
-                        break;
-                    }
                     if attempt < FETCH_ATTEMPTS {
                         tokio::time::sleep(Duration::from_millis(FETCH_BACKOFF_MS)).await;
                     }
@@ -419,17 +422,16 @@ impl UiBus for SdkBus {
             }
         }
         Err(format!(
-            "content fetch via '{}' failed after {attempts} attempt(s): {last_err}",
-            obs.target()
+            "content fetch via '{target}' failed after {FETCH_ATTEMPTS} attempt(s): {last_err}"
         ))
     }
 
-    async fn send(&self, observer_id: &str, event: UiAssetsEvent) {
-        let Some(obs) = self.observers.get(observer_id) else {
-            return;
-        };
+    async fn publish_for(&self, observer_id: &str, event: UiAssetsEvent) {
         let payload = serde_json::to_value(event).expect("UiAssetsEvent serializes");
-        let request = CallRequest::observer(&obs, payload).action(CallAction::Void);
+        // Awaited, so the `set` and `delete` calls the queue makes after this
+        // one follow it.
+        let request = for_observer::call(ON_ASSETS_CHANGED_FN, payload, observer_id)
+            .timeout(Duration::from_millis(SYNC_TIMEOUT_MS));
         if let Err(e) = self.iii.call(request).await {
             // A closed tab's observer is removed by the engine moments later.
             tracing::debug!(observer_id, error = %e, "ui-assets sync failed");
@@ -606,10 +608,10 @@ impl Processor {
         }
     }
 
-    /// Send a newly active tab the served set. Whatever committed before it
-    /// is in the sync; whatever commits after reaches the tab as a call of
-    /// the function (same queue), so there is no seed/event race to speak
-    /// of.
+    /// Send a newly active tab the served set, in a call for it alone.
+    /// Whatever committed before it is in the sync; whatever commits after
+    /// reaches the tab as a later call of the function (same queue), so
+    /// there is no seed/event race to speak of.
     async fn sync_tab(&self, observer_id: &str) {
         let assets = self.registry.lock().served();
         tracing::info!(
@@ -618,7 +620,7 @@ impl Processor {
             "{ON_ASSETS_CHANGED_FN} observer synced"
         );
         self.bus
-            .send(observer_id, UiAssetsEvent::Sync { assets })
+            .publish_for(observer_id, UiAssetsEvent::Sync { assets })
             .await;
     }
 
@@ -825,17 +827,31 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
         });
     }
 
+    // A content fetch is a call for one asset observer; nothing else calls
+    // the function.
+    iii.on_observer_match_for(ASSET_FN, for_observer::own_calls_only());
+    {
+        let iii_for_hook = iii.clone();
+        iii.on_observer_deliver_for(ASSET_FN, move |call: Call, observers: Vec<Observer>| {
+            let iii = iii_for_hook.clone();
+            async move { deliver_content(&iii, call, observers).await }
+        });
+    }
+    iii.on_observer_match_for(ON_ASSETS_CHANGED_FN, for_observer::every_call());
+
     iii.register_function(
         ASSET_FN,
-        RegisterFunction::new(|input: Value| Ok::<_, Error>(input))
+        RegisterFunction::new(|request: ContentRequest| Ok::<_, Error>(request))
             .description(
                 "A worker's injected console UI asset. Observe it once per asset with args \
                  { kind: 'script' | 'style' | 'module', path } and the worker's content \
-                 function as the target: once the observer is active, the console calls the \
-                 content function through it with { path } and serves what it returns as \
-                 { content, content_type? }. A later observer of the same path supersedes \
-                 the earlier one (UI_ASSET_SUPERSEDED); a failed fetch rejects the observer \
-                 (UI_ASSET_FETCH_FAILED). Never called.",
+                 function as the target. Once the observer is active, the console calls this \
+                 function with { path } for that observer alone, and the target receives \
+                 { path } and answers { content, content_type? }, which the console serves. \
+                 A later observer of the same path supersedes the earlier one \
+                 (UI_ASSET_SUPERSEDED); a failed fetch rejects the observer \
+                 (UI_ASSET_FETCH_FAILED). An observer announced again after its worker \
+                 reattached is fetched again.",
             )
             .args_format::<AssetArgs>()
             .private(),
@@ -846,8 +862,8 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
             .description(
                 "Called on every change to the console's injected UI assets: \
                  { op: 'set', asset: { path, kind, hash } } or { op: 'delete', path }. \
-                 Each new observer first receives { op: 'sync', assets } through itself, \
-                 the whole served set.",
+                 Each new observer also gets one call of its own once it is active \
+                 (metadata for_observer): { op: 'sync', assets }, the whole served set.",
             )
             .private(),
     );
@@ -856,6 +872,40 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
         "registered injectable-ui functions"
     );
     (registry, control)
+}
+
+/// What the console calls `console::ui::asset` with, and what its deliver
+/// hook sends the asset observer's target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContentRequest {
+    /// The asset's path, as the observer's args name it.
+    pub path: String,
+}
+
+/// `console::ui::asset`'s deliver hook. A content fetch is a call for one
+/// asset observer (its match hook gives the call to that observer alone):
+/// the hook calls the observer's target, the worker's content function,
+/// through the observer with `{ path }`, and the call answers with what the
+/// content function returns.
+async fn deliver_content(
+    iii: &IIIClient,
+    call: Call,
+    observers: Vec<Observer>,
+) -> Result<Value, Error> {
+    let path = call
+        .input
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Handler("the content fetch names no `path`".to_string()))?;
+    let Some(obs) = observers.into_iter().find(|obs| obs.matches(&call)) else {
+        return Err(Error::Handler(format!(
+            "no active {ASSET_FN} observer for the fetch of '{path}' (observer {})",
+            for_observer::of(&call).unwrap_or("unnamed"),
+        )));
+    };
+    let request = CallRequest::observer(&obs, json!({ "path": path }))
+        .timeout(Duration::from_millis(FETCH_TIMEOUT_MS));
+    iii.call(request).await
 }
 
 pub fn content_hash(content: &str) -> String {
@@ -1127,7 +1177,7 @@ mod tests {
             }
         }
 
-        async fn send(&self, observer_id: &str, event: UiAssetsEvent) {
+        async fn publish_for(&self, observer_id: &str, event: UiAssetsEvent) {
             self.sent
                 .lock()
                 .unwrap()
@@ -1182,21 +1232,6 @@ mod tests {
         }
         drop(tx);
         p.run(rx).await;
-    }
-
-    #[test]
-    fn only_an_inactive_observer_refusal_ends_the_fetch_early() {
-        let remote = |code: &str| Error::Remote {
-            code: code.to_string(),
-            message: "refused".to_string(),
-            stacktrace: None,
-        };
-        assert!(is_inactive_observer(&remote(
-            observe_codes::OBSERVER_NOT_ACTIVE
-        )));
-        assert!(!is_inactive_observer(&remote(observe_codes::OVERFLOW)));
-        assert!(!is_inactive_observer(&remote("function_not_found")));
-        assert!(!is_inactive_observer(&Error::Timeout));
     }
 
     #[test]
