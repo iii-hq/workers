@@ -92,6 +92,9 @@ func (h *Hub) Status() StatusResult {
 			continue
 		}
 		s.Nodes.Total++
+		if n.Version != "" && n.Version != h.Version {
+			s.Nodes.Outdated++
+		}
 		if n.Online {
 			s.Nodes.Online++
 		}
@@ -166,7 +169,15 @@ func (h *Hub) ListNodes(ctx context.Context, _ struct{}) ([]NodeEntry, error) {
 		if n.Name == "hub" {
 			continue
 		}
-		nodes = append(nodes, NodeEntry{Name: n.Name, Address: n.Addr.String(), Online: n.Online, LastSeen: n.LastSeen, Ephemeral: n.Ephemeral, Workers: []ComponentState{}, Drives: []ComponentState{}})
+		entry := NodeEntry{Name: n.Name, OS: n.OS, Arch: n.Arch, Version: n.Version, Address: n.Addr.String(), Online: n.Online, LastSeen: n.LastSeen, Ephemeral: n.Ephemeral, Workers: []ComponentState{}, Drives: []ComponentState{}}
+		h.mu.RLock()
+		if cached, ok := h.nodeDetails[n.Name]; ok {
+			entry.Path = cached.Path
+			entry.Workers = append(entry.Workers, cached.Workers...)
+			entry.Drives = append(entry.Drives, cached.Drives...)
+		}
+		h.mu.RUnlock()
+		nodes = append(nodes, entry)
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	return nodes, nil

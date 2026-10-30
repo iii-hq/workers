@@ -64,6 +64,7 @@ const (
 )
 
 type node struct {
+	RuntimeMetadata
 	ID        tailcfg.NodeID    `json:"id"`
 	Name      string            `json:"name"`
 	Machine   key.MachinePublic `json:"machine"`
@@ -85,6 +86,7 @@ type node struct {
 }
 
 type NodeInfo struct {
+	RuntimeMetadata
 	Ephemeral bool       `json:"ephemeral"`
 	Name      string     `json:"name"`
 	Addr      netip.Addr `json:"addr"`
@@ -169,7 +171,7 @@ func (c *Coordinator) Nodes() []NodeInfo {
 	nodes := make([]NodeInfo, 0, len(c.st.Nodes))
 	for _, n := range c.st.Nodes {
 		if c.authorized(n) {
-			nodes = append(nodes, NodeInfo{Ephemeral: n.Ephemeral, Name: n.Name, Addr: c.address(n.ID), Online: n.streams > 0, Operator: n.Operator, JoinedAt: n.JoinedAt, LastSeen: n.LastSeen})
+			nodes = append(nodes, NodeInfo{RuntimeMetadata: n.RuntimeMetadata, Ephemeral: n.Ephemeral, Name: n.Name, Addr: c.address(n.ID), Online: n.streams > 0, Operator: n.Operator, JoinedAt: n.JoinedAt, LastSeen: n.LastSeen})
 		}
 	}
 	return nodes

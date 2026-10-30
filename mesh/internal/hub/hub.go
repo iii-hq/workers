@@ -83,6 +83,7 @@ func Run(ctx context.Context, o Options) (err error) {
 		<-ctx.Done()
 		return nil
 	}
+	h.startNodeCalls(ctx)
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {

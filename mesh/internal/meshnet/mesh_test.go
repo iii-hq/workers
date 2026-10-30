@@ -67,6 +67,7 @@ func TestNodeBackendPersistsIdentityUsesPortAndHandlesRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.SetGatewayPort(50221)
+	c.SetNameTaken(func(name string) bool { return name == "laptop" })
 	port := uint16(portProbe.LocalAddr().(*net.UDPAddr).Port)
 	portProbe.Close()
 	var first netip.Addr
@@ -78,6 +79,9 @@ func TestNodeBackendPersistsIdentityUsesPortAndHandlesRemoval(t *testing.T) {
 		}
 		t.Cleanup(func() { m.Close() })
 		waitFor(t, "node map", func() bool { return m.Self().IsValid() })
+		if name, ok := m.SelfName(); !ok || name != "laptop-2" {
+			t.Fatalf("assigned name %q, %v", name, ok)
+		}
 		if got := m.sys.MagicSock.Get().LocalPort(); got != port {
 			t.Fatalf("UDP port=%d, want %d", got, port)
 		}
@@ -112,7 +116,7 @@ func TestNodeBackendPersistsIdentityUsesPortAndHandlesRemoval(t *testing.T) {
 			t.Fatalf("restart registered new node: %+v", c.Nodes())
 		}
 		if i == 1 {
-			if err := c.Remove("laptop"); err != nil {
+			if err := c.Remove("laptop-2"); err != nil {
 				t.Fatal(err)
 			}
 			select {

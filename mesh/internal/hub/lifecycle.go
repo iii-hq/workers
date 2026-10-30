@@ -20,6 +20,7 @@ import (
 	"github.com/iii-hq/workers/mesh/internal/gateway"
 	"github.com/iii-hq/workers/mesh/internal/join"
 	"github.com/iii-hq/workers/mesh/internal/meshnet"
+	"github.com/iii-hq/workers/mesh/internal/registry"
 	"github.com/iii-hq/workers/mesh/internal/relay"
 	"tailscale.com/derp/derpserver"
 )
@@ -36,6 +37,10 @@ type Hooks struct {
 }
 
 type Hub struct {
+	nodeReconciler  *nodeReconciler
+	nodeClient      rpc
+	resolveArtifact func(context.Context, string, string, string) (registry.Artifact, error)
+	nodeDetails     map[string]NodeDetails
 	Coordinator     *coordinator.Coordinator
 	MeshGateway     *gateway.Gateway
 	Tickets         *gateway.Tickets
@@ -200,6 +205,30 @@ func (h *Hub) FrontURL() string {
 	return "http://" + h.frontListener.Addr().String()
 }
 func (h *Hub) SetHooks(hooks Hooks) {
+	changed, revoke, closeHook := hooks.ConfigChanged, hooks.RevokeNode, hooks.Close
+	hooks.ConfigChanged = func(ctx context.Context, old, next Config) {
+		h.queueNodes()
+		if changed != nil {
+			changed(ctx, old, next)
+		}
+	}
+	hooks.RevokeNode = func(name string) {
+		h.cancelNode(name)
+		if revoke != nil {
+			revoke(name)
+		}
+	}
+	hooks.Close = func() error {
+		h.stopNodeCalls()
+		if closeHook != nil {
+			return closeHook()
+		}
+		return nil
+	}
+	if hooks.NodeStatus == nil && (h.nodeClient != nil || h.Client != nil) {
+		hooks.NodeStatus = h.signedNodeDetails
+	}
+
 	// Always compose from the supplied bundle, never from previously wrapped hooks.
 	if g := h.MeshGateway; g != nil {
 		if hooks.Gateway == nil {
