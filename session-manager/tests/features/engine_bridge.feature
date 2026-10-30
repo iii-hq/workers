@@ -133,8 +133,8 @@ Feature: bridge backend — storage deferral and event propagation
     And every delivery to bridged instance "B1" function "ui::b1" has "session_id" = "${S1}"
     And some delivery to bridged instance "B1" function "ui::b1" has "message.role" = "assistant"
 
-    # The second bridge: roles filter applied at ITS edge — only the
-    # user message arrives.
+    # The second bridge: its input.message.role filter applies at ITS
+    # edge — only the user message arrives.
     And within 10 seconds bridged instance "B2" function "ui::b2" receives at least 1 delivery
     And after 1 second bridged instance "B2" function "ui::b2" has received exactly 1 delivery
     And every delivery to bridged instance "B2" function "ui::b2" has "message.role" = "user"
