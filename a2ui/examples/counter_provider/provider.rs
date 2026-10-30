@@ -1,49 +1,21 @@
-//! Minimal worker event function that an A2UI live binding can observe. Run
-//! it next to an engine (no iii-stream needed):
-//!
-//! ```bash
-//! cargo run --example counter_provider -- ws://127.0.0.1:49134
-//! ```
-//!
-//! Then bind a surface to it with `a2ui::binding::set`:
-//!
-//! ```json
-//! {
-//!   "surface_id": "clicks",
-//!   "binding": {
-//!     "id": "clicks-count",
-//!     "function_id": "demo::on-counter-changed",
-//!     "args": { "counter": "clicks" },
-//!     "target_path": "/count",
-//!     "query": {
-//!       "function_id": "demo::counter::get",
-//!       "payload": { "counter": "clicks" },
-//!       "result_path": "/value"
-//!     }
-//!   }
-//! }
-//! ```
-//!
-//! `demo::counter::bump { "counter": "clicks" }` commits a new value and then
-//! calls `demo::on-counter-changed` with `{ counter, revision }`; the observers
-//! whose args name that counter receive it, and the A2UI page re-reads through
-//! the read-only `demo::counter::get` query.
+//! The demo counter provider: `demo::on-counter-changed` with its observer
+//! hooks, and the `demo::counter::*` functions around it. `main.rs` runs it
+//! as a worker; `tests/counter_provider.rs` hosts it in process.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, Call, CallAction, CallRequest, Error, IIIClient, InitOptions, Keys, Match,
-    ObserveRejection, Observer, RegisterFunction,
+    Call, CallAction, CallRequest, Error, IIIClient, Keys, Match, ObserveRejection, Observer,
+    RegisterFunction,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-const ON_COUNTER_CHANGED_FN: &str = "demo::on-counter-changed";
+pub const ON_COUNTER_CHANGED_FN: &str = "demo::on-counter-changed";
 /// Bound fan-out: observers beyond this are rejected when they are added.
-const MAX_OBSERVERS: usize = 64;
+pub const MAX_OBSERVERS: usize = 64;
 
 /// Observer args of `demo::on-counter-changed`.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -76,6 +48,9 @@ struct Empty {}
 struct Provider {
     /// counter -> (value, revision); the source of truth the query reads.
     counters: Mutex<HashMap<String, (u64, u64)>>,
+    /// Ids of the observers holding one of the `MAX_OBSERVERS` slots: taken
+    /// in `onObserverAdded`, given back in `onObserverRemoved`.
+    slots: Mutex<HashSet<String>>,
 }
 
 impl Provider {
@@ -89,6 +64,33 @@ impl Provider {
             .unwrap_or_default();
         json!({ "counter": counter, "value": value, "revision": revision })
     }
+
+    /// Number of slots held, by active observers and by observers whose
+    /// `onObserverAdded` resolved and that are not active yet.
+    fn reserved(&self) -> usize {
+        self.slots.lock().unwrap().len()
+    }
+
+    /// Take a slot for `id`. An id that holds one keeps it (the engine
+    /// announces an observer again after its worker reattaches).
+    fn reserve(&self, id: &str) -> Result<(), ObserveRejection> {
+        let mut slots = self.slots.lock().unwrap();
+        if slots.contains(id) {
+            return Ok(());
+        }
+        if slots.len() >= MAX_OBSERVERS {
+            return Err(ObserveRejection::new(
+                "OBSERVER_LIMIT",
+                format!("{ON_COUNTER_CHANGED_FN} takes at most {MAX_OBSERVERS} observers"),
+            ));
+        }
+        slots.insert(id.to_owned());
+        Ok(())
+    }
+
+    fn release(&self, id: &str) {
+        self.slots.lock().unwrap().remove(id);
+    }
 }
 
 /// Observers of `counter` among the active ones.
@@ -99,8 +101,10 @@ fn observers_of(iii: &IIIClient, counter: &str) -> usize {
         .count()
 }
 
-/// Validate an observer's args and cap the number of observers.
-async fn accept(iii: Arc<IIIClient>, obs: Observer) -> Result<(), ObserveRejection> {
+/// Validate an observer's args and take one of its function's slots. A slot
+/// is held by observer id from here to `onObserverRemoved`, so the cap holds
+/// whenever the observers it admits become active.
+fn accept(provider: &Provider, obs: &Observer) -> Result<(), ObserveRejection> {
     let args: CounterArgs = obs.args()?;
     if args.counter.trim().is_empty() || args.counter.len() > 64 {
         return Err(ObserveRejection::new(
@@ -108,38 +112,23 @@ async fn accept(iii: Arc<IIIClient>, obs: Observer) -> Result<(), ObserveRejecti
             "counter must be 1-64 bytes",
         ));
     }
-    if iii.observers(ON_COUNTER_CHANGED_FN).len() >= MAX_OBSERVERS {
-        return Err(ObserveRejection::new(
-            "OBSERVER_LIMIT",
-            format!("{ON_COUNTER_CHANGED_FN} takes at most {MAX_OBSERVERS} observers"),
-        ));
-    }
-    Ok(())
+    provider.reserve(obs.id())
 }
 
-#[tokio::main]
-async fn main() {
-    let url = std::env::args()
-        .nth(1)
-        .or_else(|| std::env::var("III_URL").ok())
-        .unwrap_or_else(|| "ws://127.0.0.1:49134".into());
-    let iii = Arc::new(register_worker(
-        &url,
-        InitOptions {
-            metadata: Some(WorkerMetadata {
-                runtime: "rust".into(),
-                name: "a2ui-demo-provider".into(),
-                ..WorkerMetadata::default()
-            }),
-            ..InitOptions::default()
-        },
-    ));
+/// Register the provider's hooks and functions on `iii`.
+pub fn register(iii: &Arc<IIIClient>) {
     let provider = Arc::new(Provider::default());
 
     // Hooks by id before registering, so they see every observer.
-    let hook_iii = iii.clone();
+    let added = provider.clone();
     iii.on_observer_added_for(ON_COUNTER_CHANGED_FN, move |obs: Observer| {
-        accept(hook_iii.clone(), obs)
+        let result = accept(&added, &obs);
+        async move { result }
+    });
+    let removed = provider.clone();
+    iii.on_observer_removed_for(ON_COUNTER_CHANGED_FN, move |obs: Observer| {
+        removed.release(obs.id());
+        async {}
     });
     // Each bump reaches the observers whose args name its counter.
     iii.on_observer_match_for(
@@ -211,20 +200,23 @@ async fn main() {
         ),
     );
 
+    let count = provider.clone();
     let count_iii = iii.clone();
     iii.register_function(
         "demo::observers::count",
         RegisterFunction::new_async(move |_: Empty| {
+            let provider = count.clone();
             let iii = count_iii.clone();
             async move {
-                Ok::<Value, Error>(json!({ "count": iii.observers(ON_COUNTER_CHANGED_FN).len() }))
+                Ok::<Value, Error>(json!({
+                    "count": iii.observers(ON_COUNTER_CHANGED_FN).len(),
+                    "reserved": provider.reserved(),
+                }))
             }
         })
-        .description("Number of active demo::on-counter-changed observers.")
+        .description(
+            "demo::on-counter-changed observers: { count } active, { reserved } slots held.",
+        )
         .metadata(json!({ "read_only": true })),
     );
-
-    println!("a2ui-demo-provider ready on {url}");
-    let _ = tokio::signal::ctrl_c().await;
-    iii.shutdown_async().await;
 }
