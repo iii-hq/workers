@@ -913,10 +913,7 @@ export async function ensureAnalysisConversation(host: Host, runId: string): Pro
   const existing = await listAnalysisConversations(host, id)
   if (existing[0]) return existing[0].sessionId
   const response = record(
-    await withRpcTimeout(
-      host.iii.call('security-scan::analysis-chat', { run_id: id }),
-      'security-scan::analysis-chat',
-    ),
+    await withRpcTimeout(host.iii.call('security-scan::analysis-chat', { run_id: id }), 'security-scan::analysis-chat'),
     'security-scan::analysis-chat response',
   )
   if (response.available !== true) return null
