@@ -107,9 +107,13 @@ func (e *nodeEvents) RegisterTrigger(ctx context.Context, cfg iii.TriggerConfig)
 	e.bindings[cfg.ID] = &nodeBinding{function: cfg.FunctionID, namespace: cfg.Namespace, node: filter, ctx: bindingCtx, cancel: cancel, stop: context.AfterFunc(e.ctx, cancel)}
 	return nil
 }
-func (e *nodeEvents) UnregisterTrigger(_ context.Context, cfg iii.TriggerConfig) error {
+func (e *nodeEvents) UnregisterTrigger(ctx context.Context, cfg iii.TriggerConfig) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// SDK callbacks can outlive their originating connection.
+	if ctx.Err() != nil {
+		return nil
+	}
 	if b := e.bindings[cfg.ID]; b != nil {
 		b.close()
 		delete(e.bindings, cfg.ID)

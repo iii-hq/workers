@@ -411,3 +411,36 @@ func TestNodeEventsBindingCapacityAllowsReplacement(t *testing.T) {
 		t.Fatal("replacement refused at capacity")
 	}
 }
+
+func TestNodeEventsStaleUnregisterPreservesReconnectedBinding(t *testing.T) {
+	h, _ := nodeCallHub(t)
+	e := newEventWire(t, h)
+	oldConnection, disconnect := context.WithCancel(e.ctx)
+	defer disconnect()
+	cfg := iii.TriggerConfig{ID: "same", FunctionID: "audit::old", Namespace: "events-project", Config: json.RawMessage(`{"node":"laptop"}`)}
+	if err := h.events.RegisterTrigger(oldConnection, cfg); err != nil {
+		t.Fatal(err)
+	}
+	disconnect()
+	freshConnection, cancel := context.WithCancel(e.ctx)
+	defer cancel()
+	cfg.FunctionID = "audit::fresh"
+	if err := h.events.RegisterTrigger(freshConnection, cfg); err != nil {
+		t.Fatal(err)
+	}
+	h.events.mu.Lock()
+	fresh := h.events.bindings[cfg.ID]
+	h.events.mu.Unlock()
+	if err := h.events.UnregisterTrigger(oldConnection, iii.TriggerConfig{ID: cfg.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ctx.Err() != nil {
+		t.Fatal("stale disconnected unregister canceled the fresh binding")
+	}
+	eventVersion(t, h, "after-stale-unregister")
+	f := e.delivery("laptop", "outdated")
+	if string(f["function_id"]) != `"audit::fresh"` {
+		t.Fatalf("fresh transition target: %s", f)
+	}
+	e.ack(f)
+}
