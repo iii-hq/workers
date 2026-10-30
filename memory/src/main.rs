@@ -37,6 +37,7 @@ use tokio::sync::RwLock;
 use memory::configuration::{self, ConfigCell, StoreCell};
 use memory::deps::Deps;
 use memory::events::{self, Emitter};
+use memory::functions::rest;
 use memory::store::Store;
 use memory::{config, functions, hooks, manifest};
 
@@ -104,11 +105,11 @@ fn seam_observers() -> Vec<(Source, &'static str)> {
 }
 
 /// The REST route of a public function: `POST /memory/...`, the function id
-/// with `::` as `/`.
+/// with `::` as `/`. Its target is `memory::rest`.
 fn rest_route(function_id: &str) -> Source {
     Source::function(HTTP_ON_REQUEST_FN).args(json!({
         "method": "POST",
-        "path": format!("/{}", function_id.replace("::", "/")),
+        "path": rest::route_path(function_id),
     }))
 }
 
@@ -210,6 +211,7 @@ async fn main() -> Result<()> {
     });
 
     functions::register_all(&iii, &deps);
+    rest::register(&iii, &deps);
     register_hook_functions(&iii, &deps);
 
     // Injectable console UI — after the memory::* functions so the console can
@@ -238,11 +240,12 @@ async fn main() -> Result<()> {
     // unavailable (delayed so the router and providers finish booting).
     memory::embed_client::backfill_all(deps.clone());
 
-    // Reuse the http worker: every public function doubles as a REST
-    // route (`POST /memory/...`). Without the http worker the routes stay
-    // pending and the bus surface still serves everything.
+    // Reuse the http worker: every public function is also a REST route
+    // (`POST /memory/...`) served by `memory::rest`, which takes the
+    // HttpRequest and answers { status_code, body }. Without the http worker
+    // the routes stay pending and the bus surface still serves everything.
     for spec in functions::catalog() {
-        let observer = iii.observe(rest_route(spec.function_id), spec.function_id);
+        let observer = iii.observe(rest_route(spec.function_id), rest::REST_ID);
         tracing::debug!(
             function_id = spec.function_id,
             observer_id = observer.id(),
@@ -255,7 +258,7 @@ async fn main() -> Result<()> {
     configuration::observe_config_changes(&iii, cell, store_cell);
 
     tracing::info!(
-        "memory ready: 14 memory::* functions + 2 change functions + REST via http::on-request"
+        "memory ready: 17 memory::* functions + 2 change functions + REST via http::on-request"
     );
 
     tokio::signal::ctrl_c().await?;
@@ -274,10 +277,7 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let d = d.clone();
             async move { hooks::pre_generate(&d, input).await }
         })
-        .description(
-            "Internal: harness pre-generate hook — injects the session bank's rules into the \
-             system prompt and recalled memories as one appended message. Never denies.",
-        )
+        .description(hooks::PRE_GENERATE_DESC)
         // Deliberately NOT trace_hidden: seeing memory feed each turn (which
         // bank, which memories) in the trace timeline is a product requirement,
         // not plumbing noise.
@@ -291,11 +291,7 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let d = d.clone();
             async move { hooks::turn_completed(&d, input).await }
         })
-        .description(
-            "Internal: harness turn-completed handler — enqueues one durable extraction job \
-             (a single router::complete call) for the finished turn; inline fallback without \
-             a queue.",
-        )
+        .description(hooks::TURN_COMPLETED_DESC)
         .metadata(json!({ "internal": true })),
     );
 
@@ -306,10 +302,7 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let d = d.clone();
             async move { hooks::extract_job(&d, input).await }
         })
-        .description(
-            "Internal: queue-delivered extraction job — errors propagate so the queue retries \
-             and dead-letters instead of losing the pass.",
-        )
+        .description(hooks::EXTRACT_JOB_DESC)
         .metadata(json!({ "internal": true })),
     );
 
@@ -320,7 +313,7 @@ fn register_hook_functions(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
             let d = d.clone();
             async move { hooks::session_deleted(&d, input).await }
         })
-        .description("Internal: session::deleted handler — drops the session's extraction cursor.")
+        .description(hooks::SESSION_DELETED_DESC)
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 }
@@ -331,6 +324,11 @@ mod tests {
 
     #[test]
     fn rest_routes_take_the_leading_slash() {
+        assert_eq!(
+            rest_route("memory::save"),
+            Source::function("http::on-request")
+                .args(json!({ "method": "POST", "path": "/memory/save" }))
+        );
         assert_eq!(
             rest_route("memory::bank::create"),
             Source::function("http::on-request")
@@ -359,6 +357,32 @@ mod tests {
                 ("queue::on-message".to_string(), hooks::EXTRACT_JOB_FN),
             ]
         );
+    }
+
+    #[test]
+    fn each_seam_target_describes_the_function_it_observes() {
+        let description = |target: &str| match target {
+            hooks::PRE_GENERATE_FN => hooks::PRE_GENERATE_DESC,
+            hooks::TURN_COMPLETED_FN => hooks::TURN_COMPLETED_DESC,
+            hooks::SESSION_DELETED_FN => hooks::SESSION_DELETED_DESC,
+            hooks::EXTRACT_JOB_FN => hooks::EXTRACT_JOB_DESC,
+            other => panic!("no description for {other}"),
+        };
+        for (source, target) in seam_observers() {
+            let text = description(target);
+            assert!(
+                text.contains(&format!("target of the {} observer", source.function_id())),
+                "{target}: {text}"
+            );
+            for removed in [
+                "harness::hook::pre-generate",
+                "harness::turn-completed",
+                "session::deleted",
+                "durable:subscriber",
+            ] {
+                assert!(!text.contains(removed), "{target} names {removed}: {text}");
+            }
+        }
     }
 
     #[test]

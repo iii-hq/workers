@@ -187,6 +187,9 @@ impl Emitter {
     }
 }
 
+// Registration (private, no args, the event as request and response) and
+// delivery to bank-filtered observers are tested against an engine in
+// tests/engine.rs.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,17 +250,5 @@ mod tests {
             serde_json::to_value(event).unwrap(),
             json!({ "event_type": "rules-changed", "bank": "blog" })
         );
-    }
-
-    #[tokio::test]
-    async fn emitting_without_observers_sends_nothing() {
-        // `IIIClient::new` builds local state only; nothing observes the
-        // change functions, so both calls return before reaching the wire.
-        let iii = Arc::new(IIIClient::new("ws://127.0.0.1:1"));
-        let emitter = Emitter::new(iii.clone());
-        emitter.item(ItemEvent::Created, "main", &memory()).await;
-        emitter.bank("created", "main").await;
-        assert!(!iii.is_observed(ON_ITEM_CHANGED_FN));
-        assert!(!iii.is_observed(ON_BANK_CHANGED_FN));
     }
 }

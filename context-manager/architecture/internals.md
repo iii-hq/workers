@@ -121,7 +121,7 @@ Load-bearing details:
    untouched").
 2. **The model-facing view excludes `role: "custom"` and is cloned.** Custom messages have
    no provider wire mapping, so they are filtered out of `working` *before*
-   counting (a huge custom entry must not trigger a phantom overflow) and never
+   counting (a huge custom entry must not cause a phantom overflow) and never
    appear in the returned `messages`. `view_to_orig: Vec<usize>` records, for
    each surviving message, its index in the original request array — so
    `tail_start_index` can be reported against the **request** array the caller
@@ -598,7 +598,7 @@ UPDATE_GOLDENS=1 cargo test --test schemas      # regenerate wire-schema goldens
   calls are unaffected.
 - **One summariser call per over-budget request if the caller doesn't persist.**
   The round trip (§8) is the fix; skipping it is correct but not cheap.
-- **`assemble`/`compact` can spend money.** They may trigger a summariser LLM
+- **`assemble`/`compact` can spend money.** They may start a summariser LLM
   call; `count-tokens` and `prune` never do. Deny the former two in
   cost-sensitive agent deployments (see [integration.md §9](integration.md)).
 - **Lease key is content-derived by default.** Two callers compacting the

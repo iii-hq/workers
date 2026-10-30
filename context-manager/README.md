@@ -132,7 +132,13 @@ Other details (and the defaults' single source of truth) live in
 cargo test                          # unit + BDD (engine scenarios soft-skip)
 cargo test --test bdd -- --tags @pure    # no engine required
 UPDATE_GOLDENS=1 cargo test --test schemas   # regenerate wire-schema goldens
+III_ENGINE_BIN=$(which iii) cargo test --test integration   # engine + worker binary end to end
 ```
+
+The BDD engine scenarios connect to `III_ENGINE_WS_URL` (default
+`ws://127.0.0.1:49134`). `tests/integration.rs` starts the engine
+`III_ENGINE_BIN` names on an ephemeral port, runs the worker binary against it
+and skips without it, or fails when `III_E2E_REQUIRE=1`.
 
 
 ### Switching to a smaller model (MOT-4937)

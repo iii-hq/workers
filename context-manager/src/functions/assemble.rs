@@ -143,7 +143,7 @@ pub struct AssembleOptions {
     pub lease_key: Option<String>,
     /// Persisted summary from a prior compaction (see the spec's "The
     /// compaction round trip"); rendered into the system prompt and
-    /// used as the anchor if compaction triggers again.
+    /// used as the anchor if compaction runs again.
     #[serde(default)]
     pub previous_summary: Option<String>,
 }

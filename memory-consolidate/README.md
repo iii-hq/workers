@@ -35,12 +35,13 @@ The report names every group: the surviving memory, the retired duplicates, and 
 | `memory-consolidate::status` | `{}` | The schedule and the last pass: `enabled`, `interval_hours`, `last_run`, `due`, the latest per-bank results |
 | `memory-consolidate::on-tick` | the `cron::on-tick` event | Internal: the schedule heartbeat |
 | `memory-consolidate::on-config-change` | the `configuration::on-updated` event | Internal: hot-reloads the configuration |
+| `memory-consolidate::rest` | the http worker's `HttpRequest` | Internal: serves the `run` and `status` REST routes |
 
 The worker hosts no observable events of its own: every change it makes is a `memory::on-item-changed` call of the memory worker. It observes:
 
 - `cron::on-tick` with args `{ expression: "0 0 * * * *" }`, target `memory-consolidate::on-tick`;
 - `configuration::on-updated`, filtered on its own entry id and `configuration:updated`, target `memory-consolidate::on-config-change`;
-- `http::on-request` with args `{ method: "POST", path }` for `run` and `status` (`POST /memory-consolidate/run`, `POST /memory-consolidate/status`), so both double as REST routes through the http worker.
+- `http::on-request` with args `{ method: "POST", path }` for `run` and `status` (`POST /memory-consolidate/run`, `POST /memory-consolidate/status`), target `memory-consolidate::rest` (internal). It receives the `HttpRequest`, runs the function with the request's JSON body as its input (an empty body is `{}`), and returns the `HttpResponse`: `200` with the function's result, or `{ error }` with `400` (the body does not fit the input), `404` or `500` (the function failed, a bank outside the allowlist included). `curl -X POST localhost:3111/memory-consolidate/run -H 'content-type: application/json' -d '{"bank":"blog","dry_run":true}'` plans one bank.
 
 Each observer stays `pending` until its function registers, so the cron, configuration and http workers can boot in any order.
 

@@ -14,4 +14,5 @@ pub mod consolidate;
 pub mod functions;
 pub mod llm;
 pub mod manifest;
+pub mod rest;
 pub mod semantic;

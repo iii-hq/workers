@@ -1,70 +1,157 @@
-//! End-to-end test: spawn the `iii` engine + the worker binary as
-//! subprocesses, then drive the worker through `iii-sdk` as a client.
-//! Self-skips when `iii` is not on PATH.
+//! End-to-end test: start the engine `III_ENGINE_BIN` names on an ephemeral
+//! port, run the worker binary against it, and drive the worker through
+//! `iii-sdk` as a client. Skips without `III_ENGINE_BIN`; with
+//! `III_E2E_REQUIRE=1` a missing engine fails the test.
 
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::{register_worker, InitOptions};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
-const ENGINE_WS: &str = "ws://127.0.0.1:49134";
-
 struct Harness {
-    iii: Child,
+    url: String,
+    engine: Child,
     worker: Child,
+    dir: tempfile::TempDir,
 }
 
 impl Drop for Harness {
     fn drop(&mut self) {
         let _ = self.worker.kill();
         let _ = self.worker.wait();
-        let _ = self.iii.kill();
-        let _ = self.iii.wait();
+        let _ = self.engine.kill();
+        let _ = self.engine.wait();
     }
 }
 
+impl Harness {
+    /// The last lines of the engine and worker logs, for a failure message.
+    fn logs(&self) -> String {
+        ["engine.log", "worker.log"]
+            .iter()
+            .map(|name| format!("--- {name}\n{}", tail(&self.dir.path().join(name), 40)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn tail(path: &Path, lines: usize) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let all: Vec<&str> = text.lines().collect();
+    all[all.len().saturating_sub(lines)..].join("\n")
+}
+
+/// The engine binary, or `None` (skip) when `III_ENGINE_BIN` is unset.
+fn engine_bin() -> Option<PathBuf> {
+    match std::env::var_os("III_ENGINE_BIN") {
+        Some(bin) => Some(bin.into()),
+        None if std::env::var("III_E2E_REQUIRE").as_deref() == Ok("1") => {
+            panic!("III_E2E_REQUIRE=1 but III_ENGINE_BIN is unset")
+        }
+        None => None,
+    }
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .expect("bind an ephemeral port")
+        .port()
+}
+
+/// stdout and stderr of a child, both appended to `dir/name`.
+fn log_file(dir: &Path, name: &str) -> (Stdio, Stdio) {
+    let file = std::fs::File::create(dir.join(name)).expect("create a log file");
+    let err = file.try_clone().expect("clone the log file handle");
+    (Stdio::from(file), Stdio::from(err))
+}
+
+/// Start the engine with only the worker manager (on an ephemeral port) and
+/// the configuration store (under a temp dir) configured, then the worker
+/// binary against it. The worker's configuration lives in the engine's
+/// `configuration` worker; no `--config` seed is passed.
 async fn boot() -> Option<Harness> {
-    let iii_bin = which::which("iii").ok()?;
+    let bin = engine_bin()?;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let port = free_port();
+    let config = dir.path().join("config.yaml");
+    std::fs::File::create(&config)
+        .and_then(|mut file| {
+            write!(
+                file,
+                "workers:\n\
+                 \x20 - name: iii-worker-manager\n\
+                 \x20   config:\n\
+                 \x20     host: 127.0.0.1\n\
+                 \x20     port: {port}\n\
+                 \x20 - name: configuration\n\
+                 \x20   config:\n\
+                 \x20     adapter:\n\
+                 \x20       name: fs\n\
+                 \x20       config:\n\
+                 \x20         directory: {}\n",
+                dir.path().join("configuration").display()
+            )
+        })
+        .expect("write the engine config");
 
-    let iii = Command::new(&iii_bin)
-        .arg("--use-default-config")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+    let (out, err) = log_file(dir.path(), "engine.log");
+    let engine = Command::new(&bin)
+        .arg("--config")
+        .arg(&config)
+        .arg("--no-update-check")
+        .current_dir(dir.path())
+        .env("III_TELEMETRY_ENABLED", "false")
+        .stdout(out)
+        .stderr(err)
         .spawn()
-        .ok()?;
+        .unwrap_or_else(|e| panic!("spawn {}: {e}", bin.display()));
 
-    sleep(Duration::from_millis(800)).await;
+    let url = format!("ws://127.0.0.1:{port}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "the engine did not listen on {port} within 30s\n{}",
+            tail(&dir.path().join("engine.log"), 40)
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
 
-    let worker_bin = env!("CARGO_BIN_EXE_context-manager");
-
-    // Path B: the authoritative config lives in the engine's `configuration`
-    // worker; no `--config` seed is passed.
-    let worker = Command::new(worker_bin)
-        .args(["--url", ENGINE_WS])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+    let (out, err) = log_file(dir.path(), "worker.log");
+    let worker = Command::new(env!("CARGO_BIN_EXE_context-manager"))
+        .args(["--url", &url])
+        .current_dir(dir.path())
+        .stdout(out)
+        .stderr(err)
         .spawn()
-        .ok()?;
+        .expect("spawn the context-manager binary");
 
-    Some(Harness { iii, worker })
+    Some(Harness {
+        url,
+        engine,
+        worker,
+        dir,
+    })
 }
 
 #[tokio::test]
 async fn end_to_end_via_iii_sdk() {
-    let Some(_h) = boot().await else {
-        eprintln!("skipping: `iii` binary not on PATH");
+    let Some(h) = boot().await else {
+        eprintln!("skipping: III_ENGINE_BIN is unset");
         return;
     };
 
-    let client = register_worker(ENGINE_WS, InitOptions::default());
+    let client = register_worker(&h.url, InitOptions::default());
 
-    // Poll until the worker's functions are routable (registration
-    // flows over its own connection; no fixed sleep).
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    // Poll until the worker's functions are routable (registration flows
+    // over its own connection; no fixed sleep).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let payload = json!({
         "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }],
                        "timestamp": 1 }],
@@ -81,14 +168,16 @@ async fn end_to_end_via_iii_sdk() {
             }),
         )
         .await;
-        match attempt {
+        let last_error = match attempt {
             Ok(Ok(v)) => break v,
-            Ok(Err(Error::NotConnected)) | Err(_) => {}
-            Ok(Err(_)) => {}
-        }
+            Ok(Err(e)) => e.to_string(),
+            Err(_) => "timed out".to_string(),
+        };
         assert!(
-            std::time::Instant::now() < deadline,
-            "context::count-tokens did not become routable within 20s"
+            Instant::now() < deadline,
+            "context::count-tokens did not become routable within 30s (last error: \
+             {last_error})\n{}",
+            h.logs()
         );
         sleep(Duration::from_millis(250)).await;
     };
