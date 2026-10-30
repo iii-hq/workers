@@ -98,9 +98,9 @@ async fn run_stream_call(
     let mut warnings = Vec::new();
 
     // Token + resolve are cached (ScaffoldCache): zero engine round trips
-    // on the hot path within the TTL. An auth-classified resolve failure
-    // drops the cache so the next attempt re-resolves fresh — retrying
-    // stays the router's job.
+    // on the hot path within the TTL; a resolve error is never cached, and
+    // retrying stays the router's job. An upstream auth terminal still drops
+    // the cache (end of this function).
     let token = cache.load_token(iii, state::STATE_SCOPE).await;
     let resolved = match cache
         .resolve(
@@ -113,16 +113,12 @@ async fn run_stream_call(
     {
         Ok(r) => r,
         Err(e) => {
-            let kind = classify_bus_error(&e);
-            if kind == ErrorKind::AuthExpired {
-                cache.invalidate();
-            }
             let _ = send_event(
                 sink,
                 &synthetic_error_event(
                     &format!("router::provider::resolve failed: {e}"),
                     &model,
-                    kind,
+                    classify_bus_error(&e),
                 ),
             );
             return;
