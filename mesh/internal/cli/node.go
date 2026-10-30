@@ -28,10 +28,7 @@ func (a *app) node(ctx context.Context) error {
 		return err
 	}
 	if exists(filepath.Join(a.paths.State, "leave-request")) {
-		if err := awaitEnrollment(ctx, network); err != nil {
-			return errors.Join(err, network.Close())
-		}
-		err := a.logout(network)
+		err := a.logout(ctx, network)
 		return errors.Join(err, network.Close())
 	}
 	workers, err := a.workers(s)
@@ -83,7 +80,7 @@ func (a *app) node(ctx context.Context) error {
 	ticker.Stop()
 	closeErr := workers.Close()
 	if exists(filepath.Join(a.paths.State, "leave-request")) {
-		closeErr = errors.Join(closeErr, a.logout(network))
+		closeErr = errors.Join(closeErr, a.logout(ctx, network))
 	}
 	closeErr = errors.Join(closeErr, network.Close(), persistErr)
 	if errors.Is(err, node.ErrRemoved) {
@@ -106,7 +103,12 @@ func (a *app) node(ctx context.Context) error {
 	}
 	return errors.Join(err, closeErr)
 }
-func (a *app) logout(network networkService) error {
+func (a *app) logout(ctx context.Context, network networkService) error {
+	if err := awaitEnrollment(ctx, network); errors.Is(err, node.ErrRemoved) {
+		return writePrivate(a.paths.State, "logout-result", []byte("ok"))
+	} else if err != nil {
+		return err
+	}
 	err := network.Logout()
 	result := "ok"
 	if err != nil {
@@ -143,6 +145,11 @@ func awaitEnrollment(ctx context.Context, network networkService) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		select {
+		case <-network.Removed():
+			return node.ErrRemoved
+		default:
+		}
 		if _, ok := network.SelfName(); ok {
 			return nil
 		}

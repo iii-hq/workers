@@ -234,3 +234,99 @@ func TestPendingLeaveRequiresAuthenticatedEnrollment(t *testing.T) {
 		t.Fatal("logout acknowledgement without authenticated map")
 	}
 }
+
+func TestActiveStartupLeaveRequiresAuthenticatedEnrollment(t *testing.T) {
+	a, network, events := testApp(t)
+	network.unnamed = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	originalWorkers := a.workers
+	a.workers = func(s State) (workerService, error) {
+		if err := writePrivate(a.paths.State, "leave-request", []byte("logout")); err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		return originalWorkers(s)
+	}
+	if err := a.node(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("acknowledged active-startup logout without authenticated enrollment: %v", err)
+	}
+	if exists(filepath.Join(a.paths.State, "logout-result")) {
+		t.Fatal("wrote logout acknowledgement without authenticated enrollment")
+	}
+	if !reflect.DeepEqual(*events, []string{"network up", "workers close", "network close"}) {
+		t.Fatal(*events)
+	}
+	if _, err := loadState(a.paths.State); err != nil {
+		t.Fatalf("lost retry credentials: %v", err)
+	}
+}
+
+func TestLeaveFailureRetainsCredentialsAndRetry(t *testing.T) {
+	a, _, _ := testApp(t)
+	before, err := os.ReadFile(filepath.Join(a.paths.State, "join.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(a.paths.Cache, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string][]byte{filepath.Join(a.paths.State, "backend-keys"): []byte("saved keys"), filepath.Join(a.paths.Cache, "artifact"): []byte("verified worker"), a.paths.Bin: []byte("installed mesh")} {
+		if err := os.WriteFile(path, content, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.uninstall = func() error { return writePrivate(a.paths.State, "logout-result", []byte("hub unreachable")) }
+	cleaned := false
+	a.clean = func() error { cleaned = true; return nil }
+	leaveErr := a.leave(context.Background())
+	if leaveErr == nil || !strings.Contains(leaveErr.Error(), "hub unreachable") {
+		t.Fatalf("missing logout error: %v", leaveErr)
+	}
+	after, err := os.ReadFile(filepath.Join(a.paths.State, "join.json"))
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("deleted or changed retry credentials after failed logout: %v", err)
+	}
+	if cleaned {
+		t.Fatal("cleaned native state after failed logout")
+	}
+	for _, path := range []string{filepath.Join(a.paths.State, "backend-keys"), filepath.Join(a.paths.State, "leave-request"), filepath.Join(a.paths.State, "logout-result"), filepath.Join(a.paths.Cache, "artifact"), a.paths.Bin} {
+		if !exists(path) {
+			t.Fatalf("deleted retry state %s", path)
+		}
+	}
+	if !strings.Contains(leaveErr.Error(), "retry mesh leave") {
+		t.Fatal("missing retry instruction")
+	}
+	a.uninstall = func() error { return a.node(context.Background()) }
+	if err := a.leave(context.Background()); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	if !cleaned {
+		t.Fatal("successful retry did not clean native state")
+	}
+	for _, path := range []string{a.paths.State, a.paths.Cache, a.paths.Bin} {
+		if exists(path) {
+			t.Fatalf("successful leave retained %s", path)
+		}
+	}
+}
+
+func TestPendingLeaveAcceptsAuthenticatedRemoval(t *testing.T) {
+	a, network, events := testApp(t)
+	network.unnamed = true
+	close(network.removed)
+	if err := writePrivate(a.paths.State, "leave-request", []byte("logout")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.node(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := os.ReadFile(filepath.Join(a.paths.State, "logout-result"))
+	if err != nil || string(result) != "ok" {
+		t.Fatalf("removed node was not acknowledged: %q %v", result, err)
+	}
+	if !reflect.DeepEqual(*events, []string{"network up", "network close"}) {
+		t.Fatal("called released backend", *events)
+	}
+}

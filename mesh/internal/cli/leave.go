@@ -29,18 +29,17 @@ func (a *app) leave(ctx context.Context) error {
 	if err := a.uninstall(); err != nil {
 		return err
 	}
-	var logoutErr error
 	if enrolled && !removedStatus(a.paths.State) {
 		result, err := os.ReadFile(filepath.Join(a.paths.State, "logout-result"))
 		if err != nil {
 			return fmt.Errorf("node service did not acknowledge logout; run sudo mesh node to complete logout, then retry mesh leave: %w", err)
 		}
 		if string(result) != "ok" {
-			logoutErr = fmt.Errorf("hub logout: %s", result)
+			return fmt.Errorf("hub logout failed: %s; run sudo mesh node to complete logout, then retry mesh leave", result)
 		}
 	}
 	cleanErr := a.clean()
-	return errors.Join(logoutErr, cleanErr, os.RemoveAll(a.paths.Cache), os.RemoveAll(a.paths.State), removeIfExists(a.paths.Bin))
+	return errors.Join(cleanErr, os.RemoveAll(a.paths.Cache), os.RemoveAll(a.paths.State), removeIfExists(a.paths.Bin))
 }
 func removeIfExists(path string) error {
 	err := os.Remove(path)
