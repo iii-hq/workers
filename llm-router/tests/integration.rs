@@ -1435,6 +1435,96 @@ async fn models_changed_event_reaches_an_observer() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn provider_changed_event_reports_register_and_discovery() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    let probe = register_worker(&engine.url, test_init_options());
+    let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let sink = received.clone();
+    probe.register_function(
+        "probe::on_provider_changed",
+        RegisterFunction::new_async(move |input: Value| {
+            let sink = sink.clone();
+            async move {
+                sink.lock().unwrap().push(input);
+                Ok::<Value, Error>(json!({}))
+            }
+        }),
+    );
+    let observer = probe.observe(
+        Source::function("router::provider::on-changed")
+            .filters(json!({ "input.provider": { "$eq": "real" } }))
+            .deliver(Deliver::Output),
+        "probe::on_provider_changed",
+    );
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .expect("router::provider::on-changed observer active in time")
+        .expect("router::provider::on-changed observer accepted");
+
+    // The declaration is `register`; a discovery completion is `discovery`.
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+    let resolved = call(
+        &provider.iii,
+        "router::provider::resolve",
+        json!({ "id": "real", "token": provider.token, "begin_discovery": true }),
+    )
+    .await
+    .expect("resolve begins a discovery attempt");
+    let attempt = resolved["discovery_attempt"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no discovery_attempt in {resolved}"))
+        .to_string();
+    call(
+        &provider.iii,
+        "router::models::reconcile",
+        json!({
+            "provider": "real",
+            "token": provider.token,
+            "discovery": { "attempt": attempt, "outcome": "success" },
+            "models": [{ "id": "d-1", "provider": "real", "context_window": 100000, "max_output_tokens": 8192 }]
+        }),
+    )
+    .await
+    .expect("discovery reconcile accepted");
+
+    let ops = || -> Vec<String> {
+        received
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                assert_eq!(
+                    event["provider"], "real",
+                    "filtered on input.provider: {event}"
+                );
+                event["op"].as_str().unwrap_or_default().to_string()
+            })
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(ops().iter().any(|op| op == "register") && ops().iter().any(|op| op == "discovery")) {
+        assert!(Instant::now() < deadline, "ops so far: {:?}", ops());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for op in ops() {
+        assert!(
+            ["register", "discovery", "available", "unavailable"].contains(&op.as_str()),
+            "undocumented op {op}"
+        );
+    }
+
+    provider.iii.shutdown();
+    probe.shutdown();
+    router_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn router_boots_its_interface_against_a_bare_engine() {
     // Mirrors CI's interface-boot smoke: the registry-publish flow boots the
     // worker against an engine configured with `workers: []` — builtin
