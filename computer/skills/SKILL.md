@@ -151,7 +151,8 @@ step is one cheap classification, not a model turn.
   names it). The judge gets the keys, not the values, but a
   typed field that is not a password shows its value in later trees, which the
   judge reads: do not pass other secrets (card numbers, API keys) unless the
-  judge is local.
+  judge is local. `computer::run` cannot be observed, so its `inputs` reach
+  no observer.
 - It only invokes, sets, toggles and selects by ref: no mouse, keyboard,
   scrolling or menus. Approving one run approves every action it takes, so do
   not use it for destructive actions.

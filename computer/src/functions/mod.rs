@@ -66,7 +66,8 @@ pub const RUN_DESC: &str =
      as `inputs` keyed by field label. Returns a status, the steps, and the app's tree with live \
      refs for computer::act; `done` is the judge's reading, so confirm with computer::find. \
      Approving a run approves every action it takes: not for destructive actions. Without a \
-     judge worker it returns judge_unavailable; drive with computer::find + computer::act.";
+     judge worker it returns judge_unavailable; drive with computer::find + computer::act. \
+     Cannot be observed: `inputs` can carry passwords.";
 pub const SCREENCAST_START_ID: &str = "computer::screencast::start";
 pub const SCREENCAST_START_DESC: &str =
     "Internal: join the live desktop capture for a console viewer (the page or a corner \
@@ -419,7 +420,10 @@ fn register_run(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 run::announced(&session, req, judge, started).await
             }
         })
-        .description(RUN_DESC),
+        .description(RUN_DESC)
+        // `inputs` carries the text typed into fields, passwords included:
+        // nobody may observe the calls (`NOT_OBSERVABLE`).
+        .observable(false),
     );
 }
 
