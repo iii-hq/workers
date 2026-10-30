@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
@@ -185,12 +186,9 @@ func (f *fixture) assertRefusedCalls(n *testNode, ids []string, code string) {
 	})
 }
 
-// Only outgoing RPCs/bindings and their result status are published; enrollment,
-// signed control envelopes and operation responses are outside this artifact.
-func (f *fixture) observeWorker(n *testNode, worker string) {
-	frames := n.snapshot()
+func workerObservations(frames []observedFrame, configurationID string) []map[string]any {
 	entries := []map[string]any{}
-	for _, frame := range frames {
+	for i, frame := range frames {
 		d := frame.Data
 		if frame.Direction != "node-to-hub" {
 			continue
@@ -199,15 +197,21 @@ func (f *fixture) observeWorker(n *testNode, worker string) {
 		if typeName != "invokefunction" && typeName != "registertrigger" && typeName != "registertriggertype" {
 			continue
 		}
-		entry := map[string]any{"request": d, "result": "no acknowledgement observed"}
-		for _, response := range frames {
+		entry := map[string]any{"connection": frame.Connection, "request": d, "result": "no acknowledgement observed"}
+		for _, response := range frames[i+1:] {
 			r := response.Data
-			if response.Direction != "hub-to-node" {
+			if response.Direction != "hub-to-node" || frame.Connection <= 0 || response.Connection != frame.Connection {
 				continue
 			}
 			matched := typeName == "invokefunction" && d["invocation_id"] != nil && r["type"] == "invocationresult" && r["invocation_id"] == d["invocation_id"]
 			matched = matched || typeName == "registertrigger" && r["type"] == "triggerregistrationresult" && r["id"] == d["id"]
-			if typeName == "registertrigger" && d["trigger_type"] == "configuration" && r["type"] == "invokefunction" && r["function_id"] == d["function_id"] {
+			config, _ := d["config"].(map[string]any)
+			event, _ := r["data"].(map[string]any)
+			receiver, _ := d["function_id"].(string)
+			if typeName == "registertrigger" && d["trigger_type"] == "configuration" &&
+				configurationID != "" && config["configuration_id"] == configurationID &&
+				r["type"] == "invokefunction" && receiver != "" && r["function_id"] == receiver &&
+				event["type"] == "configuration" && event["event_type"] == "configuration:updated" && event["id"] == configurationID {
 				entry["result"] = "configuration event delivery observed"
 			}
 			if matched {
@@ -219,6 +223,16 @@ func (f *fixture) observeWorker(n *testNode, worker string) {
 			}
 		}
 		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// Only outgoing RPCs/bindings and their result status are published; enrollment,
+// signed control envelopes and operation responses are outside this artifact.
+func (f *fixture) observeWorker(n *testNode, worker string) {
+	entries := workerObservations(n.snapshot(), n.name+"__"+worker)
+	for _, entry := range entries {
+		d := entry["request"].(map[string]any)
 		f.t.Logf("%s observation: type=%v function=%v namespace=%v trigger=%v config=%s result=%s", worker, d["type"], d["function_id"], d["namespace"], d["trigger_type"], mustJSON(d["config"]), mustJSON(entry["result"]))
 	}
 	if reports := os.Getenv("MESH_E2E_REPORT_DIR"); reports != "" {
@@ -247,4 +261,50 @@ func (f *fixture) startXvfb() string {
 		return fmt.Errorf("Xvfb has not reported a display")
 	})
 	return display
+}
+
+func TestWorkerObservationsConfigurationDelivery(t *testing.T) {
+	registration := func(connection int, id string) observedFrame {
+		return observedFrame{Connection: connection, Direction: "node-to-hub", Data: map[string]any{
+			"type": "registertrigger", "id": fmt.Sprint("binding-", connection), "trigger_type": "configuration",
+			"function_id": "computer::on-config-change", "config": map[string]any{"configuration_id": id, "event_types": []any{"configuration:updated"}},
+		}}
+	}
+	delivery := func(connection int, id string) observedFrame {
+		return observedFrame{Connection: connection, Direction: "hub-to-node", Data: map[string]any{
+			"type": "invokefunction", "function_id": "computer::on-config-change",
+			"data": map[string]any{"type": "configuration", "event_type": "configuration:updated", "id": id},
+		}}
+	}
+	const owned = "laptop__computer"
+	for _, tc := range []struct {
+		name   string
+		frames []observedFrame
+		want   []bool
+	}{
+		{"current delivery", []observedFrame{registration(1, owned), delivery(1, owned)}, []bool{true}},
+		{"historical delivery before new process", []observedFrame{registration(1, owned), delivery(1, owned), registration(2, owned)}, []bool{true, false}},
+		{"historical delivery on same connection", []observedFrame{delivery(1, owned), registration(1, owned)}, []bool{false}},
+		{"old connection delivers later", []observedFrame{registration(1, owned), registration(2, owned), delivery(1, owned)}, []bool{true, false}},
+		{"each process has its own delivery", []observedFrame{registration(1, owned), delivery(1, owned), registration(2, owned), delivery(2, owned)}, []bool{true, true}},
+		{"wrong configuration delivered", []observedFrame{registration(1, owned), delivery(1, "desktop__computer")}, []bool{false}},
+		{"nonowned registration", []observedFrame{registration(1, "desktop__computer"), delivery(1, "desktop__computer")}, []bool{false}},
+		{"missing connection identity", []observedFrame{registration(0, owned), delivery(0, owned)}, []bool{false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := workerObservations(tc.frames, owned)
+			if len(entries) != len(tc.want) {
+				t.Fatalf("entries=%d want=%d", len(entries), len(tc.want))
+			}
+			for i, entry := range entries {
+				want := "no acknowledgement observed"
+				if tc.want[i] {
+					want = "configuration event delivery observed"
+				}
+				if entry["result"] != want {
+					t.Errorf("registration %d: result=%v want=%s", i, entry["result"], want)
+				}
+			}
+		})
+	}
 }

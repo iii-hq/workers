@@ -237,8 +237,9 @@ func newFixture(t *testing.T, ns string) *fixture {
 }
 
 type observedFrame struct {
-	Direction string
-	Data      map[string]any
+	Connection int
+	Direction  string
+	Data       map[string]any
 }
 type testNode struct {
 	server      *tsnet.Server
@@ -304,6 +305,7 @@ func (f *fixture) enroll(name string) *testNode {
 		downstream.SetReadLimit(16 << 20)
 		n.mu.Lock()
 		n.connections++
+		connection := n.connections
 		n.mu.Unlock()
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
@@ -317,7 +319,7 @@ func (f *fixture) enroll(name string) *testNode {
 				var frame map[string]any
 				if json.Unmarshal(data, &frame) == nil {
 					n.mu.Lock()
-					n.frames = append(n.frames, observedFrame{direction, frame})
+					n.frames = append(n.frames, observedFrame{Connection: connection, Direction: direction, Data: frame})
 					n.mu.Unlock()
 				}
 				if dst.Write(ctx, kind, data) != nil {
