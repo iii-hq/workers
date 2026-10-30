@@ -113,6 +113,8 @@ struct Fixture {
     callback_fail: Arc<AtomicBool>,
     /// The id of the consumer's observer of github::pr::on-event.
     observer: String,
+    /// The consumer's observer of github::pr::on-event.
+    observer_handle: ObserverHandle,
     http: reqwest::Client,
     gh_path: PathBuf,
     db_path: PathBuf,
@@ -206,6 +208,7 @@ impl Fixture {
             callbacks,
             callback_fail,
             observer: observer.id().to_owned(),
+            observer_handle: observer,
             github,
             http,
             gh_path,
@@ -809,6 +812,60 @@ async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
             .await;
         let events = fixture.events();
         assert!(events.iter().any(|e| e["entity"] == "9100"), "{events:?}");
+    })
+    .catch_unwind()
+    .await;
+    fixture.shutdown().await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// The removed hook of `github::pr::on-event`: disposing an observer drops
+/// its subscriber, and marks the watches it was the last listener of as
+/// orphaned; they stop after `orphan_grace_minutes` unless an observer
+/// returns, and an observer that returns clears the mark.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disposing_an_observer_drops_its_subscriber_and_orphans_its_watches() {
+    let mut fixture = Fixture::start().await;
+    let outcome = std::panic::AssertUnwindSafe(async {
+        fixture.two_watches_ready().await;
+        assert!(fixture.database()["subscribers"][&fixture.observer].is_object());
+
+        fixture.observer_handle.dispose().await.unwrap();
+        wait(|| {
+            fixture.database()["subscribers"]
+                .get(&fixture.observer)
+                .is_none()
+        })
+        .await;
+        let database = fixture.database();
+        for number in [1, 2] {
+            let watch = &database["watches"][format!("watch-{number}")];
+            assert_eq!(watch["status"], "active", "{watch}");
+            assert!(watch["orphaned_at"].is_string(), "{watch}");
+        }
+        assert!(
+            fixture.tunnel.lease_count() == 2,
+            "the grace period keeps the leases"
+        );
+
+        let consumer = fixture.engine.client(CONSUMER).await;
+        let returned = observe_events(
+            &consumer,
+            json!({"repo":"owner/repo"}),
+            CALLBACK,
+            ObserverOptions::default().metadata(metadata()),
+        )
+        .await;
+        call(&fixture.iii, "github::webhooks::maintain", json!({})).await;
+        let database = fixture.database();
+        assert!(database["subscribers"][returned.id()].is_object());
+        for number in [1, 2] {
+            let watch = &database["watches"][format!("watch-{number}")];
+            assert_eq!(watch["status"], "active", "{watch}");
+            assert!(watch["orphaned_at"].is_null(), "{watch}");
+        }
     })
     .catch_unwind()
     .await;
