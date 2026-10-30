@@ -104,8 +104,8 @@ The registration hooks are the engine's, with the engine's input and answer:
 A hook that throws or answers anything but an object denies: a denied
 function registration is dropped, as the engine drops it, and a denied
 observer is refused with `FORBIDDEN`. Hooks see bare ids (before the session
-prefix). `rbac` keys an earlier proxy read are ignored with one `warn` each,
-naming what replaces them, so a stored entry that sets one still loads.
+prefix). `rbac` keys of entries stored before 0.26 are ignored with one
+`warn` each, naming the setting to use, so such an entry loads.
 
 A call through the middleware waits up to 610 s for it (a middleware that
 forwards with its own timeout should use 600 s or less), and a connection that

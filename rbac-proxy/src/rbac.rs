@@ -66,9 +66,10 @@ pub struct RbacConfig {
     pub on_observer_registration_function_id: Option<String>,
 }
 
-/// `rbac` keys an earlier proxy read and this one ignores, with what replaces
-/// each (the engine's own list, `rbac_config.rs` `REMOVED_KEYS`). A stored
-/// configuration that still sets one loads, with one `warn` per key.
+/// `rbac` keys that configuration entries stored before 0.26 may set, with
+/// the setting that covers each (the engine's own list, `rbac_config.rs`
+/// `REMOVED_KEYS`). The proxy ignores them: an entry that sets one loads, with
+/// one `warn` per key.
 pub const REMOVED_KEYS: [(&str, &str); 2] = [
     (
         "on_trigger_registration_function_id",
@@ -677,8 +678,8 @@ impl AuthResult {
     }
 }
 
-/// Auth result fields an earlier proxy read and this one ignores (the
-/// engine's `REMOVED_FIELDS` in rbac_session.rs).
+/// Auth result fields that auth functions written before 0.26 may return;
+/// the proxy ignores them (the engine's `REMOVED_FIELDS` in rbac_session.rs).
 pub const REMOVED_AUTH_FIELDS: [&str; 2] =
     ["allowed_trigger_types", "allow_trigger_type_registration"];
 
@@ -1063,8 +1064,8 @@ mod tests {
         assert!(s.function_registration_prefix.is_none());
     }
 
-    /// An auth result written for an earlier proxy still parses: the fields
-    /// it no longer reads are ignored.
+    /// An auth result written before 0.26 parses, and its removed fields are
+    /// ignored.
     #[test]
     fn removed_auth_fields_are_ignored() {
         let mut raw = json!({ "allowed_functions": ["api::a"] });

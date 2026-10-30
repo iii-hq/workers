@@ -87,9 +87,9 @@ pub struct BootSignature {
 }
 
 impl WorkerConfig {
-    /// Parse a stored configuration. The `rbac` keys an earlier proxy read
-    /// ([`rbac::REMOVED_KEYS`]) are dropped with a `warn` first, so an entry
-    /// written for it still loads; every other unknown key is refused.
+    /// Parse a stored configuration. The `rbac` keys of entries stored before
+    /// 0.26 ([`rbac::REMOVED_KEYS`]) are dropped with a `warn` first, so such
+    /// an entry loads; every other unknown key is refused.
     pub fn from_json(value: &Value) -> Result<Self, String> {
         let mut value = value.clone();
         if let Some(rbac) = value.get_mut("rbac") {
@@ -106,9 +106,9 @@ impl WorkerConfig {
     /// built-in default attached as the top-level `example` (mirrors
     /// approval-gate / context-manager).
     ///
-    /// The `rbac` keys an earlier proxy read ([`rbac::REMOVED_KEYS`]) stay in
-    /// the schema as deprecated and ignored, so a stored entry that sets one
-    /// still validates and [`from_json`](Self::from_json) can drop it.
+    /// The `rbac` keys of entries stored before 0.26 ([`rbac::REMOVED_KEYS`])
+    /// are in the schema as deprecated and ignored, so a stored entry that
+    /// sets one validates and [`from_json`](Self::from_json) can drop it.
     pub fn json_schema() -> Value {
         let root = schemars::schema_for!(WorkerConfig);
         let mut schema =
