@@ -311,6 +311,52 @@ def test_rust_companions_ship_beside_the_binary_as_plain_files(
     assert modes == {binary_name: 0o755, library: 0o644, module: 0o644}
 
 
+def test_rust_prebuild_features_and_entitlements_drive_the_build(tmp_path: Path, monkeypatch) -> None:
+    source_sha = "a" * 40
+    target = "aarch64-apple-darwin"
+    release = tmp_path / "smoke" / "target" / target / "release"
+    release.mkdir(parents=True)
+    (tmp_path / "smoke" / "Cargo.toml").write_text("[package]\nname='smoke'\n", encoding="utf-8")
+    (release / "smoke").write_bytes(b"smoke")
+    selected = rust_descriptor("smoke", source_sha, [target])
+    selected["artifact"].update(
+        features=["embed-init", "embed-libkrunfw"],
+        prebuild=["scripts/build-init.sh"],
+        macos_entitlements="entitlements.plist",
+    )
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(seal_descriptor(selected)), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    codesign_report = ["com.apple.security.hypervisor"]
+
+    def fake_check_output(command, **kwargs):
+        if command[:2] == ["git", "rev-parse"]:
+            return source_sha + "\n"
+        assert command[:3] == ["codesign", "-d", "--entitlements"]
+        return codesign_report[0]
+
+    monkeypatch.setattr(deployment_train.subprocess, "check_output", fake_check_output)
+    monkeypatch.setattr(deployment_train, "run", lambda *command, **kwargs: calls.append((command, kwargs)))
+    args = argparse.Namespace(descriptor=descriptor_path, unit=f"smoke-{target}", out=tmp_path / "out")
+
+    build(args)
+
+    source_dir = Path("smoke")
+    prebuild, cargo, codesign = calls
+    assert prebuild[0] == ("scripts/build-init.sh",)
+    assert prebuild[1]["cwd"] == source_dir and prebuild[1]["env"]["BUILD_TARGET"] == target
+    assert cargo[0][:2] == ("cargo", "build") and cargo[0][-2:] == ("--features", "embed-init,embed-libkrunfw")
+    assert codesign[0] == (
+        "codesign", "--sign", "-", "--entitlements", str(source_dir / "entitlements.plist"),
+        "--force", str(source_dir / "target" / target / "release" / "smoke"),
+    )
+
+    codesign_report[0] = ""
+    with pytest.raises(SystemExit, match="hypervisor"):
+        build(args)
+
+
 def test_javascript_bundle_preserves_compiler_owned_include_path(tmp_path: Path, monkeypatch) -> None:
     source_sha = "a" * 40
     source = tmp_path / "worker"
