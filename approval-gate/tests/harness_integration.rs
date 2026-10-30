@@ -1,10 +1,11 @@
 //! Cross-worker integration: real `harness` + in-process approval-gate on a
-//! live engine. Self-skips when `iii` or the harness binary is unavailable.
+//! live engine. Self-skips when the engine, the state worker or the harness
+//! binary (`CARGO_BIN_EXE_harness`) is unavailable.
 
 use std::collections::BTreeMap;
 
 use approval_gate::testkit::{
-    boot, call, engine_bin, hook_input, spawn_engine, state_get, state_set, BootOpts,
+    boot, call, hook_input, require_engine, stack_unavailable, state_get, state_set, BootOpts,
 };
 use iii_sdk::RegisterFunction;
 use serde_json::json;
@@ -14,18 +15,17 @@ where
     F: FnOnce(approval_gate::testkit::TestStack) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    if engine_bin().is_none() {
-        eprintln!("skipping: no iii engine");
+    if let Some(reason) = stack_unavailable() {
+        eprintln!("skipping: {reason}");
         return;
     }
-    let Some(engine) = spawn_engine().await else {
-        eprintln!("skipping: failed to spawn engine");
-        return;
-    };
     if std::env::var("CARGO_BIN_EXE_harness").is_err() {
         eprintln!("skipping: harness binary not built for integration tests");
         return;
     }
+    let Some(engine) = require_engine().await else {
+        return;
+    };
     let stack = boot(&engine, opts).await;
     f(stack).await;
 }

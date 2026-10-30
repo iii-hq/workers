@@ -228,17 +228,23 @@ agent allow-lists too.
 
 ```bash
 cargo test                                   # lib suites: pure unit + engine-backed handlers
-cargo test --test integration               # engine-backed; self-skips without `iii`
+cargo test --test integration               # engine-backed; self-skips without the engine and state binaries
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ./target/debug/approval-gate --manifest      # registry-publish manifest
 ```
 
-The integration suite spawns a real engine (`III_ENGINE_BIN` or `iii` on
-PATH) with `configuration` + `state`, registers the production surface
-in-process, and fakes sibling RPCs where noted (`session::get`). With the
-harness binary available, `tests/harness_integration.rs` additionally boots the
-real harness worker for cross-worker hold / sweep / resolve checks.
+The engine-backed suites spawn a real engine (`III_ENGINE_BIN` or `iii` on
+PATH) with its `configuration` worker, run this repo's standalone `state`
+worker beside it (`III_STATE_BIN`, built with `cargo build` in `state/`),
+register the production surface in-process, and fake sibling RPCs where noted
+(`session::get`). With `CARGO_BIN_EXE_harness` pointing at a built harness
+binary, `tests/harness_integration.rs` additionally boots the real harness
+worker for cross-worker hold / sweep / resolve checks.
+
+```bash
+III_ENGINE_BIN=$(command -v iii) III_STATE_BIN=../state/target/debug/state cargo test
+```
 
 ## Architecture documentation
 
