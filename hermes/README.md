@@ -91,7 +91,7 @@ hermes_executable: ""               # path to the hermes CLI; empty = resolve on
 inbound_api_path: /hermes/inbound   # path of the http::on-request route the gateway delivers to
 ```
 
-The event feeds have fixed function ids (`hermes::on-agent-event`, `hermes::on-raw-event`), so there is nothing to configure for them. The former `events_stream` / `raw_events_stream` keys are ignored if an older config still carries them.
+The event feeds have fixed function ids (`hermes::on-agent-event`, `hermes::on-raw-event`), so there is nothing to configure for them. `events_stream` and `raw_events_stream` keys in a config are accepted and ignored.
 
 ## Event feeds
 

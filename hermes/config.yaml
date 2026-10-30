@@ -11,8 +11,8 @@ defaults:
 
 # Turn frames are delivered on the functions hermes::on-agent-event
 # (normalized AgentEvent frames) and hermes::on-raw-event (raw Hermes frames);
-# consumers observe them with args { session_id }. They have fixed ids,
-# nothing to configure here (legacy keys for the old feed names are ignored).
+# consumers observe them with args { session_id }. Their ids are fixed;
+# nothing here configures them.
 
 # Prepend the iii runtime context to the prompt on a fresh session: teaches the
 # agent live discovery against the engine catalog through the iii CLI

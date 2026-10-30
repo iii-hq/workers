@@ -27,11 +27,9 @@ DEFAULTS: dict[str, Any] = {
     "inbound_api_path": "/hermes/inbound",
 }
 
-# Stream names of the removed iii-stream feeds. Configs written before the
-# feeds were fixed functions (`hermes::on-agent-event` /
-# `hermes::on-raw-event`) may still carry them; they load fine and are
-# dropped.
-LEGACY_CONFIG_KEYS = ("events_stream", "raw_events_stream")
+# Keys a config may carry that name no setting: they load and are dropped.
+# The feeds are the functions `hermes::on-agent-event` / `hermes::on-raw-event`.
+IGNORED_CONFIG_KEYS = ("events_stream", "raw_events_stream")
 
 RUN_REQUEST_FORMAT = {
     "type": "object",
@@ -118,7 +116,7 @@ def load_config() -> dict[str, Any]:
         raw = yaml.safe_load(path.read_text()) or {}
     except FileNotFoundError:
         raw = {}
-    cfg.update({k: v for k, v in raw.items() if k != "defaults" and k not in LEGACY_CONFIG_KEYS})
+    cfg.update({k: v for k, v in raw.items() if k != "defaults" and k not in IGNORED_CONFIG_KEYS})
     cfg["defaults"].update(raw.get("defaults") or {})
     return cfg
 
