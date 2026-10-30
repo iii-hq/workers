@@ -426,6 +426,83 @@ async fn one_of_two_native_observers_leaving_keeps_the_other_hearing() {
     db.iii.shutdown_async().await;
 }
 
+/// A consumer back on a new connection (a restart) observes under the id it
+/// used before. Its first connection's observer is suspended and withdrawn
+/// from the host, which releases its hold on the table's capture; the
+/// engine replaces the suspended observer with the new one (same worker
+/// name, same namespace) and announces it, and the host's added hook admits
+/// it again. The consumer keeps its id and hears each write once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_consumer_back_under_its_observer_id_keeps_hearing() {
+    let Some(url) = engine_url() else {
+        return eprintln!("skipping: III_TEST_ENGINE_URL not set");
+    };
+    let ns = namespace("stable-id");
+    let db = DatabaseWorker::start(&url, &ns, &["native:watched"]).await;
+    db.sql(
+        "primary",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)",
+    )
+    .await;
+    let file = db.dir.path().join("primary.db");
+    // Observer ids are engine-wide, across namespaces: the id carries the
+    // test's namespace, so it is the same across this test's restart and
+    // fresh on every run against the same engine.
+    let id = format!("consumer-orders-{ns}");
+    let observe = |consumer: &IIIClient| {
+        consumer.observe_with(
+            Source::function("database::on-row-changed")
+                .args(json!({ "db": "watched", "table": "orders" }))
+                .deliver(iii_sdk::Deliver::Input),
+            "consumer::orders",
+            ObserverOptions::default().id(id.clone()),
+        )
+    };
+
+    let first = client(&url, &ns, "consumer");
+    let mut before = sink(&first, "consumer::orders");
+    observe(&first).ready().await.unwrap();
+    eventually("the observer on the host", || {
+        db.capture.observer_count() == 1
+    })
+    .await;
+    external_insert(file.clone(), 1).await;
+    assert_eq!(
+        next(&mut before, "before the restart").await["returning"][0]["id"],
+        1
+    );
+
+    // The consumer's process goes away without disposing its observer.
+    first.shutdown_async().await;
+    eventually("the suspended observer withdrawn from the host", || {
+        db.capture.observer_count() == 0
+    })
+    .await;
+
+    let second = client(&url, &ns, "consumer");
+    let mut after = sink(&second, "consumer::orders");
+    let handle = observe(&second);
+    handle
+        .ready()
+        .await
+        .expect("the same worker replaces its suspended observer");
+    assert_eq!(handle.id(), id);
+    eventually("the observer back on the host", || {
+        db.capture.observer_count() == 1
+    })
+    .await;
+    external_insert(file, 2).await;
+    assert_eq!(
+        next(&mut after, "after the restart").await["returning"][0]["id"],
+        2
+    );
+    silent(&mut after, "one event per write").await;
+    silent(&mut before, "the connection that left").await;
+    handle.dispose().await.unwrap();
+    second.shutdown_async().await;
+    db.iii.shutdown_async().await;
+}
+
 /// Engine-side `args_format` and the added hook's checks reject bad args at
 /// creation, so the observer's `ready()` fails with the reason.
 #[tokio::test(flavor = "multi_thread")]
@@ -581,7 +658,8 @@ async fn config_reload_installs_capture_for_existing_observers() {
     db.iii.shutdown_async().await;
 }
 
-/// A transaction's statements arrive in commit order; a rollback emits nothing.
+/// An observer with `max_in_flight: 1` receives a transaction's statements in
+/// commit order; a rollback emits nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn commit_order_and_rollback() {
     let Some(url) = engine_url() else {

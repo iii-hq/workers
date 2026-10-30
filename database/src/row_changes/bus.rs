@@ -322,8 +322,8 @@ impl RowChangeBus {
         // `database::execute` / `commitTransaction` handler, or a native
         // listener task), so that invocation is the call's caller. Nobody
         // observing this db, table and op: no serialization, no call, no
-        // frames. Awaited, so a transaction's statements reach observers in
-        // commit order.
+        // frames. Awaited, so a transaction's statements reach iii's delivery
+        // in commit order (a target can receive them in any order).
         self.capture.call(&event).await;
     }
 }

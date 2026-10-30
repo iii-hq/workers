@@ -224,4 +224,7 @@ changed rows' primary keys, capped at 100 with `truncated: true` past that.
 `table` is null when the statement's table cannot be read off the SQL (a
 CTE-wrapped write), and `runStatement` does not fire on the statements path
 because it has no affected-row count to report. Delivery is best-effort: it
-is not durable with the commit and has no replay or exactly-once guarantee.
+is not durable with the commit and has no replay or exactly-once guarantee,
+and a target can receive events in any order (an observer with
+`max_in_flight: 1` receives them one at a time, a transaction's statements
+in commit order).

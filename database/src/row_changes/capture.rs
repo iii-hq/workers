@@ -246,7 +246,9 @@ impl NativeCapture {
     /// The call runs in-process (the handler returns the event) and iii's
     /// delivery does not wait for the observers' targets; `call_timeout_ms`
     /// bounds the round trip when the engine has not yet confirmed
-    /// in-process calls.
+    /// in-process calls. Each delivery is a call of the target of its own,
+    /// so a target can receive the events in any order; an observer with
+    /// `max_in_flight: 1` receives them in the order of these calls.
     pub async fn call(&self, event: &RowChangedEvent) {
         let Some(function) = self.function.get() else {
             return;
@@ -621,10 +623,8 @@ impl NativeCapture {
                         pg_install_hint(&text, table)
                     ))
                 };
-                // Every install replaces the SAME notify function, including
-                // installs for different tables. Concurrent CREATE OR REPLACE
-                // can fail with `tuple concurrently updated`. A DB-scoped lock
-                // coordinates separate pools/processes too.
+                // Installs of the shared notify function are serialized
+                // across pools and processes (`INSTALL_LOCK_SQL`).
                 let transaction = client
                     .build_transaction()
                     .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
@@ -632,7 +632,7 @@ impl NativeCapture {
                     .await
                     .map_err(pg_error)?;
                 transaction
-                    .batch_execute("SELECT pg_advisory_xact_lock(1768515886, 1919907683)")
+                    .batch_execute(native::INSTALL_LOCK_SQL)
                     .await
                     .map_err(pg_error)?;
                 transaction.batch_execute(&sql).await.map_err(pg_error)?;
@@ -1266,7 +1266,11 @@ mod tests {
         assert_eq!(triggers().await, 0);
 
         reload(&capture, config(true), true).await;
-        assert!(rejections.lock().unwrap().is_empty());
+        assert!(
+            rejections.lock().unwrap().is_empty(),
+            "{:?}",
+            rejections.lock().unwrap()
+        );
         assert_eq!(
             holds(&capture, "o1"),
             Some(("p".to_string(), table.clone()))
