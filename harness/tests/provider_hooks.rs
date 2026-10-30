@@ -154,6 +154,15 @@ impl Engine {
         .await
     }
 
+    /// The `invocationsobserved` items of `function_id`'s calls.
+    fn observed_calls(&self, function_id: &str) -> Vec<Value> {
+        self.frames(|frame| frame["type"] == "invocationsobserved")
+            .iter()
+            .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+            .filter(|item| item["function_id"] == function_id)
+            .collect()
+    }
+
     /// The function ids the harness called through observers.
     fn called_targets(&self) -> Vec<String> {
         self.frames(|frame| frame["type"] == "invokefunction")
@@ -168,6 +177,15 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
+}
+
+fn matched(item: &Value) -> Vec<&str> {
+    item["matched"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -264,6 +282,39 @@ async fn a_timer_past_seven_days_is_refused_and_the_last_removal_cancels_its_one
         2,
         "the first instant's last observer took its one-shot with it"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_observers_of_a_past_instant_share_one_call() {
+    let engine = Engine::start().await;
+    let at = now_ms() - 1_000;
+    for id in ["late-1", "late-2"] {
+        engine.push(host::observer_added(
+            id,
+            ON_TIMER_FN,
+            "test::wake",
+            json!({ "at": at }),
+            json!({}),
+        ));
+    }
+    assert!(engine.ack("late-1").await.get("error").is_none());
+    assert!(engine.ack("late-2").await.get("error").is_none());
+    engine
+        .frame("the late timer call", |frame| {
+            frame["type"] == "invocationsobserved"
+                && frame["items"]
+                    .as_array()
+                    .is_some_and(|items| items.iter().any(|i| i["function_id"] == ON_TIMER_FN))
+        })
+        .await;
+    // Room for a second call, were there one.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let calls = engine.observed_calls(ON_TIMER_FN);
+    assert_eq!(calls.len(), 1, "one call for the instant: {calls:?}");
+    let mut reached = matched(&calls[0]);
+    reached.sort_unstable();
+    assert_eq!(reached, vec!["late-1", "late-2"]);
+    assert_eq!(calls[0]["input"]["scheduled_at"], json!(at));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
