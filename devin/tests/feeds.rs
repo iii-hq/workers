@@ -83,7 +83,7 @@ async fn turn_frames_flow_unchanged_through_the_owned_feeds() {
 }
 
 #[test]
-fn retired_stream_keys_still_load_and_are_ignored() {
+fn stream_name_keys_load_and_are_ignored() {
     let stored = json!({
         "devin_executable": "/opt/devin",
         "events_stream": "agent::events",

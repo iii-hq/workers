@@ -32,11 +32,9 @@ devin_executable: ""
 # restrict the local agent.
 cli_extra_args: ["--permission-mode", "dangerous"]
 
-# Event feeds are fixed functions, not configurable streams: observe
-# `devin::on-agent-event` (terminal AgentEvent frames) or
+# Event feeds: observe `devin::on-agent-event` (terminal AgentEvent frames) or
 # `devin::on-raw-event` (verbatim CLI stdout lines) with args { session_id }.
-# The retired events_stream / raw_events_stream keys are ignored if still
-# present.
+# `events_stream` and `raw_events_stream` keys are accepted and ignored.
 
 # Prepend the iii runtime context to a devin::run prompt so the agent discovers
 # engine functions through the iii CLI, the same as the grok and codex workers.
