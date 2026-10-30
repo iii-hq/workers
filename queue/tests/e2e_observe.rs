@@ -14,7 +14,10 @@ use iii_queue::on_message::ON_MESSAGE_FN;
 use iii_queue::subscribers::Subscribers;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{CallRequest, IIIClient, InitOptions, RegisterFunction, Source, WorkerIdentityMode};
+use iii_sdk::{
+    CallRequest, IIIClient, InitOptions, ObserverHandle, ObserverOptions, RegisterFunction, Source,
+    WorkerIdentityMode,
+};
 use serde_json::{json, Value};
 use serial_test::serial;
 use tokio::time::Instant;
@@ -303,6 +306,242 @@ async fn a_failing_observer_target_is_retried_then_dead_lettered_connect_or_skip
     }
     assert_eq!(dead, 1, "one dead-lettered message");
     assert_eq!(count(&attempts), 2, "two attempts with max_retries: 2");
+
+    observer.dispose().await.expect("dispose");
+    boot.shutdown().await;
+    consumer.shutdown_async().await;
+    worker.shutdown_async().await;
+}
+
+/// Publish `{ "n": n }` to `topic`.
+async fn publish(iii: &IIIClient, topic: &str, n: i64, namespace: &str) {
+    call(
+        iii,
+        PUBLISH_FN_ID,
+        json!({ "topic": topic, "data": { "n": n } }),
+        namespace,
+    )
+    .await;
+}
+
+/// The messages in `topic`'s DLQ.
+async fn dead_letters(iii: &IIIClient, topic: &str, namespace: &str) -> usize {
+    call(
+        iii,
+        DLQ_MESSAGES_FN_ID,
+        json!({ "queue": topic, "limit": 100 }),
+        namespace,
+    )
+    .await
+    .as_array()
+    .map(Vec::len)
+    .unwrap_or_default()
+}
+
+/// A member of the consumer group `billing` on `topic`, observing under the
+/// stable id `id`.
+fn join_group(iii: &IIIClient, topic: &str, id: &str, target: &str) -> ObserverHandle {
+    iii.observe_with(
+        Source::function(ON_MESSAGE_FN).args(json!({
+            "topic": topic,
+            "group": "billing",
+            "max_retries": 10,
+            "backoff_ms": 20,
+        })),
+        target,
+        ObserverOptions::default().id(id),
+    )
+}
+
+async fn active(observer: &ObserverHandle) {
+    tokio::time::timeout(Duration::from_secs(5), observer.ready())
+        .await
+        .expect("observer ready in time")
+        .expect("observer active");
+}
+
+fn messages(range: std::ops::RangeInclusive<i64>) -> Vec<Value> {
+    range.map(|n| json!({ "n": n })).collect()
+}
+
+/// Two members of one consumer group, and the one the group delivers into
+/// is killed: the engine withdraws its observer from the queue worker when
+/// its connection closes, the group's subscription moves to the member that
+/// stays, and every message published after the kill reaches that member
+/// once, with nothing dead-lettered. While the killed member is away its
+/// stable id is taken for any other worker; back on a new connection under
+/// the same worker name, its observe under that id replaces the suspended
+/// observer and it rejoins the group, which still handles each message once.
+#[tokio::test]
+#[serial]
+async fn a_killed_consumer_group_member_leaves_every_later_message_to_the_live_member_connect_or_skip(
+) {
+    let namespace = format!("queue-e2e-group-{}", Uuid::new_v4());
+    let Some(worker) = connect(&namespace, "queue").await else {
+        return;
+    };
+    let Some(member_a) = connect(&namespace, "member-a").await else {
+        worker.shutdown_async().await;
+        return;
+    };
+    let Some(member_b) = connect(&namespace, "member-b").await else {
+        member_a.shutdown_async().await;
+        worker.shutdown_async().await;
+        return;
+    };
+    if member_b.engine_supports_observe() != Some(true) {
+        eprintln!("[skip] engine without observe");
+        member_b.shutdown_async().await;
+        member_a.shutdown_async().await;
+        worker.shutdown_async().await;
+        return;
+    }
+    let boot = iii_queue::boot::start(worker.clone(), QueueConfig::default())
+        .await
+        .expect("queue worker should boot");
+
+    let topic = format!("billing-{}", Uuid::new_v4().simple());
+    let via_a = register_target(&member_a, "e2e::billing::a", false);
+    let via_b = register_target(&member_b, "e2e::billing::b", false);
+    // Member A joins first, so the group's one subscription delivers into it.
+    let a = join_group(&member_a, &topic, "billing-member-a", "e2e::billing::a");
+    active(&a).await;
+    wait_for_subscribers(&boot.subscribers, &topic, 1).await;
+    let b = join_group(&member_b, &topic, "billing-member-b", "e2e::billing::b");
+    active(&b).await;
+    wait_for_subscribers(&boot.subscribers, &topic, 2).await;
+
+    publish(&member_b, &topic, 0, &namespace).await;
+    wait_for("the group's first delivery", || count(&via_a) == 1).await;
+    assert_eq!(count(&via_b), 0, "the group delivers into one member");
+
+    // Member A dies: its connection closes and its observer is never
+    // disposed (suspended for the engine's grace period).
+    member_a.shutdown_async().await;
+    for n in 1..=5 {
+        publish(&member_b, &topic, n, &namespace).await;
+    }
+    wait_for("the live member's deliveries", || count(&via_b) == 5).await;
+    wait_for_subscribers(&boot.subscribers, &topic, 1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(data(&via_b), messages(1..=5), "each message once");
+    assert_eq!(count(&via_a), 1, "nothing for the member that is away");
+    assert_eq!(dead_letters(&member_b, &topic, &namespace).await, 0);
+
+    // Its id stays taken for any other worker until the grace period ends.
+    let squatter = join_group(&member_b, &topic, "billing-member-a", "e2e::billing::b");
+    let conflict = tokio::time::timeout(Duration::from_secs(5), squatter.ready())
+        .await
+        .expect("answered in time")
+        .expect_err("another worker cannot take a suspended observer's id");
+    assert!(
+        conflict.to_string().contains("OBSERVER_ID_CONFLICT"),
+        "{conflict}"
+    );
+
+    // Member A restarts: a new connection under the same worker name, in the
+    // same namespace, observes under the same id and replaces the suspended
+    // observer; the queue worker files it with the group again.
+    let member_a = connect(&namespace, "member-a")
+        .await
+        .expect("member A reconnects");
+    let via_a_again = register_target(&member_a, "e2e::billing::a", false);
+    let a_again = join_group(&member_a, &topic, "billing-member-a", "e2e::billing::a");
+    active(&a_again).await;
+    wait_for_subscribers(&boot.subscribers, &topic, 2).await;
+
+    for n in 6..=8 {
+        publish(&member_b, &topic, n, &namespace).await;
+    }
+    wait_for("the group's later deliveries", || {
+        count(&via_a_again) + count(&via_b) == 8
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut later: Vec<Value> = data(&via_a_again)
+        .into_iter()
+        .chain(data(&via_b).into_iter().skip(5))
+        .collect();
+    later.sort_by_key(|payload| payload["n"].as_i64());
+    assert_eq!(
+        later,
+        messages(6..=8),
+        "the group handles each message once"
+    );
+    assert_eq!(dead_letters(&member_b, &topic, &namespace).await, 0);
+
+    a_again.dispose().await.expect("dispose");
+    b.dispose().await.expect("dispose");
+    boot.shutdown().await;
+    member_a.shutdown_async().await;
+    member_b.shutdown_async().await;
+    worker.shutdown_async().await;
+}
+
+/// A consumer outside a group, observing under a stable id, dies with
+/// messages it has not acked (each failed once and waits for its retry). Its
+/// worker restarts on a new connection under the same worker name, in the
+/// same namespace, and observes under the same id: the new observer replaces
+/// the one left behind, reattaches to the same durable queue, and receives
+/// that backlog once.
+#[tokio::test]
+#[serial]
+async fn a_restarted_consumer_observing_under_its_stable_id_receives_its_backlog_connect_or_skip() {
+    let namespace = format!("queue-e2e-restart-{}", Uuid::new_v4());
+    let Some(worker) = connect(&namespace, "queue").await else {
+        return;
+    };
+    let Some(consumer) = connect(&namespace, "consumer").await else {
+        worker.shutdown_async().await;
+        return;
+    };
+    if consumer.engine_supports_observe() != Some(true) {
+        eprintln!("[skip] engine without observe");
+        consumer.shutdown_async().await;
+        worker.shutdown_async().await;
+        return;
+    }
+    let boot = iii_queue::boot::start(worker.clone(), QueueConfig::default())
+        .await
+        .expect("queue worker should boot");
+
+    let topic = format!("orders-{}", Uuid::new_v4().simple());
+    let subscribe = |iii: &IIIClient| {
+        iii.observe_with(
+            Source::function(ON_MESSAGE_FN).args(json!({
+                "topic": topic,
+                "max_retries": 5,
+                "backoff_ms": 1_500,
+            })),
+            "e2e::orders::stable",
+            ObserverOptions::default().id("orders-stable"),
+        )
+    };
+    let failed = register_target(&consumer, "e2e::orders::stable", true);
+    active(&subscribe(&consumer)).await;
+    wait_for_subscribers(&boot.subscribers, &topic, 1).await;
+    for n in 1..=3 {
+        publish(&consumer, &topic, n, &namespace).await;
+    }
+    wait_for("each message's first, failed delivery", || {
+        count(&failed) == 3
+    })
+    .await;
+
+    consumer.shutdown_async().await;
+    wait_for_subscribers(&boot.subscribers, &topic, 0).await;
+
+    let consumer = connect(&namespace, "consumer")
+        .await
+        .expect("the consumer reconnects");
+    let delivered = register_target(&consumer, "e2e::orders::stable", false);
+    let observer = subscribe(&consumer);
+    active(&observer).await;
+    wait_for_subscribers(&boot.subscribers, &topic, 1).await;
+    wait_for("the backlog's retries", || count(&delivered) == 3).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(data(&delivered), messages(1..=3), "each message once");
+    assert_eq!(dead_letters(&consumer, &topic, &namespace).await, 0);
 
     observer.dispose().await.expect("dispose");
     boot.shutdown().await;
