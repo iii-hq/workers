@@ -13,8 +13,7 @@ use std::time::Duration;
 
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, Error, IIIClient, InitOptions, RegisterFunction,
-    Source,
+    register_worker, CallRequest, Deliver, Error, IIIClient, InitOptions, RegisterFunction, Source,
 };
 use memory::config::WorkerConfig;
 use memory::deps::Deps;
@@ -250,8 +249,14 @@ async fn change_functions_register_private_and_deliver_writes_to_bank_filtered_o
 
     // Nothing from the `other` bank reached either observer.
     sleep(Duration::from_millis(500)).await;
-    assert!(items.try_recv().is_err(), "an unfiltered item event arrived");
-    assert!(banks.try_recv().is_err(), "an unfiltered bank event arrived");
+    assert!(
+        items.try_recv().is_err(),
+        "an unfiltered item event arrived"
+    );
+    assert!(
+        banks.try_recv().is_err(),
+        "an unfiltered bank event arrived"
+    );
 
     // Without observers, the gate the emitter checks is closed again.
     item_observer.dispose().await.expect("dispose");
