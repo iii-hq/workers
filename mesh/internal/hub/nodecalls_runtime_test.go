@@ -274,7 +274,7 @@ func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *test
 	if err := client.Connect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	driveHost := newHubDriveHost()
+	driveHost := newHubDriveHost(t)
 	workers, drives := &signedWorkers{}, &signedDrives{controller: realDriveController(t, driveHost)}
 	n, err := node.New(node.Options{Mesh: signedNetwork{}, HubIdentity: h.Coordinator.Identity().Public().(ed25519.PublicKey), Version: h.Version, Operator: "alice", Workers: workers, Drives: drives})
 	if err != nil {

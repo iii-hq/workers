@@ -36,6 +36,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/iii-hq/workers/mesh/internal/supervisor"
 )
 
 // Host is the privileged OS boundary. Run must honor cancellation and execute
@@ -53,6 +55,14 @@ type Host interface {
 	Mounts(context.Context) (map[string]string, error)
 	Reach(context.Context, netip.Addr, string) bool
 }
+
+// LogonHost binds every Windows operator command, including enumeration, to one
+// authenticated logon. Implementations revalidate that identity at each launch.
+type LogonHost interface {
+	CaptureLogon() (supervisor.OperatorLogon, error)
+	BindLogon(supervisor.OperatorLogon) error
+}
+
 type Command struct {
 	Program   string
 	Args      []string
@@ -71,10 +81,11 @@ type ownedMount struct {
 	Host   string `json:"host,omitempty"`
 }
 type journal struct {
-	Mounts map[string]ownedMount `json:"mounts"`
-	Server bool                  `json:"server"`
-	Users  []string              `json:"users,omitempty"`
-	Masks  []string              `json:"masks,omitempty"`
+	Logon  *supervisor.OperatorLogon `json:"logon,omitempty"`
+	Mounts map[string]ownedMount     `json:"mounts"`
+	Server bool                      `json:"server"`
+	Users  []string                  `json:"users,omitempty"`
+	Masks  []string                  `json:"masks,omitempty"`
 }
 type Manager struct {
 	mu            sync.Mutex
@@ -102,6 +113,14 @@ func NewWithHost(o Options, h Host) (*Manager, error) {
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
+	}
+	if m.owned.Logon != nil {
+		if o.Platform != "windows" {
+			return nil, errors.New("unexpected Windows logon ownership")
+		}
+		if err := m.owned.Logon.Validate(); err != nil {
+			return nil, fmt.Errorf("drive ownership journal: %w", err)
+		}
 	}
 	if m.owned.Mounts == nil {
 		m.owned.Mounts = map[string]ownedMount{}
@@ -240,7 +259,7 @@ func validate(d Desired) error {
 	}
 	seen = map[string]bool{}
 	for _, mt := range d.Mount {
-		if !ValidDrive(mt.Name) || seen[mt.Name] || !ValidDrive(mt.Server) || mt.Host != mt.Server+".iii.internal" || !d.Prefix.Contains(mt.Addr) || !validCredential(mt.SMB) {
+		if !ValidDrive(mt.Name) || seen[mt.Name] || !ValidNode(mt.Server) || mt.Host != mt.Server+".iii.internal" || !d.Prefix.Contains(mt.Addr) || !validCredential(mt.SMB) {
 			return errors.New("invalid drive mount")
 		}
 		seen[mt.Name] = true
@@ -266,7 +285,7 @@ func validCredential(s *SMB) bool {
 }
 func (m *Manager) validOwned(r ownedMount) bool {
 	if m.opts.Platform == "windows" {
-		return len(r.Target) == 2 && r.Target[0] >= 'D' && r.Target[0] <= 'W' && r.Target[1] == ':' && strings.HasSuffix(r.Host, ".iii.internal") && ValidDrive(strings.TrimSuffix(r.Host, ".iii.internal")) && r.Source == `\\`+r.Host+`\`+r.Name
+		return len(r.Target) == 2 && r.Target[0] >= 'D' && r.Target[0] <= 'W' && r.Target[1] == ':' && strings.HasSuffix(r.Host, ".iii.internal") && ValidNode(strings.TrimSuffix(r.Host, ".iii.internal")) && r.Source == `\\`+r.Host+`\`+r.Name
 	}
 	if r.Target != mountTarget(m.opts.Platform, r.Name) {
 		return false
@@ -279,7 +298,7 @@ func (m *Manager) validOwned(r ownedMount) bool {
 		a, err := netip.ParseAddr(strings.TrimPrefix(host, "["))
 		return m.opts.Platform == "linux" && err == nil && a.Is6() && a.As16()[0] == 0xfd && path == exportPath(r.Name)
 	}
-	return m.opts.Platform == "darwin" && r.Source == r.Host+":"+exportPath(r.Name) && strings.HasSuffix(r.Host, ".iii.internal") && ValidDrive(strings.TrimSuffix(r.Host, ".iii.internal"))
+	return m.opts.Platform == "darwin" && r.Source == r.Host+":"+exportPath(r.Name) && strings.HasSuffix(r.Host, ".iii.internal") && ValidNode(strings.TrimSuffix(r.Host, ".iii.internal"))
 }
 func exportPath(name string) string { return "/srv/iii-mesh/" + name }
 func mountTarget(platform, name string) string {
@@ -296,6 +315,11 @@ func (m *Manager) reconcile(ctx context.Context, d Desired, force bool) []Result
 	results := m.serve(ctx, d)
 	if len(d.Mount) == 0 && len(m.owned.Mounts) == 0 {
 		return results
+	}
+	if m.opts.Platform == "windows" {
+		if err := m.bindLogon(); err != nil {
+			return append(results, Result{State: "error", Error: err.Error()})
+		}
 	}
 	at, err := m.host.Mounts(ctx)
 	if err != nil {
@@ -321,7 +345,43 @@ func (m *Manager) reconcile(ctx context.Context, d Desired, force bool) []Result
 		served := slices.ContainsFunc(results, func(r Result) bool { return r.Name == mt.Name && r.Serve && r.State == "serving" })
 		results = append(results, m.mount(ctx, mt, own, served, at))
 	}
+	if m.opts.Platform == "windows" && len(m.owned.Mounts) == 0 && m.owned.Logon != nil {
+		saved := m.owned.Logon
+		m.owned.Logon = nil
+		if err := m.save(); err != nil {
+			m.owned.Logon = saved
+			results = append(results, Result{State: "error", Error: err.Error()})
+		}
+	}
 	return results
+}
+
+func (m *Manager) bindLogon() error {
+	if len(m.owned.Mounts) > 0 && m.owned.Logon == nil {
+		return errors.New("owned Windows mappings lack an original logon identity; refusing session inference")
+	}
+	h, ok := m.host.(LogonHost)
+	if !ok {
+		return errors.New("Windows drives require an authenticated logon boundary")
+	}
+	var l supervisor.OperatorLogon
+	if len(m.owned.Mounts) == 0 {
+		var err error
+		l, err = h.CaptureLogon()
+		if err != nil {
+			return err
+		}
+	} else {
+		l = *m.owned.Logon
+	}
+	if err := l.Validate(); err != nil {
+		return err
+	}
+	if err := h.BindLogon(l); err != nil {
+		return err
+	}
+	m.owned.Logon = &l
+	return nil
 }
 func (m *Manager) source(mt Mount, own bool) string {
 	if m.opts.Platform == "windows" {

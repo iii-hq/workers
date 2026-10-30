@@ -65,3 +65,7 @@ var driveName = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 func ValidDrive(name string) bool {
 	return len(name) > 0 && len(name) <= 31 && driveName.MatchString(name)
 }
+
+var nodeName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
+
+func ValidNode(name string) bool { return nodeName.MatchString(name) }

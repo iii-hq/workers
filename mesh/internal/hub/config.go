@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/iii-hq/workers/mesh/internal/drives"
 	"io"
 	"net"
 	"net/netip"
@@ -82,7 +83,7 @@ func (c Config) Validate() error {
 		}
 	}
 	for name, d := range c.Drives {
-		if !namePattern.MatchString(name) || !namePattern.MatchString(d.Server) {
+		if !drives.ValidDrive(name) || !drives.ValidNode(d.Server) {
 			return fmt.Errorf("invalid drive %q or server", name)
 		}
 		for _, n := range d.Nodes {

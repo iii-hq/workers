@@ -65,7 +65,21 @@ func New(stateDir, account string) (*Manager, error) {
 	return NewWithHost(o, &nativeHost{operator: op})
 }
 
-type nativeHost struct{ operator supervisor.Operator }
+type nativeHost struct {
+	operator supervisor.Operator
+	bound    *supervisor.Operator
+}
+
+func (h *nativeHost) CaptureLogon() (supervisor.OperatorLogon, error) {
+	return supervisor.CaptureOperatorLogon(h.operator)
+}
+func (h *nativeHost) BindLogon(l supervisor.OperatorLogon) error {
+	op, err := supervisor.BindOperatorLogon(h.operator, l)
+	if err == nil {
+		h.bound = &op
+	}
+	return err
+}
 
 func (h *nativeHost) Run(ctx context.Context, c Command) (string, error) {
 	limit := time.Minute
@@ -85,7 +99,14 @@ func (h *nativeHost) Run(ctx context.Context, c Command) (string, error) {
 	cmd.Stderr = &b
 	cmd.Stdin = strings.NewReader(c.Input)
 	if c.Operator {
-		err = supervisor.RunOperator(ctx, cmd, h.operator)
+		op := h.operator
+		if runtime.GOOS == "windows" {
+			if h.bound == nil {
+				return "", fmt.Errorf("Windows drive command requires an original logon binding")
+			}
+			op = *h.bound
+		}
+		err = supervisor.RunOperator(ctx, cmd, op)
 	} else {
 		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 		err = runPrivileged(cmd)

@@ -28,16 +28,15 @@ import (
 	"golang.org/x/sys/windows"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strings"
 )
-
-var netUseLine = regexp.MustCompile(`(?m)\s([A-Z]:)\s+(\\\\\S+)`)
 
 func commandPath(name string) (string, error) {
 	dir, err := windows.GetSystemDirectory()
 	if err != nil {
 		return "", err
+	}
+	if name == "powershell" {
+		return filepath.Join(dir, "WindowsPowerShell", "v1.0", "powershell.exe"), nil
 	}
 	return filepath.Join(dir, name+".exe"), nil
 }
@@ -46,19 +45,13 @@ func (h *nativeHost) Mounts(ctx context.Context) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	at := map[string]string{}
-	for _, m := range netUseLine.FindAllStringSubmatch(out, -1) {
-		at[strings.ToUpper(m[1])] = m[2]
-	}
-	disks, err := windows.GetLogicalDrives()
+	at := parseWindowsMappings(out)
+	out, err = h.Run(ctx, Command{Program: "powershell", Args: []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[System.IO.Directory]::GetLogicalDrives()"}, Operator: true})
 	if err != nil {
 		return nil, err
 	}
-	for l := 'A'; l <= 'Z'; l++ {
-		p := string(l) + ":"
-		if disks&(1<<(l-'A')) != 0 && at[p] == "" {
-			at[p] = "local disk"
-		}
+	if err = addWindowsDriveLetters(at, out); err != nil {
+		return nil, err
 	}
 	return at, nil
 }

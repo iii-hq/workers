@@ -84,3 +84,33 @@ func TestOperatorTokenBinding(t *testing.T) {
 		}
 	}
 }
+
+func TestBoundLogonFailurePreventsParentAndTargetLaunch(t *testing.T) {
+	saved := OperatorLogon{SID: "S-1-5-21-1-2-3-1001", SessionID: 2, AuthenticationID: 7, LogonTime: 133000000000000000}
+	for _, failure := range []string{"unavailable", "same SID different session", "session reused", "LUID reused"} {
+		t.Run(failure, func(t *testing.T) {
+			parent, target := false, false
+			_, err := startWithSessionParent(&exec.Cmd{}, func() (func(), error) {
+				if failure == "unavailable" {
+					return nil, errors.New("WTSQueryUserToken: session unavailable")
+				}
+				actual := saved
+				switch failure {
+				case "same SID different session":
+					actual.SessionID++
+				case "session reused":
+					actual.AuthenticationID++
+				case "LUID reused":
+					actual.LogonTime++
+				}
+				if err := validateOperatorLogon(saved, actual, false); err != nil {
+					return nil, err
+				}
+				return func() {}, nil
+			}, func() (func(), func(), error) { parent = true; return func() {}, func() {}, nil }, func(*exec.Cmd) error { target = true; return nil })
+			if err == nil || parent || target {
+				t.Fatal("mismatched logon reached launch", err, parent, target)
+			}
+		})
+	}
+}

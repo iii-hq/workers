@@ -169,6 +169,7 @@ func (m *Manager) setupServer(ctx context.Context, d Desired) error {
 	if m.serverApplied == string(signature) {
 		return m.command(ctx, "systemctl", "start", smbService)
 	}
+	m.serverApplied = ""
 	if m.owned.Server {
 		if _, err := m.host.ReadFile(smbUnit); err == nil {
 			if err = m.command(ctx, "systemctl", "stop", smbService); err != nil {
@@ -398,6 +399,7 @@ func (m *Manager) unmaskSamba(ctx context.Context) error {
 	return nil
 }
 func (m *Manager) unserve(ctx context.Context) error {
+	m.serverApplied = ""
 	if !m.owned.Server {
 		return nil
 	}

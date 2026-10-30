@@ -5,13 +5,17 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 	"github.com/iii-hq/workers/mesh/internal/meshnet"
 	"io/fs"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"tailscale.com/tsnet"
 	"testing"
@@ -22,96 +26,77 @@ import (
 )
 
 type hubDriveHost struct {
-	files       map[string][]byte
-	mounts      map[string]string
-	commands    []drives.Command
-	fail        string
-	occupied    string
-	unreachable bool
+	root   string
+	mounts map[string]string
+	fail   string
 }
 
-func newHubDriveHost() *hubDriveHost {
-	return &hubDriveHost{files: map[string][]byte{}, mounts: map[string]string{}}
+func newHubDriveHost(t *testing.T) *hubDriveHost {
+	return &hubDriveHost{root: t.TempDir(), mounts: map[string]string{}}
+}
+func (h *hubDriveHost) path(p string) string {
+	return filepath.Join(h.root, filepath.FromSlash(strings.TrimPrefix(p, "/")))
 }
 func (h *hubDriveHost) Run(_ context.Context, c drives.Command) (string, error) {
-	h.commands = append(h.commands, c)
 	if c.Program == h.fail {
 		return "", errors.New("injected " + c.Program + " failure")
 	}
-	if c.Program == "useradd" {
-		u := c.Args[len(c.Args)-1]
-		h.files["/etc/passwd"] = append(h.files["/etc/passwd"], []byte(u+":x:1001:1001:iii mesh drive client:/nonexistent:/usr/sbin/nologin\n")...)
+	if c.Operator || c.Sensitive || c.Input != "" {
+		return "", errors.New("self-serve fixture received an unexpected operator/credential command")
 	}
-	if c.Program == "userdel" {
-		var keep []string
-		for line := range strings.Lines(string(h.files["/etc/passwd"])) {
-			if !strings.HasPrefix(line, c.Args[0]+":") {
-				keep = append(keep, line)
-			}
+	switch c.Program {
+	case "mount":
+		if len(c.Args) == 4 && c.Args[0] == "-o" && c.Args[1] == "bind" && strings.HasPrefix(c.Args[2], "/srv/iii-mesh/") && strings.HasPrefix(c.Args[3], "/drives/") {
+			h.mounts[c.Args[3]] = c.Args[2]
+			return "", nil
 		}
-		h.files["/etc/passwd"] = []byte(strings.Join(keep, ""))
-	}
-	if c.Program == "ss" {
-		return h.occupied, nil
-	}
-	if c.Program == "exportfs" && len(c.Args) == 0 {
-		return "", nil
-	}
-	if c.Program == "mount" {
-		h.mounts[c.Args[len(c.Args)-1]] = c.Args[len(c.Args)-2]
-	}
-	if c.Program == "umount" {
-		delete(h.mounts, c.Args[len(c.Args)-1])
-	}
-	if c.Program == "net" && len(c.Args) > 2 {
-		if c.Args[2] == "/delete" {
-			delete(h.mounts, c.Args[1])
-		} else {
-			h.mounts[c.Args[1]] = c.Args[2]
+	case "umount":
+		if len(c.Args) == 3 && reflect.DeepEqual(c.Args[:2], []string{"-i", "-c"}) {
+			delete(h.mounts, c.Args[2])
+			return "", nil
+		}
+	case "exportfs":
+		if len(c.Args) == 0 || reflect.DeepEqual(c.Args, []string{"-ra"}) {
+			return "", nil
+		}
+	case "ss":
+		if reflect.DeepEqual(c.Args, []string{"-Hltnp", "sport", "=", ":445"}) {
+			return "", nil
+		}
+	case "systemctl":
+		if reflect.DeepEqual(c.Args, []string{"daemon-reload"}) {
+			return "", nil
+		}
+		if len(c.Args) == 2 && (c.Args[1] == "iii-mesh-smbd" || c.Args[1] == "nfs-server") && (c.Args[0] == "start" || c.Args[0] == "stop" || c.Args[0] == "restart") {
+			return "", nil
 		}
 	}
-	return "", nil
+	return "", fmt.Errorf("unexpected self-serve command: %s %v", c.Program, c.Args)
 }
-func (h *hubDriveHost) ReadFile(p string) ([]byte, error) {
-	b, ok := h.files[p]
-	if !ok {
-		return nil, fs.ErrNotExist
-	}
-	return b, nil
+func (h *hubDriveHost) ReadFile(p string) ([]byte, error) { return os.ReadFile(h.path(p)) }
+func (h *hubDriveHost) WriteFile(p string, b []byte, mode fs.FileMode) error {
+	return os.WriteFile(h.path(p), b, mode)
 }
-func (h *hubDriveHost) WriteFile(p string, b []byte, _ fs.FileMode) error {
-	h.files[p] = append([]byte{}, b...)
-	return nil
-}
-func (h *hubDriveHost) MkdirAll(string, fs.FileMode) error { return nil }
-func (h *hubDriveHost) Remove(p string) error              { delete(h.files, p); return nil }
-func (h *hubDriveHost) RemoveAll(p string) error {
-	for path := range h.files {
-		if path == p || strings.HasPrefix(path, p+"/") {
-			delete(h.files, path)
-		}
-	}
-	return nil
-}
+
+// Model the privileged filesystem using a writable, unprivileged sandbox.
+func (h *hubDriveHost) MkdirAll(p string, _ fs.FileMode) error { return os.MkdirAll(h.path(p), 0700) }
+func (h *hubDriveHost) Remove(p string) error                  { return os.Remove(h.path(p)) }
+func (h *hubDriveHost) RemoveAll(p string) error               { return os.RemoveAll(h.path(p)) }
 func (h *hubDriveHost) Glob(pattern string) ([]string, error) {
-	var names []string
-	for p := range h.files {
-		if ok, _ := filepath.Match(pattern, p); ok {
-			names = append(names, p)
-		}
+	paths, err := filepath.Glob(h.path(pattern))
+	for i, p := range paths {
+		paths[i] = "/" + filepath.ToSlash(strings.TrimPrefix(p, h.root+string(filepath.Separator)))
 	}
-	return names, nil
+	return paths, err
 }
 func (h *hubDriveHost) Chown(string, int, int) error         { return nil }
 func (h *hubDriveHost) LookPath(name string) (string, error) { return "/usr/sbin/" + name, nil }
 func (h *hubDriveHost) Mounts(context.Context) (map[string]string, error) {
-	m := map[string]string{}
-	for k, v := range h.mounts {
-		m[k] = v
-	}
-	return m, nil
+	return maps.Clone(h.mounts), nil
 }
-func (h *hubDriveHost) Reach(context.Context, netip.Addr, string) bool { return !h.unreachable }
+func (h *hubDriveHost) Reach(context.Context, netip.Addr, string) bool {
+	panic("self-served bind mounts must not probe a remote server")
+}
 
 func realDriveController(t *testing.T, host *hubDriveHost) node.DriveController {
 	t.Helper()

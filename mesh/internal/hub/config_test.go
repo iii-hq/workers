@@ -38,3 +38,20 @@ func TestValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDriveConfigSeparatesNodeAndDriveNames(t *testing.T) {
+	for _, server := range []string{"nas--one", "nas-"} {
+		c := DefaultConfig()
+		c.Drives["7-project"] = DriveConfig{Server: server, Nodes: []string{"client--one", "client-"}}
+		if err := c.Validate(); err != nil {
+			t.Fatal("legal node or drive name refused", err)
+		}
+	}
+	for _, drive := range []string{"proj--one", "proj-", "../proj"} {
+		c := DefaultConfig()
+		c.Drives[drive] = DriveConfig{Server: "nas--one", Nodes: []string{"*"}}
+		if c.Validate() == nil {
+			t.Fatal("invalid drive name accepted", drive)
+		}
+	}
+}

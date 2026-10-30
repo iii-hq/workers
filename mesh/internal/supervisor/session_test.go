@@ -44,3 +44,52 @@ func TestStartOperatorClosesCredentialsAndStopsFailedStart(t *testing.T) {
 		t.Fatal(err, calls)
 	}
 }
+
+func TestOperatorLogonIdentity(t *testing.T) {
+	saved := OperatorLogon{SID: "S-1-5-21-1-2-3-1001", SessionID: 2, AuthenticationID: 0x100000002, LogonTime: 133000000000000000}
+	for _, change := range []string{"same", "other SID", "other session", "reused session", "reused LUID", "elevated"} {
+		t.Run(change, func(t *testing.T) {
+			actual := saved
+			switch change {
+			case "other SID":
+				actual.SID = "S-1-5-21-1-2-3-1002"
+			case "other session":
+				actual.SessionID++
+			case "reused session":
+				actual.AuthenticationID++
+			case "reused LUID":
+				actual.LogonTime++
+			}
+			err := validateOperatorLogon(saved, actual, change == "elevated")
+			if (err == nil) != (change == "same") {
+				t.Fatal(change, err)
+			}
+		})
+	}
+	for _, change := range []string{"zero session", "current session", "zero LUID", "zero time", "system", "noncanonical SID", "invalid SID", "overflow SID"} {
+		t.Run(change, func(t *testing.T) {
+			bad := saved
+			switch change {
+			case "zero session":
+				bad.SessionID = 0
+			case "current session":
+				bad.SessionID = ^uint32(0)
+			case "zero LUID":
+				bad.AuthenticationID = 0
+			case "zero time":
+				bad.LogonTime = 0
+			case "system":
+				bad.SID = "S-1-5-18"
+			case "noncanonical SID":
+				bad.SID = "S-1-5-21-01"
+			case "invalid SID":
+				bad.SID = "operator"
+			case "overflow SID":
+				bad.SID = "S-1-5-4294967296"
+			}
+			if bad.Validate() == nil {
+				t.Fatal("accepted invalid identity", bad)
+			}
+		})
+	}
+}

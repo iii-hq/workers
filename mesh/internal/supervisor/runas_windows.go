@@ -36,7 +36,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-type Operator struct{ name, home, sid string }
+type Operator struct {
+	name, home, sid string
+	logon           *OperatorLogon
+}
 
 func LookupOperator(name string) (Operator, error) {
 	var u *user.User
@@ -72,10 +75,59 @@ func operatorToken(op Operator) (windows.Token, error) {
 	if err := validateOperator(op); err != nil {
 		return 0, err
 	}
+	var t windows.Token
+	var id uint32
+	var err error
+	if op.logon != nil {
+		if err = op.logon.Validate(); err != nil {
+			return 0, err
+		}
+		if op.logon.SID != op.sid {
+			return 0, errors.New("bound logon does not belong to the operator")
+		}
+		id = op.logon.SessionID
+		err = windows.WTSQueryUserToken(id, &t)
+	} else {
+		t, id, err = unboundOperatorToken(op.sid)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if t.IsElevated() {
+		linked, err := t.GetLinkedToken()
+		t.Close()
+		if err != nil {
+			return 0, err
+		}
+		t = linked
+	}
+	u, err := t.GetTokenUser()
+	var session, size uint32
+	if err == nil {
+		err = windows.GetTokenInformation(t, windows.TokenSessionId, (*byte)(unsafe.Pointer(&session)), 4, &size)
+	}
+	if err == nil {
+		err = validateSessionToken(op.sid, id, u.User.Sid.String(), session, t.IsElevated())
+	}
+	if err == nil && op.logon != nil {
+		var actual OperatorLogon
+		actual, err = tokenLogon(t)
+		if err == nil {
+			err = validateOperatorLogon(*op.logon, actual, t.IsElevated())
+		}
+	}
+	if err != nil {
+		t.Close()
+		return 0, err
+	}
+	return t, nil
+}
+
+func unboundOperatorToken(sid string) (windows.Token, uint32, error) {
 	var ss *windows.WTS_SESSION_INFO
 	var n uint32
 	if err := windows.WTSEnumerateSessions(0, 0, 1, &ss, &n); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(ss)))
 	var sessions []operatorSession
@@ -101,33 +153,13 @@ func operatorToken(op Operator) (windows.Token, error) {
 		sessions = append(sessions, operatorSession{s.SessionID, u.User.Sid.String(), s.State == windows.WTSActive})
 		tokens[s.SessionID] = t
 	}
-	id, err := selectOperatorSession(op.sid, sessions)
+	id, err := selectOperatorSession(sid, sessions)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	t := tokens[id]
 	delete(tokens, id)
-	if t.IsElevated() {
-		linked, err := t.GetLinkedToken()
-		t.Close()
-		if err != nil {
-			return 0, err
-		}
-		t = linked
-	}
-	u, err := t.GetTokenUser()
-	var session, size uint32
-	if err == nil {
-		err = windows.GetTokenInformation(t, windows.TokenSessionId, (*byte)(unsafe.Pointer(&session)), 4, &size)
-	}
-	if err == nil {
-		err = validateSessionToken(op.sid, id, u.User.Sid.String(), session, t.IsElevated())
-	}
-	if err != nil {
-		t.Close()
-		return 0, err
-	}
-	return t, nil
+	return t, id, nil
 }
 
 // The token is retained only until the session parent and target are created.

@@ -2,8 +2,11 @@ package drives
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"github.com/iii-hq/workers/mesh/internal/supervisor"
 	"io/fs"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -416,5 +419,362 @@ func TestWindowsMappingComparisonIgnoresCase(t *testing.T) {
 	requireOK(t, m.Apply(t.Context(), d))
 	if err := m.Drop(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServerRestoresSuccessfulStateAfterPartialReconfiguration(t *testing.T) {
+	for _, program := range []string{"exportfs", "smbpasswd"} {
+		t.Run(program, func(t *testing.T) {
+			h := hostFixture()
+			m := managerFixture(t, "linux", t.TempDir(), h)
+			a := fixtureDesired()
+			a.Mount = nil
+			a.Serve = []Export{{Name: "proj", Clients: []Client{{Name: "a", Addr: netip.MustParseAddr("fd31:32:33::9"), SMB: &SMB{User: "iii-a", Password: strings.Repeat("a", 64)}}}}}
+			requireOK(t, m.Apply(t.Context(), a))
+			b := fixtureDesired()
+			b.Mount = nil
+			b.Serve = []Export{{Name: "proj", Clients: []Client{{Name: "b", Addr: netip.MustParseAddr("fd31:32:33::10"), SMB: &SMB{User: "iii-b", Password: strings.Repeat("b", 64)}}}}}
+			h.fail = program
+			failed := m.Apply(t.Context(), b)
+			if len(failed) != 1 || failed[0].State != "error" {
+				t.Fatal("partial change falsely succeeded", failed)
+			}
+			h.fail = ""
+			requireOK(t, m.Apply(t.Context(), a))
+			exports := string(h.files[exportsFile])
+			conf := string(h.files[m.smbConf()])
+			passwd := string(h.files["/etc/passwd"])
+			if !strings.Contains(exports, "fd31:32:33::9(") || strings.Contains(exports, "fd31:32:33::10(") || !strings.Contains(conf, "valid users = iii-a\n") || strings.Contains(conf, "iii-b") || !strings.Contains(passwd, "iii-a:") || strings.Contains(passwd, "iii-b:") {
+				t.Fatalf("rollback did not restore actual resources: exports=%s conf=%s passwd=%s", exports, conf, passwd)
+			}
+			requireOK(t, m.Apply(t.Context(), a))
+		})
+	}
+}
+func TestServerRestoresAfterPartialTeardown(t *testing.T) {
+	h := hostFixture()
+	m := managerFixture(t, "linux", t.TempDir(), h)
+	a := fixtureDesired()
+	a.Mount = nil
+	a.Serve = []Export{{Name: "proj", Clients: []Client{{Name: "client", Addr: netip.MustParseAddr("fd31:32:33::9")}}}}
+	requireOK(t, m.Apply(t.Context(), a))
+	h.fail = "exportfs"
+	r := m.Apply(t.Context(), Desired{})
+	if len(r) != 1 || r[0].Error == "" {
+		t.Fatal(r)
+	}
+	h.fail = ""
+	requireOK(t, m.Apply(t.Context(), a))
+	if !strings.Contains(string(h.files[exportsFile]), "fd31:32:33::9(") {
+		t.Fatal("partial teardown was reported restored without exports")
+	}
+}
+
+func TestNodeNamesRemainValidAcrossMountAndJournal(t *testing.T) {
+	for _, platform := range []string{"linux", "darwin", "windows"} {
+		for _, server := range []string{"nas--one", "nas-"} {
+			t.Run(platform+"/"+server, func(t *testing.T) {
+				h := hostFixture()
+				dir := t.TempDir()
+				m := managerFixture(t, platform, dir, h)
+				d := fixtureDesired()
+				d.Mount[0].Server = server
+				d.Mount[0].Host = server + ".iii.internal"
+				if platform == "windows" {
+					d.Mount[0].SMB = &SMB{User: "iii-client", Password: strings.Repeat("a", 64)}
+				}
+				requireOK(t, m.Apply(t.Context(), d))
+				m.Close()
+				again := managerFixture(t, platform, dir, h)
+				if err := again.Drop(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+	for _, server := range []string{"../nas", "-nas", "7nas", "nas.example", "NAS"} {
+		h := hostFixture()
+		m := managerFixture(t, "linux", t.TempDir(), h)
+		d := fixtureDesired()
+		d.Mount[0].Server = server
+		d.Mount[0].Host = server + ".iii.internal"
+		r := m.Apply(t.Context(), d)
+		if len(r) != 1 || r[0].Error == "" || len(h.commands) != 0 {
+			t.Fatal("invalid node reached OS boundary", server, r)
+		}
+	}
+}
+
+func testLogon() supervisor.OperatorLogon {
+	return supervisor.OperatorLogon{SID: "S-1-5-21-1-2-3-1001", SessionID: 2, AuthenticationID: 0x100000002, LogonTime: 133000000000000000}
+}
+func (h *testHost) CaptureLogon() (supervisor.OperatorLogon, error) { return testLogon(), nil }
+func (h *testHost) BindLogon(supervisor.OperatorLogon) error        { return nil }
+
+type sessionDriveHost struct {
+	*testHost
+	active           supervisor.OperatorLogon
+	sessions         map[uint32]supervisor.OperatorLogon
+	namespaces       map[uint32]map[string]string
+	credentials      map[uint32]bool
+	bound            *supervisor.OperatorLogon
+	captures         int
+	afterEnumeration func()
+	beforeCommand    func(Command)
+}
+
+func newSessionDriveHost() *sessionDriveHost {
+	a := testLogon()
+	return &sessionDriveHost{testHost: hostFixture(), active: a, sessions: map[uint32]supervisor.OperatorLogon{a.SessionID: a}, namespaces: map[uint32]map[string]string{a.SessionID: {}}, credentials: map[uint32]bool{}}
+}
+func (h *sessionDriveHost) CaptureLogon() (supervisor.OperatorLogon, error) {
+	h.captures++
+	return h.active, nil
+}
+func (h *sessionDriveHost) BindLogon(l supervisor.OperatorLogon) error { h.bound = &l; return nil }
+func (h *sessionDriveHost) current() (supervisor.OperatorLogon, error) {
+	l := h.active
+	if h.bound != nil {
+		l = *h.bound
+	}
+	actual, ok := h.sessions[l.SessionID]
+	if !ok || actual != l {
+		return l, errors.New("original operator logon is unavailable or reused")
+	}
+	return l, nil
+}
+func (h *sessionDriveHost) Mounts(context.Context) (map[string]string, error) {
+	l, err := h.current()
+	if err != nil {
+		return nil, err
+	}
+	at := maps.Clone(h.namespaces[l.SessionID])
+	if h.afterEnumeration != nil {
+		f := h.afterEnumeration
+		h.afterEnumeration = nil
+		f()
+	}
+	return at, nil
+}
+func (h *sessionDriveHost) Run(ctx context.Context, c Command) (string, error) {
+	l, err := h.current()
+	if err != nil {
+		return "", err
+	}
+	if !c.Operator {
+		return "", errors.New("unbound Windows command")
+	}
+	if h.beforeCommand != nil {
+		h.beforeCommand(c)
+	}
+	h.testHost.mounts = h.namespaces[l.SessionID]
+	if c.Program == "cmdkey" {
+		switch {
+		case c.Args[0] == "/list":
+			if h.credentials[l.SessionID] {
+				return "server.iii.internal", nil
+			}
+		case strings.HasPrefix(c.Args[0], "/add:"):
+			h.credentials[l.SessionID] = true
+		case strings.HasPrefix(c.Args[0], "/delete:"):
+			h.credentials[l.SessionID] = false
+		}
+	}
+	return h.testHost.Run(ctx, c)
+}
+func windowsDesired() Desired {
+	d := fixtureDesired()
+	d.Mount[0].SMB = &SMB{User: "iii-client", Password: strings.Repeat("a", 64)}
+	return d
+}
+func readDriveJournal(t *testing.T, dir string) map[string]json.RawMessage {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "drives.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var j map[string]json.RawMessage
+	if err = json.Unmarshal(b, &j); err != nil {
+		t.Fatal(err)
+	}
+	return j
+}
+func TestWindowsCleanupRemainsInOriginalLogon(t *testing.T) {
+	h := newSessionDriveHost()
+	dir := t.TempDir()
+	m := managerFixture(t, "windows", dir, h)
+	requireOK(t, m.Apply(t.Context(), windowsDesired()))
+	m.Close()
+	a := testLogon()
+	b := a
+	b.SessionID = 3
+	b.AuthenticationID++
+	b.LogonTime++
+	h.active = b
+	h.sessions[b.SessionID] = b
+	h.namespaces[b.SessionID] = map[string]string{"W:": `\\foreign\data`}
+	h.bound = nil
+	again := managerFixture(t, "windows", dir, h)
+	if err := again.Drop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.namespaces[a.SessionID]) != 0 || h.credentials[a.SessionID] || h.namespaces[b.SessionID]["W:"] != `\\foreign\data` || h.captures != 1 {
+		t.Fatal("cleanup changed logons", h.namespaces, h.credentials, h.captures)
+	}
+	if _, ok := readDriveJournal(t, dir)["logon"]; ok {
+		t.Fatal("fully cleaned ownership retained logon binding")
+	}
+}
+func TestWindowsUnavailableOrReusedLogonRetainsOwnership(t *testing.T) {
+	for _, failure := range []string{"disappeared", "session reused", "LUID reused", "between enumeration and mutation", "legacy journal"} {
+		t.Run(failure, func(t *testing.T) {
+			h := newSessionDriveHost()
+			dir := t.TempDir()
+			m := managerFixture(t, "windows", dir, h)
+			requireOK(t, m.Apply(t.Context(), windowsDesired()))
+			m.Close()
+			a := testLogon()
+			b := a
+			b.SessionID = 3
+			b.AuthenticationID++
+			b.LogonTime++
+			h.active = b
+			h.sessions[b.SessionID] = b
+			h.namespaces[b.SessionID] = map[string]string{}
+			h.bound = nil
+			switch failure {
+			case "disappeared":
+				delete(h.sessions, a.SessionID)
+			case "session reused":
+				reuse := a
+				reuse.AuthenticationID++
+				h.sessions[a.SessionID] = reuse
+			case "LUID reused":
+				reuse := a
+				reuse.LogonTime++
+				h.sessions[a.SessionID] = reuse
+			case "between enumeration and mutation":
+				h.afterEnumeration = func() { delete(h.sessions, a.SessionID) }
+			case "legacy journal":
+				j := readDriveJournal(t, dir)
+				delete(j, "logon")
+				data, _ := json.Marshal(j)
+				if err := os.WriteFile(filepath.Join(dir, "drives.json"), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(filepath.Join(dir, "drives.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			commands := len(h.commands)
+			again := managerFixture(t, "windows", dir, h)
+			if err = again.Drop(t.Context()); err == nil {
+				t.Fatal("cleanup forgot inaccessible original logon")
+			}
+			after, _ := os.ReadFile(filepath.Join(dir, "drives.json"))
+			if string(after) != string(before) || len(h.namespaces[a.SessionID]) != 1 || len(h.namespaces[b.SessionID]) != 0 || len(h.commands) != commands || h.captures != 1 {
+				t.Fatal("failed cleanup lost ownership or crossed logons", string(after), h.namespaces, h.captures)
+			}
+			// A failed cleanup remains retryable when the original logon is available again.
+			if failure != "legacy journal" {
+				h.sessions[a.SessionID] = a
+				if err = again.Drop(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if len(h.namespaces[a.SessionID]) != 0 || h.credentials[a.SessionID] {
+					t.Fatal("retry retained owned resources")
+				}
+			}
+		})
+	}
+}
+func TestWindowsLogonPersistedBeforeCredentialMutation(t *testing.T) {
+	h := newSessionDriveHost()
+	h.fail = "net"
+	dir := t.TempDir()
+	m := managerFixture(t, "windows", dir, h)
+	checked := false
+	h.beforeCommand = func(c Command) {
+		if c.Program != "cmdkey" || !strings.HasPrefix(c.Args[0], "/add:") {
+			return
+		}
+		var j journal
+		data, err := os.ReadFile(filepath.Join(dir, "drives.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal(data, &j); err != nil {
+			t.Fatal(err)
+		}
+		if j.Logon == nil || *j.Logon != testLogon() || len(j.Mounts) != 1 {
+			t.Fatal("credential mutation preceded ownership persistence", j)
+		}
+		checked = true
+	}
+	r := m.Apply(t.Context(), windowsDesired())
+	if len(r) != 1 || r[0].Error == "" {
+		t.Fatal(r)
+	}
+	if !checked {
+		t.Fatal("credential mutation was not exercised")
+	}
+	var saved supervisor.OperatorLogon
+	j := readDriveJournal(t, dir)
+	if err := json.Unmarshal(j["logon"], &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved != testLogon() || !h.credentials[saved.SessionID] || len(m.owned.Mounts) != 1 {
+		t.Fatal("partial credential ownership lacks original logon", saved, m.owned)
+	}
+	m.Close()
+	h.bound = nil
+	h.fail = ""
+	again := managerFixture(t, "windows", dir, h)
+	if err := again.Drop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if h.credentials[saved.SessionID] {
+		t.Fatal("orphaned credential")
+	}
+}
+
+func TestWindowsMappingEnumerationParsesNativeOutput(t *testing.T) {
+	out := "New connections will not be remembered.\r\nStatus       Local     Remote                    Network\r\n-------------------------------------------------------------------------------\r\nOK           W:        \\\\server.iii.internal\\proj Microsoft Windows Network\r\nDisconnected V:        \\\\foreign\\share             Microsoft Windows Network\r\nOK                     \\\\foreign\\IPC$              Microsoft Windows Network\r\nThe command completed successfully.\r\n"
+	want := map[string]string{"W:": `\\server.iii.internal\proj`, "V:": `\\foreign\share`}
+	if got := parseWindowsMappings(out); !reflect.DeepEqual(got, want) {
+		t.Fatal("native mappings were not enumerated", got, want)
+	}
+}
+
+func TestWindowsLogicalDriveEnumerationPreservesMappings(t *testing.T) {
+	at := map[string]string{"W:": `\\server.iii.internal\proj`}
+	if err := addWindowsDriveLetters(at, "C:\\\r\nW:\\\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	if at["C:"] != "local disk" || at["W:"] != `\\server.iii.internal\proj` {
+		t.Fatal(at)
+	}
+	if err := addWindowsDriveLetters(at, "Access denied"); err == nil {
+		t.Fatal("malformed enumeration permitted letter allocation")
+	}
+}
+func TestWindowsJournalRejectsInvalidLogonEncoding(t *testing.T) {
+	for _, bad := range []string{`{"sid":"S-1-5-21-1-2-3-1001","session_id":0,"authentication_id":"7","logon_time":"133000000000000000"}`, `{"sid":"S-1-5-18","session_id":2,"authentication_id":"7","logon_time":"133000000000000000"}`, `{"sid":"S-1-5-21-1-2-3-1001","session_id":2,"authentication_id":"18446744073709551616","logon_time":"133000000000000000"}`, `{"sid":"S-1-5-21-1-2-3-1001","session_id":2,"authentication_id":7,"logon_time":"133000000000000000"}`, `{"sid":"S-1-5-21-1-2-3-1001","session_id":2,"authentication_id":"7","logon_time":"-1"}`} {
+		dir := t.TempDir()
+		data := []byte(`{"mounts":{},"logon":` + bad + `}`)
+		if err := os.WriteFile(filepath.Join(dir, "drives.json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		h := newSessionDriveHost()
+		m, err := NewWithHost(Options{StateDir: dir, Platform: "windows", Operator: "alice"}, h)
+		if err == nil {
+			m.Close()
+			t.Fatal("invalid saved logon accepted", bad)
+		}
+		after, _ := os.ReadFile(filepath.Join(dir, "drives.json"))
+		if string(after) != string(data) || len(h.commands) > 0 || h.captures > 0 {
+			t.Fatal("invalid saved identity changed resources")
+		}
 	}
 }

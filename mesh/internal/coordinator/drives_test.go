@@ -97,3 +97,25 @@ func TestAuthenticatedDriveServerMetadataWakesPeerMaps(t *testing.T) {
 		t.Fatal("authenticated server metadata did not wake waiting member maps")
 	}
 }
+
+func TestDriveNamesAgreeWithConfiguredServerNames(t *testing.T) {
+	for _, server := range []string{"nas--one", "nas-"} {
+		c := driveCoordinator(t)
+		registerNode(t, c, "named")
+		c.byName("named").Name = server
+		c.byName(server).OS = "linux"
+		if errs := c.SetDrives(map[string]Drive{"7-project": {Server: server, Nodes: []string{"laptop"}}}); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		want := c.Desired("laptop")
+		if len(want.Mount) != 1 || want.Mount[0].Host != server+".iii.internal" {
+			t.Fatal(want)
+		}
+	}
+	c := driveCoordinator(t)
+	for _, name := range []string{"proj--one", "proj-", "../proj"} {
+		if errs := c.SetDrives(map[string]Drive{name: {Server: "server", Nodes: []string{"*"}}}); len(errs) != 1 {
+			t.Fatal("invalid drive accepted", name)
+		}
+	}
+}
