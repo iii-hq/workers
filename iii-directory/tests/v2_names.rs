@@ -19,6 +19,11 @@ const RETIRED: &[(&str, &str)] = &[
 const SCANNED: &[&str] = &["rs", "md", "ts", "tsx", "mjs", "css", "yaml", "json"];
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+    // `agents/` holds local agent profiles and is not in the repository, so a
+    // fresh checkout has none.
+    if !dir.exists() {
+        return;
+    }
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
     for entry in entries.flatten() {
         let path = entry.path();
