@@ -15,6 +15,9 @@ import { SessionBadge, SessionDetail } from './session'
 type Transport = 'native' | 'cloud'
 type View = 'messages' | 'groups' | 'connection'
 
+// The native event kinds the worker emits when a listed session changes status or links an account.
+const SESSION_LIST_KINDS = ['session.connected', 'session.disconnected', 'session.paired', 'session.failed', 'session.logged_out', 'pairing.qr']
+
 type WhatsAppPageProps = PageRenderProps & { host: Host; configurationId: string }
 
 export function WhatsAppPage(props: WhatsAppPageProps) {
@@ -55,7 +58,7 @@ function WhatsAppWorkspace({ host, configurationId, paneId, tabId, panelSide, on
   const instance = useId()
   const list = useWorkerLive<Session[]>({
     iii: host.iii,
-    sources: [{ function_id: 'whatsapp::on-events', filters: { 'input.kind': { $in: ['session.created', 'session.connected', 'session.disconnected', 'session.stopped', 'session.starting', 'session.qr', 'session.logged_out'] } } }],
+    sources: [{ function_id: 'whatsapp::on-events', filters: { 'input.kind': { $in: SESSION_LIST_KINDS } } }],
     handlerId: `iii::whatsapp-ui::sessions::${instance}`, pollMs: 5000,
     fetch: () => host.iii.call<Session[]>('whatsapp::sessions::list'),
   })

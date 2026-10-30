@@ -155,7 +155,7 @@ Delivery is best effort and not retried: target return values do not send replie
 
 ### Native events
 
-Native kinds include `session.connected`, `session.disconnected`, `session.logged_out`, `session.qr`, `message.received`, `message.receipt`, `history.sync`, `group.updated` and `chat.presence`. Observe one session's incoming messages:
+Native kinds are `session.connected`, `session.disconnected`, `session.paired`, `session.failed`, `session.logged_out`, `pairing.qr`, `message.received`, `message.receipt`, `history.sync`, `group.updated`, `group.joined` and `chat.presence`. `pairing.qr` announces that a new QR code is available from `whatsapp::sessions::qr`; it does not carry the code. Observe one session's incoming messages:
 
 ```ts
 iii.observe(
