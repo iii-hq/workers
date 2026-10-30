@@ -14,7 +14,7 @@
 //! a table compiled into the binary.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -90,20 +90,26 @@ fn loaded() -> &'static Mutex<HashMap<String, Slot>> {
 /// own estimate rather than reporting a wrong count as exact; a poisoned
 /// cache lock is treated the same way as a miss.
 pub async fn resolve(reference: &VocabularyRef) -> Option<Loaded> {
+    resolve_in(reference, &cache_dir()).await
+}
+
+/// `resolve` against an explicit cache dir, so tests never mutate the
+/// process-wide environment.
+async fn resolve_in(reference: &VocabularyRef, dir: &Path) -> Option<Loaded> {
     let slot = loaded()
         .lock()
         .ok()?
         .entry(reference.id.clone())
         .or_default()
         .clone();
-    slot.get_or_try_init(|| async { load(reference).await.ok_or(()) })
+    slot.get_or_try_init(|| async { load(reference, dir).await.ok_or(()) })
         .await
         .ok()
         .cloned()
 }
 
-async fn load(reference: &VocabularyRef) -> Option<Loaded> {
-    let path = cache_dir().join(format!("{}.json", reference.id));
+async fn load(reference: &VocabularyRef, dir: &Path) -> Option<Loaded> {
+    let path = dir.join(format!("{}.json", reference.id));
     let bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -168,7 +174,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_cold_resolves_share_one_fetch() {
         let dir = std::env::temp_dir().join(format!("vocab-flight-{}", uuid::Uuid::new_v4()));
-        std::env::set_var("III_TOKENIZER_CACHE_DIR", &dir);
         let body = serde_json::json!({
             "version": "1.0", "truncation": null, "padding": null, "added_tokens": [],
             "normalizer": null, "post_processor": null, "decoder": null,
@@ -208,7 +213,8 @@ mod tests {
         );
         let calls = (0..8).map(|_| {
             let reference = reference.clone();
-            tokio::spawn(async move { resolve(&reference).await })
+            let dir = dir.clone();
+            tokio::spawn(async move { resolve_in(&reference, &dir).await })
         });
         for call in futures::future::join_all(calls).await {
             assert!(call.unwrap().is_some());
