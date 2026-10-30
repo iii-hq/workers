@@ -2,8 +2,9 @@
 //! raw socket: the hello that advertises `observe.v2`, the
 //! `functionregistered` answer to each `registerfunction` (with local
 //! dispatch, so the harness calls its own functions in-process, and with the
-//! observers already added), the `observeradded` frames that hand the harness
-//! an observer, and the activations an `invocationsobserved` report asks for.
+//! observers already added), the `observeradded` and `observerremoved` frames
+//! that hand the harness an observer and take it back, and the activations an
+//! `invocationsobserved` report asks for.
 
 use std::collections::{HashMap, HashSet};
 
@@ -40,6 +41,17 @@ pub fn observer_added(
             "capture": ["input", "output", "caller"],
             "on": "success",
         },
+    })
+}
+
+/// An `observerremoved` frame for the observer `id` of `function_id`. The
+/// mock engine stamps its revision when it announces it ([`Host::announce`]).
+pub fn observer_removed(id: &str, function_id: &str) -> Value {
+    json!({
+        "type": "observerremoved",
+        "function_id": function_id,
+        "namespace": "default",
+        "id": id,
     })
 }
 
@@ -83,6 +95,17 @@ impl Host {
     /// its revision when its function is registered already; otherwise the
     /// next `functionregistered` carries it.
     pub fn announce(&mut self, mut frame: Value) -> Option<Value> {
+        if frame["type"] == "observerremoved" {
+            let function_id = frame["function_id"].as_str()?.to_string();
+            let id = frame["id"].clone();
+            let observers = self.observers.entry(function_id.clone()).or_default();
+            observers.retain(|observer| observer["id"] != id);
+            if !self.registered.contains(&function_id) {
+                return None;
+            }
+            frame["revision"] = json!(self.next_revision());
+            return Some(frame);
+        }
         if frame["type"] != "observeradded" {
             return Some(frame);
         }
