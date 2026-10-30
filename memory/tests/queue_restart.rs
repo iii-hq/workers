@@ -7,7 +7,9 @@
 //!   replaces the observer the killed one left suspended, and the queue
 //!   worker hands the new process the backlog;
 //! - while another worker holds the id, the worker observes again until the
-//!   id is free.
+//!   id is free, 5 s after its first refusal and 10 s after its second (the
+//!   refused observer's dispose, which the SDK waits 5 s on for an id the
+//!   engine refused, runs during the wait).
 //!
 //! Runs the `memory` binary against `III_ENGINE_WS_URL` (default
 //! `ws://127.0.0.1:49134`), with a contract mock of the queue worker
@@ -397,6 +399,25 @@ fn count(handled: &Mutex<Vec<String>>, job: &str) -> usize {
     handled.lock().unwrap().iter().filter(|j| *j == job).count()
 }
 
+/// The extraction consumer's `observing` and `observer refused` lines in a
+/// worker log, in order, each with its timestamp.
+fn consumer_events(log: &str) -> Vec<(&'static str, chrono::DateTime<chrono::FixedOffset>)> {
+    log.lines()
+        .filter(|line| line.contains(&format!("function_id=\"{ON_MESSAGE}\"")))
+        .filter_map(|line| {
+            let event = if line.contains(" memory: observing ") {
+                "observing"
+            } else if line.contains(" memory: observer refused ") {
+                "refused"
+            } else {
+                return None;
+            };
+            let at = chrono::DateTime::parse_from_rfc3339(line.split_whitespace().next()?).ok()?;
+            Some((event, at))
+        })
+        .collect()
+}
+
 const CONSUMER: (&str, &str) = (ON_MESSAGE, EXTRACT_JOB_FN);
 const RECORDED: (&str, &str) = (EXTRACT_JOB_FN, RECORDER);
 
@@ -513,7 +534,7 @@ async fn a_killed_worker_gets_its_unacked_extraction_jobs_once_after_a_restart()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_consumer_observes_again_until_another_worker_lets_its_id_go() {
+async fn the_consumer_observes_again_on_its_schedule_until_another_worker_lets_its_id_go() {
     let _one = ONE_WORKER.lock().await;
     let url = ws_url();
     let Some(host) = connect(&url, "memory-held-queue").await else {
@@ -558,10 +579,40 @@ async fn the_consumer_observes_again_until_another_worker_lets_its_id_go() {
     .await;
     assert_eq!(queue.held(), std::slice::from_ref(&stable));
     wait_observers(&host, (ON_MESSAGE, HOLDER), &memory, one_active).await;
+    // It observes again 5 s later, and is refused again.
+    wait_until("the worker's second observe is refused", || {
+        consumer_events(&memory.log())
+            .iter()
+            .filter(|(event, _)| *event == "refused")
+            .count()
+            >= 2
+    })
+    .await;
 
-    // Once the holder lets the id go, the worker observes again and gets it.
+    // Once the holder lets the id go, the worker observes again (10 s after
+    // the second refusal) and gets it.
     held.dispose().await.expect("dispose");
     let listed = wait_observers(&host, CONSUMER, &memory, one_active).await;
+    let events = consumer_events(&memory.log());
+    let order: Vec<&str> = events.iter().map(|(event, _)| *event).collect();
+    assert_eq!(
+        order,
+        ["observing", "refused", "observing", "refused", "observing"],
+        "memory log:\n{}",
+        memory.log()
+    );
+    // Each wait is the schedule's, from the refusal to the next observe: the
+    // refused observer's dispose (5 s in the SDK for an id the engine
+    // refused) runs during it and adds nothing.
+    for (refusal, wait_ms) in [(1, 5_000), (3, 10_000)] {
+        let waited = (events[refusal + 1].1 - events[refusal].1).num_milliseconds();
+        assert!(
+            (wait_ms - 50..wait_ms + 900).contains(&waited),
+            "observed again {waited} ms after refusal {}, not {wait_ms} ms\nmemory log:\n{}",
+            refusal / 2 + 1,
+            memory.log()
+        );
+    }
     assert_eq!(listed[0]["id"], stable.as_str(), "{listed:#?}");
     assert_eq!(
         listed[0]["worker"]["worker_name"],

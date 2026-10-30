@@ -79,10 +79,23 @@ fn worker_metadata() -> WorkerMetadata {
 /// The function `http::on-request` routes REST calls through.
 const HTTP_ON_REQUEST_FN: &str = "http::on-request";
 
-/// First wait before observing a seam again after `OBSERVER_ID_CONFLICT`;
-/// it doubles up to [`REOBSERVE_MAX_SECS`].
-const REOBSERVE_FIRST_SECS: u64 = 1;
+/// First wait, from a refusal with `OBSERVER_ID_CONFLICT`, before observing
+/// a seam again; it doubles up to [`REOBSERVE_MAX_SECS`]. The refused
+/// observer's dispose runs during the wait and resolves within the SDK's 5 s
+/// (at the engine's confirmation, or at 5 s for an id the engine refused,
+/// whose `unobserve` it does not answer), so every wait is the one given here.
+const REOBSERVE_FIRST_SECS: u64 = 5;
 const REOBSERVE_MAX_SECS: u64 = 30;
+
+/// The waits between a refusal and the next observe: 5 s, 10 s, 20 s, then
+/// 30 s each time.
+fn reobserve_waits() -> impl Iterator<Item = std::time::Duration> {
+    let max = std::time::Duration::from_secs(REOBSERVE_MAX_SECS);
+    std::iter::successors(
+        Some(std::time::Duration::from_secs(REOBSERVE_FIRST_SECS)),
+        move |wait| Some((*wait * 2).min(max)),
+    )
+}
 
 /// The functions this worker observes, each with its target and observer
 /// options. Every observer stays `pending` until its function registers and
@@ -156,10 +169,11 @@ fn observe_logged(
 /// Keeps `observer`. It stays `pending` until its function registers; a
 /// refusal is logged. `OBSERVER_ID_CONFLICT` (the extraction consumer's
 /// stable id still held: by a connection of this worker's previous process
-/// the engine has not seen close yet, or by another worker until the
-/// engine's grace period, `observers.observer_grace_ms`, ends) disposes the
-/// refused observer and observes again after [`REOBSERVE_FIRST_SECS`], then
-/// twice as long each time up to [`REOBSERVE_MAX_SECS`].
+/// the engine has not seen close yet, by another worker until the engine's
+/// grace period, `observers.observer_grace_ms`, ends, or by a subscriber the
+/// queue worker has not let go yet) disposes the refused observer and
+/// observes again [`REOBSERVE_FIRST_SECS`] after the refusal, then twice as
+/// long each time up to [`REOBSERVE_MAX_SECS`] ([`reobserve_waits`]).
 async fn keep_observed(
     iii: Arc<IIIClient>,
     mut observer: ObserverHandle,
@@ -167,7 +181,7 @@ async fn keep_observed(
     target: &'static str,
     options: ObserverOptions,
 ) {
-    let mut retry = std::time::Duration::from_secs(REOBSERVE_FIRST_SECS);
+    let mut waits = reobserve_waits();
     loop {
         let Err(error) = observer.ready().await else {
             tracing::debug!(
@@ -179,21 +193,29 @@ async fn keep_observed(
         };
         let code = observer.reason().map(|reason| reason.code);
         let held = code.as_deref() == Some(observe_codes::OBSERVER_ID_CONFLICT);
+        let wait = held.then(|| waits.next()).flatten();
         tracing::warn!(
             function_id = source.function_id(),
             target,
             observer_id = observer.id(),
             error = %error,
-            retry_in_secs = held.then_some(retry.as_secs()),
+            retry_in_secs = wait.map(|wait| wait.as_secs()),
             "observer refused"
         );
-        if !held {
+        let Some(wait) = wait else {
             return;
-        }
-        // The SDK keeps a refused observer and replays it until disposed.
-        let _ = observer.dispose().await;
-        tokio::time::sleep(retry).await;
-        retry = (retry * 2).min(std::time::Duration::from_secs(REOBSERVE_MAX_SECS));
+        };
+        // The SDK keeps a refused observer and replays it until disposed;
+        // the engine holds one the queue worker refused, and disposes it
+        // here. The dispose runs during the wait, and the next observe under
+        // the id goes out once both are over: the SDK tracks an observer by
+        // its id, and a dispose still waiting would drop the new one.
+        let ((), ()) = tokio::join!(
+            async {
+                let _ = observer.dispose().await;
+            },
+            tokio::time::sleep(wait)
+        );
         observer = observe_logged(&iii, &source, target, &options);
     }
 }
@@ -497,5 +519,13 @@ mod tests {
         assert!(seams
             .iter()
             .all(|(_, _, options)| *options == ObserverOptions::default()));
+    }
+
+    #[test]
+    fn a_refused_seam_observes_again_after_5_10_20_then_30_seconds() {
+        // No wait is shorter than the SDK's 5 s dispose wait, which runs
+        // during it (tests/queue_restart.rs measures the waits).
+        let waits: Vec<u64> = reobserve_waits().take(6).map(|w| w.as_secs()).collect();
+        assert_eq!(waits, [5, 10, 20, 30, 30, 30]);
     }
 }

@@ -71,6 +71,10 @@ pub fn worker_name() -> String {
 /// The engine's longest observer id, in bytes.
 const MAX_OBSERVER_ID_LEN: usize = 128;
 
+/// What follows the worker name in a digest id: `:queue:fnv1a64:` and the
+/// digest's 16 hex digits.
+const DIGEST_ID_TAIL_LEN: usize = ":queue:fnv1a64:".len() + 16;
+
 /// The id of the observer that consumes the extraction topic `topic`
 /// (`queue::on-message`): `<worker name>:queue:<topic>`, preceded by
 /// `<namespace>/` when the worker has a namespace
@@ -81,8 +85,10 @@ const MAX_OBSERVER_ID_LEN: usize = 128;
 /// suspended (the engine disposes that one and announces the new one to the
 /// queue worker), and the queue worker hands the new process the jobs the
 /// previous one left unacked. An id longer than the engine's 128 bytes
-/// becomes `<worker name>:queue:fnv1a64:<digest of the whole id>`, cut to
-/// 128 bytes.
+/// becomes `<worker name>:queue:fnv1a64:<digest of the whole id>`, with the
+/// worker name cut to its first 97 bytes (on a char boundary), so the whole
+/// digest always fits: two namespaces, or two long worker names, get two
+/// ids.
 pub fn extraction_observer_id(namespace: Option<&str>, worker_name: &str, topic: &str) -> String {
     let id = match namespace {
         Some(namespace) => format!("{namespace}/{worker_name}:queue:{topic}"),
@@ -91,16 +97,17 @@ pub fn extraction_observer_id(namespace: Option<&str>, worker_name: &str, topic:
     if id.len() <= MAX_OBSERVER_ID_LEN {
         return id;
     }
-    let mut short = format!(
-        "{worker_name}:queue:fnv1a64:{:016x}",
-        fnv1a64(id.as_bytes())
-    );
-    let mut end = short.len().min(MAX_OBSERVER_ID_LEN);
-    while !short.is_char_boundary(end) {
+    let mut end = worker_name
+        .len()
+        .min(MAX_OBSERVER_ID_LEN - DIGEST_ID_TAIL_LEN);
+    while !worker_name.is_char_boundary(end) {
         end -= 1;
     }
-    short.truncate(end);
-    short
+    format!(
+        "{}:queue:fnv1a64:{:016x}",
+        &worker_name[..end],
+        fnv1a64(id.as_bytes())
+    )
 }
 
 /// 64-bit FNV-1a: the same digest in every process and every build.
@@ -1480,13 +1487,63 @@ mod tests {
             long,
             extraction_observer_id(Some(&other), WORKER_NAME, EXTRACTION_QUEUE)
         );
-        // A worker name near the limit is cut on a char boundary.
-        let name = "é".repeat(70);
-        let cut = extraction_observer_id(None, &name, EXTRACTION_QUEUE);
-        assert!(cut.len() <= MAX_OBSERVER_ID_LEN, "{cut}");
         // The published FNV-1a 64 test vectors.
         assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    /// The digest id's worker name and digest, checked whole.
+    fn digest_id_parts(id: &str) -> (&str, &str) {
+        assert!(id.len() <= MAX_OBSERVER_ID_LEN, "{} bytes: {id}", id.len());
+        let (name, digest) = id.rsplit_once(":queue:fnv1a64:").expect(id);
+        assert_eq!(digest.len(), 16, "{id}");
+        assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        (name, digest)
+    }
+
+    #[test]
+    fn a_long_worker_name_leaves_the_whole_digest_in_the_id() {
+        // Up to 97 bytes the name stays whole beside the digest; past it, the
+        // name gives up its tail and the digest stays whole. Two namespaces
+        // of the same length put every id over 128 bytes.
+        let (ops, dev) = ("o".repeat(30), "d".repeat(30));
+        for len in [96, 97, 98, 113, 128, 300] {
+            let name = "w".repeat(len);
+            let in_ops = extraction_observer_id(Some(&ops), &name, EXTRACTION_QUEUE);
+            let in_dev = extraction_observer_id(Some(&dev), &name, EXTRACTION_QUEUE);
+            for id in [&in_ops, &in_dev] {
+                let (kept, _) = digest_id_parts(id);
+                assert_eq!(kept, &name[..len.min(97)], "{id}");
+            }
+            // The digest covers the namespace and the whole name.
+            assert_ne!(
+                in_ops, in_dev,
+                "the same {len}-byte worker name in two namespaces"
+            );
+            let (_, digest) = digest_id_parts(&in_ops);
+            let whole = format!("{ops}/{name}:queue:{EXTRACTION_QUEUE}");
+            assert_eq!(digest, format!("{:016x}", fnv1a64(whole.as_bytes())));
+        }
+        // Without a namespace, a name over 104 bytes takes the digest form.
+        let name = "w".repeat(105);
+        let bare = extraction_observer_id(None, &name, EXTRACTION_QUEUE);
+        let (kept, _) = digest_id_parts(&bare);
+        assert_eq!(kept, &name[..97]);
+        // Two long names that share their first 97 bytes get two ids.
+        let base = "w".repeat(120);
+        assert_ne!(
+            extraction_observer_id(None, &format!("{base}-a"), EXTRACTION_QUEUE),
+            extraction_observer_id(None, &format!("{base}-b"), EXTRACTION_QUEUE)
+        );
+        // A multibyte name is cut on a char boundary: 48 two-byte chars.
+        let name = "é".repeat(70);
+        let id = extraction_observer_id(Some("ops"), &name, EXTRACTION_QUEUE);
+        let (kept, _) = digest_id_parts(&id);
+        assert_eq!(kept, "é".repeat(48), "{id}");
+        assert_ne!(
+            id,
+            extraction_observer_id(Some("dev"), &name, EXTRACTION_QUEUE)
+        );
     }
 
     #[test]
