@@ -26,6 +26,14 @@ import { pushProgress, onProgress } from './lib/progress.mjs';
 import { INDEX_HTML } from './lib/ui.mjs';
 import * as configuration from './lib/configuration.mjs';
 import * as S from './lib/schemas.mjs';
+import {
+  REFRESH_INTERVALS,
+  SCHEDULE_PRESETS,
+  createWikiSchedules,
+  isRawCron,
+  observeRoutes,
+  observeTurnEvents,
+} from './lib/observers.mjs';
 
 const III_URL = process.env.III_URL || process.env.III_ENGINE_URL || 'ws://localhost:49134';
 let cfg = configuration.defaults();
@@ -38,6 +46,10 @@ const worker = registerWorker(III_URL, {
 
 store.setWorker(worker);
 store.ensureRoot().catch((e) => console.error('[openwiki] ensureRoot', e));
+
+// Per-wiki auto-refresh: one cron::on-tick observer per wiki with a cadence.
+const wikiSchedules = createWikiSchedules(worker);
+const applyWikiSchedule = wikiSchedules.apply;
 
 const now = () => new Date().toISOString();
 const inflight = new Set();
@@ -1285,74 +1297,15 @@ worker.registerFunction(
 );
 
 // ---------- HTTP routes ----------
-// One http::on-request observer per route: its args are the method and the
-// path, and the http worker calls the target with each matching request.
-
-function route(function_id, path, method = 'GET') {
-  const handle = worker.observe({ function_id: 'http::on-request', args: { method, path } }, function_id);
-  handle.onStateChange((state, reason) => {
-    if (state === 'error') console.warn('[openwiki] route rejected', method, path, reason?.code, reason?.message);
-  });
-  return handle;
-}
-route('openwiki::http::ui', '/openwiki', 'GET');
-route('openwiki::http::ui', '/openwiki/', 'GET');
-route('openwiki::http::wikis-list', '/openwiki/api/wikis', 'GET');
-route('openwiki::http::models', '/openwiki/api/models', 'GET');
-route('openwiki::http::wikis-create', '/openwiki/api/wikis', 'POST');
-route('openwiki::http::wiki-get', '/openwiki/api/wikis/:id', 'GET');
-route('openwiki::http::wiki-delete', '/openwiki/api/wikis/:id', 'DELETE');
-route('openwiki::http::wiki-status', '/openwiki/api/wikis/:id/status', 'GET');
-route('openwiki::http::pages-list', '/openwiki/api/wikis/:id/pages', 'GET');
-route('openwiki::http::page-get', '/openwiki/api/wikis/:id/pages/:slug', 'GET');
-route('openwiki::http::search', '/openwiki/api/wikis/:id/search', 'GET');
-route('openwiki::http::refresh', '/openwiki/api/wikis/:id/refresh', 'POST');
-route('openwiki::http::schedule-set', '/openwiki/api/wikis/:id/schedule', 'PUT');
-route('openwiki::http::events', '/openwiki/api/wikis/:id/events', 'GET');
-route('openwiki::http::ask', '/openwiki/api/wikis/:id/ask', 'POST');
-route('openwiki::http::diagram', '/openwiki/api/wikis/:id/diagram', 'GET');
+// One http::on-request observer per route (lib/observers.mjs ROUTES).
+observeRoutes(worker);
 
 // ---------- Scheduled refresh (per-wiki cron observers) ----------
-// Each wiki carries its own auto-refresh cadence, set from the UI, never
-// hardcoded. openwiki::set-schedule observes cron::on-tick with the wiki's
-// expression; every tick runs openwiki::cron::refresh-due, which refreshes the
-// wikis whose interval has elapsed. Observer handles live in wikiSchedules so a
-// schedule change or delete can dispose the old one; on boot they are observed
-// again from the stored schedules.
-const wikiSchedules = new Map(); // wikiId -> observer handle
-
-const REFRESH_INTERVALS = {
-  '3h': { cron: '0 0 */3 * * *', ms: 3 * 3600e3 },
-  '6h': { cron: '0 0 */6 * * *', ms: 6 * 3600e3 },
-  '12h': { cron: '0 0 */12 * * *', ms: 12 * 3600e3 },
-  daily: { cron: '0 0 3 * * *', ms: 24 * 3600e3 },
-  weekly: { cron: '0 0 3 * * 1', ms: 7 * 24 * 3600e3 },
-};
-const SCHEDULE_PRESETS = ['off', ...Object.keys(REFRESH_INTERVALS)];
-const isRawCron = (s) => /^(\S+\s+){4,5}\S+$/.test(String(s || ''));
-
-// Observe (or replace) one wiki's cron schedule. 'off' just disposes it. A raw
-// 5-6 field cron is accepted for power users; its due window is the tick
-// cadence itself (refresh whenever it fires). The cron worker rejects an
-// invalid expression with INVALID_CRON_EXPRESSION, logged from the handle.
-function applyWikiSchedule(wikiId, schedule) {
-  const prev = wikiSchedules.get(wikiId);
-  if (prev) {
-    wikiSchedules.delete(wikiId);
-    prev.dispose().catch(() => {
-      /* already gone */
-    });
-  }
-  if (!schedule || schedule === 'off') return;
-  const expression = REFRESH_INTERVALS[schedule] ? REFRESH_INTERVALS[schedule].cron : schedule;
-  const handle = worker.observe({ function_id: 'cron::on-tick', args: { expression } }, 'openwiki::cron::refresh-due', {
-    metadata: { wiki_id: wikiId },
-  });
-  handle.onStateChange((state, reason) => {
-    if (state === 'error') console.warn('[openwiki] failed to schedule', wikiId, reason?.code, reason?.message);
-  });
-  wikiSchedules.set(wikiId, handle);
-}
+// openwiki::set-schedule observes cron::on-tick with the wiki's expression
+// (wikiSchedules, lib/observers.mjs); every tick runs
+// openwiki::cron::refresh-due, which refreshes the wikis whose interval has
+// elapsed. A schedule change or delete disposes the old observer; on boot the
+// stored schedules are observed again.
 
 // A scheduled cron fired: refresh every wiki whose interval has elapsed. All the
 // per-wiki observers point here; the due check keeps it correct regardless of
@@ -1454,13 +1407,10 @@ worker.registerFunction(
   },
 );
 
-// Both observers deliver the event itself (deliver: 'output'). They stay
+// Both observers deliver the event itself (lib/observers.mjs). They stay
 // pending while the harness is absent; generation then uses its synchronous
 // fallback.
-const turnObservers = [
-  worker.observe({ function_id: 'harness::on-turn-completed', deliver: 'output' }, 'openwiki::on-turn-completed'),
-  worker.observe({ function_id: 'harness::on-turn-started', deliver: 'output' }, 'openwiki::on-turn-started'),
-];
+const turnObservers = observeTurnEvents(worker);
 Promise.all(turnObservers.map((h) => h.ready()))
   .then(() => {
     console.log('[openwiki] observing harness turn events (real-time collection + spawn feed)');

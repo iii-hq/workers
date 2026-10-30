@@ -13,6 +13,15 @@ import { AGENT, MockIII, RAW } from './helpers.js';
 
 const EVENT_ID = /^(.+)-([0-9a-f-]{36}-[0-9a-f-]{36})-(\d{8})$/;
 
+/** What the SDK does to a private function's payload under NODE_ENV=development. */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const member of Object.values(value)) deepFreeze(member);
+  }
+  return value;
+}
+
 describe('cursor agent feeds', () => {
   it('registers both feeds as private functions with session args', () => {
     const iii = new MockIII();
@@ -158,6 +167,63 @@ describe('cursor agent feeds', () => {
     await iii.addObserver(AGENT, 'late');
     await emit('late', { n: 1 });
     expect(iii.feedPayloads(AGENT).map((p) => p.seq)).toEqual([1]);
+  });
+
+  it.each([
+    AGENT,
+    RAW,
+  ])('%s: sends a copy of the event, so the caller keeps mutating its own objects', async (id) => {
+    const iii = new MockIII();
+    // The SDK hands a private function's payload to its handler by reference
+    // and, under NODE_ENV=development, deep-freezes it.
+    const original = iii.call.bind(iii);
+    iii.call = async (request: Record<string, unknown>) =>
+      original({ ...request, payload: deepFreeze(request.payload) });
+    const feeds = createAgentFeeds(iii.asClient());
+    const emit = id === AGENT ? feeds.emit : feeds.emitRaw;
+    await iii.addObserver(id, 'm-1');
+
+    const content = { type: 'text', text: 'a' };
+    const event = {
+      method: 'session/update',
+      params: { update: { sessionUpdate: 'agent_message_chunk', content } },
+    };
+    await expect(emit('m-1', event)).resolves.toBe(true);
+
+    expect(Object.isFrozen(event)).toBe(false);
+    expect(Object.isFrozen(content)).toBe(false);
+    content.text += 'b';
+
+    // The frame is the event as it was when emitted.
+    expect(iii.feedEvents(id)).toEqual([
+      {
+        method: 'session/update',
+        params: {
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'a' } },
+        },
+      },
+    ]);
+  });
+
+  it('sends an event structuredClone refuses as its JSON form', async () => {
+    const iii = new MockIII();
+    const { emitRaw } = createAgentFeeds(iii.asClient());
+    await iii.addObserver(RAW, 'j-1');
+    await expect(emitRaw('j-1', { type: 'status', cancel: () => undefined })).resolves.toBe(true);
+    expect(iii.feedEvents(RAW)).toEqual([{ type: 'status' }]);
+  });
+
+  it('logs an event it cannot copy and resolves false', async () => {
+    const iii = new MockIII();
+    const { emitRaw } = createAgentFeeds(iii.asClient());
+    await iii.addObserver(RAW, 'c-1');
+    const event: Record<string, unknown> = { type: 'cyclic', cancel: () => undefined };
+    event.self = event;
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(emitRaw('c-1', event)).resolves.toBe(false);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining(RAW));
+    expect(iii.calls).toEqual([]);
+    warning.mockRestore();
   });
 
   it('logs a refused call and resolves false', async () => {

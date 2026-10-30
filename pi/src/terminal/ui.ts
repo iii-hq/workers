@@ -15,50 +15,10 @@
 
 import type { IIIClient } from 'iii-sdk';
 import { PAGE_JS, STYLES_CSS } from '../ui-assets.generated.js';
+import { registerUiSurface } from './ui-surface.js';
 
 const WORKER = 'pi';
-const ASSET_FN = 'console::ui::asset';
 
 export function registerUi(iii: IIIClient): void {
-  const files: Record<string, { content: string; content_type: string }> = {
-    [`${WORKER}/page.js`]: { content: PAGE_JS, content_type: 'text/javascript' },
-    [`${WORKER}/styles.css`]: { content: STYLES_CSS, content_type: 'text/css' },
-  };
-
-  iii.registerFunction(
-    `${WORKER}::ui-content`,
-    async ({ path }: { path: string }) => {
-      const file = files[path];
-      if (!file) throw new Error(`unknown ui asset: ${path}`);
-      return file;
-    },
-    {
-      description: 'Console UI asset content (console plumbing).',
-      request_format: {
-        type: 'object',
-        required: ['path'],
-        properties: { path: { type: 'string' } },
-      },
-      response_format: {
-        type: 'object',
-        required: ['content'],
-        properties: { content: { type: 'string' }, content_type: { type: 'string' } },
-      },
-      metadata: { internal: true, trace_hidden: true },
-    },
-  );
-
-  const assets = [
-    { kind: 'script', path: `${WORKER}/page.js` },
-    { kind: 'style', path: `${WORKER}/styles.css` },
-  ];
-  for (const args of assets) {
-    const handle = iii.observe({ function_id: ASSET_FN, args }, `${WORKER}::ui-content`);
-    handle.onStateChange((state, reason) => {
-      if (state !== 'error') return;
-      console.warn(
-        `console ui asset ${args.path} rejected: ${reason?.code ?? 'OBSERVER_ERROR'} ${reason?.message ?? ''}`,
-      );
-    });
-  }
+  registerUiSurface(iii, WORKER, { page_js: PAGE_JS, styles_css: STYLES_CSS });
 }

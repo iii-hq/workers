@@ -24,6 +24,11 @@
  * counter per feed, and advances whether or not the frame is observed; `epoch`
  * is a per-process uuid, so consumers order by `(epoch, seq)` and dedup by
  * `event_id`.
+ *
+ * A frame carries a copy of the event taken when it is emitted. A feed is a
+ * private function, and the SDK passes a private function's payload by
+ * reference (deep-frozen under NODE_ENV=development), so the copy keeps the
+ * caller's own objects, which it may still be mutating, out of the call.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -94,6 +99,21 @@ export type Feed = {
   emit: (session_id: string, event: unknown, stableEventId?: string) => Promise<boolean>;
 };
 
+/**
+ * The event as it is at emit time, sharing no object with the caller:
+ * `structuredClone`, or a JSON round trip (what the wire carries) for values
+ * it cannot clone, such as functions.
+ */
+export function snapshot<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value;
+  try {
+    return structuredClone(value);
+  } catch {
+    const text = JSON.stringify(value);
+    return (text === undefined ? undefined : JSON.parse(text)) as T;
+  }
+}
+
 /** Register one feed function and return its emitter. */
 export function createFeed(
   iii: IIIClient,
@@ -127,19 +147,20 @@ export function createFeed(
     const seq = seqBySession.get(session_id) ?? 0;
     seqBySession.set(session_id, seq + 1);
     if (!iii.isObserved(opts.id, { input: { session_id } })) return false;
-    const payload: FeedPayload = {
-      session_id,
-      event_id: stableEventId ?? `${session_id}-${epoch}-${String(seq).padStart(8, '0')}`,
-      seq,
-      epoch,
-      source: opts.source,
-      event,
-    };
+    const event_id = stableEventId ?? `${session_id}-${epoch}-${String(seq).padStart(8, '0')}`;
     try {
+      const payload: FeedPayload = {
+        session_id,
+        event_id,
+        seq,
+        epoch,
+        source: opts.source,
+        event: snapshot(event),
+      };
       await iii.call({ function_id: opts.id, payload, action: CallAction.Void() });
       return true;
     } catch (err) {
-      console.warn(`${opts.id}: frame ${payload.event_id} was not sent: ${String(err)}`);
+      console.warn(`${opts.id}: frame ${event_id} was not sent: ${String(err)}`);
       return false;
     }
   }

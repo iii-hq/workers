@@ -2,7 +2,8 @@
  * Zod schemas compiled to JSON Schema for registerFunction. The iii
  * contract requires request_format and response_format on every
  * registration. Payload/context .passthrough() extra adopter fields
- * (branch, tokens, custom context). The request envelope stays .strict().
+ * (branch, tokens, custom context). The middleware request envelope stays
+ * .strict(); the engine's registration-hook inputs are .passthrough().
  */
 import { z } from 'zod';
 
@@ -87,6 +88,27 @@ export const FunctionIdEnvelopeSchema = z
   })
   .strict();
 
+// The engine's `on_function_registration_function_id` input. Passthrough: the
+// engine owns the envelope and may add fields. `args_format` is present only
+// when the function declares one.
+export const FunctionRegistrationRequestSchema = z
+  .object({
+    function_id: z.string(),
+    description: z.string().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+    namespace: z.string().optional(),
+    private: z.boolean().optional(),
+    observable: z.boolean().optional(),
+    args_format: z.record(z.string(), z.unknown()).optional(),
+    context: z.record(z.string(), z.unknown()).nullable().optional(),
+  })
+  .passthrough();
+
+// An accepted registration is answered with its function id alone, which keeps
+// every other field (private, observable and args_format included) as the
+// function declared it; a denial throws GantryDenied.
+export const FunctionRegistrationResponseSchema = FunctionIdEnvelopeSchema;
+
 // The engine's `on_observer_registration_function_id` input. Passthrough: the
 // engine owns the envelope and may add fields.
 export const ObserverRegistrationRequestSchema = z
@@ -130,8 +152,8 @@ export const FUNCTION_FORMATS = {
     response: VerifyResponseSchema,
   },
   'gantry::on-function-registration': {
-    request: FunctionIdEnvelopeSchema,
-    response: FunctionIdEnvelopeSchema,
+    request: FunctionRegistrationRequestSchema,
+    response: FunctionRegistrationResponseSchema,
   },
   'gantry::on-observer-registration': {
     request: ObserverRegistrationRequestSchema,

@@ -70,9 +70,10 @@ content-hash gate keeps an unchanged repo from churning the wiki.
 
 The full function catalogue (generation, scoped source readers for writer
 sub-agents, cited Q&A via `openwiki::ask`, Mermaid diagrams, `AGENTS.md`
-export, lint) is one `iii worker info openwiki` away. HTTP routes mirror the
-read/generate functions under `/openwiki/api/*`, generation progress streams
-live over SSE, and page citations deep-link to source at the pinned commit.
+export, lint) is one `iii call engine::workers::info name=openwiki` away.
+HTTP routes mirror the read/generate functions under `/openwiki/api/*`,
+generation progress streams live over SSE, and page citations deep-link to
+source at the pinned commit.
 
 ## What openwiki observes
 

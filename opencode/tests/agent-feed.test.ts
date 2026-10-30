@@ -12,6 +12,15 @@ import { AGENT, consumerFor, fakeIii, RAW } from './_helpers/fake-iii.js';
 
 const EVENT_ID = /^(.+)-([0-9a-f-]{36})-(\d{8})$/;
 
+/** What the SDK does to a private function's payload under NODE_ENV=development. */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const member of Object.values(value)) deepFreeze(member);
+  }
+  return value;
+}
+
 describe('agent feeds', () => {
   it('registers both feeds as private functions with session args', () => {
     const fake = fakeIii();
@@ -156,6 +165,53 @@ describe('agent feeds', () => {
     await fake.observe(AGENT, 's1');
     await emit('s1', { n: 1 });
     expect(fake.feedPayloads(AGENT).map((p) => p.seq)).toEqual([1]);
+  });
+
+  it.each([
+    AGENT,
+    RAW,
+  ])('%s: sends a copy of the event, so the caller keeps mutating its own objects', async (id) => {
+    const fake = fakeIii();
+    // The SDK hands a private function's payload to its handler by reference
+    // and, under NODE_ENV=development, deep-freezes it.
+    const original = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: typeof fake.iii.call }).call = (async (req: { payload: unknown }) =>
+      original({ ...req, payload: deepFreeze(req.payload) } as never)) as typeof fake.iii.call;
+    const feeds = createAgentFeeds(fake.iii);
+    const emit = id === AGENT ? feeds.emit : feeds.emitRaw;
+    await fake.observe(id, 's1');
+
+    const part = { type: 'text', text: 'a' };
+    const event = { type: 'text', part };
+    await expect(emit('s1', event)).resolves.toBe(true);
+
+    expect(Object.isFrozen(event)).toBe(false);
+    expect(Object.isFrozen(part)).toBe(false);
+    part.text += 'b';
+
+    // The frame is the event as it was when emitted.
+    expect(fake.feedEvents(id)).toEqual([{ type: 'text', part: { type: 'text', text: 'a' } }]);
+  });
+
+  it('sends an event structuredClone refuses as its JSON form', async () => {
+    const fake = fakeIii();
+    const { emitRaw } = createAgentFeeds(fake.iii);
+    await fake.observe(RAW, 's1');
+    await expect(emitRaw('s1', { type: 'step_start', abort: () => {} })).resolves.toBe(true);
+    expect(fake.feedEvents(RAW)).toEqual([{ type: 'step_start' }]);
+  });
+
+  it('logs an event it cannot copy and resolves false', async () => {
+    const fake = fakeIii();
+    const { emitRaw } = createAgentFeeds(fake.iii);
+    await fake.observe(RAW, 's1');
+    const event: Record<string, unknown> = { type: 'cyclic', abort: () => {} };
+    event.self = event;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(emitRaw('s1', event)).resolves.toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(RAW));
+    expect(fake.calls).toHaveLength(0);
+    warn.mockRestore();
   });
 
   it('logs a refused call and resolves false', async () => {

@@ -21,6 +21,14 @@ export function isGantryNamespaceFunctionId(functionId) {
   return functionId.toLowerCase().startsWith('gantry::');
 }
 
+/**
+ * `on_function_registration_function_id`: the engine calls it with
+ * `{ function_id, description, metadata, namespace, private, observable,
+ * context, args_format? }`. An object answer accepts the registration and
+ * rewrites only the keys it carries: `{ function_id }` keeps the declared
+ * description, metadata, private, observable and args_format. A throw denies
+ * it.
+ */
 export function onFunctionRegistration(input) {
   if (isReservedGovernanceFunctionId(input.function_id)) {
     throw new GantryDenied('REGISTRATION_DENIED', `reserved namespace: ${input.function_id}`);

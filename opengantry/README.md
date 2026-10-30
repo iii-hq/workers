@@ -67,7 +67,7 @@ These are the rules the code is written to. A missing `.gitagent` does not unloc
 
 **The worker process is not Planner.** It does not write missions, manifests, or `gantry init` output. Bootstrap `.gitagent` on the host, then commit missions through the Planner workflow.
 
-**iii worker contract.** Every `registerFunction` passes `request_format` and `response_format`. Payload and context schemas `.passthrough()` extra adopter fields. The request envelope stays strict. Bundle deploy, no `scripts.setup` / `scripts.install`.
+**iii worker contract.** Every `registerFunction` passes `request_format` and `response_format`. Payload and context schemas `.passthrough()` extra adopter fields. The middleware request envelope stays strict. The registration hooks publish the engine's input (`gantry::on-function-registration`: `function_id`, `description`, `metadata`, `namespace`, `private`, `observable`, `args_format`, `context`) and accept fields the engine adds; an accepted function registration is answered with `{ function_id }`, which keeps the declared `private`, `observable` and `args_format`. Bundle deploy, no `scripts.setup` / `scripts.install`.
 
 ## Install
 
