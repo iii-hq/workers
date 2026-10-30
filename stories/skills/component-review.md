@@ -38,9 +38,17 @@ stories::builds::create { "workspace": "<ws>", "line": "main", "wait": true, "wa
 
 A ref line is cached by commit sha, so a second review of the same base is
 free. When a call returns `status: "running"`, poll
-`stories::builds::get { "build_id" }` or bind `stories:build`. A function
-that answers "is still building (build b-…)" is the same situation: wait
-and retry.
+`stories::builds::get { "build_id" }`, or observe `stories::on-build` with
+`harness::observe`, filtered to the workspace:
+
+```json
+{ "function_id": "stories::on-build", "filters": { "input.workspace": { "$eq": "<ws>" } },
+  "label": "stories-build" }
+```
+
+Each delivery is one build state transition (`queued`, `running`, `done`,
+`failed`). A function that answers "is still building (build b-…)" is the
+same situation: wait and retry.
 
 ## 3. Scope the impact
 
