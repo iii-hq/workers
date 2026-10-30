@@ -756,7 +756,8 @@ async fn review_policy_filters_signed_ingress_and_delivers_compact_retryable_eve
 /// against a real engine). The new process's route observer is refused with
 /// `HTTP_ROUTE_CONFLICT` and observed again until the route is free; its
 /// queue observer, under the same id, replaces the suspended one at once, so
-/// the jobs the previous process left queued reach the new one.
+/// the queue worker holds one observer for it. The jobs the previous process
+/// left queued wait in the consumer group's queue and reach the new one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
     let mut fixture = Fixture::start().await;

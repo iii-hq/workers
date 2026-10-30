@@ -156,18 +156,21 @@ The worker observes, for its own plumbing:
 The four webhook observers exist only when `webhooks.enabled` is true. Each
 stays pending while its function's worker is not running.
 
-The job queue is observed as the consumer group `github-webhooks`, whose
-durable queue keeps the jobs nobody has acked, under a stable observer id:
-the worker name (`github`, or the `III_WORKER_NAME` its supervisor sets), then
-`:webhooks:` and the queue, preceded by `<namespace>/` when the worker has a
-namespace (`github:webhooks:github-webhooks` by default; an id over 128 bytes
-keeps a SHA-256 digest of it). When the worker stops, killed or not, the engine
-keeps its observers suspended for its grace period
+The job queue is observed as the consumer group `github-webhooks`. The queue
+worker keeps one durable queue for the group, so the jobs nobody has acked
+wait there whichever process of the worker consumes them next. The observer
+has a stable id: the worker name (`github`, or the `III_WORKER_NAME` its
+supervisor sets), then `:webhooks:` and the queue, preceded by `<namespace>/`
+when the worker has a namespace (`github:webhooks:github-webhooks` by default;
+an id over 128 bytes keeps a SHA-256 digest of it). When the worker stops,
+killed or not, the engine keeps its observers suspended for its grace period
 (`observers.observer_grace_ms`, 30 s by default) and withdraws them from the
 queue and http workers, which frees the webhook route. A restarted worker,
 under the same name and namespace, observes the queue under the same id: the
-engine replaces the suspended observer with the new one, and the queue worker
-hands the new process every job the previous one left unacked, once.
+engine replaces the suspended observer with the new one at once, so the
+consumer keeps one identity and the engine holds one observer for it. The
+group's queue hands the new process every job the previous one left unacked,
+once.
 
 A refusal because another observer still holds the route
 (`HTTP_ROUTE_CONFLICT`) or the queue observer's id (`OBSERVER_ID_CONFLICT`:

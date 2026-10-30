@@ -13,8 +13,8 @@ const TARGET_TIMEOUT_MS: u64 = 8_000;
 const ACTIVATION_WAIT_SECS: u64 = 60;
 
 /// The consumer group of the durable job queue: the queue worker keeps one
-/// durable queue for the group, whose jobs outlive the observers that
-/// consume them.
+/// durable queue for the group, keyed by the group, whose jobs outlive the
+/// observers that consume them.
 pub const WEBHOOK_CONSUMER_GROUP: &str = "github-webhooks";
 
 /// The engine's longest observer id, in bytes.
@@ -23,12 +23,15 @@ const MAX_OBSERVER_ID_LEN: usize = 128;
 /// The id of the observer that consumes the webhook job queue:
 /// `<worker name>:webhooks:<queue>`, preceded by `<namespace>/` when the
 /// worker has a namespace. It is the same for every process of the worker,
-/// so after a restart the new process's `observe` replaces the observer the
-/// previous process left suspended (the engine disposes it and announces the
-/// new one to the queue worker), and the queue worker hands the new process
-/// the jobs the previous one left unacked. An id longer than the engine's
-/// 128 bytes becomes `<worker name>:webhooks:sha256:<digest of the whole id>`,
-/// cut to 128 bytes.
+/// so the consumer keeps one identity across restarts: the new process's
+/// `observe` replaces the observer the previous process left suspended at
+/// once (the engine disposes it and announces the new one to the queue
+/// worker), and the engine holds one observer for the consumer, under that
+/// id, through the grace period. The jobs the previous process left unacked
+/// stay in the durable queue of the consumer group
+/// ([`WEBHOOK_CONSUMER_GROUP`]), which the queue worker keys by the group
+/// whatever the observer id. An id longer than the engine's 128 bytes becomes
+/// `<worker name>:webhooks:sha256:<digest of the whole id>`, cut to 128 bytes.
 pub fn queue_observer_id(namespace: Option<&str>, worker_name: &str, queue: &str) -> String {
     let id = match namespace {
         Some(namespace) => format!("{namespace}/{worker_name}:webhooks:{queue}"),

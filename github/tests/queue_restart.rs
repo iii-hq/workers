@@ -1,8 +1,10 @@
-//! A killed github worker, started again under the same worker name, gets
-//! the webhook jobs it left unacked, once each. Its queue observer observes
-//! under a stable id (`github::webhooks::queue_observer_id`), so the new
-//! process's observe replaces the observer the killed one left suspended,
-//! and the queue worker hands the new process the backlog.
+//! A killed github worker, started again under the same worker name, keeps
+//! its queue observer's identity: it observes under a stable id
+//! (`github::webhooks::queue_observer_id`), so the new process's observe
+//! replaces the observer the killed one left suspended, and the engine and
+//! the queue worker each hold one observer for it, under that id. The jobs
+//! the killed process left unacked wait in the durable queue of its consumer
+//! group, and reach the new process once each.
 //!
 //! Runs the `github` binary against a real engine (`III_ENGINE_BIN`), with
 //! the contract mock of the queue worker and the http worker on connections
@@ -169,7 +171,7 @@ fn held(queue: &Queue) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_killed_worker_gets_its_unacked_jobs_once_after_a_restart() {
+async fn a_restarted_worker_keeps_its_queue_observer_id_and_gets_its_unacked_jobs_once() {
     let Some(engine) = RealEngine::start().await else {
         eprintln!("III_ENGINE_BIN is not set; skipping");
         return;
@@ -289,13 +291,15 @@ async fn a_killed_worker_gets_its_unacked_jobs_once_after_a_restart() {
     );
 
     // The same worker, started again: its observe replaces the suspended
-    // observer, and the queue worker holds the new one under the same id.
+    // observer at once, so the engine lists one observer for it, within the
+    // grace period, and the queue worker holds the new one under the same id.
     let second = Github::start(&engine, dir.path(), 2);
     let listed = wait_observers(&queue_host, QUEUE_ON_MESSAGE, &second, |o| {
-        o.len() == 1 && o[0]["state"] == "active"
+        o.iter().any(|o| o["state"] == "active")
     })
     .await;
     assert_eq!(ids(&listed), [stable.as_str()], "{listed:#?}");
+    assert_eq!(listed[0]["state"], "active", "{listed:#?}");
     wait_until("the queue worker holds the new observer", || {
         held(&queue) == [stable.clone()]
     })
@@ -311,7 +315,8 @@ async fn a_killed_worker_gets_its_unacked_jobs_once_after_a_restart() {
     })
     .await;
 
-    // The backlog reaches the new process, once each.
+    // The backlog, kept in the durable queue of the consumer group, reaches
+    // the new process, once each.
     queue.drain(&queue_host).await.unwrap();
     assert_eq!(queue.len(), 0);
     for job in backlog {
