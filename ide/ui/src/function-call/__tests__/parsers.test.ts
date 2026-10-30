@@ -727,7 +727,7 @@ describe('stripHandlerPrefix', () => {
     ).toBe('S211: no such job')
   })
 
-  it('strips the class prefix stored conversations carry', () => {
+  it('strips the class prefix conversations stored before 0.26 carry', () => {
     expect(
       stripHandlerPrefix(
         'trigger_failed: IIIInvocationError: S211: no such job',
