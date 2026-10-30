@@ -137,7 +137,8 @@ not from a local file. On startup it:
 1. Registers its config schema with the `configuration` worker
    (`configuration::register`, id `storage`).
 2. Fetches the live, env-expanded config (`configuration::get`).
-3. Subscribes to `configuration:updated` events and hot-reloads.
+3. Observes `configuration::on-updated` (its entry's `configuration:updated`
+   events) and hot-reloads.
 
 `--config <path>` is an **optional seed**: when given, the file is loaded and
 sent as `initial_value` the first time the schema is registered (no stored value
