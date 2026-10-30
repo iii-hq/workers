@@ -273,6 +273,31 @@ impl Fixture {
         )
         .await
     }
+    /// The tunnel is ready at `url`: quick-tunnel::on-changed is called with
+    /// the snapshot and iii delivers it (contract: default delivery). Waits
+    /// until github::webhooks::tunnel-changed accepted it: its observer
+    /// (`deliver: output`) hands it the snapshot itself.
+    async fn tunnel_ready(&self, url: &str, generation: &str) {
+        const TARGET: &str = "github::webhooks::tunnel-changed";
+        let before = self.engine.activations().len();
+        let snapshot = self.tunnel.ready(&self.iii, url, generation).await;
+        let delivered = || {
+            self.engine.activations()[before..]
+                .iter()
+                .find(|a| a["target"] == TARGET && a["answered"] == true)
+                .cloned()
+        };
+        wait(|| delivered().is_some()).await;
+        let delivered = delivered().unwrap();
+        assert_eq!(
+            delivered["data"], snapshot,
+            "{TARGET} receives: {delivered}"
+        );
+        assert!(
+            delivered["error"].is_null(),
+            "{TARGET} answered: {delivered}"
+        );
+    }
     async fn flush(&self) {
         call(&self.iii, "github::webhooks::maintain", json!({})).await;
         self.queue.drain(&self.iii).await.unwrap();
@@ -297,8 +322,7 @@ impl Fixture {
             "starting tunnel cannot create a hook"
         );
         self.queue.drain(&self.iii).await.unwrap();
-        self.tunnel
-            .ready(&self.iii, "https://one.trycloudflare.com", "generation-one")
+        self.tunnel_ready("https://one.trycloudflare.com", "generation-one")
             .await;
         self.flush().await;
         for number in [1, 2] {
@@ -461,12 +485,7 @@ async fn recovery_follows_delivery_cursors_and_stops_after_five_pages() {
         // A real URL change still configures the hook once, drains the lifecycle
         // job, and leaves all watches active despite the bounded-history warning.
         fixture
-            .tunnel
-            .ready(
-                &fixture.iii,
-                "https://two.trycloudflare.com",
-                "generation-two",
-            )
+            .tunnel_ready("https://two.trycloudflare.com", "generation-two")
             .await;
         fixture.flush().await;
         assert_eq!(fixture.calls("PATCH").len(), 1);
@@ -568,7 +587,7 @@ async fn local_raw_webhooks_preserve_events_isolate_routes_and_cleanup_shared_ho
         assert_eq!(event["snapshot"]["ci"]["check_run:77"]["conclusion"], "success");
         assert!(fixture.status(2).await["snapshot"]["ci"].as_object().unwrap().is_empty());
         let old_hook = fixture.gh()["hook"].clone();
-        fixture.tunnel.ready(&fixture.iii, "https://two.trycloudflare.com", "generation-two").await;
+        fixture.tunnel_ready("https://two.trycloudflare.com", "generation-two").await;
         fixture.flush().await;
         let new_hook = fixture.gh()["hook"].clone();
         assert_eq!(fixture.calls("POST").len(), 1, "rotation must PATCH, not create/adopt");
@@ -749,12 +768,15 @@ async fn review_policy_filters_signed_ingress_and_delivers_compact_retryable_eve
     }
 }
 
-/// A restarted github worker finds its previous process's observers still
-/// there: the engine keeps them suspended for its grace period, and the http
-/// worker keeps their route meanwhile. The new process's route observer is
-/// refused with `HTTP_ROUTE_CONFLICT` and observed again until the route is
-/// free; its queue observer joins the same consumer group, so the jobs the
-/// previous process left queued reach the new one.
+/// A restarted github worker while the http worker still holds the route of
+/// its previous process: this fake engine withdraws a departed connection's
+/// observers from their hosts when the grace period ends (the engine does it
+/// when the connection closes; tests/queue_restart.rs restarts the worker
+/// against a real engine). The new process's route observer is refused with
+/// `HTTP_ROUTE_CONFLICT` and observed again until the route is free; its
+/// queue observer, under the same id, replaces the suspended one at once, so
+/// the queue worker holds one observer for it. The jobs the previous process
+/// left queued wait in the consumer group's queue and reach the new one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
     let mut fixture = Fixture::start().await;
@@ -776,11 +798,28 @@ async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
                 })
             };
         wait(route_refused).await;
-        // The queue observer is accepted at once: a group has many members.
+        // The queue observer replaces the suspended one at once: the queue
+        // worker holds one observer, under the id of the previous process's.
         fixture
             .engine
             .observed("queue::on-message", "github::webhooks::process")
             .await;
+        let stable = github::webhooks::queue_observer_id(
+            Some(PROVIDER),
+            github::WORKER_NAME,
+            &WebhookConfig::default().queue,
+        );
+        wait(|| {
+            let ids: Vec<String> = fixture
+                .queue
+                .observers
+                .values()
+                .iter()
+                .map(|obs| obs.id().to_owned())
+                .collect();
+            ids == [stable.clone()]
+        })
+        .await;
 
         // The grace period ends: the engine disposes the old observers, and
         // the http worker drops their route.
@@ -819,6 +858,82 @@ async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
+}
+
+/// Another connection holds the queue observer's id: the engine refuses the
+/// github worker's observe with `OBSERVER_ID_CONFLICT`, keeps nothing for it
+/// and ignores its `unobserve`. The worker observes again after 1 s, then 2 s,
+/// then 4 s, and its observer is active once the id is free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_observer_id_another_connection_holds_is_observed_again_after_1_then_2_s() {
+    let dir = tempfile::tempdir().unwrap();
+    let gh_path = dir.path().join("gh-state.json");
+    std::fs::write(
+        &gh_path,
+        json!({"prs":{}, "hook":null, "calls":[]}).to_string(),
+    )
+    .unwrap();
+    let db_path = dir.path().join("private/store.sqlite3");
+    let mut engine = Engine::start().await;
+    let iii = engine.client(PROVIDER).await;
+    let queue = Queue::default();
+    queue.register(&iii);
+    let topic = WebhookConfig::default().queue;
+    let id = github::webhooks::queue_observer_id(Some(PROVIDER), github::WORKER_NAME, &topic);
+
+    // The squatter holds the id.
+    let squatter = engine.client(PROVIDER).await;
+    squatter.register_function(
+        "squatter::process",
+        RegisterFunction::new(|_: Value| Ok::<_, Error>(Value::Null)),
+    );
+    let held = squatter.observe_with(
+        Source::function("queue::on-message").args(json!({"topic": topic, "group": "squatters"})),
+        "squatter::process",
+        ObserverOptions::default().id(id.as_str()),
+    );
+    tokio::time::timeout(Duration::from_secs(10), held.ready())
+        .await
+        .expect("the squatter's observer is active in time")
+        .unwrap();
+
+    let github = engine.client(PROVIDER).await;
+    github::webhooks::register(&github, &config_cell(&gh_path, &db_path), &engine.url).await;
+    // The squatter's observe, then the worker's.
+    let observes = || {
+        engine
+            .frames()
+            .iter()
+            .filter(|f| f["type"] == "observe" && f["id"] == id.as_str())
+            .count()
+    };
+    wait(|| observes() >= 2).await;
+    let refused = tokio::time::Instant::now();
+    tokio::time::sleep_until(refused + Duration::from_millis(4_500)).await;
+    let again = observes() - 2;
+    // At 1 s and at 3 s: neither the 5 s an unconfirmed disposal would wait,
+    // nor a constant 1 s.
+    assert!(
+        (1..=2).contains(&again),
+        "observed again {again} times within 4.5 s of the refusal"
+    );
+
+    held.dispose().await.unwrap();
+    engine
+        .observed("queue::on-message", "github::webhooks::process")
+        .await;
+    let holders: Vec<String> = queue
+        .observers
+        .values()
+        .iter()
+        .map(|obs| obs.id().to_owned())
+        .collect();
+    assert_eq!(holders, std::slice::from_ref(&id));
+    assert_eq!(
+        queue.observers.values()[0].target(),
+        "github::webhooks::process"
+    );
+    engine.shutdown().await;
 }
 
 /// The removed hook of `github::pr::on-event`: disposing an observer drops

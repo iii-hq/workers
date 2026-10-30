@@ -149,20 +149,36 @@ The worker observes, for its own plumbing:
 |---|---|---|
 | `configuration::on-updated` | filters `input.id` = this worker's entry, `input.event_type` = `configuration:updated` | `github::on-config-change` |
 | `http::on-request` | args `{ method: POST, path: /webhooks/github/:endpoint_id, public_webhook: true }` | `github::webhooks::receive` |
-| `queue::on-message` | args `{ topic: webhooks.queue, group: github-webhooks, max_retries: 5, backoff_ms: 1000 }` | `github::webhooks::process` |
+| `queue::on-message` | args `{ topic: webhooks.queue, group: github-webhooks, max_retries: 5, backoff_ms: 1000 }`, observer id `<worker name>:webhooks:<webhooks.queue>` | `github::webhooks::process` |
 | `quick-tunnel::on-changed` | filter `input.tunnel_id` = `webhooks.tunnel_id` | `github::webhooks::tunnel-changed` |
 | `cron::on-tick` | args `{ expression: "*/10 * * * * *" }` | `github::webhooks::maintain` |
 
 The four webhook observers exist only when `webhooks.enabled` is true. Each
-stays pending while its function's worker is not running. The job queue is
-observed as the consumer group `github-webhooks`, so a restarted worker
-consumes the jobs its previous process left queued. After a restart the
-engine keeps the previous process's observers for its grace period
-(`observers.observer_grace_ms`, 30 s by default), and the http worker refuses
-the webhook route to the new one with `HTTP_ROUTE_CONFLICT` meanwhile: the
-worker records the refusal in the webhook health's `last_error`, observes the
-route again after 1 s, then twice as long each time up to 30 s, and clears the
-error once the route is active.
+stays pending while its function's worker is not running.
+
+The job queue is observed as the consumer group `github-webhooks`. The queue
+worker keeps one durable queue for the group, so the jobs nobody has acked
+wait there whichever process of the worker consumes them next. The observer
+has a stable id: the worker name (`github`, or the `III_WORKER_NAME` its
+supervisor sets), then `:webhooks:` and the queue, preceded by `<namespace>/`
+when the worker has a namespace (`github:webhooks:github-webhooks` by default;
+an id over 128 bytes keeps a SHA-256 digest of it). When the worker stops,
+killed or not, the engine keeps its observers suspended for its grace period
+(`observers.observer_grace_ms`, 30 s by default) and withdraws them from the
+queue and http workers, which frees the webhook route. A restarted worker,
+under the same name and namespace, observes the queue under the same id: the
+engine replaces the suspended observer with the new one at once, so the
+consumer keeps one identity and the engine holds one observer for it. The
+group's queue hands the new process every job the previous one left unacked,
+once.
+
+A refusal because another observer still holds the route
+(`HTTP_ROUTE_CONFLICT`) or the queue observer's id (`OBSERVER_ID_CONFLICT`:
+the engine has not seen the previous process's connection close yet, or
+another worker holds the id until its grace period ends) is recorded in the
+webhook health's `last_error`; the worker observes again after 1 s, then twice
+as long each time up to 30 s, and clears the error once the observer is
+active.
 
 ## Configuration
 

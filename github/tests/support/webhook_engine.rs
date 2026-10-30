@@ -6,7 +6,17 @@
 //! departed connection: the observers of the functions it hosted go
 //! `pending` until a new host registers them, and the observers it made are
 //! `suspended` and disposed, at once or, after [`Engine::hold_departed`], when
-//! the test ends the grace period with [`Engine::release_departed`].
+//! the test ends the grace period with [`Engine::release_departed`]. An
+//! `observe` naming the id of a suspended observer replaces it, as the
+//! engine does for a worker back on a new connection: the function's host
+//! hears `observerremoved` for the suspended one and `observeradded` for the
+//! new one. An id another live connection holds is refused with
+//! `OBSERVER_ID_CONFLICT`, and keeps nothing for the refused connection: an
+//! `unobserve` from any connection but the observing one is ignored.
+//! iii's delivery of a call: the host reports the observers it matched in
+//! `invocationresult.observed`, and each active one's target is called with
+//! what the observer's `deliver` names (the output, the input, or the
+//! envelope), as [`Engine::activations`] records.
 //! Registered function handlers and observer hooks run on their real SDK
 //! connections.
 use futures::{SinkExt, StreamExt};
@@ -49,18 +59,32 @@ struct Observer {
     target: Key,
     /// What the function's host sees (`observeradded.observer`).
     view: Value,
+    /// `source.deliver`: `output`, `input`, or the envelope when absent.
+    deliver: Option<String>,
     metadata: Option<Value>,
     observing: Sender,
     state: &'static str,
     /// Whether `observeradded` went to the function's host.
     announced: bool,
 }
+/// An invocation forwarded to a host, until it answers.
+struct Pending {
+    /// Where the answer goes; `None` for an activation, which the engine
+    /// makes itself.
+    caller: Option<Sender>,
+    /// The function called and its input, for the observers its host
+    /// reports matched.
+    function: Key,
+    input: Value,
+}
 #[derive(Default)]
 struct State {
     functions: Mutex<HashMap<Key, Host>>,
     observers: Mutex<HashMap<String, Observer>>,
     revision: AtomicU64,
-    pending: Mutex<HashMap<String, Sender>>,
+    pending: Mutex<HashMap<String, Pending>>,
+    /// Every activation of an observer by iii's delivery, with its answer.
+    activations: Mutex<Vec<Value>>,
     channels: Mutex<HashMap<String, Channel>>,
     /// Every frame a worker sent.
     frames: Mutex<Vec<Value>>,
@@ -128,6 +152,11 @@ impl Engine {
     }
     pub fn dispatched(&self) -> Vec<Value> {
         self.state.dispatched.lock().unwrap().clone()
+    }
+    /// Every activation iii's delivery made: `{ observer_id, target, data }`,
+    /// plus `answered` and the target's `result` or `error` once it answered.
+    pub fn activations(&self) -> Vec<Value> {
+        self.state.activations.lock().unwrap().clone()
     }
     pub fn bytes(&self) -> Vec<Vec<u8>> {
         self.state.bytes.lock().unwrap().clone()
@@ -353,6 +382,14 @@ fn departed(state: &State, tx: &Sender) {
     state.departures.fetch_add(1, Ordering::SeqCst);
 }
 
+/// A new connection observes under the id of the suspended observer `id`:
+/// the suspended one leaves the grace period and is disposed, so the new one
+/// takes its place.
+fn replace_suspended(state: &State, id: &str) {
+    state.held.lock().unwrap().retain(|held| held != id);
+    dispose(state, id);
+}
+
 /// Removes the observer `id`. Its function's host hears `observerremoved` if
 /// it accepted the observer; its observing connection hears `disposed`.
 fn dispose(state: &State, id: &str) {
@@ -427,21 +464,120 @@ fn announce(state: &State, function: &Key) {
     }
 }
 
-/// Forwards an invocation to `host`, as the engine does: answers return to
-/// `caller`, and the engine's transport metadata is injected.
-fn forward(state: &State, mut frame: Value, caller: &Sender, host: &Sender) {
-    if let Some(invocation_id) = frame["invocation_id"].as_str() {
-        state
-            .pending
-            .lock()
-            .unwrap()
-            .insert(invocation_id.to_owned(), caller.clone());
-    }
+/// Forwards an invocation of `function` to `host`, as the engine does:
+/// answers return to `caller`, and the engine's transport metadata is
+/// injected.
+fn forward(state: &State, mut frame: Value, function: Key, caller: &Sender, host: &Sender) {
     if let Some(data) = frame["data"].as_object_mut() {
         data.insert("_caller_worker_id".into(), json!("test-worker"));
     }
+    if let Some(invocation_id) = frame["invocation_id"].as_str() {
+        state.pending.lock().unwrap().insert(
+            invocation_id.to_owned(),
+            Pending {
+                caller: Some(caller.clone()),
+                function,
+                input: frame["data"].clone(),
+            },
+        );
+    }
     state.dispatched.lock().unwrap().push(frame.clone());
     let _ = host.send(frame);
+}
+
+/// The value without the engine's transport field (`_caller_worker_id`),
+/// which iii's delivery removes from every observed input and output.
+fn observed_value(mut value: Value) -> Value {
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("_caller_worker_id");
+    }
+    value
+}
+
+/// iii's delivery of the call `call`, answered with `answer`: each observer
+/// its host matched (`observed`) that is active gets an activation, which
+/// calls its target with the observer's metadata and what its `deliver`
+/// names: the call's output, its input, or the envelope.
+fn activate(state: &State, call: &Pending, answer: &Value, observed: &[String]) {
+    let input = observed_value(call.input.clone());
+    let error = answer.get("error").filter(|e| !e.is_null()).cloned();
+    let output = answer
+        .get("result")
+        .filter(|_| error.is_none())
+        .cloned()
+        .map(observed_value);
+    for id in observed {
+        let observer = state.observers.lock().unwrap().get(id).and_then(|o| {
+            (o.state == "active").then(|| {
+                (
+                    o.target.clone(),
+                    o.deliver.clone(),
+                    o.metadata.clone(),
+                    o.view.get("capture").cloned(),
+                )
+            })
+        });
+        let Some((target, deliver, metadata, capture)) = observer else {
+            continue;
+        };
+        let Some(host) = state
+            .functions
+            .lock()
+            .unwrap()
+            .get(&target)
+            .map(|h| h.tx.clone())
+        else {
+            continue;
+        };
+        let activation_id = uuid::Uuid::new_v4().to_string();
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let data = match deliver.as_deref() {
+            Some("output") => output.clone().unwrap_or(Value::Null),
+            Some("input") => input.clone(),
+            _ => {
+                // The default capture: input, output and caller.
+                let captures = |part: &str| match &capture {
+                    Some(Value::Array(parts)) => parts.iter().any(|p| p == part),
+                    _ => part != "error" && part != "metadata",
+                };
+                let mut envelope = json!({
+                    "observer_id": id, "activation_id": activation_id,
+                    "function_id": call.function.1, "namespace": call.function.0,
+                    "invocation_id": answer["invocation_id"],
+                    "status": if error.is_some() { "error" } else { "success" },
+                    "started_at_ms": 0, "duration_ms": 0.0,
+                });
+                if captures("input") {
+                    envelope["input"] = input.clone();
+                }
+                if let (true, Some(output)) = (captures("output"), &output) {
+                    envelope["output"] = output.clone();
+                }
+                if let Some(error) = &error {
+                    envelope["error"] = error.clone();
+                }
+                envelope
+            }
+        };
+        state.pending.lock().unwrap().insert(
+            invocation_id.clone(),
+            Pending {
+                caller: None,
+                function: target.clone(),
+                input: data.clone(),
+            },
+        );
+        state.activations.lock().unwrap().push(json!({
+            "observer_id": id, "target": target.1, "invocation_id": invocation_id,
+            "data": data, "answered": false,
+        }));
+        let frame = json!({"type":"invokefunction", "invocation_id": invocation_id,
+            "function_id": target.1, "namespace": target.0, "data": data,
+            "metadata": metadata,
+            "activation": {"observer_id": id, "activation_id": activation_id}});
+        state.dispatched.lock().unwrap().push(frame.clone());
+        let _ = host.send(frame);
+    }
 }
 
 fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
@@ -477,6 +613,23 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                     .to_owned(),
             );
             let id = text("id");
+            let existing = state
+                .observers
+                .lock()
+                .unwrap()
+                .get(&id)
+                .map(|o| (o.observing.same_channel(tx), o.state));
+            match existing {
+                Some((false, "suspended")) => replace_suspended(state, &id),
+                Some((false, _)) => {
+                    let reason = json!({"code":"OBSERVER_ID_CONFLICT",
+                        "message":format!("observer `{id}` is owned by another connection")});
+                    let _ = tx.send(json!({"type":"observeresult", "id":id, "state":"error",
+                        "error":reason}));
+                    return;
+                }
+                _ => {}
+            }
             let mut view = json!({"id":id, "args":source["args"], "filters":source["filters"],
                 "target":target.1});
             for field in ["capture", "on"] {
@@ -490,6 +643,7 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                     function: function.clone(),
                     target,
                     view,
+                    deliver: source["deliver"].as_str().map(str::to_owned),
                     metadata: frame.get("metadata").filter(|m| !m.is_null()).cloned(),
                     observing: tx.clone(),
                     state: "pending",
@@ -510,16 +664,49 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                     .send(state_changed(&id, observer.state, refused));
             }
         }
-        "unobserve" => dispose(state, &text("id")),
-        "invocationresult" => {
-            if let Some(target) = state.pending.lock().unwrap().remove(&text("invocation_id")) {
-                // The engine activates `observed` itself and strips it.
-                let mut frame = frame;
-                if let Some(result) = frame.as_object_mut() {
-                    result.remove("observed");
-                }
-                let _ = target.send(frame);
+        "unobserve" => {
+            // Only the observing connection disposes its observer this way;
+            // the engine ignores, and does not answer, anyone else's.
+            let id = text("id");
+            let owned = state
+                .observers
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_some_and(|o| o.observing.same_channel(tx));
+            if owned {
+                dispose(state, &id);
             }
+        }
+        "invocationresult" => {
+            let invocation_id = text("invocation_id");
+            let Some(call) = state.pending.lock().unwrap().remove(&invocation_id) else {
+                return;
+            };
+            // The engine activates `observed` itself and strips it.
+            let mut frame = frame;
+            let observed: Vec<String> = frame
+                .as_object_mut()
+                .and_then(|result| result.remove("observed"))
+                .and_then(|observed| serde_json::from_value(observed).ok())
+                .unwrap_or_default();
+            match &call.caller {
+                Some(caller) => {
+                    let _ = caller.send(frame.clone());
+                }
+                None => {
+                    let mut activations = state.activations.lock().unwrap();
+                    if let Some(activation) = activations
+                        .iter_mut()
+                        .find(|a| a["invocation_id"] == invocation_id.as_str())
+                    {
+                        activation["answered"] = json!(true);
+                        activation["result"] = frame["result"].clone();
+                        activation["error"] = frame["error"].clone();
+                    }
+                }
+            }
+            activate(state, &call, &frame, &observed);
         }
         "invokefunction" => {
             let builtin = match text("function_id").as_str() {
@@ -590,21 +777,22 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                 frame["metadata"] = metadata.unwrap_or(Value::Null);
                 frame["activation"] = json!({"observer_id":observer_id,
                     "activation_id":uuid::Uuid::new_v4().to_string()});
-                forward(state, frame, tx, &host);
+                forward(state, frame, target, tx, &host);
                 return;
             }
             let ns = frame["namespace"].as_str().unwrap_or(namespace).to_owned();
+            let function = (ns, text("function_id"));
             let host = state
                 .functions
                 .lock()
                 .unwrap()
-                .get(&(ns, text("function_id")))
+                .get(&function)
                 .map(|h| (h.tx.clone(), h.registration["private"] == true));
             match host {
                 Some((host, true)) if !host.same_channel(tx) => {
                     fail(tx, &frame, "FORBIDDEN", "private function");
                 }
-                Some((host, _)) => forward(state, frame.clone(), tx, &host),
+                Some((host, _)) => forward(state, frame.clone(), function, tx, &host),
                 None => {
                     fail(
                         tx,
