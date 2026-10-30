@@ -16,15 +16,16 @@ import (
 )
 
 type Gateway struct {
-	mu          sync.Mutex
-	lookup      func(netip.Addr) (string, bool)
-	proxyURL    string
-	tickets     *Tickets
-	active      bool
-	closed      bool
-	lastError   string
-	connections map[*Connection]string
-	servers     map[*http.Server]struct{}
+	mu             sync.Mutex
+	lookup         func(netip.Addr) (string, bool)
+	proxyURL       string
+	tickets        *Tickets
+	active         bool
+	closed         bool
+	lastError      string
+	admissionEpoch uint64
+	connections    map[*Connection]string
+	servers        map[*http.Server]struct{}
 }
 
 func New(lookup func(netip.Addr) (string, bool), proxyURL string, t *Tickets) *Gateway {
@@ -49,12 +50,21 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown mesh peer", http.StatusForbidden)
 		return
 	}
+	g.mu.Lock()
+	epoch := g.admissionEpoch
+	g.mu.Unlock()
 	node, ok := g.lookup(peer.Addr().Unmap())
 	if !ok || node == "" || node == "hub" {
 		http.Error(w, "unknown mesh peer", http.StatusForbidden)
 		return
 	}
 	g.mu.Lock()
+	// Revocation must either see the owner or invalidate its peer lookup.
+	if epoch != g.admissionEpoch {
+		g.mu.Unlock()
+		http.Error(w, "mesh authorization changed", http.StatusServiceUnavailable)
+		return
+	}
 	if !g.active || g.closed {
 		g.mu.Unlock()
 		http.Error(w, "proxy ownership is not active", http.StatusServiceUnavailable)
@@ -136,6 +146,7 @@ func (g *Gateway) CloseNode(name string) {
 }
 func (g *Gateway) closeMatching(match func(string) bool) {
 	g.mu.Lock()
+	g.admissionEpoch++
 	var owners []*Connection
 	for owner, node := range g.connections {
 		if match(node) {

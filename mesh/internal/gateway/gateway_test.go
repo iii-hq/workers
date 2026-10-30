@@ -380,3 +380,48 @@ func TestGatewayReportsInvalidProxyURL(t *testing.T) {
 		})
 	}
 }
+
+func TestGatewayRejectsRemovalDuringPeerLookup(t *testing.T) {
+	seen := make(chan received, 1)
+	proxy := proxyServer(t, seen)
+	entered, resume := make(chan struct{}), make(chan struct{})
+	var authorized, firstLookup atomic.Bool
+	authorized.Store(true)
+	firstLookup.Store(true)
+	g := New(func(netip.Addr) (string, bool) {
+		allowed := authorized.Load()
+		if firstLookup.Swap(false) {
+			close(entered)
+			<-resume
+		}
+		return "laptop", allowed
+	}, proxy.URL, NewTickets(10*time.Second, time.Now))
+	g.SetActive(true)
+	defer g.Close()
+	s := httptest.NewServer(g)
+	defer s.Close()
+	result := make(chan error, 1)
+	go func() {
+		c, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(s.URL, "http"), nil)
+		if c != nil {
+			c.CloseNow()
+		}
+		result <- err
+	}()
+	<-entered
+	authorized.Store(false)
+	g.CloseNode("laptop")
+	close(resume)
+	if err := <-result; err == nil {
+		t.Fatal("removed node completed upgrade after revocation finished using stale lookup")
+	}
+	select {
+	case <-seen:
+		t.Fatal("revoked admission reached upstream")
+	default:
+	}
+	authorized.Store(true)
+	retry := dial(t, "ws"+strings.TrimPrefix(s.URL, "http"), nil)
+	echo(t, retry)
+	<-seen
+}
