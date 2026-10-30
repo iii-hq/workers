@@ -172,3 +172,8 @@ shared lease isolation, namespace routing and tunnel changes through the real
 engine; it does not launch cloudflared or expose the test server publicly.
 The test does not pair an account or call Meta. Without `III_BINARY`, `WHATSAPP_BINARY` and
 `DATABASE_BINARY`, it is skipped.
+
+On macOS, run this test and the `TestDatabaseWorker*` tests with
+`TMPDIR="$(realpath "$TMPDIR")"`. The default temporary directory goes through
+the `/var` symlink, and the worker refuses a data directory whose path contains
+a symlink, so the worker would not start.
