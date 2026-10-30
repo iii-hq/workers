@@ -104,7 +104,7 @@ export function useLiveFrames(
       console.warn('[computer-ui] frame observer failed', err)
     }
 
-    // Recovery: notifications fired while disconnected are gone, the stored
+    // Recovery: notifications sent while disconnected are gone, the stored
     // frame is not, so read it again once the connection is back.
     let wasConnected = true
     offs.push(

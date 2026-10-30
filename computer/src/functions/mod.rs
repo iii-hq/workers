@@ -70,8 +70,8 @@ pub const RUN_DESC: &str =
 pub const SCREENCAST_START_ID: &str = "computer::screencast::start";
 pub const SCREENCAST_START_DESC: &str =
     "Internal: join the live desktop capture for a console viewer (the page or a corner \
-     preview); the first viewer starts it. Each new frame fires computer::frame-changed and is \
-     read with computer::frame. Console-UI plumbing; agents use computer::screenshot. Not an \
+     preview); the first viewer starts it. Each new frame is a call of computer::on-frame-changed \
+     and is read with computer::frame. Console-UI plumbing; agents use computer::screenshot. Not an \
      agent function.";
 pub const SCREENCAST_STOP_ID: &str = "computer::screencast::stop";
 pub const SCREENCAST_STOP_DESC: &str =
@@ -80,7 +80,7 @@ pub const SCREENCAST_STOP_DESC: &str =
 pub const FRAME_ID: &str = "computer::frame";
 pub const FRAME_DESC: &str =
     "Internal: newest screencast frame, or nothing when since_frame is still current. No capture \
-     round-trip; read it on each computer::frame-changed notification. Not an agent function.";
+     round-trip; read it on each computer::on-frame-changed notification. Not an agent function.";
 
 /// One wire-surface entry: everything the golden schema test pins.
 pub struct FunctionSpec {

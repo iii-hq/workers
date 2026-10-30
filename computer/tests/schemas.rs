@@ -93,8 +93,8 @@ fn every_function_has_typed_request_and_response_schemas() {
     }
 }
 
-/// The four observable functions this worker provides (the console binds
-/// them): each one's args (`null`: it takes none) and the event its handler
+/// The four observable functions this worker provides (the console
+/// observes them): each one's args (`null`: it takes none) and the event its handler
 /// returns, which observers observe, are wire surface too.
 #[test]
 fn event_functions_match_golden() {
