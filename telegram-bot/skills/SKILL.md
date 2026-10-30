@@ -85,20 +85,24 @@ bot-side and persists a `chat_id ↔ session_id` mapping; later messages continu
 that session until the next `/start`.
 
 Proactive outbound: the agent can reach the user out-of-band via
-`telegram-bot::notify` (session-scoped), e.g. a cron-bound reminder targeting
-this session.
+`telegram-bot::notify` (session-scoped), e.g. a reminder that a `cron::on-tick`
+observer fires for this session.
 
 Outbound: as the turn runs, `session-manager`, `harness`, and `approval-gate`
-emit events. The worker's bound handlers consume them and render into the
-originating chat — resolving which chat by looking the session up in the
-`chat_id ↔ session_id` mapping. Assistant text streams via message edits (or
-native drafts) and is finalized on `harness::turn-completed`.
+call their event functions (`session::on-message-added`,
+`session::on-message-updated`, `session::on-status-changed`,
+`harness::on-turn-completed`, `approval::on-pending-created`,
+`approval::on-pending-resolved`). The worker's observers deliver each event to
+its handlers, which render into the originating chat — resolving which chat by
+looking the session up in the `chat_id ↔ session_id` mapping. Assistant text
+streams via message edits (or native drafts) and is finalized on
+`harness::on-turn-completed`.
 
 Reminder round-trip: a user asking the bot to "remind me at 5pm" gets an
 immediate reply in the same turn — that is just the normal inbound-to-outbound
 path. The later notification is a *second* turn: when the time comes, something
 must call `harness::send` on that same chat-bound `session_id`, and its assistant
-output then streams back through the same bindings. Because this worker has no
+output then streams back through the same observers. Because this worker has no
 scheduler and no push API, the timing lives elsewhere (an external scheduler,
 cron, or another worker that holds the `session_id`); the bridge's only role is
 routing that session's output back to the chat.

@@ -146,10 +146,10 @@ Final assistant messages are rendered as Telegram HTML (LLM markdown converted t
 
 ## Trace correlation
 
-Telegram ingress and harness bindings share OpenTelemetry baggage so the console can group traces by session and turn:
+Telegram ingress and the observer handlers share OpenTelemetry baggage so the console can group traces by session and turn:
 
 - **`iii.session.id`** — harness session id (or `pending-{chat_id}` before the first send in a chat)
-- **`iii.message.id`** — `tg-{update_id}` at ingress; harness `turn_id` after `harness::send` returns and for binding handlers
+- **`iii.message.id`** — `tg-{update_id}` at ingress; harness `turn_id` after `harness::send` returns and in the observer handlers
 
 `harness::send` receives `options.metadata` with `{ session_id, message_id, surface: "telegram" }` for engine passthrough. Polling mode stamps baggage per update in the poller; webhook mode stamps it in the HTTP handler.
 
@@ -160,6 +160,10 @@ cargo run --release -- --url ws://127.0.0.1:49134 --config ./tests/fixtures/conf
 cargo test
 UPDATE_GOLDENS=1 cargo test   # after schema changes
 ```
+
+`tests/integration.rs` starts an engine-only `iii` on an ephemeral port and the
+worker binary against it. It uses `III_ENGINE_BIN`, or `iii` on PATH, and skips
+without one; `III_E2E_REQUIRE=1` turns the skip into a failure.
 
 HTTP endpoints (http worker default `http://127.0.0.1:3000`), each an
 `http::on-request` observer:

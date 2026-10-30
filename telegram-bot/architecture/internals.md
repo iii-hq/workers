@@ -82,8 +82,8 @@ Two invariants:
   `input.message.role`), but `on-message-added` re-checks the role defensively.
 
 A subtle ordering rule: `on-turn-completed` **suppresses typing before it
-finalizes**, because `turn-completed` can arrive before a stale
-`status-changed(working)` — otherwise typing would restart after the final
+finalizes**, because `harness::on-turn-completed` can arrive before a stale
+`session::on-status-changed` (working) — otherwise typing would restart after the final
 answer.
 
 ### Approval flow end to end
@@ -136,9 +136,9 @@ entry)` async mutex (`entry_lock`), so an `added`, an `updated`, and a finalize
 can't interleave. The lock serializes but does **not** order — so:
 
 - **Revision freshness** (`revision_is_fresh`): an incoming revision must be
-  `>= last applied`, else it's dropped as stale. (`message-added` carries
+  `>= last applied`, else it's dropped as stale. (`session::on-message-added` carries
   revision 0, fresh only for a brand-new entry; `on_message_added` prefers an
-  existing in-memory session so a `message-updated` that raced ahead isn't
+  existing in-memory session so a `session::on-message-updated` that raced ahead isn't
   clobbered by the rev-0 add.)
 - **Finalize reconciliation**: once an entry is finalized, later updates are
   ignored unless they carry a **strictly higher** revision, in which case
