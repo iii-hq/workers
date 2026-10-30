@@ -74,7 +74,15 @@ func (w *testWorkers) Apply(_ context.Context, workers []Worker) ([]WorkerResult
 	w.workers = workers
 	return []WorkerResult{}, nil
 }
-func (w *testWorkers) Status() []WorkerStatus { return []WorkerStatus{} }
+func (w *testWorkers) Status() []WorkerStatus {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	statuses := []WorkerStatus{}
+	for _, worker := range w.workers {
+		statuses = append(statuses, WorkerStatus{Name: worker.Name, Version: worker.Version, State: "running"})
+	}
+	return statuses
+}
 func testNode(t *testing.T) (*Node, ed25519.PrivateKey, *testNetwork, *testWorkers) {
 	t.Helper()
 	pub, k, _ := ed25519.GenerateKey(rand.Reader)
@@ -167,5 +175,58 @@ func TestSignedUpdateRequestsServiceRestart(t *testing.T) {
 	}
 	if err := n.Run(t.Context()); !errors.Is(err, ErrRestartRequired) {
 		t.Fatalf("did not request service restart: %v", err)
+	}
+}
+
+func TestApplyResolutionErrorsRemainVisibleAndClear(t *testing.T) {
+	n, k, _, w := testNode(t)
+	apply := func(payload string) {
+		t.Helper()
+		signed, err := Sign(k, "mesh-node::workers::apply", json.RawMessage(payload), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := n.handle(t.Context(), "mesh-node::workers::apply", signed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply(`{"namespace":"project","workers":[{"name":"old","version":"1","artifact_url":"https://example.com/old","sha256":"old-digest"}]}`)
+	apply(`{"namespace":"project","workers":[{"name":"valid","version":"2","artifact_url":"https://example.com/valid","sha256":"valid-digest"},{"name":"unsupported","resolution_error":"worker has no binary for target","artifact_url":"https://example.com/must-not-run"}]}`)
+	if len(w.workers) != 1 || w.workers[0].Name != "valid" {
+		t.Fatalf("controller must receive only complete runnable desired set, got %+v", w.workers)
+	}
+	raw, err := json.Marshal(n.Status())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status struct {
+		Workers []struct{ Name, Version, State, Error string }
+	}
+	if err = json.Unmarshal(raw, &status); err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Workers) != 2 {
+		t.Fatalf("lost desired worker: %s", raw)
+	}
+	found := map[string]struct{ Name, Version, State, Error string }{}
+	for _, worker := range status.Workers {
+		found[worker.Name] = worker
+	}
+	if found["valid"].State != "running" || found["unsupported"].State != "error" || found["unsupported"].Error != "worker has no binary for target" || found["unsupported"].Version != "" {
+		t.Fatalf("status %s", raw)
+	}
+	apply(`{"namespace":"project","workers":[{"name":"unsupported","version":"3","artifact_url":"https://example.com/recovered","sha256":"recovered-digest"}]}`)
+	raw, _ = json.Marshal(n.Status())
+	json.Unmarshal(raw, &status)
+	if len(status.Workers) != 1 || status.Workers[0].Name != "unsupported" || status.Workers[0].State != "running" || status.Workers[0].Error != "" {
+		t.Fatalf("stale resolution error after recovery: %s", raw)
+	}
+	apply(`{"namespace":"project","workers":[{"name":"unsupported","resolution_error":"another resolution failure"}]}`)
+	if len(w.workers) != 0 {
+		t.Fatalf("previously runnable failed worker retained: %+v", w.workers)
+	}
+	apply(`{"namespace":"project","workers":[]}`)
+	if len(n.Status().Workers) != 0 {
+		t.Fatalf("removed error retained: %+v", n.Status().Workers)
 	}
 }

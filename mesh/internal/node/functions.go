@@ -12,10 +12,11 @@ import (
 )
 
 type Worker struct {
-	Name        string `json:"name"`
-	Version     string `json:"version"`
-	ArtifactURL string `json:"artifact_url"`
-	SHA256      string `json:"sha256"`
+	Name            string `json:"name"`
+	Version         string `json:"version"`
+	ArtifactURL     string `json:"artifact_url"`
+	SHA256          string `json:"sha256"`
+	ResolutionError string `json:"resolution_error,omitempty"`
 }
 type WorkerResult struct {
 	Name  string `json:"name"`
@@ -27,6 +28,7 @@ type WorkerStatus struct {
 	State    string `json:"state"`
 	Restarts int    `json:"restarts"`
 	LogTail  string `json:"log_tail"`
+	Error    string `json:"error,omitempty"`
 }
 type WorkersRequest struct {
 	Namespace string   `json:"namespace"`
@@ -65,7 +67,7 @@ func (n *Node) Status() Status {
 	if ip := n.mesh.Self(); ip.IsValid() {
 		address = ip.String()
 	}
-	s := Status{Name: name, Address: address, OS: n.platform.OS, Arch: n.platform.Arch, Target: n.platform.Target, Version: n.version, Operator: n.operator, ClockSkewSecs: n.verifier.LastSkew().Seconds(), Peers: n.mesh.Peers(), Workers: n.workers.Status(), Drives: []DriveStatus{}}
+	s := Status{Name: name, Address: address, OS: n.platform.OS, Arch: n.platform.Arch, Target: n.platform.Target, Version: n.version, Operator: n.operator, ClockSkewSecs: n.verifier.LastSkew().Seconds(), Peers: n.mesh.Peers(), Workers: n.workerStatus(), Drives: []DriveStatus{}}
 	if n.drives != nil {
 		s.Drives = n.drives.Status()
 	}
@@ -79,6 +81,23 @@ func (n *Node) Status() Status {
 		s.Drives = []DriveStatus{}
 	}
 	return s
+}
+
+func (n *Node) workerStatus() []WorkerStatus {
+	n.statusMu.RLock()
+	failures := append([]WorkerStatus{}, n.workerErrors...)
+	n.statusMu.RUnlock()
+	failed := make(map[string]bool, len(failures))
+	for _, worker := range failures {
+		failed[worker.Name] = true
+	}
+	statuses := []WorkerStatus{}
+	for _, worker := range n.workers.Status() {
+		if !failed[worker.Name] {
+			statuses = append(statuses, worker)
+		}
+	}
+	return append(statuses, failures...)
 }
 
 func (n *Node) Register(client *iii.Client) error {
@@ -126,7 +145,23 @@ func (n *Node) handle(ctx context.Context, fn string, s Signed) (json.RawMessage
 			return nil, err
 		}
 		n.namespace = request.Namespace
-		result, err = n.workers.Apply(ctx, request.Workers)
+		runnable := []Worker{}
+		failures := []WorkerStatus{}
+		failedResults := []WorkerResult{}
+		for _, worker := range request.Workers {
+			if worker.ResolutionError != "" {
+				failures = append(failures, WorkerStatus{Name: worker.Name, State: "error", Error: worker.ResolutionError})
+				failedResults = append(failedResults, WorkerResult{Name: worker.Name, Error: worker.ResolutionError})
+			} else {
+				runnable = append(runnable, worker)
+			}
+		}
+		n.statusMu.Lock()
+		n.workerErrors = failures
+		n.statusMu.Unlock()
+		var results []WorkerResult
+		results, err = n.workers.Apply(ctx, runnable)
+		result = append(results, failedResults...)
 	case "mesh-node::drives::apply":
 		var request DrivesRequest
 		if err = json.Unmarshal(raw, &request); err != nil {

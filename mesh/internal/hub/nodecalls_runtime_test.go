@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,9 +34,11 @@ func (signedNetwork) GatewayChanges() <-chan struct{} { return nil }
 func (signedNetwork) Removed() <-chan struct{}        { return nil }
 
 type signedWorkers struct {
-	mu      sync.Mutex
-	runtime node.Runtime
-	applied chan node.WorkersRequest
+	mu               sync.Mutex
+	runtime          node.Runtime
+	applied          chan node.WorkersRequest
+	workers          []node.Worker
+	started, stopped []string
 }
 
 func (w *signedWorkers) SetRuntime(_ context.Context, r node.Runtime) error {
@@ -47,12 +50,36 @@ func (w *signedWorkers) SetRuntime(_ context.Context, r node.Runtime) error {
 func (w *signedWorkers) Apply(_ context.Context, workers []node.Worker) ([]node.WorkerResult, error) {
 	w.mu.Lock()
 	namespace := w.runtime.Namespace
+	oldNames, nextNames := map[string]bool{}, map[string]bool{}
+	for _, worker := range w.workers {
+		oldNames[worker.Name] = true
+	}
+	for _, worker := range workers {
+		nextNames[worker.Name] = true
+		if !oldNames[worker.Name] {
+			w.started = append(w.started, worker.Name)
+		}
+	}
+	for _, worker := range w.workers {
+		if !nextNames[worker.Name] {
+			w.stopped = append(w.stopped, worker.Name)
+		}
+	}
+	w.workers = append([]node.Worker{}, workers...)
 	w.mu.Unlock()
-	w.applied <- node.WorkersRequest{Namespace: namespace, Workers: workers}
+	if w.applied != nil {
+		w.applied <- node.WorkersRequest{Namespace: namespace, Workers: workers}
+	}
 	return []node.WorkerResult{}, nil
 }
 func (w *signedWorkers) Status() []node.WorkerStatus {
-	return []node.WorkerStatus{{Name: "ide", Version: "0.12", State: "running"}}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	statuses := []node.WorkerStatus{}
+	for _, worker := range w.workers {
+		statuses = append(statuses, node.WorkerStatus{Name: worker.Name, Version: worker.Version, State: "running"})
+	}
+	return statuses
 }
 
 type registeredNodeRPC struct {
@@ -210,5 +237,122 @@ func TestDelayedRegisteredNodeReceivesHubSignedLatestConfig(t *testing.T) {
 	case <-h.nodeReconciler.done:
 	case <-time.After(time.Second):
 		t.Fatal("reconciliation did not stop")
+	}
+}
+
+type signedDrives struct {
+	mu      sync.Mutex
+	applied []node.DrivesRequest
+}
+
+func (d *signedDrives) Apply(_ context.Context, request node.DrivesRequest) ([]node.DriveStatus, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.applied = append(d.applied, request)
+	return []node.DriveStatus{}, nil
+}
+func (*signedDrives) Status() []node.DriveStatus { return []node.DriveStatus{} }
+
+func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *testing.T) {
+	h, _ := nodeCallHub(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	r := &registeredNodeRPC{registered: map[string]bool{}, replies: map[string]chan map[string]json.RawMessage{}, notReady: make(chan struct{}, 8)}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { r.serve(ctx, w, req) }))
+	defer server.Close()
+	client := iii.New("ws"+strings.TrimPrefix(server.URL, "http"), iii.WithName("mesh-node"), iii.WithNamespace("default"))
+	defer client.Close()
+	if err := client.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	workers, drives := &signedWorkers{}, &signedDrives{}
+	n, err := node.New(node.Options{Mesh: signedNetwork{}, HubIdentity: h.Coordinator.Identity().Public().(ed25519.PublicKey), Version: h.Version, Operator: "alice", Workers: workers, Drives: drives})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = n.Register(client); err != nil {
+		t.Fatal(err)
+	}
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		r.mu.Lock()
+		ready := len(r.registered) == 4 && r.namespace == "default"
+		r.mu.Unlock()
+		if ready {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("handlers not ready")
+		}
+	}
+	h.nodeClient = r
+	var resolveFailure error
+	h.resolveArtifact = func(_ context.Context, worker, version, target string) (registry.Artifact, error) {
+		if worker == "unsupported" && resolveFailure != nil {
+			return registry.Artifact{}, resolveFailure
+		}
+		return registry.Artifact{Version: "1.0.0", URL: "https://artifacts.example/" + worker, SHA256: strings.Repeat("a", 64)}, nil
+	}
+	for _, failure := range []error{registry.ErrNotBinary, registry.ErrNoTarget} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			resolveFailure = nil
+			h.config.Nodes["laptop"] = NodeConfig{Workers: []string{"old"}}
+			if err = h.OnNodeOnline(ctx, "laptop"); err != nil {
+				t.Fatal(err)
+			}
+			resolveFailure = failure
+			h.config.Nodes["laptop"] = NodeConfig{Workers: []string{"unsupported", "valid"}}
+			h.config.Drives = map[string]DriveConfig{"work": {Server: "desktop", Nodes: []string{"laptop"}}}
+			if err = h.OnNodeOnline(ctx, "laptop"); !errors.Is(err, failure) {
+				t.Fatalf("aggregate error %v, want %v", err, failure)
+			}
+			workers.mu.Lock()
+			current := append([]node.Worker{}, workers.workers...)
+			started, stopped := append([]string{}, workers.started...), append([]string{}, workers.stopped...)
+			workers.mu.Unlock()
+			if len(current) != 1 || current[0].Name != "valid" || !slices.Contains(started, "valid") || !slices.Contains(stopped, "old") || slices.Contains(started, "unsupported") {
+				t.Fatalf("runnable=%+v started=%v stopped=%v", current, started, stopped)
+			}
+			drives.mu.Lock()
+			lastDrive := drives.applied[len(drives.applied)-1]
+			drives.mu.Unlock()
+			if len(lastDrive.Mount) != 1 || lastDrive.Mount[0].Name != "work" {
+				t.Fatalf("resolution failure blocked drives: %+v", lastDrive)
+			}
+			status, err := h.fetchNodeStatus(ctx, "laptop")
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := json.Marshal(status)
+			var wire struct {
+				Workers []struct{ Name, Version, State, Error string }
+			}
+			json.Unmarshal(raw, &wire)
+			states := map[string]struct{ Name, Version, State, Error string }{}
+			for _, worker := range wire.Workers {
+				states[worker.Name] = worker
+			}
+			if len(states) != 2 || states["valid"].State != "running" || states["unsupported"].State != "error" || states["unsupported"].Error != failure.Error() {
+				t.Fatalf("node status lost failure: %s", raw)
+			}
+
+			h.config.Nodes["laptop"] = NodeConfig{Workers: []string{"unsupported"}}
+			h.config.Drives = map[string]DriveConfig{"archive": {Server: "desktop", Nodes: []string{"laptop"}}}
+			if err = h.OnNodeOnline(ctx, "laptop"); !errors.Is(err, failure) {
+				t.Fatalf("drive-only aggregate error: %v", err)
+			}
+			workers.mu.Lock()
+			running := len(workers.workers)
+			workers.mu.Unlock()
+			drives.mu.Lock()
+			lastDrive = drives.applied[len(drives.applied)-1]
+			drives.mu.Unlock()
+			if running != 0 || len(lastDrive.Mount) != 1 || lastDrive.Mount[0].Name != "archive" {
+				t.Fatalf("all unresolved workers blocked drive-only state: running=%d drives=%+v", running, lastDrive)
+			}
+		})
 	}
 }

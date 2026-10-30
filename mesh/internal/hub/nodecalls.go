@@ -116,17 +116,25 @@ func (h *Hub) OnNodeOnline(ctx context.Context, name string) error {
 	}
 	cfg := h.Config()
 	workers := node.WorkersRequest{Namespace: h.Namespace, Workers: []node.Worker{}}
+	resolutionErrors := map[string]error{}
+	var applyErrors []error
 	for _, spec := range cfg.Nodes[name].Workers {
 		worker, version, pinned := strings.Cut(spec, "@")
 		if !pinned {
 			version = "*"
 		}
+		var artifact registry.Artifact
+		var resolveErr error
 		if len(name+"__"+worker) > 64 {
-			return fmt.Errorf("worker configuration ID exceeds 64 characters: %s", worker)
+			resolveErr = fmt.Errorf("worker configuration ID exceeds 64 characters: %s", worker)
+		} else {
+			artifact, resolveErr = h.resolveForNode(ctx, worker, version, status.Target)
 		}
-		artifact, err := h.resolveForNode(ctx, worker, version, status.Target)
-		if err != nil {
-			return fmt.Errorf("resolve %s: %w", worker, err)
+		if resolveErr != nil {
+			resolutionErrors[worker] = resolveErr
+			applyErrors = append(applyErrors, fmt.Errorf("resolve %s: %w", worker, resolveErr))
+			workers.Workers = append(workers.Workers, node.Worker{Name: worker, ResolutionError: resolveErr.Error()})
+			continue
 		}
 		workers.Workers = append(workers.Workers, node.Worker{Name: worker, Version: artifact.Version, ArtifactURL: artifact.URL, SHA256: artifact.SHA256})
 	}
@@ -139,12 +147,12 @@ func (h *Hub) OnNodeOnline(ctx context.Context, name string) error {
 		return fmt.Errorf("invalid workers apply result: %w", err)
 	}
 	for _, result := range results {
-		if result.Error != "" {
-			return fmt.Errorf("worker %s: %s", result.Name, result.Error)
+		if result.Error != "" && resolutionErrors[result.Name] == nil {
+			applyErrors = append(applyErrors, fmt.Errorf("worker %s: %s", result.Name, result.Error))
 		}
 	}
 	_, err = h.callNode(ctx, name, "mesh-node::drives::apply", nodeDrives(cfg, name))
-	return err
+	return errors.Join(append(applyErrors, err)...)
 }
 func nodeDrives(cfg Config, name string) node.DrivesRequest {
 	request := node.DrivesRequest{Serve: []node.Drive{}, Mount: []node.Drive{}}

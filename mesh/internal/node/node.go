@@ -35,6 +35,8 @@ type Runtime struct{ Node, Namespace, URL string }
 // SetRuntime restarts desired workers when identity, namespace or URL changes.
 // An empty URL suspends them until authenticated gateway discovery recovers.
 // Controllers must serialize Status with their own mutations.
+// Apply receives the complete runnable desired set; omitted names must stop,
+// including workers whose signed resolution failures are retained by Node.
 type WorkerController interface {
 	SetRuntime(context.Context, Runtime) error
 	Apply(context.Context, []Worker) ([]WorkerResult, error)
@@ -63,6 +65,8 @@ type Node struct {
 	drives            DriveController
 	updater           *Updater
 	applyMu           sync.Mutex
+	statusMu          sync.RWMutex
+	workerErrors      []WorkerStatus
 	namespace         string
 	restart           chan struct{}
 	restartOnce       sync.Once
