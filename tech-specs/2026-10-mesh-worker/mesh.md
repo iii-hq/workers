@@ -129,7 +129,8 @@ drives: {}                        # <drive>: {server: <linux node>, nodes: ["*" 
   list (see [Gateway](#gateway)).
 - **Hot reload:**
   - `links`, `nodes`, `drives` and `trusted_proxies` apply live: through map
-    deltas and `mesh-node::*::apply` calls.
+    deltas and `mesh-node::*::apply` calls. A change to a node's grants also
+    closes and re-authenticates its sessions (see [Gateway](#gateway)).
   - A change to `listen` or `gateway_port` rebinds the listener, and keeps the
     last good listener and config if the bind fails.
   - `public_url` is baked into the one-liners at the moment
@@ -149,8 +150,8 @@ It holds:
 - the nodes: name, node key, machine key, address, os/arch, version, operator,
   `joined_at`, `last_seen`, `ephemeral`;
 - the refused keys;
-- in phase 3, the issued join tokens: a hash of each token's secret, with its
-  expiry and whether it is ephemeral.
+- in phase 3, the issued join tokens: a hash of each token's secret, its
+  expiry, whether it is reusable and ephemeral, and the nodes it created.
 
 Use the repo's worker data-dir convention for `<data dir>`.
 
@@ -203,12 +204,20 @@ A name gets `-2`, `-3`… when it would equal one of:
 
 A node keeps its name while offline, until it is removed.
 
-**Join token** (phase 3). `mesh::join::token {ephemeral?, expires_in_secs?}`
+**Join token** (phase 3). `mesh::join::token {ephemeral?, reusable?, expires_in_secs?}`
 returns `iiimj_…`, which carries `public_url`, the hub identity key and a
 random secret that state holds only as a hash. It is for unattended installs
 (`mesh join --token …`). Because each token has its own secret, it can
 expire, and `mesh::join::revoke {token_id}` revokes it, all without touching
 the device code.
+
+A token must not undo a removal:
+- **Single use by default.** Its first registration consumes it.
+- **Reusable only for CI.** `reusable: true` is accepted only with
+  `ephemeral: true`, for CI runners that join again and again.
+- **Removal revokes it.** State records which token created each node, and
+  `mesh::nodes::remove` revokes that token. A removed machine that kept its
+  token therefore cannot register fresh keys with it.
 
 An ephemeral node leaves the mesh 3 minutes after its last map poll. It is
 never part of `"*"` in drives and must be named there.
@@ -257,8 +266,20 @@ these functions, which the gateway prefixes with `<node>::`:
 | `mesh-node::workers::apply` | `{workers: [{name, artifact_url, sha256, version}]}` → per-worker result |
 | `mesh-node::drives::apply` | `{serve: [...], mount: [...]}` → per-drive result |
 
-Only the hub calls them. The root `iii-permissions.yaml` denies
-`*::mesh-node::*` to agents.
+**Only the hub can drive them.** Every `mesh-node::*` request is
+`{payload, ts, nonce, sig}`, where `sig` is the hub identity key's ed25519
+signature over the function id, payload, `ts` and `nonce`. The node pinned
+that key at join. It refuses:
+- an unsigned request;
+- a bad signature;
+- a `ts` more than 60 s from its clock;
+- a nonce it has seen in that window.
+
+So no agent can drive a node's supervisor or drives, however the call
+reaches it: directly, through `fp::pipe` or `fp::batch`, or through any other
+worker. The root `iii-permissions.yaml` also denies `*::mesh-node::*` to
+agents, and `fp` refuses those ids (see
+[Required changes](#required-changes-outside-mesh)).
 
 **Versions.** When a node connects, the hub compares versions. If they
 differ, it calls `mesh-node::update` before it applies workers or drives. The
@@ -327,22 +348,58 @@ rbac:
     match.
   - `allow_trigger_type_registration: true` and
     `allowed_trigger_types: [<node>::*, configuration, …default_trigger_types]`;
-  - `context: {mesh_node: <node>}`.
+  - `context: {mesh_node: <node>, session_key: <32 random bytes>}`. The hub
+    keeps the session key live until the gateway connection closes.
 - **`mesh::middleware`** receives every call a node makes except `engine::*`,
-  with its payload, *instead of* the target. It refuses a `configuration::*`
-  call on an entry not named `<node>.*`, because `configuration::get` returns
-  env-expanded values and so could leak other workers' keys. Otherwise it
-  forwards the call to its target and returns the target's result. Its
-  timeout follows the proxy's 610 s middleware budget.
-- **`mesh::on-trigger-registration`** refuses a `configuration` trigger whose
-  filter names an entry not under `<node>.*`.
+  with its payload and context, *instead of* the target.
+  - **Session check.** It first requires a live `context.session_key`. An
+    agent that calls `mesh::middleware` itself, directly or through `fp`, has
+    no key and is refused. Without this check the middleware would forward
+    the agent's calls with `mesh`'s own authority.
+  - **Configuration.** It confines `configuration::*` to entries named
+    `<node>.*`, and never lets hub environment values reach a node:
+    - `configuration::get` is forwarded with `raw: true`;
+    - `ensure`, `register` and `set` are forwarded with `expand: false` (see
+      [Required changes](#required-changes-outside-mesh));
+    - every other `configuration::*` call is refused.
+
+    Without this, a node could seed `<node>.probe` with `${OPENAI_API_KEY}`
+    and read the key back expanded.
+  - **Everything else** is forwarded to its target, and the target's result
+    is returned. The timeout follows the proxy's 610 s middleware budget.
+- **`mesh::on-trigger-registration`** also requires a live session key in the
+  context. It refuses:
+  - any `harness::hook::*` binding: a hook sees, and can rewrite, the
+    arguments and results of every call on the hub, approved ones included;
+  - a `configuration` binding whose filter names an entry outside `<node>.*`;
+  - a binding to any type outside the grant.
+
+  `ide` binds `harness::hook::pre-turn`, `post-turn`, `pre-trigger` and
+  `post-trigger` for its turn log (`ide/src/turns.rs`). A refused binding
+  only logs a warning and leaves a remote `ide`'s turn log without session
+  history. That is the intended v1 behaviour: remote hooks are a non-goal.
 
 Functions are confined without a hook: the proxy prefixes every registration,
 and the engine already refuses a duplicate id.
 
-`default_allow` and `default_trigger_types` are the calls and bindings the
-supported workers make at runtime. The builder derives them by running each
-supported worker behind the gateway (see [Open items](#open-items)).
+**A trigger type may be granted to nodes only when its deliveries can be
+confined to the node's own data.** `default_allow` and
+`default_trigger_types` are the calls and bindings the supported workers make
+at runtime that pass that test. The builder derives them by running each
+supported worker behind the gateway (see [Open items](#open-items)). In v1
+they never include:
+- `harness::hook::*`;
+- state or stream subscriptions;
+- `queue`, `http` or `cron` types;
+- any type whose deliveries carry other sessions' data.
+
+**Grant changes revoke live sessions.** Grants are fixed when a connection
+authenticates. So when anything that feeds a node's grants changes, the
+gateway closes every connection that node has, and drops their session keys.
+That covers `nodes.<name>.allow`, `nodes.<name>.workers`, the default lists
+after a hub upgrade, and removal. The workers reconnect and authenticate
+against the current grants. The engine drops the old sessions' registrations
+and trigger bindings on disconnect, so nothing granted earlier survives.
 
 ## Drives
 
@@ -387,7 +444,7 @@ Hub functions:
 | `mesh::nodes::remove` | `{name}` → `{removed: true, code, install}`; the code has been cycled | needs approval |
 | `mesh::join::code` | `{}` → `{code, install: {unix, windows}}` | needs approval (it is a credential) |
 | `mesh::join::cycle` | `{}` → `{code, install}` | needs approval |
-| `mesh::join::token` (phase 3) | `{ephemeral?, expires_in_secs?}` → `{token_id, token, install}` | needs approval |
+| `mesh::join::token` (phase 3) | `{ephemeral?, reusable?, expires_in_secs?}` → `{token_id, token, install}`; `reusable` requires `ephemeral` | needs approval |
 | `mesh::join::revoke` (phase 3) | `{token_id}` → `{revoked: true}` | needs approval |
 
 Internal functions, denied to agents: `mesh::auth`, `mesh::middleware`,
@@ -442,6 +499,13 @@ These ship before or with phase 1.
      not exist.
    - **Shape:** one shared predicate used by both, plus a test per call path:
      a direct call, `fp::pipe` and `fp::batch`.
+   - **fp refused steps.** `fp`'s refused-step ids are exact today
+     (`fp/src/pipe.rs`). The same predicate makes them also refuse:
+     - `<segment>::<refused id>`;
+     - `*::mesh-node::*`;
+     - `mesh`'s internal functions.
+
+     A pipe or batch can then no longer reach what a direct call is denied.
 
    The node's `ide` then applies its own configured roots from `<node>.ide`.
    Approval-gate's access-watch binds only unprefixed `shell::*` / `coder::*`
@@ -460,6 +524,17 @@ These ship before or with phase 1.
    compose exposes resolution as a bus function, use it. Otherwise add one
    there, so registry logic keeps one owner. Do not write a registry client
    in `mesh`.
+4. **configuration: entries that never expand.** Today `configuration::get`
+   expands `${VAR:default}` against the configuration process's environment
+   unless the read is `raw: true` (`docs/sops/configuration.md`).
+   - **The change:** `ensure`, `register` and `set` accept `expand: false`,
+     stored with the entry. For such an entry, `get`, `list`, change-trigger
+     payloads and mutator results always return the stored value unexpanded.
+   - **Who sets it:** `mesh::middleware` forces it on every node mutation, so
+     a node cannot make the hub expand a template. An operator-created
+     `<node>.*` entry that a node writes becomes non-expanding too.
+   - **Semantics:** a node's config never draws on the hub's environment.
+     Expanding against the node's own environment is a follow-up.
 
 ## Boundaries
 
@@ -472,9 +547,14 @@ These ship before or with phase 1.
 - A node:
   - registers only under `<node>::`;
   - calls only its allow list, through `mesh::middleware`;
-  - reads only its own configuration entries;
-  - binds only granted trigger types;
+  - reads only its own configuration entries, never expanded against the
+    hub's environment;
+  - binds only granted trigger types, never `harness::hook::*`;
+  - keeps no grant past a change to it;
   - holds no engine credential.
+- Only the hub drives `mesh-node::*` (signed requests), and only the proxy
+  drives `mesh::middleware` and `mesh::on-trigger-registration` (live session
+  key).
 - Removal refuses the node's keys forever and cycles the code. A cycled code
   refuses every old join secret.
 - Nodes make outbound connections only to:
@@ -547,6 +627,24 @@ Follow `whatsapp/` (the repo's Go worker) and `docs/sops/go-binary-worker.md`:
   to another entry, is refused.
 - A loopback client that dials the proxy without a ticket is refused.
 
+**Adversarial** (a malicious node and a malicious agent):
+- **Templates:** a node `ensure`s `<node>.probe` with
+  `${OPENAI_API_KEY}` as its value. Its `get` returns the literal template.
+- **Hooks:** a node binding `harness::hook::pre-trigger` or `post-trigger` is
+  refused, and a hub call made afterwards reaches no node.
+- **Supervisor reach:** an agent calls `<node>::mesh-node::workers::apply`
+  directly, through `fp::pipe` and through `fp::batch`. All three are refused,
+  by `fp` and by the node's signature check. A replayed signed request is
+  refused.
+- **Middleware reach:** an agent calls `mesh::middleware` without a session
+  key and is refused.
+- **Revocation:** an id is removed from `nodes.<name>.allow`. The next call
+  to it from an already-connected node worker is refused within 5 s.
+- **Tokens (phase 3):**
+  - a removed node re-registering with fresh keys and its preserved single-use
+    or reusable token is refused;
+  - a consumed single-use token does not join a second machine.
+
 **Machine matrix** (acceptance): a fresh Ubuntu 26.04 VM, a Mac on another
 network, Windows 11 (phase 2), and the hub behind a named Cloudflare tunnel.
 
@@ -591,6 +689,11 @@ network, Windows 11 (phase 2), and the hub behind a named Cloudflare tunnel.
    - A `laptop::coder::read-file` call carrying a model-written `fs_scope`
      runs under the laptop's configured roots, through a direct call,
      `fp::pipe` and `fp::batch` alike.
+   - It cannot read a hub environment variable through a configuration
+     template.
+   - It cannot bind a harness hook.
+   - It loses a revoked grant within 5 s, without being removed.
+   - No agent can drive `mesh-node::*` or `mesh::middleware`, by any path.
 10. A capture at the front door shows no plaintext except CPace messages and
     `/id`. No node opens a connection to a Tailscale-run host. No node
     fetches anything executable over plain HTTP.
@@ -599,6 +702,7 @@ network, Windows 11 (phase 2), and the hub behind a named Cloudflare tunnel.
       mesh.
     - A revoked or expired token no longer joins, and the device code still
       does.
+    - A consumed token, or the token of a removed node, never joins again.
     - A function bound to `mesh::node-changed` sees `online` and `offline`
       when a node's service stops and starts.
     - `browser` runs on a node as `<node>::browser::*`.
@@ -609,7 +713,9 @@ Each of these sets a default list or a follow-up, not the design.
 
 1. **`default_allow` and `default_trigger_types`.** Run `ide` (then
    `browser`, `computer`, `tmux`) behind the gateway and record every call
-   and binding each makes.
+   and binding each makes. Keep only what passes the confinement test in
+   [Gateway](#gateway), and record what each worker loses without the rest,
+   as done for `ide`'s turn-log hooks.
 2. **Console forms for node workers.** Check whether the Console finds them
    through `<node>::ide::configuration-id`. If it does not, that is a
    follow-up; config stays editable through `configuration::set` on
