@@ -1,6 +1,11 @@
 //! Live checks of how the worker's functions meet observers, on a real
 //! engine (worker manager only):
 //!
+//! - `browser::on-frame-event` registered in-process with the worker's own
+//!   `register_event_functions`, so the SDK runs its real key match: an
+//!   observer with `{ session_id }` receives that tab's frames only, one
+//!   without args every tab's, and `is_observed_for` is false for a tab
+//!   nobody watches.
 //! - `browser::cookies::list` and `browser::cookies::set`, registered by the
 //!   worker binary, refuse every observer (`NOT_OBSERVABLE`).
 //!
@@ -11,10 +16,14 @@
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use browser::events::{Emitter, EventKind, FrameEventPayload, ON_FRAME_EVENT_FN};
+use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, InitOptions, ObserverHandle, RegisterFunction, Source,
+    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle,
+    RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout, Instant};
@@ -105,11 +114,145 @@ impl Live {
     }
 }
 
+/// A client of this test process under its own worker name: the engine
+/// holds one connection per name, and the default name is per process.
+fn connect(engine_ws: &str, name: &str) -> IIIClient {
+    register_worker(
+        engine_ws,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: name.to_string(),
+                ..WorkerMetadata::default()
+            }),
+            ..InitOptions::default()
+        },
+    )
+}
+
+/// Waits until `check` holds, for at most 10 s.
+async fn eventually(what: &str, check: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !check() {
+        assert!(Instant::now() < deadline, "timed out waiting until {what}");
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
 async fn await_active(observer: &ObserverHandle) {
     timeout(Duration::from_secs(10), observer.ready())
         .await
         .expect("observer active in time")
         .expect("observer accepted");
+}
+
+/// A target that records `<session_id>:<frame_seq>` for every frame.
+fn frame_recorder(client: &IIIClient, function_id: &str) -> Arc<Mutex<Vec<String>>> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    client.register_function(
+        function_id,
+        RegisterFunction::new(move |frame: Value| {
+            sink.lock().unwrap().push(format!(
+                "{}:{}",
+                frame["session_id"].as_str().unwrap_or("?"),
+                frame["frame_seq"]
+            ));
+            Ok::<_, iii_sdk::errors::Error>(json!({ "ok": true }))
+        }),
+    );
+    seen
+}
+
+fn frame(session_id: &str, frame_seq: u64) -> FrameEventPayload {
+    FrameEventPayload {
+        session_id: session_id.to_string(),
+        frame: String::new(),
+        width: 1,
+        height: 1,
+        frame_seq,
+        timestamp: 0,
+    }
+}
+
+fn sorted(seen: &Mutex<Vec<String>>) -> Vec<String> {
+    let mut seen = seen.lock().unwrap().clone();
+    seen.sort();
+    seen
+}
+
+#[tokio::test]
+async fn frame_observers_receive_their_tab_or_every_tab() {
+    let Some(live) = Live::boot().await else {
+        eprintln!("skipping: `iii` not available");
+        return;
+    };
+    // The worker's side: its event functions, registered the way main.rs
+    // does, and the emitter the frame pump uses.
+    let provider = Arc::new(connect(&live.engine_ws, "frametest-provider"));
+    browser::events::register_event_functions(&provider);
+    let emitter = Emitter::for_iii(provider.clone());
+    let watched = |session_id: &str| emitter.is_observed(EventKind::FrameEvent, session_id);
+
+    let consumer = connect(&live.engine_ws, "frametest-consumer");
+    let tab_a = frame_recorder(&consumer, "frametest::tab-a");
+    let every_tab = frame_recorder(&consumer, "frametest::every-tab");
+
+    // 1. An observer of tab A only.
+    let a_observer = consumer.observe(
+        Source::function(ON_FRAME_EVENT_FN)
+            .args(json!({ "session_id": "A" }))
+            .deliver(Deliver::Output),
+        "frametest::tab-a",
+    );
+    await_active(&a_observer).await;
+    eventually("tab A is observed", || watched("A")).await;
+    assert!(
+        !watched("B"),
+        "is_observed_for is false for a tab nobody watches"
+    );
+
+    emitter
+        .emit(EventKind::FrameEvent, "A", &frame("A", 1))
+        .await;
+    emitter
+        .emit(EventKind::FrameEvent, "B", &frame("B", 1))
+        .await;
+    eventually("A's frame arrived", || !tab_a.lock().unwrap().is_empty()).await;
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(sorted(&tab_a), ["A:1"], "B's frame stays out");
+
+    // 2. An observer without args: every tab.
+    let all_observer = consumer.observe(
+        Source::function(ON_FRAME_EVENT_FN).deliver(Deliver::Output),
+        "frametest::every-tab",
+    );
+    await_active(&all_observer).await;
+    eventually("tab B is observed", || watched("B")).await;
+
+    emitter
+        .emit(EventKind::FrameEvent, "A", &frame("A", 2))
+        .await;
+    emitter
+        .emit(EventKind::FrameEvent, "B", &frame("B", 2))
+        .await;
+    eventually("both observers got their frames", || {
+        tab_a.lock().unwrap().len() == 2 && every_tab.lock().unwrap().len() == 2
+    })
+    .await;
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(sorted(&tab_a), ["A:1", "A:2"], "still tab A only");
+    assert_eq!(sorted(&every_tab), ["A:2", "B:2"], "every tab");
+
+    // 3. Disposed: nothing is watched any more.
+    a_observer.dispose().await.expect("dispose tab A observer");
+    all_observer
+        .dispose()
+        .await
+        .expect("dispose every-tab observer");
+    eventually("no tab is observed", || !watched("A") && !watched("B")).await;
+
+    consumer.shutdown_async().await;
+    provider.shutdown_async().await;
 }
 
 #[tokio::test]
