@@ -5,6 +5,20 @@ filesystem backend. Streamed uploads, signed downloads, and `object-created` /
 `object-deleted` triggers — all behind one `bucket:` name regardless of
 the cloud underneath.
 
+## S3 multipart controls
+
+The S3 backend supports multipart create, checksum-bound part signing, list,
+complete and abort, plus checksum-enabled object HEAD. These controls require a
+provider that implements the matching SHA-256 composite checksum contract;
+validate against the actual provider and version before enabling an application.
+Other backends return unsupported for these operations. Browser part bytes travel
+directly to storage; the caller owns authorization, session lifecycle and cleanup.
+Configure an incomplete-multipart lifecycle rule or an approved equivalent.
+
+Worker release versions are selected and published by Release Control from a
+verified source SHA and build manifest; see [deployment operations](../docs/sops/release.md).
+The version in Cargo.toml is source metadata, not proof that this code is published.
+
 ## Install
 
 ```bash
