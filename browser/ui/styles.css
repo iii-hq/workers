@@ -1,4 +1,5 @@
-/* The browser worker's console stylesheet (`console:style`, link-swapped on
+/* The browser worker's console stylesheet (a `console::ui::asset` observer
+ * with args { kind: "style", path: "browser/styles.css" }, link-swapped on
  * change). Every rule is scoped under [data-iii-ui="browser"]; keyframes keep
  * the br-ui- prefix. Surfaces and type come from the console's tokens; the one
  * fixed palette is incognito's (Chrome's private window), defined once below. */
