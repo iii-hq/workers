@@ -1,4 +1,4 @@
-//! Exercise the completion tail on the SDK's default-size thread stack.
+//! Turn-loop steps run against a fake engine on the SDK's default-size thread stack.
 use super::*;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -183,6 +183,7 @@ async fn complete_child(parent_prompt_present: bool) {
         },
         durable_abort: false,
         guard: deps.locks.guard("child").await,
+        replayed: false,
     });
     let deps = Arc::new(deps);
     let generated = Arc::new(Mutex::new(Some(generated)));
@@ -227,4 +228,153 @@ async fn complete_child(parent_prompt_present: bool) {
         if parent_prompt_present { 1 } else { 2 },
         "a failed pre-check must reach the parent resolver's error handling"
     );
+}
+
+/// A redelivered step whose reply already dispatched a call (checkpoint still
+/// `Triggered`: the worker died before the result) must not regenerate: the
+/// call gets `interrupted_result` and its handler is not invoked again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_step_with_a_triggered_call_closes_it_instead_of_regenerating() {
+    let (result, calls, turn) =
+        redeliver(json!({"call_hold": {"state": "triggered", "function_id": "test::hold"}})).await;
+    let names: Vec<&str> = calls.iter().map(|(f, _)| f.as_str()).collect();
+    assert!(
+        !names
+            .iter()
+            .any(|f| *f == "router::chat" || f.starts_with("context::")),
+        "the step regenerated: {names:?}"
+    );
+    assert!(!names.contains(&"test::hold"), "the handler ran again");
+    let result = result.expect("the step finishes with the stored reply");
+    assert_eq!(result.next_step, Some(2));
+    assert!(
+        calls.iter().any(|(f, data)| f == "session::append"
+            && data.to_string().contains("call_hold")
+            && data.to_string().contains("\"interrupted\"")),
+        "the call closes with interrupted_result: {calls:?}"
+    );
+    assert_eq!(turn["calls"]["call_hold"]["state"], "done");
+    assert_eq!(turn["turn_count"], 2, "no new generation is counted");
+}
+
+/// With no dispatched call (none checkpointed yet, or all done) the
+/// redelivered step regenerates as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_step_without_a_triggered_call_regenerates() {
+    for calls in [
+        json!({}),
+        json!({"call_hold": {"state": "done", "function_id": "test::hold"}}),
+    ] {
+        let (_, observed, _) = redeliver(calls).await;
+        assert!(
+            observed.iter().any(|(f, _)| f == "context::assemble"),
+            "{observed:?}"
+        );
+    }
+}
+
+/// Run step 1 of turn `t1` again on a fake engine, as the queue redelivers it
+/// after the worker died: the record as the first delivery persisted it (the
+/// generation counted, `calls` checkpointed) and that step's stored reply
+/// calling `test::hold`. Returns the outcome, every RPC, and the last record.
+async fn redeliver(
+    checkpoints: Value,
+) -> (
+    Result<TurnStepResult, HarnessError>,
+    Vec<(String, Value)>,
+    Value,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let calls = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
+    let observed = calls.clone();
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let turn = Arc::new(Mutex::new(json!({
+        "session_id": "s", "turn_id": "t1", "status": "running",
+        "step": 1, "turn_count": 2, "depth": 0,
+        "options": {"model": "fake", "max_turns": 16},
+        "calls": checkpoints,
+        "created_at": 1, "updated_at": 1
+    })));
+    let stored_turn = turn.clone();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        ready_tx.send(()).unwrap();
+        while let Some(Ok(frame)) = socket.next().await {
+            let Ok(text) = frame.to_text() else { continue };
+            let Ok(message) = serde_json::from_str::<Value>(text) else {
+                continue;
+            };
+            if message["type"] != "invokefunction" {
+                continue;
+            }
+            let function = message["function_id"].as_str().unwrap().to_string();
+            let data = message["data"].clone();
+            observed
+                .lock()
+                .unwrap()
+                .push((function.clone(), data.clone()));
+            let result = match function.as_str() {
+                "engine::workers::register" => json!({"success": true}),
+                "state::get" | "harness::state::get" if data["scope"] == "harness_turn" => {
+                    stored_turn.lock().unwrap().clone()
+                }
+                "state::set" if data["scope"] == "harness_turn" => {
+                    *stored_turn.lock().unwrap() = data["value"].clone();
+                    json!({})
+                }
+                "state::list" | "harness::state::list" => json!([]),
+                "state::list_keys" => json!({"keys": []}),
+                "session::get" => json!({"meta": {"session_id": "s", "metadata": {}}}),
+                "session::messages" => json!({"messages": [
+                    {"entry_id": "e_user", "message": {"role": "user",
+                        "content": [{"type": "text", "text": "hold"}], "timestamp": 1}},
+                    {"entry_id": "e_t1_1_assistant", "message": {
+                        "role": "assistant", "stop_reason": "function_call",
+                        "model": "fake", "provider": "fake", "timestamp": 2,
+                        "usage": {"input": 10, "output": 2, "cost_usd": 0.1},
+                        "content": [{"type": "function_call", "id": "call_hold",
+                            "function_id": "agent_trigger",
+                            "arguments": {"function": "test::hold", "payload": {}}}]}}
+                ]}),
+                "session::set-status" => json!({"ok": true}),
+                "session::append" => json!({"entry_id": data["entry_id"]}),
+                "state::set" => json!({}),
+                _ => Value::Null,
+            };
+            if !message["invocation_id"].is_null() {
+                let reply = json!({
+                    "type": "invocationresult", "invocation_id": message["invocation_id"],
+                    "function_id": function, "result": result
+                });
+                let frame = tokio_tungstenite::tungstenite::Message::Text(reply.to_string().into());
+                if socket.send(frame).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    let iii = Arc::new(register_worker(&url, InitOptions::default()));
+    ready_rx.await.unwrap();
+    let cfg = Arc::new(crate::config::WorkerConfig {
+        session_timeout_ms: 2_000,
+        ..Default::default()
+    });
+    let deps = Deps::new(
+        iii.clone(),
+        Arc::new(RwLock::new(cfg)),
+        crate::discovery::new_cell(),
+        crate::skills::new_cell(),
+        crate::events::TurnEvents::register(&iii),
+        crate::hooks::HookRegistry::register(&iii),
+    );
+    let payload =
+        serde_json::from_value(json!({"session_id": "s", "turn_id": "t1", "step": 1})).unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(10), run_step(&deps, payload)).await;
+    iii.shutdown();
+    server.abort();
+    let calls = calls.lock().unwrap().clone();
+    let turn = turn.lock().unwrap().clone();
+    (result.unwrap(), calls, turn)
 }

@@ -442,6 +442,9 @@ struct GeneratedStep {
     outcome: crate::clients::router::ChatOutcome,
     durable_abort: bool,
     guard: tokio::sync::OwnedMutexGuard<()>,
+    /// The stored reply of a redelivered step, not a new generation: it was
+    /// counted when it generated.
+    replayed: bool,
 }
 
 pub async fn run_step(
@@ -503,6 +506,31 @@ async fn generate_step(
             .map(PreparedStep::Finished);
     }
     crate::state::hydrate(&deps.iii, &mut record, cfg.session_timeout_ms).await?;
+
+    // A redelivered step whose reply already dispatched a call that never
+    // returned finishes with that reply instead of regenerating: a new
+    // generation names its calls anew, so the `Triggered` checkpoint would
+    // never match and the target would run again, and the step would be billed
+    // twice. The call closes with `interrupted_result` (at most once).
+    if let Some(message) = dispatched_reply(&session, &record, payload.step).await? {
+        let strategy = crate::contract::OutputStrategy::resolve(deps, &record).await;
+        return Ok(PreparedStep::Generated(Box::new(GeneratedStep {
+            payload,
+            cfg,
+            session,
+            record,
+            strategy,
+            outcome: crate::clients::router::ChatOutcome {
+                stop_reason: Some(message.stop_reason),
+                message,
+                ok: true,
+                error: None,
+            },
+            durable_abort: false,
+            guard: _guard,
+            replayed: true,
+        })));
+    }
 
     // Deliver messages queued while the previous step streamed: append them in
     // arrival order before the context load, so this generation sees them all
@@ -1438,7 +1466,43 @@ async fn generate_step(
         outcome,
         durable_abort,
         guard: _guard,
+        replayed: false,
     })))
+}
+
+/// This step's stored reply when one of its calls was dispatched and never
+/// returned (checkpoint still `Triggered`). Calls are dispatched only after
+/// the final reply is written, so a partially streamed reply never matches:
+/// nothing of it ran, and the step regenerates as before.
+async fn dispatched_reply(
+    session: &SessionClient,
+    record: &TurnRecord,
+    step: u64,
+) -> Result<Option<AssistantMessage>, HarnessError> {
+    let triggered = |id: &str| {
+        record
+            .calls
+            .get(id)
+            .is_some_and(|c| c.state == CallState::Triggered)
+    };
+    // Spares every ordinary step the transcript read.
+    if !record.calls.keys().any(|id| triggered(id)) {
+        return Ok(None);
+    }
+    let own = ids::assistant_entry_id(&record.turn_id, step);
+    let entries = session.messages(&record.session_id, false).await?;
+    Ok(entries
+        .into_iter()
+        .find(|entry| entry.entry_id == own)
+        .and_then(|entry| match entry.message {
+            Some(AgentMessage::Assistant(message)) => Some(message),
+            _ => None,
+        })
+        .filter(|message| {
+            message.content.iter().any(
+                |block| matches!(block, ContentBlock::FunctionCall { id, .. } if triggered(id)),
+            )
+        }))
 }
 
 /// Finish a generated step while the caller holds the session lock.
@@ -1459,8 +1523,11 @@ async fn finish_step(
         outcome,
         durable_abort,
         guard: _guard,
+        replayed,
     } = *generated;
-    record.turn_count += 1;
+    if !replayed {
+        record.turn_count += 1;
+    }
 
     // Cancellation during generation finalises the partial as cancelled.
     if cancel_requested(record.abort, durable_abort, outcome.message.stop_reason) {
