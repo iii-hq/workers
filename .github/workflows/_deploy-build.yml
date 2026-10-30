@@ -143,9 +143,14 @@ jobs:
               sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
               # Ubuntu 24.04 keeps its own sources in deb822 files, which the
               # sed above does not reach; unpinned, apt asks the amd64 mirrors
-              # for arm64 indexes and fails on their 404s.
+              # for arm64 indexes and fails on their 404s. Pin per stanza (awk
+              # paragraph mode), since one file can mix pinned and unpinned.
               for f in /etc/apt/sources.list.d/*.sources; do
-                grep -q '^Architectures:' "$f" || sudo sed -i '/^Types:/a Architectures: amd64' "$f"
+                [ -e "$f" ] || continue
+                tmp=$(mktemp)
+                awk -v RS= -v ORS='\n\n' '!/(^|\n)Architectures:/ { sub(/(^|\n)Types:[^\n]*/, "&\nArchitectures: amd64") } 1' "$f" > "$tmp"
+                sudo cp "$tmp" "$f"
+                rm -f "$tmp"
               done
               MIRROR=http://azure.ports.ubuntu.com/ubuntu-ports/
               echo "deb [arch=arm64] $MIRROR $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
