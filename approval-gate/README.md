@@ -70,11 +70,11 @@ Hold → decide → release, from any client:
 
 ```bash
 # A held call shows up in the inbox…
-iii call approval::list-pending '{}'
+iii call approval::list-pending
 # …a human allows it (the harness runs the released call)…
-iii call approval::resolve '{"session_id": "s_1", "function_call_id": "c_1", "decision": "allow"}'
+iii call approval::resolve session_id=s_1 function_call_id=c_1 decision=allow
 # …or denies it with a reason the model can adapt to.
-iii call approval::resolve '{"session_id": "s_1", "function_call_id": "c_1", "decision": "deny", "reason": "not on prod"}'
+iii call approval::resolve session_id=s_1 function_call_id=c_1 decision=deny reason="not on prod"
 ```
 
 ## Permission model
@@ -98,10 +98,11 @@ worker seeds/backfills the stored entry so `rules` are editable in the console.
 
 Both are private functions: only this worker calls them, anyone may observe
 them, and each handler returns the event it is called with. Neither takes
-args; observers select events with filters on the event's fields. iii
-delivers every call to each observer whose filters match, fire-and-forget,
-at-least-once and unordered. After a restart, reconcile with one
-`approval::list-pending` call.
+args; observers select events with filters on the event's fields. The worker
+calls each function only while something observes it. iii delivers each call
+to every observer whose filters match: fire-and-forget, at-most-once (drops
+are counted per function and reason) and unordered. Reconcile with one
+`approval::list-pending` call after a restart or a gap.
 
 | Function | Args | Called when | Event (`input` and `output`) |
 |---|---|---|---|
@@ -228,17 +229,23 @@ agent allow-lists too.
 
 ```bash
 cargo test                                   # lib suites: pure unit + engine-backed handlers
-cargo test --test integration               # engine-backed; self-skips without `iii`
+cargo test --test integration               # engine-backed; self-skips without the engine and state binaries
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ./target/debug/approval-gate --manifest      # registry-publish manifest
 ```
 
-The integration suite spawns a real engine (`III_ENGINE_BIN` or `iii` on
-PATH) with `configuration` + `state`, registers the production surface
-in-process, and fakes sibling RPCs where noted (`session::get`). With the
-harness binary available, `tests/harness_integration.rs` additionally boots the
-real harness worker for cross-worker hold / sweep / resolve checks.
+The engine-backed suites spawn a real engine (`III_ENGINE_BIN` or `iii` on
+PATH) with its `configuration` worker, run this repo's standalone `state`
+worker beside it (`III_STATE_BIN`, built with `cargo build` in `state/`),
+register the production surface in-process, and fake sibling RPCs where noted
+(`session::get`). With `CARGO_BIN_EXE_harness` pointing at a built harness
+binary, `tests/harness_integration.rs` additionally boots the real harness
+worker for cross-worker hold / sweep / resolve checks.
+
+```bash
+III_ENGINE_BIN=$(command -v iii) III_STATE_BIN=../state/target/debug/state cargo test
+```
 
 ## Architecture documentation
 
