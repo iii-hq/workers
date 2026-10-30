@@ -2616,7 +2616,9 @@ impl Repo {
     fn new(origin_main: bool) -> Self {
         let dir = std::env::temp_dir().join(format!("eval-git-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
-        git_in(&dir, &["init", "-q"]);
+        // The first commit's branch is neither `main` nor `feat`, whatever
+        // `init.defaultBranch` says: `main` is created below.
+        git_in(&dir, &["init", "-q", "-b", "trunk"]);
         let commit = |name: &str| {
             std::fs::write(dir.join("file.txt"), name).unwrap();
             git_in(&dir, &["add", "."]);
