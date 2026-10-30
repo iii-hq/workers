@@ -10,7 +10,11 @@
 //! - one observer of `console::ui::asset` per asset, with args
 //!   `{ kind: "script" | "style" | "module", path }` and the content function
 //!   as its target (the SDK replays it by id after a reconnect, and the
-//!   engine disposes it once the worker stays disconnected),
+//!   engine disposes it once the worker stays disconnected). Modules and
+//!   styles are observed at once; a script is observed once every module
+//!   observer is active or has failed, so the console commits the modules a
+//!   script imports before the script. After a reconnect the SDK replays the
+//!   observers in its own order,
 //! - the dev-loop hot-reload watcher (`III_<WORKER>_UI_WATCH` by default):
 //!   poll the build output, swap the served bytes, observe the same path
 //!   AFRESH, THEN dispose the previous observer — observe-first avoids a
@@ -248,26 +252,42 @@ impl ConsoleUi {
 
     /// Register the content function and observe `console::ui::asset` once
     /// per asset; spawn the dev watcher when the watch env var is set. Call
-    /// once, after the worker's regular functions are registered.
+    /// once, after the worker's regular functions are registered, inside a
+    /// tokio runtime.
+    ///
+    /// Modules and styles are observed at once. When the worker has modules,
+    /// each script is observed once every module observer is active or has
+    /// failed: the console commits assets in the order their observers
+    /// arrive, so it serves the modules a script imports before the script
+    /// reaches a tab. The order holds whether `register` runs before or after
+    /// the connection is up and whether the console registers before or
+    /// after this worker.
     ///
     /// Each observer stays `pending` until the console registers the asset
     /// function, and the SDK replays it on reconnect. A rejection (an asset
     /// the console refuses, a failed content fetch) is warn-logged, not
     /// fatal — injected UI is an accessory.
     pub fn register(self, iii: &Arc<IIIClient>) {
-        if self.assets.is_empty() {
+        let Self {
+            worker,
+            content_function_id,
+            watch_env,
+            watch_default_dir,
+            assets,
+        } = self;
+        if assets.is_empty() {
             tracing::warn!(
-                worker = self.worker,
+                worker,
                 "ConsoleUi::register called with no assets — nothing to do"
             );
             return;
         }
-        for spec in &self.assets {
-            if spec.path.split('/').next() != Some(self.worker.as_str()) {
+        for spec in &assets {
+            if spec.path.split('/').next() != Some(worker.as_str()) {
                 // Convention, not wire contract: the first segment becomes
                 // the data-iii-ui style scope and the only attribution.
                 tracing::warn!(
-                    worker = self.worker,
+                    worker,
                     path = spec.path,
                     "ui asset path does not start with '<worker>/' — style scoping and \
                      attribution will not point at this worker"
@@ -275,52 +295,94 @@ impl ConsoleUi {
             }
         }
 
-        let served = Arc::new(Served::new(&self.assets));
+        let served = Arc::new(Served::new(&assets));
 
         {
             let served = served.clone();
             iii.register_function(
-                self.content_function_id.clone(),
+                content_function_id.clone(),
                 RegisterFunction::new_async(move |input: UiContentInput| {
                     let served = served.clone();
                     async move { served.content_for(&input.path).await }
                 })
                 .description(format!(
-                    "Serve the {} worker's injected console UI assets (the target of its \
-                     console::ui::asset observers; the console calls it through each \
-                     asset's observer with {{path}}).",
-                    self.worker
+                    "Serve the {worker} worker's injected console UI assets (the target of \
+                     its console::ui::asset observers; the console calls it through each \
+                     asset's observer with {{path}})."
                 ))
                 // Console plumbing, not an API for agents/workers to discover.
                 .metadata(serde_json::json!({ "internal": true })),
             );
         }
 
-        let mut watched = Vec::new();
-        // Modules first: the console commits assets in the order their
-        // observers arrive, so a script never reaches a tab before the
-        // modules it imports are served.
-        let mut ordered: Vec<_> = self.assets.iter().collect();
-        ordered.sort_by_key(|spec| spec.kind != AssetKind::Module);
-        for spec in ordered {
-            let handle = observe_asset(iii, &self.content_function_id, spec.kind, &spec.path);
-            tracing::info!(
-                path = spec.path,
-                observer_id = handle.id(),
-                "observing console ui asset"
+        let dist = watch_target(&watch_env, &watch_default_dir);
+        let (first, scripts) = observe_plan(assets);
+        let mut watched: Vec<WatchedAsset> = first
+            .into_iter()
+            .map(|spec| observe_watched(iii, &content_function_id, spec))
+            .collect();
+        let modules: Vec<ObserverHandle> = watched
+            .iter()
+            .filter(|asset| asset.kind == AssetKind::Module)
+            .map(|asset| asset.handle.clone())
+            .collect();
+
+        if modules.is_empty() || scripts.is_empty() {
+            watched.extend(
+                scripts
+                    .into_iter()
+                    .map(|spec| observe_watched(iii, &content_function_id, spec)),
             );
-            watched.push(WatchedAsset {
-                path: spec.path.clone(),
-                kind: spec.kind,
-                file: spec.file.clone(),
-                handle,
-                prev: spec.content.clone(),
-            });
+            if let Some(dist) = dist {
+                spawn_watcher(iii.clone(), served, content_function_id, watched, dist);
+            }
+            return;
         }
 
-        if let Some(dist) = watch_target(&self.watch_env, &self.watch_default_dir) {
-            spawn_watcher(iii.clone(), served, self.content_function_id, watched, dist);
-        }
+        let iii = iii.clone();
+        tokio::spawn(async move {
+            for module in &modules {
+                // `ready` fails once the observer is in `error` or
+                // `disposed`; either way it has settled, and the scripts go.
+                let _ = module.ready().await;
+            }
+            watched.extend(
+                scripts
+                    .into_iter()
+                    .map(|spec| observe_watched(&iii, &content_function_id, spec)),
+            );
+            if let Some(dist) = dist {
+                spawn_watcher(iii, served, content_function_id, watched, dist);
+            }
+        });
+    }
+}
+
+/// The order `register` observes the assets in: the first list (modules,
+/// then styles) at once, the second (scripts) once every module observer has
+/// settled. Each list keeps the order the builder added the assets in.
+fn observe_plan(assets: Vec<AssetSpec>) -> (Vec<AssetSpec>, Vec<AssetSpec>) {
+    let (scripts, mut first): (Vec<_>, Vec<_>) = assets
+        .into_iter()
+        .partition(|spec| spec.kind == AssetKind::Script);
+    first.sort_by_key(|spec| spec.kind != AssetKind::Module);
+    (first, scripts)
+}
+
+/// Observe one asset and keep what the dev watcher needs to reload it.
+fn observe_watched(iii: &Arc<IIIClient>, function_id: &str, spec: AssetSpec) -> WatchedAsset {
+    let handle = observe_asset(iii, function_id, spec.kind, &spec.path);
+    tracing::info!(
+        path = spec.path,
+        observer_id = handle.id(),
+        "observing console ui asset"
+    );
+    WatchedAsset {
+        path: spec.path,
+        kind: spec.kind,
+        file: spec.file,
+        handle,
+        prev: spec.content,
     }
 }
 
@@ -675,6 +737,33 @@ mod tests {
         let served = Served::new(&ui.assets);
         let heavy = served.content_for("demo/heavy.js").await.unwrap();
         assert!(heavy.content_type.starts_with("text/javascript"));
+    }
+
+    fn paths(assets: &[AssetSpec]) -> Vec<&str> {
+        assets.iter().map(|a| a.path.as_str()).collect()
+    }
+
+    #[test]
+    fn observe_plan_observes_modules_then_styles_and_holds_scripts_back() {
+        let ui = ConsoleUi::new("demo")
+            .script("demo/page.js", "")
+            .style("demo/styles.css", "")
+            .module("demo/heavy.js", "")
+            .script("demo/other.js", "")
+            .module("demo/diagram.js", "");
+        let (first, scripts) = observe_plan(ui.assets);
+        assert_eq!(
+            paths(&first),
+            ["demo/heavy.js", "demo/diagram.js", "demo/styles.css"]
+        );
+        assert_eq!(paths(&scripts), ["demo/page.js", "demo/other.js"]);
+    }
+
+    #[test]
+    fn observe_plan_without_modules_keeps_styles_first_and_scripts_second() {
+        let (first, scripts) = observe_plan(two_assets().assets);
+        assert_eq!(paths(&first), ["demo/styles.css"]);
+        assert_eq!(paths(&scripts), ["demo/page.js"]);
     }
 
     #[test]
