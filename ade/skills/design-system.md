@@ -354,7 +354,7 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 | --- | --- | --- |
 | `Dialog` + `Trigger`/`Content`/`Title`/`Description`/`Close` | Radix dialog on `panel-raised`, `shadow-floating` | Always a title |
 | `ConfirmDialog` + `useConfirm` | `title`, `description`, `details[]`, `tone` danger; cancel owns focus | Never `window.confirm` |
-| `FactCard` + `FactCardHeader` (icon chip tinted by `accent`, the name, mono for machine names) / `FactCardStatus` (semantic dot + word + meta) / `FactList` + `Fact` (`mono`, `muted`, `align`) / `FactMeter` | The one "a thing and its numbers" card: span hover card, context usage, technical details, trigger subscription, error metadata, mention fields, span info rows | `accent` is the subject colour (worker hue, tone token) and the only colour the card adds; status stays on the semantic palette |
+| `FactCard` + `FactCardHeader` (icon chip tinted by `accent`, the name, mono for machine names) / `FactCardStatus` (semantic dot + word + meta) / `FactList` + `Fact` (`mono`, `muted`, `align`) / `FactMeter` | The one "a thing and its numbers" card: span hover card, context usage, technical details, observer registration, error metadata, mention fields, span info rows | `accent` is the subject colour (worker hue, tone token) and the only colour the card adds; status stays on the semantic palette |
 | `BottomSheet` + `Content`/`Title`/`Description`/`Trigger`/`Close` | Phone sheet, `heading`, in-sheet pages, safe area | Desktop: popover |
 | `ImageViewer` / `ImageThumbnailButton` | Full-screen viewer with zoom/pan; thumbnail opens it | Any content image |
 | `AnnotationLayer` / `AnnotationList` | Pin/rect/arrow annotations over an image | Screenshot markup |

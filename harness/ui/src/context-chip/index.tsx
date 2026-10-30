@@ -261,7 +261,7 @@ function useContextHistory(host: Host, sessionId: string, open: boolean, turnId:
           limit: HISTORY_PAGE,
         }
         if (cursor) payload.cursor = cursor
-        const value = await host.iii.trigger(MESSAGES_FN, payload, { timeoutMs: 30_000 })
+        const value = await host.iii.call(MESSAGES_FN, payload, { timeoutMs: 30_000 })
         pages.push(value)
         const next = (unwrapEnvelope(value) as { next_cursor?: unknown } | null)?.next_cursor
         if (typeof next !== 'string' || next === '' || next === cursor) break

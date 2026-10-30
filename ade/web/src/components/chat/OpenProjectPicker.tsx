@@ -371,7 +371,7 @@ export function OpenProjectPicker({
     setCreating(true)
     try {
       const client = await getIiiClient()
-      const res = await client.trigger<{ code?: string; message?: string }>(
+      const res = await client.call<{ code?: string; message?: string }>(
         'shell::fs::mkdir',
         { path },
       )

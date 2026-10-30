@@ -6,7 +6,7 @@
  *     reason, token usage) — the semantic-conventions shape any instrumented
  *     client emits;
  *   - the iii-sdk auto-captured request/response (`iii.payload.json` events,
- *     surfaced through `functionTriggerFromSpan`) for the llm-router and
+ *     surfaced through `functionCallFromSpan`) for the llm-router and
  *     provider workers: `{ model, provider, system_prompt, messages[],
  *     tools[], max_output_tokens, … }` in, `{ model, provider, stop_reason,
  *     usage, ok }` out.

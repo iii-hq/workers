@@ -79,7 +79,7 @@ describe('scraping renderer', () => {
         content: '### Title\n[Docs](/docs) see https://x.dev/a.',
       },
       running: false,
-    } as unknown as FunctionTriggerMessage
+    } as unknown as FunctionCallMessage
     const html = renderToStaticMarkup(<>{renderer.tryRender?.(done)}</>)
     expect(html).toContain('href="https://example.com/"')
     expect(html).toContain('target="_blank"')

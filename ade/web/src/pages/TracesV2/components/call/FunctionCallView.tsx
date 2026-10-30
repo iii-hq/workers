@@ -15,16 +15,16 @@ import { AlertCircle, SquareFunction } from 'lucide-react'
 import { type ReactNode, useMemo } from 'react'
 import {
   firstRendered,
-  useFunctionTriggerRenderers,
-} from '@/components/function-trigger/renderer-registry'
+  useFunctionCallRenderers,
+} from '@/components/function-call/renderer-registry'
 import { cn } from '@/lib/utils'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { parsePayload, truncatedBytesOf } from '../../lib/llmCall'
 import { formatDuration } from '../../lib/traceUtils'
 import { PayloadPane } from '../llm/PayloadPane'
 
 export interface FunctionCallViewProps {
-  message: FunctionTriggerMessage
+  message: FunctionCallMessage
   /** The request/response after the function's redactor ran. */
   rawInput: unknown
   rawOutput: unknown
@@ -76,7 +76,7 @@ function isEmpty(v: unknown): boolean {
   return false
 }
 
-/** `{ error: … }` soft failures ride on the output (see FunctionTriggerCard). */
+/** `{ error: … }` soft failures ride on the output (see FunctionCallCard). */
 function errorTextOf(output: unknown): string | null {
   if (!output || typeof output !== 'object' || Array.isArray(output))
     return null
@@ -101,7 +101,7 @@ export function FunctionCallView({
   durationMs,
   status,
 }: FunctionCallViewProps) {
-  const renderers = useFunctionTriggerRenderers()
+  const renderers = useFunctionCallRenderers()
   const rendered = useMemo(
     () =>
       message.running
@@ -185,7 +185,7 @@ export function FunctionCallView({
           <h4 className="text-xs font-semibold text-foreground">
             {rendered.renderer.primaryTabLabel ?? 'Rendered'}
           </h4>
-          <div className="overflow-hidden rounded-xl border border-border bg-background p-3 function-trigger-surface">
+          <div className="overflow-hidden rounded-xl border border-border bg-background p-3 function-call-surface">
             {rendered.node}
           </div>
         </section>

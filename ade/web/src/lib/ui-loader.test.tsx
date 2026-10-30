@@ -450,7 +450,7 @@ describe('host.chat.compose', () => {
       })),
     })
     harness.emit({
-      event: 'sync',
+      op: 'sync',
       assets: [{ path: 'ide/page.js', kind: 'script', hash: 'one' }],
     })
     await vi.waitFor(() => expect(captured).toBeDefined())

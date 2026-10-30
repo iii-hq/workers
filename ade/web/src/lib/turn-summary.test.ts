@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { FunctionTriggerMessage, Message } from '@/types/chat'
+import type { FunctionCallMessage, Message } from '@/types/chat'
 import {
   assistantHeaderIds,
   changedFilesFromCalls,
@@ -12,8 +12,8 @@ function call(
   functionId: string,
   input: unknown,
   id = functionId,
-): FunctionTriggerMessage {
-  return { id, role: 'function-trigger', functionId, input, createdAt: 0 }
+): FunctionCallMessage {
+  return { id, role: 'function-call', functionId, input, createdAt: 0 }
 }
 
 describe('changedFilesFromCalls', () => {
