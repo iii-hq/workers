@@ -19,7 +19,7 @@ use serde_json::json;
 use tokio::sync::RwLock;
 
 use memory_consolidate::functions::{self, ConfigCell, Deps};
-use memory_consolidate::{config, configuration, manifest};
+use memory_consolidate::{config, configuration, manifest, rest};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -125,11 +125,11 @@ fn spawn_backstop(deps: Arc<Deps>) {
 }
 
 /// The REST route of a public function: `POST /memory-consolidate/...`, the
-/// function id with `::` as `/`.
+/// function id with `::` as `/`. Its target is `memory-consolidate::rest`.
 fn rest_route(function_id: &str) -> Source {
     Source::function("http::on-request").args(json!({
         "method": "POST",
-        "path": format!("/{}", function_id.replace("::", "/")),
+        "path": rest::route_path(function_id),
     }))
 }
 
@@ -201,13 +201,15 @@ async fn main() -> Result<()> {
     });
 
     functions::register_all(&iii, &deps);
+    rest::register(&iii, &deps);
     configuration::observe_config_changes(&iii, cell);
 
-    // Reuse the http worker: the public functions double as REST routes
-    // (`POST /memory-consolidate/...`), pending until the http worker
-    // registers `http::on-request`, like memory.
+    // Reuse the http worker: the public functions are also REST routes
+    // (`POST /memory-consolidate/...`) served by `memory-consolidate::rest`,
+    // which takes the HttpRequest and answers { status_code, body }. They
+    // stay pending until the http worker registers `http::on-request`.
     for spec in functions::catalog() {
-        let route = iii.observe(rest_route(spec.function_id), spec.function_id);
+        let route = iii.observe(rest_route(spec.function_id), rest::REST_ID);
         tracing::debug!(
             function_id = spec.function_id,
             observer_id = route.id(),
