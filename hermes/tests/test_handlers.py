@@ -53,10 +53,10 @@ def test_load_config_merges_partial(monkeypatch, tmp_path):
     assert cfg["defaults"]["cwd"] == ""
 
 
-def test_load_config_tolerates_legacy_stream_keys(monkeypatch, tmp_path):
-    # Configs written for the old iii-stream feeds still load; the stream names
-    # are dropped (the feeds are the fixed hermes::on-agent-event /
-    # hermes::on-raw-event functions).
+def test_load_config_drops_stream_name_keys(monkeypatch, tmp_path):
+    # A config with events_stream / raw_events_stream loads and the keys are
+    # dropped; the feeds are the functions hermes::on-agent-event /
+    # hermes::on-raw-event.
     path = tmp_path / "config.yaml"
     path.write_text("events_stream: agent::events\nraw_events_stream: hermes::events\ninbound_api_path: /in\n")
     monkeypatch.setenv("HERMES_WORKER_CONFIG", str(path))

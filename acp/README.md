@@ -117,20 +117,19 @@ iii call compose::add worker=guardrails worker=dlp-scrubber worker=audit-log \
 Store the Anthropic API key once:
 
 ```bash
-iii call \
-  --function-id auth::set_token \
-  --payload '{"provider":"anthropic","credential":{"type":"api_key","key":"sk-ant-..."}}'
+iii call auth::set_token \
+  --json '{"provider":"anthropic","credential":{"type":"api_key","key":"sk-ant-..."}}'
 ```
 
 Verify the brain runs end-to-end before plugging in an editor:
 
 ```bash
-iii call --function-id run::start_and_wait --payload '{
+iii call run::start_and_wait --timeout-ms 30000 --json '{
   "session_id": "smoke",
   "messages": [{"role":"user","content":[{"type":"text","text":"reply with hi"}],"timestamp":0}],
   "model": "claude-sonnet-4-5-20250929",
   "provider": "anthropic"
-}' --timeout-ms 30000
+}'
 ```
 
 A `messages` array ending in an assistant message with `"text":"hi"` means
@@ -293,7 +292,12 @@ the process exits. Each frame is
 by `(epoch, seq)` (a 250 ms reorder window per stream, bounded at 256 buffered
 frames) and drops duplicates. Before running an external brain it checks that
 every events function is registered (`engine::functions::info`) and fails the
-prompt with the missing function and worker otherwise. Frames are not replayed: if none reached the editor during
+prompt with the missing function and worker otherwise. It then gives each of
+the session's observers up to 3 s to become active. An observer the agent
+worker rejected (for example with `OBSERVER_LIMIT` once its feed has 256
+observers) fails the prompt with the function and the rejection code, and the
+next prompt observes that function again; an observer still pending after 3 s
+is logged and the prompt runs. Frames are not replayed: if none reached the editor during
 a prompt (for example across a reconnect), the final text of the brain's
 response is rendered once instead. Each event is translated:
 
@@ -341,6 +345,8 @@ Replies stream on stdout, one JSON frame per line.
 cargo test
 ```
 
-50 lib (including the agent event sequencer, feed contract and readiness) + 10
-protocol envelope tests. Integration smoke against a live engine
-lives in the iii test harness.
+52 lib (including the agent event sequencer, feed contract and readiness) + 10
+protocol envelope tests + 2 README checks. With `III_ENGINE_WS_URL` set, the
+session observer readiness test runs against that engine (it skips without
+it; `III_E2E_REQUIRE=1` makes it fail instead). Integration smoke against a
+live engine lives in the iii test harness.

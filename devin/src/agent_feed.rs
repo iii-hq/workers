@@ -18,10 +18,10 @@
 //! - each frame is one fire-and-forget (Void) call of the feed's function.
 //!   Observers are matched by key: an observer is filed under its
 //!   `session_id`, a frame matches the observers filed under the frame's, and
-//!   iii delivers it to them. A frame of a session nobody observes costs one
-//!   hash lookup and makes no call; its `seq` still advances. A failed call
-//!   is logged and swallowed, so a turn never fails because a consumer is
-//!   gone.
+//!   iii delivers it to them. A frame of a session nobody observes is never
+//!   built: it costs one hash lookup and makes no call; its `seq` still
+//!   advances. A failed call is logged and swallowed, so a turn never fails
+//!   because a consumer is gone.
 //! - ephemeral: frames are not stored or replayed. Consumers order by
 //!   `(epoch, seq)` and dedup by `event_id`; history lives in the session
 //!   record and the run result.
@@ -192,16 +192,18 @@ impl Feed {
 
     /// Emit one frame: advance the session's `seq`, ask `observed` whether a
     /// call for the session would reach an observer, and only then build the
-    /// envelope and `send` it. A failed send is logged and swallowed. True
-    /// when the call was made and succeeded.
-    pub async fn emit_with<O, S, Fut>(
+    /// frame with `event` and the envelope around it and `send` it. A frame
+    /// nobody observes is never built. A failed send is logged and swallowed.
+    /// True when the call was made and succeeded.
+    pub async fn emit_with<E, O, S, Fut>(
         &self,
         session_id: &str,
-        event: Value,
+        event: E,
         observed: O,
         send: S,
     ) -> bool
     where
+        E: FnOnce() -> Value,
         O: FnOnce(&str) -> bool,
         S: FnOnce(FeedPayload) -> Fut,
         Fut: Future<Output = Result<Value, Error>>,
@@ -210,7 +212,7 @@ impl Feed {
         if !observed(session_id) {
             return false;
         }
-        match send(self.payload(session_id, seq, event)).await {
+        match send(self.payload(session_id, seq, event())).await {
             Ok(_) => true,
             Err(e) => {
                 tracing::warn!(
@@ -225,8 +227,14 @@ impl Feed {
     }
 
     /// Emit one frame through the engine: one Void call of this feed's
-    /// function, made only when an observer of the session exists.
-    pub async fn emit(&self, iii: &IIIClient, session_id: &str, event: Value) -> bool {
+    /// function, made only when an observer of the session exists. `event`
+    /// builds the frame and runs only then.
+    pub async fn emit(
+        &self,
+        iii: &IIIClient,
+        session_id: &str,
+        event: impl FnOnce() -> Value,
+    ) -> bool {
         self.emit_with(
             session_id,
             event,
@@ -295,6 +303,12 @@ impl Feeds {
             raw: Arc::new(Feed::new(ON_RAW_EVENT_FN, SOURCE, epoch)),
         }
     }
+
+    /// Register both feed functions and their hooks on `iii`.
+    pub fn register(&self, iii: &IIIClient) {
+        self.agent.register(iii, AGENT_EVENT_DESCRIPTION);
+        self.raw.register(iii, RAW_EVENT_DESCRIPTION);
+    }
 }
 
 /// The process-wide feeds (epoch = a uuid minted once per process).
@@ -303,20 +317,29 @@ pub fn feeds() -> &'static Feeds {
     FEEDS.get_or_init(|| Feeds::new(&uuid::Uuid::new_v4().to_string()))
 }
 
-/// Register both feed functions and their hooks. Call once at startup.
+/// Register the process-wide feed functions and their hooks. Call once at
+/// startup.
 pub fn register(iii: &IIIClient) {
-    let feeds = feeds();
-    feeds.agent.register(iii, AGENT_EVENT_DESCRIPTION);
-    feeds.raw.register(iii, RAW_EVENT_DESCRIPTION);
+    feeds().register(iii);
 }
 
 /// Emit a translated AgentEvent frame on `devin::on-agent-event`.
-pub async fn emit_agent_event(iii: &IIIClient, session_id: &str, event: Value) -> bool {
+/// `event` builds the frame and runs only when the session is observed.
+pub async fn emit_agent_event(
+    iii: &IIIClient,
+    session_id: &str,
+    event: impl FnOnce() -> Value,
+) -> bool {
     feeds().agent.emit(iii, session_id, event).await
 }
 
 /// Emit a raw CLI frame on `devin::on-raw-event`.
-pub async fn emit_raw_event(iii: &IIIClient, session_id: &str, event: Value) -> bool {
+/// `event` builds the frame and runs only when the session is observed.
+pub async fn emit_raw_event(
+    iii: &IIIClient,
+    session_id: &str,
+    event: impl FnOnce() -> Value,
+) -> bool {
     feeds().raw.emit(iii, session_id, event).await
 }
 
@@ -339,7 +362,7 @@ mod tests {
         let ok = feed
             .emit_with(
                 session_id,
-                event,
+                || event,
                 |session_id| observed.contains(&session_id),
                 |payload| {
                     sent.lock().unwrap().push(payload);
@@ -383,6 +406,30 @@ mod tests {
         let (_, sent) = capture(&feed, &["A", "B"], "B", json!({ "type": "agent_end" })).await;
         assert_eq!(sent[0].seq, 1);
         assert_eq!(sent[0].session_id, "B");
+    }
+
+    #[tokio::test]
+    async fn a_frame_nobody_observes_is_never_built() {
+        let feed = Feed::new(ON_RAW_EVENT_FN, SOURCE, EPOCH);
+        let built = std::cell::Cell::new(false);
+        let ok = feed
+            .emit_with(
+                "B",
+                || {
+                    built.set(true);
+                    json!({ "type": "raw" })
+                },
+                |_| false,
+                |_| std::future::ready(Ok::<Value, Error>(Value::Null)),
+            )
+            .await;
+        assert!(!ok);
+        assert!(
+            !built.get(),
+            "the frame of an unobserved session is not built"
+        );
+        let (_, sent) = capture(&feed, &["B"], "B", json!({ "type": "raw" })).await;
+        assert_eq!(sent[0].seq, 1, "the unobserved frame still took seq 0");
     }
 
     #[test]
@@ -466,7 +513,7 @@ mod tests {
         let ok = feed
             .emit_with(
                 "s",
-                json!({ "type": "agent_end" }),
+                || json!({ "type": "agent_end" }),
                 |_| true,
                 |_| std::future::ready(Err::<Value, Error>(Error::NotConnected)),
             )

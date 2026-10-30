@@ -10,11 +10,10 @@ defaults:
   cwd: ""
   skip_git_repo_check: true
 
-# Event feeds are fixed functions, not configurable streams: observe
-# `codex::on-agent-event` (translated AgentEvent frames) or
-# `codex::on-raw-event` (verbatim Codex thread events) with args
-# { session_id }. The retired events_stream / raw_events_stream keys are
-# ignored if still present.
+# Event feeds: observe `codex::on-agent-event` (translated AgentEvent frames)
+# or `codex::on-raw-event` (verbatim Codex thread events) with args
+# { session_id }. `events_stream` and `raw_events_stream` keys are accepted
+# and ignored.
 
 # Deliver the iii runtime context as Codex developer_instructions: teaches
 # the agent live discovery against the engine catalog through the iii CLI

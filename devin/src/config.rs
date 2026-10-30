@@ -7,8 +7,8 @@
 //!
 //! The event feeds are the fixed functions `devin::on-agent-event` and
 //! `devin::on-raw-event` (see `agent_feed`), so there are no stream-name keys.
-//! A stored config that still carries the retired `events_stream` /
-//! `raw_events_stream` keys keeps loading: unknown fields are ignored.
+//! A stored config with `events_stream` / `raw_events_stream` keys loads:
+//! unknown fields are ignored.
 //!
 //! The Devin API key is referenced in the seed as `${DEVIN_API_KEY}`; the
 //! configuration worker env-expands it before this worker ever sees the value,

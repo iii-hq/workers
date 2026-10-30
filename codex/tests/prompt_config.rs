@@ -95,10 +95,10 @@ fn config_merges_partial_file() {
 }
 
 #[test]
-fn retired_stream_keys_still_load_and_are_ignored() {
-    // A config stored before the feeds were fixed functions still carries the
-    // stream names; it must keep loading (from the configuration worker and
-    // from a seed file) and the keys are dropped on the next write.
+fn stream_name_keys_load_and_are_ignored() {
+    // A config with events_stream / raw_events_stream loads (from the
+    // configuration worker and from a seed file) and the keys are dropped on
+    // the next write.
     let stored = json!({
         "defaults": { "sandbox_mode": "read-only" },
         "events_stream": "agent::events",
