@@ -1,12 +1,18 @@
 //! Deterministic relevance tests for `reflex::discover` over a frozen
-//! snapshot of the live catalog (510 functions with their real
+//! snapshot of the live catalog (509 functions with their real
 //! descriptions and request schemas, captured 2026-08-28 via
 //! `engine::functions::info`; descriptions refreshed 2026-09-03 from the
 //! repo-wide description lint, MOT-4680; the approval, compose, context,
 //! browser::act, database::history, directory, fp, gantry, publish, state,
 //! workflow and worktree entries re-captured 2026-10-29 from the observe v2
 //! registrations; gantry's type-registration hook and the retired
-//! `eval::start` have no current registration and left the snapshot). bm25 — the shipped
+//! `eval::start` have no current registration and left the snapshot; on
+//! 2026-10-30 every description the observe v2 port changed was re-read
+//! from its registration (the agent `run` / `start` functions of claude,
+//! codex, cursor, devin, grok, hermes, opencode and pi, a2ui::binding::set,
+//! browser::cookies::list / set, shell::exec_bg and
+//! directory::system-prompts::delete), and `cron::on-config-change`, which
+//! the port retired, left the snapshot). bm25 — the shipped
 //! default — is purely lexical, so no engine, no model, and no judge are
 //! involved: expectations pin exact function sets and run in
 //! milliseconds. If a rank change breaks one of these, either the scorer
@@ -40,7 +46,7 @@ fn fixture_catalog() -> Vec<ToolSchema> {
             parameters: entry["parameters"].clone(),
         })
         .collect();
-    assert_eq!(catalog.len(), 510, "fixture catalog count changed");
+    assert_eq!(catalog.len(), 509, "fixture catalog count changed");
     catalog
 }
 
@@ -58,7 +64,7 @@ fn system_prompt_write_catalog_keeps_full_discovery_guidance() {
         ),
         (
             "directory::system-prompts::delete",
-            "Permanently delete one EXISTING filesystem-backed system prompt by name. Resolves against the same merged scan as directory::system-prompts::list, removes only that prompt's markdown file, and fans out directory::system-prompts::on-change with { op: \"delete\" }.",
+            "Permanently delete one EXISTING filesystem-backed system prompt by name. Resolves against the same merged scan as directory::system-prompts::list, removes only that prompt's markdown file, and calls directory::system-prompts::on-change with { op: \"delete\" }.",
         ),
     ] {
         let description = catalog

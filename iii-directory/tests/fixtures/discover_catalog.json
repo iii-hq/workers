@@ -93,7 +93,7 @@
     }
   },
   {
-    "description": "Attach a declarative live binding to a surface: a worker's event function observed with args or filters (optionally with its worker's read-only query), state::on-changed, or shell::on-changed. Legacy stream::on-changed bindings are deprecated.",
+    "description": "Attach a declarative live binding to a surface: a worker's private event function observed with args or filters (optionally with its worker's read-only query), state::on-changed, or shell::on-changed. Legacy stream::on-changed bindings are deprecated.",
     "name": "a2ui::binding::set",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -2056,7 +2056,7 @@
     }
   },
   {
-    "description": "List the cookies on the session's current page (name, value, domain, path, flags).",
+    "description": "List the cookies on the session's current page (name, value, domain, path, flags). Cookie values are credentials (logged-in sessions), so the function is not observable.",
     "name": "browser::cookies::list",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -2073,7 +2073,7 @@
     }
   },
   {
-    "description": "Set cookies on the session, like importing a cookie file. A cookie without a domain is scoped to the current page's URL. same_site is Strict, Lax, or None.",
+    "description": "Set cookies on the session, like importing a cookie file. A cookie without a domain is scoped to the current page's URL. same_site is Strict, Lax, or None. Cookie values are credentials (logged-in sessions), so the function is not observable.",
     "name": "browser::cookies::set",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -4600,7 +4600,7 @@
     }
   },
   {
-    "description": "Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; streams raw Claude Code messages onto claude::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.",
+    "description": "Run one Claude Code turn and wait for the result. Accepts `prompt` or a `messages` array plus a raw SDK `options` pass-through; publishes raw Claude Code messages on claude::on-raw-event and AgentEvent frames on claude::on-agent-event (observe with args { session_id }), and returns {session_id, result, usage, total_cost_usd}.",
     "name": "claude::run",
     "parameters": {
       "additionalProperties": false,
@@ -4729,7 +4729,7 @@
     }
   },
   {
-    "description": "Start a Claude Code turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start a Claude Code turn and return immediately; observe claude::on-agent-event with args { session_id } for progress and turn_end.",
     "name": "claude::start",
     "parameters": {
       "additionalProperties": false,
@@ -5802,7 +5802,7 @@
     }
   },
   {
-    "description": "Run a Codex coding-agent turn and wait for its result. Accepts `prompt` or a `messages` array plus a `codex_config` pass-through; streams Codex events to codex::events, AgentEvent frames to agent::events, and returns {session_id, result, usage}.",
+    "description": "Run a Codex coding-agent turn and wait for its result. Accepts `prompt` or a `messages` array plus a `codex_config` pass-through; delivers raw Codex events on codex::on-raw-event and AgentEvent frames on codex::on-agent-event, and returns {session_id, result, usage}.",
     "name": "codex::run",
     "parameters": {
       "definitions": {
@@ -5959,7 +5959,7 @@
     }
   },
   {
-    "description": "Start a Codex turn and return immediately; watch codex::events / agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start a Codex turn and return immediately; observe codex::on-agent-event (or codex::on-raw-event) with args { session_id } for progress and turn_end, or poll codex::status.",
     "name": "codex::start",
     "parameters": {
       "definitions": {
@@ -8099,15 +8099,6 @@
     }
   },
   {
-    "description": "Internal: reload cron configuration from the authoritative store on change.",
-    "name": "cron::on-config-change",
-    "parameters": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "ConfigChangeRequest",
-      "type": "object"
-    }
-  },
-  {
     "description": "Check whether the official Cursor Agent CLI can reuse an existing cursor-agent login. Account details and credentials are never returned.",
     "name": "cursor::auth::status",
     "parameters": {
@@ -8411,7 +8402,7 @@
     }
   },
   {
-    "description": "Start a Cursor agent turn and return immediately. Watch agent::events with group_id equal to session_id.",
+    "description": "Start a Cursor agent turn and return immediately. Observe cursor::on-agent-event with args { session_id } for progress frames.",
     "name": "cursor::start",
     "parameters": {
       "oneOf": [
@@ -9953,7 +9944,7 @@
     }
   },
   {
-    "description": "Run one Devin CLI turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw CLI stdout onto devin::events, terminal AgentEvent frames onto agent::events, and returns {session_id, devin_session_id, url, result, stop_reason, is_error}.",
+    "description": "Run one Devin CLI turn and wait for the result. Accepts `prompt` or a `messages` array; records the turn as a session-manager session (listed in the console, nested under `parent_session_id` when given), delivers raw CLI stdout on devin::on-raw-event and terminal AgentEvent frames on devin::on-agent-event, and returns {session_id, devin_session_id, url, result, stop_reason, is_error}.",
     "name": "devin::run",
     "parameters": {
       "definitions": {
@@ -10245,7 +10236,7 @@
     }
   },
   {
-    "description": "Start a Devin CLI turn and return immediately; watch devin::events / agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start a Devin CLI turn and return immediately; follow the session-manager session (session::messages, session_id) or observe devin::on-agent-event / devin::on-raw-event with args { session_id } for progress and turn_end.",
     "name": "devin::start",
     "parameters": {
       "definitions": {
@@ -10822,7 +10813,7 @@
     }
   },
   {
-    "description": "Permanently delete one EXISTING filesystem-backed system prompt by name. Resolves against the same merged scan as directory::system-prompts::list, removes only that prompt's markdown file, and fans out directory::system-prompts::on-change with { op: \"delete\" }.",
+    "description": "Permanently delete one EXISTING filesystem-backed system prompt by name. Resolves against the same merged scan as directory::system-prompts::list, removes only that prompt's markdown file, and calls directory::system-prompts::on-change with { op: \"delete\" }.",
     "name": "directory::system-prompts::delete",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -15996,7 +15987,7 @@
     }
   },
   {
-    "description": "Run a Grok coding-agent turn and wait for its result. Accepts `prompt` or a `messages` array; streams Grok events to grok::events, AgentEvent frames to agent::events; returns {session_id, result, stop_reason}.",
+    "description": "Run a Grok coding-agent turn and wait for its result. Accepts `prompt` or a `messages` array; delivers raw Grok events on grok::on-raw-event and AgentEvent frames on grok::on-agent-event; returns {session_id, result, stop_reason}.",
     "name": "grok::run",
     "parameters": {
       "definitions": {
@@ -16099,7 +16090,7 @@
     }
   },
   {
-    "description": "Start a Grok turn and return immediately; watch grok::events / agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start a Grok turn and return immediately; observe grok::on-agent-event (or grok::on-raw-event) with args { session_id } for progress and turn_end, or poll grok::status.",
     "name": "grok::start",
     "parameters": {
       "definitions": {
@@ -16309,7 +16300,7 @@
     }
   },
   {
-    "description": "Start a Hermes turn and return immediately; watch agent::events (group_id = session_id) for the result. Returns {session_id, started}.",
+    "description": "Start a Hermes turn and return immediately; observe hermes::on-agent-event with args { session_id } for the turn_end / agent_end frames, or poll hermes::status. Returns {session_id, started}.",
     "name": "hermes::start",
     "parameters": {
       "properties": {
@@ -17059,7 +17050,7 @@
     }
   },
   {
-    "description": "Run one OpenCode coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw events onto opencode::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.",
+    "description": "Run one OpenCode coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; delivers raw events on opencode::on-raw-event and AgentEvent frames on opencode::on-agent-event (observe with args { session_id }), and returns {session_id, result, usage, total_cost_usd}.",
     "name": "opencode::run",
     "parameters": {
       "additionalProperties": false,
@@ -17146,7 +17137,7 @@
     }
   },
   {
-    "description": "Start an OpenCode turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start an OpenCode turn and return immediately; observe opencode::on-agent-event with args { session_id } for progress and turn_end.",
     "name": "opencode::start",
     "parameters": {
       "additionalProperties": false,
@@ -17811,7 +17802,7 @@
     }
   },
   {
-    "description": "Run one Pi coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw Pi events onto pi::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.",
+    "description": "Run one Pi coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; publishes raw Pi events on pi::on-raw-event and AgentEvent frames on pi::on-agent-event (observe with args { session_id }), and returns {session_id, result, usage, total_cost_usd}.",
     "name": "pi::run",
     "parameters": {
       "additionalProperties": false,
@@ -17913,7 +17904,7 @@
     }
   },
   {
-    "description": "Start a Pi turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.",
+    "description": "Start a Pi turn and return immediately; observe pi::on-agent-event with args { session_id } for progress and turn_end.",
     "name": "pi::start",
     "parameters": {
       "additionalProperties": false,
@@ -21912,7 +21903,7 @@
     }
   },
   {
-    "description": "Spawn a command as a background job; returns { job_id, argv } immediately. Same payload as shell::exec (command + args, do NOT pass argv as an array), including the optional host-only `cwd` (jail-confined; escape is S215), `env` (any key except PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup and interpreter-startup keys, rejected unconditionally), and `stdin` (string written to the job's stdin); violations and cwd/env/stdin on a sandbox target reject with an S210 message. Poll with shell::status, terminate with shell::kill, list with shell::list. Host background jobs ignore the per-call timeout_ms and run until they exit or shell::kill terminates them; set the operator config `max_bg_timeout_ms` (0 = unbounded, the default) to force-kill a runaway job after that long. Spawn-time failures (argv-parse, denylist, cwd/env gating, spawn, concurrency cap) are plain-string messages naming the violation; once spawned, per-job failures surface through shell::status (the job record's status/stderr), not this call's return.",
+    "description": "Spawn a background job; returns { job_id, argv } immediately. Accepts the shell::exec payload plus optional job_id. Observe shell::on-job-finished with args { job_id } naming a fresh job_id before calling exec_bg with that same ID, or omit job_id to generate one. Duplicate retained IDs reject before execution. Host jobs ignore timeout_ms and use the configured background hard cap; read output with shell::status, list jobs with shell::list. Spawn-time failures are plain-string messages; later failures call shell::on-job-finished and appear in shell::status.",
     "name": "shell::exec_bg",
     "parameters": {
       "$schema": "http://json-schema.org/draft-07/schema#",
