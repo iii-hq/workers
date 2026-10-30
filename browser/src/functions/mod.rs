@@ -284,11 +284,13 @@ pub const RESIZE_DESC: &str =
      phone (touch input, an Android Chrome user agent); reload once when mode_changed.";
 pub const COOKIES_LIST_ID: &str = "browser::cookies::list";
 pub const COOKIES_LIST_DESC: &str =
-    "List the cookies on the session's current page (name, value, domain, path, flags).";
+    "List the cookies on the session's current page (name, value, domain, path, flags). Cookie \
+     values are credentials (logged-in sessions), so the function is not observable.";
 pub const COOKIES_SET_ID: &str = "browser::cookies::set";
 pub const COOKIES_SET_DESC: &str =
     "Set cookies on the session, like importing a cookie file. A cookie without a domain is \
-     scoped to the current page's URL. same_site is Strict, Lax, or None.";
+     scoped to the current page's URL. same_site is Strict, Lax, or None. Cookie values are \
+     credentials (logged-in sessions), so the function is not observable.";
 pub const COOKIES_CLEAR_ID: &str = "browser::cookies::clear";
 pub const COOKIES_CLEAR_DESC: &str =
     "Delete the cookies the tab's current page can see (its site's cookies). Other sites keep \
@@ -2763,7 +2765,9 @@ fn register_cookies_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 Ok::<_, Error>(cookies::CookiesListOutput { cookies })
             }
         })
-        .description(COOKIES_LIST_DESC),
+        .description(COOKIES_LIST_DESC)
+        // The output carries cookie values: credentials.
+        .observable(false),
     );
 }
 
@@ -2810,7 +2814,9 @@ fn register_cookies_set(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 Ok::<_, Error>(cookies::CookiesSetOutput { ok: true, count })
             }
         })
-        .description(COOKIES_SET_DESC),
+        .description(COOKIES_SET_DESC)
+        // The input carries cookie values: credentials.
+        .observable(false),
     );
 }
 

@@ -280,6 +280,11 @@ inline edits, the design panel backing), and `browser::sessions::list` /
 `browser::sessions::stop`. Function ids and schemas live in the code and
 `iii worker info browser`.
 
+`browser::cookies::list` returns cookie values and `browser::cookies::set`
+takes them. Cookie values are credentials (a logged-in session, an attached
+profile's logins), so both functions are registered with `observable: false`:
+observing either fails with `NOT_OBSERVABLE`.
+
 File transfer functions:
 
 | Function | Purpose |
