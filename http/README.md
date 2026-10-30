@@ -81,7 +81,7 @@ query string and headers arrive as `req.query_params` / `req.headers`.
 
 | Function | Args or input | What it is |
 |---|---|---|
-| `http::on-request` | args `{ method, path, public_webhook?, middleware_function_ids? }` | One call per HTTP request. Each observer serves one route; observers observe the `HttpRequest`. |
+| `http::on-request` | args `{ method, path, public_webhook?, middleware_function_ids? }` | One call per HTTP request that matches a route. Each observer serves one route; observers observe the `HttpRequest`. |
 | `http::status` | none | Where the server listens: `{ host, port, url, last_reload_error }`. |
 | `http::webhook-listener::status` | none | Internal: the restricted listener this process bound, and the last reload error. |
 | `http::configuration-id` | none | Internal: this instance's configuration entry id. |
@@ -115,8 +115,11 @@ The event, and what the route's target receives:
 }
 ```
 
-Each request is one call of `http::on-request`. The worker delivers it
-itself, to the observer whose route matched:
+The server matches each request's method and path to a route (a path with
+no route gets `404`, a route on another method `405`) and runs the global
+middleware. A request that matches a route and passes the global middleware
+is one call of `http::on-request`, which the worker delivers itself, to the
+observer whose route matched:
 
 1. the observer's `filters` select requests by `input` (the request); a
    request they reject gets `422 CONDITION_NOT_MET` and nothing is called;

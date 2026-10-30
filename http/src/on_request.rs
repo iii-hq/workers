@@ -1,4 +1,4 @@
-//! `http::on-request`: one call per HTTP request.
+//! `http::on-request`: one call per HTTP request that matches a route.
 //!
 //! Each observer's args (`{ method, path, public_webhook?,
 //! middleware_function_ids? }`, see [`HttpRouteArgs`]) declare one route. The
@@ -49,12 +49,13 @@ pub const HTTP_ROUTE_CONFLICT: &str = "HTTP_ROUTE_CONFLICT";
 pub const ROUTE_METADATA_KEY: &str = "route";
 
 pub const ON_REQUEST_DESCRIPTION: &str =
-    "One call per HTTP request; observers observe the request. Observe it with args \
-     { method, path } (plus optional public_webhook and middleware_function_ids) to serve \
-     that route: each matching request calls the target with the HTTP request, and its \
-     return value ({ status_code, headers, body }, or null after streaming to the response \
-     channel) is the response. The observer's filters select requests by `input`; a request \
-     they reject gets 422. Only the http worker calls it.";
+    "One call per HTTP request that matches a route; observers observe the request. Observe \
+     it with args { method, path } (plus optional public_webhook and \
+     middleware_function_ids) to serve that route: each matching request calls the target \
+     with the HTTP request, and its return value ({ status_code, headers, body }, or null \
+     after streaming to the response channel) is the response. The observer's filters \
+     select requests by `input`; a request they reject gets 422. Only the http worker calls \
+     it.";
 
 /// Registers [`ON_REQUEST_FN`] with [`RouteHooks`] over `routes` as its
 /// hooks. The hooks are set by id before the function registers, so they run
