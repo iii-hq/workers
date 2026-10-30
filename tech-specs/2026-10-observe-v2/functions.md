@@ -104,14 +104,17 @@ its row (`publish` is public; the guest rows describe an API).
   superseded) calls `obs.reject(code, message)`.
 - **Initial state.** A function whose observers receive the current state when
   they are added (`tmux::on-changed`, `harness::on-ready`, `router::on-ready`,
-  `console::workspace::on-changed`, `console::ui::on-assets-changed`,
-  `shell::on-job-finished`, the `console::ui::asset` content fetch) does it
-  from `onObserverAdded` by spawning a task that awaits `obs.accepted()` and
-  then calls through the observer:
+  `console::workspace::on-changed`, `console::ui::on-assets-changed`, the
+  `console::ui::asset` content fetch) does it from `onObserverAdded` by
+  spawning a task that awaits `obs.accepted()` and then calls through the
+  observer:
   `iii.call(CallRequest::observer(&obs, state).action(CallAction::Void))`.
   The hook itself returns at once: a call through an observer that is not
   active fails with `OBSERVER_NOT_ACTIVE`, and the observer becomes active only
-  after its hooks resolve (decision 19).
+  after its hooks resolve (decision 19). `shell::on-job-finished` sends a late
+  observer its job's completion from the same task with a call of the
+  function that only that observer matches (row 49), so iii delivers it with
+  the observer's `deliver`, filters and `on`, as it delivers the live call.
 - **Custom delivery.** A deliver hook that calls targets itself applies each
   observer's filters with `obs.matches(call)` before calling it, and documents
   in the function's description and README what targets receive and what the
@@ -359,7 +362,7 @@ fields where the name does not say them), and the consumers in this repo
 | 46 | hermes | `hermes::raw-event` | `hermes::on-raw-event` | `{ session_id }` | as row 25 | `FeedPayload` (inbound platform delivery) | none in repo |
 | 47 | ide | `shell::changed` | `shell::on-changed` | `{ path, include_ignored? }` | match(o: `root\|include_ignored` of the root resolved at add, c: the producing watch's key); added: resolve and jail-check `path`, retain the `(root, include_ignored)` watch and await its start (`ObserveRejection` on failure); removed: release it; the pump calls the function once per event | `ChangedEvent { path, kind, root, dir, ignored }` | ide:ui/src/page/live.ts, ide:ui/src/page/git-watch.ts, a2ui:ui/src/live.ts |
 | 48 | ide | `shell::git-changed` | `shell::on-git-changed` | `{ path }` | match(o and c: canonical path); added: retain the path's `GitWatch`; removed: release it | `GitChangedEvent` | ide:ui/src/page/git-watch.ts |
-| 49 | ide | `shell::job-finished` | `shell::on-job-finished` | `{ job_id? }` | match(o: `args.job_id` or `*`, c: `[input.job_id, *]`); added: when the job already finished, after `obs.accepted()` call through the observer with its retained terminal event | `JobFinishedEvent` | kits:deepwork/agents/deepwork.md (through `harness::observe`) |
+| 49 | ide | `shell::job-finished` | `shell::on-job-finished` | `{ job_id? }` | match(predicate: an observer without `args.job_id` takes every call but a replay; an observer of a job takes a call of that job, or a replay naming it in `metadata.replay`, and claims the completion `(job_id, started_at_ms, finished_at_ms)` under one lock, so it receives it once); added: when the job already finished, after `obs.accepted()` call the function (`Void`) with its retained terminal event and metadata `{ replay: obs.id }`; removed: drop the observer's claim | `JobFinishedEvent` | kits:deepwork/agents/deepwork.md (through `harness::observe`) |
 | 50 | ide | `shell::turns::changed` | `shell::turns::on-changed` | none; filters `input.session_id` | default; the 200 ms coalescing stays in the producer | `TurnsChangedEvent { session_id }` | ide:ui/src/page/turn.ts |
 | 51 | iii-directory | `directory::skills::on-change` | `directory::skills::on-change` | none; filters `input.op`, `input.name` | default | `SkillsChange { op, name? }` | harness:src/skills.rs, iii-directory:ui/src/page/browser.tsx |
 | 52 | iii-directory | `directory::system-prompts::on-change` | `directory::system-prompts::on-change` | none | default | `SystemPromptsChange { op, name? }` | none in repo |
