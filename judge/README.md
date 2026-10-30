@@ -14,7 +14,7 @@ iii call compose::add worker=judge
 ```
 
 Compose starts the hub with its `judge-typesafe` dependency, which in turn needs
-`configuration`. Use engine **`iii/v0.24.0-rc.2`**, the verified release used by
+`configuration`. Use engine **`iii/v0.26.0`**, the verified release used by
 this repository's CI. Wait for `judge::evaluate` to register before calling it.
 
 ## Quickstart

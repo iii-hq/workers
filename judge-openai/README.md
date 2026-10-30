@@ -22,7 +22,7 @@ iii call compose::add worker=judge-openai
 
 Compose starts the provider with its `configuration` dependency; add the
 [`judge`](https://github.com/iii-hq/workers/tree/main/judge) hub as well to call
-it through `judge::evaluate`. Use engine **`iii/v0.24.0-rc.2`**, the verified
+it through `judge::evaluate`. Use engine **`iii/v0.26.0`**, the verified
 release with `configuration::ensure` used by this repository's CI. Wait for the
 provider's functions to register before making a call.
 

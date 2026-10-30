@@ -312,11 +312,7 @@ describe('JevConfigForm', () => {
 describe('JevConfigForm catalog', () => {
   it('lists the catalog the worker answers, keeps the stored model selectable, and reports the key as accepted', async () => {
     const { container, iii } = await mount({ model: 'jev-1.13.0' })
-    expect(iii.call).toHaveBeenCalledWith(
-      'judge-typesafe::models::list',
-      { timeout_ms: 15_000 },
-      { timeoutMs: 20_000 },
-    )
+    expect(iii.call).toHaveBeenCalledWith('judge-typesafe::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
     const select = container.querySelector<HTMLSelectElement>('select[name="model"]')!
     expect([...select.options].map((option) => option.value)).toEqual(['', 'jev-latest', 'jev-preview', 'jev-1.13.0'])
     expect(select.options[1].dataset.description).toBe('Latest JEV · 2026-09-10')

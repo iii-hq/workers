@@ -54,11 +54,7 @@ let liveSeq = 0
 
 /** The supported models the running worker sees with its saved credentials. */
 export async function listModels(iii: Engine): Promise<ModelCard[]> {
-  const reply = await iii.call<ModelsReply>(
-    'judge-openai::models::list',
-    { timeout_ms: 15_000 },
-    { timeoutMs: 20_000 },
-  )
+  const reply = await iii.call<ModelsReply>('judge-openai::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
   if (reply?.status === 'ok' && Array.isArray(reply.models)) return reply.models
   // Typed provider refusals (`missing_key`, `http`, …) surface by code; bus failures by message.
   throw new Error(reply?.status === 'error' && reply.code ? reply.code : 'invalid_response')

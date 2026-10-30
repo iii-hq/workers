@@ -110,11 +110,7 @@ describe('listProviders', () => {
 describe('JudgeRoutingForm', () => {
   it('offers the registered providers, the built-in default, and marks the selection as registered', async () => {
     const { container, iii } = await mount({ provider: 'typesafe' })
-    expect(iii.call).toHaveBeenCalledWith(
-      'engine::functions::list',
-      { include_internal: true },
-      { timeoutMs: 10_000 },
-    )
+    expect(iii.call).toHaveBeenCalledWith('engine::functions::list', { include_internal: true }, { timeoutMs: 10_000 })
     const select = container.querySelector<HTMLSelectElement>('select[name="provider"]')!
     expect([...select.options].map((option) => option.value)).toEqual(['', 'laya', 'local-llm', 'typesafe'])
     expect(select.options[0].textContent).toBe('Built-in default (typesafe)')
