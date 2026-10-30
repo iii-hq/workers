@@ -5,8 +5,8 @@
 //!   and every phase re-inspects real git state on entry, so queue
 //!   redelivery at any point converges without duplicate side effects.
 //! - Business failures (rebase conflict, failed tests, dirty tree, moved
-//!   target, checked-out-dirty target) return `Ok` and emit a
-//!   `worktree::land-blocked` event; only infra failures (git spawn/timeout,
+//!   target, checked-out-dirty target) return `Ok` and call
+//!   `worktree::on-land-blocked`; only infra failures (git spawn/timeout,
 //!   state store) return `Err` so the engine queue redelivers.
 //! - The merge is a fast-forward compare-and-swap: `git update-ref
 //!   refs/heads/<target> <new> <old>`. A lost CAS loops back to rebase,
@@ -430,7 +430,7 @@ async fn set_phase(deps: &LandDeps, job: &mut LandJob, phase: LandPhase) -> Resu
 }
 
 /// Terminal business block: persist the blocked job, flip the record to
-/// `land-blocked`, clear the active marker, and emit `worktree::land-blocked`.
+/// `land-blocked`, clear the active marker, and call `worktree::on-land-blocked`.
 /// Returns `Ok` — a blocked land is an outcome, not an infra failure.
 async fn block(
     deps: &LandDeps,

@@ -1,5 +1,6 @@
 //! `worktree::prune` — the reconcile sweep. Every request field defaults so
-//! a cron binding can fire it with an empty `{}` payload.
+//! an observer of `cron::on-tick` can run it with the tick as its payload
+//! (the tick's fields are ignored).
 
 use std::collections::BTreeSet;
 use std::path::Path;
