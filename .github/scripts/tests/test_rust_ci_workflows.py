@@ -167,6 +167,16 @@ def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
     ) in run
 
 
+def test_interface_smoke_reads_and_asserts_the_workers_observers() -> None:
+    steps = workflow("ci.yml")["jobs"]["interface-smoke"]["steps"]
+    collect = named_step(steps, "Collect worker interface")["run"]
+    assert_step = named_step(steps, "Assert worker interface and observers")["run"]
+
+    assert "--observers-out worker-observers.json" in collect
+    assert "--assert-file worker-interface.json" in assert_step
+    assert "--assert-observers worker-observers.json" in assert_step
+
+
 def test_harness_integration_downloads_latest_rc_engine_without_building_it() -> None:
     integration = workflow("_harness-integration.yml")
     steps = integration["jobs"]["build"]["steps"]
