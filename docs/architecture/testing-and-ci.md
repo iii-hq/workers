@@ -79,7 +79,11 @@ prove that this metadata is present or typed.
 1. `cargo build --locked` (default features — same as release binary)
 2. Install `iii` CLI + start engine
 3. Start worker from `./target/debug/<bin>` (with `--config config.collect.yaml` when shipped)
-4. `collect_worker_interface.py` — 120 s wait, assert non-empty interface
+4. `collect_worker_interface.py` — 120 s wait; reads the worker's functions
+   (`engine::functions::list|info`) and the observers it created
+   (`engine::observers::list`); asserts a non-empty, typed interface and no
+   observer in state `error` (a `pending` observer whose target is not
+   registered is a warning)
 
 **Opt-out:** `registry_interface: false` in `iii.worker.yaml` (for example `lsp`).
 The release compiler records this as `interface_capture: skipped`; only that

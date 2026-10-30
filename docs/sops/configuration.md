@@ -207,7 +207,7 @@ Path B workers do **not** need `load_config()` in the production boot path.
 
 Pick a **reload tier** (§6) and mirror the matching reference:
 
-**Tier 1 — ConfigCell + targeted rebuild/re-observe** ([`context-manager/src/configuration.rs`](../../context-manager/src/configuration.rs), [`approval-gate/src/configuration.rs`](../../approval-gate/src/configuration.rs)):
+**Tier 1 — ConfigCell + targeted rebuild/re-observe** ([`context-manager/src/configuration.rs`](../../context-manager/src/configuration.rs), [`approval-gate/src/configuration.rs`](../../approval-gate/src/configuration.rs), [`worktree/src/configuration.rs`](../../worktree/src/configuration.rs)):
 
 - `pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>`
 - `register_config(iii, seed)`, `fetch_config(iii)`
@@ -215,12 +215,14 @@ Pick a **reload tier** (§6) and mirror the matching reference:
   next per-call read.
 - On a **structural** change, rebuild + swap the one affected resource rather
   than refuse: `context-manager` rebuilds its `FsLeaseStore` on a `lease_dir`
-  change; `approval-gate` replaces its `harness::hook::on-pre-call` /
-  `cron::on-tick` observers on a `hook` / `sweep_expression` change (observe
-  the new one, then `dispose()` the old handle — a fail-safe overlap). Read
+  change; `worktree` replaces its `cron::on-tick` observer on a
+  `prune_schedule` change (observe the new one, then `dispose()` the old
+  handle — a fail-safe overlap). `approval-gate` has no structural fields: it
+  swaps the snapshot, and its `harness::hook::on-pre-call` /
+  `harness::hook::on-post-call` observers are fixed at startup. Read
   `summarizer_timeout_ms` and other numeric knobs from the live snapshot per
   call so they need no rebuild.
-- `register_config_observer(iii, cell, <resource(s) to rebuild/re-observe>)`
+- `observe_config_changes(iii, cell, <resource(s) to rebuild/re-observe, if any>)`
 
 **Tier 2 — Full runtime swap** ([`session-manager/src/configuration.rs`](../../session-manager/src/configuration.rs), [`ide/src/configuration.rs`](../../ide/src/configuration.rs)):
 
@@ -260,8 +262,9 @@ Common to both tiers:
   `config_id()`, while `ui_form` remains the built-in family id.
 - `fetch_config(iii)` — read the authoritative, env-expanded value
   (`NOT_FOUND` ⇒ built-in default).
-- `register_config_observer` — register `<worker>::on-config-change` and
-  observe `configuration::on-updated` with it (see §5). Register it **exactly
+- `observe_config_changes` — register `<worker>::on-config-change` and
+  observe `configuration::on-updated` with it (see §5); `session-manager`
+  names it `register_config_observer`. Register it **exactly
   like `session-manager`**:
   a **typed** `RegisterFunction::new_async` over a small event struct
   (`OnConfigChangeEvent { id }`) returning a typed ack
@@ -283,7 +286,7 @@ Common to both tiers:
 3. register_config(seed)  +  fetch_config()        # required boot dependency
 4. resolve adapters from the fetched config
 5. build the ConfigCell; register functions
-6. register_config_observer                        # LAST
+6. observe_config_changes                          # LAST
 ```
 
 **Tier 2 (full runtime swap):**
@@ -295,7 +298,7 @@ Common to both tiers:
 4. register event functions (+ internal feeds if applicable)
 5. build_runtime → AppState
 6. register protocol handlers (mode-gated if applicable) + functions (read AppState per call)
-7. register_config_observer + config-status
+7. observe_config_changes + config-status
 ```
 
 `configuration` is a **required boot dependency**: a failed register/fetch
@@ -388,7 +391,8 @@ workers below have **no** restart-required fields.
 | Worker | Tier | Structural hot reload |
 |--------|------|-----------------------|
 | `context-manager` | ConfigCell + rebuild | `lease_dir` rebuilds the `FsLeaseStore`; `summarizer_timeout_ms` + other knobs read per call |
-| `approval-gate` | ConfigCell + re-observe | `hook` / `sweep_expression` replace the `harness::hook::on-pre-call` / `cron::on-tick` observers live; timeouts + approval defaults read per call |
+| `approval-gate` | ConfigCell | `default_mode`, `rules` and `grant_reask_limit` read per call; the `harness::hook::on-pre-call` / `on-post-call` observers are fixed at startup |
+| `worktree` | ConfigCell + re-observe | `prune_schedule` replaces the `cron::on-tick` observer live |
 | `storage` | partial runtime | topology frozen; connection settings reload |
 | `ide`, `database` | full runtime swap | yes |
 | **`session-manager`** | full runtime + **resync** | yes (fs/bridge, `data_dir`, bridge `url`/`timeout_ms`) |

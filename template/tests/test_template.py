@@ -3,6 +3,7 @@
 from pathlib import Path
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 import tomllib
@@ -13,6 +14,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "template"
+# The fields of an `engine::functions::info` row (`FunctionDetail`, iii 0.26.0):
+# the typed schemas are `request_schema` / `response_schema`.
+FUNCTION_DETAIL_FIELDS = frozenset({
+    "function_id", "namespace", "worker_name", "description", "metadata",
+    "request_schema", "response_schema", "args_format", "private", "observable",
+    "observer_count",
+})
 
 
 def tracked_files(*paths):
@@ -136,6 +144,21 @@ class TemplateTests(unittest.TestCase):
                 actual[path.relative_to(TEMPLATE).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
         self.assertFalse(any(path.startswith("config/") for path in manifest["files"]))
         self.assertEqual(actual, manifest["files"], "Run sync.sh; do not edit generated files directly")
+
+    def test_function_info_fields_are_named_as_the_engine_returns_them(self):
+        """A doc that points at a field of an `engine::functions::info` row names a field the row has."""
+        returned = FUNCTION_DETAIL_FIELDS | {"functions"}
+        checked = 0
+        for path in tracked_files("template/agents", "template/skills"):
+            if path.suffix != ".md":
+                continue
+            for paragraph in path.read_text(encoding="utf-8").split("\n\n"):
+                if "engine::functions::info" not in paragraph:
+                    continue
+                for field in re.findall(r"\bits `([a-z_]+)`", paragraph):
+                    checked += 1
+                    self.assertIn(field, returned, f"{path.relative_to(ROOT)}: `{field}`")
+        self.assertGreater(checked, 0, "no doc names a field of an engine::functions::info row")
 
     def test_all_upstream_skill_documents_are_present(self):
         """The imported skill set must contain nonempty regular Markdown files."""

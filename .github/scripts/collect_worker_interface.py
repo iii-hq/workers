@@ -29,6 +29,15 @@ SCHEMA_DEFINING_KEYS = frozenset(
 # exits ~5 s later when no queue worker answers.
 SAMPLE_INTERVAL_SECONDS = 0.5
 
+# An observer `engine::observers::list` reports in this state is failed for
+# good: the observed function's host rejected it or did not ack it in time, or
+# a registration made it invalid (its args against the function's
+# `args_format`, a private function or target).
+OBSERVER_ERROR_STATE = "error"
+# The reason of a `pending` observer whose function is hosted and whose target
+# function is not registered.
+TARGET_UNAVAILABLE = "TARGET_UNAVAILABLE"
+
 
 def _schema_is_typed(schema: object) -> bool:
     return isinstance(schema, dict) and any(k in schema for k in SCHEMA_DEFINING_KEYS)
@@ -125,6 +134,63 @@ def enrich_functions_with_schemas(
     return functions
 
 
+def collect_worker_observers(
+    worker_names: set[str] | frozenset[str],
+    *,
+    run=run_iii,
+) -> list[dict[str, object]]:
+    """The observers the named workers created, sorted by id.
+
+    `engine::observers::list` with `worker` lists the observers one worker
+    created (by its name or connection id), with their function, target,
+    state and reason."""
+    observers: dict[str, dict[str, object]] = {}
+    for worker_name in sorted(worker_names):
+        listed = run("engine::observers::list", {"worker": worker_name})
+        rows = listed.get("observers") if isinstance(listed, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError(
+                f"engine::observers::list for {worker_name!r} returned no observers array"
+            )
+        for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("id"), str):
+                observers[row["id"]] = row
+    return [observers[observer_id] for observer_id in sorted(observers)]
+
+
+def _describe_observer(observer: dict[str, object]) -> str:
+    target = observer.get("target")
+    target_id = target.get("function_id") if isinstance(target, dict) else None
+    description = f"{observer.get('id')} ({observer.get('function_id')} -> {target_id})"
+    reason = observer.get("reason")
+    if isinstance(reason, dict):
+        description += f": {reason.get('code')}: {reason.get('message')}"
+    return description
+
+
+def _observer_violations(observers: list[dict[str, object]]) -> list[str]:
+    """`"<id> (<function> -> <target>): <code>: <message>"` for every observer in
+    state `error`."""
+    return [
+        _describe_observer(observer)
+        for observer in observers
+        if isinstance(observer, dict) and observer.get("state") == OBSERVER_ERROR_STATE
+    ]
+
+
+def _observer_warnings(observers: list[dict[str, object]]) -> list[str]:
+    """The same description for every `pending` observer whose function is
+    hosted and whose target is not registered."""
+    return [
+        _describe_observer(observer)
+        for observer in observers
+        if isinstance(observer, dict)
+        and observer.get("state") == "pending"
+        and isinstance(observer.get("reason"), dict)
+        and observer["reason"].get("code") == TARGET_UNAVAILABLE
+    ]
+
+
 def wait_for_worker(
     worker_name: str,
     wait_seconds: int,
@@ -201,6 +267,23 @@ def _assert_interface(data: dict[str, object], source: str, args: argparse.Names
     return 0
 
 
+def _assert_observers(data: object, source: str) -> int:
+    observers = data.get("observers") if isinstance(data, dict) else None
+    if not isinstance(observers, list):
+        print(f"::error::no observers array in {source}", file=sys.stderr)
+        return 1
+    for warning in _observer_warnings(observers):
+        print(f"::warning::observer target is not registered: {warning}", file=sys.stderr)
+    violations = _observer_violations(observers)
+    if violations:
+        print(
+            f"::error::observers in state error in {source}: {'; '.join(violations)}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", required=False)
@@ -222,25 +305,46 @@ def main() -> int:
         "--assert-file",
         help="path to an already-written interface JSON to assert; bypasses collection",
     )
+    parser.add_argument(
+        "--observers-out",
+        help="also write the observers the worker created (engine::observers::list) "
+        "to this path as {\"observers\": [...]}",
+    )
+    parser.add_argument(
+        "--assert-observers",
+        metavar="OBSERVERS_JSON",
+        help="path to an observers JSON written by --observers-out to assert: no "
+        "observer is in state error; bypasses collection",
+    )
     args = parser.parse_args()
 
     # Standalone assertion mode — bypass collection entirely.
-    if args.assert_file:
-        if not (args.assert_non_empty or args.assert_typed_schemas):
-            print(
-                "--assert-file requires --assert-non-empty and/or --assert-typed-schemas",
-                file=sys.stderr,
-            )
-            return 1
-        try:
-            data = json.loads(pathlib.Path(args.assert_file).read_text())
-        except Exception as e:
-            print(f"could not read {args.assert_file}: {e}", file=sys.stderr)
-            return 1
-        return _assert_interface(data, args.assert_file, args)
+    if args.assert_file or args.assert_observers:
+        status = 0
+        if args.assert_file:
+            if not (args.assert_non_empty or args.assert_typed_schemas):
+                print(
+                    "--assert-file requires --assert-non-empty and/or --assert-typed-schemas",
+                    file=sys.stderr,
+                )
+                return 1
+            try:
+                data = json.loads(pathlib.Path(args.assert_file).read_text())
+            except Exception as e:
+                print(f"could not read {args.assert_file}: {e}", file=sys.stderr)
+                return 1
+            status = _assert_interface(data, args.assert_file, args)
+        if args.assert_observers:
+            try:
+                observers = json.loads(pathlib.Path(args.assert_observers).read_text())
+            except Exception as e:
+                print(f"could not read {args.assert_observers}: {e}", file=sys.stderr)
+                return 1
+            status = _assert_observers(observers, args.assert_observers) or status
+        return status
 
     if not args.worker:
-        print("--worker is required unless --assert-file is given", file=sys.stderr)
+        print("--worker is required unless --assert-file or --assert-observers is given", file=sys.stderr)
         return 1
 
     workers_baseline_json = None
@@ -288,6 +392,37 @@ def main() -> int:
     )
     pathlib.Path(args.out).write_text(json.dumps(interface, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(interface, indent=2))
+
+    if args.observers_out:
+        target_worker_names = _resolve_target_worker_names(
+            workers=workers_json.get("workers") or [],
+            worker_name=args.worker,
+            baseline_workers_json=workers_baseline_json,
+        )
+        try:
+            observers = collect_worker_observers(target_worker_names)
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+            ValueError,
+        ) as error:
+            detail = getattr(error, "stderr", None) or ""
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", "replace")
+            detail = detail.strip()
+            print(
+                f"::error::could not read engine::observers::list: {error}"
+                + (f": {detail}" if detail else ""),
+                file=sys.stderr,
+            )
+            return 1
+        pathlib.Path(args.observers_out).write_text(
+            json.dumps({"observers": observers}, indent=2) + "\n", encoding="utf-8"
+        )
+        print(f"{len(observers)} observer(s) created by {', '.join(sorted(target_worker_names))}:")
+        for observer in observers:
+            print(f"  [{observer.get('state')}] {_describe_observer(observer)}")
 
     if args.assert_non_empty or args.assert_typed_schemas:
         with open(args.out) as f:

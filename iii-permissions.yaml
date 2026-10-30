@@ -78,8 +78,8 @@ rules:
   - '!directory::on-functions-change'
   - '!directory::hint-preview'
   - directory::search_functions
-  # Internal hot-reload trigger handler — must not be agent-callable; it is
-  # invoked only by the engine's `configuration:updated` trigger dispatch.
+  # Internal hot-reload handlers — must not be agent-callable; each is the
+  # target of its worker's observer of `configuration::on-updated`.
   - '!shell::on-config-change'
   - '!cursor::on-config-change'
   # Operator/automation health signal, not an agent tool: it can surface a
@@ -157,7 +157,7 @@ rules:
   # change cannot inadvertently re-open the injection path.
   - '!storage::on-config-change'
   - '!database::on-config-change'
-  # database: the secrets::changed sink, connection management (rewrites
+  # database: the secrets::on-changed sink, connection management (rewrites
   # servers and credentials, like configuration::set; getConnection exposes
   # the stored entry; testConnection sends referenced credentials to the
   # server a candidate names) and the chat mention provider (console
@@ -267,7 +267,7 @@ rules:
   - '!security-scan::execute'
   - '!security-scan::on-turn-completed'
   - '!security-scan::on-schedule'
-  # sentinel: trigger and queue targets only. The console drives grouping
+  # sentinel: observer and queue targets only. The console drives grouping
   # through the read surface; the investigation session gets the four
   # functions below and nothing else.
   - '!sentinel::ingest'
@@ -366,9 +366,10 @@ rules:
   # watch or acquiring/releasing a public tunnel stays approval-gated.
   - '!github::webhooks::*'
   - '!quick-tunnel::on-config-change'
-  # openwiki: internal trigger targets. cron::refresh-due is the per-wiki cron
-  # target; on-turn-started/completed are harness trigger-bridge targets whose
-  # direct call could forge generation progress. The hot-reload hook follows
+  # openwiki: internal observer targets. cron::refresh-due is the per-wiki
+  # cron::on-tick target; on-turn-started/completed observe
+  # harness::on-turn-started/completed, and a direct call could forge
+  # generation progress. The hot-reload hook follows
   # the same pattern as the other on-config-change denies.
   - '!openwiki::cron::refresh-due'
   - '!openwiki::on-turn-started'
@@ -602,8 +603,8 @@ rules:
   - github::search::prs
   - github::search::code
   # web::fetch is load-bearing for the system prompt's SDK-reference gate and
-  # HTTP-trigger verification; it enforces size/timeout caps and server-side
-  # SSRF protection, so it is allowed by default.
+  # for verifying `http::on-request` observers; it enforces size/timeout caps
+  # and server-side SSRF protection, so it is allowed by default.
   - web::fetch
 
   # pdf: every function is a pure read of a document the agent could already
