@@ -429,9 +429,21 @@ serve is refused when it is created, and its `ready()` says why:
 |---|---|
 | `INVALID_ARGS` | A missing `db`, or an unknown arg (`tabel`). |
 | `NON_CANONICAL_TABLE` | `table` is not canonical; the message names the canonical value. |
-| `UNKNOWN_DB` | No such connection. A configuration reload that removes a connection rejects its observers the same way. |
+| `UNKNOWN_DB` | No such connection. |
 | `NATIVE_CAPTURE_REQUIRES_TABLE` | A `native` database and no `table`. |
 | `CAPTURE_INSTALL_FAILED` | Native capture could not be installed (privileges, a table that does not exist under that name, a MySQL server without a ROW binlog). |
+
+A configuration reload serves each observer as the new configuration says.
+When its database becomes `native`, or a `native` database's connection
+changes, the worker installs capture for its table through the new
+connection; when its database becomes `statements`, the statements path
+serves it. An observer the new configuration cannot serve is rejected with
+the code for the reason: its database was removed (`UNKNOWN_DB`), its
+database became `native` and it names no table
+(`NATIVE_CAPTURE_REQUIRES_TABLE`), or capture cannot be installed through
+the new connection (`CAPTURE_INSTALL_FAILED`). A `native` database whose
+connection cannot be built keeps its observers, and the worker installs
+their capture once the connection builds.
 
 **Event** (`input`, and `output`: the handler returns it): `{ db, schema,
 table, op, affected_rows, returning?, truncated?, at }`. `schema` is
@@ -445,7 +457,10 @@ canonical. Filter paths are checked against this shape (`input.tabel` is
 the worker files each observer under its `db`, its `table` (or every table)
 and each of its `ops` (or every operation), and looks each event up under its
 db, its table and every table, its op and every op. The observer's filters
-then apply as usual.
+then apply as usual. The worker calls the function from the task that
+announces the write and waits for the call, so one transaction's statements,
+and one native database's changes, reach iii's delivery in commit order;
+the call does not wait for the observers' targets.
 
 **Only the database worker calls it.** The function is private: the engine
 refuses a call from any other connection (`FORBIDDEN`) and refuses it as an
@@ -461,9 +476,15 @@ making. What an event says is still what the database told the worker:
   `database::query` too) or write the SQLite changelog, and the event
   carries no caller.
 
-Nobody observing costs nothing: no event is built, the function is not
-called, and nothing goes on the wire. Observers of other tables cost a hash
-lookup per key.
+With nobody observing the function, no event is built: the worker
+classifies no SQL (except an interactive transaction's statements, held
+until its commit for an observer added before it), parses or decodes
+nothing a `native` database sends, does not call the function, and puts
+nothing on the wire. A `native` database still sends what it captures (a
+Postgres notification, the MySQL binlog stream, rows in the SQLite
+changelog, which the worker deletes), and the worker drops it without
+decoding it. With observers of other tables only, the event is built and
+costs a hash lookup per key; it is not serialized.
 
 **Which rows changed — `returning`.** The event never invents row data:
 
@@ -514,6 +535,22 @@ Worth knowing:
   returns rows, not an affected-row count, and an event that invented one would
   be lying. Use `execute` when you need the change announced. On a `native`
   database the database itself reports the write, whichever path it took.
+- **Native capture stays installed.** The database triggers native capture
+  installs on a table stay when the table's last observer leaves, and when
+  the database leaves the configuration, leaves `capture: native` or moves
+  to another server: every worker and connection that captures the table
+  shares them, and the worker cannot tell whether another one still relies
+  on them. While they stay, each write
+  statement on the table raises a notification (Postgres) or appends
+  changelog rows (SQLite); a worker deletes the changelog rows only while it
+  has the database configured `capture: native`. To remove capture from a
+  table, drop them: on Postgres the triggers `iii_row_changed_ins`,
+  `iii_row_changed_upd` and `iii_row_changed_del` on the table (the
+  `iii_row_changed_notify()` function serves every captured table); on
+  SQLite the triggers `iii_row_changed_ins_<table>`,
+  `iii_row_changed_upd_<table>` and `iii_row_changed_del_<table>`, and the
+  `_iii_row_changes` table once no table is captured. MySQL capture installs
+  nothing.
 - **Native caveats.** Postgres additionally trims keys to fit NOTIFY's
   8000-byte payload. SQLite's triggers call `json_object`, so every process
   writing the file needs libsqlite ≥ 3.38 (JSON built in) — an older client

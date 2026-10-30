@@ -174,9 +174,10 @@ pub(crate) async fn run_binlog(db_name: String, connector: Arc<Connector>, bus: 
         }
     });
 
+    let observed = move || bus.is_observed();
     let mut delay = Duration::from_secs(1);
     loop {
-        match stream_once(&db_name, &connector, &tx).await {
+        match stream_once(&db_name, &connector, &tx, &observed).await {
             Ok(()) => {
                 tracing::warn!(db = %db_name, "binlog stream ended; reconnecting");
                 delay = Duration::from_secs(1);
@@ -190,11 +191,13 @@ pub(crate) async fn run_binlog(db_name: String, connector: Arc<Connector>, bus: 
     }
 }
 
-/// One replica session: snapshot position, stream, decode, emit.
+/// One replica session: snapshot position, stream, decode, emit. A
+/// statement that starts while `observed()` is false is not decoded.
 async fn stream_once(
     db_name: &str,
     connector: &Connector,
     out: &tokio::sync::mpsc::UnboundedSender<RowChangedEvent>,
+    observed: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<(), String> {
     // Events for OTHER databases on the same server are not this handle's
     // business — an observer names a db handle, and the handle names a schema.
@@ -244,14 +247,20 @@ async fn stream_once(
                     continue;
                 }
                 let table = tme.table_name().to_string();
+                let continues = pending
+                    .as_ref()
+                    .is_some_and(|p| p.table == table && p.op == op);
+                if !continues && !observed() {
+                    // Nobody observes the function: the statement's rows
+                    // are not decoded.
+                    flush(&mut pending, db_name, out);
+                    continue;
+                }
                 let decoded: Vec<_> = rows.rows(tme).collect();
                 if decoded.is_empty() {
                     continue;
                 }
-                if pending
-                    .as_ref()
-                    .is_none_or(|p| p.table != table || p.op != op)
-                {
+                if !continues {
                     flush(&mut pending, db_name, out);
                     pending = Some(Pending {
                         table,
@@ -415,17 +424,32 @@ mod tests {
             .is_some_and(|m| m.eq_ignore_ascii_case("FULL"));
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let streamer = {
             let connector = connector.clone();
             let db = "primary".to_string();
+            let observed = observed.clone();
             tokio::spawn(async move {
-                if let Err(e) = stream_once(&db, &connector, &tx).await {
+                let observed = move || observed.load(std::sync::atomic::Ordering::Relaxed);
+                if let Err(e) = stream_once(&db, &connector, &tx, &observed).await {
                     panic!("stream_once failed: {e}");
                 }
             })
         };
         // Give the replica session a moment to snapshot + attach.
         tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Unobserved: a write is read off the stream and dropped undecoded.
+        writer
+            .query_drop(format!("INSERT INTO {table} VALUES (100, 0)"))
+            .await
+            .unwrap();
+        writer
+            .query_drop(format!("DELETE FROM {table} WHERE id = 100"))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        observed.store(true, std::sync::atomic::Ordering::Relaxed);
 
         writer
             .query_drop(format!("INSERT INTO {table} VALUES (1, 10), (2, 20)"))

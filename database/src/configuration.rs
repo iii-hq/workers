@@ -247,8 +247,9 @@ pub async fn apply_config(
     runtime.replace(errors, connectors);
     drop(config_guard);
     drop(pools_guard);
-    // Observers the new config no longer supports (their database is gone)
-    // get a late rejection: their `ready()` side moves to `error`.
+    // Each observer is served as the new config says: capture installed
+    // where its database became native or moved, or a late rejection (its
+    // `ready()` side moves to `error`) when the config cannot serve it.
     if let Some(bus) = &state.row_changes {
         bus.capture().revalidate().await;
     }

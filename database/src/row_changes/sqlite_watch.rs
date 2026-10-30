@@ -286,26 +286,36 @@ fn drain(conn: &Connection, cursor: i64) -> rusqlite::Result<(Vec<Run>, i64)> {
     Ok((coalesce(raw), latest))
 }
 
-/// The watcher thread body: one dedicated connection (the pool cannot serve
-/// this — `data_version` is per-connection), an fs watch for wake-up, drain
-/// on every wake. Each event goes to `on_event`; returning `false` from it
-/// ends the watcher (the bus side is gone). Returns when `stop` is set —
-/// promptly, because the spawner holds the `wake` sender and pokes it after
-/// setting the flag; without that poke a stopped watcher would linger for up
-/// to [`FALLBACK_TICK`], overlapping its replacement on the same changelog.
-pub(crate) fn run_watcher(
-    db_name: &str,
-    path: &Path,
-    stop: &AtomicBool,
-    wake_tx: mpsc::Sender<()>,
-    wake_rx: &mpsc::Receiver<()>,
-    mut on_event: impl FnMut(RowChangedEvent) -> bool,
-) {
+/// The changelog's last id, or `cursor` when it is empty (ids are never
+/// reused: AUTOINCREMENT).
+fn head(conn: &Connection, cursor: i64) -> rusqlite::Result<i64> {
+    conn.query_row(
+        &format!("SELECT COALESCE(MAX(id), ?1) FROM {CHANGELOG}"),
+        [cursor],
+        |r| r.get(0),
+    )
+}
+
+/// A watcher's connection and where it starts: the changelog head and the
+/// connection's data version, read together. A write committed after
+/// [`open_watch`] returns is past the head and changes the data version, so
+/// the watcher delivers it however long its thread takes to start.
+pub(crate) struct WatchStart {
+    conn: Connection,
+    cursor: i64,
+    data_version: i64,
+}
+
+/// Opens the watcher's connection on `path`, creates the changelog when it
+/// is missing, and reads where the watcher starts. Skips history: only
+/// changes committed after it returns are announced. `None` (logged) when
+/// the database cannot be opened.
+pub(crate) fn open_watch(db_name: &str, path: &Path) -> Option<WatchStart> {
     let conn = match Connection::open(path) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(db = %db_name, error = %e, "sqlite watcher could not open database");
-            return;
+            return None;
         }
     };
     let _ = conn.busy_timeout(Duration::from_secs(5));
@@ -313,17 +323,60 @@ pub(crate) fn run_watcher(
     // it here too so MAX(id) and data_version have something to run against.
     if let Err(e) = ensure_changelog(&conn) {
         tracing::warn!(db = %db_name, error = %e, "sqlite watcher could not ensure changelog");
-        return;
+        return None;
     }
+    let cursor = head(&conn, 0).unwrap_or(0);
+    let data_version = pragma_data_version(&conn).unwrap_or(0);
+    Some(WatchStart {
+        conn,
+        cursor,
+        data_version,
+    })
+}
 
-    // Skip history: only changes committed from now on are announced.
-    let mut cursor: i64 = conn
-        .query_row(
-            &format!("SELECT COALESCE(MAX(id), 0) FROM {CHANGELOG}"),
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
+/// [`open_watch`], then [`watch`] on this thread.
+#[cfg(test)]
+fn run_watcher(
+    db_name: &str,
+    path: &Path,
+    stop: &AtomicBool,
+    wake_tx: mpsc::Sender<()>,
+    wake_rx: &mpsc::Receiver<()>,
+    observed: impl Fn() -> bool,
+    on_event: impl FnMut(RowChangedEvent) -> bool,
+) {
+    if let Some(start) = open_watch(db_name, path) {
+        watch(
+            db_name, path, start, stop, wake_tx, wake_rx, observed, on_event,
+        );
+    }
+}
+
+/// The watcher thread body: one dedicated connection (the pool cannot serve
+/// this — `data_version` is per-connection), an fs watch for wake-up, drain
+/// on every wake. While `observed()` is false the new changelog rows are
+/// skipped unread; otherwise each event goes to `on_event`, and returning
+/// `false` from it ends the watcher (the bus side is gone). Either way the
+/// drained rows are deleted. Returns when `stop` is set — promptly, because
+/// the spawner holds the `wake` sender and pokes it after setting the flag;
+/// without that poke a stopped watcher would linger for up to
+/// [`FALLBACK_TICK`], overlapping its replacement on the same changelog.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn watch(
+    db_name: &str,
+    path: &Path,
+    start: WatchStart,
+    stop: &AtomicBool,
+    wake_tx: mpsc::Sender<()>,
+    wake_rx: &mpsc::Receiver<()>,
+    observed: impl Fn() -> bool,
+    mut on_event: impl FnMut(RowChangedEvent) -> bool,
+) {
+    let WatchStart {
+        conn,
+        mut cursor,
+        mut data_version,
+    } = start;
 
     // Watch the parent directory, filtered to this database's files — the
     // -wal/-journal siblings appear and disappear (checkpoints), so watching
@@ -359,7 +412,6 @@ pub(crate) fn run_watcher(
     }
     tracing::info!(db = %db_name, path = %path.display(), fs_events = watching, "native capture watching");
 
-    let mut data_version: i64 = pragma_data_version(&conn).unwrap_or(0);
     let mut first = true;
     while !stop.load(Ordering::Relaxed) {
         if !first {
@@ -388,7 +440,13 @@ pub(crate) fn run_watcher(
         }
         data_version = version;
 
-        match drain(&conn, cursor) {
+        let drained = if observed() {
+            drain(&conn, cursor)
+        } else {
+            // Nobody observes the function: no row is read or decoded.
+            head(&conn, cursor).map(|head| (Vec::new(), head))
+        };
+        match drained {
             Ok((runs, new_cursor)) => {
                 for run in runs {
                     let has_keys = !run.keys.is_empty();
@@ -727,9 +785,15 @@ mod tests {
             let stop = Arc::clone(&stop);
             let path = db_path.clone();
             std::thread::spawn(move || {
-                run_watcher("primary", &path, &stop, wake_tx, &wake_rx, move |ev| {
-                    tx.send(ev).is_ok()
-                })
+                run_watcher(
+                    "primary",
+                    &path,
+                    &stop,
+                    wake_tx,
+                    &wake_rx,
+                    || true,
+                    move |ev| tx.send(ev).is_ok(),
+                )
             })
         };
 
@@ -789,6 +853,138 @@ mod tests {
         thread.join().unwrap();
     }
 
+    /// Where a watcher starts is read when it is opened: a write committed
+    /// after `open_watch` returns and before the watcher's thread runs is
+    /// delivered.
+    #[test]
+    fn a_write_before_the_watcher_thread_runs_is_delivered() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("watched.db");
+        let external = Connection::open(&db_path).unwrap();
+        external
+            .execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, n INT)")
+            .unwrap();
+        external
+            .execute_batch(&install_sql("items", &["id".into()]).unwrap())
+            .unwrap();
+        external
+            .execute_batch("INSERT INTO items (n) VALUES (1)")
+            .unwrap();
+
+        let start = open_watch("primary", &db_path).unwrap();
+        external
+            .execute_batch("INSERT INTO items (n) VALUES (2)")
+            .unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let stop_wake = wake_tx.clone();
+        let thread = {
+            let stop = Arc::clone(&stop);
+            let path = db_path.clone();
+            std::thread::spawn(move || {
+                watch(
+                    "primary",
+                    &path,
+                    start,
+                    &stop,
+                    wake_tx,
+                    &wake_rx,
+                    || true,
+                    move |ev| tx.send(ev).is_ok(),
+                )
+            })
+        };
+        let ev = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(ev.op, Op::Insert);
+        assert_eq!(
+            ev.returning.as_ref().unwrap(),
+            &vec![key(2)],
+            "history is skipped"
+        );
+        assert!(rx.recv_timeout(Duration::from_millis(400)).is_err());
+
+        stop.store(true, Ordering::Relaxed);
+        let _ = stop_wake.send(());
+        thread.join().unwrap();
+    }
+
+    /// While nobody observes the function the watcher reads no changelog row
+    /// and still trims the changelog; rows written then are never delivered
+    /// once someone observes.
+    #[test]
+    fn an_unobserved_watcher_skips_rows_unread_and_trims_the_changelog() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("watched.db");
+        let external = Connection::open(&db_path).unwrap();
+        external
+            .execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, n INT)")
+            .unwrap();
+        external
+            .execute_batch(&install_sql("items", &["id".into()]).unwrap())
+            .unwrap();
+
+        let observed = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let stop_wake = wake_tx.clone();
+        let thread = {
+            let stop = Arc::clone(&stop);
+            let observed = Arc::clone(&observed);
+            let path = db_path.clone();
+            std::thread::spawn(move || {
+                run_watcher(
+                    "primary",
+                    &path,
+                    &stop,
+                    wake_tx,
+                    &wake_rx,
+                    move || observed.load(Ordering::Relaxed),
+                    move |ev| tx.send(ev).is_ok(),
+                )
+            })
+        };
+        std::thread::sleep(Duration::from_millis(300));
+
+        external
+            .execute_batch("INSERT INTO items (n) VALUES (1), (2)")
+            .unwrap();
+        let changelog_rows = || -> i64 {
+            external
+                .query_row(&format!("SELECT count(*) FROM {CHANGELOG}"), [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while changelog_rows() != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the unobserved watcher did not trim the changelog"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            rx.recv_timeout(Duration::from_millis(400)).is_err(),
+            "nothing is delivered while unobserved"
+        );
+
+        observed.store(true, Ordering::Relaxed);
+        external
+            .execute_batch("INSERT INTO items (n) VALUES (3)")
+            .unwrap();
+        let ev = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(ev.op, Op::Insert);
+        assert_eq!(ev.affected_rows, 1);
+        assert_eq!(ev.returning.as_ref().unwrap(), &vec![key(3)]);
+
+        stop.store(true, Ordering::Relaxed);
+        let _ = stop_wake.send(());
+        thread.join().unwrap();
+    }
+
     /// History from before the watcher started is skipped (at-most-once,
     /// postgres parity) — and the GC keeps the changelog from growing.
     #[test]
@@ -815,9 +1011,15 @@ mod tests {
             let stop = Arc::clone(&stop);
             let path = db_path.clone();
             std::thread::spawn(move || {
-                run_watcher("primary", &path, &stop, wake_tx, &wake_rx, move |ev| {
-                    tx.send(ev).is_ok()
-                })
+                run_watcher(
+                    "primary",
+                    &path,
+                    &stop,
+                    wake_tx,
+                    &wake_rx,
+                    || true,
+                    move |ev| tx.send(ev).is_ok(),
+                )
             })
         };
         std::thread::sleep(Duration::from_millis(300));
