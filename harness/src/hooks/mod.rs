@@ -88,7 +88,7 @@ impl HookPoint {
     fn description(self) -> &'static str {
         match self {
             HookPoint::PreTurn => "Synchronous hook: first step of a turn, before any model spend. May veto. Observe it with args { sessions?, priority?, timeout_ms?, on_error? }. Each matching observer's target is called with the hook input { point, session_id, turn_id, step, depth, metadata? } and answers { decision, reason?, mutations?, annotations? }; the harness gets back the merged outcome { decision, reason? }.",
-            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Each matching observer's target is called with the hook input plus `generate` { system_prompt, messages, model, provider, functions_generation, tools, expose }, as the previous target left it; the harness gets back the merged outcome { decision, reason?, system_prompt?, append_messages?, annotations? }. An observer whose contribution is static passes it as args.inject_prompt; it joins the prompt before assembly and its target is not called.",
+            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Each matching observer's target is called with the hook input plus `generate` { system_prompt, messages, model, provider, functions_generation, tools, expose }, as the previous target left it; the harness gets back the merged outcome { decision, reason?, system_prompt?, append_messages?, annotations? }. An observer whose contribution is static passes it as args.inject_prompt; it joins the prompt before assembly of the turns its `sessions` globs and filters select, and its target is not called.",
             HookPoint::PostGenerate => "Synchronous hook: after the final assistant message update. Observe only: each matching observer's target is called with the hook input plus `generated` { message }; the harness gets back { decision: continue }.",
             HookPoint::PreCall => "Synchronous hook: after the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` { id, function_id, arguments }, the arguments as the previous target left them; the harness gets back the merged outcome { decision, reason?, held_by?, arguments?, annotations? }.",
             HookPoint::PostCall => "Synchronous hook: after the called function returns, before the result is appended. May rewrite content/details/is_error. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` and `result` { function_call_id, function_id, content, is_error, details }; the harness gets back the merged outcome { decision, held_by?, result?, annotations? }.",
@@ -259,7 +259,8 @@ pub struct HookArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<String>,
     /// on-pre-generate only: a static system-prompt contribution. It joins
-    /// the prompt before assembly, and the observer's target is not called.
+    /// the prompt before assembly of the turns the observer's `sessions`
+    /// globs and filters select, and the observer's target is not called.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inject_prompt: Option<String>,
 }
@@ -407,6 +408,35 @@ impl HookRegistry {
                 .observers(point.function_id())
                 .iter()
                 .filter_map(|obs| HookBinding::from_observer(point, obs).ok())
+                .collect(),
+        )
+    }
+
+    /// The `on-pre-generate` observers with a static `inject_prompt` that
+    /// apply to `input`, in chain order. They are selected as the chain
+    /// selects observers: `sessions` globs on `input.session_id`, and the
+    /// observer's filters on the call. `input` is the turn's pre_generate
+    /// hook input ([`HookRegistry::static_injection_input`]).
+    pub fn static_injections(&self, input: &Value) -> Vec<HookBinding> {
+        let call = Call {
+            function_id: ON_PRE_GENERATE_FN.to_string(),
+            input: input.clone(),
+            output: Some(input.clone()),
+            ..Call::default()
+        };
+        let session_id = input
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        ordered(
+            self.iii
+                .observers(ON_PRE_GENERATE_FN)
+                .iter()
+                .filter(|obs| obs.matches(&call))
+                .filter_map(|obs| HookBinding::from_observer(HookPoint::PreGenerate, obs).ok())
+                .filter(|binding| {
+                    binding.inject_prompt.is_some() && runner::sessions_match(binding, session_id)
+                })
                 .collect(),
         )
     }

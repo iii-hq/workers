@@ -676,10 +676,15 @@ async fn generate_step(
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
     // Static hook injections join before assembly, so the budget, the
     // compaction gate and the request count the same prompt (MOT-5569). The
-    // pre_generate chain never calls an observer with a static contribution.
+    // pre_generate chain never calls an observer with a static contribution;
+    // the injections are the ones whose `sessions` globs and filters select
+    // this turn.
     let pre_generate = deps.hooks.bindings(crate::hooks::HookPoint::PreGenerate);
+    let static_injections = deps
+        .hooks
+        .static_injections(&deps.hooks.static_injection_input(&record, payload.step));
     let assembly_system_prompt =
-        crate::hooks::runner::with_static_prompts(&pre_generate, assembly_system_prompt);
+        crate::hooks::runner::with_static_prompts(&static_injections, assembly_system_prompt);
     // Registry-change notice: if a function this session may call changed or
     // left since it last acknowledged them, tell the model its cached
     // contracts may be stale. First sighting stamps silently, and so does a

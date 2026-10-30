@@ -15,7 +15,7 @@
         ]
       },
       "inject_prompt": {
-        "description": "on-pre-generate only: a static system-prompt contribution. It joins the prompt before assembly, and the observer's target is not called.",
+        "description": "on-pre-generate only: a static system-prompt contribution. It joins the prompt before assembly of the turns the observer's `sessions` globs and filters select, and the observer's target is not called.",
         "type": [
           "string",
           "null"

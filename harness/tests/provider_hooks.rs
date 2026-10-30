@@ -413,3 +413,56 @@ async fn a_hook_observer_whose_filters_miss_the_call_is_not_called() {
     assert!(called.iter().any(|t| t == "test::hit"), "{called:?}");
     assert!(!called.iter().any(|t| t == "test::miss"), "{called:?}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn static_injections_follow_session_globs_and_filters() {
+    let engine = Engine::start().await;
+    let point = harness::hooks::HookPoint::PreGenerate;
+    for (id, args, filters) in [
+        ("everywhere", json!({ "inject_prompt": "E" }), json!({})),
+        (
+            "glob",
+            json!({ "inject_prompt": "G", "sessions": ["s1*"] }),
+            json!({}),
+        ),
+        (
+            "filtered",
+            json!({ "inject_prompt": "F" }),
+            json!({ "input.session_id": { "$eq": "s2" } }),
+        ),
+        ("dynamic", json!({}), json!({})),
+    ] {
+        engine.push(host::observer_added(
+            id,
+            point.function_id(),
+            &format!("test::{id}"),
+            args,
+            filters,
+        ));
+    }
+    for id in ["everywhere", "glob", "filtered", "dynamic"] {
+        engine.ack(id).await;
+    }
+    let injected = |session: &str| -> Vec<String> {
+        engine
+            .deps
+            .hooks
+            .static_injections(&json!({
+                "point": point.input_name(),
+                "session_id": session,
+                "turn_id": "t",
+                "step": 0,
+                "depth": 0,
+            }))
+            .into_iter()
+            .filter_map(|binding| binding.inject_prompt)
+            .collect()
+    };
+    let mut s1 = injected("s1-child");
+    s1.sort();
+    assert_eq!(s1, vec!["E", "G"]);
+    let mut s2 = injected("s2");
+    s2.sort();
+    assert_eq!(s2, vec!["E", "F"]);
+    assert_eq!(injected("s3"), vec!["E"]);
+}

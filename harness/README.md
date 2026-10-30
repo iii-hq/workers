@@ -482,7 +482,8 @@ the truth for what ran and what the next send inherits — instead of
 rebuilding the built-in. Set `default_only: true` to read the exact embedded
 Harness default without consulting session or runtime state. Static
 `pre_generate` hooks publish their exact contribution as the observer arg
-`inject_prompt`; request-dependent hook functions and compaction are not run
+`inject_prompt`; the preview lists the ones whose `sessions` globs and filters
+select the session's next step. Request-dependent hook functions and compaction are not run
 by the read-only preview and may change content when the prompt is sent.
 
 The read-only `harness::context-policy` surface returns whether the destination model permits aged function-result pruning. Console context previews must use this response rather than maintaining a model list locally; failures or malformed responses are not a permission to infer a policy.
@@ -670,7 +671,7 @@ with `decision` `continue`, `deny` or `hold`.
 | Function | Runs | Input adds | The harness gets back |
 |---|---|---|---|
 | `harness::hook::on-pre-turn` | First step of a turn, before any model spend. May veto. | — | `decision`, `reason?` |
-| `harness::hook::on-pre-generate` | After context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as the arg `inject_prompt`; the harness appends it before context assembly, so the budget and compaction count it, and its target is not called. | `generate { system_prompt, messages, model, provider, functions_generation, tools, expose }` | `decision`, `reason?`, `system_prompt?`, `append_messages?`, `annotations?` |
+| `harness::hook::on-pre-generate` | After context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as the arg `inject_prompt`; the harness appends it before context assembly to the turns its `sessions` globs and filters select (filters see the input without the assembled `system_prompt`, `messages` and `tools`), so the budget and compaction count it, and its target is not called. | `generate { system_prompt, messages, model, provider, functions_generation, tools, expose }` | `decision`, `reason?`, `system_prompt?`, `append_messages?`, `annotations?` |
 | `harness::hook::on-post-generate` | After the final assistant message. Observe only. | `generated { message }` | `decision: continue` |
 | `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. | `call { id, function_id, arguments }` | `decision`, `reason?`, `held_by?`, `arguments?`, `annotations?` |
 | `harness::hook::on-post-call` | After the called function returns, before the result is persisted. May rewrite the result. | `call`, `result { function_call_id, function_id, content, is_error, details }` | `decision`, `held_by?`, `result?`, `annotations?` |
