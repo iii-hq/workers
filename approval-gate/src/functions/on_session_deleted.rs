@@ -51,7 +51,9 @@ mod tests {
     use super::*;
     use crate::pending::PENDING_SCOPE;
     use crate::settings::SETTINGS_SCOPE;
-    use crate::testkit::{log_snapshot, state_get, state_set, with_stack, BootOpts};
+    use crate::testkit::{
+        log_snapshot, settle, state_get, state_set, wait_for, with_stack, BootOpts,
+    };
 
     async fn seed_pending(iii: &iii_sdk::IIIClient, sid: &str, cid: &str) {
         state_set(
@@ -98,6 +100,12 @@ mod tests {
                 .await
                 .is_null());
 
+            // Delivery to observers does not wait for them.
+            assert!(
+                wait_for(3_000, || log_snapshot(&stack.resolved).len() >= 2).await,
+                "pending_resolved should reach the recorder"
+            );
+            settle().await;
             let events = log_snapshot(&stack.resolved);
             assert_eq!(events.len(), 2);
             assert!(events.iter().all(|e| e["outcome"] == json!("aborted")));

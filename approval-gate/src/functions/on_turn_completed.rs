@@ -43,7 +43,9 @@ mod tests {
 
     use super::*;
     use crate::pending::PENDING_SCOPE;
-    use crate::testkit::{log_snapshot, state_get, state_set, with_stack, BootOpts};
+    use crate::testkit::{
+        log_snapshot, settle, state_get, state_set, wait_for, with_stack, BootOpts,
+    };
 
     #[tokio::test(flavor = "multi_thread")]
     async fn purges_by_turn_id_and_emits_aborted() {
@@ -80,6 +82,12 @@ mod tests {
             assert!(!state_get(&stack.iii, PENDING_SCOPE, "s_1/c_2")
                 .await
                 .is_null());
+            // Delivery to observers does not wait for them.
+            assert!(
+                wait_for(3_000, || !log_snapshot(&stack.resolved).is_empty()).await,
+                "pending_resolved should reach the recorder"
+            );
+            settle().await;
             let events = log_snapshot(&stack.resolved);
             assert_eq!(events.len(), 1);
             assert_eq!(events[0]["outcome"], json!("aborted"));
