@@ -1335,23 +1335,28 @@ const isRawCron = (s) => /^(\S+\s+){4,5}\S+$/.test(String(s || ''));
 // 5-6 field cron is accepted for power users; its due window is the tick
 // cadence itself (refresh whenever it fires). The cron worker rejects an
 // invalid expression with INVALID_CRON_EXPRESSION, logged from the handle.
+// A new schedule is observed before the old one is disposed, so the cron
+// worker keeps an expression's job running when both observers share it.
 function applyWikiSchedule(wikiId, schedule) {
   const prev = wikiSchedules.get(wikiId);
-  if (prev) {
-    wikiSchedules.delete(wikiId);
-    prev.dispose().catch(() => {
-      /* already gone */
+  wikiSchedules.delete(wikiId);
+  if (schedule && schedule !== 'off') {
+    const expression = REFRESH_INTERVALS[schedule] ? REFRESH_INTERVALS[schedule].cron : schedule;
+    const handle = worker.observe(
+      { function_id: 'cron::on-tick', args: { expression } },
+      'openwiki::cron::refresh-due',
+      {
+        metadata: { wiki_id: wikiId },
+      },
+    );
+    handle.onStateChange((state, reason) => {
+      if (state === 'error') console.warn('[openwiki] failed to schedule', wikiId, reason?.code, reason?.message);
     });
+    wikiSchedules.set(wikiId, handle);
   }
-  if (!schedule || schedule === 'off') return;
-  const expression = REFRESH_INTERVALS[schedule] ? REFRESH_INTERVALS[schedule].cron : schedule;
-  const handle = worker.observe({ function_id: 'cron::on-tick', args: { expression } }, 'openwiki::cron::refresh-due', {
-    metadata: { wiki_id: wikiId },
+  prev?.dispose().catch(() => {
+    /* already gone */
   });
-  handle.onStateChange((state, reason) => {
-    if (state === 'error') console.warn('[openwiki] failed to schedule', wikiId, reason?.code, reason?.message);
-  });
-  wikiSchedules.set(wikiId, handle);
 }
 
 // A scheduled cron fired: refresh every wiki whose interval has elapsed. All the
