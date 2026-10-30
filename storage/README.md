@@ -674,3 +674,27 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ./target/debug/storage --manifest | jq .
 ```
+
+### S3 multipart provider contract (opt-in)
+
+This check is for an **isolated test bucket**, never a production bucket. Set
+`S3_TEST_ENDPOINT`, `S3_TEST_BUCKET`, `S3_TEST_REGION`, `AWS_ACCESS_KEY_ID`,
+and `AWS_SECRET_ACCESS_KEY` in your environment (and `AWS_SESSION_TOKEN` if
+needed), then run:
+
+```sh
+cargo test --manifest-path storage/Cargo.toml --test schemas e2e::multipart::multipart_contract -- --ignored --exact
+```
+
+Add `--nocapture` after `--exact` to display the conditional probe result.
+
+The endpoint uses path-style addressing. The test creates a unique
+`qa/multipart/<uuid>/` prefix, checks SHA256/COMPOSITE multipart uploads,
+incorrect checksums, ETags, abort, metadata and ranged reads, and attempts to
+remove only its own uploads and objects. A missing required variable fails the
+explicit run. The conditional-completion probe reports whether an existing
+object was rejected with HTTP 412; other outcomes require investigation.
+A successful SDK test does not establish browser CORS, exposed ETag, signed
+Content-Length enforcement, lifecycle cleanup, or provider/version compatibility:
+verify those separately against the actual product before enabling uploads.
+Never record credentials or signed URLs in test evidence.
