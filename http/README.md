@@ -105,15 +105,47 @@ connection goes away, the engine withdraws its observers from the http worker:
 their routes answer `404`, and another observer can claim the shape. A worker
 that restarts under the same worker name and observes again under the same
 observer id within the engine's `observers.observer_grace_ms` (30 s by
-default) replaces its earlier observer and gets the route back; for any other
-worker that id is taken (`OBSERVER_ID_CONFLICT`) until the grace period ends:
+default) replaces its earlier observer and gets the route back. For this, give
+the worker a name that stays the same across restarts: `III_WORKER_NAME`
+(`iii compose` and `iii worker` set it for the workers they start) or the
+SDK's worker name option. The default name, `hostname:pid`, changes when the
+process restarts, so a restarted process under it is another worker. For any
+other worker the id is taken until the grace period ends: its observe is
+rejected with `OBSERVER_ID_CONFLICT`.
 
 ```typescript
+// A non-empty III_WORKER_NAME overrides workerName.
+const iii = registerWorker('ws://localhost:49134', { workerName: 'orders-api' })
+
 const route = iii.observe(
   { function_id: 'http::on-request', args: { method: 'GET', path: '/orders/:id' } },
   'orders::get',
-  { id: 'orders-get-route' },   // stable across restarts of this worker
+  { id: 'orders-get-route' },   // with the fixed worker name, the route survives a restart
 )
+```
+
+In Rust the name is `WorkerMetadata::name`:
+
+```rust
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{register_worker, InitOptions, ObserverOptions, Source};
+use serde_json::json;
+
+let iii = register_worker(
+    "ws://localhost:49134",
+    InitOptions {
+        metadata: Some(WorkerMetadata {
+            name: "orders-api".to_string(),
+            ..WorkerMetadata::default()
+        }),
+        ..InitOptions::default()
+    },
+);
+iii.observe_with(
+    Source::function("http::on-request").args(json!({ "method": "GET", "path": "/orders/:id" })),
+    "orders::get",
+    ObserverOptions::default().id("orders-get-route"),
+);
 ```
 
 The server calls `http::on-request` once for every request it receives (its

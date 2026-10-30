@@ -56,12 +56,15 @@ fn require_or_skip(connected: Option<Arc<IIIClient>>) -> Option<Arc<IIIClient>> 
     None
 }
 
-async fn try_connect_raw(name: String) -> Option<Arc<IIIClient>> {
+/// Connects under the worker name `name`, or under the SDK's default name
+/// (`III_WORKER_NAME` when it is set, else `hostname:pid`) when `name` is
+/// `None`.
+async fn try_connect_raw(name: Option<String>) -> Option<Arc<IIIClient>> {
     let url = ws_url();
     let iii = Arc::new(register_worker(
         &url,
         InitOptions {
-            metadata: Some(WorkerMetadata {
+            metadata: name.map(|name| WorkerMetadata {
                 name,
                 ..WorkerMetadata::default()
             }),
@@ -106,14 +109,20 @@ fn unique_name() -> String {
 /// is reachable, unless `III_E2E_REQUIRE` is set, in which case it panics.
 /// The caller should `shutdown_async()` the returned client when done.
 pub async fn connect_fresh() -> Option<Arc<IIIClient>> {
-    require_or_skip(try_connect_raw(unique_name()).await)
+    require_or_skip(try_connect_raw(Some(unique_name())).await)
 }
 
 /// [`connect_fresh`] under the worker name `name`. A worker that connects
 /// again under its name (a restart) observes again under the ids it used
 /// before.
 pub async fn connect_named(name: &str) -> Option<Arc<IIIClient>> {
-    require_or_skip(try_connect_raw(name.to_string()).await)
+    require_or_skip(try_connect_raw(Some(name.to_string())).await)
+}
+
+/// [`connect_fresh`] under the SDK's default worker name: `III_WORKER_NAME`
+/// when it is set, else `hostname:pid`, which differs for every process.
+pub async fn connect_default() -> Option<Arc<IIIClient>> {
+    require_or_skip(try_connect_raw(None).await)
 }
 
 /// Get-or-init the shared engine handle for this test binary.
@@ -122,7 +131,7 @@ pub async fn connect_named(name: &str) -> Option<Arc<IIIClient>> {
 /// reachable, unless `III_E2E_REQUIRE` is set, in which case it panics.
 pub async fn get_or_init() -> Option<Arc<IIIClient>> {
     ENGINE
-        .get_or_init(|| async { require_or_skip(try_connect_raw(unique_name()).await) })
+        .get_or_init(|| async { require_or_skip(try_connect_raw(Some(unique_name())).await) })
         .await
         .clone()
 }

@@ -50,9 +50,13 @@ channel yields a chunked streaming response.
   `/orders/:id` and `/orders/:order_id` are the same shape. The later observer
   is rejected with `HTTP_ROUTE_CONFLICT`.
 - A route lasts while its observer's worker is connected. A worker that
-  restarts under the same worker name and observes again under the same
-  observer `id` within the engine's `observers.observer_grace_ms` gets its
-  route back; pass a stable `id` in the observe options for that.
+  restarts and observes again under the same observer `id` within the
+  engine's `observers.observer_grace_ms` gets its route back. Pass a stable
+  `id` in the observe options, and give the worker a name that stays the same
+  across restarts: `III_WORKER_NAME` (`iii compose` and `iii worker` set it)
+  or the SDK's worker name option. Under the default name, `hostname:pid`, a
+  restarted process is another worker: its observe is rejected with
+  `OBSERVER_ID_CONFLICT` until the grace period ends.
 - `http::on-request` has one host per namespace: run one http worker per
   namespace.
 
