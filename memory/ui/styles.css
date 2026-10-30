@@ -1,5 +1,6 @@
 /*
- * The memory worker's console stylesheet (`console:style` asset), scoped under
+ * The memory worker's console stylesheet (the `console::ui::asset` observer
+ * with args `{ kind: 'style', path: 'memory/styles.css' }`), scoped under
  * `[data-iii-ui="memory"]`. Layout only: chrome comes from @iii-dev/console-ui
  * and the console's tokens; sans for prose, mono for machine values.
  */
