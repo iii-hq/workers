@@ -1591,30 +1591,45 @@ async fn provider_changed_event_reports_register_and_discovery() {
         .expect("router::provider::on-changed observer accepted");
 
     // The declaration is `register`; a discovery completion is `discovery`.
+    // The provider re-declares when its ready event arrives, which can land
+    // between the two calls and supersede the attempt: begin a new one then,
+    // as a provider does.
     let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
-    let resolved = call(
-        &provider.iii,
-        "router::provider::resolve",
-        json!({ "id": "real", "token": provider.token, "begin_discovery": true }),
-    )
-    .await
-    .expect("resolve begins a discovery attempt");
-    let attempt = resolved["discovery_attempt"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no discovery_attempt in {resolved}"))
-        .to_string();
-    call(
-        &provider.iii,
-        "router::models::reconcile",
-        json!({
-            "provider": "real",
-            "token": provider.token,
-            "discovery": { "attempt": attempt, "outcome": "success" },
-            "models": [{ "id": "d-1", "provider": "real", "context_window": 100000, "max_output_tokens": 8192 }]
-        }),
-    )
-    .await
-    .expect("discovery reconcile accepted");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let resolved = call(
+            &provider.iii,
+            "router::provider::resolve",
+            json!({ "id": "real", "token": provider.token, "begin_discovery": true }),
+        )
+        .await
+        .expect("resolve begins a discovery attempt");
+        let attempt = resolved["discovery_attempt"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no discovery_attempt in {resolved}"))
+            .to_string();
+        let reconciled = call(
+            &provider.iii,
+            "router::models::reconcile",
+            json!({
+                "provider": "real",
+                "token": provider.token,
+                "discovery": { "attempt": attempt, "outcome": "success" },
+                "models": [{ "id": "d-1", "provider": "real", "context_window": 100000, "max_output_tokens": 8192 }]
+            }),
+        )
+        .await;
+        match reconciled {
+            Ok(_) => break,
+            Err(error)
+                if error.to_string().contains("discovery attempt superseded")
+                    && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => panic!("discovery reconcile accepted: {error:?}"),
+        }
+    }
 
     let ops = || -> Vec<String> {
         received
