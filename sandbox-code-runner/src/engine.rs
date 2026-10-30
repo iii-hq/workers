@@ -449,7 +449,7 @@ mod tests {
             ADAPTER_INFO,
             router_reply(json!({
                 "adapter": "sandbox-libkrun",
-                "adapter_version": "1.0.0",
+                "adapter_version": "0.2.0",
                 "contract": { "major": 1, "minor": 0 },
             })),
         );

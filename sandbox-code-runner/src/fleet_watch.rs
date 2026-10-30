@@ -305,7 +305,7 @@ mod tests {
     async fn router_s302_reports_absent_instead_of_the_last_fleet() {
         let (emitter, recorder) = harness();
         let (state, _) = step(&Reported::Nothing, Ok(fleet_of(&["a"])), &emitter);
-        let s302 = r#"remote error (invocation_failed): {"code":"S302","message":"adapter sandbox-libkrun implements sandbox contract 2.0, but this engine needs major 1; install a sandbox-libkrun release whose major version is 1","retryable":false,"type":"config"}"#;
+        let s302 = r#"remote error (invocation_failed): {"code":"S302","message":"adapter sandbox-libkrun implements sandbox contract 2.0, but this engine needs major 1; install a sandbox-libkrun release that implements sandbox contract 1.x","retryable":false,"type":"config"}"#;
         let (state, delay) = step(&state, Err(s302.into()), &emitter);
         assert!(state == Reported::Absent);
         assert_eq!(delay, ABSENT_RECHECK);

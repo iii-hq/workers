@@ -44,7 +44,7 @@ it:
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: '^1'
+    version: '^0.2'
     config_override:
       auto_install: true
       image_allowlist: [desktop, anthropic]
