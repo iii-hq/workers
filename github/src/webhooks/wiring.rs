@@ -1,5 +1,6 @@
 use iii_sdk::{
-    Call, CallRequest, Deliver, Match, ObserveRejection, Observer, RegisterFunction, Source,
+    Call, CallRequest, Deliver, Match, ObserveRejection, Observer, ObserverOptions,
+    RegisterFunction, Source,
 };
 
 use super::*;
@@ -11,17 +12,49 @@ const TARGET_TIMEOUT_MS: u64 = 8_000;
 /// before activation logs it.
 const ACTIVATION_WAIT_SECS: u64 = 60;
 
-/// The consumer group of the durable job queue. The group, not the observer
-/// id, names the queue worker's durable queue, so a restarted worker consumes
-/// the backlog its previous process left.
+/// The consumer group of the durable job queue: the queue worker keeps one
+/// durable queue for the group, whose jobs outlive the observers that
+/// consume them.
 pub const WEBHOOK_CONSUMER_GROUP: &str = "github-webhooks";
 
+/// The engine's longest observer id, in bytes.
+const MAX_OBSERVER_ID_LEN: usize = 128;
+
+/// The id of the observer that consumes the webhook job queue:
+/// `<worker name>:webhooks:<queue>`, preceded by `<namespace>/` when the
+/// worker has a namespace. It is the same for every process of the worker,
+/// so after a restart the new process's `observe` replaces the observer the
+/// previous process left suspended (the engine disposes it and announces the
+/// new one to the queue worker), and the queue worker hands the new process
+/// the jobs the previous one left unacked. An id longer than the engine's
+/// 128 bytes becomes `<worker name>:webhooks:sha256:<digest of the whole id>`,
+/// cut to 128 bytes.
+pub fn queue_observer_id(namespace: Option<&str>, worker_name: &str, queue: &str) -> String {
+    let id = match namespace {
+        Some(namespace) => format!("{namespace}/{worker_name}:webhooks:{queue}"),
+        None => format!("{worker_name}:webhooks:{queue}"),
+    };
+    if id.len() <= MAX_OBSERVER_ID_LEN {
+        return id;
+    }
+    use sha2::Digest;
+    let digest = hex::encode(Sha256::digest(id.as_bytes()));
+    let mut short = format!("{worker_name}:webhooks:sha256:{digest}");
+    let mut end = short.len().min(MAX_OBSERVER_ID_LEN);
+    while !short.is_char_boundary(end) {
+        end -= 1;
+    }
+    short.truncate(end);
+    short
+}
+
 /// Refusal codes that mean another observer still holds what this one asks
-/// for. After a restart the previous process's observers stay suspended for
-/// the engine's grace period (`observers.observer_grace_ms`, 30 s by
-/// default) and keep their HTTP route; once the engine disposes them the
-/// route is free again.
-const HELD_BY_ANOTHER_OBSERVER: &[&str] = &["HTTP_ROUTE_CONFLICT"];
+/// for, until it goes away: the webhook route (`HTTP_ROUTE_CONFLICT`), or the
+/// queue observer's id (`OBSERVER_ID_CONFLICT`), held by a connection of the
+/// previous process that the engine has not seen close yet, or by another
+/// worker until the engine's grace period (`observers.observer_grace_ms`,
+/// 30 s by default) ends.
+const HELD_BY_ANOTHER_OBSERVER: &[&str] = &["HTTP_ROUTE_CONFLICT", "OBSERVER_ID_CONFLICT"];
 
 /// First wait before observing a refused source again; it doubles up to
 /// [`REOBSERVE_MAX_SECS`].
@@ -391,8 +424,13 @@ pub(super) fn validate_config(config: &WebhookConfig) -> Result<()> {
 fn activate(s: &Arc<Service>) {
     // No private server. Only this route opts into the sibling HTTP worker's
     // separate public listener; all other functions remain on the private bus.
-    for (source, target) in observed_sources(&s.config) {
-        tokio::spawn(keep_observed(s.clone(), source, target));
+    let queue_observer = queue_observer_id(
+        s.iii.namespace().as_deref(),
+        &crate::worker_name(),
+        &s.config.queue,
+    );
+    for (source, target, options) in observed_sources(&s.config, queue_observer) {
+        tokio::spawn(keep_observed(s.clone(), source, target, options));
     }
     let service = s.clone();
     tokio::spawn(async move {
@@ -414,8 +452,13 @@ fn activate(s: &Arc<Service>) {
     });
 }
 
-/// The sources the webhook plumbing observes, with their targets.
-pub(super) fn observed_sources(config: &WebhookConfig) -> [(Source, &'static str); 4] {
+/// The sources the webhook plumbing observes, with their targets and
+/// observer options: the queue consumer observes under `queue_observer`
+/// ([`queue_observer_id`]).
+pub(super) fn observed_sources(
+    config: &WebhookConfig,
+    queue_observer: String,
+) -> [(Source, &'static str, ObserverOptions); 4] {
     [
         (
             Source::function("http::on-request").args(json!({
@@ -424,6 +467,7 @@ pub(super) fn observed_sources(config: &WebhookConfig) -> [(Source, &'static str
                 "public_webhook": true,
             })),
             "github::webhooks::receive",
+            ObserverOptions::default(),
         ),
         (
             Source::function("queue::on-message").args(json!({
@@ -433,18 +477,21 @@ pub(super) fn observed_sources(config: &WebhookConfig) -> [(Source, &'static str
                 "backoff_ms": 1000,
             })),
             "github::webhooks::process",
+            ObserverOptions::default().id(queue_observer),
         ),
         (
             Source::function("quick-tunnel::on-changed")
                 .filters(json!({ "input.tunnel_id": { "$eq": config.tunnel_id } }))
                 .deliver(Deliver::Output),
             "github::webhooks::tunnel-changed",
+            ObserverOptions::default(),
         ),
         (
             Source::function("cron::on-tick")
                 .args(json!({ "expression": "*/10 * * * * *" }))
                 .deliver(Deliver::Output),
             "github::webhooks::maintain",
+            ObserverOptions::default(),
         ),
     ]
 }
@@ -456,15 +503,21 @@ pub(super) fn observed_sources(config: &WebhookConfig) -> [(Source, &'static str
 /// becomes active once it registers; one still pending after
 /// [`ACTIVATION_WAIT_SECS`] is logged. A refusal is recorded as the webhook
 /// health's `last_error`. A refusal in [`HELD_BY_ANOTHER_OBSERVER`] (the
-/// route still held by this worker's previous process) disposes the refused
-/// observer and observes again, waiting [`REOBSERVE_FIRST_SECS`] and then
-/// twice as long each time up to [`REOBSERVE_MAX_SECS`]; once the observer
-/// is active, the error it recorded is cleared.
-async fn keep_observed(s: Arc<Service>, source: Source, target: &'static str) {
+/// route or the observer id still held by another observer) disposes the
+/// refused observer and observes again with the same `options`, waiting
+/// [`REOBSERVE_FIRST_SECS`] and then twice as long each time up to
+/// [`REOBSERVE_MAX_SECS`]; once the observer is active, the error it
+/// recorded is cleared.
+async fn keep_observed(
+    s: Arc<Service>,
+    source: Source,
+    target: &'static str,
+    options: ObserverOptions,
+) {
     let mut retry = std::time::Duration::from_secs(REOBSERVE_FIRST_SECS);
     let mut recorded: Option<String> = None;
     loop {
-        let handle = s.iii.observe(source.clone(), target);
+        let handle = s.iii.observe_with(source.clone(), target, options.clone());
         let wait = std::time::Duration::from_secs(ACTIVATION_WAIT_SECS);
         let outcome = match tokio::time::timeout(wait, handle.ready()).await {
             Ok(outcome) => outcome,
@@ -546,6 +599,44 @@ async fn record_activation_error(
 #[cfg(test)]
 mod metadata_tests {
     use super::*;
+
+    #[test]
+    fn the_queue_observer_id_is_the_worker_and_its_queue() {
+        assert_eq!(
+            queue_observer_id(None, "github", "github-webhooks"),
+            "github:webhooks:github-webhooks"
+        );
+        assert_eq!(
+            queue_observer_id(Some("ops"), "github", "github-webhooks"),
+            "ops/github:webhooks:github-webhooks"
+        );
+        // The queue observer observes under it.
+        let sources = observed_sources(&WebhookConfig::default(), "fixed".into());
+        let queue = sources
+            .iter()
+            .find(|(source, _, _)| source.function_id() == "queue::on-message")
+            .unwrap();
+        assert_eq!(queue.2, ObserverOptions::default().id("fixed"));
+        assert!(sources
+            .iter()
+            .filter(|(source, _, _)| source.function_id() != "queue::on-message")
+            .all(|(_, _, options)| *options == ObserverOptions::default()));
+    }
+
+    #[test]
+    fn a_long_queue_observer_id_keeps_a_digest_within_the_engine_limit() {
+        let queue = "q".repeat(200);
+        let id = queue_observer_id(Some("ops"), "github", &queue);
+        assert!(id.len() <= MAX_OBSERVER_ID_LEN, "{id}");
+        assert!(id.starts_with("github:webhooks:sha256:"), "{id}");
+        // Stable, and apart for another queue or namespace.
+        assert_eq!(id, queue_observer_id(Some("ops"), "github", &queue));
+        assert_ne!(id, queue_observer_id(Some("dev"), "github", &queue));
+        assert_ne!(
+            id,
+            queue_observer_id(Some("ops"), "github", &"r".repeat(200))
+        );
+    }
 
     #[test]
     fn engine_metadata_keeps_strict_requests_and_schemas() {

@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
             metadata: Some(WorkerMetadata {
                 runtime: "rust".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                name: "github".to_string(),
+                name: github::WORKER_NAME.to_string(),
                 os: std::env::consts::OS.to_string(),
                 description: Some("GitHub CLI (gh) as an iii worker.".to_string()),
                 pid: Some(std::process::id()),

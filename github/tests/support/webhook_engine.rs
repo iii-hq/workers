@@ -6,7 +6,12 @@
 //! departed connection: the observers of the functions it hosted go
 //! `pending` until a new host registers them, and the observers it made are
 //! `suspended` and disposed, at once or, after [`Engine::hold_departed`], when
-//! the test ends the grace period with [`Engine::release_departed`].
+//! the test ends the grace period with [`Engine::release_departed`]. An
+//! `observe` naming the id of a suspended observer replaces it, as the
+//! engine does for a worker back on a new connection: the function's host
+//! hears `observerremoved` for the suspended one and `observeradded` for the
+//! new one. An id another live connection holds is refused with
+//! `OBSERVER_ID_CONFLICT`.
 //! Registered function handlers and observer hooks run on their real SDK
 //! connections.
 use futures::{SinkExt, StreamExt};
@@ -353,6 +358,14 @@ fn departed(state: &State, tx: &Sender) {
     state.departures.fetch_add(1, Ordering::SeqCst);
 }
 
+/// A new connection observes under the id of the suspended observer `id`:
+/// the suspended one leaves the grace period and is disposed, so the new one
+/// takes its place.
+fn replace_suspended(state: &State, id: &str) {
+    state.held.lock().unwrap().retain(|held| held != id);
+    dispose(state, id);
+}
+
 /// Removes the observer `id`. Its function's host hears `observerremoved` if
 /// it accepted the observer; its observing connection hears `disposed`.
 fn dispose(state: &State, id: &str) {
@@ -477,6 +490,23 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                     .to_owned(),
             );
             let id = text("id");
+            let existing = state
+                .observers
+                .lock()
+                .unwrap()
+                .get(&id)
+                .map(|o| (o.observing.same_channel(tx), o.state));
+            match existing {
+                Some((false, "suspended")) => replace_suspended(state, &id),
+                Some((false, _)) => {
+                    let reason = json!({"code":"OBSERVER_ID_CONFLICT",
+                        "message":format!("observer `{id}` is owned by another connection")});
+                    let _ = tx.send(json!({"type":"observeresult", "id":id, "state":"error",
+                        "error":reason}));
+                    return;
+                }
+                _ => {}
+            }
             let mut view = json!({"id":id, "args":source["args"], "filters":source["filters"],
                 "target":target.1});
             for field in ["capture", "on"] {

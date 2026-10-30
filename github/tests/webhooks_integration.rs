@@ -749,12 +749,14 @@ async fn review_policy_filters_signed_ingress_and_delivers_compact_retryable_eve
     }
 }
 
-/// A restarted github worker finds its previous process's observers still
-/// there: the engine keeps them suspended for its grace period, and the http
-/// worker keeps their route meanwhile. The new process's route observer is
-/// refused with `HTTP_ROUTE_CONFLICT` and observed again until the route is
-/// free; its queue observer joins the same consumer group, so the jobs the
-/// previous process left queued reach the new one.
+/// A restarted github worker while the http worker still holds the route of
+/// its previous process: this fake engine withdraws a departed connection's
+/// observers from their hosts when the grace period ends (the engine does it
+/// when the connection closes; tests/queue_restart.rs restarts the worker
+/// against a real engine). The new process's route observer is refused with
+/// `HTTP_ROUTE_CONFLICT` and observed again until the route is free; its
+/// queue observer, under the same id, replaces the suspended one at once, so
+/// the jobs the previous process left queued reach the new one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
     let mut fixture = Fixture::start().await;
@@ -776,11 +778,28 @@ async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
                 })
             };
         wait(route_refused).await;
-        // The queue observer is accepted at once: a group has many members.
+        // The queue observer replaces the suspended one at once: the queue
+        // worker holds one observer, under the id of the previous process's.
         fixture
             .engine
             .observed("queue::on-message", "github::webhooks::process")
             .await;
+        let stable = github::webhooks::queue_observer_id(
+            Some(PROVIDER),
+            github::WORKER_NAME,
+            &WebhookConfig::default().queue,
+        );
+        wait(|| {
+            let ids: Vec<String> = fixture
+                .queue
+                .observers
+                .values()
+                .iter()
+                .map(|obs| obs.id().to_owned())
+                .collect();
+            ids == [stable.clone()]
+        })
+        .await;
 
         // The grace period ends: the engine disposes the old observers, and
         // the http worker drops their route.
