@@ -62,7 +62,7 @@ def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]
     if port := os.environ.get("III_ENGINE_PORT"):
         if not port.isdigit() or not (1 <= int(port) <= 65535):
             raise ValueError("III_ENGINE_PORT must be an integer from 1 to 65535")
-        command.extend(["--port", port])
+        command.extend(["--engine", f"ws://127.0.0.1:{port}"])
     completed = subprocess.run(
         command,
         check=True,
