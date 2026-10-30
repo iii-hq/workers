@@ -3,7 +3,7 @@
 //! `harness::send`. Spawning is fire-and-forget: the caller gets the child's
 //! ids immediately and never its result — delegation flows one way, downward,
 //! and outcomes come back only through the state the child writes and the
-//! `harness::turn-completed` event its finalize emits. The `ParentLink` is
+//! `harness::on-turn-completed` event its finalize emits. The `ParentLink` is
 //! kept for event filters and console nesting, not for result delivery.
 
 use std::collections::BTreeMap;

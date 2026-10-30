@@ -3,7 +3,7 @@
 //! usage that came back for it. Built from the assembly the loop already
 //! performs (no extra counting round trips), stamped with usage after the
 //! terminal frame, stored once per generate step. Read back by
-//! `harness::metrics` and pushed on `harness::turn-completed`.
+//! `harness::metrics` and pushed on `harness::on-turn-completed`.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;

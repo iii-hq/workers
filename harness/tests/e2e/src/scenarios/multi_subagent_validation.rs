@@ -1,5 +1,5 @@
 //! `multi_subagent_validation` — parallel fan-out of VALIDATED sub-agents:
-//! the parent registers one `harness::hook::post-turn` validator per child
+//! the parent registers one `harness::hook::on-post-turn` validator per child
 //! (disjoint session scopes, disjoint SQL predicates over a shared table,
 //! per-child `retry_prompt`), arms one verdict wake per child, spawns both
 //! children in the same turn, and tallies verdict wakes until every child

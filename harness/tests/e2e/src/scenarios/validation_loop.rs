@@ -1,4 +1,4 @@
-//! `validation_loop` — the agent installs its OWN `harness::hook::post-turn`
+//! `validation_loop` — the agent installs its OWN `harness::hook::on-post-turn`
 //! validator (fp::pipe over a live row count) and is then held in the
 //! harness-driven correction loop until the goal is met: insert 4 rows,
 //! get denied by its own validator (custom `retry_prompt` with the live

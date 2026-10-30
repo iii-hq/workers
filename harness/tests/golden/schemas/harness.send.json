@@ -423,7 +423,7 @@
             "type": "null"
           }
         ],
-        "description": "Set when the message was the `/compact` command: nothing was appended and no turn ran. The compaction runs in the background; its start and outcome reach every client through the transcript and `harness::compaction`."
+        "description": "Set when the message was the `/compact` command: nothing was appended and no turn ran. The compaction runs in the background; its start and outcome reach every client through the transcript and `harness::on-compaction`."
       },
       "deduplicated": {
         "description": "True when `idempotency_key` matched an earlier send.",
