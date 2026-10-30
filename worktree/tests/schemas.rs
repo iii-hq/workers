@@ -57,6 +57,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "worktree::prune",
             "worktree::land",
             "worktree::land-step",
+            "worktree::rest",
             "worktree::on-config-change",
         ]
     );

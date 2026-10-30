@@ -9,8 +9,9 @@
 //!      value — a required boot dependency; failure aborts startup.
 //!   4. Probe `git --version` (warn below 2.35).
 //!   5. Register the six `worktree::on-*` event functions.
-//!   6. Register the eleven public functions, and observe `http::on-request`
-//!      for the read-only ones.
+//!   6. Register the eleven public functions and `worktree::rest`, and
+//!      observe `http::on-request` for the read-only ones, each route
+//!      targeting `worktree::rest`.
 //!   7. Register the config-change handler and observe
 //!      `configuration::on-updated` with it, then observe `cron::on-tick` for
 //!      the prune schedule.
@@ -26,7 +27,7 @@ use tokio::sync::RwLock;
 
 use worktree::configuration::{self, ConfigCell, CronSlot};
 use worktree::events::{Emitter, IiiDeliverer};
-use worktree::functions::{self, Deps};
+use worktree::functions::{self, rest, Deps};
 use worktree::land::test_gate::ShellExecRunner;
 use worktree::land::IiiEnqueuer;
 use worktree::locks::RepoLocks;
@@ -140,19 +141,17 @@ async fn main() -> Result<()> {
     worktree::ui::register(&iii);
 
     // Best-effort HTTP exposure for the read-only surface: one observer of
-    // `http::on-request` per route. Without an http worker the observers stay
-    // `pending` and the worker keeps serving the bus; a rejected route warns.
-    for function_id in [
-        "worktree::list",
-        "worktree::get",
-        "worktree::status",
-        "worktree::validate",
-    ] {
-        let path = format!("/{}", function_id.replace("::", "/"));
+    // `http::on-request` per route (`POST /worktree/...`), each targeting
+    // `worktree::rest`, which takes the HttpRequest, runs the function the
+    // path names with the body and answers { status_code, body }. Without an
+    // http worker the observers stay `pending` and the worker keeps serving
+    // the bus; a rejected route warns.
+    for function_id in rest::ROUTED {
+        let path = rest::route_path(function_id);
         let route = iii.observe(
             Source::function("http::on-request")
                 .args(serde_json::json!({ "method": "POST", "path": &path })),
-            function_id,
+            rest::REST_ID,
         );
         route.on_state_change(move |state, reason| {
             if *state == ObserverState::Error {

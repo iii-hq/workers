@@ -210,6 +210,7 @@ instance.
   `prune_schedule`; `{}` payload works.
 - `worktree::land` — queue a land job; returns `{ job_id, queued }`.
 - `worktree::land-step` — internal queue consumer; not agent-callable.
+- `worktree::rest`: internal target of the HTTP routes (below).
 
 Errors carry stable `W###` codes (`src/error.rs`). One instance per engine:
 state has no compare-and-set, so run a single worktree worker (shard by
@@ -262,9 +263,30 @@ while the rebase is still unresolved returns `W402`; pass
 With the `http` worker installed, the read surface is also served over HTTP:
 the worker observes `http::on-request` with `{ method: "POST", path }` for
 `/worktree/list`, `/worktree/get`, `/worktree/status` and
-`/worktree/validate`, each targeting the function of the same name. Without
-an http worker those observers stay pending and the worker keeps serving the
-bus; a rejected route logs a warning.
+`/worktree/validate`, each targeting `worktree::rest`. It runs the function
+the path names (`/worktree/get` is `worktree::get`) with the request's JSON
+body as its input (an empty body is `{}`) and answers with the function's
+result as the response body, status `200`. A body that is not JSON answers
+`400` `W001` and runs no function. An error answers
+`{ "error": { "code", "message" } }` with the status of its code:
+
+| Status | `code` |
+|---|---|
+| 400 | `W001` (also a body that is not JSON or does not fit the function's input), `W110`, `W111`, `W112` |
+| 403 | `W500`-`W504` |
+| 404 | `W200`, `W201` |
+| 409 | `W120`, `W210`-`W222`, `W401`-`W413` |
+| 503 | `W300` |
+| 504 | `W101` |
+| 500 | any other code |
+
+```bash
+curl -s -X POST http://127.0.0.1:3111/worktree/get \
+  -H 'content-type: application/json' -d '{"worktree_id":"wt_..."}'
+```
+
+Without an http worker those observers stay pending and the worker keeps
+serving the bus; a rejected route logs a warning.
 
 ## Local development and testing
 
@@ -273,5 +295,7 @@ cargo run --release -- --url ws://127.0.0.1:49134
 cargo test
 ```
 
-The end-to-end test boots a real engine and self-skips when `iii` is not on
-PATH. Regenerate wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
+The end-to-end tests boot a real engine and self-skip when `iii` is not on
+PATH (`III_ENGINE_BIN` names another binary). The REST test also runs the
+http worker, `III_HTTP_BIN` (`cargo build --manifest-path ../http/Cargo.toml`).
+Regenerate wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.

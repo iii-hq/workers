@@ -12,6 +12,7 @@ pub mod list;
 pub mod prune;
 pub mod release;
 pub mod remove;
+pub mod rest;
 pub mod status;
 pub mod validate;
 
@@ -207,5 +208,6 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         "Internal: execute one queued land job. Bound to the land queue; not \
          agent-callable."
     );
+    rest::register(iii, deps);
     tracing::info!("all worktree functions registered");
 }
