@@ -791,8 +791,12 @@ mod tests {
                 "context-manager",
                 "iii-directory",
                 "cron",
+                "database",
+                "sentinel",
                 "ade",
                 "ide",
+                "judge-typesafe",
+                "judge",
                 "harness",
             ]
         );
@@ -807,22 +811,27 @@ mod tests {
             [
                 "state",
                 "llm-router",
+                "provider-openai",
                 "context-manager",
                 "iii-directory",
                 "cron",
+                "database",
+                "sentinel",
                 "ade",
                 "ide",
+                "judge-typesafe",
+                "judge",
                 "harness"
             ]
         );
-        assert_eq!(config.worker("harness").unwrap().deps.len(), 12);
+        assert_eq!(config.worker("harness").unwrap().deps.len(), 14);
         // The rest of the repo is what the dashboard can start on demand.
         let offered = discover_workers(&config.repo_root, &config.worker_dirs, &config.workers);
         assert!(offered.len() > 40, "{}", offered.len());
         assert!(offered
             .iter()
             .all(|worker| config.worker(&worker.name).is_none()));
-        assert!(offered.iter().any(|worker| worker.name == "database"));
+        assert!(offered.iter().any(|worker| worker.name == "worktree"));
     }
 
     #[test]
