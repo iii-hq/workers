@@ -1,7 +1,8 @@
 //! `tmux::on-changed` against a scripted engine: the registration, the first
-//! overview sent through a new observer, and the poll loop's calls while the
-//! function is observed: one per change, none for the state the new observer
-//! already received.
+//! overview a new observer receives (a call of the function for it alone,
+//! metadata `for_observer`), and the poll loop's calls while the function is
+//! observed: one per change, none for the state the new observer already
+//! received. `live_feed_engine.rs` runs the same feed through a real engine.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -142,14 +143,22 @@ async fn observers_get_the_current_overview_and_every_change() {
     assert_eq!(ack["id"], "page");
     assert!(ack["error"].is_null(), "{ack}");
 
-    // The new observer alone receives the current overview, through itself,
-    // before any call of the function.
+    // The first call of the function is the current overview for the new
+    // observer alone: metadata `for_observer`, never a call through it.
     let first = next_matching(&mut captured, |v| {
-        assert!(!is_feed_call(v), "a call before the first overview: {v}");
-        v["type"] == "invokefunction" && v["activation"]["observer_id"] == "page"
+        assert!(
+            v["function_id"] != TARGET,
+            "a call through the observer: {v}"
+        );
+        is_feed_call(v)
     })
     .await;
-    assert_eq!(first["function_id"], TARGET);
+    assert_eq!(
+        first["metadata"],
+        json!({ "for_observer": "page" }),
+        "{first}"
+    );
+    assert!(first["activation"].is_null(), "{first}");
     assert_eq!(first["action"]["type"], "void");
     assert!(is_overview(&first["data"]), "{first}");
 
@@ -166,6 +175,10 @@ async fn observers_get_the_current_overview_and_every_change() {
     monitor.poke();
     let call = next_matching(&mut captured, is_feed_call).await;
     assert!(call["invocation_id"].is_null(), "a void call: {call}");
+    assert!(
+        call["metadata"].is_null(),
+        "a call for every observer: {call}"
+    );
     assert!(is_overview(&call["data"]), "{call}");
     let error = call["data"]["sessions"]["tmux"]["error"]
         .as_str()

@@ -139,7 +139,7 @@ settings action or with `configuration::set`.
 
 | Function | Args | Delivery | Event |
 |---|---|---|---|
-| `tmux::on-changed` | none; the overview has no field to filter on | iii's default delivery; each new observer also receives the current overview once it is accepted | `Overview { sessions, ports }`: the shapes `tmux::sessions::list` and `tmux::ports::list` return |
+| `tmux::on-changed` | none; the overview has no field to filter on | iii's default delivery; once a new observer is accepted, the worker calls the function with the current overview for that observer alone (metadata `{ for_observer: <observer id> }`), delivered like every other call | `Overview { sessions, ports }`: the shapes `tmux::sessions::list` and `tmux::ports::list` return |
 
 `tmux::on-changed` is private: only this worker calls it, whenever sessions,
 windows, panes, agent states, compose stacks or listening ports change. The
