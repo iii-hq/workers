@@ -282,7 +282,7 @@
           },
           "previous_summary": {
             "default": null,
-            "description": "Persisted summary from a prior compaction (see the spec's \"The compaction round trip\"); rendered into the system prompt and used as the anchor if compaction triggers again.",
+            "description": "Persisted summary from a prior compaction (see the spec's \"The compaction round trip\"); rendered into the system prompt and used as the anchor if compaction runs again.",
             "type": [
               "string",
               "null"
