@@ -17,7 +17,9 @@
 //!   that metadata ([`crate::subscribers::IiiInvoker`]). The deliver hook
 //!   ([`deliver_message`]) calls through the matched observer, and the
 //!   target's result is the call's result: it acks the message, and an error
-//!   retries it with backoff and then dead-letters it. A subscriber that is
+//!   retries it with backoff and then dead-letters it. The engine bounds the
+//!   call through the observer by `observers.activation_timeout_ms`; a target
+//!   slower than that fails the delivery with `TIMEOUT`. A subscriber that is
 //!   not active fails the call with `OBSERVER_NOT_ACTIVE` (retried, then
 //!   dead-lettered); a message its filters reject is acked with `null`.
 
@@ -52,8 +54,12 @@ pub const ON_MESSAGE_DESCRIPTION: &str =
      observer is a subscriber with its own durable queue, retries and dead-letter queue, except \
      that observers naming the same group share one queue and handle each message once. The \
      target receives the published data; returning acks the message, and an error retries it \
-     with backoff and then moves it to the topic's DLQ. Filters read the message as input; a \
-     message they reject is acked without a delivery. Only the queue worker calls it.";
+     with backoff and then moves it to the topic's DLQ. The target is called through its \
+     observer, so the engine's observers.activation_timeout_ms (30 s by default) bounds each \
+     delivery: a target that has not answered by then fails it with TIMEOUT and the message is \
+     retried; raise that engine setting for targets that run longer. Filters read the message \
+     as input; a message they reject is acked without a delivery. Only the queue worker calls \
+     it.";
 
 /// Sets the hooks of `queue::on-message` and registers it: private, its
 /// handler returns the message, its observers' args are [`args_format`].
@@ -217,8 +223,10 @@ impl MatchedSubscriber for ThroughObserver<'_> {
     }
 
     async fn call_through(&self, payload: Value) -> Result<Value, Error> {
-        // Queue-delivered functions may run for many minutes; the call
-        // carries the same budget as the consumer's call of this function.
+        // The call carries the consumer's 30-minute budget for this
+        // function; the engine ends a call through an observer with
+        // `TIMEOUT` after `observers.activation_timeout_ms`, whichever is
+        // shorter.
         self.iii
             .call(
                 CallRequest::observer(self.obs, payload)
