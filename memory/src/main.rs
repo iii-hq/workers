@@ -16,9 +16,11 @@
 //!   6. Observe the harness seams (`harness::hook::on-pre-generate`
 //!      fail-OPEN — memory must never block a turn — and
 //!      `harness::on-turn-completed` for extraction), `session::on-deleted`
-//!      and the extraction queue's `queue::on-message`. An observer stays
-//!      `pending` until its function registers, so in a deployment without
-//!      the harness the worker still boots and serves its RPCs.
+//!      and the extraction queue's `queue::on-message`, the last under a
+//!      stable id ([`hooks::extraction_observer_id`]) so a restarted worker
+//!      consumes the jobs its previous process left unacked. An observer
+//!      stays `pending` until its function registers, so in a deployment
+//!      without the harness the worker still boots and serves its RPCs.
 //!   7. Observe `configuration::on-updated` LAST.
 //!   8. Sleep on Ctrl+C, then `shutdown_async` cleanly. There is no
 //!      shutdown flush: every write was already fsynced at commit time.
@@ -27,9 +29,11 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use iii_sdk::protocol::observe_codes;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, CallRequest, Deliver, IIIClient, InitOptions, RegisterFunction, Source,
+    register_worker, CallRequest, Deliver, IIIClient, InitOptions, ObserverHandle, ObserverOptions,
+    RegisterFunction, Source,
 };
 use serde_json::json;
 use tokio::sync::RwLock;
@@ -64,7 +68,7 @@ fn worker_metadata() -> WorkerMetadata {
     WorkerMetadata {
         runtime: "rust".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        name: "memory".to_string(),
+        name: hooks::WORKER_NAME.to_string(),
         os: std::env::consts::OS.to_string(),
         pid: Some(std::process::id()),
         telemetry: None,
@@ -75,23 +79,46 @@ fn worker_metadata() -> WorkerMetadata {
 /// The function `http::on-request` routes REST calls through.
 const HTTP_ON_REQUEST_FN: &str = "http::on-request";
 
-/// The functions this worker observes, each with its target. Every observer
-/// stays `pending` until its function registers and its host accepts it, so
-/// the harness, session-manager and queue can boot in any order.
-fn seam_observers() -> Vec<(Source, &'static str)> {
+/// First wait, from a refusal with `OBSERVER_ID_CONFLICT`, before observing
+/// a seam again; it doubles up to [`REOBSERVE_MAX_SECS`]. The refused
+/// observer's dispose runs during the wait and resolves within the SDK's 5 s
+/// (at the engine's confirmation, or at 5 s for an id the engine refused,
+/// whose `unobserve` it does not answer), so every wait is the one given here.
+const REOBSERVE_FIRST_SECS: u64 = 5;
+const REOBSERVE_MAX_SECS: u64 = 30;
+
+/// The waits between a refusal and the next observe: 5 s, 10 s, 20 s, then
+/// 30 s each time.
+fn reobserve_waits() -> impl Iterator<Item = std::time::Duration> {
+    let max = std::time::Duration::from_secs(REOBSERVE_MAX_SECS);
+    std::iter::successors(
+        Some(std::time::Duration::from_secs(REOBSERVE_FIRST_SECS)),
+        move |wait| Some((*wait * 2).min(max)),
+    )
+}
+
+/// The functions this worker observes, each with its target and observer
+/// options. Every observer stays `pending` until its function registers and
+/// its host accepts it, so the harness, session-manager and queue can boot
+/// in any order. The extraction consumer observes under `extraction_id`
+/// ([`hooks::extraction_observer_id`]).
+fn seam_observers(extraction_id: String) -> Vec<(Source, &'static str, ObserverOptions)> {
     vec![
         (
             Source::function("harness::hook::on-pre-generate")
                 .args(json!({ "priority": 100, "timeout_ms": 3_000, "on_error": "fail_open" })),
             hooks::PRE_GENERATE_FN,
+            ObserverOptions::default(),
         ),
         (
             Source::function("harness::on-turn-completed").deliver(Deliver::Output),
             hooks::TURN_COMPLETED_FN,
+            ObserverOptions::default(),
         ),
         (
             Source::function("session::on-deleted").deliver(Deliver::Output),
             hooks::SESSION_DELETED_FN,
+            ObserverOptions::default(),
         ),
         (
             Source::function("queue::on-message").args(json!({
@@ -100,8 +127,97 @@ fn seam_observers() -> Vec<(Source, &'static str)> {
                 "backoff_ms": 2_000,
             })),
             hooks::EXTRACT_JOB_FN,
+            ObserverOptions::default().id(extraction_id),
         ),
     ]
+}
+
+/// Observes `source` now, in the worker's observer order, and keeps the
+/// observer from a task of its own ([`keep_observed`]).
+fn observe_seam(
+    iii: &Arc<IIIClient>,
+    source: Source,
+    target: &'static str,
+    options: ObserverOptions,
+) {
+    let observer = observe_logged(iii, &source, target, &options);
+    tokio::spawn(keep_observed(
+        iii.clone(),
+        observer,
+        source,
+        target,
+        options,
+    ));
+}
+
+fn observe_logged(
+    iii: &IIIClient,
+    source: &Source,
+    target: &'static str,
+    options: &ObserverOptions,
+) -> ObserverHandle {
+    let observer = iii.observe_with(source.clone(), target, options.clone());
+    tracing::info!(
+        function_id = source.function_id(),
+        target,
+        observer_id = observer.id(),
+        "observing"
+    );
+    observer
+}
+
+/// Keeps `observer`. It stays `pending` until its function registers; a
+/// refusal is logged. `OBSERVER_ID_CONFLICT` (the extraction consumer's
+/// stable id still held: by a connection of this worker's previous process
+/// the engine has not seen close yet, by another worker until the engine's
+/// grace period, `observers.observer_grace_ms`, ends, or by a subscriber the
+/// queue worker has not let go yet) disposes the refused observer and
+/// observes again [`REOBSERVE_FIRST_SECS`] after the refusal, then twice as
+/// long each time up to [`REOBSERVE_MAX_SECS`] ([`reobserve_waits`]).
+async fn keep_observed(
+    iii: Arc<IIIClient>,
+    mut observer: ObserverHandle,
+    source: Source,
+    target: &'static str,
+    options: ObserverOptions,
+) {
+    let mut waits = reobserve_waits();
+    loop {
+        let Err(error) = observer.ready().await else {
+            tracing::debug!(
+                function_id = source.function_id(),
+                observer_id = observer.id(),
+                "observer active"
+            );
+            return;
+        };
+        let code = observer.reason().map(|reason| reason.code);
+        let held = code.as_deref() == Some(observe_codes::OBSERVER_ID_CONFLICT);
+        let wait = held.then(|| waits.next()).flatten();
+        tracing::warn!(
+            function_id = source.function_id(),
+            target,
+            observer_id = observer.id(),
+            error = %error,
+            retry_in_secs = wait.map(|wait| wait.as_secs()),
+            "observer refused"
+        );
+        let Some(wait) = wait else {
+            return;
+        };
+        // The SDK keeps a refused observer and replays it until disposed;
+        // the engine holds one the queue worker refused, and disposes it
+        // here. The dispose runs during the wait, and the next observe under
+        // the id goes out once both are over: the SDK tracks an observer by
+        // its id, and a dispose still waiting would drop the new one.
+        let ((), ()) = tokio::join!(
+            async {
+                let _ = observer.dispose().await;
+            },
+            tokio::time::sleep(wait)
+        );
+        observer = observe_logged(&iii, &source, target, &options);
+    }
 }
 
 /// The REST route of a public function: `POST /memory/...`, the function id
@@ -224,15 +340,15 @@ async fn main() -> Result<()> {
     // extraction, session GC, and the durable extraction consumer). If an
     // owning sibling boots after this worker, its observer stays pending and
     // becomes active once the sibling registers the function. The observers
-    // live as long as the worker's connection.
-    for (source, target) in seam_observers() {
-        let observer = iii.observe(source.clone(), target);
-        tracing::info!(
-            function_id = source.function_id(),
-            target,
-            observer_id = observer.id(),
-            "observing"
-        );
+    // live as long as the worker's connection. The extraction consumer's
+    // stable id keeps its unacked jobs across a restart.
+    let extraction_id = hooks::extraction_observer_id(
+        iii.namespace().as_deref(),
+        &hooks::worker_name(),
+        hooks::EXTRACTION_QUEUE,
+    );
+    for (source, target, options) in seam_observers(extraction_id) {
+        observe_seam(&iii, source, target, options);
     }
     ensure_extraction_queue(iii.clone());
 
@@ -338,9 +454,9 @@ mod tests {
 
     #[test]
     fn seams_observe_the_harness_session_and_queue_functions() {
-        let observed: Vec<(String, &str)> = seam_observers()
+        let observed: Vec<(String, &str)> = seam_observers("fixed".into())
             .into_iter()
-            .map(|(source, target)| (source.function_id().to_string(), target))
+            .map(|(source, target, _)| (source.function_id().to_string(), target))
             .collect();
         assert_eq!(
             observed,
@@ -368,7 +484,7 @@ mod tests {
             hooks::EXTRACT_JOB_FN => hooks::EXTRACT_JOB_DESC,
             other => panic!("no description for {other}"),
         };
-        for (source, target) in seam_observers() {
+        for (source, target, _) in seam_observers("fixed".into()) {
             let text = description(target);
             assert!(
                 text.contains(&format!("target of the {} observer", source.function_id())),
@@ -386,8 +502,9 @@ mod tests {
     }
 
     #[test]
-    fn the_extraction_consumer_names_its_topic() {
-        let (queue, _) = seam_observers().pop().unwrap();
+    fn the_extraction_consumer_names_its_topic_under_the_stable_id() {
+        let mut seams = seam_observers("fixed".into());
+        let (queue, _, options) = seams.pop().unwrap();
         assert_eq!(
             queue,
             Source::function("queue::on-message").args(json!({
@@ -396,5 +513,19 @@ mod tests {
                 "backoff_ms": 2_000,
             }))
         );
+        assert_eq!(options, ObserverOptions::default().id("fixed"));
+        // The other seams carry no backlog: each process observes them
+        // under ids of its own.
+        assert!(seams
+            .iter()
+            .all(|(_, _, options)| *options == ObserverOptions::default()));
+    }
+
+    #[test]
+    fn a_refused_seam_observes_again_after_5_10_20_then_30_seconds() {
+        // No wait is shorter than the SDK's 5 s dispose wait, which runs
+        // during it (tests/queue_restart.rs measures the waits).
+        let waits: Vec<u64> = reobserve_waits().take(6).map(|w| w.as_secs()).collect();
+        assert_eq!(waits, [5, 10, 20, 30, 30, 30]);
     }
 }

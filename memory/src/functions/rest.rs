@@ -79,7 +79,10 @@ pub async fn handle(deps: &Deps, request: RestRequest) -> RestResponse {
         Some(Err(e)) => error_response(&e),
         None => RestResponse {
             status_code: 404,
-            body: error_body("not_found", &format!("no memory function at {}", request.path)),
+            body: error_body(
+                "not_found",
+                &format!("no memory function at {}", request.path),
+            ),
         },
     }
 }
@@ -202,11 +205,21 @@ mod tests {
         .await;
         assert_eq!(response.status_code, 200, "{:?}", response.body);
         assert_eq!(response.body["created"], true);
-        assert_eq!(response.body["memory"]["text"], "The blog deploys on Fridays");
+        assert_eq!(
+            response.body["memory"]["text"],
+            "The blog deploys on Fridays"
+        );
 
-        let listed = handle(&deps, http_request("/memory/list", json!({ "bank": "blog" }))).await;
+        let listed = handle(
+            &deps,
+            http_request("/memory/list", json!({ "bank": "blog" })),
+        )
+        .await;
         assert_eq!(listed.status_code, 200, "{:?}", listed.body);
-        assert_eq!(listed.body["memories"][0]["text"], "The blog deploys on Fridays");
+        assert_eq!(
+            listed.body["memories"][0]["text"],
+            "The blog deploys on Fridays"
+        );
     }
 
     #[tokio::test]
