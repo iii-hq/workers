@@ -21,6 +21,11 @@
  * Frames are ephemeral: not stored, not replayed. The durable record of a turn
  * is the session record behind `cursor::status` and the result `cursor::run`
  * returns.
+ *
+ * A frame carries a copy of the event taken when it is emitted. A feed is a
+ * private function, and the SDK passes a private function's payload by
+ * reference (deep-frozen under NODE_ENV=development), so the copy keeps the
+ * caller's own objects, which it may still be mutating, out of the call.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -115,6 +120,21 @@ export type Emit = (sessionId: string, event: unknown, stableEventId?: string) =
 
 export type Feed = { emit: FeedEmit };
 
+/**
+ * The event as it is at emit time, sharing no object with the caller:
+ * `structuredClone`, or a JSON round trip (what the wire carries) for values
+ * it cannot clone, such as functions.
+ */
+export function snapshot<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value;
+  try {
+    return structuredClone(value);
+  } catch {
+    const text = JSON.stringify(value);
+    return (text === undefined ? undefined : JSON.parse(text)) as T;
+  }
+}
+
 /** Register one feed function and return its emitter. */
 export function createFeed(
   iii: IIIClient,
@@ -150,20 +170,21 @@ export function createFeed(
     if (!iii.isObserved(opts.id, { input: { session_id: sessionId } })) return false;
     const epoch = `${PROCESS_EPOCH}-${state.generation}`;
     const seq = state.sequence;
-    const payload: FeedPayload = {
-      session_id: sessionId,
-      event_id: stableEventId ?? `${sessionId}-${epoch}-${String(seq).padStart(8, '0')}`,
-      seq,
-      epoch,
-      source: opts.source,
-      event,
-    };
+    const eventId = stableEventId ?? `${sessionId}-${epoch}-${String(seq).padStart(8, '0')}`;
     try {
+      const payload: FeedPayload = {
+        session_id: sessionId,
+        event_id: eventId,
+        seq,
+        epoch,
+        source: opts.source,
+        event: snapshot(event),
+      };
       await iii.call({ function_id: opts.id, payload, action: CallAction.Void() });
       return true;
     } catch (error) {
       console.warn(
-        `${opts.id}: frame ${payload.event_id} was not sent for ${sessionId}: ${safeError(error)}`,
+        `${opts.id}: frame ${eventId} was not sent for ${sessionId}: ${safeError(error)}`,
       );
       return false;
     }
