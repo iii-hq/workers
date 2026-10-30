@@ -619,13 +619,15 @@ impl Backend for S3Backend {
             h = h.checksum_mode(aws_sdk_s3::types::ChecksumMode::Enabled);
         }
         let resp = h.send().await.map_err(map_s3_error)?;
-        let checksum_type = match (resp.checksum_sha256.as_deref(), resp.checksum_type.as_ref()) {
-            (Some(value), kind) => {
-                composite_checksum(value, kind.map(|v| v.as_str()), None)?;
-                Some("COMPOSITE".to_string())
-            }
-            (None, None) => None,
-            (None, Some(_)) => return Err(multipart_invalid("missing HEAD checksum")),
+        let kind = resp.checksum_type.as_ref().map(|v| v.as_str());
+        let checksum_type = if resp
+            .checksum_sha256
+            .as_deref()
+            .is_some_and(|v| composite_checksum(v, kind, None).is_ok())
+        {
+            Some("COMPOSITE".to_string())
+        } else {
+            kind.map(str::to_string)
         };
         let last_modified = resp
             .last_modified
@@ -914,6 +916,54 @@ mod tests {
         assert!(
             composite_checksum("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", None, None).is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn head_preserves_full_object_sha256_in_both_modes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = [0; 4096];
+                let _ = stream.read(&mut buf).await.unwrap();
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Type: text/plain\r\nx-amz-checksum-sha256: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\r\nx-amz-checksum-type: FULL_OBJECT\r\nConnection: close\r\n\r\n").await.unwrap();
+            }
+        });
+        let backend = S3Backend::build(
+            S3BackendOpts {
+                region: "us-east-1",
+                credentials: Some(S3StaticCreds {
+                    access_key_id: "test".into(),
+                    secret_access_key: "test".into(),
+                    session_token: None,
+                }),
+                endpoint_url: Some(format!("http://{addr}")),
+                force_path_style: true,
+                provider_tag: "s3",
+                fast_fail: true,
+            },
+            "bucket".into(),
+        )
+        .await
+        .unwrap();
+        for mode in [false, true] {
+            let head = backend
+                .head(HeadReq {
+                    key: "key".into(),
+                    version_id: None,
+                    checksum_mode: mode,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                head.checksum_sha256.as_deref(),
+                Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            );
+            assert_eq!(head.checksum_type.as_deref(), Some("FULL_OBJECT"));
+        }
+        server.await.unwrap();
     }
 
     #[tokio::test]
