@@ -3218,6 +3218,102 @@ mod tests {
         rt.shutdown();
     }
 
+    /// A call through an observer takes no metadata (decision 53): its
+    /// target's metadata argument is the observer's. Every JSON kind other
+    /// than `null` is refused with the SDKs' message, before anything reaches
+    /// the engine.
+    #[tokio::test]
+    async fn a_call_through_an_observer_takes_no_metadata() {
+        let fake = FakeEngine::new();
+        fake.with_observer_response("obs-1", Ok(json!("ran")));
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "iii.onObserverAdded('app::x', (obs) => { globalThis.obs = obs }); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        fake.fire_observer_added(&observer_of("app::x", "obs-1"))
+            .await
+            .unwrap();
+
+        for metadata in ["{ binding: 'forged' }", "{}", "[]", "0", "false", "''"] {
+            let out = eval(
+                &rt,
+                &format!(
+                    "try {{ await iii.call({{ observer: globalThis.obs, payload: {{}}, \
+                                              metadata: {metadata} }}); \
+                       return 'no throw' }} \
+                     catch (e) {{ return [e instanceof Error, e.message] }}"
+                ),
+                2_000,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                out.result,
+                json!([
+                    true,
+                    "a call through an observer takes no metadata; its target receives the \
+                     observer's metadata"
+                ]),
+                "metadata {metadata}"
+            );
+        }
+        assert!(
+            fake.observer_calls().is_empty(),
+            "a refused call reached the engine"
+        );
+        rt.shutdown();
+    }
+
+    /// `metadata: null` is no metadata (decision 54): a call through an
+    /// observer and a call of a function both go through with it, exactly as
+    /// they do without it.
+    #[tokio::test]
+    async fn null_metadata_is_no_metadata_on_every_call() {
+        let fake = FakeEngine::new();
+        fake.with_observer_response("obs-1", Ok(json!("through")));
+        fake.with_response("app::y", Ok(json!("called")));
+        let rt = spawn_rt_with_namespace(fake.clone(), "app::");
+        eval(
+            &rt,
+            "iii.onObserverAdded('app::x', (obs) => { globalThis.obs = obs }); return 1",
+            2_000,
+        )
+        .await
+        .unwrap();
+        fake.fire_observer_added(&observer_of("app::x", "obs-1"))
+            .await
+            .unwrap();
+
+        let out = eval(
+            &rt,
+            "return [ \
+               await iii.call({ observer: globalThis.obs, payload: { n: 1 }, metadata: null }), \
+               await iii.call({ observer: globalThis.obs, payload: { n: 2 }, metadata: undefined }), \
+               await iii.call({ function_id: 'app::y', payload: { n: 3 }, metadata: null }), \
+             ]",
+            2_000,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.result, json!(["through", "through", "called"]));
+        assert_eq!(
+            fake.observer_calls(),
+            vec![
+                ("obs-1".to_string(), json!({ "n": 1 })),
+                ("obs-1".to_string(), json!({ "n": 2 }))
+            ]
+        );
+        assert_eq!(
+            fake.calls(),
+            vec![("app::y".to_string(), json!({ "n": 3 }))]
+        );
+        rt.shutdown();
+    }
+
     /// Only observers this runtime's own hooks were handed may be called
     /// through. A forged `{ id }` — or a real id that belongs to another
     /// runtime's function — gets the same refusal, and never reaches the

@@ -95,8 +95,8 @@ Code you run gets a global `iii`:
 
 - `await iii.call({ function_id, payload, action?, timeout_ms? })` — invoke
   any bus function. `action: { type: 'void' }` is fire-and-forget, and
-  `timeout_ms` is clamped to the deployment's `max_timeout_ms`. `iii.trigger`
-  is the same function.
+  `timeout_ms` is clamped to the deployment's `max_timeout_ms`. The call
+  sends no metadata. `iii.trigger` is the same function.
 - `iii.registerFunction(id, handler, opts?)` — publish one for the life of
   this runtime. For one that outlives it, use `code-runner::register_function`.
   `opts` takes `description`; `request_format` / `response_format`, JSON
@@ -120,7 +120,10 @@ Code you run gets a global `iii`:
   `OBSERVE_REJECTED`; `null` removes a hook. `await iii.call({ observer,
   payload })` runs that observer's target with `payload`, under the
   observer's policy and metadata; it belongs in the delivery code of a source
-  the runtime delivers itself (below).
+  the runtime delivers itself (below). It takes no `metadata`: a request that
+  names any is refused with "a call through an observer takes no metadata;
+  its target receives the observer's metadata", the SDKs' message, and
+  `metadata: null` counts as none.
 - `iii.files` — a **private scratch directory** that lives exactly as long as
   the runtime: `write(name, contents)`, `read(name)`, `readText(name)`,
   `list()`, `remove(name)`. Names are one file each — no paths, no

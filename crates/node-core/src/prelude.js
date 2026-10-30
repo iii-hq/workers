@@ -222,22 +222,36 @@
     trace: emit("warn"),
   };
 
+  // Why `call` refuses a call through an observer that names metadata: its
+  // target's metadata argument is the observer's registration metadata
+  // (decision 53). The same message as every iii SDK.
+  const OBSERVER_CALL_METADATA =
+    "a call through an observer takes no metadata; its target receives the observer's metadata";
+
   // The SDK's request-object form: `iii.call({ function_id, payload })`, or
   // `iii.call({ observer, payload })` to run an observer's own target.
   // `action` routes the call (omit for request/response; `{ type: 'void' }`
   // is fire-and-forget); `timeout_ms` is a per-call millisecond budget
   // clamped by the host. `iii.trigger` is this same function.
+  //
+  // `metadata: null` is no metadata on every call (decision 54). A call
+  // through an observer that names any other metadata is refused before
+  // anything is sent, as the SDKs refuse it. A guest's call of a function
+  // carries no metadata: the ops take none.
   async function call(request) {
     if (request === null || typeof request !== "object") {
       throw new TypeError("call(request): request must be an object");
     }
-    const { function_id, observer, payload, action, timeout_ms } = request;
+    const { function_id, observer, payload, action, timeout_ms, metadata } = request;
     if (observer !== undefined) {
       if (function_id !== undefined) {
         throw new TypeError("call(request): pass function_id or observer, not both");
       }
       if (observer === null || typeof observer !== "object" || typeof observer.id !== "string" || observer.id.length === 0) {
         throw new TypeError("call(request): observer must be an observer an onObserverAdded hook received");
+      }
+      if (metadata !== undefined && metadata !== null) {
+        throw new Error(OBSERVER_CALL_METADATA);
       }
     } else if (typeof function_id !== "string" || function_id.length === 0) {
       throw new TypeError("call(request): function_id must be a non-empty string");

@@ -5,9 +5,11 @@
 //!
 //! Asserted: the added hook sees `{ id, function_id, args, filters, target }`;
 //! a hook that throws an error with a `code` rejects the observer with that
-//! code; `iii.call({ observer, payload })` reaches the observer's target and
-//! resolves to its result; the removed hook runs on dispose, and never for
-//! the rejected observer.
+//! code; `iii.call({ observer, payload })` reaches the observer's target,
+//! whose metadata argument is the observer's, and resolves to its result; a
+//! call through an observer that names metadata is refused before anything
+//! is sent, and `metadata: null` is no metadata on every call; the removed
+//! hook runs on dispose, and never for the rejected observer.
 //!
 //! The engine is `III_ENGINE_WS_URL` when set; otherwise `III_ENGINE_BIN`
 //! (or an `iii` 0.26+ on PATH) is spawned with an engine-only config on
@@ -24,7 +26,9 @@ use code_runner::node_bus::IIIEngine;
 use iii_node_core::manager::RuntimeManager;
 use iii_node_core::wire::run::RunRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, RegisterFunction, Source};
+use iii_sdk::{
+    register_worker, CallRequest, IIIClient, InitOptions, ObserverOptions, RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
@@ -260,8 +264,8 @@ async fn guest_hooks_see_accept_reject_and_call_through_observers() {
     let (tx, mut reached) = mpsc::unbounded_channel();
     consumer.register_function(
         "test::target",
-        RegisterFunction::new(move |payload: Value| {
-            let _ = tx.send(payload.clone());
+        RegisterFunction::new(move |payload: Value, metadata: Option<Value>| {
+            let _ = tx.send((payload.clone(), metadata));
             Ok::<_, iii_sdk::Error>(json!({ "echoed": unstamped(payload) }))
         }),
     );
@@ -269,11 +273,13 @@ async fn guest_hooks_see_accept_reject_and_call_through_observers() {
     // Accepted: the added hook sees the observer as the guest API describes
     // it, with its filters in iii's normalized form.
     let filters = json!({ "input.kind": { "$eq": "x" } });
-    let accepted = consumer.observe(
+    let binding = json!({ "binding": "b-1" });
+    let accepted = consumer.observe_with(
         Source::function("probe::on-thing")
             .args(json!({ "tag": "a" }))
             .filters(filters.clone()),
         "test::target",
+        ObserverOptions::default().metadata(binding.clone()),
     );
     timeout(Duration::from_secs(15), accepted.ready())
         .await
@@ -292,7 +298,8 @@ async fn guest_hooks_see_accept_reject_and_call_through_observers() {
         })
     );
 
-    // A call through the observer runs its target and resolves to its result.
+    // A call through the observer runs its target, whose metadata argument
+    // is the observer's, and resolves to its result.
     let answer = eval(
         &node,
         &runtime_id,
@@ -300,11 +307,57 @@ async fn guest_hooks_see_accept_reject_and_call_through_observers() {
     )
     .await;
     assert_eq!(answer, json!({ "echoed": { "hello": "world" } }));
-    let payload = timeout(Duration::from_secs(5), reached.recv())
+    let (payload, metadata) = timeout(Duration::from_secs(5), reached.recv())
         .await
         .expect("the call through the observer never reached its target")
         .unwrap();
     assert_eq!(unstamped(payload), json!({ "hello": "world" }));
+    assert_eq!(metadata, Some(binding.clone()));
+
+    // A call through an observer takes no metadata: refused before anything
+    // is sent, with the SDKs' message.
+    let refused_metadata = eval(
+        &node,
+        &runtime_id,
+        "try { await iii.call({ observer: globalThis.accepted, payload: { forged: true }, \
+                               metadata: { binding: 'forged' } }); return 'called' } \
+         catch (e) { return e.message }",
+    )
+    .await;
+    assert_eq!(
+        refused_metadata,
+        "a call through an observer takes no metadata; its target receives the observer's metadata"
+    );
+
+    // `metadata: null` is no metadata: through the observer the target gets
+    // the observer's (the refused call above never reached it), and a call
+    // of the function gets none.
+    let answer = eval(
+        &node,
+        &runtime_id,
+        "return await iii.call({ observer: globalThis.accepted, payload: { n: 2 }, metadata: null })",
+    )
+    .await;
+    assert_eq!(answer, json!({ "echoed": { "n": 2 } }));
+    let (payload, metadata) = timeout(Duration::from_secs(5), reached.recv())
+        .await
+        .expect("the call through the observer never reached its target")
+        .unwrap();
+    assert_eq!(unstamped(payload), json!({ "n": 2 }));
+    assert_eq!(metadata, Some(binding.clone()));
+    let answer = eval(
+        &node,
+        &runtime_id,
+        "return await iii.call({ function_id: 'test::target', payload: { n: 3 }, metadata: null })",
+    )
+    .await;
+    assert_eq!(answer, json!({ "echoed": { "n": 3 } }));
+    let (payload, metadata) = timeout(Duration::from_secs(5), reached.recv())
+        .await
+        .expect("the call never reached its target")
+        .unwrap();
+    assert_eq!(unstamped(payload), json!({ "n": 3 }));
+    assert_eq!(metadata, None);
 
     // Rejected: the hook's thrown code is the observer's reason.
     let refused = consumer.observe(
