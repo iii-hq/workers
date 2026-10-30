@@ -16,7 +16,7 @@ use crate::events::{
     ON_CLAIMED_FN, ON_CREATED_FN, ON_LANDED_FN, ON_LAND_BLOCKED_FN, ON_RELEASED_FN, ON_REMOVED_FN,
 };
 use crate::functions::{
-    claim, create, get, land, land_step, list, prune, release, remove, status, validate,
+    claim, create, get, land, land_step, list, prune, release, remove, rest, status, validate,
 };
 
 /// One function's wire surface: id plus the schemars-derived
@@ -65,6 +65,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<prune::Request, prune::Response>("worktree::prune"),
         spec::<land::Request, land::Response>("worktree::land"),
         spec::<land_step::Request, land_step::Response>("worktree::land-step"),
+        spec::<rest::RestRequest, rest::RestResponse>(rest::REST_ID),
         spec::<OnConfigChangeEvent, OnConfigChangeResponse>("worktree::on-config-change"),
     ]
 }
