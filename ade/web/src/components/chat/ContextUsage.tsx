@@ -1,4 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, Gauge } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/shadcn/popover'
+import {
+  Fact,
+  FactCardHeader,
+  FactList,
+  FactMeter,
+} from '@/components/ui/FactCard'
 import type { ContextUsageReport } from '@/lib/backend/types'
 import {
   estimateConversationTokens,
@@ -6,6 +18,7 @@ import {
 } from '@/lib/token-estimate'
 import { cn } from '@/lib/utils'
 import type { Message } from '@/types/chat'
+import { RingGauge } from './RingGauge'
 
 interface ContextUsageProps {
   messages: readonly Message[]
@@ -23,13 +36,38 @@ interface ContextUsageProps {
 const WARN_THRESHOLD = 0.75
 const DANGER_THRESHOLD = 0.9
 
+type Tone = 'normal' | 'warn' | 'danger'
+
+/** The arc takes the tone; the hero number's `-strong` holds AA as text. */
+const RING_TONE: Record<Tone, string> = {
+  normal: 'text-accent',
+  warn: 'text-warn',
+  danger: 'text-danger',
+}
+const TEXT_TONE: Record<Tone, string> = {
+  normal: 'text-ink',
+  warn: 'text-warn-strong',
+  danger: 'text-alert-strong',
+}
+/** The chip tint and the meter fill: ink until the window gets tight. */
+const ACCENT_TONE: Record<Tone, string> = {
+  normal: 'var(--color-ink)',
+  warn: 'var(--color-warn)',
+  danger: 'var(--color-alert)',
+}
+
+/**
+ * The built-in context meter: a ring gauge, `used / window` counts and a
+ * caret in the chat header, opening a popover led by the share used and
+ * the three numbers behind it. The harness worker's `context` chip
+ * supersedes it with real per-step numbers; the two draw the same control.
+ */
 export function ContextUsage({
   messages,
   contextWindow,
   reported,
 }: ContextUsageProps) {
   const [open, setOpen] = useState(false)
-  const rootRef = useRef<HTMLDivElement>(null)
   const estimate = useMemo(
     () => estimateConversationTokens(messages),
     [messages],
@@ -40,24 +78,6 @@ export function ContextUsage({
   // the model's raw window, is the capacity the last request was fit into.
   const capacity = reported?.usable ?? contextWindow
 
-  useEffect(() => {
-    if (!open) return
-
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
-    }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-
-    document.addEventListener('mousedown', closeOnOutsideClick)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('mousedown', closeOnOutsideClick)
-      document.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [open])
-
   const hasCapacity = capacity !== undefined && capacity > 0
   const ratio = hasCapacity ? Math.min(1, tokens / capacity) : 0
   const pct = Math.round(ratio * 100)
@@ -67,112 +87,118 @@ export function ContextUsage({
       ? Math.max(0, capacity - tokens)
       : null
 
-  let tone: 'normal' | 'warn' | 'danger' = 'normal'
+  let tone: Tone = 'normal'
   if (ratio >= DANGER_THRESHOLD) tone = 'danger'
   else if (ratio >= WARN_THRESHOLD) tone = 'warn'
 
-  const fillClass = cn(
-    // Message text can update at streaming cadence. Immediate width changes
-    // avoid queueing overlapping animations while tokens are arriving.
-    'block h-full',
-    tone === 'normal' && 'bg-accent',
-    tone === 'warn' && 'bg-warn',
-    tone === 'danger' && 'bg-danger',
-  )
-
-  const labelToneClass = cn(
-    tone === 'normal' && 'text-ink',
-    tone === 'warn' && 'text-warn',
-    tone === 'danger' && 'text-danger',
-  )
+  const label = `context: ${estimated ? 'approximately ' : ''}${tokens.toLocaleString()} tokens${hasCapacity ? ` of ${capacity.toLocaleString()} (${pct}%)` : ''} — click for details`
 
   return (
-    <div ref={rootRef} className="relative flex self-stretch items-center">
-      <button
-        type="button"
-        aria-label={`context: ${estimated ? 'approximately ' : ''}${tokens.toLocaleString()} tokens${hasCapacity ? ` of ${capacity.toLocaleString()} (${pct}%)` : ''} — click for details`}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-        className="flex self-stretch items-center gap-1.5 rounded-sm font-sans text-sm text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        aria-label={label}
+        className={cn(
+          'flex self-stretch items-center gap-1.5 rounded-sm px-0.5 font-inter text-xs text-ink-faint transition-colors duration-[var(--motion-duration-control)] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus aria-expanded:text-ink',
+        )}
       >
-        {/* Under a 30rem pane (`@container` on the chat root) the meter
-            keeps only the counts you act on — `12.3k/200k`: the label, the
-            bar and the percentage hide. Without a capacity the lone number
-            needs its label to read as context, so `ctx` stays. */}
-        <span className={cn(hasCapacity && '@max-[30rem]:hidden')}>ctx</span>
+        <span
+          role="progressbar"
+          aria-label="context window usage"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          className={cn('flex', RING_TONE[tone])}
+        >
+          <RingGauge ratio={ratio} size={16} stroke={2.5} />
+        </span>
         {hasCapacity ? (
-          <>
-            <span
-              // `surface-active`, not `surface`: the header group this sits in
-              // is itself `bg-surface`, so the track needs added contrast.
-              className="relative h-[6px] w-14 overflow-hidden bg-surface-active @max-[30rem]:hidden"
-              role="progressbar"
-              aria-label="context window usage"
-              aria-valuenow={pct}
-              aria-valuemin={0}
-              aria-valuemax={100}
-            >
-              <span className={fillClass} style={{ width: `${pct}%` }} />
-            </span>
-            <span
-              className={cn('tabular-nums @max-[30rem]:hidden', labelToneClass)}
-            >
-              {pct}%
-            </span>
-            <span className="tabular-nums text-ink-faint">
-              {formatTokenCount(tokens)}/{formatTokenCount(capacity)}
-            </span>
-          </>
+          <span
+            className={cn(
+              'tabular-nums whitespace-nowrap',
+              tone !== 'normal' && TEXT_TONE[tone],
+            )}
+          >
+            {formatTokenCount(tokens)}
+            <span className="mx-[3px] text-ink-ghost">/</span>
+            {formatTokenCount(capacity)}
+          </span>
         ) : (
           <span className="tabular-nums text-ink">
             {formatTokenCount(tokens)}
           </span>
         )}
-      </button>
+        {/* Under a 30rem pane (`@container` on the chat root) the caret
+            goes; the ring and the counts are what you act on. */}
+        <ChevronDown
+          aria-hidden
+          className={cn(
+            'size-4 shrink-0 text-ink-ghost transition-transform duration-[var(--motion-duration-control)] @max-[30rem]:hidden',
+            open && 'rotate-180',
+          )}
+        />
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        sideOffset={6}
+        aria-label="context details"
+        className="w-72 gap-3 p-4"
+      >
+        <FactCardHeader
+          icon={Gauge}
+          accent={ACCENT_TONE[tone]}
+          title="Context usage"
+          description={
+            estimated ? 'Estimated from the loaded messages' : 'Last request'
+          }
+        />
 
-      {open ? (
-        <div
-          role="dialog"
-          aria-label="context details"
-          className="absolute top-full right-0 z-50 mt-1 w-64 rounded-md border border-rule-2 bg-panel-raised p-3 font-sans text-sm whitespace-normal normal-case tracking-normal text-ink shadow-floating"
-        >
-          <div className="flex items-baseline justify-between gap-3">
-            <span className="font-medium">Context</span>
-            <span className="text-xs text-ink-faint">
-              {estimated ? 'Estimated' : 'Last request'}
+        {hasCapacity ? (
+          <div className="flex items-center gap-3">
+            <FactMeter
+              value={pct}
+              accent={ACCENT_TONE[tone]}
+              label="share of the context window"
+              className="flex-1"
+            />
+            <span
+              className={cn(
+                'shrink-0 font-mono text-[13px] tabular-nums',
+                TEXT_TONE[tone],
+              )}
+            >
+              {estimated ? '~' : ''}
+              {formatTokenCount(tokens)} / {formatTokenCount(capacity)}
+              <span className="text-ink-faint"> · {pct}%</span>
             </span>
           </div>
-          <div className="mt-3 space-y-2">
-            <ContextDetailRow label="Conversation" value={tokens} />
-            {hasCapacity && available !== null ? (
-              <>
-                <ContextDetailRow label="Available" value={available} />
-                <ContextDetailRow
-                  label={estimated ? 'Window' : 'Input budget'}
-                  value={capacity}
-                />
-              </>
-            ) : null}
-          </div>
-          <p className="mt-3 border-t border-rule-2 pt-2 text-xs leading-relaxed text-ink-faint">
-            {!hasCapacity
-              ? 'The selected model did not report a context-window limit.'
-              : estimated
-                ? 'An estimate based on the messages loaded in this chat.'
-                : 'What the last request sent to the model actually used.'}
-          </p>
-        </div>
-      ) : null}
-    </div>
-  )
-}
+        ) : null}
 
-function ContextDetailRow({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-ink-faint">{label}</span>
-      <span className="tabular-nums">{formatTokenCount(value)}</span>
-    </div>
+        <FactList>
+          <Fact label="Conversation" mono align="end" className="font-medium">
+            {formatTokenCount(tokens)}
+          </Fact>
+          {hasCapacity && available !== null ? (
+            <>
+              <Fact label="Available" mono align="end">
+                {formatTokenCount(available)}
+              </Fact>
+              <Fact
+                label={estimated ? 'Window' : 'Input budget'}
+                mono
+                align="end"
+              >
+                {formatTokenCount(capacity)}
+              </Fact>
+            </>
+          ) : null}
+        </FactList>
+
+        {!hasCapacity ? (
+          <p className="text-xs leading-4 text-ink-faint">
+            The selected model did not report a context-window limit.
+          </p>
+        ) : null}
+      </PopoverContent>
+    </Popover>
   )
 }

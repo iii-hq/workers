@@ -181,8 +181,7 @@ function TimelineTabView({
             ? `Every file this turn changed goes back to how it was before the turn: ${pending.count} ${pending.count === 1 ? 'file' : 'files'}. Edits made after the turn to the same files are lost.`
             : 'The file goes back to how it was before this turn. Later edits to it are lost.'
         }
-        details={pending?.kind === 'file' ? [pending.path] : undefined}
-        confirmLabel="Revert"
+        confirmLabel={pending?.kind === 'turn' ? 'Revert turn' : 'Revert file'}
         onConfirm={() => {
           const target = pending
           setPending(null)

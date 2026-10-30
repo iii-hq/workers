@@ -68,6 +68,10 @@ pub struct ChatRequest {
     pub thinking_level: Option<ThinkingLevel>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
+    /// Maximum retries after the first provider attempt. Omitted uses the router's
+    /// configured limit; zero disables retries. Can only reduce that limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_max: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_options: Option<BTreeMap<String, Value>>, // namespaced by provider id
     #[serde(skip_serializing_if = "Option::is_none")]

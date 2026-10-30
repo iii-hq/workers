@@ -1,14 +1,20 @@
 import { useQuery } from '@tanstack/react-query'
-import { ArrowUp, Clock, Copy, Layers, X, Zap } from 'lucide-react'
+import { ArrowUp, Check, Copy, X } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
 import { useFunctionCallRenderers } from '@/components/function-call/renderer-registry'
-import { Button } from '@/components/ui/Button'
-import { Eyebrow } from '@/components/ui/Eyebrow'
-import { StatusDot } from '@/components/ui/StatusDot'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { Button } from '@/components/shadcn/button'
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/shadcn/tabs'
+import { Hint } from '@/components/ui/Hint'
 import { cn } from '@/lib/utils'
 import { fetchOtelLogs } from '../api/otel-logs'
 import { spanRawRedactor } from '../lib/functionCallFromSpan'
+import { formatSpanLabel } from '../lib/spanLabel'
+import { getWorkerColor } from '../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
   formatDuration,
@@ -31,12 +37,40 @@ interface SpanPanelProps {
   onNavigateToTrace?: (traceId: string) => void
 }
 
-function statusTone(
-  status: VisualizationSpan['status'],
-): 'accent' | 'alert' | 'ink' {
-  if (status === 'ok') return 'accent'
-  if (status === 'error') return 'alert'
-  return 'ink'
+/** A small count beside a tab label. */
+function TabCount({ count }: { count: number }) {
+  if (count <= 0) return null
+  return (
+    <span className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-md bg-muted px-1 font-mono text-[11px] font-medium text-muted-foreground tabular-nums">
+      {count}
+    </span>
+  )
+}
+
+/** One fact in the header's meta row. */
+function Meta({
+  label,
+  value,
+  tone,
+}: {
+  label: string
+  value: string
+  tone?: 'alert' | 'ok'
+}) {
+  return (
+    <span className="inline-flex items-baseline gap-1 whitespace-nowrap">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          'font-mono text-xs text-foreground tabular-nums',
+          tone === 'alert' && 'text-alert-strong',
+          tone === 'ok' && 'text-ok',
+        )}
+      >
+        {value}
+      </span>
+    </span>
+  )
 }
 
 export function SpanPanel({
@@ -110,184 +144,165 @@ export function SpanPanel({
   const eventCount = span.events?.length || 0
   const linkCount = span.links?.length || 0
   const worker = getWorkerName(span)
-  const tone = statusTone(span.status)
+  const color = getWorkerColor(worker)
+  const title = formatSpanLabel(span)
+  const childCount = traceContext?.childSpans.length ?? 0
 
   return (
     <div
-      className="h-full bg-panel-raised overflow-hidden flex flex-col"
+      className="flex h-full flex-col overflow-hidden bg-card font-inter"
       data-span-panel
       data-span-id={span.span_id}
       data-span-name={span.name}
     >
-      {/* Header strip */}
-      <div className="flex-shrink-0 border-b border-rule-2">
-        {/* Row 1: worker badge + span name + close */}
-        <div className="flex items-center gap-2 px-4 pt-3 pb-1.5">
-          <span className="px-1.5 py-0.5 font-mono text-[11px] flex-shrink-0 rounded-xs bg-surface text-ink-faint">
-            {worker}
-          </span>
-          <h2
-            className="font-mono text-[13px] font-semibold text-ink leading-tight truncate flex-1 min-w-0"
-            title={span.name}
-          >
-            {span.name}
-          </h2>
-          <Button
-            variant="icon"
-            size="icon"
-            onClick={onClose}
-            aria-label="close panel (esc)"
-            title="close (esc)"
-          >
-            <X className="size-4" />
-          </Button>
+      {/* Header: identity, then the facts, then the way up. */}
+      <div className="shrink-0 border-b border-border px-4 pt-3 pb-3">
+        <div className="flex items-start gap-2">
+          <span
+            aria-hidden
+            className="mt-1 size-2 shrink-0 rounded-full"
+            style={{
+              backgroundColor: hasError ? 'var(--color-trace-error)' : color,
+            }}
+          />
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <h2
+              className="truncate font-mono text-[13px] font-semibold leading-5 text-foreground"
+              title={span.name}
+            >
+              {title}
+            </h2>
+            <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="truncate">{worker}</span>
+              <span aria-hidden>·</span>
+              <Hint label="Copy span id">
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard('spanId', span.span_id)}
+                  className="group/id inline-flex shrink-0 items-center gap-1 rounded-sm font-mono tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  aria-label="copy span id"
+                >
+                  {span.span_id.slice(0, 12)}
+                  {copiedField === 'spanId' ? (
+                    <Check className="size-4 text-ok" aria-hidden />
+                  ) : (
+                    <Copy
+                      className="size-4 opacity-0 transition-opacity group-hover/id:opacity-100 group-focus-visible/id:opacity-100"
+                      aria-hidden
+                    />
+                  )}
+                </button>
+              </Hint>
+            </div>
+          </div>
+          <Hint label="Close (Esc)">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={onClose}
+              aria-label="close panel (esc)"
+              className="-mt-0.5 -mr-1.5"
+            >
+              <X />
+            </Button>
+          </Hint>
         </div>
 
-        {/* Row 2: span ID + quick stats */}
-        <div className="flex items-center gap-2 px-4 pb-2.5 flex-wrap">
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <Meta
+            label="status"
+            value={span.pending ? 'running' : span.status}
+            tone={hasError ? 'alert' : span.status === 'ok' ? 'ok' : undefined}
+          />
+          <Meta label="duration" value={formatDuration(span.duration_ms)} />
+          {traceContext && childCount > 0 ? (
+            <Meta label="self" value={formatDuration(traceContext.selfTime)} />
+          ) : null}
+          <Meta label="depth" value={String(span.depth)} />
+          {childCount > 0 ? (
+            <Meta label="children" value={String(childCount)} />
+          ) : null}
+        </div>
+
+        {traceContext?.parentSpan ? (
           <button
             type="button"
-            onClick={() => copyToClipboard('spanId', span.span_id)}
-            className="flex items-center gap-1 font-mono text-[11px] text-ink-faint hover:text-ink transition-colors group tabular-nums"
+            onClick={() =>
+              traceContext.parentSpan &&
+              onNavigateToSpan(traceContext.parentSpan)
+            }
+            className="group/parent mt-2.5 flex h-8 w-full items-center gap-1.5 rounded-md border border-border px-2 text-left text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            title="open the parent span"
           >
-            <span>{span.span_id.slice(0, 12)}</span>
-            {copiedField === 'spanId' ? (
-              <Eyebrow className="text-accent">copied</Eyebrow>
-            ) : (
-              <Copy className="size-4 opacity-0 group-hover:opacity-100 transition-opacity" />
-            )}
+            <ArrowUp
+              className="size-4 shrink-0 text-muted-foreground transition-colors group-hover/parent:text-foreground"
+              aria-hidden
+            />
+            <span className="shrink-0 text-muted-foreground">parent</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-foreground">
+              {formatSpanLabel(traceContext.parentSpan)}
+            </span>
+            <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
+              {formatDuration(traceContext.parentSpan.duration_ms)}
+            </span>
           </button>
-
-          <span aria-hidden className="w-px h-3 bg-edge" />
-
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-            <Clock className="size-4 text-accent" />
-            <span className="font-mono text-[11px] font-semibold text-accent tabular-nums">
-              {formatDuration(span.duration_ms)}
-            </span>
-          </span>
-
-          {traceContext && traceContext.childSpans.length > 0 && (
-            <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-              <Zap className="size-4 text-ink-faint" />
-              <span className="font-mono text-[11px] text-ink-faint tabular-nums">
-                self {formatDuration(traceContext.selfTime)}
-              </span>
-            </span>
-          )}
-
-          <span
-            className={cn(
-              'flex items-center gap-1 px-2 py-0.5 rounded-xs',
-              span.status === 'error' ? 'bg-alert-muted' : 'bg-surface',
-            )}
-          >
-            <StatusDot tone={tone} />
-            <span
-              className={cn(
-                'font-mono text-[11px]',
-                span.status === 'error' ? 'text-alert' : 'text-ink-faint',
-              )}
-            >
-              {span.status}
-            </span>
-          </span>
-
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-            <Layers className="size-4 text-ink-faint" />
-            <span className="font-mono text-[11px] text-ink-faint tabular-nums">
-              d:{span.depth}
-            </span>
-          </span>
-
-          {traceContext && traceContext.childSpans.length > 0 && (
-            <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-              <span className="font-mono text-[11px] text-ink-faint tabular-nums">
-                {traceContext.childSpans.length} child
-                {traceContext.childSpans.length !== 1 ? 'ren' : ''}
-              </span>
-            </span>
-          )}
-        </div>
-
-        {/* Parent span navigation */}
-        {traceContext?.parentSpan && (
-          <div className="px-4 pb-2.5">
-            <button
-              type="button"
-              onClick={() =>
-                traceContext.parentSpan &&
-                onNavigateToSpan(traceContext.parentSpan)
-              }
-              className="flex items-center gap-1.5 w-full px-2.5 py-1.5 rounded-sm bg-surface hover:bg-surface-hover transition-colors group text-left"
-            >
-              <ArrowUp className="size-4 text-ink-faint group-hover:text-accent transition-colors flex-shrink-0" />
-              <span className="font-mono text-[11px] text-ink-faint flex-shrink-0">
-                parent
-              </span>
-              <span className="font-mono text-[11px] text-ink truncate group-hover:text-ink transition-colors">
-                {traceContext.parentSpan.name}
-              </span>
-              <span className="font-mono text-[11px] text-ink-ghost ml-auto flex-shrink-0 tabular-nums">
-                {formatDuration(traceContext.parentSpan.duration_ms)}
-              </span>
-            </button>
-          </div>
-        )}
+        ) : null}
       </div>
 
       {/* Tabbed content.
         Intentionally not keyed on span_id so the active tab persists when the
         user navigates between spans. */}
-      <div className="flex-1 overflow-hidden min-h-0">
+      <div className="min-h-0 flex-1 overflow-hidden">
         <Tabs
           defaultValue={hasError ? 'errors' : 'info'}
-          className="h-full flex flex-col"
+          className="flex h-full flex-col gap-0"
         >
-          <TabsList className="px-4 pt-2 pb-0 bg-transparent">
-            <TabsTrigger value="info">Info</TabsTrigger>
-            <TabsTrigger value="tags">
-              Attributes
-              {attrCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
-                  {attrCount}
-                </span>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="logs">
-              Events
-              {eventCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
-                  {eventCount}
-                </span>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="errors">
-              Errors
-              {hasError && (
-                <span className="ml-1 w-1.5 h-1.5 bg-alert rounded-full inline-block" />
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="otel-logs">
-              Logs
-              {logCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
-                  {logCount}
-                </span>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="baggage">Context</TabsTrigger>
-            {linkCount > 0 && (
-              <TabsTrigger value="links">
-                Links
-                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
-                  {linkCount}
-                </span>
+          <div className="shrink-0 overflow-x-auto border-b border-border px-4 no-scrollbar">
+            <TabsList
+              variant="line"
+              className="h-9 w-max min-w-full justify-start gap-3 p-0"
+            >
+              <TabsTrigger value="info" className="flex-none px-0 text-xs">
+                Info
               </TabsTrigger>
-            )}
-          </TabsList>
+              <TabsTrigger value="tags" className="flex-none px-0 text-xs">
+                Attributes
+                <TabCount count={attrCount} />
+              </TabsTrigger>
+              <TabsTrigger value="logs" className="flex-none px-0 text-xs">
+                Events
+                <TabCount count={eventCount} />
+              </TabsTrigger>
+              <TabsTrigger value="errors" className="flex-none px-0 text-xs">
+                Errors
+                {hasError ? (
+                  <>
+                    <span
+                      aria-hidden
+                      className="ml-1 inline-block size-1.5 rounded-full bg-alert"
+                    />
+                    <span className="sr-only">this span failed</span>
+                  </>
+                ) : null}
+              </TabsTrigger>
+              <TabsTrigger value="otel-logs" className="flex-none px-0 text-xs">
+                Logs
+                <TabCount count={logCount} />
+              </TabsTrigger>
+              <TabsTrigger value="baggage" className="flex-none px-0 text-xs">
+                Context
+              </TabsTrigger>
+              {linkCount > 0 ? (
+                <TabsTrigger value="links" className="flex-none px-0 text-xs">
+                  Links
+                  <TabCount count={linkCount} />
+                </TabsTrigger>
+              ) : null}
+            </TabsList>
+          </div>
 
-          <div className="flex-1 overflow-y-auto min-h-0">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <TabsContent value="info" className="mt-0">
               <SpanInfoTab span={span} traceData={traceData} />
             </TabsContent>

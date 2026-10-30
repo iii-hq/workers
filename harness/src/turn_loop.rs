@@ -398,6 +398,7 @@ async fn sync_skills(
             record.skill_ack = Some(crate::types::turn::SkillAck {
                 generation,
                 fingerprint: Some(crate::skills::fingerprint(baseline)),
+                ids: crate::skills::listed_ids(baseline),
             });
         }
     }
@@ -4799,6 +4800,7 @@ mod tests {
             SkillAck {
                 generation: 2,
                 fingerprint: Some("sha256:b".into()),
+                ids: None,
             },
         )
         .await
@@ -4815,6 +4817,7 @@ mod tests {
             SkillAck {
                 generation: 3,
                 fingerprint: Some("sha256:c".into()),
+                ids: None,
             },
         )
         .await
@@ -4828,7 +4831,8 @@ mod tests {
             ack,
             Some(SkillAck {
                 generation: 3,
-                fingerprint: Some("sha256:c".into())
+                fingerprint: Some("sha256:c".into()),
+                ids: None,
             })
         );
     }
@@ -4845,6 +4849,7 @@ mod tests {
         let mut ack = Some(SkillAck {
             generation: 2,
             fingerprint: Some("sha256:b".into()),
+            ids: None,
         });
 
         let result = super::persist_skill_correction(
@@ -4856,6 +4861,7 @@ mod tests {
             SkillAck {
                 generation: 3,
                 fingerprint: Some("sha256:c".into()),
+                ids: None,
             },
         )
         .await;

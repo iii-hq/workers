@@ -53,6 +53,12 @@ export function stringAt(value: JsonValue | undefined, path: readonly string[], 
   return typeof found === 'string' ? found : fallback
 }
 
+/** Read a boolean setting; anything that is not a boolean uses the caller's fallback. */
+export function booleanAt(value: JsonValue | undefined, path: readonly string[], fallback: boolean): boolean {
+  const found = getPath(value, path)
+  return typeof found === 'boolean' ? found : fallback
+}
+
 /** Read a finite numeric setting; malformed and non-finite values use the caller's fallback. */
 export function numberAt(value: JsonValue | undefined, path: readonly string[], fallback: number): number {
   const found = getPath(value, path)
@@ -84,6 +90,9 @@ export const DEFAULTS = {
   silenceAfterSpeech: 0.8,
   silenceWithoutSpeech: 2.4,
   maxUtterance: 20,
+  cleanupEnabled: true,
+  cleanupTimeoutMs: 12000,
+  chatControls: false,
   whisperCppCommand: 'whisper-cli',
   whisperCppModel: 'whisper-large-v3-turbo',
   whisperCppLanguage: 'auto',

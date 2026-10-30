@@ -1,40 +1,38 @@
 import { Check } from 'lucide-react'
 import type { ComponentProps, InputHTMLAttributes, ReactNode } from 'react'
-import { Button as SharedButton } from '@/components/ui/Button'
+import { Button as SharedButton } from '@/components/shadcn/button'
 import { cn } from '@/lib/utils'
 
 type SetupButtonVariant = 'primary' | 'outline' | 'ghost'
 
+const VARIANT = {
+  primary: 'default',
+  outline: 'secondary',
+  ghost: 'ghost',
+} as const
+
 /**
- * Setup's three pill buttons on the shared base: `primary` (solid ink) for
- * the one action that moves on, `outline` (a soft neutral fill, no stroke)
- * for going back, `ghost` for skipping. All three share one 36px height, a
- * semibold label, a focus ring with an offset so it reads on the solid
- * primary too, and a 0.96 press.
+ * Setup's buttons are the shared shadcn Button: `primary` for the one
+ * action that moves on, `outline` (the shared secondary) for going back,
+ * `ghost` for skipping. Setup sits on the 36px `lg` step; `sm` drops to the
+ * shared default.
  */
 export function Button({
   className,
   variant = 'primary',
   size,
   ...props
-}: Omit<ComponentProps<typeof SharedButton>, 'variant'> & {
+}: Omit<ComponentProps<typeof SharedButton>, 'variant' | 'size'> & {
   variant?: SetupButtonVariant
+  size?: 'sm'
 }) {
   return (
     <SharedButton
       {...props}
-      variant={variant === 'primary' ? 'primary' : 'ghost'}
-      size={size}
+      variant={VARIANT[variant]}
+      size={size === 'sm' ? 'default' : 'lg'}
       className={cn(
-        'h-9 rounded-xl px-6 text-[13px] font-semibold tracking-[-0.005em] transition-[background-color,color,border-color,transform] duration-150 ease-[var(--motion-ease-standard)] active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white motion-reduce:active:scale-100 dark:focus-visible:ring-offset-neutral-950',
-        size === 'sm' && 'h-8 px-3 text-xs',
-        // Fills step through the console's surface ramp so a hover is the
-        // same one-step change in both themes, on any base.
-        variant === 'primary' && 'bg-ink text-bg hover:bg-ink/85',
-        variant === 'outline' &&
-          'bg-neutral-100 text-ink hover:bg-neutral-200 hover:text-ink dark:bg-neutral-800 dark:hover:bg-neutral-700',
-        variant === 'ghost' &&
-          'px-4 text-ink-faint hover:bg-surface-hover hover:text-ink',
+        variant === 'ghost' && 'text-ink-faint hover:text-ink',
         className,
       )}
     />

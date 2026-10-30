@@ -8,21 +8,30 @@ import {
   Clock,
   Copy,
   EllipsisVertical,
+  History,
   Layers,
+  MessageSquareOff,
   MessageSquareQuote,
   MessagesSquare,
+  Timer,
   Trash2,
+  Wrench,
   X,
 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { Badge } from '@/components/shadcn/badge'
+import { Button } from '@/components/shadcn/button'
+import { Tabs, TabsList, TabsTrigger } from '@/components/shadcn/tabs'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/shadcn/tooltip'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
-import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
-import { EmptyState } from '@/components/ui/EmptyState'
-import { Eyebrow } from '@/components/ui/Eyebrow'
+import { Hint } from '@/components/ui/Hint'
 import { IconButton } from '@/components/ui/IconButton'
-import { SegmentedControl } from '@/components/ui/ModeToggle'
 import { PageSidebar } from '@/components/ui/PageChrome'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -40,6 +49,7 @@ import {
   findSideChat,
   folderGh,
   githubWorkerGh,
+  isSideChat,
   lastSpokenEntry,
   SIDE_CHAT_KEY,
   SIDE_CHAT_QUOTES_KEY,
@@ -86,6 +96,19 @@ const AUTO_FIX_EVERY_MS = 90_000
 /** When a side chat ends on its own (ChatPanel runs the rules). */
 const SIDE_CHAT_LIFETIME =
   'Deleted after 2 hours unused, when every ADE tab closes, or with this chat.'
+
+/** A panel tab: the header's full height, a 2px ink rule under the chosen
+ *  one on the header's bottom edge, quiet otherwise. The weight never
+ *  changes between states, so switching tabs shifts nothing. */
+const ASIDE_TAB =
+  'h-full flex-none gap-1.5 rounded-none px-2 text-[13px] font-medium text-muted-foreground hover:text-foreground data-active:text-foreground data-active:shadow-none group-data-horizontal/tabs:after:bottom-0 group-data-horizontal/tabs:after:h-0.5 dark:data-active:border-transparent dark:data-active:bg-transparent'
+
+function clockTime(at: number): string {
+  return new Date(at).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
 
 function readStoredTab(): AsideTab {
   try {
@@ -218,6 +241,15 @@ export function ChatAside({
     if (forkRef.current) return forkRef.current.id
     if (forkIdRef.current) return forkIdRef.current
     if (forkingRef.current) return forkingRef.current
+    // A side chat of a side chat is never wanted, and a loop that forks the
+    // fork would fill the session list: refuse outright.
+    if (
+      isSideChat(conversation) ||
+      (conversation.title ?? '').startsWith('Side chat · ')
+    ) {
+      setForkError('This is already a side chat. Ask in it directly.')
+      return null
+    }
     const run = (async () => {
       setForking(true)
       setForkError(null)
@@ -239,7 +271,12 @@ export function ChatAside({
         const point = lastSpokenEntry(
           (await tail(conversation.id, 20))?.messages ?? [],
         )
-        if (!point) return null
+        if (!point) {
+          setForkError(
+            'A side chat sees the conversation up to now, and this one has no messages yet. Send one in the chat first.',
+          )
+          return null
+        }
         const forked = await client.call<{
           session_id: string
           meta: SessionMeta
@@ -449,43 +486,40 @@ export function ChatAside({
     seen.id === loadedForkId &&
     replies > seen.count
 
+  // On a phone the clock says what the dropped "Temporary" row did.
+  const SideChatIcon = phone ? Clock : MessagesSquare
   const tabs = (
-    <SegmentedControl<AsideTab>
-      aria-label="Side panel"
+    <Tabs
       value={tab}
-      onChange={show}
-      className="min-w-0 flex-1"
-      options={[
-        {
-          value: 'context',
-          label: 'Context',
-          icon: <Layers aria-hidden className="size-4" />,
-        },
-        {
-          value: 'side-chat',
-          // A reply that landed while the Context tab was up.
-          label: unread ? (
+      onValueChange={(next) => show(next as AsideTab)}
+      className="min-w-0 flex-1 self-stretch font-inter"
+    >
+      <TabsList
+        variant="line"
+        aria-label="Side panel"
+        className="w-full justify-start gap-1 p-0 group-data-horizontal/tabs:h-full"
+      >
+        <TabsTrigger value="context" className={ASIDE_TAB}>
+          <Layers aria-hidden className="size-4" />
+          Context
+        </TabsTrigger>
+        <TabsTrigger value="side-chat" className={ASIDE_TAB}>
+          <SideChatIcon aria-hidden className="size-4" />
+          Side chat
+          {/* A reply that landed while the Context tab was up. */}
+          {unread ? (
             <>
-              Side chat
               <span
                 aria-hidden
                 data-side-chat-unread=""
-                className="inline-block size-1.5 rounded-full bg-accent"
+                className="inline-block size-1.5 rounded-full bg-foreground"
               />
               <span className="sr-only">, new reply</span>
             </>
-          ) : (
-            'Side chat'
-          ),
-          // On a phone the clock says what the dropped "Temporary" row did.
-          icon: phone ? (
-            <Clock aria-hidden className="size-4" />
-          ) : (
-            <MessagesSquare aria-hidden className="size-4" />
-          ),
-        },
-      ]}
-    />
+          ) : null}
+        </TabsTrigger>
+      </TabsList>
+    </Tabs>
   )
 
   const sectionIds = useContextSections().map((section) => section.id)
@@ -564,37 +598,16 @@ export function ChatAside({
         {fork ? (
           <>
             {phone ? null : (
-              <div className="flex h-8 shrink-0 items-center gap-1.5 pr-2 pl-4 text-[12px] text-ink-faint">
-                <Clock aria-hidden className="size-4 shrink-0" />
-                <span title={SIDE_CHAT_LIFETIME}>Temporary</span>
-                <span className="min-w-0 truncate text-ink-ghost">
-                  · sees the chat up to{' '}
-                  <span className="font-mono text-[11px] tabular-nums">
-                    {new Date(since).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </span>
-                </span>
-                <span className="flex-1" />
-                <IconButton
-                  label="Keep as conversation"
-                  disabled={keeping}
-                  onClick={() => void keep()}
-                >
-                  <BookmarkPlus aria-hidden />
-                </IconButton>
-                <IconButton
-                  label="Discard side chat"
-                  onClick={() =>
-                    own.some((message) => message.role === 'user')
-                      ? setConfirmDiscard(true)
-                      : discard()
-                  }
-                >
-                  <Trash2 aria-hidden />
-                </IconButton>
-              </div>
+              <SideChatBar
+                since={since}
+                keeping={keeping}
+                onKeep={() => void keep()}
+                onDiscard={() =>
+                  own.some((message) => message.role === 'user')
+                    ? setConfirmDiscard(true)
+                    : discard()
+                }
+              />
             )}
             <ChatView
               key={`${fork.id}:${composerKey}`}
@@ -602,7 +615,7 @@ export function ChatAside({
               side={{
                 since,
                 fromEntry: from,
-                empty: <SideChatHint />,
+                empty: <SideChatIntro since={since} />,
                 autoFocus: focusSide,
                 quote: pendingQuote,
                 onRemoveQuote: () => onPendingQuoteChange(null),
@@ -627,11 +640,6 @@ export function ChatAside({
               onPatchMessage={ctx.updateMessage}
               onCompactConversation={ctx.compactConversation}
             />
-            {phone ? null : (
-              <p className="shrink-0 px-4 pb-3 text-[11px] leading-4 text-ink-ghost">
-                {SIDE_CHAT_LIFETIME}
-              </p>
-            )}
           </>
         ) : forking || forkPending ? (
           <div className="flex flex-col gap-2 px-4 py-3" aria-busy="true">
@@ -656,8 +664,8 @@ export function ChatAside({
             }
           />
         ) : (
-          <div className="flex flex-1 flex-col justify-center px-4">
-            <SideChatHint
+          <div className="flex flex-1 flex-col overflow-y-auto px-3 pt-3 pb-4">
+            <SideChatIntro
               action={{
                 label: 'Start side chat',
                 onClick: () => void ensureFork(),
@@ -709,6 +717,10 @@ export function ChatAside({
     <PageSidebar
       label="Side panel"
       side={side}
+      // A hairline where the panel meets the chat, on the edge it shares.
+      className={
+        side === 'left' ? 'border-r border-edge' : 'border-l border-edge'
+      }
       storageKey="console:chat:aside"
       defaultWidth={340}
       minWidth={280}
@@ -761,18 +773,157 @@ export function ChatAside({
   )
 }
 
-function SideChatHint({
-  action,
+/**
+ * The desktop side chat's top strip: what this chat is (temporary, with the
+ * lifetime behind the badge), how far back it sees, and Keep / Discard.
+ */
+function SideChatBar({
+  since,
+  keeping,
+  onKeep,
+  onDiscard,
 }: {
-  action?: { label: string; onClick: () => void }
+  since: number
+  keeping: boolean
+  onKeep: () => void
+  onDiscard: () => void
 }) {
   return (
-    <EmptyState
-      icon={MessagesSquare}
-      title="Ask on the side"
-      description="Sees this conversation up to now and has the same tools. Nothing here lands in the main chat."
-      action={action}
-    />
+    <div
+      className="flex h-10 shrink-0 items-center gap-2 border-b border-edge pr-1.5 pl-3 font-inter"
+      data-side-chat-bar=""
+    >
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Badge
+              variant="outline"
+              render={<button type="button" />}
+              className="h-6 cursor-default gap-1.5 rounded-md px-1.5 text-xs text-foreground [&>svg]:size-4!"
+            />
+          }
+        >
+          <Clock aria-hidden />
+          Temporary
+        </TooltipTrigger>
+        <TooltipContent align="start">{SIDE_CHAT_LIFETIME}</TooltipContent>
+      </Tooltip>
+      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+        Sees up to{' '}
+        <time
+          dateTime={new Date(since).toISOString()}
+          className="font-geist-mono tabular-nums text-foreground"
+        >
+          {clockTime(since)}
+        </time>
+      </span>
+      <Hint label="Keep as conversation">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Keep as conversation"
+          className="text-muted-foreground"
+          disabled={keeping}
+          onClick={onKeep}
+        >
+          <BookmarkPlus aria-hidden />
+        </Button>
+      </Hint>
+      <Hint label="Discard side chat">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Discard side chat"
+          className="text-muted-foreground hover:text-destructive"
+          onClick={onDiscard}
+        >
+          <Trash2 aria-hidden />
+        </Button>
+      </Hint>
+    </div>
+  )
+}
+
+/**
+ * What a side chat is, where its transcript would be. With `action`, the
+ * chat has not started yet and the card's footer starts it; with `since`,
+ * the first fact says how far back it sees.
+ */
+function SideChatIntro({
+  since,
+  action,
+}: {
+  since?: number
+  action?: { label: string; onClick: () => void }
+}) {
+  const facts: { icon: typeof History; label: string; value: string }[] = [
+    {
+      icon: History,
+      label: 'Context',
+      value:
+        since === undefined
+          ? 'This chat, up to now'
+          : `This chat, up to ${clockTime(since)}`,
+    },
+    { icon: Wrench, label: 'Tools', value: 'Same tools and approvals' },
+    {
+      icon: MessageSquareOff,
+      label: 'Main chat',
+      value: 'Nothing lands there',
+    },
+    {
+      icon: Timer,
+      label: 'Lifetime',
+      value: '2 hours unused, or with this chat',
+    },
+  ]
+  return (
+    <section
+      aria-labelledby="side-chat-intro-title"
+      data-side-chat-intro=""
+      className="mx-auto flex w-full max-w-[26rem] flex-col items-center px-1 pt-6 pb-2 text-center font-inter"
+    >
+      {/* A quiet tile: a hairline ring over a faint wash, no fill to shout. */}
+      <span
+        aria-hidden
+        className="flex size-10 items-center justify-center rounded-lg bg-gradient-to-b from-foreground/[0.07] to-foreground/[0.02] text-foreground ring-1 ring-foreground/10"
+      >
+        <MessagesSquare className="size-5" />
+      </span>
+      <h2
+        id="side-chat-intro-title"
+        className="mt-4 text-[15px] font-medium tracking-[-0.01em] text-foreground"
+      >
+        Ask on the side
+      </h2>
+      <p className="mt-1.5 text-sm text-balance text-muted-foreground">
+        A scratch chat beside this one, for the question you don't want in the
+        main thread.
+      </p>
+      <dl className="mt-5 w-full divide-y divide-foreground/[0.07] rounded-xl bg-card text-left ring-1 ring-foreground/10">
+        {facts.map(({ icon: Icon, label, value }) => (
+          <div key={label} className="flex items-center gap-3 px-3.5 py-2.5">
+            <dt className="flex w-24 shrink-0 items-center gap-2 text-xs font-medium text-muted-foreground">
+              <Icon aria-hidden className="size-4 shrink-0" />
+              {label}
+            </dt>
+            <dd className="min-w-0 flex-1 truncate text-sm text-foreground">
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {action ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          className="mt-5"
+          onClick={action.onClick}
+        >
+          {action.label}
+        </Button>
+      ) : null}
+    </section>
   )
 }
 
@@ -790,15 +941,15 @@ export function QuoteChip({
   if (compact) {
     return (
       <div
-        className="flex h-10 items-center gap-2 bg-surface pl-3"
+        className="flex h-10 items-center gap-2 border-b border-edge bg-muted/40 pl-3 font-inter"
         data-side-chat-quote=""
       >
         <MessageSquareQuote
           aria-hidden
-          className="size-4 shrink-0 text-ink-ghost"
+          className="size-4 shrink-0 text-muted-foreground"
         />
         <span className="sr-only">Quoted · {quote.agent || 'Agent'}: </span>
-        <span className="min-w-0 flex-1 truncate text-[13px] text-ink-faint">
+        <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
           {quote.text}
         </span>
         {onRemove ? (
@@ -815,25 +966,31 @@ export function QuoteChip({
   }
   return (
     <div
-      className="flex items-start gap-2 bg-surface px-3 py-2"
+      className="flex items-start gap-2 border-b border-edge bg-muted/40 py-2 pr-1.5 pl-3 font-inter"
       data-side-chat-quote=""
     >
+      <MessageSquareQuote
+        aria-hidden
+        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+      />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <Eyebrow className="text-ink-ghost">
+        <span className="text-xs font-medium text-muted-foreground">
           Quoted · {quote.agent || 'Agent'}
-        </Eyebrow>
-        <span className="line-clamp-2 text-[12px] leading-[18px] text-ink-faint">
+        </span>
+        <span className="line-clamp-2 text-[13px] leading-[18px] text-foreground">
           {quote.text}
         </span>
       </div>
       {onRemove ? (
-        <IconButton
-          label="Remove quote"
-          className="shrink-0"
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Remove quote"
+          className="-my-0.5 shrink-0 text-muted-foreground"
           onClick={onRemove}
         >
           <X aria-hidden />
-        </IconButton>
+        </Button>
       ) : null}
     </div>
   )
@@ -1082,12 +1239,7 @@ function SideChatOptions({
       <BottomSheet open={open} onOpenChange={setOpen}>
         <BottomSheetContent
           heading="Temporary side chat"
-          description={`Sees the chat up to ${new Date(
-            since,
-          ).toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit',
-          })}. ${SIDE_CHAT_LIFETIME}`}
+          description={`Sees the chat up to ${clockTime(since)}. ${SIDE_CHAT_LIFETIME}`}
           className="mx-auto max-w-[460px] font-sans"
         >
           <div className="flex flex-col gap-1 px-2 pb-1">

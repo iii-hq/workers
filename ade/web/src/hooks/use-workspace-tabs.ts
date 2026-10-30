@@ -31,6 +31,7 @@ import {
 } from '@/hooks/lib/workspace-layout-writer'
 import { getIiiClient } from '@/lib/iii-client'
 import { moveItem } from '@/lib/reorder'
+import { canCreateTab, DEFAULT_TAB_LIMIT } from '@/lib/tab-limit'
 import type { WorkspaceLayoutValue } from '@/lib/workspace-layout'
 import {
   adjacentTabId,
@@ -53,8 +54,10 @@ import {
   type WorkspaceTab,
   withActiveTabId,
   withColumnAdded,
+  withOnlyPane,
   withPaneMoved,
   withPaneRemoved,
+  withPaneSplit,
   withScreenDetached,
   withTabClosed,
   withTabSizes,
@@ -212,7 +215,14 @@ export interface UseWorkspaceTabsReturn {
   activeTabId: string
   activeTab: WorkspaceTab
   activateTab: (id: string) => void
-  /** New tab with the chosen column count and (optionally) screens. */
+  /** The configured ceiling on open tabs (`tabs.limit` in the console
+      configuration entry; `DEFAULT_TAB_LIMIT` when it says nothing). */
+  tabLimit: number
+  /** Whether `createTab` would open one: false at the limit, where every
+      new-tab control disables. Tabs above a lowered limit stay as they are. */
+  canCreateTab: boolean
+  /** New tab with the chosen column count and (optionally) screens. A
+      no-op at the limit. */
   createTab: (opts: { columns: 1 | 2; screens?: TabScreen[] }) => void
   closeTab: (id: string) => void
   renameTab: (id: string, name: string) => void
@@ -224,10 +234,14 @@ export interface UseWorkspaceTabsReturn {
   attachScreen: (id: string, column: number, screen: TabScreen) => void
   /** Blank a column's screen (column stays, shows the attach affordance). */
   detachScreen: (id: string, column: number) => void
-  /** Grow the tab by one empty column on that side (up to the safety ceiling). */
-  addColumn: (id: string, side: 'left' | 'right') => void
+  /** Grow the tab by one column on that side (up to the safety ceiling):
+      at the tab's edge, or right beside `beside.paneId` (taking half its
+      width), empty or showing `beside.screen`. */
+  addColumn: (id: string, side: 'left' | 'right', beside?: SplitTarget) => void
   /** Drop one pane by stable identity (the last one never goes). */
   removeColumn: (id: string, paneId: string) => void
+  /** Drop every pane of the tab but `paneId`, which then fills it. */
+  keepOnlyPane: (id: string, paneId: string) => void
   /** Move one pane to another pane's position inside a tab. */
   reorderPanel: (id: string, paneId: string, targetPaneId: string) => void
   /** Persist drag-to-resize column fractions (index-aligned). */
@@ -242,7 +256,21 @@ export interface UseWorkspaceTabsReturn {
   ) => void
 }
 
-export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
+/** The pane a split starts from, and what the new column shows. */
+export interface SplitTarget {
+  paneId: string
+  /** Absent or null: an empty column with the attach affordance. */
+  screen?: TabScreen | null
+}
+
+export interface UseWorkspaceTabsOptions {
+  /** Open-tab ceiling; the caller reads it from configuration (`useTabLimit`). */
+  tabLimit?: number
+}
+
+export function useWorkspaceTabs({
+  tabLimit = DEFAULT_TAB_LIMIT,
+}: UseWorkspaceTabsOptions = {}): UseWorkspaceTabsReturn {
   const qc = useQueryClient()
   const writer = workspaceLayoutWriter(qc)
 
@@ -427,8 +455,14 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     [activateTab, activeTabId, tabs],
   )
 
+  const canCreate = canCreateTab(tabs.length, tabLimit)
+
   const createTab = useCallback(
     (opts: { columns: 1 | 2; screens?: TabScreen[] }) => {
+      // Refused at the limit — and refused again inside the transform, so a
+      // write that lands on a strip another browser just filled stays a
+      // no-op instead of opening tab limit+1.
+      if (!canCreate) return
       const screens = (opts.screens ?? []).slice(0, opts.columns)
       const tab: WorkspaceTab = {
         id: newTabId(),
@@ -436,14 +470,15 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         screens,
       }
       choose(tab.id)
-      persist((state) => ({
-        tabs: state.tabs.some((existing) => existing.id === tab.id)
-          ? state.tabs
-          : [...state.tabs, tab],
-        activeTabId: tab.id,
-      }))
+      persist((state) => {
+        if (state.tabs.some((existing) => existing.id === tab.id)) {
+          return { ...state, activeTabId: tab.id }
+        }
+        if (!canCreateTab(state.tabs.length, tabLimit)) return state
+        return { tabs: [...state.tabs, tab], activeTabId: tab.id }
+      })
     },
-    [choose, persist],
+    [canCreate, choose, persist, tabLimit],
   )
 
   const closeTab = useCallback(
@@ -526,12 +561,19 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   )
 
   const addColumn = useCallback(
-    (id: string, side: 'left' | 'right') => {
+    (id: string, side: 'left' | 'right', beside?: SplitTarget) => {
       const stablePaneId = { current: null as string | null }
       persist((state) => ({
         ...state,
         tabs: state.tabs.map((tab) => {
           if (tab.id !== id) return tab
+          if (beside) {
+            return stabilizeAddedPane(
+              [tab],
+              [withPaneSplit(tab, beside.paneId, side, beside.screen ?? null)],
+              stablePaneId,
+            )[0]
+          }
           const next = withColumnAdded(tab, side)
           if (next === tab) return tab
           const paneIds = tabPaneIds(next)
@@ -540,6 +582,18 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
           paneIds[addedIndex] = stablePaneId.current
           return { ...next, paneIds }
         }),
+      }))
+    },
+    [persist],
+  )
+
+  const keepOnlyPane = useCallback(
+    (id: string, paneId: string) => {
+      persist((state) => ({
+        ...state,
+        tabs: state.tabs.map((tab) =>
+          tab.id === id ? withOnlyPane(tab, paneId) : tab,
+        ),
       }))
     },
     [persist],
@@ -653,6 +707,8 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     activeTabId,
     activeTab,
     activateTab,
+    tabLimit,
+    canCreateTab: canCreate,
     createTab,
     closeTab,
     renameTab,
@@ -662,6 +718,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     detachScreen,
     addColumn,
     removeColumn,
+    keepOnlyPane,
     reorderPanel,
     resizeColumns,
     openScreen,

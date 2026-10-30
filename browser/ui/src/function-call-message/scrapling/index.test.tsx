@@ -66,6 +66,30 @@ describe('scraping renderer', () => {
     expect(html).toContain('br-ui-open-in-browser')
   })
 
+  it('links the fetched url and colours links in markdown content', async () => {
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const renderer = createScraplingRenderer(host)
+    const done = {
+      functionId: 'browser::fetch',
+      input: { url: 'https://example.com', format: 'markdown' },
+      output: {
+        status: 200,
+        url: 'https://example.com/',
+        format: 'markdown',
+        content: '### Title\n[Docs](/docs) see https://x.dev/a.',
+      },
+      running: false,
+    } as unknown as FunctionTriggerMessage
+    const html = renderToStaticMarkup(<>{renderer.tryRender?.(done)}</>)
+    expect(html).toContain('href="https://example.com/"')
+    expect(html).toContain('target="_blank"')
+    expect(html).toContain('<span class="br-ui-md-mark">###</span>')
+    expect(html).toContain('<span class="br-ui-md-link">Docs</span>')
+    expect(html).toContain('<span class="br-ui-md-url">/docs</span>')
+    // a sentence-ending period stays outside the url
+    expect(html).toContain('<span class="br-ui-md-link">https://x.dev/a</span>.')
+  })
+
   it('renders approval previews and parse results', () => {
     const renderer = createScraplingRenderer(host)
     const preview = {

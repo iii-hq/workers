@@ -1,14 +1,59 @@
 /**
- * Tiny insert bus between non-chat surfaces and the active conversation's
- * composer. The Browser page publishes picked-element blocks here; the
- * composer's Lexical shell subscribes and appends the text. Inserts issued
- * while no composer is mounted (dock collapsed) are buffered and drained
- * the moment one subscribes, so a pick never disappears silently.
+ * Tiny insert bus between non-chat surfaces and a chat's composer. The
+ * Browser page publishes picked-element blocks here, the IDE a reference to
+ * the selected lines; the composer's Lexical shell subscribes and appends
+ * the text. Inserts issued while no composer is mounted (dock collapsed)
+ * are buffered and drained the moment one subscribes, so a pick never
+ * disappears silently.
+ *
+ * Several chats can be open side by side, so an insert is addressed to ONE
+ * composer, never all of them: the only one mounted, else the one used
+ * last (`composerTarget`). A caller that must not guess asks first
+ * (`mountedComposerCount`).
  */
+
+/** Chat composers that take outside input, by id: when each was last used
+ *  (0 = not yet), in the order they mounted. */
+const composers = new Map<string, number>()
+let usedClock = 0
+
+/** A chat composer that takes outside input is mounted; returns its removal. */
+export function registerComposer(id: string): () => void {
+  composers.set(id, 0)
+  return () => {
+    composers.delete(id)
+  }
+}
+
+/** The person put the caret in this composer: it is the one used last. */
+export function markComposerUsed(id: string): void {
+  if (composers.has(id)) composers.set(id, ++usedClock)
+}
+
+/** How many chat composers could take an insert right now. */
+export function mountedComposerCount(): number {
+  return composers.size
+}
+
+/** The composer an insert goes to: the only one, else the one used last,
+ *  else the first mounted; `null` while none is. */
+export function composerTarget(): string | null {
+  let target: string | null = null
+  let latest = -1
+  for (const [id, usedAt] of composers) {
+    if (usedAt > latest) {
+      target = id
+      latest = usedAt
+    }
+  }
+  return target
+}
 
 /** A bus that holds what it cannot deliver yet, and drains on subscribe.
  * The buffer is bounded: with no listener the oldest entries fall off, so
- * a page publishing into a never-opened composer cannot grow memory.
+ * a page publishing into a never-opened composer cannot grow memory. A
+ * value addressed to one composer reaches only that composer's listeners;
+ * one published while no composer is mounted goes to whoever comes next.
  *
  * The drain waits a microtask, so every listener a mounting composer adds
  * in the same effect flush (the editor shell's and the composer's own) gets
@@ -16,26 +61,47 @@
  * reach the editor as text and never reach the composer that sends it. */
 const PENDING_CAP = 16
 
+interface BusListener<T> {
+  /** The composer listening; absent = every value. */
+  composerId?: string
+  receive: (value: T) => void
+}
+
 function bufferedBus<T>() {
-  const listeners = new Set<(value: T) => void>()
+  const listeners = new Set<BusListener<T>>()
   let pending: T[] = []
   return {
-    publish(value: T): void {
-      if (listeners.size === 0) {
+    publish(value: T, target: string | null = composerTarget()): void {
+      const receivers = [...listeners].filter(
+        (listener) =>
+          target === null ||
+          listener.composerId === undefined ||
+          listener.composerId === target,
+      )
+      if (receivers.length === 0) {
         pending.push(value)
         if (pending.length > PENDING_CAP) pending.shift()
         return
       }
-      for (const listener of listeners) listener(value)
+      for (const listener of receivers) listener.receive(value)
     },
-    subscribe(listener: (value: T) => void): () => void {
+    subscribe(receive: (value: T) => void, composerId?: string): () => void {
+      const listener = { composerId, receive }
       listeners.add(listener)
       if (pending.length > 0) {
         queueMicrotask(() => {
-          if (listeners.size === 0) return
+          if (!listeners.has(listener) || pending.length === 0) return
           const drained = pending
           pending = []
-          for (const value of drained) for (const each of listeners) each(value)
+          // The mounting composer's listeners (and any unaddressed ones).
+          const receivers = [...listeners].filter(
+            (each) =>
+              each.composerId === undefined ||
+              composerId === undefined ||
+              each.composerId === composerId,
+          )
+          for (const value of drained)
+            for (const each of receivers) each.receive(value)
         })
       }
       return () => {
@@ -76,8 +142,12 @@ export function insertIntoComposer(
   })
 }
 
-export function onComposerInsert(listener: ComposerInsertListener): () => void {
-  return inserts.subscribe(listener)
+/** Listen for inserts; with `composerId`, only the ones addressed to it. */
+export function onComposerInsert(
+  listener: ComposerInsertListener,
+  composerId?: string,
+): () => void {
+  return inserts.subscribe(listener, composerId)
 }
 
 const draftSends = new Map<string, string>()
@@ -111,25 +181,40 @@ export function attachToComposer(files: File[]): void {
   attachments.publish(files)
 }
 
-export function onComposerAttach(listener: ComposerAttachListener): () => void {
-  return attachments.subscribe(listener)
+export function onComposerAttach(
+  listener: ComposerAttachListener,
+  composerId?: string,
+): () => void {
+  return attachments.subscribe(listener, composerId)
 }
 
 type ComposerFocusListener = () => void
 
-const focusListeners = new Set<ComposerFocusListener>()
+const focusListeners = new Set<BusListener<void>>()
 
-/** Ask the mounted composer for the caret. Unlike an insert this is not
-    buffered: a focus nobody is around to take is a focus nobody wanted. */
-export function requestComposerFocus(): void {
-  for (const listener of focusListeners) listener()
+/** Ask a mounted composer for the caret: `composerId`'s, else the one an
+    insert would go to. Unlike an insert this is not buffered: a focus
+    nobody is around to take is a focus nobody wanted. Callable with no
+    argument, so it can be handed to `requestAnimationFrame`. */
+export function requestComposerFocus(composerId?: unknown): void {
+  const target = typeof composerId === 'string' ? composerId : composerTarget()
+  for (const listener of focusListeners) {
+    if (
+      target === null ||
+      listener.composerId === undefined ||
+      listener.composerId === target
+    )
+      listener.receive()
+  }
 }
 
 export function onComposerFocusRequest(
   listener: ComposerFocusListener,
+  composerId?: string,
 ): () => void {
-  focusListeners.add(listener)
+  const entry = { composerId, receive: listener }
+  focusListeners.add(entry)
   return () => {
-    focusListeners.delete(listener)
+    focusListeners.delete(entry)
   }
 }

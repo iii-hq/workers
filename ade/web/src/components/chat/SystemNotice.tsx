@@ -4,32 +4,30 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  FileWarning,
   FolderInput,
   Gauge,
+  History,
   Hourglass,
   Info,
   KeyRound,
   type LucideIcon,
+  RotateCcw,
   ServerCrash,
   Settings2,
   TriangleAlert,
   Unplug,
   Wallet,
-  Wrench,
 } from 'lucide-react'
-import { useId, useState } from 'react'
+import { Fragment, useId, useState } from 'react'
 import { Chip, type ChipTone } from '@/components/ui/Chip'
 import {
   CollapsibleCard,
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
-import {
-  Card,
-  CardBody,
-  CardHeader,
-  CardHighlight,
-} from '@/components/ui/Surface'
+import { Fact, FactList } from '@/components/ui/FactCard'
+import { Card, CardHighlight } from '@/components/ui/Surface'
 import { rememberedProvider } from '@/lib/models-catalog'
 import { skillUpdateSummary } from '@/lib/skill-update'
 import {
@@ -46,6 +44,7 @@ import type {
 } from '@/types/chat'
 import { CopyMessageButton } from './CopyMessageButton'
 import { ModelNoteMarker } from './ModelNoteMarker'
+import { formatProviderLabel } from './model-picker-presentation'
 import { splitNotice } from './system-notice-copy'
 import {
   TimelineActivityDisclosure,
@@ -117,7 +116,7 @@ function InlineNotice({ message }: { message: SystemMessage }) {
       data-message-role="system-notice"
       data-message-tone={tone}
       className={cn(
-        'flex w-fit max-w-full min-w-0 items-start gap-3 rounded-md px-4 py-3 sm:px-3 sm:py-2.5',
+        'flex w-fit max-w-full min-w-0 items-start gap-3 rounded-xl px-4 py-3 sm:px-3 sm:py-2.5',
         fill,
       )}
     >
@@ -175,9 +174,15 @@ const OWNER_CHIP: Record<TurnFailureOwner, ChipTone> = {
 function TurnFailureCard({ message }: { message: SystemMessage }) {
   const titleId = useId()
   const details = message.technicalDetails
+  const known = details?.provider
+    ? rememberedProvider(details.provider)
+    : undefined
   const presentation = classifyTurnFailure(message, {
-    providerHint: details?.provider
-      ? rememberedProvider(details.provider)?.context_overflow_hint
+    providerHint: known?.context_overflow_hint,
+    providerName: details?.provider
+      ? (known?.display_name ??
+        formatProviderLabel(details.provider) ??
+        undefined)
       : undefined,
   })
   const failure = message.failure
@@ -186,18 +191,42 @@ function TurnFailureCard({ message }: { message: SystemMessage }) {
   // — the user's account or iii itself — is red.
   const severity: 'warn' | 'alert' =
     presentation.owner === 'environment' ? 'warn' : 'alert'
-  const rows = technicalRows(details)
+  // What the harness said in its own words sits with the raw error: the card
+  // leads with the plain-language title and sentence.
   const summary = failure?.summary ?? splitNotice(message.content).headline
-  const notes = [
+  const rows: TechnicalRow[] = [
+    ...(summary ? [['Message', summary] as TechnicalRow] : []),
+    ...technicalRows(details),
+  ]
+  const attempts = failure?.recoveryAttempted
+  const maxAttempts = failure?.recoveryMaxAttempts ?? attempts
+  // What else is true about the turn, as short facts under the explanation.
+  const facts: Array<{ key: string; Icon: LucideIcon; text: string }> = [
+    attempts
+      ? {
+          key: 'retried',
+          Icon: History,
+          text: `Already retried automatically ${attempts} of ${maxAttempts} ${
+            attempts === 1 && maxAttempts === 1 ? 'time' : 'times'
+          }.`,
+        }
+      : null,
     failure?.partialResultAvailable
-      ? 'The partial response above was kept as evidence; treat it as incomplete.'
+      ? {
+          key: 'partial',
+          Icon: FileWarning,
+          text: 'The reply above stopped partway, so it’s incomplete.',
+        }
       : null,
-    failure?.recoveryAttempted
-      ? `iii retried automatically ${failure.recoveryAttempted} of ${
-          failure.recoveryMaxAttempts ?? failure.recoveryAttempted
-        } ${failure.recoveryAttempted === 1 && (failure.recoveryMaxAttempts ?? 1) === 1 ? 'time' : 'times'} before giving up.`
+    // "Temporary" already says it for network and provider hiccups.
+    failure?.retryable && presentation.owner !== 'environment'
+      ? {
+          key: 'retryable',
+          Icon: RotateCcw,
+          text: 'Safe to try again once that’s fixed.',
+        }
       : null,
-  ].filter((note): note is string => note !== null)
+  ].filter((fact) => fact !== null)
 
   return (
     <article
@@ -208,89 +237,159 @@ function TurnFailureCard({ message }: { message: SystemMessage }) {
       data-failure-owner={presentation.owner}
       aria-labelledby={titleId}
     >
-      <Card className="@container">
-        <CardHeader className="items-start gap-3 border-b border-edge p-4 sm:p-3">
-          <div
-            className={cn(
-              'flex size-10 shrink-0 items-center justify-center rounded-md sm:size-9',
-              severity === 'warn' ? 'bg-warn-muted' : 'bg-alert-muted',
-            )}
-          >
-            <Icon
-              aria-hidden
+      <Card className="@container gap-0 py-0">
+        <div className="flex flex-col gap-4 p-4 sm:p-3.5">
+          <header className="flex min-w-0 items-start gap-3">
+            <div
               className={cn(
-                'size-5 shrink-0 sm:size-4',
-                severity === 'warn' ? 'stroke-warn' : 'stroke-alert',
+                'flex size-9 shrink-0 items-center justify-center rounded-lg sm:size-8',
+                severity === 'warn' ? 'bg-warn-muted' : 'bg-alert-muted',
               )}
-            />
-          </div>
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
+            >
+              <Icon
+                aria-hidden
+                className={cn(
+                  'size-4 shrink-0',
+                  severity === 'warn' ? 'stroke-warn' : 'stroke-alert',
+                )}
+              />
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <h3
                 id={titleId}
-                className="min-w-0 text-balance font-sans text-base font-semibold text-ink sm:text-sm"
+                className="min-w-0 text-balance font-inter text-base font-medium text-ink sm:text-sm"
               >
                 {presentation.title}
               </h3>
-              <Chip tone={OWNER_CHIP[presentation.owner]}>
-                {presentation.ownerLabel}
-              </Chip>
-              {failure?.retryable ? <Chip tone="accent">Retryable</Chip> : null}
+              {details?.provider || details?.model ? (
+                <div className="flex min-w-0 items-center gap-1.5 font-mono text-xs text-ink-faint">
+                  {details.provider ? (
+                    <span className="shrink-0">{details.provider}</span>
+                  ) : null}
+                  {details.provider && details.model ? (
+                    <span aria-hidden>/</span>
+                  ) : null}
+                  {details.model ? (
+                    <span className="min-w-0 truncate">{details.model}</span>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
-            {details?.provider || details?.model ? (
-              <div className="flex min-w-0 flex-wrap items-center gap-x-2 font-mono text-[12px] font-normal text-ink-faint">
-                {details.provider ? <span>{details.provider}</span> : null}
-                {details.provider && details.model ? (
-                  <span aria-hidden className="text-ink-ghost">
-                    ·
-                  </span>
-                ) : null}
-                {details.model ? (
-                  <span className="min-w-0 truncate" title={details.model}>
-                    {details.model}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-        </CardHeader>
+            <Chip tone={OWNER_CHIP[presentation.owner]} className="shrink-0">
+              {presentation.ownerLabel}
+            </Chip>
+          </header>
 
-        <CardBody className="flex flex-col gap-4 p-4 sm:p-3">
-          <div className="flex flex-col gap-1.5 font-sans text-base sm:text-sm">
-            <p
-              data-message-summary
-              className="text-pretty wrap-break-word text-ink"
-            >
-              {summary}
-            </p>
-            <p
-              data-failure-ownership
-              className="text-pretty wrap-break-word text-ink-faint"
-            >
-              {presentation.ownership}
-            </p>
-            {notes.map((note) => (
-              <p key={note} className="text-pretty text-ink-faint">
-                {note}
-              </p>
-            ))}
-          </div>
-          <CardHighlight className="flex items-start gap-3 p-3">
-            <Wrench
-              aria-hidden
-              className="mt-0.5 size-5 shrink-0 stroke-ink-faint sm:size-4"
-            />
-            <NextActions
-              actions={presentation.actions}
-              heading
-              note={presentation.providerNote}
-            />
-          </CardHighlight>
-        </CardBody>
+          <p
+            data-failure-ownership
+            className="text-pretty wrap-break-word font-inter text-base text-ink-faint sm:text-sm"
+          >
+            {presentation.ownership}
+          </p>
 
-        {rows.length > 0 ? <TechnicalDetails rows={rows} framed /> : null}
+          {facts.length > 0 ? (
+            <ul className="flex flex-col gap-1.5 font-inter text-sm text-ink-faint sm:text-[0.8125rem]">
+              {facts.map(({ key, Icon: FactIcon, text }) => (
+                <li
+                  key={key}
+                  data-failure-fact={key}
+                  className="flex min-w-0 items-start gap-2"
+                >
+                  <FactIcon
+                    aria-hidden
+                    className="mt-0.5 size-4 shrink-0 stroke-ink-faint"
+                  />
+                  <span className="text-pretty">{text}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          <FailureSteps
+            actions={presentation.actions}
+            note={presentation.providerNote}
+          />
+        </div>
+
+        {rows.length > 0 ? <FailureDetails rows={rows} /> : null}
       </Card>
     </article>
+  )
+}
+
+/** The fix, as numbered steps in their own quiet panel. */
+function FailureSteps({ actions, note }: { actions: string[]; note?: string }) {
+  if (actions.length === 0 && !note) return null
+  return (
+    <section
+      data-message-next-actions
+      className="flex flex-col gap-2 rounded-lg bg-surface p-3 font-inter text-base sm:text-sm"
+    >
+      <h4 className="text-xs font-medium text-ink-faint">What you can do</h4>
+      <ol className="flex flex-col gap-2 text-pretty text-ink [counter-reset:step]">
+        {actions.map((action) => (
+          <li
+            key={action}
+            data-step
+            className="relative pl-7 [counter-increment:step] before:absolute before:top-0.5 before:left-0 before:flex before:size-5 before:items-center before:justify-center before:rounded-full before:bg-panel-raised before:font-mono before:text-[11px] before:text-ink-faint before:ring-1 before:ring-edge before:content-[counter(step)]"
+          >
+            {action}
+          </li>
+        ))}
+      </ol>
+      {note ? (
+        <p
+          data-provider-hint
+          className="text-pretty wrap-break-word text-ink-faint"
+        >
+          {note}
+        </p>
+      ) : null}
+    </section>
+  )
+}
+
+/** The card's footer band: the raw error behind a disclosure, with a copy
+    button that stays reachable while it is closed. */
+function FailureDetails({ rows }: { rows: TechnicalRow[] }) {
+  const copyText = () => rows.map(([k, v]) => `${k}: ${v}`).join('\n')
+  return (
+    <details
+      data-message-technical-details
+      className="group border-t border-edge bg-surface/40"
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 font-inter text-sm text-ink-faint select-none hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-rule-focus sm:px-3.5 [&::-webkit-details-marker]:hidden">
+        <ChevronRight
+          aria-hidden
+          className="size-4 shrink-0 transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard) group-open:rotate-90"
+        />
+        <span className="flex-1">Technical details</span>
+        <span className="hidden font-mono text-xs group-open:hidden @md:inline">
+          {rows.find(([label]) => label === 'Code')?.[1]}
+        </span>
+      </summary>
+      <div className="flex flex-col gap-3 px-4 pb-4 sm:px-3.5 sm:pb-3.5">
+        <dl className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 rounded-lg bg-panel-raised p-3 ring-1 ring-edge">
+          {rows.map(([label, value]) => (
+            <Fragment key={label}>
+              <dt className="font-inter text-xs leading-5 text-ink-faint">
+                {label}
+              </dt>
+              <dd
+                data-technical-detail={label.toLowerCase()}
+                className="min-w-0 font-mono text-xs leading-5 break-words text-ink"
+              >
+                {value}
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
+        <div className="flex items-center gap-1.5 font-inter text-sm text-ink-faint">
+          <CopyMessageButton text={copyText} label="copy technical details" />
+          <span>Copy for a bug report</span>
+        </div>
+      </div>
+    </details>
   )
 }
 
@@ -366,7 +465,7 @@ function WorkingDirMarker({
         <CollapsibleCardContent>
           <div className="flex flex-col gap-4 border-t border-edge p-4 sm:p-3">
             <div className="flex min-w-0 items-start gap-3">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-workdir-muted sm:size-9">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-workdir-muted sm:size-9">
                 <FolderInput
                   aria-hidden
                   className="size-5 shrink-0 stroke-workdir sm:size-4"
@@ -380,17 +479,17 @@ function WorkingDirMarker({
               </div>
             </div>
             <CardHighlight className="p-3">
-              <dl className="grid grid-cols-[max-content_minmax(0,1fr)] items-baseline gap-x-4 gap-y-2 font-mono text-[12px]">
+              <FactList className="gap-y-2">
                 {scope.cause !== 'selected' || previous !== null ? (
-                  <>
-                    <dt className="text-ink-ghost">Before</dt>
-                    <dd className="min-w-0 wrap-break-word text-ink-faint">
-                      {previous ?? 'unscoped'}
-                    </dd>
-                  </>
+                  <Fact label="Before" mono muted>
+                    {previous ?? 'unscoped'}
+                  </Fact>
                 ) : null}
-                <dt className="text-ink-ghost">Now</dt>
-                <dd className="flex min-w-0 items-baseline gap-2 text-ink">
+                <Fact
+                  label="Now"
+                  mono
+                  className="flex min-w-0 items-baseline gap-2"
+                >
                   <span className="min-w-0 wrap-break-word">
                     {scope.path ?? 'unscoped'}
                   </span>
@@ -401,8 +500,8 @@ function WorkingDirMarker({
                       className="shrink-0 self-center"
                     />
                   ) : null}
-                </dd>
-              </dl>
+                </Fact>
+              </FactList>
             </CardHighlight>
           </div>
         </CollapsibleCardContent>
@@ -551,7 +650,7 @@ function SkillsMarker({
             <div className="flex min-w-0 items-start gap-3">
               <div
                 className={cn(
-                  'flex size-10 shrink-0 items-center justify-center rounded-md sm:size-9',
+                  'flex size-10 shrink-0 items-center justify-center rounded-lg sm:size-9',
                   update.available ? 'bg-surface' : 'bg-warn-muted',
                 )}
               >
@@ -627,14 +726,9 @@ function skillsCopy(update: SkillCatalogUpdate): {
 
 function NextActions({
   actions,
-  heading = false,
-  note,
   className,
 }: {
   actions: string[]
-  heading?: boolean
-  /** Provider-declared add-on shown under the steps (see `providerNote`). */
-  note?: string
   className?: string
 }) {
   return (
@@ -645,24 +739,12 @@ function NextActions({
         className,
       )}
     >
-      <div
-        className={cn('text-ink', heading ? 'font-semibold' : 'font-medium')}
-      >
-        What you can do
-      </div>
+      <div className="font-medium text-ink">What you can do</div>
       <ol className="flex list-decimal flex-col gap-1 pl-4 text-pretty text-ink-faint marker:text-ink-ghost">
         {actions.map((action) => (
           <li key={action}>{action}</li>
         ))}
       </ol>
-      {note ? (
-        <p
-          data-provider-hint
-          className="text-pretty wrap-break-word text-ink-faint"
-        >
-          {note}
-        </p>
-      ) : null}
     </div>
   )
 }
@@ -691,51 +773,35 @@ function technicalRows(
 
 function TechnicalDetails({
   rows,
-  framed = false,
   className,
 }: {
   rows: TechnicalRow[]
-  /** Card footer variant: divider above, card padding inside. */
-  framed?: boolean
   className?: string
 }) {
   const copyText = () => rows.map(([k, v]) => `${k}: ${v}`).join('\n')
   return (
-    <details
-      data-message-technical-details
-      className={cn('group', framed && 'border-t border-edge', className)}
-    >
-      <summary
-        className={cn(
-          'flex w-fit cursor-pointer list-none items-center gap-1.5 font-sans text-base font-medium text-ink-faint select-none hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:text-sm [&::-webkit-details-marker]:hidden',
-          framed && 'w-full px-4 py-3 sm:px-3 sm:py-2.5',
-        )}
-      >
+    <details data-message-technical-details className={cn('group', className)}>
+      <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 font-sans text-base font-medium text-ink-faint select-none hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:text-sm [&::-webkit-details-marker]:hidden">
         <ChevronRight
           aria-hidden
           className="size-4 shrink-0 stroke-ink-ghost transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard) group-open:rotate-90"
         />
         <span>Technical details</span>
       </summary>
-      <div
-        className={cn(
-          'flex flex-col gap-2',
-          framed ? 'px-4 pb-4 sm:px-3 sm:pb-3' : 'mt-2',
-        )}
-      >
-        <dl className="grid grid-cols-[max-content_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1.5 font-mono text-[12px]">
+      <div className="mt-2 flex flex-col gap-2">
+        <FactList className="gap-y-1.5">
           {rows.map(([label, value]) => (
-            <div key={label} className="contents">
-              <dt className="text-ink-ghost">{label}</dt>
-              <dd
-                data-technical-detail={label.toLowerCase()}
-                className="min-w-0 wrap-break-word text-ink-faint"
-              >
-                {value}
-              </dd>
-            </div>
+            <Fact
+              key={label}
+              label={label}
+              mono
+              muted
+              data-technical-detail={label.toLowerCase()}
+            >
+              {value}
+            </Fact>
           ))}
-        </dl>
+        </FactList>
         <div className="flex items-center gap-1.5 font-sans text-sm text-ink-faint sm:text-[0.8125rem]">
           <CopyMessageButton text={copyText} label="copy technical details" />
           <span>Copy for a bug report</span>

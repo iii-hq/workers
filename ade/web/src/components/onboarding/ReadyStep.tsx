@@ -182,7 +182,7 @@ export function ReadyStep({
 
       {added.length > 0 ? (
         <Disclosure label="Workers added" summary={`${added.length} installed`}>
-          <ul className="grid gap-x-4 gap-y-1 rounded-lg border border-neutral-200 bg-neutral-50 px-3.5 py-2.5 font-mono text-xs leading-5 dark:border-neutral-800 dark:bg-neutral-900 @md:grid-cols-2">
+          <ul className="grid gap-x-4 gap-y-1 rounded-xl border border-neutral-200 bg-neutral-50 px-3.5 py-2.5 font-mono text-xs leading-5 dark:border-neutral-800 dark:bg-neutral-900 @md:grid-cols-2">
             {added.map((worker) => (
               <li key={worker} className="flex min-w-0 items-center gap-2">
                 <span

@@ -1,28 +1,34 @@
 /* The Search view — VS Code's layout over the worker's `coder::search`:
-   a query box with the Aa / ab / .* toggles inside it, include/exclude
-   globs behind a disclosure, results grouped by file with the matched
-   text highlighted inside a short window of its line, keyboard-walkable
-   and virtualized so a thousand hits stay light. Searches run as you
-   type (debounced), a stale response never overwrites a newer one. */
+   a query box with the Aa / ab / .* toggles inside it and a Replace box
+   under it behind the left chevron, include/exclude globs behind a
+   disclosure, results grouped by file with the matched text highlighted
+   inside a short window of its line (and the replacement previewed over
+   it), keyboard-walkable and virtualized so a thousand hits stay light.
+   Searches run as you type (debounced), a stale response never overwrites
+   a newer one. */
 
-import { EmptyState, IconButton, SearchField } from '@iii-dev/console-ui'
+import { EmptyState, IconButton } from '@iii-dev/console-ui'
 import {
+  BookOpen,
   CaseSensitive,
+  CaseUpper,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
-  Ellipsis,
   Folder,
   Regex,
   RefreshCw,
+  Replace,
+  ReplaceAll,
+  Settings,
   WholeWord,
   X,
 } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import type { Host } from '@iii-dev/console-ui'
-import { coderSearch } from './coder'
+import type { ConfirmOptions, Host } from '@iii-dev/console-ui'
+import { coderSearch, joinPath } from './coder'
 import { FileTypeIcon } from './file-type-icon'
 import {
   effectivePattern,
@@ -35,7 +41,17 @@ import {
   searchSummary,
   stepSearchRow,
 } from './search-model'
+import {
+  type FileReplaceOutcome,
+  previewReplacement,
+  replaceAllInText,
+  replaceInFile,
+  replaceOneInText,
+  type ReplaceOptions,
+  replaceSummary,
+} from './search-replace'
 import { ViewHeader } from './ViewHeader'
+import { createPaneMemory } from './pane-memory'
 import { VirtualList } from './VirtualList'
 
 const DEBOUNCE_MS = 220
@@ -52,6 +68,8 @@ export interface SearchRequest {
 interface SearchTabProps {
   host: Host
   root: string
+  /** The pane the view belongs to: what was typed comes back per pane. */
+  memoryKey: string
   request: SearchRequest | null
   /** Click on a text match — open at the line as the preview tab. */
   onOpenMatch: (relPath: string, line: number, column: number, pin: boolean) => void
@@ -61,6 +79,12 @@ interface SearchTabProps {
   onPinFile: (relPath: string) => void
   /** Click on a FOLDER match — expand + scroll to it in the explorer. */
   onRevealFolder: (relPath: string) => void
+  /** Root-relative paths with unsaved edits: a replace leaves them alone. */
+  dirtyPaths: ReadonlySet<string>
+  /** Root-relative paths open in editor tabs, for "search only in open editors". */
+  openPaths: readonly string[]
+  /** The page's confirmation, asked before a replace across files. */
+  confirm: (options: ConfirmOptions) => Promise<boolean>
 }
 
 interface SearchResults {
@@ -68,6 +92,29 @@ interface SearchResults {
   paths: SearchPathRow[]
   truncated: boolean
 }
+
+/** What the view held when it last unmounted (another sidebar view, or the
+    page remounting), per pane: the form as typed and set, the request it
+    already applied, and the last answer with the folder it came from. In
+    memory only (`pane-memory.ts`): a query or replacement can hold secrets. */
+interface SearchMemory {
+  query: string
+  matchCase: boolean
+  wholeWord: boolean
+  regex: boolean
+  includeGlob: string
+  excludeGlob: string
+  useGitignore: boolean
+  onlyOpenEditors: boolean
+  replacement: string
+  preserveCase: boolean
+  /** By identity: a request is the page's object, so one made after the page
+      remounted is new even if its seq repeats an old one. */
+  appliedRequest: SearchRequest | null
+  answer: { root: string; results: SearchResults; collapsed: ReadonlySet<string>; dismissed: ReadonlySet<string> } | null
+}
+
+const searchMemory = createPaneMemory<SearchMemory>()
 
 /** A glob the user typed matches anywhere below the root: a bare pattern
     or a folder pattern both get the leading `**` segment VS Code implies. */
@@ -85,23 +132,58 @@ export function splitGlobs(text: string): string[] {
     .filter((glob) => glob !== '')
 }
 
+interface SearchParams {
+  query: string
+  matchCase: boolean
+  wholeWord: boolean
+  regex: boolean
+  includeGlob: string
+  excludeGlob: string
+  useGitignore: boolean
+  /** Root-relative paths to search instead of the include globs; null = all. */
+  scopePaths: readonly string[] | null
+}
+
 /** Module-level, so the memoized list sees the same function every render. */
 const rowKey = (row: SearchRow) => row.key
 
-function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinFile, onRevealFolder }: SearchTabProps) {
-  const [query, setQuery] = useState('')
-  const [matchCase, setMatchCase] = useState(false)
-  const [wholeWord, setWholeWord] = useState(false)
-  const [regex, setRegex] = useState(false)
-  const [detailsOpen, setDetailsOpen] = useState(false)
-  const [includeGlob, setIncludeGlob] = useState('')
-  const [excludeGlob, setExcludeGlob] = useState('')
-  const [useGitignore, setUseGitignore] = useState(true)
+/** Files rewritten at once by a replace across files. */
+const REPLACE_CONCURRENCY = 4
+
+function SearchTabView({
+  host,
+  root,
+  memoryKey,
+  request,
+  onOpenMatch,
+  onPreviewFile,
+  onPinFile,
+  onRevealFolder,
+  dirtyPaths,
+  openPaths,
+  confirm,
+}: SearchTabProps) {
+  const [remembered] = useState(() => searchMemory.read(memoryKey))
+  // The last answer shows at once if it is this folder's; the search runs
+  // again behind it, since the files may have moved on.
+  const [answer] = useState(() => (remembered?.answer?.root === root ? remembered.answer : null))
+  const [query, setQuery] = useState(remembered?.query ?? '')
+  const [matchCase, setMatchCase] = useState(remembered?.matchCase ?? false)
+  const [wholeWord, setWholeWord] = useState(remembered?.wholeWord ?? false)
+  const [regex, setRegex] = useState(remembered?.regex ?? false)
+  const [includeGlob, setIncludeGlob] = useState(remembered?.includeGlob ?? '')
+  const [excludeGlob, setExcludeGlob] = useState(remembered?.excludeGlob ?? '')
+  const [useGitignore, setUseGitignore] = useState(remembered?.useGitignore ?? true)
+  const [onlyOpenEditors, setOnlyOpenEditors] = useState(remembered?.onlyOpenEditors ?? false)
+  const [replacement, setReplacement] = useState(remembered?.replacement ?? '')
+  const [preserveCase, setPreserveCase] = useState(remembered?.preserveCase ?? false)
+  const [replacing, setReplacing] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [results, setResults] = useState<SearchResults | null>(null)
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set())
+  const [results, setResults] = useState<SearchResults | null>(answer?.results ?? null)
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(answer?.collapsed ?? new Set())
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(answer?.dismissed ?? new Set())
   const [focusIndex, setFocusIndex] = useState(-1)
   const inputRef = useRef<HTMLInputElement>(null)
   // The page's search verb and the console's pane focus both look the box
@@ -114,22 +196,21 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
   // Only the newest in-flight search may land — a slow older response
   // must not overwrite a newer one.
   const seqRef = useRef(0)
-  const appliedRequestRef = useRef(0)
+  const appliedRequestRef = useRef<SearchRequest | null>(remembered?.appliedRequest ?? null)
+
+  // Open editors only: the open tabs' own paths are the include list.
+  const scopePaths = onlyOpenEditors ? openPaths : null
+  const params = useMemo<SearchParams>(
+    () => ({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, scopePaths }),
+    [query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, scopePaths],
+  )
 
   const run = useCallback(
-    (params: {
-      query: string
-      matchCase: boolean
-      wholeWord: boolean
-      regex: boolean
-      includeGlob: string
-      excludeGlob: string
-      useGitignore: boolean
-    }) => {
+    (params: SearchParams) => {
       const q = params.query
-      if (q.trim() === '') {
+      if (q.trim() === '' || params.scopePaths?.length === 0) {
         seqRef.current += 1
-        setResults(null)
+        setResults(q.trim() === '' ? null : { groups: [], paths: [], truncated: false })
         setError(null)
         setSearching(false)
         return
@@ -144,10 +225,10 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
         regex: sendRegex,
         ignoreCase: !params.matchCase,
         path: root,
-        includeGlobs: splitGlobs(params.includeGlob),
+        includeGlobs: params.scopePaths ?? splitGlobs(params.includeGlob),
         excludeGlobs: splitGlobs(params.excludeGlob),
         respectGitignore: params.useGitignore,
-        searchPaths: true,
+        searchPaths: params.scopePaths === null,
       })
         .then((out) => {
           if (seqRef.current !== seq) return
@@ -173,30 +254,60 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
 
   // Search as you type. A fresh root clears the old answer.
   useEffect(() => {
-    if (query.trim().length < MIN_AUTO_QUERY) {
-      if (query.trim() === '') run({ query: '', matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore })
+    if (params.query.trim().length < MIN_AUTO_QUERY) {
+      if (params.query.trim() === '') run(params)
       return
     }
-    const timer = window.setTimeout(
-      () => run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore }),
-      DEBOUNCE_MS,
-    )
+    const timer = window.setTimeout(() => run(params), DEBOUNCE_MS)
     return () => window.clearTimeout(timer)
-  }, [query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore, run])
+  }, [params, run])
 
   useEffect(() => {
-    if (!request || request.seq === appliedRequestRef.current) return
-    appliedRequestRef.current = request.seq
-    if (request.includeGlob !== undefined) {
-      setIncludeGlob(request.includeGlob)
-      setDetailsOpen(true)
-    }
+    if (!request || request === appliedRequestRef.current) return
+    appliedRequestRef.current = request
+    if (request.includeGlob !== undefined) setIncludeGlob(request.includeGlob)
     if (request.query !== undefined) setQuery(request.query)
     window.requestAnimationFrame(() => {
       inputRef.current?.focus()
       inputRef.current?.select()
     })
   }, [request])
+
+  // Kept as it changes (a map write, no render), so whatever unmounts the
+  // view finds it current.
+  useEffect(() => {
+    searchMemory.write(memoryKey, {
+      query,
+      matchCase,
+      wholeWord,
+      regex,
+      includeGlob,
+      excludeGlob,
+      useGitignore,
+      onlyOpenEditors,
+      replacement,
+      preserveCase,
+      appliedRequest: appliedRequestRef.current,
+      answer: results ? { root, results, collapsed, dismissed } : null,
+    })
+  }, [
+    memoryKey,
+    root,
+    query,
+    matchCase,
+    wholeWord,
+    regex,
+    includeGlob,
+    excludeGlob,
+    useGitignore,
+    onlyOpenEditors,
+    replacement,
+    preserveCase,
+    results,
+    collapsed,
+    dismissed,
+    request,
+  ])
 
   const visibleGroups = useMemo(
     () => (results ? results.groups.filter((group) => !dismissed.has(group.path)) : []),
@@ -208,6 +319,78 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
   )
   const summary = results ? searchSummary(visibleGroups, results.paths, results.truncated) : null
   const allCollapsed = visibleGroups.length > 0 && visibleGroups.every((group) => collapsed.has(group.path))
+
+  // A replace's outcome stands until the query or the replacement moves on.
+  useEffect(() => setNotice(null), [query, replacement])
+
+  // ── replace ──
+  // The preview and the rewrite use the pattern the results came from.
+  const replaceOptions = useMemo<ReplaceOptions>(
+    () => ({ query, regex, ignoreCase: !matchCase, wholeWord, replacement, preserveCase }),
+    [query, regex, matchCase, wholeWord, replacement, preserveCase],
+  )
+  const showReplace = query.trim() !== ''
+  const previewing = showReplace && replacement !== ''
+
+  /** Rewrite `groups` with `edit`, skipping files with unsaved edits, then
+      search again so the results show what is left. */
+  const replaceAcross = useCallback(
+    async (groups: readonly SearchFileGroup[], edit: (content: string) => { content: string; count: number }) => {
+      if (groups.length === 0) return
+      setReplacing(true)
+      setNotice(null)
+      const outcomes: FileReplaceOutcome[] = []
+      const queue = [...groups]
+      const worker = async () => {
+        for (let group = queue.shift(); group; group = queue.shift()) {
+          const abs = joinPath(root, group.rel)
+          if (dirtyPaths.has(group.rel)) {
+            outcomes.push({ path: abs, status: 'skipped', reason: `${group.name} has unsaved edits` })
+            continue
+          }
+          try {
+            outcomes.push(await replaceInFile(host, abs, edit))
+          } catch (err: unknown) {
+            outcomes.push({ path: abs, status: 'skipped', reason: errorMessage(err) })
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(REPLACE_CONCURRENCY, queue.length) }, worker))
+      setReplacing(false)
+      setNotice(replaceSummary(outcomes))
+      run(params)
+    },
+    [host, root, dirtyPaths, run, params],
+  )
+
+  const replaceAll = useCallback(async () => {
+    const total = visibleGroups.reduce((sum, group) => sum + group.matches.length, 0)
+    if (total === 0 || replacing) return
+    const files = visibleGroups.length
+    const ok = await confirm({
+      title: `Replace ${total} ${total === 1 ? 'occurrence' : 'occurrences'} across ${files} ${files === 1 ? 'file' : 'files'}?`,
+      description:
+        replacement === ''
+          ? `Every match of “${query}” is deleted. Files with unsaved edits are skipped.`
+          : `Every match of “${query}” becomes “${replacement}”. Files with unsaved edits are skipped.`,
+      confirmLabel: 'Replace all',
+    })
+    if (ok) await replaceAcross(visibleGroups, (content) => replaceAllInText(content, replaceOptions))
+  }, [visibleGroups, replacing, confirm, replacement, query, replaceAcross, replaceOptions])
+
+  const replaceFile = useCallback(
+    (group: SearchFileGroup) => {
+      if (!replacing) void replaceAcross([group], (content) => replaceAllInText(content, replaceOptions))
+    },
+    [replacing, replaceAcross, replaceOptions],
+  )
+
+  const replaceMatch = useCallback(
+    (group: SearchFileGroup, line: number, column: number) => {
+      if (!replacing) void replaceAcross([group], (content) => replaceOneInText(content, line, column, replaceOptions))
+    },
+    [replacing, replaceAcross, replaceOptions],
+  )
 
   const toggleGroup = useCallback((path: string) => {
     setCollapsed((previous) => {
@@ -300,17 +483,33 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
             {row.group.dir ? <span className="dir">{row.group.dir}</span> : null}
             <span className="spacer" />
             <span className="count">{row.group.matches.length}</span>
-            <button
-              type="button"
-              className="dismiss"
-              aria-label={`Dismiss results in ${row.group.name}`}
-              onClick={(event) => {
-                event.stopPropagation()
-                setDismissed((previous) => new Set(previous).add(row.group.path))
-              }}
-            >
-              <X aria-hidden />
-            </button>
+            <span className="shui-search-row-actions">
+              {showReplace ? (
+                <button
+                  type="button"
+                  aria-label={`Replace all in ${row.group.name}`}
+                  title="Replace all in this file"
+                  disabled={replacing}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    replaceFile(row.group)
+                  }}
+                >
+                  <ReplaceAll aria-hidden />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                aria-label={`Dismiss results in ${row.group.name}`}
+                title="Dismiss"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setDismissed((previous) => new Set(previous).add(row.group.path))
+                }}
+              >
+                <X aria-hidden />
+              </button>
+            </span>
           </div>
         )
       }
@@ -358,13 +557,36 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
           <span className="text">
             {match.leadCut ? <span className="cut">…</span> : null}
             {match.lead}
-            {match.hit ? <mark className="shui-hl">{match.hit}</mark> : null}
+            {match.hit && previewing ? (
+              <>
+                <del className="shui-hl-del">{match.hit}</del>
+                <ins className="shui-hl-ins">{previewReplacement(match.hit, replaceOptions)}</ins>
+              </>
+            ) : match.hit ? (
+              <mark className="shui-hl">{match.hit}</mark>
+            ) : null}
             {match.trail}
           </span>
+          {showReplace && match.hit ? (
+            <span className="shui-search-row-actions">
+              <button
+                type="button"
+                aria-label={`Replace on line ${match.line}`}
+                title="Replace"
+                disabled={replacing}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  replaceMatch(row.group, match.line, match.column)
+                }}
+              >
+                <Replace aria-hidden />
+              </button>
+            </span>
+          ) : null}
         </div>
       )
     },
-    [focusIndex, toggleGroup, onPinFile, activateRow],
+    [focusIndex, toggleGroup, onPinFile, activateRow, showReplace, previewing, replacing, replaceOptions, replaceFile, replaceMatch],
   )
 
   return (
@@ -376,7 +598,7 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
             <IconButton
               label="Refresh"
               disabled={query.trim() === ''}
-              onClick={() => run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore })}
+              onClick={() => run(params)}
             >
               <RefreshCw aria-hidden />
             </IconButton>
@@ -408,72 +630,108 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
         className="shui-search-form"
         onSubmit={(event) => {
           event.preventDefault()
-          run({ query, matchCase, wholeWord, regex, includeGlob, excludeGlob, useGitignore })
+          run(params)
         }}
       >
-        <div className="shui-search-box">
-          <SearchField
-            ref={inputRef}
-            value={query}
-            onChange={setQuery}
-            placeholder="Search"
-            aria-label="Search query"
-            className="shui-search-query"
-            onKeyDown={(event) => {
-              if (event.key === 'ArrowDown' && rows.length > 0) {
-                event.preventDefault()
-                setFocusIndex(stepSearchRow(rows, -1, 1))
-                listRef.current?.focus()
-              }
-            }}
-          />
-          <span className="shui-search-toggles">
-            <SearchToggle label="Match case" pressed={matchCase} onToggle={() => setMatchCase((value) => !value)}>
-              <CaseSensitive aria-hidden />
-            </SearchToggle>
-            <SearchToggle label="Match whole word" pressed={wholeWord} onToggle={() => setWholeWord((value) => !value)}>
-              <WholeWord aria-hidden />
-            </SearchToggle>
-            <SearchToggle label="Use regular expression" pressed={regex} onToggle={() => setRegex((value) => !value)}>
-              <Regex aria-hidden />
-            </SearchToggle>
-          </span>
-        </div>
-        <div className="shui-search-details-row">
-          <button
-            type="button"
-            className={`shui-search-details-toggle${detailsOpen ? ' open' : ''}`}
-            aria-expanded={detailsOpen}
-            aria-label="Toggle search details"
-            onClick={() => setDetailsOpen((value) => !value)}
-          >
-            <Ellipsis aria-hidden />
-          </button>
-          {summary !== null ? (
-            <span className="shui-search-summary" role="status">
-              {searching ? 'searching…' : summary}
+        {/* Four fields, always there (VS Code's order): search, replace, the
+            files to include, the files to exclude. Nothing to open first. */}
+        <div className="shui-search-fields">
+          <div className="shui-search-input">
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search"
+              aria-label="Search query"
+              autoComplete="off"
+              spellCheck={false}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown' && rows.length > 0) {
+                  event.preventDefault()
+                  setFocusIndex(stepSearchRow(rows, -1, 1))
+                  listRef.current?.focus()
+                } else if (event.key === 'Escape' && query !== '') {
+                  event.preventDefault()
+                  setQuery('')
+                }
+              }}
+            />
+            <span className="shui-search-toggles">
+              <SearchToggle label="Match case" pressed={matchCase} onToggle={() => setMatchCase((value) => !value)}>
+                <CaseSensitive aria-hidden />
+              </SearchToggle>
+              <SearchToggle label="Match whole word" pressed={wholeWord} onToggle={() => setWholeWord((value) => !value)}>
+                <WholeWord aria-hidden />
+              </SearchToggle>
+              <SearchToggle label="Use regular expression" pressed={regex} onToggle={() => setRegex((value) => !value)}>
+                <Regex aria-hidden />
+              </SearchToggle>
             </span>
-          ) : searching ? (
-            <span className="shui-search-summary" role="status">
-              searching…
-            </span>
-          ) : null}
+          </div>
+          <div className="shui-search-replace-row">
+            <div className="shui-search-input">
+              <input
+                type="text"
+                value={replacement}
+                onChange={(event) => setReplacement(event.target.value)}
+                placeholder="Replace"
+                aria-label="Replace"
+                autoComplete="off"
+                spellCheck={false}
+                onKeyDown={(event) => {
+                  // ⌘⏎ replaces everywhere, the way VS Code's box does.
+                  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault()
+                    void replaceAll()
+                  }
+                }}
+              />
+              <span className="shui-search-toggles">
+                <SearchToggle label="Preserve case" pressed={preserveCase} onToggle={() => setPreserveCase((value) => !value)}>
+                  <CaseUpper aria-hidden />
+                </SearchToggle>
+              </span>
+            </div>
+            <button
+              type="button"
+              className="shui-search-toggle shui-search-replace-all"
+              aria-label="Replace all"
+              title="Replace all (⌘⏎)"
+              disabled={!showReplace || visibleGroups.length === 0 || replacing}
+              onClick={() => void replaceAll()}
+            >
+              <ReplaceAll aria-hidden />
+            </button>
+          </div>
         </div>
-        {detailsOpen ? (
-          <div className="shui-search-details">
-            <label className="shui-search-field">
-              <span>files to include</span>
+        <div className="shui-search-details">
+          <label className="shui-search-field">
+            <span>Files to include</span>
+            <span className="shui-search-input">
               <input
                 type="text"
                 value={includeGlob}
                 onChange={(event) => setIncludeGlob(event.target.value)}
-                placeholder="e.g. *.ts, src/**"
+                placeholder={onlyOpenEditors ? 'open editors' : 'e.g. *.ts, src/**'}
+                disabled={onlyOpenEditors}
                 autoComplete="off"
                 spellCheck={false}
               />
-            </label>
-            <label className="shui-search-field">
-              <span>files to exclude</span>
+              <span className="shui-search-toggles">
+                <SearchToggle
+                  label="Search only in open editors"
+                  pressed={onlyOpenEditors}
+                  onToggle={() => setOnlyOpenEditors((value) => !value)}
+                >
+                  <BookOpen aria-hidden />
+                </SearchToggle>
+              </span>
+            </span>
+          </label>
+          <label className="shui-search-field">
+            <span>Files to exclude</span>
+            <span className="shui-search-input">
               <input
                 type="text"
                 value={excludeGlob}
@@ -482,12 +740,22 @@ function SearchTabView({ host, root, request, onOpenMatch, onPreviewFile, onPinF
                 autoComplete="off"
                 spellCheck={false}
               />
-            </label>
-            <label className="shui-search-check">
-              <input type="checkbox" checked={useGitignore} onChange={(event) => setUseGitignore(event.target.checked)} />
-              <span>skip files ignored by Git</span>
-            </label>
-          </div>
+              <span className="shui-search-toggles">
+                <SearchToggle
+                  label="Use exclude settings and ignore files"
+                  pressed={useGitignore}
+                  onToggle={() => setUseGitignore((value) => !value)}
+                >
+                  <Settings aria-hidden />
+                </SearchToggle>
+              </span>
+            </span>
+          </label>
+        </div>
+        {replacing || searching || notice || summary ? (
+          <span className="shui-search-summary" role="status">
+            {replacing ? 'replacing…' : searching ? 'searching…' : (notice ?? summary ?? '')}
+          </span>
         ) : null}
       </form>
 

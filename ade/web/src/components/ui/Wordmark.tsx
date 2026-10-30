@@ -9,9 +9,10 @@ interface WordmarkProps {
    * `inset` is a recessed, low-contrast treatment for large decorative
    * placements; `loading` pulses the columns; `assemble` builds the mark once
    * — stems rise, then the dots land — for a moment worth marking, such as
-   * finishing setup.
+   * finishing setup. `live` is the chrome's mark: inline, ink-coloured, and
+   * it answers a hover by lifting its dots in sequence (`icon-motion.css`).
    */
-  appearance?: 'default' | 'inset' | 'loading' | 'assemble'
+  appearance?: 'default' | 'inset' | 'loading' | 'assemble' | 'live'
   /**
    * `auto` swaps ink/white with `[data-theme]` (default). `ink` and `inverse`
    * pin a variant for panels that don't follow the page theme.
@@ -36,10 +37,12 @@ const ASSEMBLE_DOT_DELAY = [
 function WordmarkGlyphs({
   animated = false,
   assemble = false,
+  live = false,
   trademark = true,
 }: {
   animated?: boolean
   assemble?: boolean
+  live?: boolean
   trademark?: boolean
 }) {
   return (
@@ -51,6 +54,7 @@ function WordmarkGlyphs({
             animated && 'model-waiting-wordmark-segment',
             animated && index === 1 && '[animation-delay:120ms]',
             animated && index === 2 && '[animation-delay:240ms]',
+            live && 'wordmark-live__col',
           )}
         >
           <rect
@@ -61,6 +65,7 @@ function WordmarkGlyphs({
             className={cn(
               assemble && 'wordmark-assemble-stem',
               assemble && ASSEMBLE_STEM_DELAY[index],
+              live && 'wordmark-live__stem',
             )}
           />
           <rect
@@ -71,6 +76,7 @@ function WordmarkGlyphs({
             className={cn(
               assemble && 'wordmark-assemble-dot',
               assemble && ASSEMBLE_DOT_DELAY[index],
+              live && 'wordmark-live__dot',
             )}
           />
         </g>
@@ -114,6 +120,22 @@ export function Wordmark({
       >
         <WordmarkGlyphs assemble trademark={false} />
       </svg>
+    )
+  }
+
+  if (appearance === 'live') {
+    // The hover lives on the wrapper, not the `<svg>`: the mark is mostly
+    // gaps, and a hover that dropped out between the columns would flicker.
+    return (
+      <span role="img" aria-label="iii" className="wordmark-live">
+        <svg
+          viewBox="0 0 1075.74 1075.74"
+          aria-hidden="true"
+          className={cn('size-6 shrink-0 fill-ink', className)}
+        >
+          <WordmarkGlyphs live trademark={false} />
+        </svg>
+      </span>
     )
   }
 

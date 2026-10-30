@@ -398,9 +398,8 @@ describe('observe receipt display', () => {
     expect(expanded).toContain('data-observer-execution-trace')
     expect(expanded).toContain('data-observer-flow-card="when"')
     expect(expanded).toContain('data-observer-flow-card="then"')
-    expect(expanded).toContain('Terminal')
-    expect(expanded).toContain('Raw JSON')
-    expect(expanded).toContain('fcall-chrome')
+    expect(expanded).toContain('Show raw')
+    expect(expanded).toContain('chat-tool-row__body')
     expect(expanded).toContain('data-timeline-activity-kind="function"')
     expect(expanded).not.toContain(
       'data-timeline-activity-kind="observer-registration"',

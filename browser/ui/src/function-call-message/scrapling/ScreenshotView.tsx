@@ -1,5 +1,5 @@
-import { ActionLine, Badge, Chip, MetaRow } from '@iii-dev/console-ui'
-import { ArrowRight } from 'lucide-react'
+import { Badge, Chip, MetaRow } from '@iii-dev/console-ui'
+import { UrlLine } from '../url-line'
 import {
   safeParseRequest,
   safeParseResponse,
@@ -30,9 +30,7 @@ export function ScreenshotView({
           {req.full_page ? <Chip>full page</Chip> : null}
           {req.proxy ? <Chip>proxy</Chip> : null}
         </MetaRow>
-        <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-          <span className="br-ui-break">{req.url}</span>
-        </ActionLine>
+        <UrlLine url={req.url} />
         <div className="br-ui-more">
           · waiting for the browser…
         </div>
@@ -66,9 +64,7 @@ export function ScreenshotView({
           <span className="br-ui-num">{sizeKb} KB</span>
         </Chip>
       </MetaRow>
-      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-        <span className="br-ui-break">{url}</span>
-      </ActionLine>
+      <UrlLine url={url} />
       <div className="br-ui-scrape-gallery">
         {images.map((b, i) => (
           <img
@@ -101,9 +97,7 @@ export function ScreenshotPreview({ input }: { input: unknown }) {
         {req.full_page ? <Chip>full page</Chip> : null}
         {req.proxy ? <Chip>proxy</Chip> : null}
       </MetaRow>
-      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-        <span className="br-ui-break">{req.url}</span>
-      </ActionLine>
+      <UrlLine url={req.url} />
     </div>
   )
 }

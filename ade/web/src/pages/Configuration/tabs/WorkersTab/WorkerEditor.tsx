@@ -1,4 +1,3 @@
-import { ArrowLeft } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { configurationFormFamily } from '@/lib/configuration-family'
@@ -8,6 +7,10 @@ import {
   useUiAssetsStatus,
 } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
+import {
+  SETTINGS_COLUMN,
+  SettingsPageHeader,
+} from '../../components/primitives'
 import { isObjectSchema } from '../../lib/schema/guard'
 import { type Path, pathToDomId } from '../../lib/schema/path'
 import { validateConfig } from '../../lib/schema/validate'
@@ -18,10 +21,6 @@ import { parseSetError } from './errors'
 import { useConfigurationValue, useSetConfiguration } from './hooks'
 import { SaveBar, type SaveStatus } from './SaveBar'
 import { wt } from './typography'
-
-// viewport: phone chrome — the sm and md utilities here are the console's
-// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
-// not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 interface WorkerEditorProps {
   entry: ConfigurationSchemaView
@@ -211,21 +210,19 @@ export function WorkerEditor({
 
   return (
     <section
-      className={cn(
-        'flex-1 flex flex-col min-h-0 min-w-0',
-        !embedded && 'bg-panel',
-      )}
+      className="flex min-h-0 min-w-0 flex-1 flex-col"
       aria-label={`configuration ${entry.id}`}
     >
-      {embedded ? null : (
-        <EditorHeader entry={entry} dirty={dirty} onBack={onBack} />
-      )}
       <div
         className={cn(
-          'flex flex-1 min-h-0 min-w-0 flex-col',
-          fullForm ? 'overflow-hidden' : 'overflow-y-auto',
+          // A full-layout form fills the column and may own its scroll; the
+          // column still scrolls for one that does not.
+          'flex flex-1 min-h-0 min-w-0 flex-col overflow-y-auto overscroll-contain',
         )}
       >
+        {embedded ? null : (
+          <EditorHeader entry={entry} dirty={dirty} onBack={onBack} />
+        )}
         {valueQuery.isLoading ? <EditorLoading embedded={embedded} /> : null}
         {valueQuery.isError ? (
           <EditorError
@@ -247,7 +244,7 @@ export function WorkerEditor({
                     ? 'flex flex-1 min-h-0 flex-col'
                     : embedded
                       ? 'px-4 pb-4'
-                      : 'mx-auto max-w-3xl px-6 py-8',
+                      : cn(SETTINGS_COLUMN, 'px-5 pt-4 pb-16 @3xl:px-14'),
                 )}
               >
                 <formOverride.component
@@ -262,9 +259,9 @@ export function WorkerEditor({
                   <p
                     className={cn(
                       wt.bodySm,
-                      'text-alert',
+                      'text-destructive',
                       fullForm
-                        ? 'shrink-0 border-t border-edge px-4 py-3'
+                        ? 'shrink-0 border-t border-neutral-200 px-4 py-3 dark:border-neutral-800'
                         : 'mt-4',
                     )}
                     role="alert"
@@ -299,8 +296,9 @@ export function WorkerEditor({
 }
 
 /**
- * The settings pane's raised top bar — identity (name, dirty dot, id crumb,
- * description) plus the drill-out back button in the narrow flow.
+ * The settings pane's top bar — identity (name, dirty dot, id crumb,
+ * description) plus the drill-out back button in the narrow flow and the
+ * dialog's close control.
  */
 export function EditorHeader({
   entry,
@@ -312,52 +310,28 @@ export function EditorHeader({
   onBack?: () => void
 }) {
   return (
-    <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-edge bg-panel-raised py-2.5 pl-4 pr-12">
-      {onBack ? (
-        <button
-          type="button"
-          onClick={onBack}
-          aria-label="Open settings navigation"
-          className="relative -ml-1.5 flex size-10 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-8"
-        >
-          <span
-            className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-            aria-hidden="true"
-          />
-          <ArrowLeft className="size-4 shrink-0" aria-hidden />
-        </button>
-      ) : null}
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <h2
-            className={cn(
-              wt.body,
-              'truncate font-semibold text-ink tracking-[-0.01em]',
-            )}
-          >
-            {entry.name || entry.id}
-          </h2>
+    <SettingsPageHeader
+      title={entry.name || entry.id}
+      titleAside={
+        <>
           {dirty ? (
             <span
-              className="size-[7px] rounded-full bg-accent shrink-0"
+              className="size-1.5 shrink-0 rounded-full bg-foreground"
               title="unsaved changes"
               aria-hidden
             />
           ) : null}
-          <p className="truncate font-mono text-[0.75rem] text-ink-ghost">
+          <p
+            data-keep-mono
+            className="truncate font-mono text-sm leading-5 text-neutral-400 dark:text-neutral-500"
+          >
             {entry.id}
           </p>
-        </div>
-        {entry.description ? (
-          <p
-            className={cn(wt.caption, 'text-ink-faint mt-0.5 truncate')}
-            title={entry.description}
-          >
-            {entry.description}
-          </p>
-        ) : null}
-      </div>
-    </header>
+        </>
+      }
+      description={entry.description || undefined}
+      onBack={onBack}
+    />
   )
 }
 
@@ -366,7 +340,9 @@ function EditorLoading({ embedded = false }: { embedded?: boolean }) {
     <div
       className={cn(
         'w-full space-y-4',
-        embedded ? 'px-4 py-2' : 'mx-auto max-w-3xl px-6 py-8',
+        embedded
+          ? 'px-4 py-2'
+          : cn(SETTINGS_COLUMN, 'px-5 pt-4 pb-16 @3xl:px-14'),
       )}
     >
       <Skeleton className="h-5 w-40" />
@@ -389,10 +365,12 @@ function EditorError({
     <div
       className={cn(
         'w-full',
-        embedded ? 'px-4 py-2' : 'mx-auto max-w-3xl px-6 py-8',
+        embedded
+          ? 'px-4 py-2'
+          : cn(SETTINGS_COLUMN, 'px-5 pt-4 pb-16 @3xl:px-14'),
       )}
     >
-      <p className={cn(wt.bodySm, 'text-alert')}>{message}</p>
+      <p className={cn(wt.bodySm, 'text-destructive')}>{message}</p>
     </div>
   )
 }

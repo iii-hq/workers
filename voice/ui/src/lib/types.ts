@@ -50,9 +50,14 @@ export type DictationStopRequest = {
 
 export interface DictationStopResponse {
   session_id: string
+  /** The transcript, cleaned up by the configured language model when that pass is on. */
   text: string
   segments: Segment[]
   duration_secs: number
+  /** The recognizer's words before the clean-up pass changed them. */
+  raw_text?: string
+  /** The `provider::model` that cleaned the text up. */
+  cleanup_model?: string
 }
 
 export interface DictationListEntry {
@@ -146,6 +151,8 @@ export interface ModelsRemoveResponse {
 }
 
 export interface DoctorResponse {
+  /** The fn key as the dictation key (macOS; needs Input Monitoring). Absent on older workers. */
+  fn_key?: { available: boolean; problem?: string }
   stt: {
     backend: 'local' | 'whisper_cpp' | 'openai' | 'router'
     model: string
@@ -172,6 +179,14 @@ export interface DoctorResponse {
     /** Legacy server playback count, now zero; browsers own playback. */
     playing: number
   }
+  /** The clean-up pass over finished dictations; absent on workers before 0.2. */
+  cleanup?: {
+    enabled: boolean
+    model: string
+    problem?: string
+  }
+  /** Whether Read aloud / Voice chat show above the composer; absent (shown) on workers before 0.2. */
+  chat_controls?: boolean
   sessions: number
   version: string
 }
@@ -236,9 +251,24 @@ export interface ComposerActionProps {
   isStreaming: boolean
 }
 
+/** A key in the console's shortcut syntax, one chord or one per platform. */
+export type ComposerShortcut = string | { mac: readonly string[]; other: readonly string[] }
+
+/** The palette row and key a console may give a composer action (ADE 2026-10 and later). */
+export interface ComposerActionCommand {
+  title: string
+  detail?: string
+  keywords?: readonly string[]
+  shortcut?: ComposerShortcut
+  firesWhileTyping?: boolean
+  enabled?: () => boolean
+  run: () => void
+}
+
 export interface ComposerActionRegistration {
   id: string
   render: ComponentType<ComposerActionProps>
+  command?: ComposerActionCommand
 }
 
 /** `host.chat` on a console that ships the composer toolbar slot; feature-detect the method. */

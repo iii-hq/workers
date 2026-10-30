@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StoredSpan } from '../api/traces'
-import {
-  isPendingSpan,
-  toWaterfallData,
-} from './traceTransform'
+import { isPendingSpan, toWaterfallData } from './traceTransform'
 
 const NOW_MS = 1_700_000_010_000
 

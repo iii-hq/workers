@@ -72,11 +72,54 @@ function fieldError(
 
 function FieldMessage({ message }: { message?: string }) {
   return message ? (
-    <p className="font-sans text-base text-alert sm:text-sm" role="alert">
+    <p className="text-[13px] leading-relaxed text-alert-strong" role="alert">
       {message}
     </p>
   ) : null
 }
+
+/** The schema's own words for a field, when it has any. */
+function fieldDescription(schema: JsonSchema | undefined): string | undefined {
+  return typeof schema?.description === 'string' && schema.description.trim()
+    ? schema.description.trim()
+    : undefined
+}
+
+/** A field row: label, the schema's description, the control, its error. */
+function Field({
+  id,
+  label,
+  description,
+  error,
+  children,
+}: {
+  id: string
+  label: string
+  description?: string
+  error?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="space-y-2.5 px-5 py-4">
+      <div className="space-y-0.5">
+        <label htmlFor={id} className="block text-[15px] font-medium text-ink">
+          {label}
+        </label>
+        {description ? (
+          <p className="text-[13px] leading-relaxed text-ink-faint">
+            {description}
+          </p>
+        ) : null}
+      </div>
+      {children}
+      <FieldMessage message={error} />
+    </div>
+  )
+}
+
+/** The control itself: a field that reads as one on the card. */
+const fieldInputClass =
+  'h-10 rounded-lg bg-panel px-3.5 text-[15px] text-ink ring-1 ring-inset ring-edge placeholder:text-ink-ghost hover:bg-panel focus:border-transparent focus:ring-rule-focus sm:h-10 sm:text-[15px]'
 
 /**
  * Friendly fallback for the router's common provider settings. An API-key
@@ -117,7 +160,12 @@ export function ProviderSettingsForm({
   }
 
   return (
-    <div className={cn('space-y-5 py-1', className)}>
+    <div
+      className={cn(
+        'space-y-6 py-1 font-inter text-[15px] text-ink',
+        className,
+      )}
+    >
       {credentialEnvVar ? (
         <SecretKeyField
           name={credentialEnvVar}
@@ -145,26 +193,28 @@ export function ProviderSettingsForm({
       >
         <div className="flex items-center gap-2 px-1">
           <SlidersHorizontal
-            className="size-5 shrink-0 text-ink-ghost sm:size-4"
+            className="size-4 shrink-0 text-ink-faint"
             aria-hidden
           />
           <h3
             id="provider-settings-heading"
-            className="font-sans text-[11px] font-medium text-ink-ghost"
+            className="text-[13px] font-medium text-ink-faint"
           >
             Provider settings
           </h3>
         </div>
 
-        <div className="divide-y divide-edge overflow-hidden rounded-lg bg-surface ring-1 ring-inset ring-edge">
+        <div className="divide-y divide-edge overflow-hidden rounded-xl bg-surface ring-1 ring-inset ring-edge">
           {properties.api_url ? (
-            <div className="space-y-2 p-3">
-              <label
-                htmlFor={apiUrlId}
-                className="block font-sans text-base font-medium text-ink sm:text-sm"
-              >
-                API endpoint
-              </label>
+            <Field
+              id={apiUrlId}
+              label="API endpoint"
+              description={
+                fieldDescription(properties.api_url) ??
+                'Where requests for this provider are sent.'
+              }
+              error={fieldError(errors, 'api_url')}
+            >
               <Input
                 id={apiUrlId}
                 value={stringValue(current.api_url)}
@@ -176,20 +226,21 @@ export function ProviderSettingsForm({
                 }
                 preserveCase
                 inputMode="url"
-                className="h-12 max-sm:text-base sm:h-9"
+                className={fieldInputClass}
               />
-              <FieldMessage message={fieldError(errors, 'api_url')} />
-            </div>
+            </Field>
           ) : null}
 
           {properties.max_tokens ? (
-            <div className="space-y-2 p-3">
-              <label
-                htmlFor={maxTokensId}
-                className="block font-sans text-base font-medium text-ink sm:text-sm"
-              >
-                Maximum output tokens
-              </label>
+            <Field
+              id={maxTokensId}
+              label="Maximum output tokens"
+              description={
+                fieldDescription(properties.max_tokens) ??
+                'The most tokens one reply may contain.'
+              }
+              error={fieldError(errors, 'max_tokens')}
+            >
               <Input
                 id={maxTokensId}
                 value={
@@ -211,20 +262,19 @@ export function ProviderSettingsForm({
                 }
                 preserveCase
                 inputMode="numeric"
-                className="h-12 max-sm:text-base sm:h-9"
+                className={cn(fieldInputClass, 'max-w-[12rem] tabular-nums')}
               />
-              <FieldMessage message={fieldError(errors, 'max_tokens')} />
-            </div>
+            </Field>
           ) : null}
 
           {systemPromptSchema ? (
-            <div className="space-y-3 p-3">
-              <label className="flex min-h-12 cursor-pointer items-center justify-between gap-3">
-                <span className="min-w-0 flex-1">
-                  <span className="block font-sans text-base font-medium text-ink sm:text-sm">
+            <div className="space-y-3 px-5 py-4">
+              <label className="flex min-h-10 cursor-pointer items-center justify-between gap-4">
+                <span className="min-w-0 flex-1 space-y-0.5">
+                  <span className="block text-[15px] font-medium text-ink">
                     Custom system prompt
                   </span>
-                  <span className="block font-sans text-base leading-relaxed text-ink-faint sm:text-sm">
+                  <span className="block text-[13px] leading-relaxed text-ink-faint">
                     Leave off to use the prompt supplied by the provider.
                   </span>
                 </span>
@@ -239,7 +289,7 @@ export function ProviderSettingsForm({
                         : undefined,
                     )
                   }
-                  className="size-5 shrink-0 accent-accent sm:size-4"
+                  className="size-4 shrink-0 accent-accent"
                 />
               </label>
               {hasSystemPrompt ? (
@@ -250,7 +300,7 @@ export function ProviderSettingsForm({
                   }
                   rows={6}
                   placeholder="Enter a provider-specific system prompt"
-                  className="w-full resize-y rounded-sm border border-transparent bg-panel-raised px-3 py-2 font-sans text-base leading-relaxed text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:border-rule-focus focus:outline-none focus:ring-[3px] focus:ring-accent/10 sm:text-sm"
+                  className="w-full resize-y rounded-lg bg-panel px-3.5 py-2.5 text-[15px] leading-relaxed text-ink ring-1 ring-inset ring-edge placeholder:text-ink-ghost focus:outline-none focus:ring-rule-focus"
                 />
               ) : null}
               <FieldMessage message={fieldError(errors, 'system_prompt')} />

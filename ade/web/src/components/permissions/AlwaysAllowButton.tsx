@@ -1,11 +1,6 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/Button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { isAutoAcceptable } from '@/lib/backend/auto-accept-policy'
 
 const isDestructiveFunction = (id: string) => !isAutoAcceptable(id)
@@ -64,42 +59,17 @@ export function AlwaysAllowButton({
             ? 'approve always (potentially destructive)'
             : 'approve always'}
       </Button>
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent className="max-w-md">
-          <DialogTitle className="text-[14px]">
-            approve always for this potentially destructive function?
-          </DialogTitle>
-          <DialogDescription className="mt-3 text-ink">
-            you're about to let the agent call{' '}
-            <code className="px-1 bg-paper-2 text-accent">{functionId}</code>{' '}
-            for the rest of this conversation with no further prompts.
-          </DialogDescription>
-          <DialogDescription className="mt-2 text-ink-faint">
-            this function matched the potentially-destructive verb policy (write
-            / delete / exec / send / credential / …). approve once if you only
-            want it this time.
-          </DialogDescription>
-          <div className="mt-6 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setConfirmOpen(false)}
-              className="font-mono text-[12px] px-3 py-1 rounded-sm bg-surface text-ink-faint hover:bg-surface-hover hover:text-ink transition-colors"
-            >
-              cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setConfirmOpen(false)
-                void onConfirm()
-              }}
-              className="font-mono text-[12px] px-3 py-1 rounded-sm bg-alert text-bg hover:bg-alert/90 transition-colors"
-            >
-              approve always {functionId}
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Always approve this function?"
+        description={`The agent can run ${functionId} for the rest of this conversation without asking. It matches the destructive-action policy (write, delete, exec, send, credentials), so approve once if you only need it now.`}
+        confirmLabel="Approve always"
+        tone="danger"
+        onConfirm={() => {
+          void onConfirm()
+        }}
+      />
     </>
   )
 }

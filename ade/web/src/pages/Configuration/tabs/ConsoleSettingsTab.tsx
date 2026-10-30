@@ -1,23 +1,28 @@
+import { ArrowUpRight } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { DefaultPermissionModePicker } from '@/components/permissions/DefaultPermissionModePicker'
+import { FullModeConfirmDialog } from '@/components/permissions/FullModeConfirmDialog'
 import { FunctionAllowlistTree } from '@/components/permissions/FunctionAllowlistTree'
-import { Button } from '@/components/ui/Button'
+import { Button } from '@/components/shadcn/button'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
+  DialogHeader,
   DialogTitle,
-} from '@/components/ui/Dialog'
-import { ModeToggle } from '@/components/ui/ModeToggle'
+} from '@/components/shadcn/dialog'
 import {
-  SettingsList,
-  SettingsRow,
-  SettingsSection,
-} from '@/components/ui/Settings'
-import { Switch } from '@/components/ui/Switch'
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/shadcn/select'
+import { Switch } from '@/components/shadcn/switch'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
-import type { Theme } from '@/hooks/use-theme'
+import { useTabLimit } from '@/hooks/use-tab-limit'
+import type { ThemePreference } from '@/hooks/use-theme'
 import { getDefaultBackend } from '@/lib/backend'
 import {
   autoAllowSeedFromRules,
@@ -33,26 +38,60 @@ import {
 } from '@/lib/completion-bell'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
+import {
+  loadUiSoundsEnabled,
+  playUiSound,
+  saveUiSoundsEnabled,
+  subscribeUiSoundsPreference,
+} from '@/lib/ui-sounds'
+import { settingsFade } from '../components/motion'
+import {
+  SettingsList,
+  SettingsPageBody,
+  SettingsRow,
+  SettingsSection,
+} from '../components/primitives'
+import { GENERAL_ANCHOR } from '../lib/general-settings-index'
 
 // Provider credentials + settings live in the llm-router configuration entry.
 const HARNESS_CONFIG_HASH = hashForWorkersConfiguration('llm-router')
 // Shell's permanent `fs.host_roots` list — do NOT build a second editor for
 // it here; deep-link to the worker-owned configuration interface instead.
 const SHELL_CONFIG_HASH = hashForWorkersConfiguration('ide')
+// The workspace tab limit lives in the ADE's own configuration entry
+// (`tabs.limit`), edited through its schema-driven form like the port.
+const TAB_LIMIT_CONFIG_HASH = hashForWorkersConfiguration('console', [
+  'tabs',
+  'limit',
+])
+
+const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
+  { value: 'light', label: 'Light' },
+  { value: 'system', label: 'System' },
+  { value: 'dark', label: 'Dark' },
+]
+
+const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
+  { value: 'manual', label: 'Manual' },
+  { value: 'auto', label: 'Auto' },
+  { value: 'full', label: 'Full' },
+]
+
+/* A row's dropdown: the shadcn trigger at Linear's width, white on the
+   card so it reads as a control and not a chip. */
+const ROW_SELECT_TRIGGER =
+  'h-9 min-w-40 border-neutral-200 bg-white text-[15px] hover:bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:bg-neutral-900'
 
 interface ConsoleSettingsTabProps {
-  theme: Theme
-  onThemeChange: (next: Theme) => void
+  theme: ThemePreference
+  onThemeChange: (next: ThemePreference) => void
 }
 
 /**
- * Console-level preferences: theme + provider API keys. Extracted from the
- * modal shell so global Settings can host worker sections and future surfaces
- * without nesting unrelated logic.
- *
- * Keyboard nav (number keys to open a provider, arrow keys to walk rows) is
- * scoped to this section — the listener self-removes when it unmounts so
- * it never fights other surfaces.
+ * Console-level preferences: theme, sounds, permission defaults, workspace
+ * limits and links into the worker-owned provider and filesystem forms.
+ * Extracted from the modal shell so global Settings can host worker sections
+ * and future surfaces without nesting unrelated logic.
  */
 export function ConsoleSettingsTab({
   theme,
@@ -64,11 +103,13 @@ export function ConsoleSettingsTab({
   // provider (Storybook) the context is null; treat that as available.
   const ctx = useConversationsCtxOptional()
   const approvalGateAvailable = ctx ? ctx.approvalGateAvailable : true
+  const tabLimit = useTabLimit()
 
   // Deployment defaults from the approval-gate configuration entry (single source).
   const [defaultMode, setDefaultMode] = useState<PermissionMode>('manual')
   const [allowlist, setAllowlist] = useState<string[]>([])
   const [loaded, setLoaded] = useState(false)
+  const [pendingFull, setPendingFull] = useState(false)
   const [completionBellEnabled, setCompletionBellEnabled] = useState(
     loadCompletionBellEnabled,
   )
@@ -84,6 +125,23 @@ export function ConsoleSettingsTab({
   const handleCompletionBellChange = useCallback((enabled: boolean) => {
     setCompletionBellEnabled(enabled)
     saveCompletionBellEnabled(enabled)
+  }, [])
+
+  const [uiSoundsEnabled, setUiSoundsEnabled] = useState(loadUiSoundsEnabled)
+
+  useEffect(
+    () =>
+      subscribeUiSoundsPreference(() => {
+        setUiSoundsEnabled(loadUiSoundsEnabled())
+      }),
+    [],
+  )
+
+  const handleUiSoundsChange = useCallback((enabled: boolean) => {
+    setUiSoundsEnabled(enabled)
+    saveUiSoundsEnabled(enabled)
+    // Turning them on answers with the cue itself.
+    if (enabled) playUiSound('switch')
   }, [])
 
   useEffect(() => {
@@ -125,12 +183,26 @@ export function ConsoleSettingsTab({
     [],
   )
 
-  const handleModeChange = useCallback(
+  const commitMode = useCallback(
     (next: PermissionMode) => {
       setDefaultMode(next)
       void persistDefaults(next, allowlist)
     },
     [allowlist, persistDefaults],
+  )
+
+  // Full mode skips every prompt, so it asks once before it becomes the
+  // default for new conversations.
+  const handleModeChange = useCallback(
+    (next: PermissionMode) => {
+      if (next === defaultMode) return
+      if (next === 'full') {
+        setPendingFull(true)
+        return
+      }
+      commitMode(next)
+    },
+    [commitMode, defaultMode],
   )
 
   const addAllow = useCallback(
@@ -167,168 +239,260 @@ export function ConsoleSettingsTab({
   const [allowlistOpen, setAllowlistOpen] = useState(false)
 
   return (
-    <div className="@container min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex max-w-3xl flex-col gap-8 px-4 py-6 @2xl:px-6 @2xl:py-8">
-        <SettingsSection
-          title="Appearance"
-          description="Choose how the ADE looks in this browser."
-        >
-          <SettingsList>
-            <SettingsRow
-              label="Theme"
-              description="Applied immediately and stored for this browser."
-              layout="inline"
-              control={
-                <ModeToggle<Theme>
-                  value={theme}
-                  onChange={onThemeChange}
-                  variant="radio"
-                  aria-label="Theme"
-                  options={[
-                    { value: 'light', label: 'Light' },
-                    { value: 'dark', label: 'Dark' },
-                  ]}
-                />
-              }
-            />
-          </SettingsList>
-        </SettingsSection>
-
-        <SettingsSection
-          title="Notifications"
-          description="Local sounds from this open Console. No notification permission is required."
-        >
-          <SettingsList>
-            <SettingsRow
-              label="Completion bell"
-              description="Play a gentle bell when a top-level conversation finishes. Failures use a distinct tone; stopped turns stay silent."
-              layout="inline"
-              control={
-                <Switch
-                  aria-label="Completion bell"
-                  checked={completionBellEnabled}
-                  onChange={(event) =>
-                    handleCompletionBellChange(event.currentTarget.checked)
-                  }
-                />
-              }
-            />
-            <SettingsRow
-              label="Sound check"
-              description="Play the success tone now. Your first tap also enables audio for later completions."
-              action={
-                <Button
-                  type="button"
-                  variant="pill"
-                  size="sm"
-                  onClick={() => void playCompletionBell('completed', true)}
+    <SettingsPageBody>
+      <SettingsSection
+        id={GENERAL_ANCHOR.appearance}
+        title="Appearance"
+        description="Choose how the ADE looks in this browser."
+      >
+        <SettingsList>
+          <SettingsRow
+            id={GENERAL_ANCHOR.theme}
+            label="Interface theme"
+            description="Applied immediately and stored for this browser. System follows the OS as it changes."
+            control={
+              <Select
+                value={theme}
+                onValueChange={(value) =>
+                  onThemeChange(value as ThemePreference)
+                }
+                items={THEME_OPTIONS}
+              >
+                <SelectTrigger
+                  aria-label="Interface theme"
+                  className={ROW_SELECT_TRIGGER}
                 >
-                  Test bell
-                </Button>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {THEME_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            }
+          />
+        </SettingsList>
+      </SettingsSection>
+
+      <SettingsSection
+        id={GENERAL_ANCHOR.notifications}
+        title="Notifications"
+        description="Local sounds from this open Console. No notification permission is required."
+      >
+        <SettingsList>
+          <SettingsRow
+            id={GENERAL_ANCHOR.completionBell}
+            label="Completion bell"
+            description="Play a gentle bell when a top-level conversation finishes. Failures use a distinct tone; stopped turns stay silent."
+            layout="inline"
+            control={
+              <Switch
+                aria-label="Completion bell"
+                checked={completionBellEnabled}
+                onCheckedChange={handleCompletionBellChange}
+              />
+            }
+          />
+          <SettingsRow
+            id={GENERAL_ANCHOR.uiSounds}
+            label="Interface sounds"
+            description="A soft tick when you open the model picker and a short tone when you switch models."
+            layout="inline"
+            control={
+              <Switch
+                aria-label="Interface sounds"
+                checked={uiSoundsEnabled}
+                onCheckedChange={handleUiSoundsChange}
+              />
+            }
+          />
+          <SettingsRow
+            id={GENERAL_ANCHOR.soundCheck}
+            label="Sound check"
+            description="Play the success tone now. Your first tap also enables audio for later completions."
+            action={
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void playCompletionBell('completed', true)}
+              >
+                Test bell
+              </Button>
+            }
+          />
+        </SettingsList>
+      </SettingsSection>
+
+      {approvalGateAvailable ? (
+        <SettingsSection
+          id={GENERAL_ANCHOR.permissions}
+          title="Permissions"
+          description="Set the default behavior for new conversations. Existing conversations keep their current permissions."
+        >
+          <SettingsList>
+            <SettingsRow
+              id={GENERAL_ANCHOR.defaultMode}
+              label="Default mode"
+              description="Manual asks before every function. Auto skips functions on the allowlist. Full skips all prompts."
+              control={
+                <Select
+                  value={loaded ? defaultMode : 'manual'}
+                  onValueChange={(value) =>
+                    handleModeChange(value as PermissionMode)
+                  }
+                  items={PERMISSION_MODE_OPTIONS}
+                >
+                  <SelectTrigger
+                    aria-label="Default permission mode"
+                    className={ROW_SELECT_TRIGGER}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    {PERMISSION_MODE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               }
             />
-          </SettingsList>
-        </SettingsSection>
-
-        {approvalGateAvailable ? (
-          <SettingsSection
-            title="Permissions"
-            description="Set the default behavior for new conversations. Existing conversations keep their current permissions."
-          >
-            <SettingsList>
+            {defaultMode === 'auto' ? (
               <SettingsRow
-                label="Default mode"
-                description="Manual asks before every function. Auto skips functions on the allowlist. Full skips all prompts."
-                control={
-                  <DefaultPermissionModePicker
-                    value={loaded ? defaultMode : undefined}
-                    onChange={handleModeChange}
-                  />
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={settingsFade}
+                id={GENERAL_ANCHOR.allowlist}
+                label="Auto-mode allowlist"
+                description="Functions that new conversations can run without asking."
+                meta={
+                  allowlist.length === 0
+                    ? 'No functions selected'
+                    : `${allowlist.length} function${allowlist.length === 1 ? '' : 's'} selected`
+                }
+                action={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setAllowlistOpen(true)}
+                  >
+                    Manage
+                  </Button>
                 }
               />
-              {defaultMode === 'auto' ? (
-                <SettingsRow
-                  label="Auto-mode allowlist"
-                  description="Functions that new conversations can run without asking."
-                  meta={
-                    allowlist.length === 0
-                      ? 'No functions selected'
-                      : `${allowlist.length} function${allowlist.length === 1 ? '' : 's'} selected`
-                  }
-                  action={
-                    <Button
-                      type="button"
-                      variant="pill"
-                      size="sm"
-                      onClick={() => setAllowlistOpen(true)}
-                    >
-                      Manage
-                    </Button>
-                  }
-                />
-              ) : null}
-            </SettingsList>
-          </SettingsSection>
-        ) : null}
+            ) : null}
+          </SettingsList>
+        </SettingsSection>
+      ) : null}
 
-        <Dialog open={allowlistOpen} onOpenChange={setAllowlistOpen}>
-          <DialogContent className="flex max-h-[80vh] max-w-xl flex-col overflow-hidden">
+      <FullModeConfirmDialog
+        open={pendingFull}
+        onOpenChange={setPendingFull}
+        onConfirm={() => commitMode('full')}
+        scope="default"
+      />
+
+      <Dialog open={allowlistOpen} onOpenChange={setAllowlistOpen}>
+        <DialogContent className="flex max-h-[80vh] flex-col overflow-hidden [--dialog-max-width:36rem]">
+          <DialogHeader>
             <DialogTitle>Auto-mode allowlist</DialogTitle>
-            <DialogDescription className="mt-1">
+            <DialogDescription>
               Selected functions run automatically in new conversations using
               Auto mode. Existing conversations keep their current selection.
             </DialogDescription>
-            <div className="-mx-2 mt-4 min-h-[280px] flex-1 overflow-y-auto border border-rule-2 px-2 py-2">
-              <FunctionAllowlistTree
-                functions={allowlistCandidates}
-                allowlist={allowlistSet}
-                onAdd={addAllow}
-                onRemove={removeAllow}
-                emptyHint="The function catalog has not loaded yet."
-              />
-            </div>
-            <div className="mt-4 flex justify-end">
-              <Button type="button" onClick={() => setAllowlistOpen(false)}>
-                Done
+          </DialogHeader>
+          <div className="min-h-[280px] flex-1 overflow-y-auto overscroll-contain rounded-xl border border-neutral-200 p-2 dark:border-neutral-800">
+            <FunctionAllowlistTree
+              functions={allowlistCandidates}
+              allowlist={allowlistSet}
+              onAdd={addAllow}
+              onRemove={removeAllow}
+              emptyHint="The function catalog has not loaded yet."
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" onClick={() => setAllowlistOpen(false)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <SettingsSection
+        id={GENERAL_ANCHOR.workspace}
+        title="Workspace"
+        description="How many workspace tabs this ADE lets you open at once."
+      >
+        <SettingsList>
+          <SettingsRow
+            id={GENERAL_ANCHOR.tabLimit}
+            label="Tab limit"
+            description="New-tab controls disable at the limit; tabs already open stay open."
+            meta={`${tabLimit} ${tabLimit === 1 ? 'tab' : 'tabs'}`}
+            action={
+              <Button
+                variant="outline"
+                nativeButton={false}
+                render={<a href={TAB_LIMIT_CONFIG_HASH} />}
+              >
+                Edit limit
               </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
+            }
+          />
+        </SettingsList>
+      </SettingsSection>
 
-        <SettingsSection
-          title="Providers"
-          description="Manage model credentials, endpoints, and provider-specific settings."
-        >
-          <SettingsList>
-            <SettingsRow
-              label="Model providers"
-              description="API keys are masked and remain in the llm-router configuration."
-              action={
-                <Button asChild variant="pill" size="sm">
-                  <a href={HARNESS_CONFIG_HASH}>Open settings</a>
-                </Button>
-              }
-            />
-          </SettingsList>
-        </SettingsSection>
+      <SettingsSection
+        id={GENERAL_ANCHOR.providers}
+        title="Providers"
+        description="Manage model credentials, endpoints, and provider-specific settings."
+      >
+        <SettingsList>
+          <SettingsRow
+            id={GENERAL_ANCHOR.modelProviders}
+            label="Model providers"
+            description="API keys are masked and remain in the llm-router configuration."
+            action={
+              <Button
+                variant="outline"
+                nativeButton={false}
+                render={<a href={HARNESS_CONFIG_HASH} />}
+              >
+                Open LLM Router
+                <ArrowUpRight data-icon="inline-end" />
+              </Button>
+            }
+          />
+        </SettingsList>
+      </SettingsSection>
 
-        <SettingsSection
-          title="Filesystem access"
-          description="A conversation can always use its workspace. Access outside it requires a temporary or permanent grant."
-        >
-          <SettingsList>
-            <SettingsRow
-              label="Permanent roots"
-              description="Folders available to every conversation. Workspace and session grants are managed from each chat."
-              action={
-                <Button asChild variant="pill" size="sm">
-                  <a href={SHELL_CONFIG_HASH}>Edit roots</a>
-                </Button>
-              }
-            />
-          </SettingsList>
-        </SettingsSection>
-      </div>
-    </div>
+      <SettingsSection
+        id={GENERAL_ANCHOR.filesystem}
+        title="Filesystem access"
+        description="A conversation can always use its workspace. Access outside it requires a temporary or permanent grant."
+      >
+        <SettingsList>
+          <SettingsRow
+            id={GENERAL_ANCHOR.permanentRoots}
+            label="Permanent roots"
+            description="Folders available to every conversation. Workspace and session grants are managed from each chat."
+            action={
+              <Button
+                variant="outline"
+                nativeButton={false}
+                render={<a href={SHELL_CONFIG_HASH} />}
+              >
+                Open IDE
+                <ArrowUpRight data-icon="inline-end" />
+              </Button>
+            }
+          />
+        </SettingsList>
+      </SettingsSection>
+    </SettingsPageBody>
   )
 }

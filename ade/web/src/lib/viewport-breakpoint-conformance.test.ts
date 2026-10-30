@@ -22,18 +22,17 @@ const SHEET =
 
 const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'App.tsx': {
-    max: 16,
+    max: 14,
     reason:
-      'phone chrome: the workspace strip snaps one panel at a time on phones, phone header vs desktop menu bar, dialog sized against the viewport',
+      'phone chrome: the workspace strip snaps one panel at a time on phones, dialog sized against the viewport',
   },
   'components/CommandPalette.tsx': {
-    max: 31,
+    max: 15,
     reason:
       'phone chrome: full-screen on phones vs a centred dialog, keyboard hints only where a keyboard is',
   },
   'components/chat/ActiveSubagentChips.tsx': { max: 1, reason: TOUCH },
   'components/chat/AddProviderPanel.tsx': { max: 8, reason: SHEET },
-  'components/chat/ChatPanel.tsx': { max: 4, reason: TOUCH },
   'components/chat/ChatView.tsx': {
     max: 6,
     reason: 'phone chrome: phone header hides the status dot; touch sizes',
@@ -55,7 +54,6 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/chat/MessageList.tsx': { max: 4, reason: TOUCH },
   'components/chat/ModelPicker.tsx': { max: 22, reason: SHEET },
   'components/chat/ModelWaitingIndicator.tsx': { max: 2, reason: TOUCH },
-  'components/chat/ProviderConfigurationPanel.tsx': { max: 2, reason: TOUCH },
   'components/chat/ProviderSettingsForm.tsx': { max: 15, reason: TOUCH },
   'components/chat/ReasoningEffortSlider.tsx': { max: 2, reason: TOUCH },
   'components/chat/SessionAddonsPicker.tsx': { max: 1, reason: TOUCH },
@@ -65,15 +63,10 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/chat/engine/ObserveView.tsx': { max: 10, reason: TOUCH },
   'components/chat/harness/SpawnView.tsx': { max: 7, reason: TOUCH },
   'components/chat/sandbox/ErrorCard.tsx': { max: 18, reason: TOUCH },
-  'components/function-call/FunctionCallCard.tsx': {
-    max: 6,
-    reason: TOUCH,
-  },
   'components/permissions/FullModeConfirmDialog.tsx': {
     max: 8,
     reason: 'phone chrome: stacked 48px buttons in the phone dialog',
   },
-  'components/sidebar/ConversationRow.tsx': { max: 1, reason: TOUCH },
   'components/sidebar/ConversationSidebar.tsx': { max: 4, reason: TOUCH },
   'components/observer-activity/ObserverActivityCard.tsx': {
     max: 18,
@@ -106,14 +99,13 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/ui/SettingsDeck.tsx': { max: 4, reason: TOUCH },
   'components/workspace/EmptyPane.tsx': { max: 2, reason: TOUCH },
   'components/workspace/TabStrip.tsx': { max: 7, reason: TOUCH },
+  'components/workspace/WorkspaceHeader.tsx': {
+    max: 2,
+    reason: 'phone chrome: phone header vs desktop menu bar',
+  },
   'components/workspace/pane-controls.tsx': {
     max: 5,
     reason: 'phone chrome: split handles and pane rails need a pointer',
-  },
-  'pages/Configuration/index.tsx': { max: 14, reason: TOUCH },
-  'pages/Configuration/tabs/WorkersTab/WorkerEditor.tsx': {
-    max: 1,
-    reason: TOUCH,
   },
 }
 
@@ -146,6 +138,9 @@ function walk(ext: string): string[] {
     .map((file) => relative(srcRoot, join(srcRoot, file)))
     .filter(
       (file) =>
+        // shadcn registry components are vendored as generated; their
+        // phone-vs-desktop utilities are the registry's, not the console's.
+        !file.startsWith('components/shadcn/') &&
         !file.startsWith('demo/') &&
         !file.endsWith('.stories.tsx') &&
         !file.endsWith('.test.tsx'),

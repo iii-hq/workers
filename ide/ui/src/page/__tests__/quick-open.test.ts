@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   fuzzyMatchIndices,
   highlightSegments,
+  inUseRows,
   isQuickOpenKey,
   normalizeQuickOpenQuery,
   QUICK_OPEN_SHORTCUT,
   quickOpenKeyLabel,
   quickOpenRow,
+  rankQuickOpenRows,
+  useScore,
   stepQuickOpenIndex,
   toQuickOpenRows,
 } from '../quick-open'
@@ -23,14 +26,16 @@ const key = (overrides: Partial<Parameters<typeof isQuickOpenKey>[0]>) => ({
 describe('quick-open shortcut', () => {
   it('is Ctrl+P on a Mac and Alt+P elsewhere, never the browser print chord', () => {
     expect(QUICK_OPEN_SHORTCUT).toEqual({ mac: ['Ctrl+P'], other: ['Alt+P'] })
-    expect(quickOpenKeyLabel('mac')).toBe('Ctrl+P')
+    expect(quickOpenKeyLabel('mac')).toBe('⌘P')
     expect(quickOpenKeyLabel('other')).toBe('Alt+P')
   })
 
   it('matches the chord for the platform only', () => {
     expect(isQuickOpenKey(key({ ctrlKey: true }), 'mac')).toBe(true)
     expect(isQuickOpenKey(key({ ctrlKey: true, key: 'P' }), 'mac')).toBe(true)
-    expect(isQuickOpenKey(key({ metaKey: true }), 'mac')).toBe(false)
+    expect(isQuickOpenKey(key({ metaKey: true }), 'mac')).toBe(true)
+    expect(isQuickOpenKey(key({ metaKey: true, ctrlKey: true }), 'mac')).toBe(false)
+    expect(isQuickOpenKey(key({ metaKey: true }), 'other')).toBe(false)
     expect(isQuickOpenKey(key({ ctrlKey: true, shiftKey: true }), 'mac')).toBe(false)
     expect(isQuickOpenKey(key({ altKey: true }), 'mac')).toBe(false)
     expect(isQuickOpenKey(key({ altKey: true }), 'other')).toBe(true)
@@ -123,5 +128,29 @@ describe('stepQuickOpenIndex', () => {
     expect(stepQuickOpenIndex(2, 1, 3)).toBe(0)
     expect(stepQuickOpenIndex(0, -1, 3)).toBe(2)
     expect(stepQuickOpenIndex(0, 1, 0)).toBe(-1)
+  })
+})
+
+describe('ranking by use', () => {
+  const now = Date.UTC(2026, 9, 27)
+  const day = 86_400_000
+  const rows = ['docs/readme.md', 'src/app.ts', 'src/apply.ts', 'lib/zap.ts'].map((rel) => quickOpenRow(rel, ''))
+
+  it('fades opens by age, halving each week', () => {
+    expect(useScore({ count: 4, last: now }, now)).toBe(4)
+    expect(useScore({ count: 4, last: now - 7 * day }, now)).toBeCloseTo(2)
+    expect(useScore(undefined, now)).toBe(0)
+  })
+
+  it('pulls a name that starts with the query, then files in use, ahead of the fuzzy order', () => {
+    const ranked = rankQuickOpenRows(rows, 'app', {}, now).map((row) => row.rel)
+    expect(ranked.slice(0, 2)).toEqual(['src/app.ts', 'src/apply.ts'])
+    const used = rankQuickOpenRows(rows, 'a', { 'lib/zap.ts': { count: 30, last: now } }, now).map((row) => row.rel)
+    expect(used[0]).toBe('lib/zap.ts')
+  })
+
+  it('lists the files in use for an empty query, the one just left first', () => {
+    const uses = { 'a.ts': { count: 1, last: now }, 'b.ts': { count: 9, last: now }, 'old.ts': { count: 1, last: now - 400 * day } }
+    expect(inUseRows(uses, ['a.ts'], now, 5).map((row) => row.rel)).toEqual(['a.ts', 'b.ts'])
   })
 })

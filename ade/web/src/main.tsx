@@ -6,7 +6,7 @@ import * as JsxRuntime from 'react/jsx-runtime'
 import * as ReactDOM from 'react-dom'
 import * as ReactDOMClient from 'react-dom/client'
 import { createRoot } from 'react-dom/client'
-import { TooltipProvider } from '@/components/ui/Tooltip'
+import { TooltipProvider } from '@/components/shadcn/tooltip'
 import { routeFromHash, standaloneRouteFromHash } from '@/hooks/use-hash-route'
 import { sideChatsLeftByClosedTabs } from '@/lib/chat-aside'
 import { buildConsoleApi } from '@/lib/console-api'
@@ -107,7 +107,7 @@ const queryClient = new QueryClient({
 createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider delayDuration={150}>
+      <TooltipProvider>
         <Root injectableUiRuntime={injectableUiRuntime} />
       </TooltipProvider>
     </QueryClientProvider>

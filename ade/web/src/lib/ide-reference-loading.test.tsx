@@ -17,6 +17,7 @@ vi.mock('@iii-dev/console-ui', async () => {
       ...props
     }: Record<string, unknown>) =>
       React.createElement('button', props, children as React.ReactNode),
+    useConfirm: () => ({ confirm: async () => true, dialog: null }),
     IconButton: ({ children, label, ...props }: Record<string, unknown>) =>
       React.createElement(
         'button',
@@ -51,9 +52,10 @@ vi.mock('@iii-dev/console-ui', async () => {
 })
 
 import {
-  EditorPane,
   type EditorCache,
+  EditorPane,
 } from '../../../../ide/ui/src/page/EditorPane'
+import { htmlPreviewLimits } from '../../../../ide/ui/src/page/rich-preview'
 
 let container: HTMLDivElement
 let root: Root
@@ -311,6 +313,140 @@ describe('IDE reference loading', () => {
     await show('short.ts', { line: 999, seq: 1 })
     expect(container.querySelector('[role="status"]')?.textContent).toContain(
       'exceeds the current file',
+    )
+  })
+})
+
+/** Model the page's Open preview request, acknowledged like a reveal, with
+    the IDE's default of opening files as source. */
+function PreviewPage({
+  path,
+  request,
+  bump = 0,
+}: {
+  path: string
+  request: { path: string; seq: number }
+  bump?: number
+}) {
+  const [pending, setPending] = useState<{ path: string; seq: number } | null>(
+    request,
+  )
+  useEffect(() => setPending(request), [request])
+  const handled = useCallback((path: string, seq: number) => {
+    setPending((current) =>
+      current?.path === path && current.seq === seq ? null : current,
+    )
+  }, [])
+  return (
+    <EditorPane
+      key={`${path}:${bump}`}
+      host={host}
+      root="/repo"
+      rootLabel="repo"
+      relPath={path}
+      cache={cache}
+      createObjectUrl={noImage}
+      onDirtyChange={noop}
+      onRevealDir={noop}
+      onCompare={noop}
+      previewRequest={pending?.path === path ? pending : null}
+      onPreviewHandled={handled}
+    />
+  )
+}
+
+describe('explorer Open preview', () => {
+  it('opens an HTML file rendered, once, and keeps a later Show source', async () => {
+    call.mockResolvedValue({
+      content: '<h1>Hello</h1>',
+      is_utf8: true,
+    })
+    const request = { path: 'site/index.html', seq: 1 }
+    await act(async () =>
+      root.render(<PreviewPage path="site/index.html" request={request} />),
+    )
+    expect(container.querySelector('iframe[title="preview site/index.html"]')).not.toBeNull()
+    // Plain markup renders whole: no note about what is missing.
+    expect(container.querySelector('[role="note"]')).toBeNull()
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Show source"]')
+        ?.click(),
+    )
+    expect(container.querySelector('iframe')).toBeNull()
+    // A remount (tab switch or refresh) does not replay the request.
+    await act(async () =>
+      root.render(<PreviewPage path="site/index.html" request={request} bump={1} />),
+    )
+    expect(container.querySelector('iframe')).toBeNull()
+    expect(container.querySelector('[aria-label="Show preview"]')).not.toBeNull()
+    // A new request on the same file shows it again.
+    await act(async () =>
+      root.render(
+        <PreviewPage path="site/index.html" request={{ ...request, seq: 2 }} bump={1} />,
+      ),
+    )
+    expect(container.querySelector('iframe')).not.toBeNull()
+  })
+
+  it('says what a static preview leaves out of an app shell', async () => {
+    call.mockResolvedValue({
+      content:
+        '<div id="root"></div><script type="module" src="/src/main.tsx"></script>',
+      is_utf8: true,
+    })
+    await act(async () =>
+      root.render(<PreviewPage path="index.html" request={{ path: 'index.html', seq: 1 }} />),
+    )
+    expect(container.querySelector('[role="note"]')?.textContent).toContain(
+      "scripts don't run",
+    )
+  })
+
+  it('waits for a failed read to succeed before switching', async () => {
+    call.mockRejectedValueOnce(new Error('permission denied'))
+    call.mockResolvedValueOnce({ content: '<p>ok</p>', is_utf8: true })
+    await act(async () =>
+      root.render(<PreviewPage path="page.htm" request={{ path: 'page.htm', seq: 1 }} />),
+    )
+    expect(container.textContent).toContain('This file could not be opened')
+    const retry = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes('Try again'),
+    )
+    await act(async () => retry?.click())
+    expect(container.querySelector('iframe[title="preview page.htm"]')).not.toBeNull()
+  })
+
+  it('leaves a file with no rendered view as source', async () => {
+    call.mockResolvedValue({ content: 'const a = 1', is_utf8: true })
+    await act(async () =>
+      root.render(<PreviewPage path="main.ts" request={{ path: 'main.ts', seq: 1 }} />),
+    )
+    expect(container.querySelector('textarea')).not.toBeNull()
+    expect(container.querySelector('iframe')).toBeNull()
+  })
+})
+
+describe('htmlPreviewLimits', () => {
+  it('is null for markup that renders whole', () => {
+    expect(htmlPreviewLimits('<h1>Hi</h1><style>h1{color:red}</style>')).toBeNull()
+    expect(
+      htmlPreviewLimits(
+        '<link rel="stylesheet" href="https://cdn.example/a.css"><img src="data:image/png;base64,AA">',
+      ),
+    ).toBeNull()
+    // Links the page navigates to are not resources it needs.
+    expect(htmlPreviewLimits('<a href="./about.html">About</a>')).toBeNull()
+  })
+
+  it('names scripts, local files, or both', () => {
+    expect(htmlPreviewLimits('<script>1</script>')).toContain("scripts don't run")
+    expect(htmlPreviewLimits('<link rel="stylesheet" href="style.css">')).toContain(
+      "linked local files",
+    )
+    expect(htmlPreviewLimits("<img src='/logo.png'>")).toContain('linked local files')
+    expect(htmlPreviewLimits('<script src="./app.js"></script>')).toContain(
+      "scripts don't run and linked local files don't load",
     )
   })
 })

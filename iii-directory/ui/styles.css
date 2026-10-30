@@ -139,7 +139,14 @@
   min-width: 0;
   font-family: var(--font-mono);
   color: var(--color-ink);
-  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+/* the install / read call under each section: inset like the rows above it,
+   so the prompt and the copy button keep off the card's edges */
+[data-iii-ui="iii-directory"] .dir-ui-search-cmd {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  background: var(--color-panel-raised);
 }
 [data-iii-ui="iii-directory"] .dir-ui-search-fn > summary .dir-ui-search-fn-id {
   color: var(--color-accent);

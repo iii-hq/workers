@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Button } from './Button'
+import { Button } from '@/components/shadcn/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from './Dialog'
 
 // viewport: phone chrome — shared modal margins, stacked actions and touch targets.
@@ -7,94 +7,146 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from './Dialog'
 export interface ConfirmDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** The question, naming the thing at stake: `Delete index.html?`. */
   title: string
+  /** One or two plain sentences: what happens, and whether it can be undone. */
   description?: React.ReactNode
-  /** Lines listed under the description, e.g. the unsaved items at stake. */
-  details?: readonly string[]
   confirmLabel?: string
   cancelLabel?: string
   /** `danger` paints the confirm control in `alert` for destructive actions. */
   tone?: 'default' | 'danger'
-  onConfirm: () => void
+  /**
+   * The confirmed action. A promise keeps the dialog open while it runs
+   * (the confirm control shows `busyLabel`, nothing else is clickable) and
+   * closes it once it resolves; a rejection stays open with its message
+   * under the description, and the confirm control tries again.
+   */
+  onConfirm: () => void | Promise<void>
   onCancel?: () => void
+  /** The confirm control's label while an async `onConfirm` runs. */
+  busyLabel?: string
+  /** Why the action failed, from outside the dialog (it opens on the failure,
+      the confirm control then tries again). A rejected `onConfirm` sets its
+      own. While one shows, the controls read `Retry …` and `Close`. */
+  error?: string | null
 }
 
-/** The console's confirmation in place of `window.confirm`; cancel owns initial focus. */
+/**
+ * The console's one alert dialog, in place of `window.confirm`: a title, a
+ * short description, and the actions on their own band. Nothing else goes in
+ * it. Cancel owns initial focus; Escape and the close control cancel.
+ */
 export function ConfirmDialog({
   open,
   onOpenChange,
   title,
   description,
-  details,
   confirmLabel = 'Continue',
   cancelLabel = 'Cancel',
   tone = 'default',
   onConfirm,
   onCancel,
+  busyLabel,
+  error: outsideError = null,
 }: ConfirmDialogProps) {
   const cancelRef = React.useRef<HTMLButtonElement>(null)
-  const settle = (confirmed: boolean) => {
+  const [busy, setBusy] = React.useState(false)
+  const [ownError, setError] = React.useState<string | null>(null)
+  const error = ownError ?? outsideError
+  const busyRef = React.useRef(false)
+  // Each opening starts clean.
+  React.useEffect(() => {
+    if (!open) return
+    setError(null)
+  }, [open])
+  const cancel = () => {
+    if (busyRef.current) return
     onOpenChange(false)
-    if (confirmed) onConfirm()
-    else onCancel?.()
+    onCancel?.()
+  }
+  const confirm = () => {
+    if (busyRef.current) return
+    const result = onConfirm()
+    if (!(result instanceof Promise)) {
+      onOpenChange(false)
+      return
+    }
+    busyRef.current = true
+    setBusy(true)
+    setError(null)
+    result.then(
+      () => {
+        busyRef.current = false
+        setBusy(false)
+        onOpenChange(false)
+      },
+      (reason: unknown) => {
+        busyRef.current = false
+        setBusy(false)
+        setError(reason instanceof Error ? reason.message : String(reason))
+      },
+    )
   }
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) settle(false)
+        if (!next) cancel()
       }}
     >
       <DialogContent
         role="alertdialog"
-        className="w-[calc(100%-24px)] max-w-md"
+        aria-busy={busy || undefined}
+        className="w-[calc(100%-24px)] max-w-[440px] overflow-hidden rounded-2xl p-0 font-inter"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           cancelRef.current?.focus()
         }}
       >
-        <DialogTitle className="pr-8 text-[14px]">{title}</DialogTitle>
-        {description ? (
-          <DialogDescription className="mt-2 text-[13px] leading-relaxed">
-            {description}
-          </DialogDescription>
-        ) : null}
-        {details && details.length > 0 ? (
-          <ul className="mt-3 space-y-1 rounded-sm bg-surface px-3 py-2 font-sans text-[12px] text-ink">
-            {details.map((line, index) => (
-              <li
-                // biome-ignore lint/suspicious/noArrayIndexKey: lines are positional and may repeat
-                key={`${index}:${line}`}
-                className="truncate"
-              >
-                {line}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <div className="mt-5 flex flex-col-reverse justify-end gap-2 sm:flex-row">
+        <div className="px-6 pt-6 pb-5">
+          <DialogTitle className="pr-8 font-inter text-[16px] leading-6 font-semibold break-words">
+            {title}
+          </DialogTitle>
+          {description ? (
+            <DialogDescription className="mt-1.5 font-inter text-[14px] leading-[22px] break-words">
+              {description}
+            </DialogDescription>
+          ) : null}
+          {error ? (
+            <p
+              role="alert"
+              className="mt-3 font-inter text-[14px] leading-[22px] break-words text-alert"
+            >
+              {error}
+            </p>
+          ) : null}
+        </div>
+        {/* The actions sit on their own band, one surface step down. */}
+        <div className="flex flex-col-reverse justify-end gap-2 bg-surface px-6 py-4 sm:flex-row">
           <Button
             ref={cancelRef}
             type="button"
-            variant="pill"
-            size="sm"
-            className="h-12 sm:h-8"
-            onClick={() => settle(false)}
+            variant="secondary"
+            size="lg"
+            disabled={busy}
+            className="h-11 sm:h-9"
+            onClick={cancel}
           >
-            {cancelLabel}
+            {error ? 'Close' : cancelLabel}
           </Button>
           <Button
             type="button"
-            variant="primary"
-            size="sm"
-            className={
-              tone === 'danger'
-                ? 'h-12 bg-alert text-white hover:bg-alert/90 sm:h-8'
-                : 'h-12 sm:h-8'
-            }
-            onClick={() => settle(true)}
+            variant={tone === 'danger' ? 'destructive' : 'default'}
+            size="lg"
+            disabled={busy}
+            className="h-11 sm:h-9"
+            onClick={confirm}
           >
-            {confirmLabel}
+            {busy && busyLabel
+              ? busyLabel
+              : error
+                ? `Retry ${confirmLabel.charAt(0).toLowerCase()}${confirmLabel.slice(1)}`
+                : confirmLabel}
           </Button>
         </div>
       </DialogContent>
@@ -105,12 +157,7 @@ export function ConfirmDialog({
 export interface ConfirmOptions
   extends Pick<
     ConfirmDialogProps,
-    | 'title'
-    | 'description'
-    | 'details'
-    | 'confirmLabel'
-    | 'cancelLabel'
-    | 'tone'
+    'title' | 'description' | 'confirmLabel' | 'cancelLabel' | 'tone'
   > {}
 
 /**
@@ -149,7 +196,6 @@ export function useConfirm(): {
       }}
       title={options?.title ?? ''}
       description={options?.description}
-      details={options?.details}
       confirmLabel={options?.confirmLabel}
       cancelLabel={options?.cancelLabel}
       tone={options?.tone}

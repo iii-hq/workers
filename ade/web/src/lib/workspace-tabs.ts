@@ -186,6 +186,64 @@ export function withColumnAdded(
 /** Which side of the anchor column a new column lands on. */
 export type OpenDirection = 'left' | 'right'
 
+/**
+ * Split one pane: a new column right beside it on `side`, empty or showing
+ * `screen`. The new column takes half of that pane's width, so every other
+ * pane keeps its own. A screen headed for a side whose neighbour is an empty
+ * column fills that column instead. A screen the tab already shows, a pane
+ * that is not there, or a full tab leaves the tab as it is.
+ */
+export function withPaneSplit(
+  tab: WorkspaceTab,
+  paneId: string,
+  side: OpenDirection,
+  screen: TabScreen | null = null,
+  makePaneId: () => string = newPaneId,
+): WorkspaceTab {
+  const columns = tabColumns(tab)
+  const paneIds = tabPaneIds(tab)
+  const index = paneIds.indexOf(paneId)
+  if (index < 0) return tab
+  const screens: (TabScreen | null)[] = Array.from(
+    { length: columns },
+    (_, i) => tab.screens[i] ?? null,
+  )
+  if (screen !== null) {
+    if (screens.includes(screen)) return tab
+    const neighbour = side === 'right' ? index + 1 : index - 1
+    if (neighbour >= 0 && neighbour < columns && screens[neighbour] === null) {
+      screens[neighbour] = screen
+      return { ...tab, columns, screens }
+    }
+  }
+  if (columns >= MAX_COLUMNS) return tab
+  const sizes = tabSizes(tab)
+  const half = sizes[index] / 2
+  sizes[index] = half
+  const insertAt = side === 'right' ? index + 1 : index
+  screens.splice(insertAt, 0, screen)
+  paneIds.splice(insertAt, 0, makePaneId())
+  sizes.splice(insertAt, 0, half)
+  return { ...tab, columns: columns + 1, screens, paneIds, sizes }
+}
+
+/**
+ * Every column but one gone: the pane `paneId` fills the tab on its own.
+ * A tab that is already one column, or has no such pane, stays as it is.
+ */
+export function withOnlyPane(tab: WorkspaceTab, paneId: string): WorkspaceTab {
+  const paneIds = tabPaneIds(tab)
+  const index = paneIds.indexOf(paneId)
+  if (index < 0 || paneIds.length <= 1) return tab
+  return {
+    ...tab,
+    columns: 1,
+    screens: [tab.screens[index] ?? null],
+    paneIds: [paneId],
+    sizes: [1],
+  }
+}
+
 /** Where an opened screen lands, and the widths of the tab it lands in. */
 export interface ScreenPlacement {
   /** Screen the new column goes beside; defaults to chat. */
@@ -363,6 +421,10 @@ const MIGRATED_SCREENS: Record<string, string> = {
   'ext:triggers': 'observers',
 }
 
+/** A column of its own for the IDE's side chat, saved by an unreleased
+    build; read back as the chat (`parseWorkspaceTabs`). */
+const RETIRED_SIDE_CHAT_SCREEN = 'side-chat'
+
 /** Configuration is deliberately NOT here: console settings open as an
     overlay page, never as a workspace-tab screen. Per-worker pages
     (worktrees, memory, browser, github) are injected UI — they attach as
@@ -498,11 +560,18 @@ export function parseWorkspaceTabs(
       return t
     const tab = t as WorkspaceTab
     const { paneIds, ...tabWithoutPaneIds } = tab
+    const showsChat = tab.screens.some(
+      (s) => typeof s === 'string' && isChatScreen(s),
+    )
     return {
       ...tabWithoutPaneIds,
       ...(isUsablePaneIdList(tab, paneIds) ? { paneIds } : {}),
       screens: tab.screens.map((s) => {
         if (s === 'configuration') return null
+        // The IDE's separate side chat became the chat itself: its column
+        // shows the chat, or the attach affordance when the tab has one.
+        if (s === RETIRED_SIDE_CHAT_SCREEN)
+          return showsChat ? null : CHAT_SCREEN
         if (typeof s === 'string' && s in MIGRATED_SCREENS)
           return screenForExtPage(MIGRATED_SCREENS[s])
         return s
@@ -706,7 +775,16 @@ export function withWorkspaceScreenOpened(
     return { tabs, activeTabId: active.id }
   }
 
-  const existing = tabs.find((tab) => tab.screens.includes(screen))
+  // The chat asked for beside a screen in this workspace (the IDE's ⌘L)
+  // joins it here: jumping to another tab's chat would leave the screen
+  // that asked for it behind.
+  const besideHere =
+    screen === CHAT_SCREEN &&
+    anchor !== CHAT_SCREEN &&
+    active?.screens.includes(anchor) === true
+  const existing = besideHere
+    ? undefined
+    : tabs.find((tab) => tab.screens.includes(screen))
   if (existing) return { tabs, activeTabId: existing.id }
 
   const holdsAnchor = (tab: WorkspaceTab) =>

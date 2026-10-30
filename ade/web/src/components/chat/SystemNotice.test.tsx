@@ -189,9 +189,9 @@ describe('SystemNotice · turn failure', () => {
     expect(out).toContain('data-message-role="turn-failure"')
     expect(out).toContain('data-failure-category="auth"')
     expect(out).toContain('data-failure-owner="user"')
-    expect(out).toContain('Provider credentials rejected')
-    expect(out).toContain('Needs your attention')
-    expect(out).toContain('not with iii or the console')
+    expect(out).toContain('OpenAI didn’t accept your API key')
+    expect(out).toContain('Action needed')
+    expect(out).toContain('Nothing is broken in iii')
     expect(out).toContain('What you can do')
     expect(out).toContain('Technical details')
     expect(out).toContain('router/provider_auth_expired')
@@ -224,10 +224,9 @@ describe('SystemNotice · turn failure', () => {
       createdAt: 0,
     })
     expect(out).toContain('data-failure-owner="environment"')
-    expect(out).toContain('Connection to the provider dropped')
-    expect(out).toContain('Can happen · retry')
-    expect(out).toContain('Retryable')
-    expect(out).toContain('kept as evidence')
+    expect(out).toContain('Lost the connection to Zai')
+    expect(out).toContain('Temporary')
+    expect(out).toContain('stopped partway')
     expect(out).toContain('retried automatically 1 of 1 time')
     expect(out).toContain('bg-warn-muted')
   })
@@ -256,16 +255,17 @@ describe('SystemNotice · turn failure', () => {
     })
     expect(out).toContain('data-failure-category="billing"')
     expect(out).toContain('data-failure-owner="user"')
-    expect(out).toMatch(/<h3[^>]*>Provider credit or quota exhausted<\/h3>/)
-    expect(out).toContain('Needs your attention')
+    expect(out).toMatch(/<h3[^>]*>Your OpenAI account is out of credit<\/h3>/)
+    expect(out).toContain('Action needed')
+    // The harness's own words sit with the raw error, under Technical details.
     expect(out).toMatch(
-      /data-message-summary[^>]*>The provider rejected this request\.</,
+      /data-technical-detail="message"[^>]*>The provider rejected this request\.</,
     )
     expect(out).toMatch(
       /data-failure-ownership[^>]*>[^<]*not an iii or ADE failure/,
     )
-    expect(out.match(/<li>/g)).toHaveLength(2)
-    expect(out).toMatch(/<li>Add credit/)
+    expect(out.match(/data-step/g)).toHaveLength(2)
+    expect(out).toMatch(/data-step[^>]*>Add credit/)
     expect(out).toMatch(/data-technical-detail="code"[^>]*>invocation_failed</)
     expect(out).toMatch(/data-technical-detail="class"[^>]*>llm\.permanent</)
     expect(out).toMatch(
@@ -287,8 +287,8 @@ describe('SystemNotice · turn failure', () => {
       createdAt: 0,
     })
     expect(out).toContain('data-failure-owner="iii"')
-    expect(out).toContain('iii could not complete the turn')
-    expect(out).toContain('iii error')
+    expect(out).toContain('Something went wrong in iii')
+    expect(out).toContain('iii issue')
   })
 })
 

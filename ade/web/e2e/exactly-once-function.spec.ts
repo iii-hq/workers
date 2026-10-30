@@ -27,13 +27,15 @@ test('renders one completed function call and its durable result', async ({
 
   const requestPane = card.locator('[data-function-pane="request"]')
   await expect(requestPane).toBeVisible()
-  await expect(requestPane).toContainText('request · value')
+  // The pane names itself and the argument, then shows its value.
+  await expect(requestPane).toContainText('Request')
+  await expect(requestPane).toContainText('value')
   await expect(requestPane.locator('code')).toHaveText('expected')
 
   const responsePane = card.locator('[data-function-pane="response"]')
   await expect(responsePane).toBeVisible()
   await expect(responsePane).toContainText('recorded')
-  await expect(responsePane).toContainText('details')
+  await expect(responsePane).toContainText(/details/i)
   await expect(responsePane).toContainText(/"text"\s*:\s*"recorded"/)
   await expect(responsePane).toContainText(/"is_error"\s*:\s*false/)
 

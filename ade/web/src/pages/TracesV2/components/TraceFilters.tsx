@@ -1,14 +1,22 @@
-// Trace filter bar.
+// Trace filter bar, on shadcn.
 //
-// Layout: a single row of always-visible controls (search, group-by,
-// more-filters trigger, stats) with active-filter chips
-// rendered below. The advanced filters (status, time range, sort,
-// duration, worker, operation, attributes) live inside a "more
-// filters" popover so they stay out of the way until needed.
+// Layout: one toolbar row — the saved-views chip (and the session scope
+// chip), the search field, the group-by chip, a "Filters" popover trigger
+// with a count badge, the active filters as removable chips — and, pushed
+// to the end, the page's stats (quiet; their word labels fold into tooltips
+// in a narrow pane). Two things are prominent: the search and the Filters
+// trigger. Views and Group by are quiet 28px chips (ghost until one is
+// active, then a soft fill), so the row reads as one search and one filter
+// button with two small modifiers beside them rather than four equal
+// dropdowns. The first INLINE_CHIP_LIMIT active filters show as chips in
+// the row; the rest fold behind a "+N" menu, so the row stays a row instead
+// of growing a second line of chips. The advanced filters (status, time
+// range, sort, duration, worker, operation, display, attributes) live
+// inside the popover.
 //
-// Behaviors preserved from motia:
+// Behaviors preserved:
 //   • 300ms-debounced text inputs (workerName, operationName) — wired
-//     via the parent useTraceFilters hook.
+//     via the parent useTraceFilters hook; here they apply on blur/Enter.
 //   • Min/max duration validation warnings.
 //   • Group-by switching (server-side aggregation).
 //   • Status filtering (ok / error / unset / all).
@@ -21,7 +29,6 @@
 import {
   AlertTriangle,
   ArrowUp,
-  ChevronDown,
   Hash,
   Search,
   SlidersHorizontal,
@@ -29,12 +36,30 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
-import { useEffect, useReducer, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { Button } from '@/components/ui/Button'
-import { Caret } from '@/components/ui/Caret'
-import { ModeToggle } from '@/components/ui/ModeToggle'
-import { StatusPanel } from '@/components/ui/StatusPanel'
+import { useEffect, useReducer, useState } from 'react'
+import { Button } from '@/components/shadcn/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/shadcn/dropdown-menu'
+import { Input } from '@/components/shadcn/input'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/shadcn/popover'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/shadcn/select'
+import { Tabs, TabsList, TabsTrigger } from '@/components/shadcn/tabs'
 import { cn } from '@/lib/utils'
 import type { TraceFilterState } from '../hooks/useTraceFilters'
 import type { GroupByOption } from '../lib/groupTraces'
@@ -77,44 +102,39 @@ export interface TraceFiltersProps {
 }
 
 const TIME_RANGE_PRESETS: Array<{ label: string; ms: number | null }> = [
-  { label: 'all time', ms: null },
-  { label: 'last 15m', ms: 15 * 60 * 1000 },
-  { label: 'last 1h', ms: 60 * 60 * 1000 },
-  { label: 'last 6h', ms: 6 * 60 * 60 * 1000 },
-  { label: 'last 24h', ms: 24 * 60 * 60 * 1000 },
-  { label: 'last 7d', ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: 'All time', ms: null },
+  { label: 'Last 15 minutes', ms: 15 * 60 * 1000 },
+  { label: 'Last hour', ms: 60 * 60 * 1000 },
+  { label: 'Last 6 hours', ms: 6 * 60 * 60 * 1000 },
+  { label: 'Last 24 hours', ms: 24 * 60 * 60 * 1000 },
+  { label: 'Last 7 days', ms: 7 * 24 * 60 * 60 * 1000 },
 ]
 
 const SORT_BY_OPTIONS: Array<{
   label: string
   value: 'start_time' | 'duration' | 'service_name'
 }> = [
-  { label: 'start time', value: 'start_time' },
-  { label: 'duration', value: 'duration' },
-  { label: 'worker name', value: 'service_name' },
+  { label: 'Start time', value: 'start_time' },
+  { label: 'Duration', value: 'duration' },
+  { label: 'Worker name', value: 'service_name' },
 ]
 
 type StatusValue = 'all' | 'ok' | 'error' | 'unset'
 
 const STATUS_OPTIONS: Array<{ value: StatusValue; label: string }> = [
-  { value: 'all', label: 'all' },
-  { value: 'ok', label: 'ok' },
-  { value: 'error', label: 'error' },
-  { value: 'unset', label: 'unset' },
+  { value: 'all', label: 'All' },
+  { value: 'ok', label: 'OK' },
+  { value: 'error', label: 'Error' },
+  { value: 'unset', label: 'Unset' },
 ]
 
 const LABEL_MODE_OPTIONS: Array<{
   value: NonNullable<TraceFilterState['labelMode']>
   label: string
 }> = [
-  { value: 'function', label: 'function name' },
-  { value: 'span-name', label: 'span name' },
-  { value: 'attribute', label: 'attribute value' },
-]
-
-const SORT_ORDER_OPTIONS: Array<{ value: 'asc' | 'desc'; label: string }> = [
-  { value: 'desc', label: 'desc' },
-  { value: 'asc', label: 'asc' },
+  { value: 'function', label: 'Function name' },
+  { value: 'span-name', label: 'Span name' },
+  { value: 'attribute', label: 'Attribute value' },
 ]
 
 // --- Temp Inputs Reducer ---
@@ -188,113 +208,55 @@ function currentTimeRangeIndex(filters: TraceFilterState): number {
   return idx === -1 ? 0 : idx
 }
 
-const inputClass =
-  'h-8 px-2 rounded-sm font-mono text-[12px] bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors'
-
-const selectClass =
-  'h-8 px-2 rounded-sm font-mono text-[12px] bg-surface border border-transparent text-ink hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors appearance-none cursor-pointer'
-
-// Lightweight popover anchored to a trigger via getBoundingClientRect.
-// Portals into document.body so it isn't clipped by overflow-hidden
-// ancestors (the Traces section is overflow-hidden).
-interface MoreFiltersPopoverProps {
-  open: boolean
-  onClose: () => void
-  triggerRef: React.RefObject<HTMLElement | null>
-  width?: number
-  children: React.ReactNode
-}
-
-function MoreFiltersPopover({
-  open,
-  onClose,
-  triggerRef,
-  width = 520,
+/** A field in the filters popover: a quiet label over its control. */
+function Field({
+  label,
+  className,
   children,
-}: MoreFiltersPopoverProps) {
-  const popoverRef = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{
-    top: number
-    right: number
-    width: number
-    maxHeight: number
-  } | null>(null)
-
-  useEffect(() => {
-    if (!open || !triggerRef.current) return
-    const MARGIN = 8
-    const update = () => {
-      const trigger = triggerRef.current
-      if (!trigger) return
-      const rect = trigger.getBoundingClientRect()
-      const actualWidth = Math.min(width, window.innerWidth - MARGIN * 2)
-      // Right-align to the trigger, clamped so neither edge leaves the
-      // viewport.
-      const right = Math.min(
-        Math.max(window.innerWidth - rect.right, MARGIN),
-        window.innerWidth - actualWidth - MARGIN,
-      )
-      let top = rect.bottom + 4
-      let maxHeight = window.innerHeight - top - MARGIN
-      const MIN_HEIGHT = 240
-      if (maxHeight < MIN_HEIGHT) {
-        // Not enough room below the trigger — raise the popover (possibly
-        // over the trigger) so the content stays usable and scrollable.
-        maxHeight = Math.min(MIN_HEIGHT, window.innerHeight - MARGIN * 2)
-        top = window.innerHeight - MARGIN - maxHeight
-      }
-      setPos({ top, right, width: actualWidth, maxHeight })
-    }
-    update()
-    window.addEventListener('resize', update)
-    window.addEventListener('scroll', update, true)
-    return () => {
-      window.removeEventListener('resize', update)
-      window.removeEventListener('scroll', update, true)
-    }
-  }, [open, triggerRef, width])
-
-  useEffect(() => {
-    if (!open) return
-    const handleClick = (e: MouseEvent) => {
-      const target = e.target as Node
-      if (popoverRef.current?.contains(target)) return
-      if (triggerRef.current?.contains(target)) return
-      onClose()
-    }
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('mousedown', handleClick)
-    document.addEventListener('keydown', handleEscape)
-    return () => {
-      document.removeEventListener('mousedown', handleClick)
-      document.removeEventListener('keydown', handleEscape)
-    }
-  }, [open, onClose, triggerRef])
-
-  if (!open || !pos) return null
-
-  return createPortal(
-    <div
-      ref={popoverRef}
-      style={{
-        position: 'fixed',
-        top: pos.top,
-        right: pos.right,
-        width: pos.width,
-        maxHeight: pos.maxHeight,
-        zIndex: 50,
-      }}
-      className="rounded-md bg-panel-raised p-3 shadow-floating overflow-y-auto"
-    >
+  htmlFor,
+}: {
+  label: string
+  className?: string
+  children: React.ReactNode
+  htmlFor?: string
+}) {
+  return (
+    <div className={cn('flex min-w-0 flex-col gap-1', className)}>
+      <label
+        htmlFor={htmlFor}
+        className="text-xs font-medium text-muted-foreground"
+      >
+        {label}
+      </label>
       {children}
-    </div>,
-    document.body,
+    </div>
   )
 }
 
-function SearchInput({
+/** A group of fields inside the popover, parted from the next by a hairline. */
+function FieldSection({
+  title,
+  children,
+}: {
+  title: string
+  children: React.ReactNode
+}) {
+  return (
+    <section
+      className="flex flex-col gap-3 border-b border-border px-4 py-3 last:border-b-0"
+      aria-label={title}
+    >
+      {children}
+    </section>
+  )
+}
+
+const INPUT = 'h-8 rounded-md text-sm'
+const SELECT_TRIGGER = 'h-8 w-full rounded-md text-sm'
+const TABS_LIST = 'h-8 w-full rounded-md p-0.5'
+const TAB = 'h-7 rounded-[5px] px-2 text-xs'
+
+export function SearchInput({
   searchQuery,
   onSearchChange,
   className,
@@ -303,40 +265,33 @@ function SearchInput({
   onSearchChange?: (value: string) => void
   className?: string
 }) {
-  const [searchFocused, setSearchFocused] = useState(false)
   return (
-    <label
-      className={cn(
-        'flex items-center gap-2 h-8 px-2 rounded-sm border bg-surface transition-[border-color,box-shadow]',
-        searchFocused
-          ? 'border-rule-focus ring-[3px] ring-accent/10'
-          : 'border-transparent',
-        className,
-      )}
-    >
-      <Search className="size-4 text-ink-faint flex-shrink-0" />
-      <span className="text-accent font-mono text-[12px] select-none">$</span>
-      <input
-        type="text"
+    <div className={cn('relative', className)}>
+      <Search
+        className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+        aria-hidden
+      />
+      <Input
+        type="search"
         value={searchQuery}
         onChange={(e) => onSearchChange?.(e.target.value)}
-        onFocus={() => setSearchFocused(true)}
-        onBlur={() => setSearchFocused(false)}
-        placeholder="search traces..."
-        className="flex-1 bg-transparent font-mono text-[12px] text-ink placeholder:text-ink-ghost focus:outline-none min-w-0"
+        placeholder="Search traces"
+        aria-label="search traces"
+        className="h-8 rounded-lg bg-muted/50 pr-8 pl-8 text-sm [&::-webkit-search-cancel-button]:hidden"
       />
-      {searchFocused && !searchQuery && <Caret className="h-[12px] w-[5px]" />}
-      {searchQuery && (
-        <button
+      {searchQuery ? (
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-xs"
           onClick={() => onSearchChange?.('')}
-          className="text-ink-faint hover:text-ink transition-colors"
           aria-label="clear search"
+          className="absolute top-1/2 right-1 -translate-y-1/2 text-muted-foreground"
         >
-          <X className="size-4" />
-        </button>
-      )}
-    </label>
+          <X />
+        </Button>
+      ) : null}
+    </div>
   )
 }
 
@@ -346,6 +301,44 @@ export interface HeldNewTraces {
   /** on a later page the segment offers the latest traces on page 1 */
   onPage1: boolean
   onShow: () => void
+}
+
+/** A stat in the toolbar: a glyph, the number in mono, a quiet label. */
+function Stat({
+  icon,
+  value,
+  label,
+  title,
+  tone,
+}: {
+  icon: React.ReactNode
+  value: string
+  label: string
+  title?: string
+  tone?: 'alert'
+}) {
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-1 whitespace-nowrap text-[11px]',
+        tone === 'alert' ? 'text-alert-strong' : 'text-muted-foreground',
+      )}
+      title={title ?? label}
+    >
+      {icon}
+      <span
+        className={cn(
+          'font-mono tabular-nums',
+          tone === 'alert' ? 'text-alert-strong' : 'text-foreground',
+        )}
+      >
+        {value}
+      </span>
+      {/* a narrow toolbar keeps the glyph and number; the word stays for
+          screen readers and in the tooltip */}
+      <span className="sr-only @[44rem]:not-sr-only">{label}</span>
+    </div>
+  )
 }
 
 export function StatsBlock({
@@ -358,13 +351,15 @@ export function StatsBlock({
   if (!stats) return null
   const held = heldNew && heldNew.count > 0 ? heldNew : null
   return (
-    <div className="flex items-stretch rounded-md bg-surface">
+    <div className="flex h-8 items-center gap-2.5 font-inter @[44rem]:gap-3">
       {held ? (
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="xs"
           onClick={held.onShow}
           data-trace-list-held={held.count}
-          className="flex items-center gap-1.5 rounded-l-md px-2.5 py-1 font-mono text-[11px] text-accent transition-colors hover:bg-surface-hover"
+          className="rounded-md"
           title={
             held.onPage1
               ? `${held.count} new ${held.count === 1 ? 'trace' : 'traces'} waiting — show them at the top`
@@ -376,43 +371,137 @@ export function StatsBlock({
               : 'show the latest traces on page 1'
           }
         >
-          <ArrowUp className="size-4" />
+          <ArrowUp data-icon="inline-start" aria-hidden />
           {held.onPage1 ? (
             <>
-              <span className="tabular-nums">{held.count}</span>
+              <span className="font-mono tabular-nums">{held.count}</span>
               <span>new</span>
             </>
           ) : (
             <span>latest</span>
           )}
-        </button>
+        </Button>
       ) : null}
-      <div
-        className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint"
+      <Stat
+        icon={<Hash className="size-4" aria-hidden />}
+        value={stats.totalTraces.toLocaleString('en-US')}
+        label="Traces"
         title={`${stats.pageTraceCount} traces on this page, ${stats.totalTraces} total matching traces`}
-      >
-        <Hash className="size-4 text-ink-faint" />
-        <span className="text-ink tabular-nums">{stats.totalTraces}</span>
-        <span className="text-ink-ghost">Traces</span>
-      </div>
-      <div
-        className={cn(
-          'flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px]',
-          stats.errorCount > 0 ? 'text-alert' : 'text-ink-faint',
-        )}
-      >
-        <XCircle className="size-4" />
-        <span className="tabular-nums">{stats.errorCount}</span>
-        <span className="text-ink-ghost">Page errors</span>
-      </div>
-      <div className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint">
-        <Timer className="size-4" />
-        <span className="text-ink tabular-nums">
-          {formatDurationMs(stats.avgDuration)}
-        </span>
-        <span className="text-ink-ghost">Page avg</span>
-      </div>
+      />
+      <Stat
+        icon={<XCircle className="size-4" aria-hidden />}
+        value={String(stats.errorCount)}
+        label="Page errors"
+        tone={stats.errorCount > 0 ? 'alert' : undefined}
+      />
+      <Stat
+        icon={<Timer className="size-4" aria-hidden />}
+        value={formatDurationMs(stats.avgDuration)}
+        label="Page avg"
+      />
     </div>
+  )
+}
+
+interface ActiveFilter {
+  key: string
+  /** the chip's quiet prefix: `status`, `worker`, `hidden`… */
+  name: string
+  /** the chip's value, in the foreground */
+  value: string
+  onRemove?: () => void
+}
+
+function FilterChip({
+  filter,
+  onRemove,
+}: {
+  filter: ActiveFilter
+  onRemove: () => void
+}) {
+  return (
+    <span
+      className="inline-flex h-6 max-w-[14rem] min-w-0 items-center gap-1 rounded-md border border-border bg-background pl-2 text-xs"
+      data-active-filter={filter.key}
+    >
+      <span className="shrink-0 text-muted-foreground">{filter.name}</span>
+      <span
+        className="truncate font-medium text-foreground"
+        title={filter.value}
+      >
+        {filter.value}
+      </span>
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label={`remove ${filter.name}: ${filter.value}`}
+        className="mr-0.5 flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        <X className="size-4" aria-hidden />
+      </button>
+    </span>
+  )
+}
+
+/** Active filters shown as chips in the toolbar row before the rest fold. */
+const INLINE_CHIP_LIMIT = 2
+
+/**
+ * The active filters past INLINE_CHIP_LIMIT, behind a quiet "+N" — each
+ * row removes its filter, and "Clear all" closes the list.
+ */
+function FilterOverflowMenu({
+  filters,
+  onRemove,
+  onClear,
+}: {
+  filters: ActiveFilter[]
+  onRemove: (filter: ActiveFilter) => void
+  onClear: () => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="rounded-md font-mono text-muted-foreground tabular-nums"
+            aria-label={`${filters.length} more active ${filters.length === 1 ? 'filter' : 'filters'}`}
+            data-active-filter-overflow={filters.length}
+          />
+        }
+      >
+        +{filters.length}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-64">
+        <DropdownMenuGroup>
+          {filters.map((filter) => (
+            <DropdownMenuItem
+              key={filter.key}
+              closeOnClick={false}
+              onClick={() => onRemove(filter)}
+              aria-label={`remove ${filter.name}: ${filter.value}`}
+              data-active-filter={filter.key}
+            >
+              <span className="shrink-0 text-muted-foreground">
+                {filter.name}
+              </span>
+              <span className="min-w-0 flex-1 truncate" title={filter.value}>
+                {filter.value}
+              </span>
+              <X
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden
+              />
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={onClear}>Clear all</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -578,33 +667,32 @@ export function TraceFilters({
     )
   }
 
-  const activeFilters: Array<{
-    key: string
-    label: string
-    onRemove?: () => void
-  }> = []
+  const activeFilters: ActiveFilter[] = []
   if (filters.status) {
-    activeFilters.push({ key: 'status', label: `status: ${filters.status}` })
+    activeFilters.push({ key: 'status', name: 'status', value: filters.status })
   }
   if (filters.workerName) {
     activeFilters.push({
       key: 'workerName',
-      label: `worker: ${filters.workerName}`,
+      name: 'worker',
+      value: filters.workerName,
     })
   }
   if (filters.operationName) {
     activeFilters.push({
       key: 'operationName',
-      label: `operation: ${filters.operationName}`,
+      name: 'operation',
+      value: filters.operationName,
     })
   }
   if (filters.minDurationMs || filters.maxDurationMs) {
     const parts: string[] = []
-    if (filters.minDurationMs) parts.push(`${filters.minDurationMs}ms`)
-    if (filters.maxDurationMs) parts.push(`${filters.maxDurationMs}ms`)
+    if (filters.minDurationMs) parts.push(`≥ ${filters.minDurationMs}ms`)
+    if (filters.maxDurationMs) parts.push(`≤ ${filters.maxDurationMs}ms`)
     activeFilters.push({
       key: 'duration',
-      label: `duration: ${parts.join('-')}`,
+      name: 'duration',
+      value: parts.join(' · '),
     })
   }
   if (filters.startTime && filters.endTime) {
@@ -612,41 +700,50 @@ export function TraceFilters({
     const preset = TIME_RANGE_PRESETS.find((p) => p.ms === diff)
     activeFilters.push({
       key: 'timeRange',
-      label: preset ? preset.label : 'custom range',
+      name: 'time',
+      value: preset ? preset.label.toLowerCase() : 'custom range',
     })
   }
   if (filters.attributes && filters.attributes.length > 0) {
     activeFilters.push({
       key: 'attributes',
-      label: `attributes (${filters.attributes.length})`,
+      name: 'attributes',
+      value:
+        filters.attributes.length === 1
+          ? `${filters.attributes[0][0]} = ${filters.attributes[0][1]}`
+          : `${filters.attributes.length} set`,
     })
   }
   if (filters.sortBy && filters.sortBy !== 'start_time') {
     const opt = SORT_BY_OPTIONS.find((o) => o.value === filters.sortBy)
     activeFilters.push({
       key: 'sortBy',
-      label: `sort: ${opt?.label ?? filters.sortBy}`,
+      name: 'sort',
+      value: (opt?.label ?? filters.sortBy).toLowerCase(),
     })
   }
   if (filters.sortOrder && filters.sortOrder !== 'desc') {
     activeFilters.push({
       key: 'sortOrder',
-      label: `order: ${filters.sortOrder}`,
+      name: 'order',
+      value: filters.sortOrder,
     })
   }
   if (filters.labelMode && filters.labelMode !== 'function') {
     activeFilters.push({
       key: 'display',
-      label:
+      name: 'display',
+      value:
         filters.labelMode === 'attribute'
-          ? `display: ${filters.labelAttribute || 'attribute'}`
-          : 'display: span name',
+          ? filters.labelAttribute || 'attribute'
+          : 'span name',
     })
   }
   for (const fn of filters.hiddenFunctions ?? []) {
     activeFilters.push({
       key: `hidden:${fn}`,
-      label: `hidden: ${fn}`,
+      name: 'hidden',
+      value: fn,
       onRemove: () => unhideFunction(fn),
     })
   }
@@ -654,13 +751,13 @@ export function TraceFilters({
   const statusValue: StatusValue = (filters.status ?? 'all') as StatusValue
   const groupByValue = (filters.groupBy ?? 'none') as GroupByOption
   const sortOrderValue = filters.sortOrder ?? 'desc'
-
-  // Chips that aren't already represented by inline controls (group-by);
-  // status lives in the popover, so it counts here.
   const advancedFilterCount = activeFilters.length
+  const inlineFilters = activeFilters.slice(0, INLINE_CHIP_LIMIT)
+  const overflowFilters = activeFilters.slice(INLINE_CHIP_LIMIT)
+  const removeActive = (filter: ActiveFilter) =>
+    filter.onRemove ? filter.onRemove() : removeFilter(filter.key)
 
   const [popoverOpen, setPopoverOpen] = useState(false)
-  const triggerRef = useRef<HTMLButtonElement>(null)
 
   // Hide validation warnings automatically once the underlying values
   // stop being suspect. The parent surfaces a manual dismiss button too.
@@ -675,45 +772,48 @@ export function TraceFilters({
   }, [validationWarnings, onClearWarnings])
 
   return (
-    <div className="space-y-2" data-testid="trace-filters">
+    <div
+      className="@container flex flex-col gap-2 font-inter"
+      data-testid="trace-filters"
+    >
       {(validationWarnings?.durationSwapped ||
         validationWarnings?.timeRangeSwapped) && (
-        <div className="relative">
-          <StatusPanel
-            variant="warn"
-            icon={<AlertTriangle className="w-full h-full" />}
-            headline="values corrected"
-            detail={
-              <>
-                {validationWarnings.durationSwapped &&
-                  'min/max duration swapped. '}
-                {validationWarnings.timeRangeSwapped &&
-                  'start/end time swapped. '}
-              </>
-            }
-          />
+        <div
+          role="status"
+          className="flex items-center gap-2 rounded-xl border border-warn/30 bg-warn-muted px-3 py-1.5 text-xs text-warn-strong"
+        >
+          <AlertTriangle className="size-4 shrink-0" aria-hidden />
+          <span className="flex-1">
+            Values corrected:{' '}
+            {validationWarnings.durationSwapped &&
+              'min and max duration were swapped. '}
+            {validationWarnings.timeRangeSwapped &&
+              'start and end time were swapped.'}
+          </span>
           {onClearWarnings && (
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon-xs"
               onClick={onClearWarnings}
-              className="absolute top-2 right-2 text-warn hover:text-ink transition-colors"
-              title="dismiss warning"
               aria-label="dismiss warning"
             >
-              <X className="size-4" />
-            </button>
+              <X />
+            </Button>
           )}
         </div>
       )}
 
-      {/* Always-visible row: views, search, group-by, more filters, stats */}
-      <div className="flex items-center gap-2 flex-wrap">
+      {/* The toolbar: views, search, group-by, filters and their active
+          chips, then the stats. It wraps only as a last resort, in a pane
+          too narrow for the row. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         {leading}
 
         <SearchInput
           searchQuery={searchQuery}
           onSearchChange={onSearchChange}
-          className="flex-1 min-w-[240px] max-w-[460px]"
+          className="min-w-[9rem] flex-1 @3xl:max-w-[30rem]"
         />
 
         <GroupByPicker
@@ -722,284 +822,349 @@ export function TraceFilters({
           suggestions={attributeKeySuggestions}
         />
 
-        <button
-          ref={triggerRef}
-          type="button"
-          onClick={() => setPopoverOpen((v) => !v)}
-          className={cn(
-            'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] transition-colors',
-            popoverOpen || advancedFilterCount > 0
-              ? 'bg-accent-muted text-ink'
-              : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
-          )}
-          aria-haspopup="dialog"
-          aria-expanded={popoverOpen}
-        >
-          <SlidersHorizontal className="size-4" />
-          <span>More filters</span>
-          {advancedFilterCount > 0 && (
-            <span className="px-1 py-0 rounded-xs bg-accent text-accent-fg font-mono text-[11px] tabular-nums leading-none flex items-center min-w-[14px] justify-center">
-              {advancedFilterCount}
-            </span>
-          )}
-          <ChevronDown
-            className={cn(
-              'size-4 transition-transform',
-              popoverOpen && 'rotate-180',
-            )}
-          />
-        </button>
-
-        <div className="ml-auto">
-          <StatsBlock stats={stats} heldNew={heldNew} />
-        </div>
-      </div>
-
-      {/* Active filter chips */}
-      {activeFilters.length > 0 && (
-        <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
-          {isLoading && (
-            <span
-              aria-hidden
-              className="w-1.5 h-1.5 bg-accent rounded-full pulse-dot mr-0.5"
-            />
-          )}
-          {activeFilters.map((filter) => (
-            <button
-              key={filter.key}
-              type="button"
-              onClick={() =>
-                filter.onRemove ? filter.onRemove() : removeFilter(filter.key)
-              }
-              className="flex items-center gap-1 px-2 py-1 rounded-sm bg-surface hover:bg-surface-hover hover:text-ink font-mono text-[11px] text-ink-faint transition-colors group"
-            >
-              <span>{filter.label}</span>
-              <X className="size-4 opacity-50 group-hover:opacity-100 transition-all" />
-            </button>
-          ))}
-          <Button variant="ghost" size="sm" onClick={onClear} className="ml-1">
-            clear all
-          </Button>
-        </div>
-      )}
-
-      <MoreFiltersPopover
-        open={popoverOpen}
-        onClose={() => setPopoverOpen(false)}
-        triggerRef={triggerRef}
-      >
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="iii-ui-eyebrow">more filters</h3>
-            <button
-              type="button"
-              onClick={() => setPopoverOpen(false)}
-              className="text-ink-faint hover:text-ink"
-              aria-label="close"
-            >
-              <X className="size-4" />
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1 col-span-2">
-              <span className="iii-ui-eyebrow">status</span>
-              <ModeToggle<StatusValue>
-                value={statusValue}
-                options={STATUS_OPTIONS}
-                onChange={(next) =>
-                  onFilterChange('status', next === 'all' ? null : next)
-                }
+        <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+          <PopoverTrigger
+            render={
+              <Button
+                type="button"
+                variant="secondary"
+                className="rounded-lg"
+                aria-label="more filters"
+                data-trace-filters-trigger
               />
-            </div>
-
-            <label className="flex flex-col gap-1">
-              <span className="iii-ui-eyebrow">time range</span>
-              <select
-                className={selectClass}
-                value={currentTimeRangeIndex(filters)}
-                onChange={(e) =>
-                  handleTimeRangeChange(Number.parseInt(e.target.value, 10))
-                }
-              >
-                {TIME_RANGE_PRESETS.map((preset, i) => (
-                  <option key={preset.label} value={i}>
-                    {preset.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="flex flex-col gap-1">
-              <span className="iii-ui-eyebrow">sort by</span>
-              <div className="flex gap-2">
-                <select
-                  className={cn(selectClass, 'flex-1')}
-                  value={filters.sortBy ?? 'start_time'}
-                  onChange={(e) =>
-                    onFilterChange(
-                      'sortBy',
-                      e.target.value as
-                        | 'start_time'
-                        | 'duration'
-                        | 'service_name',
-                    )
-                  }
-                >
-                  {SORT_BY_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <ModeToggle<'asc' | 'desc'>
-                  value={sortOrderValue}
-                  options={SORT_ORDER_OPTIONS}
-                  onChange={(next) => onFilterChange('sortOrder', next)}
-                />
-              </div>
-            </label>
-
-            <label className="flex flex-col gap-1">
-              <span className="iii-ui-eyebrow">worker</span>
-              <input
-                type="text"
-                placeholder="e.g. api-*, backend"
-                value={tempWorkerName}
-                onChange={(e) =>
-                  dispatchTempInputs({
-                    type: 'SET_WORKER_NAME',
-                    payload: e.target.value,
-                  })
-                }
-                onBlur={applyWorker}
-                onKeyDown={(e) => handleEnterApply(e, applyWorker)}
-                className={inputClass}
-              />
-            </label>
-
-            <label className="flex flex-col gap-1">
-              <span className="iii-ui-eyebrow">operation</span>
-              <input
-                type="text"
-                placeholder="e.g. get *, post /api/*"
-                value={tempOperationName}
-                onChange={(e) =>
-                  dispatchTempInputs({
-                    type: 'SET_OPERATION_NAME',
-                    payload: e.target.value,
-                  })
-                }
-                onBlur={applyOperation}
-                onKeyDown={(e) => handleEnterApply(e, applyOperation)}
-                className={inputClass}
-              />
-            </label>
-
-            <label className="flex flex-col gap-1 col-span-2">
-              <span className="iii-ui-eyebrow">duration (ms)</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  placeholder="min"
-                  value={tempMinDuration}
-                  onChange={(e) =>
-                    dispatchTempInputs({
-                      type: 'SET_MIN_DURATION',
-                      payload: e.target.value,
-                    })
-                  }
-                  onBlur={applyDuration}
-                  onKeyDown={(e) => handleEnterApply(e, applyDuration)}
-                  className={cn(inputClass, 'flex-1 tabular-nums')}
-                />
-                <span className="text-ink-ghost font-mono text-[11px]">—</span>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  placeholder="max"
-                  value={tempMaxDuration}
-                  onChange={(e) =>
-                    dispatchTempInputs({
-                      type: 'SET_MAX_DURATION',
-                      payload: e.target.value,
-                    })
-                  }
-                  onBlur={applyDuration}
-                  onKeyDown={(e) => handleEnterApply(e, applyDuration)}
-                  className={cn(inputClass, 'flex-1 tabular-nums')}
-                />
-              </div>
-            </label>
-          </div>
-
-          <div className="pt-2 border-t border-rule-2">
-            <div className="iii-ui-eyebrow mb-2">display</div>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="flex flex-col gap-1">
-                <span className="iii-ui-eyebrow">label rows by</span>
-                <select
-                  className={selectClass}
-                  value={filters.labelMode ?? 'function'}
-                  onChange={(e) =>
-                    onFilterChange(
-                      'labelMode',
-                      e.target.value as TraceFilterState['labelMode'],
-                    )
-                  }
-                >
-                  {LABEL_MODE_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {filters.labelMode === 'attribute' && (
-                <label className="flex flex-col gap-1">
-                  <span className="iii-ui-eyebrow">attribute key</span>
-                  <input
-                    type="text"
-                    placeholder="e.g. iii.tag.message"
-                    value={tempLabelAttribute}
-                    onChange={(e) => setTempLabelAttribute(e.target.value)}
-                    onBlur={applyLabelAttribute}
-                    onKeyDown={(e) => handleEnterApply(e, applyLabelAttribute)}
-                    className={inputClass}
-                  />
-                </label>
-              )}
-            </div>
-          </div>
-
-          <div className="pt-2 border-t border-rule-2">
-            <div className="iii-ui-eyebrow mb-2">
-              attributes
-              {filters.attributes && filters.attributes.length > 0 ? (
-                <span className="ml-1 text-accent tabular-nums normal-case">
-                  ({filters.attributes.length})
+            }
+          >
+            <SlidersHorizontal data-icon="inline-start" />
+            Filters
+            {advancedFilterCount > 0 ? (
+              <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-sm bg-foreground px-1 font-mono text-[11px] font-medium text-background tabular-nums">
+                {advancedFilterCount}
+              </span>
+            ) : null}
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            collisionPadding={8}
+            className="w-[min(32rem,calc(100vw-1rem))] gap-0 rounded-lg p-0"
+          >
+            <div className="flex h-10 items-center gap-2 border-b border-border pr-2 pl-4">
+              <span className="text-sm font-semibold text-foreground">
+                Filters
+              </span>
+              {advancedFilterCount > 0 ? (
+                <span className="text-xs text-muted-foreground">
+                  {advancedFilterCount} active
                 </span>
               ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                onClick={onClear}
+                disabled={advancedFilterCount === 0}
+                className="ml-auto rounded-md text-muted-foreground"
+              >
+                Clear all
+              </Button>
             </div>
-            <AttributesFilter
-              value={filters.attributes || []}
-              onChange={(attrs) =>
-                onFilterChange(
-                  'attributes',
-                  attrs.length > 0 ? attrs : undefined,
-                )
-              }
-            />
-          </div>
 
-          <div className="flex items-center justify-end pt-2 border-t border-rule-2">
-            <Button variant="ghost" size="sm" onClick={onClear}>
-              clear all filters
-            </Button>
+            <div className="max-h-[min(70dvh,40rem)] overflow-y-auto overscroll-contain">
+              <FieldSection title="Scope">
+                <Field label="Status">
+                  <Tabs
+                    value={statusValue}
+                    onValueChange={(next) =>
+                      onFilterChange(
+                        'status',
+                        next === 'all' ? null : (next as StatusValue),
+                      )
+                    }
+                  >
+                    <TabsList className={TABS_LIST}>
+                      {STATUS_OPTIONS.map((option) => (
+                        <TabsTrigger
+                          key={option.value}
+                          value={option.value}
+                          className={TAB}
+                        >
+                          {option.label}
+                        </TabsTrigger>
+                      ))}
+                    </TabsList>
+                  </Tabs>
+                </Field>
+
+                <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2">
+                  <Field label="Time range">
+                    <Select
+                      value={String(currentTimeRangeIndex(filters))}
+                      onValueChange={(value) =>
+                        handleTimeRangeChange(
+                          Number.parseInt(String(value), 10),
+                        )
+                      }
+                      items={TIME_RANGE_PRESETS.map((preset, i) => ({
+                        value: String(i),
+                        label: preset.label,
+                      }))}
+                    >
+                      <SelectTrigger
+                        className={SELECT_TRIGGER}
+                        aria-label="time range"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="rounded-lg">
+                        {TIME_RANGE_PRESETS.map((preset, i) => (
+                          <SelectItem key={preset.label} value={String(i)}>
+                            {preset.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+
+                  <Field label="Sort">
+                    <div className="flex gap-1.5">
+                      <Select
+                        value={filters.sortBy ?? 'start_time'}
+                        onValueChange={(value) =>
+                          onFilterChange(
+                            'sortBy',
+                            value as 'start_time' | 'duration' | 'service_name',
+                          )
+                        }
+                        items={SORT_BY_OPTIONS}
+                      >
+                        <SelectTrigger
+                          className={cn(SELECT_TRIGGER, 'min-w-0 flex-1')}
+                          aria-label="sort by"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="rounded-lg">
+                          {SORT_BY_OPTIONS.map((opt) => (
+                            <SelectItem key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Tabs
+                        value={sortOrderValue}
+                        onValueChange={(next) =>
+                          onFilterChange('sortOrder', next as 'asc' | 'desc')
+                        }
+                      >
+                        <TabsList
+                          className="h-8 rounded-md p-0.5"
+                          aria-label="sort order"
+                        >
+                          <TabsTrigger value="desc" className={TAB}>
+                            Desc
+                          </TabsTrigger>
+                          <TabsTrigger value="asc" className={TAB}>
+                            Asc
+                          </TabsTrigger>
+                        </TabsList>
+                      </Tabs>
+                    </div>
+                  </Field>
+                </div>
+              </FieldSection>
+
+              <FieldSection title="Match">
+                <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2">
+                  <Field label="Worker" htmlFor="trace-filter-worker">
+                    <Input
+                      id="trace-filter-worker"
+                      type="text"
+                      placeholder="e.g. api-*, backend"
+                      value={tempWorkerName}
+                      onChange={(e) =>
+                        dispatchTempInputs({
+                          type: 'SET_WORKER_NAME',
+                          payload: e.target.value,
+                        })
+                      }
+                      onBlur={applyWorker}
+                      onKeyDown={(e) => handleEnterApply(e, applyWorker)}
+                      className={INPUT}
+                    />
+                  </Field>
+
+                  <Field label="Operation" htmlFor="trace-filter-operation">
+                    <Input
+                      id="trace-filter-operation"
+                      type="text"
+                      placeholder="e.g. get *, post /api/*"
+                      value={tempOperationName}
+                      onChange={(e) =>
+                        dispatchTempInputs({
+                          type: 'SET_OPERATION_NAME',
+                          payload: e.target.value,
+                        })
+                      }
+                      onBlur={applyOperation}
+                      onKeyDown={(e) => handleEnterApply(e, applyOperation)}
+                      className={INPUT}
+                    />
+                  </Field>
+                </div>
+
+                <Field label="Duration">
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      placeholder="min"
+                      aria-label="minimum duration in milliseconds"
+                      value={tempMinDuration}
+                      onChange={(e) =>
+                        dispatchTempInputs({
+                          type: 'SET_MIN_DURATION',
+                          payload: e.target.value,
+                        })
+                      }
+                      onBlur={applyDuration}
+                      onKeyDown={(e) => handleEnterApply(e, applyDuration)}
+                      className={cn(INPUT, 'font-mono tabular-nums')}
+                    />
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      to
+                    </span>
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      placeholder="max"
+                      aria-label="maximum duration in milliseconds"
+                      value={tempMaxDuration}
+                      onChange={(e) =>
+                        dispatchTempInputs({
+                          type: 'SET_MAX_DURATION',
+                          payload: e.target.value,
+                        })
+                      }
+                      onBlur={applyDuration}
+                      onKeyDown={(e) => handleEnterApply(e, applyDuration)}
+                      className={cn(INPUT, 'font-mono tabular-nums')}
+                    />
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      ms
+                    </span>
+                  </div>
+                </Field>
+              </FieldSection>
+
+              <FieldSection title="Display">
+                <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2">
+                  <Field label="Label rows by">
+                    <Select
+                      value={filters.labelMode ?? 'function'}
+                      onValueChange={(value) =>
+                        onFilterChange(
+                          'labelMode',
+                          value as TraceFilterState['labelMode'],
+                        )
+                      }
+                      items={LABEL_MODE_OPTIONS}
+                    >
+                      <SelectTrigger
+                        className={SELECT_TRIGGER}
+                        aria-label="label rows by"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="rounded-lg">
+                        {LABEL_MODE_OPTIONS.map((opt) => (
+                          <SelectItem key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  {filters.labelMode === 'attribute' ? (
+                    <Field
+                      label="Attribute key"
+                      htmlFor="trace-filter-label-attribute"
+                    >
+                      <Input
+                        id="trace-filter-label-attribute"
+                        type="text"
+                        placeholder="e.g. iii.tag.message"
+                        value={tempLabelAttribute}
+                        onChange={(e) => setTempLabelAttribute(e.target.value)}
+                        onBlur={applyLabelAttribute}
+                        onKeyDown={(e) =>
+                          handleEnterApply(e, applyLabelAttribute)
+                        }
+                        className={cn(INPUT, 'font-mono')}
+                      />
+                    </Field>
+                  ) : null}
+                </div>
+              </FieldSection>
+
+              <FieldSection title="Attributes">
+                <Field label="Span attributes">
+                  <AttributesFilter
+                    value={filters.attributes || []}
+                    onChange={(attrs) =>
+                      onFilterChange(
+                        'attributes',
+                        attrs.length > 0 ? attrs : undefined,
+                      )
+                    }
+                  />
+                </Field>
+              </FieldSection>
+            </div>
+          </PopoverContent>
+        </Popover>
+
+        {/* Active filter chips, inline; the rest fold behind "+N". */}
+        {activeFilters.length > 0 && (
+          <div className="flex min-w-0 items-center gap-1.5">
+            {isLoading && (
+              <span
+                aria-hidden
+                className="mr-0.5 size-1.5 shrink-0 rounded-full bg-ok live-dot"
+              />
+            )}
+            {inlineFilters.map((filter) => (
+              <FilterChip
+                key={filter.key}
+                filter={filter}
+                onRemove={() => removeActive(filter)}
+              />
+            ))}
+            {overflowFilters.length > 0 ? (
+              <FilterOverflowMenu
+                filters={overflowFilters}
+                onRemove={removeActive}
+                onClear={onClear}
+              />
+            ) : (
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                onClick={onClear}
+                className="rounded-md text-muted-foreground"
+              >
+                Clear all
+              </Button>
+            )}
           </div>
-        </div>
-      </MoreFiltersPopover>
+        )}
+
+        {stats ? (
+          <div className="ml-auto">
+            <StatsBlock stats={stats} heldNew={heldNew} />
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 }

@@ -9,11 +9,7 @@
  */
 import { formatBytes } from '@/components/chat/sandbox/format'
 import { Chip } from '@/components/chat/sandbox/terminal/Terminal'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/Tooltip'
+import { Hint } from '@/components/ui/Hint'
 import { iconForEntry, LockedBadge } from './entryShared'
 import {
   joinEntryPath,
@@ -151,14 +147,11 @@ function TruncationStub({
   return (
     <div className="flex items-center gap-1.5 px-3 py-0.5">
       <Indent depth={depth} />
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="text-ink-ghost cursor-help">
-            ⋯ {truncationLabel(info)}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>{info.hint}</TooltipContent>
-      </Tooltip>
+      <Hint label={info.hint}>
+        <span className="text-ink-ghost cursor-help">
+          ⋯ {truncationLabel(info)}
+        </span>
+      </Hint>
     </div>
   )
 }

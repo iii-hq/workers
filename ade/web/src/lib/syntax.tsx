@@ -35,27 +35,33 @@ if (!prism.languages.json) {
   }
 }
 
-/* Monochrome blueprint theme — every color references a design token so the
-   palette inverts automatically with `[data-theme="dark"]`. Keys get the
-   strongest ink, structural punctuation fades to `ink-ghost`, and the single
-   tonal hit is the hot orange `accent` reserved for literals (numbers,
-   booleans, null) so the eye lands on the values that actually matter. */
+/* The token palette is a set of CSS variables (`--syntax-*`, index.css).
+   Their defaults are the monochrome blueprint: keys get the strongest ink,
+   structural punctuation fades to `ink-ghost`, and the single tonal hit is
+   the accent reserved for literals (numbers, booleans, null) so the eye
+   lands on the values that actually matter. A surface may repoint them —
+   the trace panes wear `code-theme-editor` — without touching this file,
+   and every palette inverts with `[data-theme="dark"]` because the tokens
+   do. */
 export const syntaxTheme: PrismTheme = {
-  plain: { color: 'var(--color-ink)' },
+  plain: { color: 'var(--syntax-plain)' },
   styles: [
-    { types: ['property'], style: { color: 'var(--color-ink)' } },
-    { types: ['string'], style: { color: 'var(--color-ink-faint)' } },
+    { types: ['property'], style: { color: 'var(--syntax-key)' } },
+    { types: ['string'], style: { color: 'var(--syntax-string)' } },
+    // Italic or not is the theme's call too (`--syntax-literal-style`), but
+    // PrismTheme only types a literal `normal`/`italic`, so the slant is a
+    // rule on `.token.number/.boolean/.null/.keyword` in index.css.
     {
       types: ['number', 'boolean', 'null', 'keyword'],
-      style: { color: 'var(--color-accent)', fontStyle: 'italic' },
+      style: { color: 'var(--syntax-literal)' },
     },
     {
       types: ['punctuation', 'operator'],
-      style: { color: 'var(--color-ink-ghost)' },
+      style: { color: 'var(--syntax-punctuation)' },
     },
     {
       types: ['comment'],
-      style: { color: 'var(--color-ink-ghost)', fontStyle: 'italic' },
+      style: { color: 'var(--syntax-comment)', fontStyle: 'italic' },
     },
   ],
 }
@@ -148,6 +154,9 @@ interface CodeHighlightProps {
   language: string
   className?: string
   wrap?: boolean
+  /** Lines that should carry a `data-prompt` marker (a shell `$`, drawn by
+      the caller's CSS as a pseudo-element so it is never selected). */
+  linePrompt?: (lineText: string, index: number) => boolean
 }
 
 /**
@@ -162,6 +171,7 @@ export function CodeHighlight({
   language,
   className,
   wrap,
+  linePrompt,
 }: CodeHighlightProps) {
   return (
     <Highlight
@@ -184,14 +194,25 @@ export function CodeHighlight({
             {tokens.map((line, lineIdx) => {
               const lineProps = getLineProps({ line })
               const lineKey = `${lineIdx}:${line.length}`
+              const prompt =
+                linePrompt?.(
+                  line.map((token) => token.content).join(''),
+                  lineIdx,
+                ) === true
+              // An empty line's single token already carries its newline.
+              const blank = line.length === 1 && line[0].empty === true
               return (
-                <span key={lineKey} {...lineProps}>
+                <span
+                  key={lineKey}
+                  {...lineProps}
+                  data-prompt={prompt ? '' : undefined}
+                >
                   {line.map((token, tokenIdx) => {
                     const tokenProps = getTokenProps({ token })
                     const tokenKey = `${tokenIdx}:${token.types.join('.')}:${token.content}`
                     return <span key={tokenKey} {...tokenProps} />
                   })}
-                  {lineIdx < tokens.length - 1 ? '\n' : ''}
+                  {lineIdx < tokens.length - 1 && !blank ? '\n' : ''}
                 </span>
               )
             })}
@@ -222,6 +243,7 @@ export function JsonHighlight({ code, className, wrap }: JsonHighlightProps) {
                  and token order maps 1:1 to source position, so positional
                  keys are stable between renders of the same input. */
               const lineKey = `${lineIdx}:${line.length}`
+              const blank = line.length === 1 && line[0].empty === true
               return (
                 <span key={lineKey} {...lineProps}>
                   {line.map((token, tokenIdx) => {
@@ -229,7 +251,7 @@ export function JsonHighlight({ code, className, wrap }: JsonHighlightProps) {
                     const tokenKey = `${tokenIdx}:${token.types.join('.')}:${token.content}`
                     return <span key={tokenKey} {...tokenProps} />
                   })}
-                  {lineIdx < tokens.length - 1 ? '\n' : ''}
+                  {lineIdx < tokens.length - 1 && !blank ? '\n' : ''}
                 </span>
               )
             })}

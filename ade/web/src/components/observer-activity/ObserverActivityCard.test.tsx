@@ -280,7 +280,7 @@ describe('ObserverActivityCard', () => {
     expect(html).toContain('lucide-check')
     expect(html).toContain('data-timeline-activity-kind="observer-fired"')
     expect(html).toContain('data-icon="observer"')
-    expect(html).toContain('lucide-chevron-right')
+    expect(html).toContain('lucide-chevron-down')
     expect(html).not.toContain('left-full')
     expect(html).toContain('class="activity-status-icon" data-status="done"')
     expect(html).toContain('data-activity-status-layer="error"')

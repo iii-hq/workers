@@ -1112,7 +1112,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "llm-router"
-version = "1.4.40"
+version = "1.4.41"
 dependencies = [
  "async-trait",
  "clap",
@@ -1446,7 +1446,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai"
-version = "1.2.28"
+version = "1.2.29"
 dependencies = [
  "base64 0.22.1",
  "clap",

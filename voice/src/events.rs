@@ -17,12 +17,14 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::hotkey::HotkeyEvent;
 use crate::models::Progress;
 
 pub const ON_TRANSCRIPT_FN: &str = "voice::on-transcript";
 pub const ON_SESSION_STARTED_FN: &str = "voice::on-session-started";
 pub const ON_SESSION_STOPPED_FN: &str = "voice::on-session-stopped";
 pub const ON_MODEL_PROGRESS_FN: &str = "voice::on-model-progress";
+pub const ON_HOTKEY_FN: &str = "voice::on-hotkey";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -30,6 +32,7 @@ pub enum EventKind {
     SessionStarted,
     SessionStopped,
     ModelProgress,
+    Hotkey,
 }
 
 impl EventKind {
@@ -40,15 +43,17 @@ impl EventKind {
             EventKind::SessionStarted => ON_SESSION_STARTED_FN,
             EventKind::SessionStopped => ON_SESSION_STOPPED_FN,
             EventKind::ModelProgress => ON_MODEL_PROGRESS_FN,
+            EventKind::Hotkey => ON_HOTKEY_FN,
         }
     }
 
-    pub fn all() -> [EventKind; 4] {
+    pub fn all() -> [EventKind; 5] {
         [
             EventKind::Transcript,
             EventKind::SessionStarted,
             EventKind::SessionStopped,
             EventKind::ModelProgress,
+            EventKind::Hotkey,
         ]
     }
 }
@@ -127,6 +132,13 @@ pub fn register(iii: &IIIClient) {
         ON_MODEL_PROGRESS_FN,
         "Bytes received while a speech model downloads, one event per megabyte and a \
          final done event (with error when the download failed). Filter on input.id.",
+    );
+    register_source::<HotkeyEvent>(
+        iii,
+        ON_HOTKEY_FN,
+        "The fn (globe) key on macOS, which browsers never see: action down, up, or chord \
+         when another key was pressed while it was held. The console dictates while it \
+         is held. Needs Input Monitoring for the app running iii; see voice::doctor.",
     );
 }
 
@@ -292,6 +304,7 @@ mod tests {
                 "voice::on-session-started",
                 "voice::on-session-stopped",
                 "voice::on-model-progress",
+                "voice::on-hotkey",
             ]
         );
     }

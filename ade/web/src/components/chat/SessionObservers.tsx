@@ -9,6 +9,8 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
+import { Fact, FactList } from '@/components/ui/FactCard'
+import { Hint } from '@/components/ui/Hint'
 import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import type { SessionObserverInfo } from '@/lib/backend/observers'
 import { copyTextToClipboard } from '@/lib/clipboard'
@@ -198,27 +200,28 @@ function CopyableId({ value }: { value: string }) {
   return (
     <span className="inline-flex min-w-0 items-baseline gap-1.5">
       <span className="break-all">{value}</span>
-      <button
-        type="button"
-        onClick={() => {
-          // Helper, not navigator.clipboard: the API is undefined over
-          // `http://<LAN-IP>` (insecure context) and the raw call no-ops.
-          void copyTextToClipboard(value).then((ok) => {
-            if (!ok) return
-            setCopied(true)
-            window.setTimeout(() => setCopied(false), 1200)
-          })
-        }}
-        className="shrink-0 self-center text-ink-ghost hover:text-ink transition-colors"
-        aria-label={copied ? 'copied' : 'copy id'}
-        title={copied ? 'copied' : 'copy'}
-      >
-        {copied ? (
-          <Check size={16} aria-hidden />
-        ) : (
-          <Copy size={16} aria-hidden />
-        )}
-      </button>
+      <Hint label={copied ? 'Copied' : 'Copy'}>
+        <button
+          type="button"
+          onClick={() => {
+            // Helper, not navigator.clipboard: the API is undefined over
+            // `http://<LAN-IP>` (insecure context) and the raw call no-ops.
+            void copyTextToClipboard(value).then((ok) => {
+              if (!ok) return
+              setCopied(true)
+              window.setTimeout(() => setCopied(false), 1200)
+            })
+          }}
+          className="shrink-0 self-center text-ink-ghost hover:text-ink transition-colors"
+          aria-label={copied ? 'copied' : 'copy id'}
+        >
+          {copied ? (
+            <Check size={16} aria-hidden />
+          ) : (
+            <Copy size={16} aria-hidden />
+          )}
+        </button>
+      </Hint>
     </span>
   )
 }
@@ -278,20 +281,21 @@ function ObserverRow({
           </span>
         </span>
       </button>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={onDispose}
-        className={toolbarIconButtonClass}
-        aria-label={`${inactive ? 'dismiss' : 'remove'} ${title}`}
-        title={inactive ? 'dismiss' : 'remove'}
-      >
-        {busy ? (
-          <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
-        ) : (
-          <X aria-hidden className="size-4 shrink-0" />
-        )}
-      </button>
+      <Hint label={inactive ? 'Dismiss' : 'Remove'}>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onDispose}
+          className={toolbarIconButtonClass}
+          aria-label={`${inactive ? 'dismiss' : 'remove'} ${title}`}
+        >
+          {busy ? (
+            <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
+          ) : (
+            <X aria-hidden className="size-4 shrink-0" />
+          )}
+        </button>
+      </Hint>
     </li>
   )
 }
@@ -332,39 +336,35 @@ export function ObserverDetailDialog({
           observer created by this conversation's agent.
         </DialogDescription>
         {observer ? (
-          <div className="mt-4 space-y-4 font-mono text-[12px]">
-            <dl className="grid grid-cols-[max-content_1fr] items-baseline gap-x-4 gap-y-1.5">
-              <dt className="text-ink-ghost">Observes</dt>
-              <dd className="text-ink">{observer.functionId}</dd>
+          <div className="mt-4 space-y-4">
+            <FactList className="gap-y-1.5">
+              <Fact label="Observes" mono>
+                {observer.functionId}
+              </Fact>
               {observer.namespace ? (
-                <>
-                  <dt className="text-ink-ghost">Namespace</dt>
-                  <dd className="text-ink-faint">{observer.namespace}</dd>
-                </>
+                <Fact label="Namespace" mono muted>
+                  {observer.namespace}
+                </Fact>
               ) : null}
-              <dt className="text-ink-ghost">Delivers</dt>
-              <dd className="text-ink">{deliveryLabel(observer)}</dd>
-              <dt className="text-ink-ghost">Lifetime</dt>
-              <dd className="text-ink">
+              <Fact label="Delivers" mono>
+                {deliveryLabel(observer)}
+              </Fact>
+              <Fact label="Lifetime" mono>
                 {observer.fired
                   ? (lifecycleNote(observer) ?? 'retired')
                   : observer.once
                     ? 'once — retires after first fire'
                     : (lifecycleNote(observer) ?? 'until removed')}
-              </dd>
+              </Fact>
               {observer.createdAt !== undefined ? (
-                <>
-                  <dt className="text-ink-ghost">Created</dt>
-                  <dd className="text-ink-faint">
-                    {new Date(observer.createdAt).toLocaleString()}
-                  </dd>
-                </>
+                <Fact label="Created" mono muted>
+                  {new Date(observer.createdAt).toLocaleString()}
+                </Fact>
               ) : null}
-              <dt className="text-ink-ghost">Observer</dt>
-              <dd className="text-ink-faint">
+              <Fact label="Observer" mono muted>
                 <CopyableId value={observer.id} />
-              </dd>
-            </dl>
+              </Fact>
+            </FactList>
             {isEmptyObject(observer.args) ? null : (
               <JsonSection label="args" value={observer.args} />
             )}
@@ -561,20 +561,24 @@ export function SessionObservers({
             />
           </button>
           {onClearAll ? (
-            <button
-              type="button"
-              onClick={() => setConfirmingClear(true)}
-              disabled={clearing}
-              aria-label="clear all observers"
-              title="clear all observers"
-              className={toolbarIconButtonClass}
-            >
-              {clearing ? (
-                <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
-              ) : (
-                <Trash2 aria-hidden className="size-4 shrink-0" />
-              )}
-            </button>
+            <Hint label="Clear all observers">
+              <button
+                type="button"
+                onClick={() => setConfirmingClear(true)}
+                disabled={clearing}
+                aria-label="clear all observers"
+                className={toolbarIconButtonClass}
+              >
+                {clearing ? (
+                  <Loader2
+                    aria-hidden
+                    className="size-4 shrink-0 animate-spin"
+                  />
+                ) : (
+                  <Trash2 aria-hidden className="size-4 shrink-0" />
+                )}
+              </button>
+            </Hint>
           ) : null}
         </div>
 

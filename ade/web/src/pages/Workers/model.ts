@@ -145,6 +145,17 @@ export function alsoStarts(
   return names.length ? [`Also starts ${names.join(', ')}, stopped now`] : []
 }
 
+/** A confirmation's description with the containers it also starts said in
+    the same breath: a confirmation is a title and a description, no list. */
+export function withAlsoStarts(
+  description: string,
+  idle: readonly string[],
+  except: readonly string[] = [],
+): string {
+  const [also] = alsoStarts(idle, except)
+  return also ? `${description} ${also}.` : description
+}
+
 /** Containers grouped by `start_after` depth: step 1 starts with the engine. */
 export function startWaves(declared: readonly DeclaredContainer[]): string[][] {
   const byName = new Map(declared.map((d) => [d.name, d]))

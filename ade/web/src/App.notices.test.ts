@@ -37,7 +37,7 @@ function jsxChildren(path: string, tag: string) {
 describe('failure notice placement', () => {
   it('keeps navigation above global notices and the workspace', () => {
     expect(jsxChildren('./App.tsx', 'Sheet').slice(0, 3)).toEqual([
-      'Header',
+      'WorkspaceHeader',
       'ConnectionNotice',
       'WorkspacePanes',
     ])

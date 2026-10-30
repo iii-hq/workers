@@ -115,6 +115,58 @@ pub struct SttConfig {
     /// Settings for the direct `whisper_cpp` backend.
     #[serde(default)]
     pub whisper_cpp: WhisperCppSttConfig,
+
+    /// The clean-up pass over a finished dictation: a language model through
+    /// llm-router fixes grammar, punctuation, misheard words and spoken
+    /// self-corrections, and drops fillers, before the text reaches the
+    /// composer.
+    #[serde(default)]
+    pub cleanup: CleanupConfig,
+}
+
+/// How a finished dictation is cleaned up before it is handed back.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupConfig {
+    /// Run the clean-up pass when a dictation stops. Off hands back the
+    /// recognizer's text as it is.
+    #[serde(default = "default_cleanup_enabled")]
+    pub enabled: bool,
+
+    /// Chat model as llm-router lists it (`provider::model`, or a bare id the
+    /// router resolves). Empty uses the default model of the first configured
+    /// provider.
+    #[serde(default)]
+    pub model: String,
+
+    /// Milliseconds the pass may take before the raw transcript is handed
+    /// back instead.
+    #[serde(default = "default_cleanup_timeout_ms")]
+    pub timeout_ms: u64,
+
+    /// Extra guidance appended to the clean-up prompt: names, product terms,
+    /// spellings, a preferred style.
+    #[serde(default)]
+    pub instructions: String,
+}
+
+fn default_cleanup_enabled() -> bool {
+    true
+}
+
+fn default_cleanup_timeout_ms() -> u64 {
+    12_000
+}
+
+impl Default for CleanupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_cleanup_enabled(),
+            model: String::new(),
+            timeout_ms: default_cleanup_timeout_ms(),
+            instructions: String::new(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
@@ -213,6 +265,11 @@ pub struct TtsConfig {
     /// Longest text, in characters, one `voice::speak` call will read.
     #[serde(default = "default_max_speak_chars")]
     pub max_speak_chars: usize,
+
+    /// Show the Read aloud, Read selection and Voice chat controls above the
+    /// chat composer. Off keeps read-aloud on the voice page only.
+    #[serde(default)]
+    pub chat_controls: bool,
 
     /// Settings for the local neural Piper backend.
     #[serde(default)]
@@ -456,6 +513,7 @@ impl Default for SttConfig {
             openai: OpenaiSttConfig::default(),
             router: RouterSttConfig::default(),
             whisper_cpp: WhisperCppSttConfig::default(),
+            cleanup: CleanupConfig::default(),
         }
     }
 }
@@ -489,6 +547,7 @@ impl Default for TtsConfig {
             voice: String::new(),
             rate_wpm: 0,
             max_speak_chars: default_max_speak_chars(),
+            chat_controls: false,
             piper: PiperTtsConfig::default(),
             openai: OpenaiTtsConfig::default(),
             router: RouterTtsConfig::default(),
@@ -577,6 +636,9 @@ impl WorkerConfig {
         }
         if self.tts.max_speak_chars == 0 {
             return Err("tts.max_speak_chars must be at least 1".to_string());
+        }
+        if self.stt.cleanup.enabled && self.stt.cleanup.timeout_ms < 1_000 {
+            return Err("stt.cleanup.timeout_ms must be at least 1000".to_string());
         }
         Ok(self)
     }
@@ -691,6 +753,26 @@ mod tests {
             WorkerConfig::from_json(&serde_json::json!({"tts": {"piper": {"device": "gpu"}}}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn cleanup_is_on_by_default_and_the_chat_footer_controls_are_off() {
+        let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
+        assert!(cfg.stt.cleanup.enabled);
+        assert_eq!(cfg.stt.cleanup.model, "");
+        assert_eq!(cfg.stt.cleanup.timeout_ms, 12_000);
+        assert!(!cfg.tts.chat_controls);
+        let json = cfg.to_json();
+        assert_eq!(json["stt"]["cleanup"]["enabled"], true);
+        assert_eq!(json["tts"]["chat_controls"], false);
+    }
+
+    #[test]
+    fn a_cleanup_timeout_under_a_second_is_rejected_only_while_enabled() {
+        let too_short = serde_json::json!({"stt": {"cleanup": {"timeout_ms": 200}}});
+        assert!(WorkerConfig::from_json(&too_short).is_err());
+        let off = serde_json::json!({"stt": {"cleanup": {"enabled": false, "timeout_ms": 200}}});
+        assert!(WorkerConfig::from_json(&off).is_ok());
     }
 
     #[test]

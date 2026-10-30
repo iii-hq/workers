@@ -3,6 +3,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -11,16 +12,12 @@ import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAcces
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { Button } from '@/components/ui/Button'
+import { Hint } from '@/components/ui/Hint'
 import { IconButton } from '@/components/ui/IconButton'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/Tooltip'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
 import { useFilesystemGrants } from '@/hooks/use-filesystem-grants'
@@ -121,6 +118,7 @@ import {
   useExtSessionChips,
   useExtSessionTurnSummaries,
 } from '@/lib/ui-slots'
+import { cn } from '@/lib/utils'
 import {
   activateWorkingDir,
   fetchDefaultWorkingDir,
@@ -160,6 +158,7 @@ import {
 } from '@/types/chat'
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
+import { AgentProfilePicker } from './AgentProfilePicker'
 import { idleComposerPlaceholder } from './agent-defaults'
 import {
   type AsideRequest,
@@ -257,6 +256,11 @@ interface ChatViewProps {
   density?: 'route' | 'dock'
   /** Header label for a session-pinned workspace panel. */
   panelTitle?: string
+  /**
+   * The open-chats tab row: when set (and there is no ← back button), it
+   * takes the header's left side in place of the title and agent label.
+   */
+  headerTabs?: ReactNode
   /** Close the hosting pane — the header's standard ✕ when present. */
   onRequestClose?: () => void
   /** The pane's command registrar: chat's keys and palette rows. */
@@ -308,6 +312,7 @@ export function ChatView({
   catalogLoading,
   density = 'route',
   panelTitle,
+  headerTabs,
   onRequestClose,
   commands,
   onBack,
@@ -334,6 +339,13 @@ export function ChatView({
     imported &&
     importedTurnEstablished === false &&
     (!conversation.model || !conversation.workingDir)
+  // An imported history with no ADE turn yet is a fresh session as far as
+  // the pickers are concerned: its messages came from elsewhere, so they
+  // must not lock the model and agent the reader is being asked to choose.
+  const importedAwaitingSetup = imported && importedTurnEstablished === false
+  // This chat's composer on the insert bus: its own palette row focuses it,
+  // not whichever chat beside it was used last.
+  const composerId = useId()
   const [isStreaming, setIsStreaming] = useState(false)
   // Pre-content phase of this tab's in-flight send, for the thinking
   // waiting indicator detail: submit → harness::send ack → turn-started.
@@ -578,7 +590,20 @@ export function ChatView({
   // covers reloads and turns observed from another tab. Local isStreaming
   // covers the gap before the first status event lands.
   const serverWorking = conversation.status === 'working'
-  const streamingIndicator = isStreaming || serverWorking
+  // A stop is honoured on the spot: the moment the reader asks, the turn
+  // reads as over here — composer back to Send, waiting indicator gone —
+  // while the harness winds the real turn down (a running tool can take it
+  // a while). The override lifts once the server reports idle, or when the
+  // stop RPC itself fails and the turn is genuinely still running.
+  const [stopRequested, setStopRequested] = useState(false)
+  useEffect(() => {
+    if (!serverWorking && !isStreaming) setStopRequested(false)
+  }, [serverWorking, isStreaming])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a stop belongs to one conversation; switching drops it.
+  useEffect(() => {
+    setStopRequested(false)
+  }, [conversation.id])
+  const streamingIndicator = (isStreaming || serverWorking) && !stopRequested
 
   // Stop requested but not yet finalized server-side. Disables the stop button
   // until status-changed flips the indicator off. The ref is the dedupe guard:
@@ -1207,6 +1232,18 @@ export function ChatView({
   ])
 
   const extComposerActions = useExtComposerActions()
+  /* A worker's composer action may bring a palette row and a key (the voice
+   * worker's Dictate). They join this pane's commands, so the key fires only
+   * while focus is in this chat and the palette lists them as `Chat: …`. */
+  useEffect(() => {
+    if (!commands) return
+    const rows = extComposerActions
+      .filter((action) => action.command)
+      .map((action) => ({ id: `action-${action.id}`, ...action.command! }))
+    if (rows.length === 0) return
+    return commands.register(rows)
+  }, [commands, extComposerActions])
+
   const composerActions = useMemo(() => {
     if (extComposerActions.length === 0) return null
     return [...extComposerActions].sort(compareChips).map((action) => {
@@ -2300,6 +2337,10 @@ export function ChatView({
               break
             }
             case 'stop-reason': {
+              // The reader stopped this turn themselves: the composer already
+              // said so by returning to Send, and a card restating it under
+              // the partial reply is noise.
+              if (event.reason === 'aborted' && stopSeenRef.current) break
               let noticeContent = formatStopReason(event.reason, event.message)
               if (event.partialResultAvailable) {
                 noticeContent +=
@@ -2482,6 +2523,7 @@ export function ChatView({
     stopRequestedRef.current = true
     stopSeenRef.current = true
     setStopping(true)
+    setStopRequested(true)
     abortRef.current?.abort()
     // Re-enable the button if the stop RPC fails while the server still
     // reports working — otherwise `stopping` never clears (the reset
@@ -2489,6 +2531,7 @@ export function ChatView({
     void backend.abortRun?.(sessionId).catch(() => {
       stopRequestedRef.current = false
       setStopping(false)
+      setStopRequested(false)
     })
   }, [backend, sessionId, readOnly])
 
@@ -2871,30 +2914,30 @@ export function ChatView({
     return commands.register([
       {
         id: 'focus-composer',
-        title: 'Focus the composer',
+        title: 'Focus message box',
         enabled: () => !readOnly,
-        detail: 'Put the caret in the message box',
-        keywords: ['type', 'write', 'input', 'message'],
-        run: () => requestComposerFocus(),
+        detail: 'Start typing a message',
+        keywords: ['type', 'write', 'input', 'message', 'composer'],
+        run: () => requestComposerFocus(composerId),
       },
       {
         id: 'next-message',
         title: 'Next message',
-        detail: 'Move the focus down the conversation',
+        detail: 'Move focus to the next message',
         keywords: ['down', 'read', 'inspect'],
         run: () => focusMessage(1),
       },
       {
         id: 'previous-message',
         title: 'Previous message',
-        detail: 'Move the focus up the conversation',
+        detail: 'Move focus to the previous message',
         keywords: ['up', 'read', 'inspect'],
         run: () => focusMessage(-1),
       },
       {
         id: 'latest',
-        title: 'Jump to the latest message',
-        detail: 'Scroll to the end of the conversation',
+        title: 'Scroll to latest message',
+        detail: 'Jump to the end of the conversation',
         keywords: ['bottom', 'end', 'scroll', 'tail'],
         shortcut: 'End',
         run: () => {
@@ -2906,54 +2949,54 @@ export function ChatView({
       },
       {
         id: 'approve',
-        title: 'Approve the pending call',
-        detail: 'Let the focused (or the only waiting) function call run',
+        title: 'Approve function call',
+        detail: 'Let the waiting function call run',
         keywords: ['allow', 'yes', 'permission'],
         enabled: pendingApproval,
         run: () => answerApproval('approve'),
       },
       {
         id: 'deny',
-        title: 'Deny the pending call',
-        detail: 'Refuse the focused (or the only waiting) function call',
+        title: 'Deny function call',
+        detail: 'Stop the waiting function call from running',
         keywords: ['reject', 'no', 'permission'],
         enabled: pendingApproval,
         run: () => answerApproval('deny'),
       },
       {
         id: 'always-allow',
-        title: 'Always allow the pending call',
-        detail: 'Approve it and stop asking for this function',
+        title: 'Always allow this function',
+        detail: 'Approve it now and stop asking',
         keywords: ['allow', 'permission', 'session', 'trust'],
         enabled: pendingApproval,
         run: () => answerApproval('always-allow'),
       },
       {
         id: 'expand',
-        title: 'Expand or collapse the focused message',
-        detail: 'Open a function call card, or fold it',
+        title: 'Expand or collapse message',
+        detail: 'Open or fold the focused function call',
         keywords: ['open', 'fold', 'details'],
         run: () => actOnFocused('toggle'),
       },
       {
         id: 'copy',
-        title: 'Copy the focused message',
-        detail: 'Copy its text to the clipboard',
+        title: 'Copy message',
+        detail: 'Copy the focused message to the clipboard',
         keywords: ['clipboard'],
         run: () => actOnFocused('copy'),
       },
       {
         id: 'model',
-        title: 'Switch model',
+        title: 'Change model',
         enabled: () => !readOnly,
-        detail: 'Open the model picker',
-        keywords: ['provider', 'picker', 'llm'],
+        detail: 'Pick the model for this chat',
+        keywords: ['provider', 'picker', 'llm', 'switch'],
         run: handleOpenModelPicker,
       },
       {
         id: 'stop',
-        title: 'Stop the turn',
-        detail: 'Interrupt the running generation',
+        title: 'Stop generating',
+        detail: 'Interrupt the running response',
         keywords: ['cancel', 'interrupt', 'abort'],
         shortcut: 'Escape',
         firesWhileTyping: true,
@@ -2964,7 +3007,7 @@ export function ChatView({
         ? [
             {
               id: 'show-context',
-              title: 'Show the context panel',
+              title: 'Show context panel',
               detail: 'Folder, branch, pull requests, sub-agents and links',
               keywords: ['side panel', 'branch', 'changes', 'subagents'],
               run: () => showAside('context'),
@@ -2972,8 +3015,7 @@ export function ChatView({
             {
               id: 'ask-in-side-chat',
               title: 'Ask in side chat',
-              detail:
-                'A temporary chat that sees this one; quotes the selection',
+              detail: 'Ask a quick question without leaving this chat',
               keywords: ['side panel', 'question', 'quote', 'btw'],
               run: () => {
                 const picked = selectionQuote(
@@ -2990,6 +3032,7 @@ export function ChatView({
     ])
   }, [
     commands,
+    composerId,
     handleOpenModelPicker,
     handleStop,
     working,
@@ -3001,16 +3044,57 @@ export function ChatView({
     conversation.agentProfile?.name,
   ])
 
+  const welcome =
+    !side &&
+    !readOnly &&
+    shownMessages.length === 0 &&
+    !isThinking &&
+    !streamingIndicator &&
+    conversation.hydrated !== false &&
+    !harnessBlocked &&
+    (!conversationsCtx || modelOptions.length > 0)
+  const agentPicker =
+    conversationsCtx && !side ? (
+      <AgentProfilePicker
+        key={conversation.id}
+        systemPrompt={effectiveSystemPrompt}
+        onSystemPromptChange={(next) =>
+          conversationsCtx.setSystemPrompt(conversation.id, next)
+        }
+        agentProfile={conversation.agentProfile}
+        onAgentProfileChange={(next, options) =>
+          conversationsCtx.setAgentProfile(conversation.id, next, options)
+        }
+        preselectDefaultAgent={conversation.draft === true && !harnessBlocked}
+        selectionLocked={
+          streamingIndicator ||
+          harnessBlocked ||
+          (!importedAwaitingSetup &&
+            (sessionHydrating ||
+              conversation.started === true ||
+              conversation.messages.length > 0))
+        }
+        details={
+          composerControls?.footer?.length ? composerControls.footer : undefined
+        }
+      />
+    ) : undefined
+
   const view = (
     <section
       ref={viewRef}
       data-chat-session-id={conversation.id}
       data-chat-session-hydrated={conversation.hydrated}
-      className="@container flex-1 flex flex-col min-w-0 min-h-0"
+      className="conversation-surface @container flex-1 flex flex-col min-w-0 min-h-0"
     >
       {side ? null : (
         <PageHeader
-          className={headerPad}
+          /* Dark: the header sits on the chat's black canvas, framed by a
+             neutral-900 edge on its bottom and sides. */
+          className={cn(
+            headerPad,
+            'dark:bg-panel dark:border-x dark:border-b dark:border-neutral-900',
+          )}
           onClose={onRequestClose}
           actions={
             readOnly ? undefined : (
@@ -3024,7 +3108,7 @@ export function ChatView({
                 system's narrow-container threshold): the context meter —
                 built-in or the harness chip — drops to its `used/usable`
                 counts, the sandbox chip is already `⬚ N`. */}
-                <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
+                <div className="flex h-7 items-center gap-3 rounded-xl bg-surface px-2.5">
                   {sessionChips}
                   {hasInjectedContextChip ? null : (
                     <ContextUsage
@@ -3049,66 +3133,72 @@ export function ChatView({
                 sr-only role="status" span so transitions still announce.
                 `self-stretch px-1` turns a 6px dot into a full-height hover
                 target without letting an error widen the header. */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    {/* viewport: phone chrome — hidden from the phone header, touch size */}
-                    <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
-                      <StatusDot
-                        tone={
-                          conversation.status === 'error'
-                            ? 'alert'
-                            : streamingIndicator
-                              ? 'accent'
-                              : 'ok'
-                        }
-                        pulse={streamingIndicator}
-                      />
-                      <span role="status" className="sr-only">
-                        {streamingIndicator
-                          ? 'working'
-                          : conversation.status === 'error'
-                            ? 'error'
-                            : 'ready'}
-                      </span>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {conversation.status === 'error'
+                <Hint
+                  label={
+                    conversation.status === 'error'
                       ? `error${conversation.statusReason ? ` — ${conversation.statusReason}` : ''}`
                       : streamingIndicator
                         ? 'working'
-                        : 'ready'}
-                  </TooltipContent>
-                </Tooltip>
+                        : 'ready'
+                  }
+                >
+                  {/* viewport: phone chrome — hidden from the phone header, touch size */}
+                  <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
+                    <StatusDot
+                      tone={
+                        conversation.status === 'error'
+                          ? 'alert'
+                          : streamingIndicator
+                            ? 'accent'
+                            : 'ok'
+                      }
+                      pulse={streamingIndicator}
+                    />
+                    <span role="status" className="sr-only">
+                      {streamingIndicator
+                        ? 'working'
+                        : conversation.status === 'error'
+                          ? 'error'
+                          : 'ready'}
+                    </span>
+                  </div>
+                </Hint>
               </div>
             )
           }
         >
           <div className="flex min-w-0 flex-1 items-center gap-2 font-sans text-sm text-ink-faint">
             {onBack ? (
-              <button
-                type="button"
-                onClick={onBack}
-                aria-label="back to conversations"
-                title="back to conversations"
-                className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
-              >
-                <span
-                  className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                  aria-hidden="true"
-                />
-                <ArrowLeft aria-hidden className="size-4 shrink-0" />
-              </button>
+              <Hint label="Back to conversations">
+                <button
+                  type="button"
+                  onClick={onBack}
+                  aria-label="back to conversations"
+                  className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
+                >
+                  <span
+                    className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                    aria-hidden="true"
+                  />
+                  <ArrowLeft aria-hidden className="size-4 shrink-0" />
+                </button>
+              </Hint>
             ) : null}
-            <span className="min-w-0 truncate font-medium text-ink">
-              {panelTitle ?? 'Chat'}
-            </span>
-            <span className="shrink-0 text-ink-ghost">·</span>
-            <span className="min-w-0 truncate">
-              {readOnly
-                ? 'Read-only'
-                : (conversation.agentProfile?.name ?? effectiveModel)}
-            </span>
+            {headerTabs && !onBack ? (
+              headerTabs
+            ) : (
+              <>
+                <span className="min-w-0 truncate font-medium text-ink">
+                  {panelTitle ?? 'Chat'}
+                </span>
+                <span className="shrink-0 text-ink-ghost">·</span>
+                <span className="min-w-0 truncate">
+                  {readOnly
+                    ? 'Read-only'
+                    : (conversation.agentProfile?.name ?? effectiveModel)}
+                </span>
+              </>
+            )}
           </div>
         </PageHeader>
       )}
@@ -3117,292 +3207,304 @@ export function ChatView({
           onDisable={() => void approvalSettings.setMode('manual')}
         />
       ) : null}
-      <ChatFileNavigation
-        messages={conversation.messages}
-        historyComplete={
-          conversation.hydrated !== false &&
-          conversation.history?.hasMore !== true
-        }
-        workingDir={conversation.workingDir ?? null}
-        enabled={workingDirEnabled}
+      <div
+        className="chat-conversation-body flex min-h-0 flex-1 flex-col"
+        data-welcome={welcome || undefined}
       >
-        <RegisteredObserverStatusProvider
-          loaded={observersSnapshotSessionId === conversation.id}
-          observersById={observersById}
+        <ChatFileNavigation
+          messages={conversation.messages}
+          historyComplete={
+            conversation.hydrated !== false &&
+            conversation.history?.hasMore !== true
+          }
+          workingDir={conversation.workingDir ?? null}
+          enabled={workingDirEnabled}
         >
-          <AskInSideChatContext.Provider value={sideChatValue}>
-            <SideChatQuotesContext.Provider value={sideQuotesValue}>
-              <MessageList
-                messages={shownMessages}
-                header={
-                  side && shownMessages.length === 0 ? side.empty : undefined
+          <RegisteredObserverStatusProvider
+            loaded={observersSnapshotSessionId === conversation.id}
+            observersById={observersById}
+          >
+            <AskInSideChatContext.Provider value={sideChatValue}>
+              <SideChatQuotesContext.Provider value={sideQuotesValue}>
+                <MessageList
+                  messages={shownMessages}
+                  header={
+                    side && shownMessages.length === 0 ? side.empty : undefined
+                  }
+                  agentName={conversation.agentProfile?.name}
+                  sessionId={conversation.id}
+                  spawnContext={{
+                    title: conversation.title,
+                    model: effectiveModel,
+                    appearance: conversation.subagentAppearance,
+                  }}
+                  transcriptHydrated={conversation.hydrated !== false}
+                  isThinking={isThinking}
+                  turnVisualPhase={turnVisualState.phase}
+                  turnKey={turnVisualState.turnKey}
+                  thinkingDetail={
+                    conversation.status === 'working' &&
+                    conversation.statusReason
+                      ? conversation.statusReason
+                      : (phaseDetail ?? waitingFallback)
+                  }
+                  density={density}
+                  onResolveApproval={resolveApproval}
+                  onAlwaysAllow={handleAlwaysAllow}
+                  onResolveFilesystemAccess={handleFilesystemResolve}
+                  onManageFilesystemAccess={handleManageFilesystemAccess}
+                  onConfigureProvider={handleConfigureProvider}
+                  workingDir={conversation.workingDir ?? null}
+                  onWorkingDirChange={
+                    workingDirEnabled ? handleWorkingDirChange : undefined
+                  }
+                  defaultWorkingDir={defaultWorkingDir}
+                  worktreePicker={
+                    worktreeEnabled
+                      ? { enabled: true, onPick: handlePickWorktree }
+                      : undefined
+                  }
+                  observersById={observersById}
+                  focusMessageId={quoteFocusId ?? focusMessageId}
+                  onFocusMessageHandled={() => {
+                    setQuoteFocusId(null)
+                    handleFocusMessageHandled()
+                  }}
+                  history={side ? undefined : conversation.history}
+                  onLoadOlder={side ? undefined : handleLoadOlder}
+                  onLoadActivityEntries={handleLoadActivityEntries}
+                />
+              </SideChatQuotesContext.Provider>
+            </AskInSideChatContext.Provider>
+          </RegisteredObserverStatusProvider>
+        </ChatFileNavigation>
+        <LiveRegion announcement={announcer.announcement} />
+        {modelSwitch.dialog}
+        {modelSwitch.error || modelSwitch.notice ? (
+          <StatusPanel
+            role={modelSwitch.error ? 'alert' : 'status'}
+            variant={modelSwitch.error ? 'alert' : 'info'}
+            headline={
+              modelSwitch.error
+                ? 'Model switch not completed'
+                : 'Switching models'
+            }
+            detail={modelSwitch.error ?? modelSwitch.notice}
+          />
+        ) : null}
+        {readOnly ? (
+          <footer className={footerPad}>
+            <div className="mx-auto max-w-[760px]">
+              <p className="text-sm text-ink-faint">
+                This conversation is read-only.
+              </p>
+            </div>
+          </footer>
+        ) : (
+          <footer className={footerPad}>
+            {fileOpenError ? (
+              <p
+                role="alert"
+                className="mx-auto max-w-[760px] break-words text-[12px] text-alert"
+              >
+                {fileOpenError}
+              </p>
+            ) : null}
+            <div className="mx-auto max-w-[760px]">
+              {conversationsCtx ? (
+                <ActiveSubagentChips
+                  className="mb-1 px-1"
+                  conversations={conversationsCtx.conversations}
+                  rootSessionId={conversation.id}
+                  connectionState={conversationsCtx.connectionState}
+                  onOpen={conversationsCtx.openConversationInPanel}
+                />
+              ) : null}
+              <SessionObservers
+                observers={mergedObservers}
+                onDispose={handleDisposeObserver}
+                onClearAll={
+                  backend.disposeObserver ? handleClearAllObservers : undefined
                 }
-                agentName={conversation.agentProfile?.name}
-                sessionId={conversation.id}
-                spawnContext={{
-                  title: conversation.title,
-                  model: effectiveModel,
-                  appearance: conversation.subagentAppearance,
-                }}
-                transcriptHydrated={conversation.hydrated !== false}
-                isThinking={isThinking}
-                turnVisualPhase={turnVisualState.phase}
-                turnKey={turnVisualState.turnKey}
-                thinkingDetail={
-                  conversation.status === 'working' && conversation.statusReason
-                    ? conversation.statusReason
-                    : (phaseDetail ?? waitingFallback)
+                checkStateKey={backend.stateKeyExists}
+              />
+              {queuedStrip.length > 0 ? (
+                <section
+                  className="mb-1 rounded-xl bg-surface"
+                  aria-label="queued messages"
+                >
+                  {/* The message being edited is pulled out of the queue and lives
+                  only in the composer — hidden here until it's saved back (in
+                  place, so it reappears at its spot) or removed. */}
+                  {queuedStrip
+                    .filter((row) => row.id !== browsedQueuedId)
+                    .map((row) => (
+                      <div
+                        key={row.id}
+                        className="flex items-center gap-2 border-b border-rule-2 px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-[12px]"
+                      >
+                        <span className="min-w-0 flex-1 truncate">
+                          {row.text}
+                        </span>
+                        <span className="shrink-0 text-ink-ghost">
+                          {drainingQueue ? 'Delivering…' : 'Queued'}
+                        </span>
+                      </div>
+                    ))}
+                  {/* No edit hint while draining — the rows are being delivered,
+                  so inviting an edit would be a race the user loses. */}
+                  {backend.editQueued &&
+                  queuedDrafts.length > 0 &&
+                  !drainingQueue ? (
+                    <div className="px-3 py-0.5 text-right text-[11px] text-ink-ghost max-sm:hidden">
+                      {browsedQueuedId
+                        ? '↑ / ↓ cycle · Enter saves in place · Empty + Enter removes'
+                        : 'Press ↑ in the composer to edit queued messages'}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+              {sessionTurnSummaries ? (
+                <div
+                  className="flex flex-wrap items-center justify-end gap-1.5 px-1"
+                  data-chat-turn-summary-slot
+                >
+                  {sessionTurnSummaries}
+                </div>
+              ) : null}
+              {checkingImportedTurn && !importTurnError && (
+                <p role="status" className="mb-2 px-1 text-sm text-ink-faint">
+                  Checking conversation state…
+                </p>
+              )}
+              {importTurnError && (
+                <StatusPanel
+                  role="alert"
+                  variant="alert"
+                  className="mb-2"
+                  icon={<TriangleAlert className="h-full w-full" />}
+                  headline="Could not check conversation state"
+                  detail={importTurnError}
+                  action={
+                    <Button
+                      variant="pill"
+                      size="sm"
+                      onClick={() => {
+                        setImportTurnError(null)
+                        setImportedTurnEstablished(null)
+                        setImportCheck((attempt) => attempt + 1)
+                      }}
+                    >
+                      Retry
+                    </Button>
+                  }
+                />
+              )}
+              {importNeedsSetup && (
+                <p role="status" className="mb-2 px-1 text-sm text-ink-faint">
+                  Choose an ADE model and working directory to continue this
+                  conversation.
+                  {!workingDirEnabled &&
+                    ' The working-directory picker requires the shell worker.'}
+                </p>
+              )}
+              <Composer
+                key={composerGeneration}
+                model={effectiveModel}
+                modelOptions={modelOptions}
+                catalogLoading={catalogLoading}
+                modelPickerOpenRequest={modelPickerOpenRequest}
+                modelLocked={
+                  modelSwitch.pending ||
+                  (!importedAwaitingSetup && (modelLocked || sessionHydrating))
                 }
-                density={density}
-                onResolveApproval={resolveApproval}
-                onAlwaysAllow={handleAlwaysAllow}
-                onResolveFilesystemAccess={handleFilesystemResolve}
-                onManageFilesystemAccess={handleManageFilesystemAccess}
-                onConfigureProvider={handleConfigureProvider}
+                functionEntries={functionEntries}
+                searchFiles={searchFiles}
+                mentionContext={mentionContext}
+                onOpenFileMention={
+                  workingDirEnabled ? handleOpenFileMention : undefined
+                }
+                permissionMode={approvalSettings.settings.mode}
+                permissionModeLoading={!approvalSettings.loaded}
+                showPermissionMode={approvalEnabled}
+                thinkingLevel={thinkingLevel}
+                onThinkingLevelChange={handleThinkingLevelChange}
+                onModelChange={modelSwitch.request}
+                showWorkingDir={workingDirEnabled && !side}
                 workingDir={conversation.workingDir ?? null}
-                onWorkingDirChange={
-                  workingDirEnabled ? handleWorkingDirChange : undefined
+                showMemoryBank={
+                  !side &&
+                  backend.id === 'real' &&
+                  (conversationsCtx?.memoryAvailable ?? false)
                 }
+                memoryBank={conversation.memoryBank ?? null}
+                onMemoryBankChange={(next) =>
+                  conversationsCtx?.setMemoryBank(conversation.id, next)
+                }
+                workingDirLocked={false}
                 defaultWorkingDir={defaultWorkingDir}
+                onWorkingDirChange={handleWorkingDirChange}
                 worktreePicker={
                   worktreeEnabled
                     ? { enabled: true, onPick: handlePickWorktree }
                     : undefined
                 }
-                observersById={observersById}
-                focusMessageId={quoteFocusId ?? focusMessageId}
-                onFocusMessageHandled={() => {
-                  setQuoteFocusId(null)
-                  handleFocusMessageHandled()
-                }}
-                history={side ? undefined : conversation.history}
-                onLoadOlder={side ? undefined : handleLoadOlder}
-                onLoadActivityEntries={handleLoadActivityEntries}
-              />
-            </SideChatQuotesContext.Provider>
-          </AskInSideChatContext.Provider>
-        </RegisteredObserverStatusProvider>
-      </ChatFileNavigation>
-      <LiveRegion announcement={announcer.announcement} />
-      {modelSwitch.dialog}
-      {modelSwitch.error || modelSwitch.notice ? (
-        <StatusPanel
-          role={modelSwitch.error ? 'alert' : 'status'}
-          variant={modelSwitch.error ? 'alert' : 'info'}
-          headline={
-            modelSwitch.error
-              ? 'Model switch not completed'
-              : 'Switching models'
-          }
-          detail={modelSwitch.error ?? modelSwitch.notice}
-        />
-      ) : null}
-      {readOnly ? (
-        <footer className={footerPad}>
-          <div className="mx-auto max-w-[760px]">
-            <p className="text-sm text-ink-faint">
-              This conversation is read-only.
-            </p>
-          </div>
-        </footer>
-      ) : (
-        <footer className={footerPad}>
-          {fileOpenError ? (
-            <p
-              role="alert"
-              className="mx-auto max-w-[760px] break-words text-[12px] text-alert"
-            >
-              {fileOpenError}
-            </p>
-          ) : null}
-          <div className="mx-auto max-w-[760px]">
-            {conversationsCtx ? (
-              <ActiveSubagentChips
-                className="mb-1 px-1"
-                conversations={conversationsCtx.conversations}
-                rootSessionId={conversation.id}
-                connectionState={conversationsCtx.connectionState}
-                onOpen={conversationsCtx.openConversationInPanel}
-              />
-            ) : null}
-            <SessionObservers
-              observers={mergedObservers}
-              onDispose={handleDisposeObserver}
-              onClearAll={
-                backend.disposeObserver ? handleClearAllObservers : undefined
-              }
-              checkStateKey={backend.stateKeyExists}
-            />
-            {queuedStrip.length > 0 ? (
-              <section
-                className="mb-1 rounded-md bg-surface"
-                aria-label="queued messages"
-              >
-                {/* The message being edited is pulled out of the queue and lives
-                  only in the composer — hidden here until it's saved back (in
-                  place, so it reappears at its spot) or removed. */}
-                {queuedStrip
-                  .filter((row) => row.id !== browsedQueuedId)
-                  .map((row) => (
-                    <div
-                      key={row.id}
-                      className="flex items-center gap-2 border-b border-rule-2 px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-[12px]"
-                    >
-                      <span className="min-w-0 flex-1 truncate">
-                        {row.text}
-                      </span>
-                      <span className="shrink-0 text-ink-ghost">
-                        {drainingQueue ? 'Delivering…' : 'Queued'}
-                      </span>
-                    </div>
-                  ))}
-                {/* No edit hint while draining — the rows are being delivered,
-                  so inviting an edit would be a race the user loses. */}
-                {backend.editQueued &&
-                queuedDrafts.length > 0 &&
-                !drainingQueue ? (
-                  <div className="px-3 py-0.5 text-right text-[11px] text-ink-ghost max-sm:hidden">
-                    {browsedQueuedId
-                      ? '↑ / ↓ cycle · Enter saves in place · Empty + Enter removes'
-                      : 'Press ↑ in the composer to edit queued messages'}
-                  </div>
-                ) : null}
-              </section>
-            ) : null}
-            {sessionTurnSummaries ? (
-              <div
-                className="flex flex-wrap items-center justify-end gap-1.5 px-1"
-                data-chat-turn-summary-slot
-              >
-                {sessionTurnSummaries}
-              </div>
-            ) : null}
-            {checkingImportedTurn && !importTurnError && (
-              <p role="status" className="mb-2 px-1 text-sm text-ink-faint">
-                Checking conversation state…
-              </p>
-            )}
-            {importTurnError && (
-              <StatusPanel
-                role="alert"
-                variant="alert"
-                className="mb-2"
-                icon={<TriangleAlert className="h-full w-full" />}
-                headline="Could not check conversation state"
-                detail={importTurnError}
-                action={
-                  <Button
-                    variant="pill"
-                    size="sm"
-                    onClick={() => {
-                      setImportTurnError(null)
-                      setImportedTurnEstablished(null)
-                      setImportCheck((attempt) => attempt + 1)
-                    }}
-                  >
-                    Retry
-                  </Button>
+                onPermissionModeChange={(next) =>
+                  void approvalSettings.setMode(next)
+                }
+                initialText={composerInitialText}
+                onTextChange={handleComposerTextChange}
+                initialAttachments={composerInitialAttachments}
+                onAttachmentsChange={handleComposerAttachmentsChange}
+                syncedAttachments={conversation.draftAttachments}
+                composerActions={composerActions}
+                agentPicker={agentPicker}
+                showSuggestions={welcome}
+                composerControls={
+                  agentPicker ? undefined : composerControls?.footer
+                }
+                projectControls={composerControls?.project}
+                onSubmit={handleSubmit}
+                onStop={handleStop}
+                stopping={stopping}
+                queuedForEdit={backend.editQueued ? queuedForEdit : undefined}
+                onEditQueued={backend.editQueued ? handleEditQueued : undefined}
+                onBrowseChange={setBrowsedQueuedId}
+                isStreaming={streamingIndicator}
+                queueWhileStreaming={!!backend.queueMessage}
+                blocked={harnessBlocked}
+                submitBlocked={submitBlocked || modelSwitch.pending}
+                claimDraftSend={claimComposerSend}
+                autoFocus={
+                  (side ? side.autoFocus === true : focusComposerOnOpen) &&
+                  !harnessBlocked
+                }
+                externalInput={!side}
+                composerId={composerId}
+                compact={side?.compact}
+                header={
+                  side?.quote ? (
+                    <QuoteChip
+                      quote={side.quote}
+                      onRemove={side.onRemoveQuote}
+                      compact={side.compact}
+                    />
+                  ) : undefined
+                }
+                idlePlaceholder={idleComposerPlaceholder(
+                  conversation.agentProfile,
+                  conversation.messages.length > 0,
+                )}
+                blockedPlaceholder={
+                  conversationsCtx
+                    ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
+                    : undefined
                 }
               />
-            )}
-            {importNeedsSetup && (
-              <p role="status" className="mb-2 px-1 text-sm text-ink-faint">
-                Choose an ADE model and working directory to continue this
-                conversation.
-                {!workingDirEnabled &&
-                  ' The working-directory picker requires the shell worker.'}
-              </p>
-            )}
-            <Composer
-              key={composerGeneration}
-              model={effectiveModel}
-              modelOptions={modelOptions}
-              catalogLoading={catalogLoading}
-              modelPickerOpenRequest={modelPickerOpenRequest}
-              modelLocked={
-                modelLocked || modelSwitch.pending || sessionHydrating
-              }
-              functionEntries={functionEntries}
-              searchFiles={searchFiles}
-              mentionContext={mentionContext}
-              onOpenFileMention={
-                workingDirEnabled ? handleOpenFileMention : undefined
-              }
-              permissionMode={approvalSettings.settings.mode}
-              permissionModeLoading={!approvalSettings.loaded}
-              showPermissionMode={approvalEnabled}
-              thinkingLevel={thinkingLevel}
-              onThinkingLevelChange={handleThinkingLevelChange}
-              onModelChange={modelSwitch.request}
-              showWorkingDir={workingDirEnabled && !side}
-              workingDir={conversation.workingDir ?? null}
-              showMemoryBank={
-                !side &&
-                backend.id === 'real' &&
-                (conversationsCtx?.memoryAvailable ?? false)
-              }
-              memoryBank={conversation.memoryBank ?? null}
-              onMemoryBankChange={(next) =>
-                conversationsCtx?.setMemoryBank(conversation.id, next)
-              }
-              workingDirLocked={false}
-              defaultWorkingDir={defaultWorkingDir}
-              onWorkingDirChange={handleWorkingDirChange}
-              worktreePicker={
-                worktreeEnabled
-                  ? { enabled: true, onPick: handlePickWorktree }
-                  : undefined
-              }
-              onPermissionModeChange={(next) =>
-                void approvalSettings.setMode(next)
-              }
-              initialText={composerInitialText}
-              onTextChange={handleComposerTextChange}
-              initialAttachments={composerInitialAttachments}
-              onAttachmentsChange={handleComposerAttachmentsChange}
-              syncedAttachments={conversation.draftAttachments}
-              composerActions={composerActions}
-              composerControls={composerControls?.footer}
-              projectControls={composerControls?.project}
-              onSubmit={handleSubmit}
-              onStop={handleStop}
-              stopping={stopping}
-              queuedForEdit={backend.editQueued ? queuedForEdit : undefined}
-              onEditQueued={backend.editQueued ? handleEditQueued : undefined}
-              onBrowseChange={setBrowsedQueuedId}
-              isStreaming={streamingIndicator}
-              queueWhileStreaming={!!backend.queueMessage}
-              blocked={harnessBlocked}
-              submitBlocked={submitBlocked || modelSwitch.pending}
-              claimDraftSend={claimComposerSend}
-              autoFocus={
-                (side ? side.autoFocus === true : focusComposerOnOpen) &&
-                !harnessBlocked
-              }
-              externalInput={!side}
-              compact={side?.compact}
-              header={
-                side?.quote ? (
-                  <QuoteChip
-                    quote={side.quote}
-                    onRemove={side.onRemoveQuote}
-                    compact={side.compact}
-                  />
-                ) : undefined
-              }
-              idlePlaceholder={idleComposerPlaceholder(
-                conversation.agentProfile,
-                conversation.messages.length > 0,
-              )}
-              blockedPlaceholder={
-                conversationsCtx
-                  ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
-                  : undefined
-              }
-            />
-          </div>
-        </footer>
-      )}
+            </div>
+          </footer>
+        )}
+      </div>
       {workingDirEnabled ? (
         <FilesystemAccessDialog
           open={filesystemDialogOpen}

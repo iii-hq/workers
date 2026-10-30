@@ -673,7 +673,7 @@ export function ProviderConfigurationPanel({
         className,
       )}
     >
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 font-inter">
         {configurationsQuery.error ? (
           loadErrorPanel(
             'Could not resolve router configuration',
@@ -757,7 +757,7 @@ export function ProviderConfigurationPanel({
             onCredentialChange={applyCredential}
           />
         ) : (
-          <div className="rounded-lg bg-surface px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
+          <div className="rounded-xl bg-surface px-5 py-4 text-[15px] leading-relaxed text-ink-faint ring-1 ring-inset ring-edge">
             {draft !== undefined && !isJsonObject(draft)
               ? 'This provider value is opaque; its provider-owned form must handle the value explicitly.'
               : 'This provider does not expose editable configuration.'}

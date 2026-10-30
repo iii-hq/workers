@@ -1,0 +1,71 @@
+/* A sidebar row's title: ellipsis until it is measured as overflowing, then
+   a fade at the right edge (the tell that there is more) and, on hover, a
+   right-to-left slide at reading pace until the end is in view. The
+   distance and the duration come from MarqueeLabel.tsx as custom
+   properties; the stylesheet owns when it moves. */
+
+.sidebar-marquee {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sidebar-marquee__text {
+  display: inline;
+}
+
+.sidebar-marquee[data-overflow] {
+  text-overflow: clip;
+  mask-image: linear-gradient(
+    to right,
+    var(--color-ink) calc(100% - 20px),
+    transparent
+  );
+}
+
+/* Only an overflowing title becomes a moving box: an inline-block inside
+   the label would otherwise defeat the resting ellipsis. The return is the
+   quick leg (the system responding); the slide is the slow one (the user
+   reading). */
+.sidebar-marquee[data-overflow] .sidebar-marquee__text {
+  display: inline-block;
+  transform: translateX(0);
+  transition: transform var(--motion-duration-panel) var(--motion-ease-enter);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .iii-ui-tree-item:hover
+    .sidebar-marquee[data-overflow]
+    .sidebar-marquee__text,
+  .iii-ui-tree-item:focus-visible
+    .sidebar-marquee[data-overflow]
+    .sidebar-marquee__text {
+    transform: translateX(calc(-1 * var(--marquee-distance)));
+    /* A 400ms delay: a pointer crossing the list on its way elsewhere never
+       sets a row's title in motion. Linear, because the eye is reading. */
+    transition: transform var(--marquee-duration) linear 400ms;
+  }
+
+  /* While the text travels, both edges fade: what has scrolled out leaves
+     as softly as what is yet to arrive. */
+  .iii-ui-tree-item:hover .sidebar-marquee[data-overflow],
+  .iii-ui-tree-item:focus-visible .sidebar-marquee[data-overflow] {
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      var(--color-ink) 12px,
+      var(--color-ink) calc(100% - 20px),
+      transparent
+    );
+  }
+}
+
+/* Reduced motion keeps the fade and loses the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-marquee[data-overflow] .sidebar-marquee__text {
+    transition: none;
+    transform: none;
+  }
+}

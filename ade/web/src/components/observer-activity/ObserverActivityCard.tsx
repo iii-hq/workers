@@ -132,7 +132,7 @@ export function ObserverActivityCard({
   if (!activity) {
     return (
       <article
-        className="flex items-start gap-3 rounded-md border border-edge bg-panel-raised p-4 shadow-raised sm:p-3"
+        className="flex items-start gap-3 rounded-xl bg-card p-4 ring-1 ring-foreground/10 sm:p-3"
         data-message-role="observer-activity"
       >
         <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-warn-muted sm:size-9">
@@ -218,7 +218,7 @@ export function ObserverActivityCard({
 
   return (
     <article
-      className="w-full"
+      className="chat-tool-row w-full"
       data-message-id={activity.id}
       data-message-role="observer-activity"
       data-observer-activity-kind={activity.kind}
@@ -251,10 +251,10 @@ export function ObserverActivityCard({
             <div className="flex w-full min-w-0 items-center gap-2">
               <ObserverActivityOutcomeIcon status={fireStatus} />
               <TimelineActivityTrail kind="observer-fired" />
-              <div className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground sm:text-[0.8125rem]">
+              <div className="chat-tool-row__title min-w-0 flex-1">
                 {display?.node ?? eventText}
               </div>
-              <TimelineActivityDisclosure />
+              <TimelineActivityDisclosure open={open} />
             </div>
           ) : (
             (display?.node ?? expandedSummary)

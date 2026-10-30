@@ -89,6 +89,13 @@ pub struct SkillAck {
     pub generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
+    /// Skill ids the admitted view listed, so a mid-turn change appends only
+    /// the ids that joined or left instead of the whole catalog again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Boxed on purpose: a plain Vec grows every future that carries the ack
+    // and pushes `stack_tests` past the SDK thread's 2 MiB stack.
+    #[allow(clippy::box_collection)]
+    pub ids: Option<Box<Vec<String>>>,
 }
 
 /// The agent profile a turn runs as, frozen at resolution time
@@ -896,6 +903,7 @@ pub(crate) mod tests {
         r.skill_ack = Some(SkillAck {
             generation: 3,
             fingerprint: Some("sha256:abc".into()),
+            ids: Some(Box::new(vec!["review".into()])),
         });
         r.skills_started = true;
 

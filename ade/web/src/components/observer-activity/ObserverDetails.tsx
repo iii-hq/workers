@@ -202,7 +202,7 @@ export function ObserverJsonPane({
         'min-w-0 overflow-hidden',
         secondary
           ? 'border-t border-edge'
-          : 'rounded-md border border-edge bg-surface',
+          : 'rounded-xl border border-foreground/10 bg-surface',
       )}
       data-function-pane={label.toLowerCase().replaceAll(' ', '-')}
     >

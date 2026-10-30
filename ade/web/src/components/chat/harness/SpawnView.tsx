@@ -312,7 +312,7 @@ export function SpawnActivityCard({
     </div>
   )
   const className = cn(
-    '@container w-full rounded-md bg-panel-raised px-4 py-4 text-left shadow-raised sm:px-3 sm:py-3',
+    '@container w-full rounded-xl bg-card px-4 py-4 text-left ring-1 ring-foreground/10 sm:px-3 sm:py-3',
     onOpen &&
       'group/subagent cursor-pointer transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
   )

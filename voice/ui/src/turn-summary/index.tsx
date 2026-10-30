@@ -1,15 +1,36 @@
-/** Read the last assistant reply in this browser, never on the worker's host. */
+/**
+ * Read the last assistant reply in this browser, never on the worker's host.
+ * The row only shows when `tts.chat_controls` is on (off by default: most
+ * people dictate far more than they listen, and the composer footer is
+ * theirs); the voice page keeps read-aloud regardless.
+ */
 
 import type { Host, SessionTurnSummaryProps, SessionTurnSummaryRegistration } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { Volume2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { speak } from '../lib/client'
+import { doctor, speak } from '../lib/client'
 import { useBrowserPlayback } from '../lib/playback'
 import { fetchSpokenReply, selectedChatText, subscribeAutoReplies, type SpokenReply } from '../lib/voice-chat'
 
 export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistration {
   function VoiceTurnSummary({ sessionId, isStreaming }: SessionTurnSummaryProps) {
+    // Hidden until the worker says otherwise. Workers before 0.2 do not
+    // report the flag; they always showed the row.
+    const [shown, setShown] = useState(false)
+    useEffect(() => {
+      let cancelled = false
+      doctor(host.iii)
+        .then((res) => {
+          if (!cancelled) setShown(res.chat_controls ?? true)
+        })
+        .catch(() => {
+          if (!cancelled) setShown(false)
+        })
+      return () => {
+        cancelled = true
+      }
+    }, [])
     const { state: speakState, play, enqueue, stop: onStop } = useBrowserPlayback()
     const [lastReply, setLastReply] = useState<SpokenReply | null>(null)
     const [selected, setSelected] = useState('')
@@ -81,6 +102,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
 
     const busy = speakState.phase === 'speaking' || speakState.phase === 'loading'
 
+    if (!shown) return null
     return (
       <div className="voice-turn-summary">
         <button type="button" className="voice-turn-action" aria-pressed={autoRead}

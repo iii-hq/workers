@@ -1,7 +1,8 @@
 import type { Host } from '@iii-dev/console-ui'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import { ArrowRight, Hash } from 'lucide-react'
-import { OpenInBrowser } from '../open-in-browser'
+import { Hash } from 'lucide-react'
+import { UrlLine } from '../url-line'
+import { TextPreview } from './text-preview'
 import {
   ActionLine,
   Badge,
@@ -168,9 +169,7 @@ export function SessionFetchView({
           {node}
         </MetaRow>
         {url ? (
-          <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-            <span className="br-ui-break">{url}</span>
-          </ActionLine>
+          <UrlLine url={url} />
         ) : null}
         <div className="br-ui-more">
           · waiting for page…
@@ -192,12 +191,7 @@ export function SessionFetchView({
           }>{status != null ? String(status) : 'done'}</Badge>
         {node}
       </MetaRow>
-      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-        <span className="br-ui-break">{page.url || url || ''}</span>
-        {host && (page.url || url) ? (
-          <OpenInBrowser host={host} url={page.url || url || ''} />
-        ) : null}
-      </ActionLine>
+      <UrlLine url={page.url || url || ''} host={host} />
       {page.extracted ? (
         <div>
           <div className={cn('br-ui-scrape-label', uiClasses.eyebrow)}>
@@ -207,9 +201,11 @@ export function SessionFetchView({
         </div>
       ) : null}
       {page.content != null ? (
-        <pre className="br-ui-text is-separated">
-          <code>{page.content.slice(0, 2000)}</code>
-        </pre>
+        <TextPreview
+          className="is-separated"
+          format={page.format}
+          text={page.content.slice(0, 2000)}
+        />
       ) : null}
     </SectionShell>
   )
@@ -226,9 +222,7 @@ export function SessionFetchPreview({ input }: { input: unknown }) {
         {node}
       </MetaRow>
       {url ? (
-        <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-          <span className="br-ui-break">{url}</span>
-        </ActionLine>
+        <UrlLine url={url} />
       ) : null}
     </div>
   )

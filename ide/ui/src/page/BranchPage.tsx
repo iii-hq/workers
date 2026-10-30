@@ -5,7 +5,7 @@
    Tracked Branch opens the tracked branch's actions in a menu beside this
    one. Escape or ← steps back a level. */
 
-import { DropdownMenuSeparator, IconButton, List, uiClasses } from '@iii-dev/console-ui'
+import { IconButton, List, Separator, uiClasses } from '@iii-dev/console-ui'
 import { ArrowLeft, ChevronRight } from 'lucide-react'
 import { Fragment, type KeyboardEvent, useEffect, useRef, useState } from 'react'
 import {
@@ -181,9 +181,7 @@ export function BranchPage({
           <IconButton label="Back to branches" variant="ghost" onClick={back}>
             <ArrowLeft size={16} aria-hidden />
           </IconButton>
-          <span className="shui-wt-page-title" title={name}>
-            {name}
-          </span>
+          <span className="shui-wt-page-title">{name}</span>
           {ctx.upstream !== null && !branch.remote ? (
             <span className={uiClasses.treeItemMeta}>{ctx.upstream}</span>
           ) : null}
@@ -224,7 +222,7 @@ export function BranchPage({
       <List className={`${uiClasses.tree} shui-wt-menu-list`} aria-label={`Actions for ${name}`} {...actionsHover()}>
         {actions.map((action, index) => (
           <Fragment key={action.id}>
-            {index > 0 && actions[index - 1].group !== action.group ? <DropdownMenuSeparator /> : null}
+            {index > 0 && actions[index - 1].group !== action.group ? <Separator className="shui-wt-sep" /> : null}
             <div
               className={`${uiClasses.treeItem} shui-wt-row shui-wt-action`}
               data-action={action.id}

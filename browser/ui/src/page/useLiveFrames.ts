@@ -26,6 +26,17 @@ import { useBrowserSessionEvent } from '../lib/events'
  * unmount and tab switch (idempotent).
  */
 
+/** How long the worker keeps a pane's viewer without a renewal, and how
+ * often the pane renews it (well inside the lease). */
+const VIEWER_LEASE_MS = 20_000
+const VIEWER_RENEW_MS = 8_000
+
+/** Frame pixels per CSS pixel this screen draws: the frames' target. */
+function screenScale(): number {
+  const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1
+  return Math.min(3, Math.max(1, dpr))
+}
+
 export interface LiveFrame {
   dataUrl: string
   /** Page-viewport size the image maps to (input coordinate space). */
@@ -64,6 +75,14 @@ export function useLiveFrames(
   const [stillsFor, setStillsFor] = useState<string | null>(null)
   const stillsOnly = sessionId !== null && stillsFor === sessionId
   const [stillToken, setStillToken] = useState(0)
+  // A pane is a named viewer (sharp frames at this screen's density, a lease
+  // that lapses if the window goes away); a corner preview stays anonymous.
+  const viewerIdRef = useRef<string | null>(null)
+  if (!preview && viewerIdRef.current === null) {
+    viewerIdRef.current =
+      globalThis.crypto?.randomUUID?.() ??
+      `pane-${Math.random().toString(36).slice(2)}`
+  }
 
   // The stale image never bleeds into a newly selected session.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on session change only
@@ -82,7 +101,21 @@ export function useLiveFrames(
 
     // Retain the start so teardown can wait for it to settle before stopping;
     // otherwise a late start could reactivate the screencast after cleanup.
-    const started = startBrowserScreencast(host.iii, sessionId, preview)
+    const viewer = viewerIdRef.current
+      ? { id: viewerIdRef.current, scale: screenScale(), leaseMs: VIEWER_LEASE_MS }
+      : undefined
+    const started = startBrowserScreencast(host.iii, sessionId, preview, viewer)
+    // Renew the lease while the pane is up (the same start, idempotent),
+    // with the screen's current density: a window dragged to another
+    // display gets frames for it.
+    const renew = viewer
+      ? window.setInterval(() => {
+          void startBrowserScreencast(host.iii, sessionId, preview, {
+            ...viewer,
+            scale: screenScale(),
+          }).catch(() => {})
+        }, VIEWER_RENEW_MS)
+      : undefined
 
     void (async () => {
       try {
@@ -111,11 +144,14 @@ export function useLiveFrames(
 
     return () => {
       cancelled = true
+      window.clearInterval(renew)
       // Stop only after the start has settled, so the stop can never be
       // overtaken by an in-flight start reactivating the screencast.
       void started
         .catch(() => {})
-        .then(() => stopBrowserScreencast(host.iii, sessionId, preview))
+        .then(() =>
+          stopBrowserScreencast(host.iii, sessionId, preview, viewer?.id),
+        )
         .catch(() => {})
     }
   }, [host, enabled, sessionId, wakeToken])

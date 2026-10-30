@@ -1,0 +1,22 @@
+{
+  "name": "@iii-workers/editor-prefs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The IDE editor's display preferences (code size, and whether the editor header shows file size, line count and a Save button): one localStorage value and a React hook. Shared by the IDE page and its Settings section. Source-only — each UI bundles it.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=19"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "react": "^19.2.8",
+    "typescript": "^5.9.2"
+  }
+}

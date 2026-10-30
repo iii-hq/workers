@@ -140,10 +140,10 @@ describe('mention pill', () => {
     const pill = container.querySelector('[data-worker-mention="kanban"]')
     expect(pill?.textContent).toContain('Fix login redirect')
     // The pill is the trigger of the hover popover that holds the card.
-    expect(pill?.getAttribute('data-state')).toBe('closed')
+    expect(pill?.getAttribute('data-slot')).toBe('tooltip-trigger')
 
     await render(<WorkerMentionPill name="kanban" id="u1" hoverCard={false} />)
     const plain = container.querySelector('[data-worker-mention="kanban"]')
-    expect(plain?.hasAttribute('data-state')).toBe(false)
+    expect(plain?.hasAttribute('data-slot')).toBe(false)
   })
 })

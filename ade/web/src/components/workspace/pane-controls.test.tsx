@@ -30,12 +30,12 @@ describe('PanelDragHandle', () => {
 })
 
 describe('EdgeAddZone', () => {
-  it('keeps a generous idle hover target at both responsive widths', () => {
+  it('keeps an idle hover target that spans the gutter and the panel edge', () => {
     const markup = renderToStaticMarkup(
       <EdgeAddZone side="right" onAdd={vi.fn()} />,
     )
 
-    expect(markup).toContain('w-3 sm:w-4')
+    expect(markup).toContain('w-1.5 sm:w-2')
     expect(markup).toContain('show Split right control')
   })
 
@@ -96,7 +96,7 @@ describe('SplitPreview', () => {
     expect(markup).toContain('aria-label="Split right"')
     expect(markup).toContain('bg-panel-raised')
     expect(markup).toContain('shadow-floating')
-    expect(markup).toContain('font-sans')
+    expect(markup).toContain('font-inter')
     expect(markup).toContain('split-preview-enter-right')
     expect(markup).not.toContain('border-dashed')
     expect(markup).not.toContain('backdrop-blur')

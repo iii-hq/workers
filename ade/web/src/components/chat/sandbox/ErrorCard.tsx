@@ -3,6 +3,10 @@ import { type ReactNode, useId } from 'react'
 import { Chip } from '@/components/ui/Chip'
 import { Eyebrow } from '@/components/ui/Eyebrow'
 import {
+  factLabelClassName,
+  factMonoValueClassName,
+} from '@/components/ui/FactCard'
+import {
   Card,
   CardBody,
   CardHeader,
@@ -97,10 +101,15 @@ export function ErrorCard({
                   key={item.label}
                   className="flex min-w-0 flex-col gap-1 @md:flex-row @md:gap-4"
                 >
-                  <Eyebrow as="dt" className="shrink-0 text-ink @md:w-28">
+                  <dt className={cn(factLabelClassName, 'shrink-0 @md:w-28')}>
                     {item.label}
-                  </Eyebrow>
-                  <dd className="min-w-0 break-words font-mono text-base text-ink-faint sm:text-[0.8125rem]">
+                  </dt>
+                  <dd
+                    className={cn(
+                      factMonoValueClassName,
+                      'min-w-0 break-words text-ink-faint',
+                    )}
+                  >
                     {item.value}
                   </dd>
                 </div>

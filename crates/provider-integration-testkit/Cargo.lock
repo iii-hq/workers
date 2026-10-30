@@ -1341,7 +1341,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llm-router"
-version = "1.4.40"
+version = "1.4.41"
 dependencies = [
  "async-trait",
  "clap",
@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "provider-claude-code"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "clap",
  "futures",
@@ -1773,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "provider-deepseek"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "clap",
  "futures",
@@ -1833,7 +1833,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai"
-version = "1.2.28"
+version = "1.2.29"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -1855,7 +1855,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai-codex"
-version = "0.4.29"
+version = "0.4.30"
 dependencies = [
  "base64 0.22.1",
  "clap",

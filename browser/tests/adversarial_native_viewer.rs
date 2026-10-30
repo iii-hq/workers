@@ -863,10 +863,11 @@ async fn act_click_count_is_bounded() {
     answered.unwrap_or_else(|e| panic!("{e}"));
 }
 
-/// With `ghost_cursor: false` no pointer action draws the agent's cursor:
-/// click (left and right), hover, drag and scroll, on the desktop and as a
-/// phone tap. A positive control (the default) still draws it. A wrong-typed
-/// `ghost_cursor` is refused.
+/// No pointer action draws a cursor into the page: click (left and right),
+/// hover, drag and scroll, on the desktop and as a phone tap, with
+/// `ghost_cursor: false` and without it (the worker draws nothing into the
+/// page any more; the field is accepted for older callers). A wrong-typed
+/// `ghost_cursor` is still refused.
 #[tokio::test]
 async fn ghost_cursor_false_never_injects_for_any_pointer_action() {
     let Some(h) = boot("  max_sessions: 4\n").await else {
@@ -936,8 +937,8 @@ async fn ghost_cursor_false_never_injects_for_any_pointer_action() {
     .await;
     assert_eq!(
         evaluate(&client, &id, cursor).await,
-        true,
-        "the default lost its agent cursor"
+        false,
+        "an action without ghost_cursor drew a cursor into the page"
     );
     call(
         &client,
@@ -1530,10 +1531,11 @@ async fn the_largest_scale_drives_the_stream_and_each_leave_drops_it() {
     client.shutdown_async().await;
 }
 
-/// The session-status badge describes the watching human. A named viewer
-/// leaving while the console still watches must not take the badge away.
+/// A named viewer leaving while the console still watches must not end the
+/// console's screencast, and no viewer puts anything into the page (the
+/// worker draws no session badge).
 #[tokio::test]
-async fn the_badge_stays_while_a_console_still_watches() {
+async fn the_cast_stays_while_a_console_still_watches() {
     let Some(h) = boot("  max_sessions: 4\n").await else {
         eprintln!("skipping: `iii` or Chromium not available");
         return;
@@ -1569,8 +1571,8 @@ async fn the_badge_stays_while_a_console_still_watches() {
             "!!document.getElementById('iii-session-badge')"
         )
         .await,
-        true,
-        "the badge left while the console still watches"
+        false,
+        "a viewer put a session badge into the page"
     );
     client.shutdown_async().await;
 }

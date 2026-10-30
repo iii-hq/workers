@@ -1,3 +1,5 @@
+import { Button } from '@/components/shadcn/button'
+
 interface FullPermissionsBannerProps {
   onDisable: () => void
 }
@@ -26,13 +28,9 @@ export function FullPermissionsBanner({
           files, executing shells, and sending messages.
         </span>
       </p>
-      <button
-        type="button"
-        onClick={onDisable}
-        className="font-mono text-[12px] px-3 py-1 rounded-sm bg-ink text-bg hover:bg-ink/90 transition-colors shrink-0"
-      >
+      <Button type="button" size="sm" onClick={onDisable} className="shrink-0">
         disable
-      </button>
+      </Button>
     </div>
   )
 }

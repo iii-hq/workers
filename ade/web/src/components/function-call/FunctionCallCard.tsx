@@ -1,24 +1,27 @@
-import { Check, Copy, Loader2, X } from 'lucide-react'
+import { Check, ChevronDown, CircleAlert, Copy, Loader2 } from 'lucide-react'
 import {
   type ReactNode,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react'
+import { DrawnCheck } from '@/components/chat/ChatGlyphs'
 import { CopyMessageButton } from '@/components/chat/CopyMessageButton'
-import {
-  TimelineActivityDisclosure,
-  TimelineActivityTrail,
-} from '@/components/chat/TimelineActivityTrail'
+import { TimelineActivityTrail } from '@/components/chat/TimelineActivityTrail'
 import {
   firstNonNull,
   firstRendered,
   rawRedactor,
   useFunctionCallRenderers,
 } from '@/components/function-call/renderer-registry'
-import { ObserverJsonPane } from '@/components/observer-activity/ObserverDetails'
+import {
+  errorSubtitle,
+  formatRowDuration,
+  resultSummary,
+} from '@/components/function-call/row-summary'
 import {
   ChromiumMissingAction,
   isChromiumMissingCall,
@@ -34,13 +37,11 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
-import { eyebrowClassName } from '@/components/ui/Eyebrow'
+import { Hint } from '@/components/ui/Hint'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { copyTextToClipboard } from '@/lib/clipboard'
-import { formatCallDuration } from '@/lib/format-call-duration'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/chat'
@@ -51,8 +52,9 @@ import type { FunctionCallMessage as FunctionCallMessageType } from '@/types/cha
 
 /**
  * FunctionCallCard — the canonical rendering of one iii function call:
- * collapsible header (status dot, ƒ id, duration), request/response panes,
- * per-family tool views, and the optional approval bar.
+ * one row of a tool group (ƒ marker, title, settled facts, status glyph,
+ * chevron) that opens to the per-family tool view or the request/response
+ * panes, the function identity strip, and the optional approval bar.
  *
  * Location-agnostic by design: it is props-only (no chat store, no session
  * context). Chat renders it from live session messages; TracesV2 renders it
@@ -240,31 +242,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   return <span className="text-ink">{functionId}</span>
 }
 
-function FunctionIdentityRow({ functionId }: { functionId: string }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2 border-b border-rule-2 bg-paper-2 px-3 py-1.5">
-      <span className="shrink-0 iii-ui-eyebrow">function</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
-        <span className="text-accent italic font-semibold">ƒ</span>{' '}
-        <FunctionIdLabel functionId={functionId} />
-      </span>
-      <CopyMessageButton
-        text={functionId}
-        label="copy function id"
-        className="shrink-0"
-      />
-    </div>
-  )
-}
-
 type FunctionCallStatus = 'pending' | 'running' | 'error' | 'done'
-
-const FUNCTION_CALL_STATUSES: readonly FunctionCallStatus[] = [
-  'pending',
-  'running',
-  'error',
-  'done',
-]
 
 interface RendererLayer {
   key: string
@@ -369,16 +347,14 @@ function FunctionRendererPresence({
  * for the spinner -> check/error handoff without delaying the real state.
  */
 function FunctionCallStatusIcon({
-  expanded,
   status,
 }: {
-  expanded: boolean
   status: FunctionCallStatus
 }) {
   return (
     <span
       aria-hidden="true"
-      className="activity-status-icon"
+      className="activity-status-icon chat-tool-row__status"
       data-status={status}
     >
       <span data-activity-status-layer="pending">
@@ -388,150 +364,160 @@ function FunctionCallStatusIcon({
         <Loader2
           strokeWidth={2}
           className={cn(
-            'size-4 stroke-call-running motion-reduce:animate-none',
+            'size-4 stroke-ink-faint motion-reduce:animate-none',
             status === 'running' && 'animate-spin',
           )}
         />
       </span>
       <span data-activity-status-layer="error">
-        <X strokeWidth={2.5} className="size-4 stroke-alert" />
+        <CircleAlert strokeWidth={2} className="size-4 stroke-alert" />
       </span>
       <span data-activity-status-layer="done">
-        <Check
-          strokeWidth={2.5}
-          className={cn(
-            'size-4',
-            expanded ? 'stroke-ok' : 'stroke-muted-foreground',
-          )}
-        />
+        <DrawnCheck active={status === 'done'} className="size-4 text-ok" />
       </span>
     </span>
   )
 }
 
-interface FunctionCallStatusCopyProps {
-  denied: boolean
+interface FunctionCallRowTextProps {
   description?: string
-  durationMs?: number
-  expanded: boolean
-  filesystemAccess: boolean
   functionId: string
-  hideGenericVerb: boolean
   preview: string | null
-  ran: boolean
   status: FunctionCallStatus
+  /** Why the row needs attention or failed; wins over the args digest. */
+  subtitle: string | null
   unresolvedTarget: boolean
 }
 
 /**
- * Status copy uses the same layered-state pattern as the icon. Keeping every
- * state in one grid slot avoids replacing the text node at the exact moment
- * a call settles; inactive layers are hidden from both interaction and AT.
+ * The row's title and its optional second line. The title is the agent's
+ * short description when it gave one, else the function id; it never
+ * changes as the call settles, so only the line under it and the status at
+ * the trailing edge move. The second line opens its own height track, so a
+ * failure reason can arrive under a title already on screen.
  */
-function FunctionCallStatusCopy({
-  denied,
+function FunctionCallRowText({
   description,
-  durationMs,
-  expanded,
-  filesystemAccess,
   functionId,
-  hideGenericVerb,
   preview,
-  ran,
   status,
+  subtitle,
   unresolvedTarget,
-}: FunctionCallStatusCopyProps) {
-  const copyFor = (layer: FunctionCallStatus) => {
-    const settled = layer === 'error' || layer === 'done'
-
-    if (description) {
-      return (
-        <>
-          <span
-            className={cn(
-              layer === 'running' &&
-                layer === status &&
-                'function-call-shimmer',
-            )}
-          >
-            {description}
-          </span>
-          {settled && expanded && typeof durationMs === 'number' ? (
-            <span className="text-ink-faint">
-              {' '}
-              for{' '}
-              <span className="tabular-nums">
-                {formatCallDuration(durationMs)}
-              </span>
-            </span>
-          ) : null}
-        </>
-      )
-    }
-
-    return (
-      <>
-        {layer === 'pending' ? (
-          <>
-            <span>
-              {filesystemAccess
-                ? 'needs filesystem access to run'
-                : 'waiting for your approval to run'}
-            </span>{' '}
-          </>
-        ) : layer === 'running' ? (
-          hideGenericVerb ? null : (
-            <>Calling </>
-          )
-        ) : layer === 'error' ? (
-          denied ? null : (
-            <>Failed </>
-          )
-        ) : ran ? (
-          <>Called </>
-        ) : null}
-        {layer === 'running' && unresolvedTarget ? (
-          <span className="text-ink-faint">…</span>
-        ) : layer === status ? (
-          <FunctionIdLabel functionId={functionId} />
-        ) : (
-          <span className="text-ink">{functionId}</span>
-        )}
-        {settled && preview ? (
-          <span className="text-ink-ghost"> ({preview})</span>
-        ) : null}
-        {settled && typeof durationMs === 'number' ? (
-          <span className="text-ink-faint">
-            {' '}
-            for{' '}
-            <span className="tabular-nums">
-              {formatCallDuration(durationMs)}
-            </span>
-          </span>
-        ) : null}
-      </>
-    )
-  }
-
+}: FunctionCallRowTextProps) {
+  const settled = status === 'done' || status === 'error'
+  const line = subtitle ?? (!description && settled ? preview : null)
+  const mono = subtitle === null && line !== null
   return (
-    <span className="function-call-status-copy" data-status={status}>
-      {FUNCTION_CALL_STATUSES.map((layer) => (
+    <div className="chat-tool-row__text">
+      <div className="chat-tool-row__title">
         <span
-          key={layer}
-          aria-hidden={layer === status ? undefined : true}
-          data-function-status-text={layer}
+          className={cn(status === 'running' && 'function-call-shimmer')}
         >
-          {copyFor(layer)}
+          {description ? (
+            description
+          ) : status === 'running' && unresolvedTarget ? (
+            <span className="text-ink-faint">…</span>
+          ) : (
+            <FunctionIdLabel functionId={functionId} />
+          )}
         </span>
-      ))}
-    </span>
+      </div>
+      <div
+        className="chat-tool-row__subtitle"
+        data-visible={line !== null}
+        aria-hidden={line === null}
+      >
+        <span data-mono={mono || undefined} title={line ?? undefined}>
+          {line}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+/** `4 results · 1.2s` once a call has settled; nothing while it runs. */
+function FunctionCallRowMeta({
+  durationMs,
+  output,
+  status,
+}: {
+  durationMs?: number
+  output: unknown
+  status: FunctionCallStatus
+}) {
+  if (status !== 'done' && status !== 'error') return null
+  const parts = [
+    status === 'done' ? resultSummary(output) : null,
+    typeof durationMs === 'number' ? formatRowDuration(durationMs) : null,
+  ].filter((part): part is string => part !== null)
+  if (parts.length === 0) return null
+  return <span className="chat-tool-row__meta">{parts.join(' · ')}</span>
+}
+
+/**
+ * The strip under an opened call: the concrete function identity (the row
+ * title is usually the agent's description) with a copy affordance, and,
+ * when a worker's own view stands in for the payload, a toggle that opens
+ * the raw request and response. The raw panes stay mounted behind a
+ * zero-height track so the toggle animates and nothing re-renders.
+ */
+function FunctionCallRowFooter({
+  functionId,
+  raw,
+}: {
+  functionId: string
+  raw?: { input: unknown; output: unknown }
+}) {
+  const [showRaw, setShowRaw] = useState(false)
+  const rawId = useId()
+  return (
+    <div className="chat-tool-row__foot" data-function-call-footer="">
+      <div className="chat-tool-row__foot-bar">
+        <span className="chat-tool-row__fn">
+          <span className="text-accent italic font-semibold">ƒ</span>{' '}
+          <FunctionIdLabel functionId={functionId} />
+        </span>
+        <CopyMessageButton
+          text={functionId}
+          label="copy function id"
+          className="chat-tool-row__fn-copy shrink-0"
+        />
+        {raw ? (
+          <button
+            type="button"
+            aria-expanded={showRaw}
+            aria-controls={rawId}
+            onClick={() => setShowRaw((value) => !value)}
+            className="chat-tool-row__raw-toggle"
+            data-message-action="toggle-raw"
+          >
+            {showRaw ? 'Hide raw' : 'Show raw'}
+          </button>
+        ) : null}
+      </div>
+      {raw ? (
+        <div
+          id={rawId}
+          className="chat-tool-row__raw"
+          data-visible={showRaw}
+          aria-hidden={!showRaw}
+          inert={showRaw ? undefined : true}
+        >
+          <div className="chat-tool-row__raw-inner">
+            <ValuePane label="request" value={raw.input} />
+            <ValuePane label="response" value={raw.output} stacked />
+          </div>
+        </div>
+      ) : null}
+    </div>
   )
 }
 
 /**
- * One-line `key: value` digest of the request args for the collapsed header —
- * what separates three settled calls to the same function without expanding
- * them. Long strings truncate, nested values collapse to `[N]` / `{…}`.
+ * One-line `key: value` digest of the request args for a settled row with
+ * no description — what separates three calls to the same function without
+ * expanding them. Long strings truncate, nested values collapse to `[N]` /
+ * `{…}`.
  */
 function argsPreview(input: unknown): string | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null
@@ -629,12 +615,10 @@ export function FunctionCallCard({
     if (requestedDetailsRef.current) return
     loadDetails()
   }, [open, unloaded, onLoadDetails])
-  // Closed calls read as a lightweight activity list. Opening one restores
-  // the full raised function-call surface with the existing panes and
-  // controls. Pending approvals remain surfaces because they require action.
+  // Closed calls read as one line of the group. Opening one reveals the
+  // payload underneath; pending approvals open themselves because they
+  // require action.
   const expandedSurface = open || pending
-  const [showRawDetails, setShowRawDetails] = useState(false)
-  const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
   const [submitting, setSubmitting] = useState<
     'approve' | 'deny' | 'always_allow' | null
   >(null)
@@ -700,26 +684,10 @@ export function FunctionCallCard({
   }, [pending])
 
   const errored = !pending && !running && isErrorOutput(message.output)
-  // A gate denial is an error envelope, but the function never ran —
-  // "failed" would misreport a rejection as a failed execution.
-  const denied = errored && isDeniedOutput(message.output)
   // A browser call that failed for want of Chromium offers the fix inline.
   const chromiumMissing =
     errored && isChromiumMissingCall(message.functionId, message.output)
-  // "called" is an execution claim, so a settled card only makes it when
-  // the call actually ran. Denials are recognized by the gate's envelope in
-  // the error details (see isDeniedOutput) — a plain run error keeps the
-  // verb. A card with neither output nor duration (deny/abort cleared the
-  // approval but no result paired in yet) stays verb-less too.
-  const ran =
-    !isDeniedOutput(message.output) &&
-    (message.output !== undefined || typeof message.durationMs === 'number')
-  // While arguments are forming, the incrementally parsed function id or
-  // description is already the activity label; do not replace it with the
-  // generic "calling" fallback.
-  const hideGenericVerb =
-    message.identityInherited || (running && streamingTail !== undefined)
-  // `rawInput`, not `message.input`: the collapsed header digests the request
+  // `rawInput`, not `message.input`: the collapsed row digests the request
   // args inline, so it is a display exit like the raw pane and the clipboard —
   // a claimed card's `redactRaw` has to cover it or a secret shows up in the
   // one line that renders without anyone expanding the card.
@@ -732,17 +700,46 @@ export function FunctionCallCard({
       : errored
         ? 'error'
         : 'done'
+  // The line under the title: what the row needs from the reader, or why
+  // it failed. A gate denial reads as a denial, not as a failed execution.
+  const subtitle = pending
+    ? filesystemAccess
+      ? 'Needs filesystem access to run'
+      : 'Waiting for your approval'
+    : errored
+      ? errorSubtitle(rawOutput)
+      : null
   const collapsedActivityKind =
     !expandedSurface && message.functionId === 'harness::observe'
       ? 'observer-registration'
       : 'function'
+  // The identity strip names the concrete function. While an agent_call
+  // wrapper's target is still streaming there is nothing concrete to name.
+  const showFooter = !pending && !(running && message.unresolvedTarget)
+  const rowText = (
+    <FunctionCallRowText
+      description={description}
+      functionId={message.functionId}
+      preview={preview}
+      status={status}
+      subtitle={subtitle}
+      unresolvedTarget={!!message.unresolvedTarget}
+    />
+  )
+  const rowMeta = (
+    <FunctionCallRowMeta
+      durationMs={message.durationMs}
+      output={rawOutput}
+      status={status}
+    />
+  )
 
   if (expandableCustomDisplay) {
     const detailsOpen = running || open
 
     return (
       <section
-        className="function-call-surface"
+        className="function-call-surface chat-tool-row"
         data-message-id={message.id}
         data-message-role="function-call"
         data-function-id={message.functionId}
@@ -753,62 +750,35 @@ export function FunctionCallCard({
           open={detailsOpen}
           onOpenChange={setOpen}
           disabled={running}
-          className="@container function-call-active-collapsible"
+          className="@container function-call-active-collapsible chat-tool-row__collapsible"
         >
           <CollapsibleCardTrigger
-            className="p-4 select-none sm:p-3"
+            className="p-3 select-none"
             aria-label={`${detailsOpen ? 'Hide' : 'Show'} details for ${message.functionId}`}
           >
             <FunctionRendererPresence
               presentation={customDisplay != null ? 'display' : 'terminal'}
             >
               {customDisplay ?? (
-                <div className="flex min-w-0 items-center gap-2">
-                  <FunctionCallStatusIcon expanded status={status} />
+                <div className="flex min-w-0 items-center gap-2.5">
                   <TimelineActivityTrail kind="function" />
-                  <div className="min-w-0 flex-1 font-mono text-[0.8125rem] text-ink">
-                    <FunctionCallStatusCopy
-                      denied={denied}
-                      description={description}
-                      durationMs={message.durationMs}
-                      expanded
-                      filesystemAccess={!!filesystemAccess}
-                      functionId={message.functionId}
-                      hideGenericVerb={!!hideGenericVerb}
-                      preview={preview}
-                      ran={ran}
-                      status={status}
-                      unresolvedTarget={!!message.unresolvedTarget}
-                    />
-                  </div>
+                  {rowText}
+                  {rowMeta}
+                  <FunctionCallStatusIcon status={status} />
                 </div>
               )}
             </FunctionRendererPresence>
           </CollapsibleCardTrigger>
           <CollapsibleCardContent>
-            <Tabs
-              value={tab}
-              onValueChange={(value) => setTab(value as 'terminal' | 'json')}
-              className="border-t border-edge"
-            >
-              <div className="overflow-x-auto px-4 sm:px-3">
-                <TabsList>
-                  <TabsTrigger value="terminal">Terminal</TabsTrigger>
-                  <TabsTrigger value="json">Raw JSON</TabsTrigger>
-                </TabsList>
+            <div className="chat-tool-row__body">
+              <div data-function-renderer-details-slot="" className="p-3">
+                {customTerminal}
               </div>
-              <TabsContent value="terminal" className="p-4 sm:p-3">
-                <div data-function-renderer-details-slot="">
-                  {customTerminal}
-                </div>
-              </TabsContent>
-              <TabsContent value="json" className="p-4 sm:p-3">
-                <div className="flex min-w-0 flex-col gap-3">
-                  <ObserverJsonPane label="Request" value={rawInput} />
-                  <ObserverJsonPane label="Response" value={rawOutput} />
-                </div>
-              </TabsContent>
-            </Tabs>
+              <FunctionCallRowFooter
+                functionId={message.functionId}
+                raw={{ input: rawInput, output: rawOutput }}
+              />
+            </div>
           </CollapsibleCardContent>
         </CollapsibleCard>
         {chromiumMissing ? <ChromiumMissingAction /> : null}
@@ -818,12 +788,7 @@ export function FunctionCallCard({
 
   return (
     <section
-      className={cn(
-        'function-call-surface',
-        expandedSurface
-          ? 'fcall-chrome overflow-hidden rounded-md'
-          : 'overflow-visible bg-transparent',
-      )}
+      className="function-call-surface chat-tool-row"
       data-message-id={message.id}
       data-message-role="function-call"
       data-function-id={message.functionId}
@@ -835,114 +800,50 @@ export function FunctionCallCard({
       tabIndex={pending ? -1 : undefined}
       data-function-status={status}
     >
-      {/* The copy affordance must be a sibling of the collapse toggle
-          (nested buttons are invalid HTML): the labeled toggle carries the
-          title with the copy icon in flow right after it, and the trailing
-          activity disclosure/caret is a pointer-only duplicate target so
-          clicking anywhere on the row still collapses. */}
-      <div
-        className={cn(
-          'group/fchdr flex items-center gap-2',
-          expandedSurface && 'hover:bg-surface-hover/50',
-        )}
-      >
+      {/* The row is one labeled toggle carrying the title, the settled
+          facts and the status glyph; the trailing chevron is a pointer-only
+          duplicate target so clicking anywhere on the line still toggles. */}
+      <div className="chat-tool-row__head group/fchdr">
         <button
           type="button"
           data-message-action="toggle"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className={cn(
-            'min-w-0 cursor-pointer items-center gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-            expandedSurface ? 'flex py-2 pl-3' : 'flex flex-1 py-1.5 sm:py-1',
-          )}
+          className="chat-tool-row__main"
         >
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <FunctionCallStatusIcon
-              expanded={expandedSurface}
-              status={status}
-            />
-            <TimelineActivityTrail kind={collapsedActivityKind} />
-            <div
-              className={cn(
-                'min-w-0 flex-1',
-                expandedSurface
-                  ? 'font-mono text-[0.8125rem] text-ink'
-                  : cn(
-                      'font-sans text-sm sm:text-[0.8125rem]',
-                      running ? 'text-call-running' : 'text-muted-foreground',
-                    ),
-              )}
-            >
-              <FunctionCallStatusCopy
-                denied={denied}
-                description={description}
-                durationMs={message.durationMs}
-                expanded={expandedSurface}
-                filesystemAccess={!!filesystemAccess}
-                functionId={message.functionId}
-                hideGenericVerb={!!hideGenericVerb}
-                preview={preview}
-                ran={ran}
-                status={status}
-                unresolvedTarget={!!message.unresolvedTarget}
-              />
-            </div>
-          </div>
+          <TimelineActivityTrail kind={collapsedActivityKind} />
+          {rowText}
+          {rowMeta}
+          <FunctionCallStatusIcon status={status} />
         </button>
-        {!description && !(running && message.unresolvedTarget) ? (
-          <CopyMessageButton
-            text={message.functionId}
-            label="copy function id"
-            className="opacity-0 group-hover/fchdr:opacity-100 group-focus-within/fchdr:opacity-100 transition-[opacity,color]"
-          />
-        ) : null}
         <button
           type="button"
           data-message-action="toggle-caret"
           aria-hidden="true"
           tabIndex={-1}
           onClick={() => setOpen((v) => !v)}
-          className={cn(
-            'flex cursor-pointer items-center self-stretch overflow-visible',
-            expandedSurface
-              ? 'flex-1 justify-end pr-3'
-              : 'w-8 shrink-0 justify-center',
-          )}
+          className="chat-tool-row__caret"
         >
-          {expandedSurface ? (
-            <span
-              className={cn(
-                'inline-block shrink-0 text-ink-ghost transition-transform duration-[var(--motion-duration-control)]',
-                open && 'rotate-90',
-              )}
-            >
-              ▸
-            </span>
-          ) : (
-            <TimelineActivityDisclosure />
-          )}
+          <ChevronDown className="chat-tool-row__chevron size-4" />
         </button>
       </div>
 
       {open && unloaded ? (
-        <div className="border-t border-rule-2">
-          {description ? (
-            <FunctionIdentityRow functionId={message.functionId} />
-          ) : null}
+        <div className="chat-tool-row__body">
           {loadFailed ? (
             <div
               role="alert"
-              className="flex items-center gap-2 px-3 py-3 font-mono text-[12px] text-warn"
+              className="flex items-center gap-2 px-3 py-3 font-inter text-[13px] text-warn"
               data-function-call-load-failed=""
             >
-              <span>could not load call details</span>
+              <span>Could not load call details.</span>
               <button
                 type="button"
                 data-message-action="retry-load"
                 onClick={loadDetails}
                 className="cursor-pointer underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
-                retry
+                Retry
               </button>
             </div>
           ) : (
@@ -958,70 +859,45 @@ export function FunctionCallCard({
               <Skeleton className="h-3 w-5/6" />
             </div>
           )}
-        </div>
-      ) : open ? (
-        <div className="border-t border-rule-2">
-          {description && !(running && message.unresolvedTarget) ? (
-            <FunctionIdentityRow functionId={message.functionId} />
+          {description ? (
+            <FunctionCallRowFooter functionId={message.functionId} />
           ) : null}
+        </div>
+      ) : open && !displayCustomTerminal ? (
+        <div className="chat-tool-row__body">
           {pending && customPreview ? (
-            <div className="border-b border-rule-2">{customPreview}</div>
+            <div className="border-b border-edge">{customPreview}</div>
           ) : showRequestPaneAbove ? (
             <ValuePane label="request" value={rawInput} />
           ) : null}
-          {!pending && displayCustomTerminal ? (
-            <div className="border-t border-rule-2 bg-paper-2">
-              <button
-                type="button"
-                aria-expanded={showRawDetails}
-                onClick={() => setShowRawDetails((value) => !value)}
-                className={cn(
-                  eyebrowClassName,
-                  'w-full cursor-pointer px-3 py-2 text-left hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent',
-                )}
-              >
-                {showRawDetails ? 'hide' : 'show'} raw request and response
-              </button>
-              {showRawDetails ? (
-                <>
-                  <ValuePane label="request" value={rawInput} />
-                  <ValuePane label="response" value={rawOutput} bordered />
-                </>
-              ) : null}
-            </div>
-          ) : null}
-          {running && !pending && !displayCustomTerminal ? (
+          {running && !pending ? (
             streamingTail !== undefined ? (
               <StreamingArgsPane text={streamingTail} />
             ) : hasCustomTerminal ? (
-              <div className="border-t border-rule-2">{customTerminal}</div>
+              <div data-function-terminal="">{customTerminal}</div>
             ) : (
-              <ValuePane label="response" value={rawOutput} bordered />
+              <ValuePane label="response" value={rawOutput} stacked />
             )
           ) : null}
-          {!pending && !running && !displayCustomTerminal ? (
+          {!pending && !running ? (
             hasCustomTerminal ? (
-              <Tabs
-                value={tab}
-                onValueChange={(v) => setTab(v as 'terminal' | 'json')}
-                className="border-t border-rule-2"
-              >
-                <TabsList className="px-3">
-                  <TabsTrigger value="terminal">Terminal</TabsTrigger>
-                  <TabsTrigger value="json">Raw JSON</TabsTrigger>
-                </TabsList>
-                <TabsContent value="terminal">{customTerminal}</TabsContent>
-                <TabsContent value="json">
-                  <ValuePane label="request" value={rawInput} />
-                  <ValuePane label="response" value={rawOutput} bordered />
-                </TabsContent>
-              </Tabs>
+              <div data-function-terminal="">{customTerminal}</div>
             ) : (
               <>
                 <ValuePane label="request" value={rawInput} />
-                <ValuePane label="response" value={rawOutput} bordered />
+                <ValuePane label="response" value={rawOutput} stacked />
               </>
             )
+          ) : null}
+          {showFooter ? (
+            <FunctionCallRowFooter
+              functionId={message.functionId}
+              raw={
+                !running && hasCustomTerminal
+                  ? { input: rawInput, output: rawOutput }
+                  : undefined
+              }
+            />
           ) : null}
         </div>
       ) : null}
@@ -1039,6 +915,17 @@ export function FunctionCallCard({
           </FunctionRendererPresence>
         </div>
       ) : null}
+      {/* A worker's display card is the row's content; the identity strip
+          and raw payload follow it rather than sitting between the header
+          and the card. */}
+      {open && displayCustomTerminal && showFooter ? (
+        <div className="chat-tool-row__body">
+          <FunctionCallRowFooter
+            functionId={message.functionId}
+            raw={{ input: rawInput, output: rawOutput }}
+          />
+        </div>
+      ) : null}
 
       {pending && filesystemAccess ? (
         <FilesystemAccessPrompt
@@ -1053,9 +940,9 @@ export function FunctionCallCard({
           disabled={!onResolveFilesystemAccess}
         />
       ) : pending ? (
-        <div className="border-t border-rule-2 px-3 py-2 flex flex-col gap-2">
-          <p className="font-mono text-[12px] text-ink-faint">
-            execution is paused until you approve or deny this call.
+        <div className="flex flex-col gap-2 border-t border-edge px-3 py-2.5">
+          <p className="font-inter text-[13px] text-ink-faint">
+            Execution is paused until you approve or deny this call.
           </p>
           <div className="flex items-center gap-2" data-approval-actions="">
             <Button
@@ -1085,13 +972,15 @@ export function FunctionCallCard({
               />
             ) : null}
             {submitting ? (
-              <span className="font-mono text-[12px] text-ink-faint">
+              <span className="font-inter text-[13px] text-ink-faint">
                 waiting for the agent to resume…
               </span>
             ) : null}
           </div>
           {submitError ? (
-            <div className="font-mono text-[12px] text-warn">{submitError}</div>
+            <div className="font-inter text-[13px] text-warn">
+              {submitError}
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -1103,15 +992,87 @@ export function FunctionCallCard({
 interface ValuePaneProps {
   label: string
   value: unknown
-  bordered?: boolean
+  /** A pane that follows another in the same column: no top margin, so the
+      two sit one pane-gap apart instead of two. */
+  stacked?: boolean
 }
 
-const TEXT_PRE_CLS =
-  'bg-bg overflow-x-auto px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words'
+/* Pane chrome — the same recipe as the traces page's payload panes: Inter
+   labels on a hairline-framed card, the body on the editor code theme
+   (`.code-theme-editor`, index.css: Geist Mono at 13px, loose leading, the
+   Vesper / min-light token palette). Machine values (line counts, ids) stay
+   in Geist Mono. */
+const PANE_LABEL_CLS = 'font-inter text-xs font-medium text-ink'
+const PANE_HINT_CLS = 'font-inter text-[11px] font-normal text-ink-faint'
+const PANE_FRAME_CLS =
+  'code-theme-editor min-w-0 overflow-hidden rounded-lg border border-edge bg-(--code-surface) mx-2.5 mb-2.5'
+const PANE_FRAME_TOP_CLS = 'mt-2.5'
+const PANE_HEADER_CLS =
+  'flex h-8 items-center gap-2 border-b border-edge bg-paper-2 pr-1 pl-3'
+const PANE_BODY_PAD_CLS = 'px-4 py-3'
+
+/** `request` → `Request` for display; the data attribute keeps the raw id. */
+function titleCase(label: string): string {
+  return label.charAt(0).toUpperCase() + label.slice(1)
+}
+
+/* Copy → copied is an infrequent state swap: both icons stay in one grid
+   cell and cross-fade (scale 0.25→1, blur 4→0, 300ms on the standard
+   curve); reduced motion leaves only the opacity fade. */
+const COPY_ICON_LAYER_CLS =
+  '[grid-area:1/1] transition-[opacity,filter,scale] duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:scale-100 motion-reduce:blur-[0px]'
+const COPY_ICON_SHOWN_CLS = 'scale-100 opacity-100 blur-[0px]'
+const COPY_ICON_HIDDEN_CLS = 'scale-[0.25] opacity-0 blur-[4px]'
+
+function PaneCopyButton({ label, text }: { label: string; text: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    void copyTextToClipboard(text).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    })
+  }
+  return (
+    <Hint label={copied ? 'Copied' : 'Copy'}>
+      <button
+        type="button"
+        onClick={copy}
+        className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-ink-ghost transition-[background-color,color] duration-[var(--motion-duration-fast)] hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        aria-label={copied ? 'copied' : `copy ${label}`}
+      >
+        <span className="grid place-items-center">
+          <span
+            className={cn(
+              COPY_ICON_LAYER_CLS,
+              copied ? COPY_ICON_SHOWN_CLS : COPY_ICON_HIDDEN_CLS,
+            )}
+          >
+            <Check className="size-4 text-ok" aria-hidden />
+          </span>
+          <span
+            className={cn(
+              COPY_ICON_LAYER_CLS,
+              copied ? COPY_ICON_HIDDEN_CLS : COPY_ICON_SHOWN_CLS,
+            )}
+          >
+            <Copy className="size-4" aria-hidden />
+          </span>
+        </span>
+      </button>
+    </Hint>
+  )
+}
+
+const TEXT_PRE_CLS = cn(
+  PANE_BODY_PAD_CLS,
+  'overflow-x-auto whitespace-pre-wrap break-words',
+)
 
 /** Rendered lines above which a pane collapses behind a "show all" footer. */
 const CLAMP_LINES = 24
-/** Collapsed body height — ~16 code lines, enough to identify the payload. */
+/** Collapsed body height — ~12 code lines at the editor theme's leading,
+    enough to identify the payload. */
 const CLAMP_MAX_H = 'max-h-[21rem]'
 
 function countLines(s: string): number {
@@ -1131,59 +1092,38 @@ function PaneShell({
   hints,
   copyText,
   lineCount,
-  bordered,
+  stacked,
   children,
 }: {
   label: string
   hints?: string[]
   copyText: string
   lineCount: number
-  bordered?: boolean
+  stacked?: boolean
   children: React.ReactNode
 }) {
   const clampable = lineCount > CLAMP_LINES
   const [expanded, setExpanded] = useState(false)
-  const [copied, setCopied] = useState(false)
-
-  const copy = () => {
-    void copyTextToClipboard(copyText).then((ok) => {
-      if (!ok) return
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
-    })
-  }
 
   return (
     <div
-      className={cn(bordered && 'border-t border-rule-2')}
+      className={cn(PANE_FRAME_CLS, !stacked && PANE_FRAME_TOP_CLS)}
       data-function-pane={label}
     >
-      <div className="flex items-center gap-2 bg-paper-2 px-3 py-1.5 border-b border-rule-2 iii-ui-eyebrow">
-        <span className="min-w-0 flex-1 truncate">
-          {label}
+      <div className={PANE_HEADER_CLS}>
+        <span className={cn('min-w-0 flex-1 truncate', PANE_LABEL_CLS)}>
+          {titleCase(label)}
           {(hints ?? []).map((hint) => (
-            <span
-              key={hint}
-              className="text-ink-ghost normal-case tracking-normal"
-            >
-              {' '}
-              · {hint}
+            <span key={hint} className={cn('ml-2', PANE_HINT_CLS)}>
+              {hint}
             </span>
           ))}
         </span>
-        <button
-          type="button"
-          onClick={copy}
-          className="shrink-0 cursor-pointer text-ink-ghost hover:text-ink transition-colors"
-          aria-label={copied ? 'copied' : `copy ${label}`}
-          title={copied ? 'copied' : 'copy'}
-        >
-          {copied ? (
-            <Check size={16} aria-hidden />
-          ) : (
-            <Copy size={16} aria-hidden />
-          )}
-        </button>
+        <span className="shrink-0 font-geist-mono text-[11px] text-ink-faint tabular-nums">
+          {lineCount.toLocaleString('en-US')}{' '}
+          {lineCount === 1 ? 'line' : 'lines'}
+        </span>
+        <PaneCopyButton label={label} text={copyText} />
       </div>
       <div
         className={cn(
@@ -1197,9 +1137,12 @@ function PaneShell({
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          className="w-full border-t border-rule-2 bg-paper-2 px-3 py-1 text-center font-mono text-[11px] text-ink-faint hover:text-ink transition-colors"
+          className={cn(
+            PANE_HINT_CLS,
+            'w-full cursor-pointer border-t border-edge bg-paper-2 px-3 py-1.5 text-center text-xs transition-colors hover:text-ink',
+          )}
         >
-          {expanded ? '▴ Collapse' : `▾ Show all · ${lineCount} lines`}
+          {expanded ? 'Collapse' : `Show all · ${lineCount} lines`}
         </button>
       ) : null}
     </div>
@@ -1213,16 +1156,23 @@ function PaneShell({
  */
 function StreamingArgsPane({ text }: { text: string }) {
   return (
-    <div data-function-pane="request">
-      <div className="bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
-        request
-        <span className="text-ink-ghost normal-case tracking-normal">
-          {' '}
-          · streaming…
+    <div
+      className={cn(PANE_FRAME_CLS, PANE_FRAME_TOP_CLS)}
+      data-function-pane="request"
+    >
+      <div className={PANE_HEADER_CLS}>
+        <span className={PANE_LABEL_CLS}>
+          Request
+          <span className={cn('ml-2', PANE_HINT_CLS)}>streaming…</span>
         </span>
       </div>
-      <div className="max-h-48 overflow-y-auto flex flex-col-reverse">
-        <pre className="px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-all text-ink-faint">
+      <div className="flex max-h-56 flex-col-reverse overflow-y-auto">
+        <pre
+          className={cn(
+            PANE_BODY_PAD_CLS,
+            'whitespace-pre-wrap break-all text-(--syntax-comment)',
+          )}
+        >
           {text}
         </pre>
       </div>
@@ -1281,21 +1231,20 @@ export function paneCopyText(value: unknown): string {
   return resultEnvelope(value) ? formatJson(value) : plainPane(value).body
 }
 
-function ValuePane({ label, value, bordered }: ValuePaneProps) {
+function ValuePane({ label, value, stacked }: ValuePaneProps) {
   const empty = isEmptyValue(value)
   const envelope = empty ? null : resultEnvelope(value)
 
   if (empty) {
     return (
       <div
-        className={cn(bordered && 'border-t border-rule-2')}
+        className={cn(PANE_FRAME_CLS, !stacked && PANE_FRAME_TOP_CLS)}
         data-function-pane={label}
       >
-        <div className="bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
-          {label}
-          <span className="text-ink-ghost normal-case tracking-normal">
-            {' '}
-            · empty
+        <div className={cn(PANE_HEADER_CLS, 'border-b-0')}>
+          <span className={PANE_LABEL_CLS}>
+            {titleCase(label)}
+            <span className={cn('ml-2', PANE_HINT_CLS)}>empty</span>
           </span>
         </div>
       </div>
@@ -1326,11 +1275,15 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
         label={label}
         copyText={paneCopyText(value)}
         lineCount={lineCount}
-        bordered={bordered}
+        stacked={stacked}
       >
         {blocks.map((b) =>
           b.parsed !== undefined ? (
-            <JsonHighlight key={b.raw} code={formatJson(b.parsed)} />
+            <JsonHighlight
+              key={b.raw}
+              code={formatJson(b.parsed)}
+              className={PANE_BODY_PAD_CLS}
+            />
           ) : (
             <pre key={b.raw} className={TEXT_PRE_CLS}>
               <code>{b.raw}</code>
@@ -1339,10 +1292,10 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
         )}
         {detailsJson ? (
           <>
-            <div className="bg-paper-2 px-3 py-1.5 border-y border-rule-2 iii-ui-eyebrow">
-              details
+            <div className={cn(PANE_HEADER_CLS, 'border-t')}>
+              <span className={PANE_LABEL_CLS}>Details</span>
             </div>
-            <JsonHighlight code={detailsJson} />
+            <JsonHighlight code={detailsJson} className={PANE_BODY_PAD_CLS} />
           </>
         ) : null}
       </PaneShell>
@@ -1357,10 +1310,10 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
       hints={hints}
       copyText={paneCopyText(value)}
       lineCount={countLines(body)}
-      bordered={bordered}
+      stacked={stacked}
     >
       {json ? (
-        <JsonHighlight code={body} />
+        <JsonHighlight code={body} className={PANE_BODY_PAD_CLS} />
       ) : (
         <pre className={TEXT_PRE_CLS}>
           <code>{body}</code>

@@ -1,13 +1,13 @@
-import { Download, Plus } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { PanelLeft, PanelRight, SquarePen } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  NewChatDialog,
+  type NewChatDraft,
+} from '@/components/chat/NewChatDialog'
+import { OpenProjectPicker } from '@/components/chat/OpenProjectPicker'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Button } from '@/components/ui/Button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from '@/components/ui/Dialog'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { IconButton } from '@/components/ui/IconButton'
 import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -22,14 +22,26 @@ import {
   sideChatsLeftByClosedTabs,
   sideChatsMadeHere,
 } from '@/lib/chat-aside'
-import { onChatShownRequest } from '@/lib/chat-requests'
+import { onChatDialogRequest, onChatShownRequest } from '@/lib/chat-requests'
+import { sendDraftWhenReady } from '@/lib/composer-insert'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
+import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
+import {
+  closeChatTab,
+  loadOpenChatTabs,
+  type OpenChatTabs,
+  openChatTab,
+  pruneChatTabs,
+  saveOpenChatTabs,
+} from '@/lib/open-chat-tabs'
 import {
   getRemovalPreview,
   type RemovalPreview,
 } from '@/lib/sessions/removal-preview'
+import { cn } from '@/lib/utils'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
+import { ChatTabs } from './ChatTabs'
 import { ChatView } from './ChatView'
 import { ConversationLoadNotice } from './ConversationLoadNotice'
 import { ImportConversationsDialog } from './ImportConversationsDialog'
@@ -207,7 +219,6 @@ export function ChatPanel({
   const [removalPending, setRemovalPending] = useState(false)
   const [removalError, setRemovalError] = useState<string | null>(null)
   const removalWaitRef = useRef<AbortController | null>(null)
-  const cancelRemovalRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(
     () => () => {
@@ -243,6 +254,46 @@ export function ChatPanel({
     [select],
   )
 
+  // The header's open-chat tabs (an unpinned, wide pane only): the chat on
+  // screen always has one; side chats live in the aside, not here.
+  const [chatTabs, setChatTabs] = useState<OpenChatTabs>(loadOpenChatTabs)
+  useEffect(() => saveOpenChatTabs(chatTabs), [chatTabs])
+  useEffect(() => {
+    if (pinned || !activeId) return
+    const shown = conversations.find((c) => c.id === activeId)
+    if (shown && isSideChat(shown)) return
+    setChatTabs((current) => openChatTab(current, activeId))
+  }, [pinned, activeId, conversations])
+  useEffect(() => {
+    if (!listed) return
+    const tabbable = new Set(
+      conversations.filter((c) => !isSideChat(c)).map((c) => c.id),
+    )
+    setChatTabs((current) => pruneChatTabs(current, (id) => tabbable.has(id)))
+  }, [listed, conversations])
+  const tabConversations = useMemo(
+    () =>
+      chatTabs.ids
+        .map((id) => conversations.find((c) => c.id === id))
+        .filter((c): c is (typeof conversations)[number] => c !== undefined),
+    [chatTabs.ids, conversations],
+  )
+  const recentConversations = useMemo(
+    () =>
+      conversations
+        .filter((c) => !isSideChat(c))
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+    [conversations],
+  )
+  const handleCloseTab = useCallback(
+    (id: string) => {
+      const { state, next } = closeChatTab(chatTabs, id)
+      setChatTabs(state)
+      if (id === activeId && next) select(next)
+    },
+    [chatTabs, activeId, select],
+  )
+
   // The sidebar's verbs, beside the chat's own: both live in the same pane.
   useEffect(() => {
     if (pinned) return
@@ -257,27 +308,48 @@ export function ChatPanel({
           setNarrowView('chat')
         },
       },
-      {
-        id: 'search-chats',
-        title: 'Search conversations',
-        detail: 'Put the caret in the sidebar search',
-        keywords: ['find', 'sessions', 'filter'],
-        run: () => {
-          setNarrowView('list')
-          window.requestAnimationFrame(() => {
-            surfaceRef.current
-              ?.querySelector<HTMLElement>('[data-conversation-search]')
-              ?.focus()
-          })
-        },
-      },
     ])
   }, [commands, createNew, pinned])
 
-  const handleCreate = useCallback(() => {
-    createNew()
-    setNarrowView('chat')
-  }, [createNew])
+  // New chat is a dialog (project, first message, model), so the chat is
+  // born with its first message on the way rather than as an empty draft.
+  const [newChatOpen, setNewChatOpen] = useState(false)
+  const handleNewChat = useCallback(
+    (draft: NewChatDraft) => {
+      const id = createNew({ text: draft.text })
+      if (draft.model) setModel(id, draft.model)
+      setThinkingLevel(id, draft.thinkingLevel)
+      if (draft.workingDir) setWorkingDir(id, draft.workingDir)
+      sendDraftWhenReady(id, draft.text)
+      setNarrowView('chat')
+    },
+    [createNew, setModel, setThinkingLevel, setWorkingDir],
+  )
+
+  // Add project: a new chat scoped to the folder just added, so the first
+  // message lands where the user pointed.
+  const [addProjectOpen, setAddProjectOpen] = useState(false)
+  const handleProjectAdded = useCallback(
+    (path: string) => {
+      const id = createNew()
+      setWorkingDir(id, path)
+      setNarrowView('chat')
+    },
+    [createNew, setWorkingDir],
+  )
+
+  // The shortcuts reach the pane through the request bus (App dispatches
+  // them); a pinned pane leaves the global chat's dialogs alone.
+  useEffect(
+    () =>
+      pinned
+        ? undefined
+        : onChatDialogRequest((dialog) => {
+            if (dialog === 'new-chat') setNewChatOpen(true)
+            else setAddProjectOpen(true)
+          }),
+    [pinned],
+  )
 
   const handleBack = useCallback(() => {
     setNarrowView('list')
@@ -350,9 +422,28 @@ export function ChatPanel({
     setRemovalError(null)
   }, [])
 
+  // The dialog stays open (busy) until the deletion is confirmed, and says
+  // why when it isn't; its confirm control then tries again.
   const confirmRemoval = useCallback(async () => {
-    if (pendingRemoval) await performRemoval(pendingRemoval)
-  }, [pendingRemoval, performRemoval])
+    const target = pendingRemoval
+    if (!target || removalWaitRef.current) return
+    const wait = new AbortController()
+    removalWaitRef.current = wait
+    setRemovalPending(true)
+    setRemovalError(null)
+    try {
+      await remove(target.id, { signal: wait.signal })
+    } catch (error) {
+      if (!wait.signal.aborted) {
+        throw new Error(`The deletion wasn't confirmed: ${errText(error)}`)
+      }
+    } finally {
+      if (removalWaitRef.current === wait) {
+        removalWaitRef.current = null
+        setRemovalPending(false)
+      }
+    }
+  }, [pendingRemoval, remove])
 
   const removalAction = pendingRemoval?.hasRunningWork
     ? 'Stop and delete'
@@ -376,12 +467,27 @@ export function ChatPanel({
         surfaceRef.current = node
         rootRef(node)
       }}
-      className="chat-surface flex-1 flex flex-col min-h-0 min-w-0"
+      className={cn(
+        'chat-surface flex min-h-0 min-w-0 flex-1 flex-col font-inter',
+        NEUTRAL_SURFACE,
+      )}
     >
       <ImportConversationsDialog
         open={importOpen}
         onOpenChange={setImportOpen}
         onImported={handleSelect}
+      />
+      <OpenProjectPicker
+        open={addProjectOpen}
+        onOpenChange={setAddProjectOpen}
+        onAdded={handleProjectAdded}
+      />
+      <NewChatDialog
+        open={newChatOpen}
+        onOpenChange={setNewChatOpen}
+        modelOptions={modelOptions}
+        catalogLoading={catalogLoading}
+        onCreate={handleNewChat}
       />
       <ConversationLoadNotice
         loading={conversationsLoading && connectionState === 'connected'}
@@ -397,7 +503,12 @@ export function ChatPanel({
         {showList ? (
           <PageSidebar
             // learn-iii-conversations: tour anchor (workers/learn-iii). Do not remove.
-            className="learn-iii-conversations"
+            className={cn(
+              'learn-iii-conversations bg-white dark:bg-neutral-950',
+              /* Dark: a neutral-900 edge where the list meets the chat. */
+              'dark:border-neutral-900',
+              panelSide === 'right' ? 'dark:border-l' : 'dark:border-r',
+            )}
             label="Conversations"
             side={panelSide}
             storageKey="console:chat:conversations"
@@ -407,35 +518,25 @@ export function ChatPanel({
             collapsible
             resizable
             narrow={narrow}
-            header={
-              <>
-                <Button
-                  type="button"
-                  variant="primary"
-                  size="md"
-                  className="h-12 flex-1 justify-center px-3 font-sans text-base normal-case sm:h-9 sm:justify-start sm:text-sm"
-                  onClick={handleCreate}
-                >
-                  <Plus className="size-4 shrink-0" aria-hidden />
-                  New chat
-                </Button>
-                <IconButton
-                  label="Import conversations"
-                  className="max-sm:size-12"
-                  onClick={() => setImportOpen(true)}
-                >
-                  <Download aria-hidden />
-                </IconButton>
-              </>
+            /* The toggle leads the top row from the outer edge; New chat,
+               search and import are navigation rows inside the sidebar. */
+            togglePlacement="outer"
+            /* The shadcn sidebar trigger: one panel glyph for both states,
+               on the edge the pane hugs, at the nav rows' 16px stroke. */
+            toggleIcons={
+              panelSide === 'right'
+                ? { expanded: PanelRight, collapsed: PanelRight }
+                : { expanded: PanelLeft, collapsed: PanelLeft }
             }
+            header={<span className="sr-only">Conversations</span>}
             collapsedActions={
               <IconButton
                 label="New chat"
                 tooltipSide={panelSide === 'left' ? 'right' : 'left'}
-                onClick={handleCreate}
+                onClick={() => setNewChatOpen(true)}
                 className="size-7"
               >
-                <Plus aria-hidden />
+                <SquarePen aria-hidden />
               </IconButton>
             }
           >
@@ -443,6 +544,10 @@ export function ChatPanel({
               conversations={conversations}
               activeId={activeId}
               narrow={narrow}
+              onCreate={() => setNewChatOpen(true)}
+              onAddProject={() => setAddProjectOpen(true)}
+              onCreateInProject={handleProjectAdded}
+              onImport={() => setImportOpen(true)}
               onSelect={handleSelect}
               onRename={rename}
               onRemove={requestRemoval}
@@ -459,6 +564,18 @@ export function ChatPanel({
             catalogLoading={catalogLoading}
             density={density}
             panelTitle={pinned ? displayedConversation.title : undefined}
+            headerTabs={
+              pinned || narrow ? undefined : (
+                <ChatTabs
+                  tabs={tabConversations}
+                  activeId={activeId}
+                  recent={recentConversations}
+                  onSelect={handleSelect}
+                  onClose={handleCloseTab}
+                  onNew={() => setNewChatOpen(true)}
+                />
+              )
+            }
             onRequestClose={onRequestClose}
             commands={commands}
             onBack={narrow && !pinned ? handleBack : undefined}
@@ -502,7 +619,8 @@ export function ChatPanel({
           detail={previewError.message}
           action={
             <Button
-              variant="ghost"
+              variant="secondary"
+              size="sm"
               onClick={() => void requestRemoval(previewError.id)}
             >
               Try again
@@ -510,89 +628,34 @@ export function ChatPanel({
           }
         />
       ) : null}
-      <Dialog
+      <ConfirmDialog
         open={pendingRemoval !== null}
-        onOpenChange={(open) => !open && cancelRemoval()}
-      >
-        <DialogContent
-          data-chat-delete-dialog=""
-          aria-busy={removalPending}
-          onOpenAutoFocus={(event) => {
-            event.preventDefault()
-            cancelRemovalRef.current?.focus()
-          }}
-          onEscapeKeyDown={(event) => {
-            if (removalPending) event.preventDefault()
-          }}
-          onInteractOutside={(event) => {
-            if (removalPending) event.preventDefault()
-          }}
-        >
-          <DialogTitle className="pr-8">
-            {removalAction} conversation?
-          </DialogTitle>
-          <DialogDescription className="mt-2 break-words leading-relaxed">
-            <span className="font-medium text-ink">
-              “{pendingRemoval?.title}”
-            </span>
-            {pendingRemoval?.hasChildren
-              ? ' and its subagent conversations will be permanently deleted.'
-              : ' will be permanently deleted.'}{' '}
-            This cannot be undone.
-            {pendingRemoval?.hasRunningWork || pendingRemoval?.parentId ? (
-              <span className="mt-2 block">
-                {pendingRemoval.hasRunningWork
-                  ? 'Running work will be stopped first. '
-                  : null}
-                {pendingRemoval.parentId
-                  ? 'The parent will be notified, not stopped or deleted.'
-                  : null}
-              </span>
-            ) : null}
-          </DialogDescription>
-          {removalPending ? (
-            <StatusPanel
-              className="mt-3"
-              role="status"
-              headline={removalProgress}
-              detail="Waiting for confirmation. Closing the panel won't cancel deletion."
-            />
-          ) : null}
-          {removalError ? (
-            <StatusPanel
-              className="mt-3"
-              variant="alert"
-              role="alert"
-              headline="Deletion could not be confirmed."
-              data-chat-delete-error=""
-              detail={removalError}
-            />
-          ) : null}
-          <div data-chat-delete-actions="">
-            <Button
-              ref={cancelRemovalRef}
-              type="button"
-              variant="ghost"
-              disabled={removalPending}
-              onClick={cancelRemoval}
-            >
-              {removalError ? 'Close' : 'Cancel'}
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              disabled={removalPending}
-              onClick={() => void confirmRemoval()}
-            >
-              {removalPending
-                ? removalProgress
-                : removalError
-                  ? `Retry ${removalAction.toLowerCase()}`
-                  : removalAction}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+        onOpenChange={(open) => {
+          if (!open) cancelRemoval()
+        }}
+        title={`${removalAction} conversation?`}
+        description={
+          pendingRemoval ? (
+            <>
+              {pendingRemoval.hasChildren
+                ? 'This conversation and its subagent conversations will be permanently deleted.'
+                : 'This conversation will be permanently deleted.'}{' '}
+              {pendingRemoval.hasRunningWork
+                ? 'Running work will be stopped first. '
+                : null}
+              {pendingRemoval.parentId
+                ? 'The parent will be notified, not stopped or deleted. '
+                : null}
+              This cannot be undone.
+            </>
+          ) : null
+        }
+        confirmLabel={removalAction}
+        busyLabel={removalProgress}
+        error={removalError}
+        tone="danger"
+        onConfirm={confirmRemoval}
+      />
     </div>
   )
 }

@@ -2,9 +2,8 @@ import type { RefObject } from 'react'
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
-} from '@/components/ui/Tooltip'
+} from '@/components/shadcn/tooltip'
 import { useMentionProviders } from '@/lib/mentions/providers'
 import { useMentionView } from '@/lib/mentions/views'
 import { cn } from '@/lib/utils'
@@ -135,16 +134,15 @@ export function WorkerMentionPill({
 
   if (!view || !hoverCard) return pill
   return (
-    <TooltipProvider delayDuration={450}>
-      <Tooltip>
-        <TooltipTrigger asChild>{pill}</TooltipTrigger>
-        <TooltipContent
-          side="top"
-          className="w-[22rem] max-w-[calc(100vw-1rem)] bg-transparent p-0 shadow-none"
-        >
-          <MentionPreviewCard name={name} id={id} />
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip>
+      <TooltipTrigger delay={450} render={pill} />
+      {/* A card, not a label: no pill colour, padding or arrow. */}
+      <TooltipContent
+        side="top"
+        className="w-[22rem] max-w-[calc(100vw-1rem)] bg-transparent p-0 shadow-none *:data-[slot=tooltip-arrow]:hidden"
+      >
+        <MentionPreviewCard name={name} id={id} />
+      </TooltipContent>
+    </Tooltip>
   )
 }

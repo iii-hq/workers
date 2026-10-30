@@ -1,10 +1,6 @@
 import {
   Button,
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
+  ConfirmDialog,
   JsonHighlight,
   StatusDot,
 } from '@iii-dev/console-ui'
@@ -108,29 +104,16 @@ export function TaskDetail({
         </Button>
       </footer>
 
-      <Dialog open={confirming} onOpenChange={setConfirming}>
-        <DialogContent>
-          <DialogTitle>Remove this schedule?</DialogTitle>
-          <DialogDescription>
-            {task.label ?? task.observerId} stops firing immediately. This cannot be undone; the schedule has to be
-            created again.
-          </DialogDescription>
-          <div className="cron-ui-detail-actions">
-            <DialogClose asChild>
-              <Button variant="ghost">Keep it</Button>
-            </DialogClose>
-            <Button
-              variant="primary"
-              onClick={() => {
-                setConfirming(false)
-                onRemove()
-              }}
-            >
-              Remove
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title="Remove this schedule?"
+        description={`${task.label ?? task.observerId} stops firing immediately. This can't be undone; the schedule has to be created again.`}
+        confirmLabel="Remove"
+        cancelLabel="Keep it"
+        tone="danger"
+        onConfirm={onRemove}
+      />
     </div>
   )
 }

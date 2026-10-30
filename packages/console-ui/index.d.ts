@@ -115,6 +115,11 @@ export interface ScreenOpenRequest {
   sizes?: number[]
 }
 
+/** What `host.chat.compose` did: handed the draft to a composer (or held it
+    for the chat being opened), or, with `ifUnambiguous`, left it alone
+    because several chats are open. */
+export type ComposeResult = 'composed' | 'ambiguous'
+
 /** Props the host passes to every registered page render component. */
 export interface PageRenderProps {
   panelSide: PanelSide
@@ -506,10 +511,25 @@ export interface ComposerActionProps {
  * An icon-sized action rendered in the composer's toolbar, beside the
  * attach button. Duplicate `id`: last registration wins.
  */
+/**
+ * The keyboard and palette face of a composer action: the console lists it
+ * as `Chat: Title` and fires it while focus is in the chat pane, the same
+ * way a page's own commands work. `run` must not need the rendered
+ * component: it runs from the palette too, with nothing hovered or pressed.
+ * Ignored by consoles before this field existed; feature-detect nothing,
+ * the action still renders.
+ */
+export type ComposerActionCommand = Pick<
+  PageCommand,
+  'title' | 'detail' | 'keywords' | 'shortcut' | 'firesWhileTyping' | 'enabled' | 'run'
+>
+
 export interface ComposerActionRegistration {
   /** kebab-case; convention `<worker>-<name>`. */
   id: string
   render: React.ComponentType<ComposerActionProps>
+  /** Optional palette row and shortcut for the same action. */
+  command?: ComposerActionCommand
 }
 
 /**
@@ -752,9 +772,10 @@ export interface Host {
     /** Open a new, editable human chat draft without sending or creating a session. */
     openDraft?(draft: { text: string; title?: string }): void
     /**
-     * Hand text and files to the active conversation's composer, the way a
-     * drop or a paste would, and put the caret there. Files become
-     * attachments. Absent on older consoles; feature-detect.
+     * Hand text and files to a chat's composer, the way a drop or a paste
+     * would, and put the caret there: the only chat open, else the one used
+     * last (never several at once). Files become attachments. Absent on
+     * older consoles; feature-detect. Older consoles return nothing.
      */
     compose?(draft: {
       text?: string
@@ -767,7 +788,21 @@ export interface Host {
        * cannot send right now (streaming, blocked): the text stays a draft.
        */
       submit?: boolean
-    }): void
+      /**
+       * A screen (such as `ext:ide`) to open the chat beside when the
+       * workspace on screen shows none, so the text lands where the person
+       * can see it. Ignored where there is no workspace (`#/worker/…`).
+       */
+      beside?: string
+      /**
+       * Hand over only when the composer is beyond doubt. With more than
+       * one chat open nothing is inserted and `'ambiguous'` comes back, so
+       * the caller can offer another way (the clipboard) instead of
+       * guessing which chat was meant. Without it, the chat used last gets
+       * the text.
+       */
+      ifUnambiguous?: boolean
+    }): ComposeResult | void
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
@@ -1005,7 +1040,11 @@ export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
 export declare const Badge: React.ComponentType<BadgeProps>
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'ghost' | 'pill' | 'icon' | 'terminal' | 'wiggle'
+  /** The action looks are `primary`, `secondary` and `destructive` (all
+      `rounded-xl` Inter 14px, the console's shadcn Button). `pill` and
+      `terminal` resolve to secondary, `wiggle` to primary; `ghost` and
+      `icon` are for icon-only chrome. */
+  variant?: 'primary' | 'secondary' | 'destructive' | 'ghost' | 'pill' | 'icon' | 'terminal' | 'wiggle'
   size?: 'sm' | 'md' | 'lg' | 'icon'
   /** Render as the child element (Radix Slot) instead of a `<button>`. */
   asChild?: boolean
@@ -1140,25 +1179,30 @@ export declare const IconButton: React.ComponentType<IconButtonProps & React.Ref
 export interface ConfirmDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** The question, naming the thing at stake: `Delete index.html?`. */
   title: string
+  /** One or two plain sentences: what happens, and whether it can be undone. */
   description?: React.ReactNode
-  /** Lines listed under the description, e.g. the unsaved items at stake. */
-  details?: readonly string[]
   confirmLabel?: string
   cancelLabel?: string
   /** `danger` paints the confirm control in `alert` for destructive actions. */
   tone?: 'default' | 'danger'
-  onConfirm: () => void
+  /** The confirmed action. A promise keeps the dialog open (busy) until it
+      resolves; a rejection stays open with its message, to try again. */
+  onConfirm: () => void | Promise<void>
   onCancel?: () => void
+  /** The confirm control's label while an async `onConfirm` runs. */
+  busyLabel?: string
 }
 /**
- * The console's confirmation in place of `window.confirm`: cancel owns
- * initial focus, Escape and the close control cancel.
+ * The console's one alert dialog, in place of `window.confirm`: a title, a
+ * short description and the actions on their own band, nothing else. Cancel
+ * owns initial focus; Escape and the close control cancel.
  */
 export declare const ConfirmDialog: React.ComponentType<ConfirmDialogProps>
 export type ConfirmOptions = Pick<
   ConfirmDialogProps,
-  'title' | 'description' | 'details' | 'confirmLabel' | 'cancelLabel' | 'tone'
+  'title' | 'description' | 'confirmLabel' | 'cancelLabel' | 'tone'
 >
 
 /** Root is state-only; compose with `DialogTrigger`/`DialogContent`. */
@@ -1199,6 +1243,9 @@ export interface DropdownMenuContentProps extends React.HTMLAttributes<HTMLDivEl
   /** As the menu opens and moves focus into itself; `preventDefault()`
       keeps that focus from its first item, to focus another control. */
   onOpenAutoFocus?(event: Event): void
+  /** As the menu closes and hands focus back to its trigger; `preventDefault()`
+      leaves focus where an item's action put it. */
+  onCloseAutoFocus?(event: Event): void
 }
 export declare const DropdownMenuContent: React.ComponentType<DropdownMenuContentProps>
 export interface DropdownMenuItemProps extends React.HTMLAttributes<HTMLDivElement> {
@@ -1391,6 +1438,18 @@ export interface PageShellProps extends React.ComponentProps<'div'> {}
 /** The pane's root column — fills the pane, `--color-panel` background. */
 export declare const PageShell: React.ComponentType<PageShellProps>
 
+/** One row of a page header's ⋯ menu. */
+export interface PageHeaderMenuItem {
+  id: string
+  label: string
+  icon?: React.ReactNode
+  /** Shown at the row's end, e.g. `⇧⌥G`. */
+  shortcut?: string
+  /** A toggle: the row shows a check while on. Absent: a plain action. */
+  checked?: boolean
+  disabled?: boolean
+  onSelect(): void
+}
 export interface PageHeaderProps {
   /** Identity glyph, rendered at 16px in faint ink (any svg fits). */
   icon?: React.ReactNode
@@ -1405,6 +1464,9 @@ export interface PageHeaderProps {
   /** Close the hosting pane — renders the standard ✕ when present.
       Wire to `PageRenderProps.onRequestClose`. */
   onClose?: () => void
+  /** Less frequent controls behind one ⋯ button after the actions; the
+      pane's Settings joins this menu. Ignored by older consoles. */
+  menu?: readonly PageHeaderMenuItem[]
   className?: string
 }
 /** The standard pane top bar: slightly raised, hairline bottom edge. */
@@ -1427,6 +1489,12 @@ export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
   header?: React.ReactNode
   /** Compact actions rendered below the toggle in the collapsed rail. */
   collapsedActions?: React.ReactNode
+  /**
+   * Where the collapse toggle sits in the top row: `inner` (default) hugs the
+   * edge against the main column, `outer` hugs the pane's outer edge so the
+   * toggle leads the row.
+   */
+  togglePlacement?: 'inner' | 'outer'
   /** Controlled expanded width. */
   width?: number
   /** Initial expanded width for host-owned state. */
@@ -1750,8 +1818,10 @@ export interface TerminalStreamProps {
     a private stream pane in a worker asset; import this instead. */
 export declare const TerminalStream: React.ComponentType<TerminalStreamProps>
 
-/** The console app provides the Radix `TooltipProvider`; compose Root/Trigger/Content,
-    or pass `label` to wrap `children` as the trigger with that content. */
+/** The console's shadcn (Base UI) tooltip behind its first, Radix-shaped API:
+    the console app provides the provider (shared open delay, instant
+    neighbours); compose Root/Trigger/Content, or pass `label` to wrap
+    `children` as the trigger with that content. */
 export interface TooltipProps {
   open?: boolean
   defaultOpen?: boolean
@@ -1775,6 +1845,75 @@ export interface TooltipContentProps extends React.HTMLAttributes<HTMLDivElement
 }
 export declare const TooltipContent: React.ComponentType<TooltipContentProps>
 
+/* ── shadcn primitives (Base UI) ─────────────────────────────────────
+   The console's shadcn components, exported as they are so a worker's
+   chrome reads like the console's own: Inter, the neutral surface ramp,
+   the shadcn focus ring. They take the shadcn props, not Radix's
+   (`render` in place of `asChild`). */
+
+export type ToggleVariant = 'default' | 'outline'
+export type ToggleSize = 'default' | 'sm' | 'lg'
+export interface ToggleProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'value'> {
+  /** Controlled pressed state; the button carries `aria-pressed`. */
+  pressed?: boolean
+  defaultPressed?: boolean
+  onPressedChange?(pressed: boolean): void
+  disabled?: boolean
+  /** Identifies the toggle inside a toggle group. */
+  value?: string
+  variant?: ToggleVariant
+  size?: ToggleSize
+  /** Replace the rendered element: a Base UI `render` prop. */
+  render?: React.ReactElement
+}
+/** A two-state button (`<button aria-pressed>`): a view switch, an option
+    such as "show hidden files". Pressed is the neutral `muted` fill. */
+export declare const Toggle: React.ComponentType<ToggleProps & React.RefAttributes<HTMLButtonElement>>
+
+export interface SeparatorProps extends React.HTMLAttributes<HTMLDivElement> {
+  orientation?: 'horizontal' | 'vertical'
+}
+/** A hairline in `border`: 1px tall, or 1px wide and stretched when vertical. */
+export declare const Separator: React.ComponentType<SeparatorProps & React.RefAttributes<HTMLDivElement>>
+
+export interface PopoverProps {
+  open?: boolean
+  defaultOpen?: boolean
+  onOpenChange?(open: boolean): void
+  modal?: boolean
+  children?: React.ReactNode
+}
+/** A floating panel anchored to its trigger (Base UI popover). */
+export declare const Popover: React.ComponentType<PopoverProps>
+export interface PopoverTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  render?: React.ReactElement
+}
+export declare const PopoverTrigger: React.ComponentType<PopoverTriggerProps & React.RefAttributes<HTMLButtonElement>>
+export interface PopoverContentProps extends React.HTMLAttributes<HTMLDivElement> {
+  side?: 'top' | 'right' | 'bottom' | 'left' | 'inline-start' | 'inline-end'
+  align?: 'start' | 'center' | 'end'
+  sideOffset?: number
+  alignOffset?: number
+  collisionPadding?: number
+  /** Keep the popup mounted while closed. */
+  keepMounted?: boolean
+  /** Where focus goes on open: an element, `false` to leave it on the
+      trigger, or a function of how it opened (`'keyboard'`, `'mouse'`,
+      `'touch'`, `'pen'`, `''`). Defaults to the first tabbable element. */
+  initialFocus?:
+    | boolean
+    | React.RefObject<HTMLElement | null>
+    | ((openType: string) => void | boolean | HTMLElement | null)
+  /** Where focus goes on close; defaults to the trigger. */
+  finalFocus?:
+    | boolean
+    | React.RefObject<HTMLElement | null>
+    | ((closeType: string) => void | boolean | HTMLElement | null)
+}
+/** The panel: `panel-raised`, 12px radius, hairline ring, floating shadow,
+    scaled in from its trigger. */
+export declare const PopoverContent: React.ComponentType<PopoverContentProps & React.RefAttributes<HTMLDivElement>>
+
 export interface CodeEditorHandle {
   focus(): void
   /** Put the cursor on `line` (1-based, clamped), scroll the pane that holds
@@ -1794,12 +1933,46 @@ export interface CodeEditorSelection {
   endColumn: number
   text: string
 }
-/** An action offered on a selection, in a small floating bar by its end. */
+/** An action offered on a selection, in a small floating bar above it. */
 export interface CodeEditorSelectionAction {
   id: string
   label: string
   icon?: React.ReactNode
+  /** A chord that runs the action while text is selected and the editor has
+      focus, in the console's shortcut syntax (`Mod+L`); shown beside the label. */
+  shortcut?: string
   run(selection: CodeEditorSelection): void
+}
+/** What Quick Edit rewrites: the selection, or the whole file around it. */
+export type CodeEditorQuickEditScope = 'selection' | 'file'
+export interface CodeEditorQuickEditRequest {
+  /** What the person asked for, trimmed. */
+  instruction: string
+  scope: CodeEditorQuickEditScope
+  /** The selection the prompt was opened on, 1-based. */
+  selection: CodeEditorSelection
+  /** The whole buffer as it was when the prompt was sent. */
+  value: string
+  /** Monaco language id of the buffer. */
+  language: string
+  /** The model picked in the card (`provider::model`); null = the caller's default.
+      Absent on consoles without the card's picker. */
+  model?: string | null
+  /** The reasoning effort picked with it; `default` = the model's own. */
+  thinkingLevel?: string
+  /** Aborts when the person stops or closes the prompt. */
+  signal: AbortSignal
+}
+/** The caller's side of the editor's inline "edit with AI" prompt. */
+export interface CodeEditorQuickEdit {
+  /** Text that replaces the selection (or the whole file, for `file`). Reject to show an error. */
+  run(request: CodeEditorQuickEditRequest): Promise<string>
+  /** Chord that opens the prompt on a selection. Default `Mod+I`. */
+  shortcut?: string
+  /** The model the card's picker starts on (`provider::model`), e.g. the chat's. */
+  model?: string | null
+  /** Label for the model when the console has no catalog to pick from. */
+  modelLabel?: string | null
 }
 export interface CodeEditorProps {
   value: string
@@ -1834,9 +2007,26 @@ export interface CodeEditorProps {
   wordWrap?: boolean
   /** Render the minimap; only meaningful together with `fill`. */
   minimap?: boolean
+  /** Code size in px; line height follows at 1.5×. Default 12.5 on 19. */
+  fontSize?: number
   /** Actions shown in a discreet floating bar whenever text is selected
       ("Reference in chat", …). Empty or absent: no bar. */
   selectionActions?: readonly CodeEditorSelectionAction[]
+  /** Offer Quick Edit on a selection (⌘I by default, plus a "Quick Edit"
+      button in the selection bar): an inline prompt whose answer, from
+      `run`, replaces the selected code as one undoable edit, then Accept /
+      Reject. Absent on older consoles (the prop is ignored). */
+  quickEdit?: CodeEditorQuickEdit
+  /** The editor's right-click menu, VS Code's: Go to Definition, Rename,
+      Format Document, Refactor…, Cut / Copy / Paste, Command Palette, plus
+      the selection actions and Quick Edit. Off by default (prose fields). */
+  contextMenu?: boolean
+  /** Where the reader was (scroll, cursor, selection), from an earlier
+      `onViewStateChange`: restored once, when the editor mounts. Opaque. */
+  initialViewState?: unknown
+  /** The reader's place, reported as they scroll or move the cursor and once
+      more as the editor goes away. Decided at mount. Absent on older consoles. */
+  onViewStateChange?: (state: unknown) => void
 }
 /** The console's Monaco-backed code editor — the one editor for every code
     or long-text editing surface, themed by the console's design tokens in

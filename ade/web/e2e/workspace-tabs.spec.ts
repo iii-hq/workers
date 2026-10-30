@@ -88,11 +88,12 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
   )
   expect(orderAfterReload[0]).toBe(homeId)
 
-  // The go-to chord and a deep link open the screen once and never a second
-  // tab for it.
+  // The go-to key and a deep link open the screen once and never a second
+  // tab for it (Go to workers: ⌃⌘W on a Mac, Alt+Shift+W elsewhere).
   await settle(page)
-  await page.keyboard.press(`${workspaceModifier}+g`)
-  await page.keyboard.press('w')
+  await page.keyboard.press(
+    process.platform === 'darwin' ? 'Control+Meta+w' : 'Alt+Shift+w',
+  )
   await expect(tabs(page).filter({ hasText: 'workers' })).toHaveCount(1)
   await page.goto(`${stack.consoleUrl}#/`)
   await page.goto(`${stack.consoleUrl}#/workers`)

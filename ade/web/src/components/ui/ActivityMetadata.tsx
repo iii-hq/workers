@@ -144,7 +144,11 @@ export function ActionLine({
       >
         {icon}
       </span>
-      <div className="min-w-0 break-all text-ink">{children}</div>
+      {/* Wrap at word boundaries; break inside a word only when one (a long
+          function id) cannot fit the line on its own. */}
+      <div className="min-w-0 text-ink [overflow-wrap:anywhere]">
+        {children}
+      </div>
     </div>
   )
 }

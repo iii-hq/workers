@@ -1,4 +1,4 @@
-/* Go to file (Ctrl+P): the pure half. Which key opens it on each platform,
+/* Go to file (⌘P): the pure half. Which key opens it on each platform,
    how a typed query is prepared for the worker, and which characters of a
    path the worker's fuzzy scorer matched — so a row can show WHY it is
    there. React-free so the tests and the editor pane import it without
@@ -10,10 +10,10 @@ import { basename, dirname } from './paths'
 
 export type QuickOpenPlatform = 'mac' | 'other'
 
-/** `Ctrl+P` on a Mac, where ⌘P is the browser's Print and Ctrl is the
-    free tier the console's own keys sit on. On Windows and Linux Ctrl IS
-    the browser's modifier — `Ctrl+P` prints there and the console refuses
-    it — so the chord moves to Alt, the free tier on those platforms. */
+/** The chord the console's registry knows (palette rows, the shortcut
+    sheet): `Ctrl+P` on a Mac and `Alt+P` elsewhere, because the registry
+    keeps ⌘P for the browser's Print. The page itself also takes ⌘P while
+    focus is inside it (`isQuickOpenKey`), the key every editor uses. */
 export const QUICK_OPEN_SHORTCUT: PageShortcut = { mac: ['Ctrl+P'], other: ['Alt+P'] }
 
 export function quickOpenPlatform(): QuickOpenPlatform {
@@ -23,7 +23,7 @@ export function quickOpenPlatform(): QuickOpenPlatform {
 
 /** How the key prints in a hint, for the reader's platform. */
 export function quickOpenKeyLabel(platform: QuickOpenPlatform): string {
-  return platform === 'mac' ? 'Ctrl+P' : 'Alt+P'
+  return platform === 'mac' ? '⌘P' : 'Alt+P'
 }
 
 export interface KeyLike {
@@ -39,8 +39,12 @@ export interface KeyLike {
     would otherwise cancel the event before the console's dispatcher sees
     it. */
 export function isQuickOpenKey(event: KeyLike, platform: QuickOpenPlatform): boolean {
-  if (event.key.toLowerCase() !== 'p' || event.shiftKey || event.metaKey) return false
-  return platform === 'mac' ? event.ctrlKey && !event.altKey : event.altKey && !event.ctrlKey
+  if (event.key.toLowerCase() !== 'p' || event.shiftKey) return false
+  if (platform === 'mac') {
+    // ⌘P like every editor, and Ctrl+P, the console's registered chord.
+    return !event.altKey && event.metaKey !== event.ctrlKey
+  }
+  return event.altKey && !event.ctrlKey && !event.metaKey
 }
 
 /** The query the worker scores: whitespace dropped (a space separates
@@ -180,4 +184,68 @@ export function stepQuickOpenIndex(current: number, delta: 1 | -1, count: number
   if (count === 0) return -1
   if (current < 0) return delta === 1 ? 0 : count - 1
   return (current + delta + count) % count
+}
+
+/* ── ranking: the files a person actually works in come first ── */
+
+/** How often and how recently a file was opened in this folder. */
+export interface FileUse {
+  count: number
+  /** ms since epoch of the last open. */
+  last: number
+}
+
+const DAY_MS = 86_400_000
+
+/** One number for "this is a file I work in": opens, faded by age (a week
+    halves them), so last month's habit gives way to this morning's. */
+export function useScore(use: FileUse | undefined, now: number): number {
+  if (!use) return 0
+  const ageDays = Math.max(0, (now - use.last) / DAY_MS)
+  return use.count * 0.5 ** (ageDays / 7)
+}
+
+/** The worker's fuzzy order, with the files in use pulled up and a name
+    that starts with the query (what a person types first) ahead of a match
+    buried in a folder name. Stable otherwise. */
+export function rankQuickOpenRows(
+  rows: readonly QuickOpenRow[],
+  query: string,
+  uses: Readonly<Record<string, FileUse>>,
+  now: number,
+): QuickOpenRow[] {
+  const q = query.toLowerCase()
+  return rows
+    .map((row, index) => {
+      const name = row.name.toLowerCase()
+      const nameBoost = q === '' ? 0 : name === q ? 12 : name.startsWith(q) ? 8 : name.includes(q) ? 4 : 0
+      const useBoost = Math.min(14, Math.log2(1 + useScore(uses[row.rel], now)) * 5)
+      return { row, rank: index - nameBoost - useBoost }
+    })
+    .sort((a, b) => a.rank - b.rank)
+    .map((entry) => entry.row)
+}
+
+/** The empty query's list: the files in use, best first, then the recent
+    ones not already listed, at most `limit`. */
+export function inUseRows(
+  uses: Readonly<Record<string, FileUse>>,
+  recent: readonly string[],
+  now: number,
+  limit: number,
+): QuickOpenRow[] {
+  const ranked = Object.entries(uses)
+    .map(([rel, use]) => ({ rel, score: useScore(use, now) }))
+    .filter((entry) => entry.score > 0.05)
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.rel)
+  const out: string[] = []
+  for (const rel of [...recent, ...ranked]) {
+    if (out.length >= limit) break
+    if (!out.includes(rel)) out.push(rel)
+  }
+  // Recent first only for the one just left; the rest follow use.
+  const [first, ...rest] = out
+  const byUse = rest.sort((a, b) => useScore(uses[b], now) - useScore(uses[a], now))
+  return (first === undefined ? [] : [first, ...byUse]).map((rel) => quickOpenRow(rel, ''))
 }

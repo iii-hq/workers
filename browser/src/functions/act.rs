@@ -55,10 +55,10 @@ pub struct ActInput {
     /// Drag end y, in viewport pixels (`drag`).
     #[serde(default)]
     pub y2: Option<f64>,
-    /// Draw the agent's ghost cursor where the action lands, for whoever
-    /// watches the live view. Default true; false for a person's own input
-    /// from a viewer, so the page shows no agent cursor.
+    /// Accepted for older callers and ignored: the worker draws nothing into
+    /// the page (no agent cursor), whoever acts.
     #[serde(default)]
+    #[allow(dead_code)]
     pub ghost_cursor: Option<bool>,
 }
 

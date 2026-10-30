@@ -1,10 +1,10 @@
 import type { Host } from '@iii-dev/console-ui'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import { ArrowRight } from 'lucide-react'
-import { OpenInBrowser } from '../open-in-browser'
-import { ActionLine, Badge, Chip, EmptyState, JsonHighlight, MetaRow } from '@iii-dev/console-ui'
+import { Badge, Chip, EmptyState, JsonHighlight, MetaRow } from '@iii-dev/console-ui'
+import { UrlLine } from '../url-line'
 import { cn } from '../../lib/cn'
 import { FilterChip } from '../../lib/shared'
+import { TextPreview } from './text-preview'
 import {
   type FetchRequest,
   fetchEngineLabel,
@@ -149,10 +149,7 @@ function TargetLines({ urls, host }: { urls: string[]; host?: Host }) {
     <>
       {urls.slice(0, MAX_TARGET_LINES).map((url, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: static wire snapshot; rows never reorder and urls may repeat
-        <ActionLine key={`${i}:${url}`} icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-          <span className="br-ui-break">{url}</span>
-          {host ? <OpenInBrowser host={host} url={url} /> : null}
-        </ActionLine>
+        <UrlLine key={`${i}:${url}`} url={url} host={host} />
       ))}
       {urls.length > MAX_TARGET_LINES ? (
         <div className="br-ui-more">
@@ -190,12 +187,7 @@ function SinglePane({
           <FilterChip label="xhr" value={page.captured_xhr.length} />
         ) : null}
       </MetaRow>
-      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
-        <span className="br-ui-break">{page.url || req.url || ''}</span>
-        {host && (page.url || req.url) ? (
-          <OpenInBrowser host={host} url={page.url || req.url || ''} />
-        ) : null}
-      </ActionLine>
+      <UrlLine url={page.url || req.url || ''} host={host} />
       {page.extracted ? <Extracted extracted={page.extracted} /> : null}
       {page.content != null ? (
         <RenderedContent format={page.format} content={page.content} />
@@ -257,12 +249,10 @@ function RenderedContent({
         {format ?? 'content'} · {formatChars(content.length)}
         {truncated ? ' · truncated' : ''}
       </div>
-      <pre className="br-ui-text">
-        <code>
-          {content.slice(0, HTML_PREVIEW_CHARS)}
-          {truncated ? '…' : ''}
-        </code>
-      </pre>
+      <TextPreview
+        format={format}
+        text={`${content.slice(0, HTML_PREVIEW_CHARS)}${truncated ? '…' : ''}`}
+      />
     </div>
   )
 }

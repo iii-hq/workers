@@ -10,8 +10,9 @@
  *   PageShell    the pane's root column — fills the pane, `bg-panel`
  *   PageHeader   the standard top bar: `bg-panel-raised`, hairline edge
  *                border, icon + title + description, an actions slot,
- *                and the ✕ that closes the hosting pane (`onClose` —
- *                pages get it as `PageRenderProps.onRequestClose`)
+ *                the hosting pane's split control, and the ✕ that closes
+ *                the hosting pane (`onClose` — pages get it as
+ *                `PageRenderProps.onRequestClose`)
  *   PageBody     the row under the header (`side` mirrors it so a
  *                sidebar can hug the pane's outer edge)
  *   PageSidebar  the navigation column — `bg-sidebar`, bounded width
@@ -22,8 +23,18 @@
  * gets the same hairline without border bookkeeping.
  */
 
-import { Settings2, X } from 'lucide-react'
+import { Ellipsis, Settings, X } from 'lucide-react'
 import type * as React from 'react'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger,
+} from '@/components/shadcn/dropdown-menu'
+import { PaneSplitMenu } from '@/components/workspace/PaneSplitMenu'
 import {
   openPaneConfiguration,
   usePaneConfigurationId,
@@ -51,6 +62,22 @@ export function PageShell({ className, ...rest }: React.ComponentProps<'div'>) {
   )
 }
 
+/** A header icon's phone touch target (48px), shared by Settings and ⋯. */
+const HEADER_ICON_TOUCH = 'max-sm:size-12'
+
+/** One row of a page header's ⋯ menu. */
+export interface PageHeaderMenuItem {
+  id: string
+  label: string
+  icon?: React.ReactNode
+  /** Shown at the row's end, e.g. `⇧⌥G`. */
+  shortcut?: string
+  /** A toggle: the row shows a check while on. Absent: a plain action. */
+  checked?: boolean
+  disabled?: boolean
+  onSelect(): void
+}
+
 export interface PageHeaderProps {
   /** Identity glyph, rendered at 16px in faint ink (any svg fits). */
   icon?: React.ReactNode
@@ -65,6 +92,10 @@ export interface PageHeaderProps {
   /** Close the hosting pane — renders the standard ✕ when present.
       Worker pages: pass `PageRenderProps.onRequestClose` through. */
   onClose?: () => void
+  /** The page's less frequent controls, behind one ⋯ button at the end of
+      the actions. The pane's Settings joins the menu instead of standing
+      on its own. */
+  menu?: readonly PageHeaderMenuItem[]
   className?: string
 }
 
@@ -76,6 +107,7 @@ export function PageHeader({
   children,
   actions,
   onClose,
+  menu,
   className,
 }: PageHeaderProps) {
   const configurationId = usePaneConfigurationId()
@@ -110,14 +142,26 @@ export function PageHeader({
       {actions ? (
         <div className="shrink-0 flex items-center gap-1.5">{actions}</div>
       ) : null}
-      {configurationId ? (
+      {/* The hosting pane's split control (a workspace pane on desktop
+          only), the same in every pane's header. */}
+      <PaneSplitMenu />
+      {menu && menu.length > 0 ? (
+        <PageHeaderMenu
+          items={menu}
+          onOpenSettings={
+            configurationId
+              ? () => void openPaneConfiguration(configurationId)
+              : undefined
+          }
+        />
+      ) : configurationId ? (
         <IconButton
-          label="Configure worker"
+          label="Settings"
           tooltipSide="bottom"
-          className="max-sm:size-12"
+          className={HEADER_ICON_TOUCH}
           onClick={() => void openPaneConfiguration(configurationId)}
         >
-          <Settings2 aria-hidden className="size-4 shrink-0" />
+          <Settings aria-hidden className="size-4 shrink-0" />
         </IconButton>
       ) : null}
       {/* No tooltip on the ✕ — a lone close glyph at a pane's corner is
@@ -176,5 +220,69 @@ export function PageMain({
       )}
       {...rest}
     />
+  )
+}
+
+/** The header's ⋯ menu: the page's rows, then Settings. */
+function PageHeaderMenu({
+  items,
+  onOpenSettings,
+}: {
+  items: readonly PageHeaderMenuItem[]
+  onOpenSettings?: () => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <IconButton
+            label="More actions"
+            tooltipSide="bottom"
+            className={HEADER_ICON_TOUCH}
+          >
+            <Ellipsis aria-hidden className="size-4 shrink-0" />
+          </IconButton>
+        }
+      />
+      <DropdownMenuContent align="end" className="min-w-[14rem]">
+        {items.map((item) =>
+          item.checked === undefined ? (
+            <DropdownMenuItem
+              key={item.id}
+              disabled={item.disabled}
+              onClick={item.onSelect}
+            >
+              {item.icon}
+              {item.label}
+              {item.shortcut ? (
+                <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut>
+              ) : null}
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuCheckboxItem
+              key={item.id}
+              checked={item.checked}
+              disabled={item.disabled}
+              onCheckedChange={item.onSelect}
+            >
+              {item.icon}
+              {item.label}
+              {item.shortcut ? (
+                <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut>
+              ) : null}
+            </DropdownMenuCheckboxItem>
+          ),
+        )}
+        {onOpenSettings ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onOpenSettings}>
+              <Settings aria-hidden />
+              Settings
+            </DropdownMenuItem>
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

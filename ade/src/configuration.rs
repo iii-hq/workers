@@ -168,6 +168,20 @@ fn schema() -> Value {
                 },
                 "additionalProperties": true
             },
+            "tabs": {
+                "type": "object",
+                "description": "Workspace tab strip preferences.",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 64,
+                        "default": 10,
+                        "description": "How many workspace tabs may be open at once. The new-tab controls disable at the limit; tabs already open above a lowered limit stay open. Changes apply live."
+                    }
+                },
+                "additionalProperties": true
+            },
             "injectableUi": {
                 "type": "object",
                 "description": "Injectable worker UI controls (the assets workers ship as console::ui::asset observers of kind script, style or module).",
@@ -218,6 +232,9 @@ fn default_value(http_port: u16, data_dir: &str) -> Value {
                 "hiddenGroups": ["harness::send"],
                 "hiddenWorkers": ["context-manager", "session-manager"]
             }
+        },
+        "tabs": {
+            "limit": 10
         },
         "injectableUi": {
             "disabledWorkers": []
@@ -678,6 +695,18 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(description.contains("console::ui::asset"), "{description}");
+    }
+
+    #[test]
+    fn schema_exposes_the_tab_limit() {
+        let limit = &schema()["properties"]["tabs"]["properties"]["limit"];
+        assert_eq!(limit["type"], "integer");
+        assert_eq!(limit["minimum"], 1);
+        assert_eq!(limit["maximum"], 64);
+        assert_eq!(limit["default"], 10);
+        // The out-of-the-box entry states the same number, so the form shows
+        // it rather than an empty field.
+        assert_eq!(default_value(3113, "data/ade")["tabs"]["limit"], 10);
     }
 
     #[test]

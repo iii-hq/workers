@@ -294,10 +294,10 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
                 </p>
               ) : null}
               <div className="shui-text-dialog-actions">
-                <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+                <Button type="button" variant="secondary" size="md" onClick={onClose}>
                   Cancel
                 </Button>
-                <Button type="submit" variant="primary" size="sm" disabled={!ready}>
+                <Button type="submit" variant="primary" size="md" disabled={!ready}>
                   {state.step === 'creating' ? 'Creating…' : start ? 'Create and start' : 'Create'}
                 </Button>
               </div>
@@ -335,18 +335,18 @@ export function NewWorkerDialog({ host, root, baseDir, onCreated, onClose }: New
             <div className="shui-text-dialog-actions">
               {state.step === 'result' || state.step === 'failed' ? (
                 <>
-                  <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+                  <Button type="button" variant="secondary" size="md" onClick={onClose}>
                     Done
                   </Button>
-                  <Button type="button" variant="primary" size="sm" onClick={() => add(result, state.owned)}>
+                  <Button type="button" variant="primary" size="md" onClick={() => add(result, state.owned)}>
                     {state.step === 'failed' ? 'Retry' : 'Add to stack'}
                   </Button>
                 </>
               ) : (
                 <Button
                   type="button"
-                  variant={state.step === 'running' ? 'primary' : 'ghost'}
-                  size="sm"
+                  variant={state.step === 'running' ? 'primary' : 'secondary'}
+                  size="md"
                   onClick={onClose}
                 >
                   Done

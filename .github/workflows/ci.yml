@@ -792,7 +792,7 @@ jobs:
           [[ -x "$state_bin" ]] || { echo "::error::state worker is unavailable"; exit 3; }
           echo "III_STATE_BIN=$state_bin" >> "$GITHUB_ENV"
 
-      - name: Run real-engine router lifecycle suite
+      - name: Run real-engine router lifecycle and retry suites
         run: |
           set -euo pipefail
           [[ -x "$III_ENGINE_BIN" ]] || { echo "::error::III_ENGINE_BIN is unavailable"; exit 3; }
@@ -801,6 +801,7 @@ jobs:
             --manifest-path llm-router/Cargo.toml \
             --no-default-features \
             --test integration \
+            --test request_retry \
             -- --nocapture --test-threads=1
 
   # ──────────────────────────────────────────────────────────────

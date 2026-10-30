@@ -86,12 +86,54 @@ fn view_ack(view: &EffectiveView) -> Option<SkillAck> {
         EffectiveView::Removed { generation } => Some(SkillAck {
             generation: *generation,
             fingerprint: None,
+            ids: None,
         }),
         EffectiveView::Available(view) => Some(SkillAck {
             generation: view.generation,
             fingerprint: Some(view.fingerprint.clone()),
+            ids: listed_ids(&view.body),
         }),
     }
+}
+
+/// The skill ids a rendered `<available_skills>` body lists, in order.
+#[allow(clippy::box_collection)]
+pub(crate) fn listed_ids(body: &str) -> Option<Box<Vec<String>>> {
+    let ids: Vec<String> = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("- **"))
+        .filter_map(|rest| rest.split_once("** — ").map(|(id, _)| id.to_string()))
+        .collect();
+    (!ids.is_empty()).then(|| Box::new(ids))
+}
+
+/// One short line naming the skill ids that joined or left since the list
+/// the session last saw; `None` when only descriptions changed.
+fn change_notice(previous: &[String], next: &[String]) -> Option<String> {
+    let added: Vec<&str> = next
+        .iter()
+        .filter(|id| !previous.contains(id))
+        .map(String::as_str)
+        .collect();
+    let removed: Vec<&str> = previous
+        .iter()
+        .filter(|id| !next.contains(id))
+        .map(String::as_str)
+        .collect();
+    if added.is_empty() && removed.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if !added.is_empty() {
+        parts.push(format!("added {}", added.join(", ")));
+    }
+    if !removed.is_empty() {
+        parts.push(format!("removed {}", removed.join(", ")));
+    }
+    Some(format!(
+        "Available skills changed: {}. Load one with `directory::skills::get` only if the task needs it.",
+        parts.join("; ")
+    ))
 }
 
 pub(crate) fn plan_sync(
@@ -114,6 +156,15 @@ pub(crate) fn plan_sync(
             ack: next,
         },
         (None, _, EffectiveView::Removed { .. }) => SyncPlan::Acknowledge(next),
+        (Some(previous), true, EffectiveView::Available(_)) if previous.fingerprint.is_some() => {
+            match change_notice(
+                previous.ids.as_deref().map_or(&[], Vec::as_slice),
+                next.ids.as_deref().map_or(&[], Vec::as_slice),
+            ) {
+                Some(message) => SyncPlan::Append { message, ack: next },
+                None => SyncPlan::Acknowledge(next),
+            }
+        }
         (_, _, EffectiveView::Available(view)) => SyncPlan::Append {
             message: format!(
                 "The available skills have changed. This list supersedes the previous\navailable skills list.\n{}",
@@ -756,6 +807,7 @@ mod tests {
         let admitted = SkillAck {
             generation: 2,
             fingerprint: Some("sha256:one".into()),
+            ids: Some(Box::new(vec!["one".into()])),
         };
         let moved_without_view_change = EffectiveView::Available(RenderedView {
             generation: 3,
@@ -768,7 +820,8 @@ mod tests {
             plan_sync(Some(&admitted), true, &moved_without_view_change),
             SyncPlan::Acknowledge(SkillAck {
                 generation: 3,
-                fingerprint: Some("sha256:one".into())
+                fingerprint: Some("sha256:one".into()),
+                ids: Some(Box::new(vec!["one".into()])),
             })
         );
 
@@ -788,6 +841,7 @@ mod tests {
         let removed = SkillAck {
             generation: 3,
             fingerprint: None,
+            ids: None,
         };
         assert!(matches!(
             plan_sync(Some(&removed), true, &available),
@@ -796,10 +850,58 @@ mod tests {
     }
 
     #[test]
+    fn a_started_turn_appends_only_the_changed_skill_ids() {
+        let view = |ids: &[&str], fingerprint: &str| {
+            let skills: Vec<Skill> = ids
+                .iter()
+                .map(|id| Skill {
+                    id: (*id).into(),
+                    description: "Does it".into(),
+                })
+                .collect();
+            EffectiveView::Available(RenderedView {
+                fingerprint: fingerprint.into(),
+                generation: 2,
+                ..render(&skills, None)
+            })
+        };
+        let shown = SkillAck {
+            generation: 1,
+            fingerprint: Some("sha256:old".into()),
+            ids: Some(Box::new(vec!["one".into(), "two".into()])),
+        };
+
+        let SyncPlan::Append { message, ack } =
+            plan_sync(Some(&shown), true, &view(&["one", "three"], "sha256:new"))
+        else {
+            panic!("a changed id set must be named");
+        };
+        assert_eq!(
+            message,
+            "Available skills changed: added three; removed two. Load one with `directory::skills::get` only if the task needs it."
+        );
+        assert!(!message.contains("<available_skills>"));
+        assert_eq!(
+            ack.ids.as_deref().map(Vec::as_slice),
+            Some(&["one".to_string(), "three".to_string()][..])
+        );
+
+        assert!(matches!(
+            plan_sync(
+                Some(&shown),
+                true,
+                &view(&["one", "two"], "sha256:reworded")
+            ),
+            SyncPlan::Acknowledge(_)
+        ));
+    }
+
+    #[test]
     fn a_send_time_baseline_change_before_generation_is_still_a_transcript_correction() {
         let baseline = SkillAck {
             generation: 1,
             fingerprint: Some("sha256:baseline".into()),
+            ids: None,
         };
         let current = EffectiveView::Available(RenderedView {
             body: "<available_skills>current</available_skills>".into(),

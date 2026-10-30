@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { expect, expectPassingResult, openSession, test } from './harness-stack'
 
 const SECOND_MESSAGE = 'Return the second trace phrase.'
@@ -47,7 +48,8 @@ test('shows two traces and exposes function arguments in trace events', async ({
   await traces.getByRole('button', { name: 'group traces by' }).click()
   await page
     .getByRole('listbox', { name: 'group traces by' })
-    .getByRole('option', { name: 'session', exact: true })
+    // The preset reads "Session", its attribute key beside it.
+    .getByRole('option', { name: /^Session\b/ })
     .click()
 
   const group = traces.locator(
@@ -89,13 +91,19 @@ test('shows two traces and exposes function arguments in trace events', async ({
     traces.getByRole('button', { name: 'close trace detail' }),
   ).toBeVisible()
   await expect(traces.getByText(/\d+ spans/).first()).toBeVisible()
-  await expect(traces.getByText(/\d+ workers?/).first()).toBeVisible()
+  // The trace header reads "Workers 9" (label, then the count).
+  await expect(
+    traces.getByText(/\d+ workers?|workers?\s*\d+/i).first(),
+  ).toBeVisible()
 
   const functionId = stack.ready.functions.record
   expect(functionId).toBeTruthy()
-  const functionSpan = traces.locator(
-    `[data-trace-span-name="execute ${functionId}"]`,
-  )
+  const spanSelector = `[data-trace-span-name="execute ${functionId}"]`
+  const functionSpan = traces.locator(spanSelector)
+  // The timeline keeps only the bars near its viewport in the DOM (a
+  // 5000-span trace stays cheap), so pan to the span the way a reader would.
+  await expect(traces.locator('[data-trace-span-id]').first()).toBeVisible()
+  await revealTimelineSpan(page, spanSelector)
   await expect(functionSpan).toBeVisible()
   await functionSpan.click()
 
@@ -128,3 +136,30 @@ test('shows two traces and exposes function arguments in trace events', async ({
   const result = await stack.finish()
   expectPassingResult(result)
 })
+
+/** Pan the trace timeline (down, then across) until `selector` renders. */
+async function revealTimelineSpan(page: Page, selector: string) {
+  for (let step = 0; step < 60; step++) {
+    const found = await page.evaluate((sel) => {
+      if (document.querySelector(sel)) return true
+      let scroller = document.querySelector('[data-trace-span-id]')
+        ?.parentElement as HTMLElement | null
+      while (
+        scroller &&
+        !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)
+      )
+        scroller = scroller.parentElement
+      if (!scroller) return true
+      const atBottom =
+        scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1
+      if (!atBottom) scroller.scrollTop += scroller.clientHeight * 0.6
+      else {
+        scroller.scrollTop = 0
+        scroller.scrollLeft += scroller.clientWidth * 0.6
+      }
+      return false
+    }, selector)
+    if (found) return
+    await page.waitForTimeout(60)
+  }
+}

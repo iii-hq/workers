@@ -5,6 +5,7 @@ import {
   filterEntries,
   groupEntries,
   KIND_ORDER,
+  matchRanges,
   type PaletteEntry,
   type PaletteKind,
   parseQuery,
@@ -150,5 +151,78 @@ describe('groupEntries', () => {
     expect(groupEntries(input).flatMap(([, rows]) => rows)).toHaveLength(
       input.length,
     )
+  })
+})
+
+describe('matchRanges', () => {
+  it('lights the matched word, preferring a word start', () => {
+    expect(matchRanges('Open settings', 'set')).toEqual([[5, 8]])
+    expect(matchRanges('reset settings', 'set')).toEqual([[6, 9]])
+  })
+
+  it('lights every word of a multi-word query, merged and in order', () => {
+    expect(matchRanges('Open file', 'file open')).toEqual([
+      [0, 4],
+      [5, 9],
+    ])
+    expect(matchRanges('abcd', 'ab bc')).toEqual([[0, 3]])
+  })
+
+  it('falls back to the subsequence for id-like labels only', () => {
+    expect(matchRanges('engine::workers::list', 'ewl', 'function')).toEqual([
+      [0, 1],
+      [8, 9],
+      [17, 18],
+    ])
+    expect(matchRanges('engine::workers::list', 'ewl', 'page')).toEqual([])
+  })
+
+  it('lights nothing for an empty query', () => {
+    expect(matchRanges('chat', '  ')).toEqual([])
+  })
+})
+
+describe('intent synonyms', () => {
+  const theme: PaletteEntry = {
+    id: 'action:theme',
+    kind: 'action',
+    title: 'Change theme',
+    detail: 'Switch to dark theme',
+    run: () => {},
+  }
+  const model: PaletteEntry = {
+    id: 'command:model',
+    kind: 'command',
+    title: 'Change model',
+    run: () => {},
+  }
+
+  it('finds a row by any verb people use for the same intent', () => {
+    for (const query of [
+      'change theme',
+      'toggle theme',
+      'set theme',
+      'theme',
+    ]) {
+      expect(scoreEntry(theme, query)).toBeGreaterThan(0)
+    }
+    expect(scoreEntry(model, 'switch model')).toBeGreaterThan(0)
+  })
+
+  it('ranks the typed word above its synonym', () => {
+    expect(scoreEntry(model, 'change')).toBeGreaterThan(
+      scoreEntry(model, 'switch'),
+    )
+  })
+
+  it('still requires every word to land', () => {
+    expect(scoreEntry(model, 'switch theme')).toBe(0)
+  })
+
+  it('lights the synonym the query matched through', () => {
+    expect(matchRanges('Change model', 'switch model')).toEqual([
+      [0, 6],
+      [7, 12],
+    ])
   })
 })

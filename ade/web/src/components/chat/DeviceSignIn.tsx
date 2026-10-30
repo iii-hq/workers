@@ -274,7 +274,7 @@ export function DeviceSignIn({
   return (
     <section
       aria-label={`${provider.title} sign-in`}
-      className="flex flex-col gap-3 rounded-lg border border-edge bg-surface p-3"
+      className="flex flex-col gap-3 rounded-xl bg-card p-3 ring-1 ring-foreground/10"
     >
       {heading || phase === 'connected' ? (
         <header className="flex items-center justify-between gap-2">

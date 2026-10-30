@@ -10,7 +10,6 @@ import {
   Card,
   type ConfigFormProps,
   ConfirmDialog,
-  Eyebrow,
   type ExtensionIii,
   IconButton,
   Input,
@@ -24,7 +23,7 @@ import {
 } from '@iii-dev/console-ui'
 import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
 import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
-import { ChevronLeft, ChevronRight, Globe } from 'lucide-react'
+import { ChevronLeft } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { clearAllBrowserData, errorMessage } from '../lib/browser'
 import {
@@ -58,6 +57,7 @@ const BROWSER_OWNED_TOP_LEVEL_FIELDS = [
   'inactive_after_ms',
   'screenshot_quality',
   'frame_density',
+  'live_view_quality',
   'allowed_schemes',
   'max_snapshot_nodes',
   'default_origin_policy',
@@ -85,6 +85,7 @@ const DEFAULTS = {
   inactive_after_ms: 1_800_000,
   screenshot_quality: 60,
   frame_density: 2,
+  live_view_quality: 85,
   allowed_schemes: ['http', 'https', 'file'],
   max_snapshot_nodes: 2_000,
   allow_history_access: true,
@@ -125,6 +126,7 @@ const FIELD_SECTION: Record<string, SectionId> = {
   viewport_height: 'viewport',
   screenshot_quality: 'viewport',
   frame_density: 'viewport',
+  live_view_quality: 'viewport',
   console_buffer: 'limits',
   network_buffer: 'limits',
   max_snapshot_nodes: 'limits',
@@ -864,7 +866,7 @@ function ConfigNav({
     {
       id: 'viewport',
       label: 'Viewport',
-      description: 'Canvas and screenshots',
+      description: 'Canvas, live view, screenshots',
       summary: `${width} × ${height}`,
     },
     {
@@ -895,10 +897,7 @@ function ConfigNav({
 
   return (
     <nav className="br-cfg-nav" aria-label="Browser configuration sections">
-      <div className="br-cfg-nav-head">
-        <Eyebrow as="div">Browser settings</Eyebrow>
-        <p>Settings are grouped by when and where they apply.</p>
-      </div>
+      <div className="br-cfg-nav-head">Browser settings</div>
       <ul className="br-cfg-nav-list">
         {sections.map((section) => {
           const active = section.id === selection
@@ -909,14 +908,10 @@ function ConfigNav({
                 className={`br-cfg-nav-row${active ? ' active' : ''}`}
                 data-config-section={section.id}
                 aria-current={active ? 'page' : undefined}
+                title={`${section.description} · ${section.summary}`}
                 onClick={() => onSelect(section.id)}
               >
-                <span className="br-cfg-nav-copy">
-                  <span className="br-cfg-nav-name">{section.label}</span>
-                  <span className="br-cfg-nav-description">{section.description}</span>
-                  <span className="br-cfg-nav-meta">{section.summary}</span>
-                </span>
-                <ChevronRight size={16} aria-hidden className="br-cfg-nav-chevron" />
+                <span className="br-cfg-nav-name">{section.label}</span>
               </button>
             </li>
           )
@@ -950,7 +945,6 @@ function EditorHeader({
           <ChevronLeft size={16} aria-hidden />
         </IconButton>
       ) : null}
-      <Globe size={16} aria-hidden className="br-cfg-editor-icon" />
       <div className="br-cfg-editor-title">
         <h3 id={titleId}>{title}</h3>
         <p>{description}</p>
@@ -1254,6 +1248,36 @@ export function BrowserConfigEditor({
               </div>
             </ConfigSection>
             <ConfigSection
+              title="Live view"
+              description="How sharp the streamed page is in the browser pane and the iii app's Browser, against the bandwidth each frame costs."
+            >
+              <SettingsList className="br-cfg-section-list">
+                <NumberField
+                  field="frame_density"
+                  label="Frame density"
+                  value={value.frame_density}
+                  placeholder={DEFAULTS.frame_density}
+                  min={1}
+                  max={3}
+                  step={0.5}
+                  hint={FRAME_DENSITY_HINT}
+                  error={fieldError(errors, 'frame_density')}
+                  onChange={(next) => setNumber('frame_density', next, true)}
+                />
+                <NumberField
+                  field="live_view_quality"
+                  label="Frame JPEG quality"
+                  value={value.live_view_quality}
+                  placeholder={DEFAULTS.live_view_quality}
+                  min={1}
+                  max={100}
+                  hint="Use a value from 1 to 100. Lower values blur text edges first."
+                  error={fieldError(errors, 'live_view_quality')}
+                  onChange={(next) => setNumber('live_view_quality', next)}
+                />
+              </SettingsList>
+            </ConfigSection>
+            <ConfigSection
               title="Screenshot capture"
               description="Balance image detail against artifact size and transfer time."
             >
@@ -1268,25 +1292,6 @@ export function BrowserConfigEditor({
                   hint="Use a value from 1 to 100. The default is tuned for compact diagnostic screenshots."
                   error={fieldError(errors, 'screenshot_quality')}
                   onChange={(next) => setNumber('screenshot_quality', next)}
-                />
-              </SettingsList>
-            </ConfigSection>
-            <ConfigSection
-              title="Live view"
-              description="How sharp the streamed page is in a viewer such as the iii app's Browser."
-            >
-              <SettingsList className="br-cfg-section-list">
-                <NumberField
-                  field="frame_density"
-                  label="Frame density"
-                  value={value.frame_density}
-                  placeholder={DEFAULTS.frame_density}
-                  min={1}
-                  max={3}
-                  step={0.5}
-                  hint={FRAME_DENSITY_HINT}
-                  error={fieldError(errors, 'frame_density')}
-                  onChange={(next) => setNumber('frame_density', next, true)}
                 />
               </SettingsList>
             </ConfigSection>

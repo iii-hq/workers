@@ -4,6 +4,8 @@
  * legacy `iii-chat-conversations` blob is no longer read or written.
  */
 
+import { pinnedDefaultModel } from './pinned-models'
+
 const ACTIVE_KEY = 'iii-chat-active'
 const LAST_MODEL_KEY = 'iii-chat-last-model'
 const LAST_THINKING_LEVEL_KEY = 'iii-chat-last-thinking-level'
@@ -83,7 +85,14 @@ export function saveActiveId(id: string | null): void {
   }
 }
 
+/**
+ * What a new chat starts on. The first slot of the quick menu once the
+ * person has arranged it (it is badged "default" there); until then, the
+ * model used last.
+ */
 export function loadLastModel(): string | null {
+  const pinned = pinnedDefaultModel()
+  if (pinned) return pinned.id
   try {
     return localStorage.getItem(LAST_MODEL_KEY)
   } catch {
@@ -101,6 +110,8 @@ export function saveLastModel(id: string | null): void {
 }
 
 export function loadLastThinkingLevel(): string | null {
+  const pinned = pinnedDefaultModel()
+  if (pinned) return pinned.effort
   try {
     const level = localStorage.getItem(LAST_THINKING_LEVEL_KEY)
     return level && level.length > 0 ? level : null

@@ -23,6 +23,7 @@
  */
 import { TriangleAlert } from 'lucide-react'
 import { Chip } from '@/components/chat/sandbox/terminal/Terminal'
+import { Hint } from '@/components/ui/Hint'
 import {
   Table,
   TableBody,
@@ -33,11 +34,6 @@ import {
   TableRow,
   TableViewport,
 } from '@/components/ui/Table'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
 import { OpenInEditorButton } from './OpenInEditorButton'
 import {
@@ -416,16 +412,14 @@ function EchoGroupBlock({
     <div className="border-b border-rule-2 last:border-b-0 py-1.5 space-y-1">
       <div className="px-3 flex flex-wrap items-center gap-1.5">
         {op ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="iii-ui-eyebrow cursor-help">
-                op {group.opIndex}
-              </span>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-[64ch] break-words">
-              {formatUpdateOp(op)}
-            </TooltipContent>
-          </Tooltip>
+          <Hint
+            label={formatUpdateOp(op)}
+            className="max-w-[min(64ch,calc(100vw-1rem))]"
+          >
+            <span className="iii-ui-eyebrow cursor-help">
+              op {group.opIndex}
+            </span>
+          </Hint>
         ) : (
           <span className="iii-ui-eyebrow">op {group.opIndex}</span>
         )}
@@ -467,19 +461,17 @@ function FileFailureRow({ result }: { result: UpdateFileResult }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-ink">{result.path}</span>
         {result.error ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="inline-flex items-center gap-1 text-warn cursor-help">
-                <TriangleAlert aria-hidden className="size-4" />
-                <Chip className="bg-warn-muted text-warn">
-                  {result.error.code}
-                </Chip>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-[64ch] break-words">
-              {result.error.message}
-            </TooltipContent>
-          </Tooltip>
+          <Hint
+            label={result.error.message}
+            className="max-w-[min(64ch,calc(100vw-1rem))]"
+          >
+            <span className="inline-flex items-center gap-1 text-warn cursor-help">
+              <TriangleAlert aria-hidden className="size-4" />
+              <Chip className="bg-warn-muted text-warn">
+                {result.error.code}
+              </Chip>
+            </span>
+          </Hint>
         ) : (
           <span className="text-warn">Error</span>
         )}

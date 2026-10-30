@@ -152,6 +152,21 @@ async fn main() -> anyhow::Result<()> {
     functions::register_all(&iii, &state);
     ui::register(&iii);
 
+    // fn held = dictate, as in Wispr Flow; the console decides what to do.
+    let runtime = tokio::runtime::Handle::current();
+    let hotkey_emitter = state.emitter.clone();
+    voice::hotkey::spawn(move |action| {
+        let emitter = hotkey_emitter.clone();
+        runtime.spawn(async move {
+            let event = voice::hotkey::HotkeyEvent {
+                key: "fn",
+                action,
+                timestamp_ms: events::now_ms(),
+            };
+            emitter.emit(events::EventKind::Hotkey, None, &event).await;
+        });
+    });
+
     sessions
         .set_progress_sink(functions::catalog::progress_sink(&state))
         .await;
