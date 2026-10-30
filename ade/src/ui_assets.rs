@@ -36,6 +36,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
+use iii_sdk::protocol::observe_codes;
 use iii_sdk::{CallAction, CallRequest, IIIClient, ObserveRejection, Observer, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -348,6 +349,17 @@ impl Observers {
     }
 }
 
+/// Whether a call through an observer was refused because the observer is
+/// not active. The engine announces the observers of a worker that
+/// disconnected (`suspended` for `observers.observer_grace_ms`) to the
+/// function's host too, and refuses calls through them until that worker
+/// reconnects: a restarted console meets its previous process's asset
+/// observers this way. The fetch gives up on the first such refusal, since
+/// every later asset waits in the queue behind it.
+fn is_inactive_observer(error: &Error) -> bool {
+    matches!(error, Error::Remote { code, .. } if code == observe_codes::OBSERVER_NOT_ACTIVE)
+}
+
 struct SdkBus {
     iii: Arc<IIIClient>,
     observers: Arc<Observers>,
@@ -368,7 +380,9 @@ impl UiBus for SdkBus {
             .get(observer_id)
             .ok_or_else(|| format!("observer {observer_id} was removed"))?;
         let mut last_err = String::new();
+        let mut attempts = 0;
         for attempt in 1..=FETCH_ATTEMPTS {
+            attempts = attempt;
             let request = CallRequest::observer(&obs, json!({ "path": path }))
                 .timeout(Duration::from_millis(FETCH_TIMEOUT_MS));
             match self.iii.call(request).await {
@@ -395,6 +409,9 @@ impl UiBus for SdkBus {
                 }
                 Err(e) => {
                     last_err = e.to_string();
+                    if is_inactive_observer(&e) {
+                        break;
+                    }
                     if attempt < FETCH_ATTEMPTS {
                         tokio::time::sleep(Duration::from_millis(FETCH_BACKOFF_MS)).await;
                     }
@@ -402,7 +419,7 @@ impl UiBus for SdkBus {
             }
         }
         Err(format!(
-            "content fetch via '{}' failed after {FETCH_ATTEMPTS} attempts: {last_err}",
+            "content fetch via '{}' failed after {attempts} attempt(s): {last_err}",
             obs.target()
         ))
     }
@@ -1165,6 +1182,21 @@ mod tests {
         }
         drop(tx);
         p.run(rx).await;
+    }
+
+    #[test]
+    fn only_an_inactive_observer_refusal_ends_the_fetch_early() {
+        let remote = |code: &str| Error::Remote {
+            code: code.to_string(),
+            message: "refused".to_string(),
+            stacktrace: None,
+        };
+        assert!(is_inactive_observer(&remote(
+            observe_codes::OBSERVER_NOT_ACTIVE
+        )));
+        assert!(!is_inactive_observer(&remote(observe_codes::OVERFLOW)));
+        assert!(!is_inactive_observer(&remote("function_not_found")));
+        assert!(!is_inactive_observer(&Error::Timeout));
     }
 
     #[test]

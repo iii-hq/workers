@@ -22,10 +22,10 @@ import {
   type IIIConnectionState,
   type InitOptions,
   type ISdk,
-  type ObserveSource as SdkObserveSource,
   type RegisterFunctionOptions,
   type RemoteFunctionHandler,
   registerWorker,
+  type ObserveSource as SdkObserveSource,
 } from 'iii-browser-sdk'
 
 export type { IIIConnectionState }

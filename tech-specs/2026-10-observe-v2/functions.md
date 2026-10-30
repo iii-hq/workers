@@ -903,6 +903,11 @@ The harness observes, for its own plumbing: `engine::on-workers-changed`,
   `args.expression`, `queue::on-message` `args.topic`) and filters
   (`state::on-changed` `input.scope`/`input.key`). Functions show an
   Observers tab (observers of it, observers targeting it).
+- **Chat roles** (decision 32): the ADE stores no chat roles. Transcripts
+  are session-manager entries, and `web/src/lib/sessions/entry-mapper.ts`
+  derives each message's role from its entry as it reads them, so a tool
+  call stored before 0.26 reads as `function-call` and no reader meets
+  `function-trigger`.
 - **Proxy** (`ade/src/proxy.rs`): drops a browser `registerfunction` whose id
   is one of the ADE's provider ids (`console::ui::*`,
   `console::workspace::on-changed`, `console::compose::on-changed`) and strips

@@ -23,9 +23,9 @@ import { putAttachment } from '@/lib/sessions/api'
 import type { Attachment } from '@/types/chat'
 import {
   type AttachmentFailure,
+  type CallFn,
   describeWorkerFailure,
   fileToBase64,
-  type CallFn,
 } from './shared'
 
 export const PUT_ATTACHMENT_FUNCTION_ID = 'session::put-attachment'

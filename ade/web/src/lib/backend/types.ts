@@ -110,7 +110,7 @@ export type StreamEvent =
        * `accepted` = harness::send seeded a turn (step-0 sits on the durable
        * queue); `merged` = folded into an in-flight turn; `queued` = parked
        * in the server-side queue (the queued strip owns that surface);
-       * `started` = harness::turn-started fired, the loop is running.
+       * `started` = harness::on-turn-started was called, the loop is running.
        */
       kind: 'turn-status'
       phase: 'accepted' | 'merged' | 'queued' | 'started'
@@ -176,7 +176,7 @@ export interface ChatStreamOptions {
    * Per-send message id (`msg-<uuid>`). The harness derives the user
    * message's session-manager entry id from it (`<message_id>-user-0`), so
    * the console's optimistic user message reconciles in place when the
-   * `session::message-added` snapshot arrives. The real backend mints one
+   * `session::on-message-added` snapshot arrives. The real backend mints one
    * when omitted.
    */
   messageId?: string

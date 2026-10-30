@@ -7,23 +7,23 @@
 import { describe, expect, it } from 'vitest'
 import type {
   RegisteredConfigForm,
+  RegisteredObserverActivityRenderer,
   RegisteredOverlay,
   RegisteredProviderConfigForm,
   RegisteredSessionChip,
-  RegisteredObserverActivityRenderer,
 } from './ui-slots'
 import {
   getExtConfigForm,
+  getExtObserverActivityRenderers,
   getExtOverlays,
   getExtProviderConfigForm,
   getExtSessionChips,
-  getExtObserverActivityRenderers,
   isExtConfigFormPending,
   registerExtConfigForm,
+  registerExtObserverActivityRenderer,
   registerExtOverlay,
   registerExtProviderConfigForm,
   registerExtSessionChip,
-  registerExtObserverActivityRenderer,
 } from './ui-slots'
 
 function chip(id: string, path: string): RegisteredSessionChip {

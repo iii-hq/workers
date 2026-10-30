@@ -1,9 +1,9 @@
 import { Bot, MessageSquareQuote, Sparkles } from 'lucide-react'
 import { useContext, useEffect, useRef } from 'react'
 import { FunctionCallCard } from '@/components/function-call/FunctionCallCard'
-import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import type { ObserverRegistration } from '@/components/observer-activity/model'
 import { ObserverActivityCard } from '@/components/observer-activity/ObserverActivityCard'
+import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { Caret } from '@/components/ui/Caret'
 import { Chip } from '@/components/ui/Chip'
 import { Prompt } from '@/components/ui/Prompt'
@@ -300,7 +300,7 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
 
 /**
  * A validation nudge (`validation: true`): the harness re-prompting the turn
- * after the output contract or a `harness::hook::post-turn` validator
+ * after the output contract or a `harness::hook::on-post-turn` validator
  * rejected its result. Labeled and left-aligned like the other
  * machine-authored user entries so it never reads as something the human
  * typed — the loop is visible AS a loop.

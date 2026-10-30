@@ -7,8 +7,8 @@ import type {
   TurnStartedEvent,
 } from '@/types/iii-agent-event'
 import {
-  startQueuedEventsSubscription,
   startObserversChangedSubscription,
+  startQueuedEventsSubscription,
   startTurnEventsSubscription,
 } from './turn-events-live'
 

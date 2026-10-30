@@ -224,7 +224,7 @@ describe('ChatPanel contextual delete confirmation', () => {
     expect(mocks.getRemovalPreview).toHaveBeenCalledTimes(2)
     expect(mocks.remove).not.toHaveBeenCalled()
   })
-  it('clears a failed preview once session::deleted removes that conversation', async () => {
+  it('clears a failed preview once session::on-deleted removes that conversation', async () => {
     mocks.getRemovalPreview.mockRejectedValueOnce(new Error('offline'))
     await click('Request removal')
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(
@@ -355,7 +355,7 @@ describe('ChatPanel contextual delete confirmation', () => {
     expect(dialog()).toBeNull()
   })
 
-  it('keeps the title if session::deleted removes the sidebar row during the wait', async () => {
+  it('keeps the title if session::on-deleted removes the sidebar row during the wait', async () => {
     const pending = deferred()
     mocks.remove.mockReturnValueOnce(pending.promise)
     await click('Request removal')

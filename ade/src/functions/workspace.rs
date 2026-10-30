@@ -174,11 +174,14 @@ pub fn is_chat_screen(screen: &str) -> bool {
     screen == CHAT_SCREEN || session_id_for_chat_screen(screen).is_some()
 }
 
+/// A stored screen as it reads today (the SPA's `MIGRATED_SCREENS`).
 fn migrate_screen(screen: Option<String>) -> Option<String> {
     match screen.as_deref() {
         Some("configuration") => None,
         Some("worktrees") => Some("ext:worktree".to_string()),
         Some(s @ ("memory" | "browser" | "github")) => Some(format!("{EXT_SCREEN_PREFIX}{s}")),
+        // The catalog's Observers page was `triggers` before 0.26.
+        Some("ext:triggers") => Some("ext:observers".to_string()),
         _ => screen,
     }
 }
@@ -1383,6 +1386,38 @@ mod tests {
             ]
         );
         assert_eq!(parse_active_tab_id(&value).as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn a_stored_triggers_screen_reads_as_the_observers_page() {
+        let value = json!({
+            "activeTabId": "t1",
+            "tabs": [{ "id": "t1", "columns": 2, "screens": ["chat", "ext:triggers"] }]
+        });
+        let tabs = parse_tabs(&value);
+        assert_eq!(
+            tabs[0].screens,
+            vec![Some("chat".to_string()), Some("ext:observers".to_string())]
+        );
+        assert!(tabs[0].has_screen("ext:observers"));
+
+        // Opening the Observers page finds the stored column instead of
+        // placing a second one.
+        let opened = open_screen(
+            &tabs,
+            "t1",
+            "ext:observers",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
+        assert!(opened.tabs.is_none(), "the page is already mounted");
+
+        // Closing it removes the stored column.
+        let (closed, _) = close_screen(&tabs, "ext:observers");
+        let merged = merge_tabs(&raw_tabs(&value), &closed);
+        assert_eq!(merged[0]["screens"], json!(["chat"]));
     }
 
     #[test]

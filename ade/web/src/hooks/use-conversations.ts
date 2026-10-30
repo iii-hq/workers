@@ -16,7 +16,7 @@
  *   `{ surface, model, thinking_level, skills, title_manual }`;
  *   metadata replaces WHOLESALE, so the full object is always sent.
  * - delete delegates the entire subtree to the harness; local cleanup waits
- *   for completion. Authoritative `session::deleted` events still reconcile.
+ *   for completion. Authoritative `session::on-deleted` events still reconcile.
  * - transcript content reconciles `message-added` / `message-updated`
  *   snapshots by entry, keeping the highest revision per entry
  *   (at-least-once, unordered delivery).
@@ -930,7 +930,7 @@ export function applyCatalogModelFallback(
   return changed ? next : conversations
 }
 
-/** Keep a just-selected session even if `session::created` has not yet
+/** Keep a just-selected session even if `session::on-created` has not yet
  *  inserted it into the sidebar list. Without this, the boot-time "always
  *  have an active chat" effect snaps back to conversations[0]. */
 export function resolveActiveConversationId(input: {
@@ -1055,7 +1055,7 @@ export function mergeConversationMeta(
 }
 
 /** Merge the boot-time session list without dropping sessions discovered by
- * a concurrent `session::created` event. The list RPC may have been captured
+ * a concurrent `session::on-created` event. The list RPC may have been captured
  * before that event, so treating it as a replacement can invalidate the
  * active conversation and send the user back to the local draft. */
 export function mergeSessionListSnapshot(
@@ -1136,7 +1136,7 @@ export function appendMessageToConversation(
     updatedAt: now,
   }
   // A typed send starts a harness turn, so mark the session working until
-  // `session::status-changed` reports back. A client-handled `command` row
+  // `session::on-status-changed` reports back. A client-handled `command` row
   // (`/compact`) starts no turn: flipping it here would leave the session
   // working forever, since no status event will ever clear it.
   const startsTurn = message.role === 'user' && !message.command
@@ -2111,7 +2111,7 @@ export function useConversations(
             }
             return [stub, ...prev]
           })
-          // `session::created` carries no metadata (by contract), so a spawned
+          // `session::on-created` carries no metadata (by contract), so a spawned
           // sub-agent / workflow node arrives here with no parent link and would
           // sit flat until a reload re-lists it. Fetch its meta once to learn
           // parent_session_id so it nests live in the sidebar tree.
@@ -2808,7 +2808,7 @@ export function useConversations(
       const conv = conversationsRef.current.find((c) => c.id === id)
       // A removed new chat takes its saved text with it, never another's.
       if (conv?.draft) forgetNewChatDraft(id)
-      // Unknown ids must still reach the idempotent backend: session::deleted
+      // Unknown ids must still reach the idempotent backend: session::on-deleted
       // can arrive while the dialog is open or before a failed wait is retried.
       const deletedIds = new Set(
         !serverEnabled || conv?.draft

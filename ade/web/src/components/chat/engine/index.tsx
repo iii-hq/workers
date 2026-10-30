@@ -3,9 +3,9 @@ import { parseSandboxErrorDisplay } from '@/components/chat/sandbox/parsers'
 import type { FunctionCallMessage } from '@/types/chat'
 import { FunctionInfoView } from './FunctionInfoView'
 import { FunctionsListView } from './FunctionsListView'
-import { ObserverAddedDisplay, ObserveView } from './ObserveView'
 import { ObserverInfoView } from './ObserverInfoView'
 import { ObserversListView } from './ObserversListView'
+import { ObserverAddedDisplay, ObserveView } from './ObserveView'
 import {
   coerceJsonObject,
   isEngineListFunction,

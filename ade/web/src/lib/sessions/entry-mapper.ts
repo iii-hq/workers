@@ -40,10 +40,10 @@ import type {
   Attachment,
   FunctionCallMessage,
   Message,
+  ObserverFiredData,
   SystemMessage,
   SystemNoticeFailure,
   SystemNoticeTechnicalDetails,
-  ObserverFiredData,
   UserMessage,
 } from '@/types/chat'
 import {

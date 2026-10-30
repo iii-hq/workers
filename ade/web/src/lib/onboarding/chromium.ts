@@ -58,7 +58,7 @@ export type ChromiumPhase =
   | 'done'
   | 'failed'
 
-/** One `browser::chromium-install-progress` event. */
+/** One `browser::on-chromium-install-progress` event. */
 export interface ChromiumInstallProgress {
   job_id: string
   phase: ChromiumPhase

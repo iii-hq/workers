@@ -192,7 +192,7 @@ export function ChatAside({
       ctx.conversations.filter((c) => !discarding.has(c.id)),
       conversation.id,
     )
-  // Forked, but its session::created has not reached the list yet.
+  // Forked, but its session::on-created has not reached the list yet.
   const forkPending = forkId !== null && !listed && !discarding.has(forkId)
   const forkRef = useRef(fork)
   forkRef.current = fork

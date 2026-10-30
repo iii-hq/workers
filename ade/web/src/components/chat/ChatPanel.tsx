@@ -314,7 +314,7 @@ export function ChatPanel({
       if (removalWaitRef.current || previewWaitRef.current) return
       const conversation = conversations.find((item) => item.id === id)
       if (!conversation) {
-        // Already gone (e.g. session::deleted): drop only this id's stale
+        // Already gone (e.g. session::on-deleted): drop only this id's stale
         // preview error so its alert and Try again cannot stick around.
         setPreviewError((current) => (current?.id === id ? null : current))
         return

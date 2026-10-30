@@ -281,7 +281,7 @@ interface OperationSnapshot {
   last_event?: { detail?: string; container?: string | null } | null
 }
 
-/** One `compose-operation` event (iii-compose `ProgressEvent`). */
+/** One `compose::on-operation-progress` event (iii-compose `ProgressEvent`). */
 export interface ComposeProgressEvent {
   operation_id: string
   phase: string
@@ -730,7 +730,7 @@ function needsSignIn(error: unknown): boolean {
 
 /**
  * Wait for the provider's chat models to reach the router: re-read once per
- * `router::models::changed` / `router::provider::changed` event about it (a
+ * `router::models::on-changed` / `router::provider::on-changed` event about it (a
  * catalog reconciled, the provider registered or came back).
  */
 async function waitForModels(
@@ -767,7 +767,7 @@ async function waitForModels(
       // Once the router holds a credential, ask the provider for its
       // catalog: a rejected key comes back as an empty list, and saying so
       // now beats a timeout a minute and a half later. The answer also
-      // arrives as a `router::models::changed` event, which asks once more.
+      // arrives as a `router::models::on-changed` event, which asks once more.
       report({ note: `Waiting on response from ${title}` })
       const signsIn = state?.ownsAuthentication === true
       let refreshed: { count?: number } | null = null
@@ -821,7 +821,7 @@ interface JudgeFailure {
 type JudgeAnswer = JudgeFailure & { models?: unknown[]; status?: string }
 
 /**
- * The judge functions an `engine::functions-available` payload lists, as one
+ * The judge functions an `engine::on-functions-changed` event lists, as one
  * comparable string — the hub's and every `judge-<provider>`'s. A provider
  * registers its functions once it is ready (a local one after downloading
  * its model), which is the event worth re-asking on; every other registry

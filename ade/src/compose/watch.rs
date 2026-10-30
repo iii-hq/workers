@@ -96,16 +96,47 @@ pub async fn locate(iii: &IIIClient, file: Option<&str>) -> Result<Option<Projec
     }))
 }
 
+/// A running watch of one project. Dropping it stops the watch.
 struct WatchHandle {
     location: ProjectLocation,
+    /// Cleared when the watch stops on its own (a watcher error), so the
+    /// next observer starts it again.
     healthy: Arc<AtomicBool>,
+    _running: Box<dyn Send>,
+}
+
+/// The filesystem watcher and the task that turns its events into calls.
+struct FsWatch {
     _watcher: RecommendedWatcher,
     task: tokio::task::JoinHandle<()>,
 }
 
-impl Drop for WatchHandle {
+impl Drop for FsWatch {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+/// Where the watched project is and how its watch starts: the compose
+/// daemon and the filesystem ([`ComposeFs`]), or a stand-in in tests.
+#[async_trait]
+trait WatchBackend: Send + Sync + 'static {
+    async fn locate(&self) -> Result<Option<ProjectLocation>, Error>;
+    fn start(&self, location: ProjectLocation) -> notify::Result<WatchHandle>;
+}
+
+struct ComposeFs {
+    iii: Arc<IIIClient>,
+}
+
+#[async_trait]
+impl WatchBackend for ComposeFs {
+    async fn locate(&self) -> Result<Option<ProjectLocation>, Error> {
+        locate(&self.iii, None).await
+    }
+
+    fn start(&self, location: ProjectLocation) -> notify::Result<WatchHandle> {
+        start_watch(self.iii.clone(), location)
     }
 }
 
@@ -114,20 +145,26 @@ impl Drop for WatchHandle {
 /// dropped), the removed hook closes it with the last.
 #[derive(Clone)]
 pub struct StateWatcher {
-    iii: Arc<IIIClient>,
+    backend: Arc<dyn WatchBackend>,
     observers: Arc<std::sync::Mutex<HashSet<String>>>,
     active: Arc<Mutex<Option<WatchHandle>>>,
 }
 
 impl StateWatcher {
     pub fn new(iii: Arc<IIIClient>) -> Self {
+        Self::with_backend(Arc::new(ComposeFs { iii }))
+    }
+
+    fn with_backend(backend: Arc<dyn WatchBackend>) -> Self {
         Self {
-            iii,
+            backend,
             observers: Arc::default(),
             active: Arc::new(Mutex::new(None)),
         }
     }
 
+    /// The running watch's project, starting the watch when none runs or
+    /// the last one dropped. `None` while the daemon names no project.
     pub async fn ensure(&self) -> Result<Option<ProjectLocation>, Error> {
         let mut active = self.active.lock().await;
         if let Some(watch) = active.as_ref() {
@@ -136,10 +173,12 @@ impl StateWatcher {
             }
             active.take();
         }
-        let Some(location) = locate(&self.iii, None).await? else {
+        let Some(location) = self.backend.locate().await? else {
             return Ok(None);
         };
-        let watch = start_watch(self.iii.clone(), location.clone())
+        let watch = self
+            .backend
+            .start(location.clone())
             .map_err(|error| Error::Handler(format!("compose watch failed: {error}")))?;
         *active = Some(watch);
         Ok(Some(location))
@@ -147,6 +186,30 @@ impl StateWatcher {
 
     pub async fn close(&self) {
         self.active.lock().await.take();
+    }
+
+    /// An observer was added: make sure the watch runs, then count it.
+    async fn observer_added(&self, observer_id: &str) -> Result<(), Error> {
+        if self.ensure().await?.is_none() {
+            tracing::warn!(
+                "compose daemon not reachable yet; watching starts with the next observer"
+            );
+        }
+        self.observers().insert(observer_id.to_string());
+        Ok(())
+    }
+
+    /// An observer was removed: close the watch with the last one.
+    async fn observer_removed(&self, observer_id: &str) {
+        let last = {
+            let mut observers = self.observers();
+            observers.remove(observer_id);
+            observers.is_empty()
+        };
+        if last {
+            self.close().await;
+            tracing::info!("compose state watch closed with its last observer");
+        }
     }
 
     fn observers(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
@@ -159,28 +222,14 @@ impl StateWatcher {
 #[async_trait]
 impl AddedHook for StateWatcher {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
-        if self.ensure().await?.is_none() {
-            tracing::warn!(
-                "compose daemon not reachable yet; watching starts with the next observer"
-            );
-        }
-        self.observers().insert(obs.id().to_string());
-        Ok(())
+        Ok(self.observer_added(obs.id()).await?)
     }
 }
 
 #[async_trait]
 impl RemovedHook for StateWatcher {
     async fn on_removed(&self, obs: Observer) {
-        let last = {
-            let mut observers = self.observers();
-            observers.remove(obs.id());
-            observers.is_empty()
-        };
-        if last {
-            self.close().await;
-            tracing::info!("compose state watch closed with its last observer");
-        }
+        self.observer_removed(obs.id()).await;
     }
 }
 
@@ -205,8 +254,10 @@ fn start_watch(iii: Arc<IIIClient>, location: ProjectLocation) -> notify::Result
     Ok(WatchHandle {
         location,
         healthy,
-        _watcher: watcher,
-        task,
+        _running: Box::new(FsWatch {
+            _watcher: watcher,
+            task,
+        }),
     })
 }
 
@@ -397,6 +448,159 @@ mod tests {
         };
         let location = location();
         assert!(changes_for_event(&location, &location.state_dir, &event).is_empty());
+    }
+
+    /// A stand-in for the daemon and the filesystem: a project at a fixed
+    /// location (or none yet), counting the watches it starts and the ones
+    /// that stop.
+    #[derive(Default)]
+    struct FakeBackend {
+        project: std::sync::Mutex<Option<ProjectLocation>>,
+        lookup_fails: AtomicBool,
+        started: std::sync::atomic::AtomicUsize,
+        stopped: Arc<std::sync::atomic::AtomicUsize>,
+        last_health: std::sync::Mutex<Option<Arc<AtomicBool>>>,
+    }
+
+    impl FakeBackend {
+        fn with_project() -> Arc<Self> {
+            let backend = Self::default();
+            *backend.project.lock().unwrap() = Some(location());
+            Arc::new(backend)
+        }
+
+        fn started(&self) -> usize {
+            self.started.load(Ordering::SeqCst)
+        }
+
+        fn stopped(&self) -> usize {
+            self.stopped.load(Ordering::SeqCst)
+        }
+
+        /// The running watch drops, as a watcher error ends it.
+        fn drop_watch(&self) {
+            let health = self.last_health.lock().unwrap();
+            health.as_ref().unwrap().store(false, Ordering::Release);
+        }
+    }
+
+    struct CountsStop(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Drop for CountsStop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl WatchBackend for FakeBackend {
+        async fn locate(&self) -> Result<Option<ProjectLocation>, Error> {
+            if self.lookup_fails.load(Ordering::SeqCst) {
+                return Err(Error::Handler("compose::status failed".to_string()));
+            }
+            Ok(self.project.lock().unwrap().clone())
+        }
+
+        fn start(&self, location: ProjectLocation) -> notify::Result<WatchHandle> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            let healthy = Arc::new(AtomicBool::new(true));
+            *self.last_health.lock().unwrap() = Some(healthy.clone());
+            Ok(WatchHandle {
+                location,
+                healthy,
+                _running: Box::new(CountsStop(self.stopped.clone())),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_first_observer_arms_the_watch_and_the_last_closes_it() {
+        let backend = FakeBackend::with_project();
+        let watcher = StateWatcher::with_backend(backend.clone());
+
+        watcher.observer_added("obs-1").await.unwrap();
+        assert_eq!((backend.started(), backend.stopped()), (1, 0));
+        watcher.observer_added("obs-2").await.unwrap();
+        watcher.observer_added("obs-3").await.unwrap();
+        assert_eq!(
+            (backend.started(), backend.stopped()),
+            (1, 0),
+            "later observers reuse the running watch"
+        );
+
+        watcher.observer_removed("obs-1").await;
+        watcher.observer_removed("obs-3").await;
+        assert_eq!(
+            backend.stopped(),
+            0,
+            "the watch runs while an observer remains"
+        );
+        watcher.observer_removed("obs-2").await;
+        assert_eq!(backend.stopped(), 1, "the last observer closes the watch");
+
+        watcher.observer_added("obs-4").await.unwrap();
+        assert_eq!(
+            (backend.started(), backend.stopped()),
+            (2, 1),
+            "an observer after the last one left arms a new watch"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_watch_is_armed_again_by_the_next_observer() {
+        let backend = FakeBackend::with_project();
+        let watcher = StateWatcher::with_backend(backend.clone());
+
+        watcher.observer_added("obs-1").await.unwrap();
+        backend.drop_watch();
+        watcher.observer_added("obs-2").await.unwrap();
+        assert_eq!((backend.started(), backend.stopped()), (2, 1));
+
+        watcher.observer_removed("obs-1").await;
+        assert_eq!(backend.stopped(), 1);
+        watcher.observer_removed("obs-2").await;
+        assert_eq!(backend.stopped(), 2);
+    }
+
+    #[tokio::test]
+    async fn without_a_project_the_watch_starts_with_a_later_observer() {
+        let backend = Arc::new(FakeBackend::default());
+        let watcher = StateWatcher::with_backend(backend.clone());
+
+        watcher.observer_added("obs-1").await.unwrap();
+        assert_eq!(backend.started(), 0, "nothing to watch yet");
+
+        *backend.project.lock().unwrap() = Some(location());
+        watcher.observer_added("obs-2").await.unwrap();
+        assert_eq!(backend.started(), 1);
+
+        watcher.observer_removed("obs-2").await;
+        assert_eq!(
+            backend.stopped(),
+            0,
+            "obs-1 still observes, so the watch stays"
+        );
+        watcher.observer_removed("obs-1").await;
+        assert_eq!(backend.stopped(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_lookup_refuses_the_observer_and_leaves_it_uncounted() {
+        let backend = FakeBackend::with_project();
+        let watcher = StateWatcher::with_backend(backend.clone());
+
+        backend.lookup_fails.store(true, Ordering::SeqCst);
+        assert!(watcher.observer_added("obs-1").await.is_err());
+        assert_eq!(backend.started(), 0);
+
+        backend.lookup_fails.store(false, Ordering::SeqCst);
+        watcher.observer_added("obs-2").await.unwrap();
+        watcher.observer_removed("obs-2").await;
+        assert_eq!(
+            (backend.started(), backend.stopped()),
+            (1, 1),
+            "the refused observer does not keep the watch open"
+        );
     }
 
     /// iii-compose uses `III_COMPOSE_STATE_DIR` as given, so the state dir can

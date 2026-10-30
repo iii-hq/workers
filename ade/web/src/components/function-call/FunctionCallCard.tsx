@@ -18,6 +18,7 @@ import {
   rawRedactor,
   useFunctionCallRenderers,
 } from '@/components/function-call/renderer-registry'
+import { ObserverJsonPane } from '@/components/observer-activity/ObserverDetails'
 import {
   ChromiumMissingAction,
   isChromiumMissingCall,
@@ -27,7 +28,6 @@ import {
   type FilesystemAccessAction,
   FilesystemAccessPrompt,
 } from '@/components/permissions/FilesystemAccessPrompt'
-import { ObserverJsonPane } from '@/components/observer-activity/ObserverDetails'
 import { Button } from '@/components/ui/Button'
 import {
   CollapsibleCard,

@@ -56,10 +56,10 @@ import {
   useImageViewer,
 } from '@/components/ui/ImageViewer'
 import { LiveRegion } from '@/components/ui/LiveRegion'
+import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
-import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { useLazyAttachment } from '@/hooks/use-lazy-attachment'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import {

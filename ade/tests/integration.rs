@@ -1,103 +1,259 @@
-//! End-to-end test: spawn the `iii` engine, the `console` worker, and
-//! drive the worker through its HTTP port and the `/ws` proxy.
+//! End-to-end test: an `iii` engine, the `ade` worker, and a test client that
+//! drives the worker through its HTTP port, the `/ws` proxy, its
+//! configuration entry and its observable functions.
 //!
-//! Self-skips when:
-//!   - the `iii` binary is not on `PATH`, or
-//!   - the chosen `HTTP_PORT` is already taken on this host.
+//! The engine, in this order:
+//!   - `III_ENGINE_BIN` (or `III_BIN`): that binary, started here on an
+//!     ephemeral port with an engine-only config in a temp dir;
+//!   - `III_ENGINE_WS_URL`: an engine already running there (one no other
+//!     `ade` worker is connected to, since the test's worker hosts the
+//!     `console::*` functions);
+//!   - `iii` on `PATH`, started here, when it is 0.26 or later.
 //!
-//! When skipped the test prints why so CI logs make the gap visible.
+//! The worker listens on ephemeral ports and keeps its data in the temp dir.
+//! Without an engine the test prints why and skips; with `III_E2E_REQUIRE`
+//! set it fails instead. A failed run keeps the temp dir (engine and worker
+//! logs) and prints where it is.
 
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, IIIClient, InitOptions, ObserverHandle, ObserverState};
 use iii_sdk::{CallRequest, Deliver, Error, RegisterFunction, Source};
+use serde_json::{json, Value};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
-const ENGINE_WS: &str = "ws://127.0.0.1:49134";
-const HTTP_PORT: u16 = 48217;
-const REBOUND_HTTP_PORT: u16 = 48218;
+/// The oldest engine (major, minor) the test runs against: the first with
+/// observable functions.
+const MIN_ENGINE: (u64, u64) = (0, 26);
+
+enum EngineSource {
+    Spawn(PathBuf),
+    Running(String),
+}
+
+/// Which engine the test uses, or why there is none.
+fn engine_source() -> Result<EngineSource, String> {
+    for var in ["III_ENGINE_BIN", "III_BIN"] {
+        if let Some(bin) = std::env::var_os(var).filter(|value| !value.is_empty()) {
+            return Ok(EngineSource::Spawn(bin.into()));
+        }
+    }
+    if let Some(url) = std::env::var("III_ENGINE_WS_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(EngineSource::Running(url));
+    }
+    let bin = which::which("iii").map_err(|_| {
+        "no engine: set III_ENGINE_BIN, III_BIN or III_ENGINE_WS_URL, or put iii 0.26 or later on PATH"
+            .to_string()
+    })?;
+    match engine_version(&bin) {
+        Some(version) if version >= MIN_ENGINE => Ok(EngineSource::Spawn(bin)),
+        Some((major, minor)) => Err(format!(
+            "{} is iii {major}.{minor}; this test needs {}.{} or later (set III_ENGINE_BIN)",
+            bin.display(),
+            MIN_ENGINE.0,
+            MIN_ENGINE.1,
+        )),
+        None => Err(format!("{} --version printed no version", bin.display())),
+    }
+}
+
+/// `(major, minor)` from `iii --version` (`0.26.0` or `iii 0.26.0`).
+fn engine_version(bin: &Path) -> Option<(u64, u64)> {
+    let output = Command::new(bin).arg("--version").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version = text
+        .split_whitespace()
+        .find(|word| word.starts_with(|c: char| c.is_ascii_digit()))?;
+    let mut parts = version.split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .expect("bind an ephemeral port")
+        .port()
+}
+
+/// No engine to run against: skip, or fail under `III_E2E_REQUIRE`.
+fn skip(reason: &str) -> Option<Harness> {
+    if std::env::var_os("III_E2E_REQUIRE").is_some() {
+        panic!("III_E2E_REQUIRE is set and the end-to-end test cannot run: {reason}");
+    }
+    eprintln!("skipping: {reason}");
+    None
+}
 
 struct Harness {
-    iii: Child,
+    dir: PathBuf,
+    engine: Option<Child>,
     worker: Child,
+    engine_url: String,
+    client: IIIClient,
+    http_port: u16,
+    rebound_http_port: u16,
     config_id: String,
 }
 
 impl Drop for Harness {
     fn drop(&mut self) {
+        self.client.shutdown();
         let _ = self.worker.kill();
         let _ = self.worker.wait();
-        let _ = self.iii.kill();
-        let _ = self.iii.wait();
+        if let Some(engine) = self.engine.as_mut() {
+            let _ = engine.kill();
+            let _ = engine.wait();
+        }
+        if std::thread::panicking() {
+            eprintln!("engine and worker logs kept in {}", self.dir.display());
+        } else {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
+}
+
+/// Start the engine named by `III_ENGINE_BIN` on an ephemeral port with an
+/// engine-only config: the worker manager and the configuration worker.
+fn spawn_engine(bin: &Path, dir: &Path) -> Result<(String, Child), String> {
+    let port = free_port();
+    let config = format!(
+        "workers:
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: {port}
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: {dir}/configuration
+",
+        dir = dir.display(),
+    );
+    let config_path = dir.join("engine.yaml");
+    std::fs::write(&config_path, config).map_err(|e| format!("write engine config: {e}"))?;
+    let log = std::fs::File::create(dir.join("engine.log"))
+        .map_err(|e| format!("create engine log: {e}"))?;
+    let child = Command::new(bin)
+        .arg("--no-update-check")
+        .arg("--config")
+        .arg(&config_path)
+        .current_dir(dir)
+        .env("III_TELEMETRY_ENABLED", "false")
+        .stdout(Stdio::null())
+        .stderr(log)
+        .spawn()
+        .map_err(|e| format!("start {}: {e}", bin.display()))?;
+    Ok((format!("ws://127.0.0.1:{port}"), child))
+}
+
+/// Resolves once the engine answers and its configuration worker serves
+/// (a missing entry answers `NOT_FOUND`).
+async fn engine_ready(client: &IIIClient, max: Duration) -> bool {
+    let deadline = Instant::now() + max;
+    while Instant::now() < deadline {
+        let answer = client
+            .call(CallRequest {
+                function_id: "configuration::get".to_string(),
+                payload: json!({ "id": "ade-integration-readiness-probe" }),
+                action: None,
+                timeout_ms: Some(1_000),
+            })
+            .await;
+        match answer {
+            Ok(_) => return true,
+            Err(error) if error.to_string().to_ascii_uppercase().contains("NOT_FOUND") => {
+                return true;
+            }
+            Err(_) => sleep(Duration::from_millis(200)).await,
+        }
+    }
+    false
 }
 
 async fn boot() -> Option<Harness> {
-    let iii_bin = which::which("iii").ok()?;
+    let source = match engine_source() {
+        Ok(source) => source,
+        Err(reason) => return skip(&reason),
+    };
+    let dir = std::env::temp_dir().join(format!("ade-integration-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join("configuration")).expect("create the test dir");
 
-    if TcpStream::connect(("127.0.0.1", HTTP_PORT)).await.is_ok() {
-        eprintln!(
-            "skipping: port {HTTP_PORT} already in use on 127.0.0.1; \
-             leftover from a previous test run?"
-        );
-        return None;
-    }
-    if TcpStream::connect(("127.0.0.1", REBOUND_HTTP_PORT))
-        .await
-        .is_ok()
-    {
-        eprintln!("skipping: rebound port {REBOUND_HTTP_PORT} already in use on 127.0.0.1");
-        return None;
-    }
-
-    let iii = Command::new(&iii_bin)
-        .arg("--use-default-config")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-
-    sleep(Duration::from_millis(800)).await;
+    let (engine_url, engine) = match source {
+        EngineSource::Running(url) => (url, None),
+        EngineSource::Spawn(bin) => match spawn_engine(&bin, &dir) {
+            Ok((url, child)) => (url, Some(child)),
+            Err(reason) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return skip(&reason);
+            }
+        },
+    };
 
     let worker_bin = env!("CARGO_BIN_EXE_ade");
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let config_path = format!("{manifest_dir}/config.yaml");
+    let config_path = format!("{}/config.yaml", env!("CARGO_MANIFEST_DIR"));
     let config_id = format!("console-integration-{}", Uuid::new_v4());
-
+    let http_port = free_port();
+    let rebound_http_port = free_port();
+    let worker_log = std::fs::File::create(dir.join("ade.log")).expect("create the worker log");
     let worker = Command::new(worker_bin)
         .args([
             "--url",
-            ENGINE_WS,
+            &engine_url,
             "--config",
             &config_path,
             "--http-port",
-            &HTTP_PORT.to_string(),
+            &http_port.to_string(),
+            "--http-host",
+            "127.0.0.1",
         ])
+        .current_dir(&dir)
         .env("III_CONFIG_NAME", &config_id)
+        .env("III_COMPOSE_DIR", &dir)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(worker_log)
         .spawn()
-        .ok()?;
+        .expect("start the ade worker");
 
-    if !wait_for_listen(HTTP_PORT, Duration::from_secs(8)).await {
-        return None;
-    }
-
-    Some(Harness {
-        iii,
+    let client = register_worker(&engine_url, InitOptions::default());
+    let harness = Harness {
+        dir,
+        engine,
         worker,
+        engine_url,
+        client,
+        http_port,
+        rebound_http_port,
         config_id,
-    })
+    };
+    if !engine_ready(&harness.client, Duration::from_secs(30)).await {
+        let reason = format!("no engine answered at {}", harness.engine_url);
+        drop(harness);
+        return skip(&reason);
+    }
+    assert!(
+        wait_for_listen(harness.http_port, Duration::from_secs(20)).await,
+        "the ade worker never listened on {} (logs in {})",
+        harness.http_port,
+        harness.dir.display(),
+    );
+    Some(harness)
 }
 
 async fn wait_for_listen(port: u16, max: Duration) -> bool {
-    let deadline = std::time::Instant::now() + max;
-    while std::time::Instant::now() < deadline {
+    let deadline = Instant::now() + max;
+    while Instant::now() < deadline {
         if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
             return true;
         }
@@ -106,14 +262,87 @@ async fn wait_for_listen(port: u16, max: Duration) -> bool {
     false
 }
 
+/// The payload as the console sent it: a call through an observer carries
+/// the `_caller_worker_id` stamp the engine adds to every call a worker
+/// makes.
+fn without_caller(mut value: Value) -> Value {
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("_caller_worker_id");
+    }
+    value
+}
+
+/// Register `id` as a target that forwards what it receives.
+fn recording_target(client: &IIIClient, id: &str) -> UnboundedReceiver<Value> {
+    let (tx, rx) = unbounded_channel();
+    client.register_function(
+        id,
+        RegisterFunction::new(move |event: Value| {
+            let _ = tx.send(without_caller(event));
+            Ok::<_, Error>(json!({}))
+        }),
+    );
+    rx
+}
+
+async fn next_event(rx: &mut UnboundedReceiver<Value>, what: &str) -> Value {
+    timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+        .unwrap_or_else(|| panic!("channel closed waiting for {what}"))
+}
+
+/// The next `console::ui::on-assets-changed` event of `op` about `path`,
+/// skipping events about other assets (the console's own UI among them).
+async fn asset_event(rx: &mut UnboundedReceiver<Value>, op: &str, path: &str) -> Value {
+    loop {
+        let event = next_event(rx, &format!("an assets `{op}` of {path}")).await;
+        let about = match op {
+            "set" => &event["asset"]["path"],
+            _ => &event["path"],
+        };
+        if event["op"] == op && about == path {
+            return event;
+        }
+    }
+}
+
+async fn active(observer: &ObserverHandle, what: &str) {
+    timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .unwrap_or_else(|_| panic!("{what} never became active"))
+        .unwrap_or_else(|error| panic!("{what} was refused: {error}"));
+}
+
+/// Waits until the provider rejects `observer` and returns the code.
+async fn rejected(observer: &ObserverHandle, what: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if observer.state() == ObserverState::Error {
+            return observer
+                .reason()
+                .map(|reason| reason.code)
+                .unwrap_or_default();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what} was never rejected (state {:?})",
+            observer.state()
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
     let Some(harness) = boot().await else {
-        eprintln!("skipping: prerequisites not met (see logs above)");
         return;
     };
+    let client = &harness.client;
+    let http_port = harness.http_port;
+    let rebound_http_port = harness.rebound_http_port;
 
-    let base = format!("http://127.0.0.1:{HTTP_PORT}");
+    let base = format!("http://127.0.0.1:{http_port}");
 
     // 1. GET / -> 200, contains the SPA root.
     let res = reqwest::get(&base).await.expect("GET / failed");
@@ -167,7 +396,7 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
     //    syntactically-valid iii control frame and expect ANY frame
     //    back from the engine — that proves the proxy is forwarding
     //    bidirectionally. We don't care about the semantic response.
-    let ws_url = format!("ws://127.0.0.1:{HTTP_PORT}/ws");
+    let ws_url = format!("ws://127.0.0.1:{http_port}/ws");
     let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
         .await
         .unwrap_or_else(|e| panic!("WS connect to {ws_url} failed: {e}"));
@@ -200,8 +429,7 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
     // 5. Change the authoritative configuration entry and prove the same
     // process moves to the new listener: replacement serves, status updates,
     // and the original port stops accepting new connections.
-    let client = register_worker(ENGINE_WS, InitOptions::default());
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(10);
     let current = loop {
         match client
             .call(
@@ -218,7 +446,7 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
             Ok(value) => break value,
             Err(error) => {
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    Instant::now() < deadline,
                     "configuration::get never became callable: {error}"
                 );
                 sleep(Duration::from_millis(100)).await;
@@ -226,7 +454,7 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         }
     };
     let mut value = current["value"].clone();
-    value["http_port"] = serde_json::json!(REBOUND_HTTP_PORT);
+    value["http_port"] = json!(rebound_http_port);
     client
         .call(
             CallRequest {
@@ -244,10 +472,11 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         .expect("configuration::set failed");
 
     assert!(
-        wait_for_listen(REBOUND_HTTP_PORT, Duration::from_secs(8)).await,
+        wait_for_listen(rebound_http_port, Duration::from_secs(8)).await,
         "rebound Console port never started listening"
     );
-    let rebound = reqwest::get(format!("http://127.0.0.1:{REBOUND_HTTP_PORT}/"))
+    let rebound_base = format!("http://127.0.0.1:{rebound_http_port}");
+    let rebound = reqwest::get(format!("{rebound_base}/"))
         .await
         .expect("GET / on rebound port failed");
     assert!(rebound.status().is_success());
@@ -261,19 +490,16 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         })
         .await
         .expect("console::status failed after rebind");
-    assert_eq!(status["http_port"], REBOUND_HTTP_PORT);
-    assert_eq!(
-        status["url"],
-        format!("http://127.0.0.1:{REBOUND_HTTP_PORT}")
-    );
+    assert_eq!(status["http_port"], rebound_http_port);
+    assert_eq!(status["url"], rebound_base);
 
-    let old_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let old_deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if TcpStream::connect(("127.0.0.1", HTTP_PORT)).await.is_err() {
+        if TcpStream::connect(("127.0.0.1", http_port)).await.is_err() {
             break;
         }
         assert!(
-            std::time::Instant::now() < old_deadline,
+            Instant::now() < old_deadline,
             "original Console port kept accepting connections after rebind"
         );
         sleep(Duration::from_millis(100)).await;
@@ -281,30 +507,153 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
 
     // 6. Observe console::workspace::on-changed: the console rings a new
     //    observer once it is active.
-    let (rung_tx, mut rung_rx) = tokio::sync::mpsc::unbounded_channel();
-    client.register_function(
-        "integration::workspace-rung",
-        RegisterFunction::new(move |event: serde_json::Value| {
-            let _ = rung_tx.send(event);
-            Ok::<_, Error>(serde_json::json!({}))
-        }),
-    );
+    let mut rung = recording_target(client, "integration::workspace-rung");
     let observer = client.observe(
         Source::function("console::workspace::on-changed").deliver(Deliver::Output),
         "integration::workspace-rung",
     );
-    timeout(Duration::from_secs(5), observer.ready())
-        .await
-        .expect("observer never became active")
-        .expect("console::workspace::on-changed refused the observer");
-    let first = timeout(Duration::from_secs(5), rung_rx.recv())
-        .await
-        .expect("a new observer was not rung")
-        .expect("ring channel closed");
-    assert_eq!(first, serde_json::json!({}));
+    active(&observer, "the console::workspace::on-changed observer").await;
+    // The ring is a call through the observer: the payload arrives as the
+    // console sent it.
+    assert_eq!(next_event(&mut rung, "the workspace ring").await, json!({}));
     observer.dispose().await.expect("dispose failed");
 
-    client.shutdown_async().await;
+    // 7. Injectable UI.
+    ui_assets(client, &rebound_base).await;
+
+    harness.client.shutdown_async().await;
+}
+
+/// `console::ui::on-assets-changed` and `console::ui::asset` against the
+/// engine: a tab's observer receives the served set through itself once it
+/// is active; an asset observer's content is fetched through it with
+/// `{ path }`, served at `/ui/<path>` and announced to every tab as a `set`;
+/// a later observer of the path supersedes it; a failed fetch rejects the
+/// observer; removing the asset's observer announces a `delete`.
+async fn ui_assets(client: &IIIClient, base: &str) {
+    const ASSET_FN: &str = "console::ui::asset";
+    const ON_ASSETS_CHANGED_FN: &str = "console::ui::on-assets-changed";
+    const PATH: &str = "integration/e2e.js";
+
+    let mut fetches = {
+        let (tx, rx) = unbounded_channel();
+        client.register_function(
+            "integration::ui-content",
+            RegisterFunction::new(move |input: Value| {
+                let _ = tx.send(without_caller(input));
+                Ok::<_, Error>(json!({ "content": "export const version = 1\n" }))
+            }),
+        );
+        rx
+    };
+    client.register_function(
+        "integration::ui-content-next",
+        RegisterFunction::new(|_: Value| {
+            Ok::<_, Error>(json!({ "content": "export const version = 2\n" }))
+        }),
+    );
+    client.register_function(
+        "integration::ui-content-broken",
+        RegisterFunction::new(|_: Value| {
+            Err::<Value, _>(Error::Handler("no content for this path".to_string()))
+        }),
+    );
+    let observe_asset = |kind: &str, path: &str, content_fn: &str| {
+        client.observe(
+            Source::function(ASSET_FN).args(json!({ "kind": kind, "path": path })),
+            content_fn,
+        )
+    };
+
+    // A tab: its first delivery is the sync, through its own observer.
+    let mut tab_events = recording_target(client, "integration::assets-tab");
+    let tab = client.observe(
+        Source::function(ON_ASSETS_CHANGED_FN).deliver(Deliver::Output),
+        "integration::assets-tab",
+    );
+    active(&tab, "the tab's console::ui::on-assets-changed observer").await;
+    let sync = next_event(&mut tab_events, "the tab's sync").await;
+    assert_eq!(sync["op"], "sync", "a new tab observer was sent {sync}");
+    assert!(sync["assets"].is_array(), "sync without assets: {sync}");
+
+    // An asset: fetched through its observer, served, announced.
+    let first = observe_asset("module", PATH, "integration::ui-content");
+    active(&first, "the asset observer").await;
+    assert_eq!(
+        next_event(&mut fetches, "the content fetch").await,
+        json!({ "path": PATH })
+    );
+    let set = asset_event(&mut tab_events, "set", PATH).await;
+    assert_eq!(set["asset"]["kind"], "module");
+    let first_hash = set["asset"]["hash"].clone();
+    assert!(first_hash.is_string(), "set without a hash: {set}");
+    let served = reqwest::get(format!("{base}/ui/{PATH}"))
+        .await
+        .expect("GET the asset");
+    assert!(
+        served.status().is_success(),
+        "GET /ui/{PATH}: {}",
+        served.status()
+    );
+    assert_eq!(served.text().await.unwrap(), "export const version = 1\n");
+
+    // A tab that opens later gets the asset in its sync.
+    let mut late_events = recording_target(client, "integration::assets-late-tab");
+    let late = client.observe(
+        Source::function(ON_ASSETS_CHANGED_FN).deliver(Deliver::Output),
+        "integration::assets-late-tab",
+    );
+    active(&late, "the late tab's observer").await;
+    let sync = next_event(&mut late_events, "the late tab's sync").await;
+    assert_eq!(sync["op"], "sync");
+    assert!(
+        sync["assets"]
+            .as_array()
+            .is_some_and(|assets| assets.contains(&json!({
+                "path": PATH,
+                "kind": "module",
+                "hash": first_hash,
+            }))),
+        "the late tab's sync does not name {PATH}: {sync}"
+    );
+    late.dispose().await.expect("dispose the late tab");
+
+    // A later observer of the path supersedes the first.
+    let next = observe_asset("module", PATH, "integration::ui-content-next");
+    active(&next, "the superseding asset observer").await;
+    let set = asset_event(&mut tab_events, "set", PATH).await;
+    assert_ne!(set["asset"]["hash"], first_hash, "content changed: {set}");
+    assert_eq!(
+        rejected(&first, "the superseded asset observer").await,
+        "UI_ASSET_SUPERSEDED"
+    );
+    let served = reqwest::get(format!("{base}/ui/{PATH}"))
+        .await
+        .expect("GET the asset");
+    assert_eq!(served.text().await.unwrap(), "export const version = 2\n");
+
+    // A content function that fails rejects its observer.
+    let broken = observe_asset(
+        "script",
+        "integration/broken.js",
+        "integration::ui-content-broken",
+    );
+    assert_eq!(
+        rejected(&broken, "the asset observer whose fetch fails").await,
+        "UI_ASSET_FETCH_FAILED"
+    );
+
+    // Removing the asset's observer removes the asset.
+    next.dispose().await.expect("dispose the asset observer");
+    asset_event(&mut tab_events, "delete", PATH).await;
+    let gone = reqwest::get(format!("{base}/ui/{PATH}"))
+        .await
+        .expect("GET the removed asset");
+    assert_eq!(gone.status().as_u16(), 404);
+
+    tab.dispose().await.expect("dispose the tab");
+    let _ = first.dispose().await;
+    let _ = broken.dispose().await;
 }
 
 /// A page cannot register a function the console hosts through `/ws`, and

@@ -58,13 +58,13 @@ import {
   predictedUserEntryId,
 } from '@/lib/backend/harness-send'
 import {
-  type SessionObserverLoader,
-  startSessionObserverLoader,
-} from '@/lib/backend/session-observer-loader'
-import {
   mergeFiredObservers,
   type SessionObserverInfo,
 } from '@/lib/backend/observers'
+import {
+  type SessionObserverLoader,
+  startSessionObserverLoader,
+} from '@/lib/backend/session-observer-loader'
 import type {
   ApprovalStreamEvent,
   CompactResult,
@@ -151,10 +151,10 @@ import {
   type MessagePatch,
   type ModelId,
   type ModelOption,
+  type ObserverFiredData,
   type SystemMessage,
   type ThinkingLevel,
   type ThoughtMessage,
-  type ObserverFiredData,
   type UserMessage,
   type WorkingDirScope,
 } from '@/types/chat'
@@ -1722,7 +1722,7 @@ export function ChatView({
       // `harness::send` carries `idempotency_key: messageId`, so the harness
       // appends the user message with the deterministic entry id
       // `e_idem_<messageId>`; using the same id here lets the
-      // session::message-added snapshot reconcile this optimistic row in place.
+      // session::on-message-added snapshot reconcile this optimistic row in place.
       const messageId = newMessageId()
       const trimmed = payload.text.trim()
       // `/compact` starts no turn (the harness runs it as a compaction), so

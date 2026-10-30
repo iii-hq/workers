@@ -15,12 +15,12 @@ import type {
   ContextSectionRegistration,
   FunctionCallRenderer,
   MentionRendererRegistration,
+  ObserverActivityRenderer,
   OverlayRegistration,
   PageRegistration,
   ProviderConfigFormProps,
   SessionChipRegistration,
   SessionTurnSummaryRegistration,
-  ObserverActivityRenderer,
 } from '@/types/injectable-ui'
 
 export interface RegisteredPage extends PageRegistration {

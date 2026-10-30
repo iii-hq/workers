@@ -21,13 +21,13 @@ import {
   ATTACHED_FILE_PREFIX,
   type AttachmentFailure,
   type AttachmentReadSummary,
+  type CallFn,
+  callOr,
   describeWorkerFailure,
   escapeAttr,
   failureBlock,
   fileToBase64,
   reportDropped,
-  type CallFn,
-  callOr,
 } from './shared'
 
 export const CLASSIFY_FUNCTION_ID = 'pdf::classify'

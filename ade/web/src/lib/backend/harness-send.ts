@@ -240,7 +240,7 @@ export function isTurnActive(status: HarnessTurnStatus): boolean {
  * message when `harness::send` carries an `idempotency_key` — `e_idem_<key>`
  * with unsafe characters replaced (mirrors `harness/src/ids.rs`). The console
  * predicts it so an optimistically-appended user row reconciles in place when
- * the `session::message-added` snapshot arrives.
+ * the `session::on-message-added` snapshot arrives.
  */
 export function predictedUserEntryId(idempotencyKey: string): string {
   const safe = idempotencyKey.replace(/[^A-Za-z0-9_-]/g, '_')

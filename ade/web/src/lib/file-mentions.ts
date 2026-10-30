@@ -19,10 +19,10 @@
 
 import {
   ATTACHED_FILE_PREFIX,
-  escapeAttr,
-  failureBlock,
   type CallFn,
   callOr,
+  escapeAttr,
+  failureBlock,
 } from '@/lib/attachments/shared'
 import {
   FILE_MENTION_RE,
