@@ -34,6 +34,15 @@ func newCallbackPeer(t *testing.T, respond func(map[string]json.RawMessage) map[
 			return
 		}
 		defer conn.CloseNow()
+		// The SDK exports telemetry over a second socket at <engine>/otel; the
+		// engine accepts it, and these tests only read the worker protocol.
+		if r.URL.Path == "/otel" {
+			for {
+				if _, _, err := conn.Read(r.Context()); err != nil {
+					return
+				}
+			}
+		}
 		p.conn = conn
 		close(ready)
 		for {

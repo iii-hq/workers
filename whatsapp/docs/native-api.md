@@ -16,7 +16,8 @@ iii call whatsapp::sessions::get --json '{"session_id":"work"}'
 Render the returned QR `code` as a QR image and scan it from WhatsApp's linked
 devices screen, or request `sessions::pair_code` with `phone_number`.
 Pairing material expires and is returned only by these dedicated functions.
-A null QR means none is currently available. Wait for the `connected` state
+Both are registered with `observable: false`: observing them fails with
+`NOT_OBSERVABLE`. A null QR means none is currently available. Wait for the `connected` state
 before sending.
 
 ```sh

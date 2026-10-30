@@ -155,7 +155,7 @@ Delivery is best effort and not retried: target return values do not send replie
 
 ### Native events
 
-Native kinds include `session.connected`, `session.disconnected`, `session.logged_out`, `session.qr`, `message.received`, `message.receipt`, `history.sync`, `group.updated` and `chat.presence`. Observe one session's incoming messages:
+Native kinds are `session.connected`, `session.disconnected`, `session.paired`, `session.failed`, `session.logged_out`, `pairing.qr`, `message.received`, `message.receipt`, `history.sync`, `group.updated`, `group.joined` and `chat.presence`. `pairing.qr` announces that a new QR code is available from `whatsapp::sessions::qr`; it does not carry the code. Observe one session's incoming messages:
 
 ```ts
 iii.observe(
@@ -202,6 +202,20 @@ Read the [observer walkthrough](https://github.com/iii-hq/workers/blob/main/what
 | `quick-tunnel::on-changed` | filter `input.tunnel_id` `webhooks` | `whatsapp::cloud::tunnel::changed` |
 
 Each observer stays pending until its provider runs; a refused observer is logged and the worker keeps serving its own functions.
+
+### Functions nobody can observe
+
+These functions carry a credential in their input or output. They are registered with `observable: false`, so observing them fails with `NOT_OBSERVABLE`; calling them works as for any other function. Every other function the worker registers is observable.
+
+| Function | Credential |
+| --- | --- |
+| `whatsapp::sessions::qr` | output: the pairing QR payload |
+| `whatsapp::sessions::pair_code` | output: the phone pairing code |
+| `whatsapp::cloud::phone_numbers::verify_code` | input: the verification code Meta sent to the phone |
+| `whatsapp::cloud::phone_numbers::register` | input: the two-step verification PIN |
+| `whatsapp::cloud::phone_numbers::set_pin` | input: the two-step verification PIN |
+| `whatsapp::cloud::webhook::verify` | input: Meta's `hub.verify_token`, which equals the configured verify token |
+| `whatsapp::on-config-change` | input: the `configuration::on-updated` event, whose `new_value` holds the access token, app secret, verify token and Flow private key |
 
 ## Limits and differences from OpenWA
 
