@@ -346,11 +346,7 @@ function FunctionRendererPresence({
  * which layer is visible, giving CSS both the outgoing and incoming glyphs
  * for the spinner -> check/error handoff without delaying the real state.
  */
-function FunctionCallStatusIcon({
-  status,
-}: {
-  status: FunctionCallStatus
-}) {
+function FunctionCallStatusIcon({ status }: { status: FunctionCallStatus }) {
   return (
     <span
       aria-hidden="true"
@@ -410,9 +406,7 @@ function FunctionCallRowText({
   return (
     <div className="chat-tool-row__text">
       <div className="chat-tool-row__title">
-        <span
-          className={cn(status === 'running' && 'function-call-shimmer')}
-        >
+        <span className={cn(status === 'running' && 'function-call-shimmer')}>
           {description ? (
             description
           ) : status === 'running' && unresolvedTarget ? (

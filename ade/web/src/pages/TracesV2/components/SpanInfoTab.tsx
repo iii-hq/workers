@@ -134,9 +134,7 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
     const redact = functionId ? rawRedactor(renderers, functionId) : undefined
     return {
       input: redact ? redact(functionCall?.input) : functionCall?.input,
-      output: redact
-        ? redact(functionCall?.output)
-        : functionCall?.output,
+      output: redact ? redact(functionCall?.output) : functionCall?.output,
     }
   }, [functionId, renderers, functionCall])
   const llm = useMemo(() => {
