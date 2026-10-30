@@ -800,6 +800,15 @@ async fn the_readme_lists_every_function_the_worker_registers() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // Shut down before asserting: a failed assertion would leave this
+    // connection hosting state::* for every later test.
+    config_observer
+        .dispose()
+        .await
+        .expect("dispose configuration observer");
+    boot.shutdown().await;
+    iii.shutdown_async().await;
+
     for expected in [
         "state::set",
         "state::ui-content",
@@ -813,10 +822,12 @@ async fn the_readme_lists_every_function_the_worker_registers() {
             "{expected} is registered: {registered:?}"
         );
     }
+    // Boot also restores the accessors of namespaces claimed earlier in this
+    // process: every `<prefix>::state::*` is one README row.
     let missing: Vec<String> = registered
         .iter()
-        .map(|id| match id.strip_prefix(&accessor_prefix) {
-            Some(accessor) => format!("`<prefix>::{accessor}`"),
+        .map(|id| match id.split_once("::state::") {
+            Some((_, accessor)) => format!("`<prefix>::state::{accessor}`"),
             None => format!("`{id}`"),
         })
         .filter(|listed| !section.contains(listed.as_str()))
@@ -825,13 +836,6 @@ async fn the_readme_lists_every_function_the_worker_registers() {
         missing.is_empty(),
         "the README Functions table leaves out {missing:?}"
     );
-
-    config_observer
-        .dispose()
-        .await
-        .expect("dispose configuration observer");
-    boot.shutdown().await;
-    iii.shutdown_async().await;
 }
 
 /// Assert a public `state::*` call is locked out of a reserved scope.
