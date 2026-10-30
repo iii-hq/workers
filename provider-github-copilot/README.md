@@ -24,6 +24,10 @@ iii call provider::github-copilot::login::poll device_code=<device_code>
 # → { status: "ok" } — the catalog fills within seconds
 ```
 
+The `device_code` exchanges for the GitHub OAuth token, so `login::start` and
+`login::poll` are registered with `observable: false`: observing either fails
+with `NOT_OBSERVABLE`.
+
 Machines already signed in through an editor need no login at all: the worker
 imports (read-only) `~/.config/github-copilot/apps.json` or pi's auth store.
 `GITHUB_COPILOT_NO_LOCAL_IMPORT=1` opts out of that import;

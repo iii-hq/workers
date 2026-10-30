@@ -490,3 +490,42 @@ async fn provider_redeclares_on_router_ready() {
     router2.shutdown();
     provider_iii.shutdown();
 }
+
+/// `login::start` returns the device code and `login::poll` takes it; the
+/// device code exchanges for the GitHub OAuth token, so neither function may
+/// be observed.
+#[tokio::test(flavor = "multi_thread")]
+async fn login_functions_are_not_observable() {
+    let _env = ENV_LOCK.lock().await;
+    set_credential_env(false);
+    let engine = engine_or_skip!();
+    let (router_iii, provider_iii) = boot_stack(&engine.url).await;
+
+    let spy = register_worker(&engine.url, test_init_options());
+    spy.register_function(
+        "spy::on_login",
+        iii_sdk::RegisterFunction::new_async(|_input: Value| async move {
+            Ok::<Value, iii_sdk::errors::Error>(json!({}))
+        }),
+    );
+    for function_id in [
+        "provider::github-copilot::login::start",
+        "provider::github-copilot::login::poll",
+    ] {
+        let observer = spy.observe(function_id, "spy::on_login");
+        let err = tokio::time::timeout(Duration::from_secs(10), observer.ready())
+            .await
+            .unwrap_or_else(|_| panic!("observing {function_id} answered in time"))
+            .expect_err("observing a login function fails");
+        match err {
+            iii_sdk::errors::Error::Remote { ref code, .. } => {
+                assert_eq!(code, "NOT_OBSERVABLE", "{function_id}: {err}")
+            }
+            other => panic!("{function_id}: unexpected error {other}"),
+        }
+    }
+
+    spy.shutdown();
+    router_iii.shutdown();
+    provider_iii.shutdown();
+}
