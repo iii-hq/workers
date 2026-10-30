@@ -532,6 +532,21 @@ Worth knowing:
   returns rows, not an affected-row count, and an event that invented one would
   be lying. Use `execute` when you need the change announced. On a `native`
   database the database itself reports the write, whichever path it took.
+- **Native capture stays installed.** The database triggers native capture
+  installs on a table stay when the table's last observer leaves, and when
+  the database leaves the configuration or `capture: native`: every worker
+  and connection that captures the table shares them, and the worker cannot
+  tell whether another one still relies on them. While they stay, each write
+  statement on the table raises a notification (Postgres) or appends
+  changelog rows (SQLite); a worker deletes the changelog rows only while it
+  has the database configured `capture: native`. To remove capture from a
+  table, drop them: on Postgres the triggers `iii_row_changed_ins`,
+  `iii_row_changed_upd` and `iii_row_changed_del` on the table (the
+  `iii_row_changed_notify()` function serves every captured table); on
+  SQLite the triggers `iii_row_changed_ins_<table>`,
+  `iii_row_changed_upd_<table>` and `iii_row_changed_del_<table>`, and the
+  `_iii_row_changes` table once no table is captured. MySQL capture installs
+  nothing.
 - **Native caveats.** Postgres additionally trims keys to fit NOTIFY's
   8000-byte payload. SQLite's triggers call `json_object`, so every process
   writing the file needs libsqlite ≥ 3.38 (JSON built in) — an older client
