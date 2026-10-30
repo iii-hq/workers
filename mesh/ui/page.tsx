@@ -101,34 +101,60 @@ function MeshPage({ host, onRequestClose }: PageRenderProps & { host: Host }) {
   </PageShell>
 }
 
-function object(value: JsonValue | undefined): Record<string, JsonValue> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+function isRecord(value: JsonValue | undefined): value is Record<string, JsonValue> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
-function at(value: JsonValue, path: string[]): JsonValue {
+function at(value: JsonValue, path: string[]): JsonValue | undefined {
   let current: JsonValue | undefined = value
-  for (const key of path) current = Array.isArray(current) ? current[Number(key)] : object(current)[key]
-  return current ?? null
+  for (const key of path) {
+    if (Array.isArray(current)) current = current[Number(key)]
+    else if (isRecord(current) && Object.hasOwn(current, key)) current = current[key]
+    else return undefined
+  }
+  return current
 }
-function setAt(value: JsonValue, path: string[], next: JsonValue): JsonValue {
+function setAt(value: JsonValue | undefined, path: string[], next: JsonValue): JsonValue {
   if (!path.length) return next
   const [key, ...rest] = path
   if (Array.isArray(value)) return value.map((item, i) => i === Number(key) ? setAt(item, rest, next) : item)
-  const record = object(value)
-  return { ...record, [key]: setAt(record[key] ?? null, rest, next) }
+  // Only missing parents may be created by a typed edit; existing raw blocks need conversion.
+  if (value !== undefined && !isRecord(value)) return value
+  const record = value ?? {}
+  const child = Object.hasOwn(record, key) ? record[key] : undefined
+  return { ...record, [key]: setAt(child, rest, next) }
 }
-function pointer(path: string[]) { return '/' + path.map((s) => s.replaceAll('~', '~0').replaceAll('/', '~1')).join('/') }
+function pointer(path: string[]) { return path.length ? '/' + path.map((s) => s.replaceAll('~', '~0').replaceAll('/', '~1')).join('/') : '' }
+function defaultConfiguration(): JsonValue {
+  return { public_url: '', listen: '0.0.0.0:49180', gateway_port: 49135, proxy_url: 'ws://127.0.0.1:49200', stun_port: 0, trusted_proxies: [], links: [], nodes: {}, drives: {} }
+}
 
-type FormFieldProps = { form: ConfigFormProps; path: string[]; label: string; description?: string; numeric?: boolean }
-function Field({ form, path, label, description, numeric }: FormFieldProps) {
+type FormFieldProps = { form: ConfigFormProps; path: string[]; label: string; description?: string; numeric?: boolean; literal?: JsonValue }
+function OpaqueValue({ form, path, label, value, literal, replacementLabel = 'literal settings' }: {
+  form: ConfigFormProps; path: string[]; label: string; value: JsonValue; literal: JsonValue; replacementLabel?: string
+}) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value)
+  return <SettingsField label={label} field={path.join('.') || undefined} controlSize="full"
+    description="This raw value is preserved. Replace it explicitly to edit individual settings."
+    error={form.errors?.get(pointer(path))}
+    renderControl={(props) => <RawValueInput {...props} label={label} value={text}
+      readOnly={typeof value !== 'string'} kind={typeof value === 'string' && value.includes('${') ? 'environment' : 'custom'}
+      replacementLabel={replacementLabel}
+      onUseLiteral={() => form.onChange(setAt(form.value, path, literal))}
+      onChange={(next) => { if (typeof value === 'string') form.onChange(setAt(form.value, path, next)) }} />} />
+}
+function Field({ form, path, label, description, numeric, literal = numeric ? 0 : '' }: FormFieldProps) {
   const value = at(form.value, path)
+  if (value !== undefined && (numeric ? typeof value !== 'number' && value !== '' : typeof value !== 'string')) {
+    return <OpaqueValue form={form} path={path} label={label} value={value} literal={literal} replacementLabel="default value" />
+  }
   return <SettingsField label={label} description={description} field={path.join('.')} error={form.errors?.get(pointer(path))}
-    renderControl={(props) => <Input {...props} value={typeof value === 'string' || typeof value === 'number' ? String(value) : ''}
+    renderControl={(props) => <Input {...props} value={value === undefined ? '' : String(value)}
       onChange={(next) => form.onChange(setAt(form.value, path, numeric && /^\d+$/.test(next) ? Number(next) : next))} />} />
 }
 function StringList({ form, path, label, description }: FormFieldProps) {
   const value = at(form.value, path)
-  if (value !== null && !Array.isArray(value)) return <Field form={form} path={path} label={label} description={description} />
-  const values = Array.isArray(value) ? value : []
+  if (value !== undefined && !Array.isArray(value)) return <OpaqueValue form={form} path={path} label={label} value={value} literal={[]} replacementLabel="an item list" />
+  const values = value ?? []
   return <SettingsSection title={label} description={description} action={<Button variant="ghost" size="sm" onClick={() => form.onChange(setAt(form.value, path, [...values, '']))}>Add item</Button>}>
     <SettingsList>{values.map((_, index) => <div className="mesh-ui-form-item" key={index}>
       <Field form={form} path={[...path, String(index)]} label={`${label} ${index + 1}`} />
@@ -139,21 +165,19 @@ function StringList({ form, path, label, description }: FormFieldProps) {
 function Collection({ form, kind }: { form: ConfigFormProps; kind: 'nodes' | 'drives' }) {
   const [name, setName] = useState('')
   const collectionValue = at(form.value, [kind])
-  const entries = object(collectionValue)
+  const title = kind === 'nodes' ? 'Machine workers' : 'Shared drives'
+  if (collectionValue !== undefined && !isRecord(collectionValue)) return <SettingsSection title={title}>
+    <OpaqueValue form={form} path={[kind]} label={title} value={collectionValue} literal={{}} />
+  </SettingsSection>
+  const entries = collectionValue ?? {}
   const validName = (kind === 'drives' ? /^(?=.{1,31}$)[a-z0-9]+(-[a-z0-9]+)*$/.test(name) : /^[a-z][a-z0-9-]{0,30}$/.test(name)) && !Object.hasOwn(entries, name)
   const label = kind === 'nodes' ? 'Machine' : 'Drive'
-  if (typeof collectionValue === 'string') return <SettingsSection title={kind === 'nodes' ? 'Machine workers' : 'Shared drives'}>
-    <RawValueInput label={kind} value={collectionValue} kind="environment" replacementLabel="Use literal settings"
-      onUseLiteral={() => form.onChange(setAt(form.value, [kind], {}))}
-      onChange={(next) => form.onChange(setAt(form.value, [kind], next))} />
-  </SettingsSection>
-  return <SettingsSection title={kind === 'nodes' ? 'Machine workers' : 'Shared drives'}
+  const emptyEntry: Record<string, JsonValue> = kind === 'nodes' ? { workers: [], allow: [] } : { server: '', nodes: [] }
+  return <SettingsSection title={title}
     description={kind === 'nodes' ? 'Choose which workers each machine runs and any additional function grants.' : 'A drive server must be a joined Linux machine. Drive names identify shared mounts.'}>
     {Object.keys(entries).map((key) => <details className="mesh-ui-config-entry" key={key} open>
       <summary><code>{key}</code></summary>
-      {typeof entries[key] === 'string' ? <RawValueInput label={key} value={entries[key]} kind="environment" replacementLabel="Use literal settings"
-        onUseLiteral={() => form.onChange(setAt(form.value, [kind, key], kind === 'nodes' ? { workers: [], allow: [] } : { server: '', nodes: [] }))}
-        onChange={(next) => form.onChange(setAt(form.value, [kind, key], next))} /> : kind === 'nodes' ? <>
+      {!isRecord(entries[key]) ? <OpaqueValue form={form} path={[kind, key]} label={`${label} ${key} settings`} value={entries[key]} literal={emptyEntry} /> : kind === 'nodes' ? <>
         <StringList form={form} path={[kind, key, 'workers']} label="Workers" description="Worker names, optionally worker@version." />
         <StringList form={form} path={[kind, key, 'allow']} label="Additional grants" description="Extra hub function patterns allowed for this machine." />
       </> : <>
@@ -168,11 +192,28 @@ function Collection({ form, kind }: { form: ConfigFormProps; kind: 'nodes' | 'dr
     <div className="mesh-ui-form-add">
       <Input aria-label={`New ${label.toLowerCase()} name`} placeholder={`${label} name`} value={name} onChange={setName} />
       <Button size="sm" disabled={!validName} onClick={() => {
-        form.onChange(setAt(form.value, [kind], { ...entries, [name]: kind === 'nodes' ? { workers: [], allow: [] } : { server: '', nodes: [] } }))
+        form.onChange(setAt(form.value, [kind], { ...entries, [name]: emptyEntry }))
         setName('')
       }}>Add {label.toLowerCase()}</Button>
     </div>
     {name && !validName ? <p role="status" className="mesh-ui-muted">{kind === 'nodes' ? 'Use a unique lowercase name, starting with a letter, up to 31 letters, digits or hyphens.' : 'Use a unique name up to 31 lowercase letters or digits, separated by single hyphens.'}</p> : null}
+  </SettingsSection>
+}
+
+function MachineLinks({ form }: { form: ConfigFormProps }) {
+  const value = at(form.value, ['links'])
+  const pairs = Array.isArray(value) ? value : []
+  const opaque = value !== undefined && !Array.isArray(value)
+  return <SettingsSection title="Machine links" description="Explicit pairs of machines allowed to connect."
+    action={opaque ? undefined : <Button variant="ghost" size="sm" onClick={() => form.onChange(setAt(form.value, ['links'], [...pairs, ['', '']]))}>Add link</Button>}>
+    {opaque ? <OpaqueValue form={form} path={['links']} label="Machine links" value={value} literal={[]} replacementLabel="a link list" /> : null}
+    {pairs.map((pair, i) => <SettingsList key={i}>
+      {!Array.isArray(pair) || pair.length !== 2 ? <OpaqueValue form={form} path={['links', String(i)]} label={`Link ${i + 1}`} value={pair} literal={['', '']} replacementLabel="a machine pair" /> : <>
+        <Field form={form} path={['links', String(i), '0']} label={`Link ${i + 1} first machine`} />
+        <Field form={form} path={['links', String(i), '1']} label={`Link ${i + 1} second machine`} />
+      </>}
+      <Button variant="ghost" size="sm" onClick={() => form.onChange(setAt(form.value, ['links'], pairs.filter((_, index) => index !== i)))}>Remove link {i + 1}</Button>
+    </SettingsList>)}
   </SettingsSection>
 }
 
@@ -184,14 +225,15 @@ function MeshConfiguration(form: ConfigFormProps) {
     const target = root.current?.querySelector<HTMLElement>(`[data-field="${CSS.escape(focus)}"]`)
     target?.focus(); target?.scrollIntoView({ block: 'center' })
   }, [focus])
-  const links = at(form.value, ['links'])
-  const pairs = Array.isArray(links) ? links : []
+  if (!isRecord(form.value)) return <div className="mesh-ui-configuration" ref={root}>
+    <OpaqueValue form={form} path={[]} label="Mesh configuration" value={form.value} literal={defaultConfiguration()} replacementLabel="default settings" />
+  </div>
   return <div className="mesh-ui-configuration" ref={root}>
     <SettingsSection title="Connection" description="Set the public URL before joining machines. Network changes reconfigure the hub.">
       <SettingsList>
         <Field form={form} path={['public_url']} label="Public URL" description="HTTPS front door reachable by your machines." />
         <Field form={form} path={['listen']} label="Listen address" />
-        <Field form={form} path={['gateway_port']} label="Gateway port" numeric />
+        <Field form={form} path={['gateway_port']} label="Gateway port" numeric literal={49135} />
         <Field form={form} path={['proxy_url']} label="Proxy URL" description="Direct numeric loopback WebSocket endpoint for rbac-proxy." />
         <Field form={form} path={['stun_port']} label="STUN port" description="Use 0 to disable STUN." numeric />
       </SettingsList>
@@ -200,15 +242,7 @@ function MeshConfiguration(form: ConfigFormProps) {
     <Collection form={form} kind="drives" />
     <details className="mesh-ui-advanced"><summary>Advanced networking</summary>
       <StringList form={form} path={['trusted_proxies']} label="Trusted proxies" description="CIDRs trusted to supply forwarded client addresses." />
-      <SettingsSection title="Machine links" description="Explicit pairs of machines allowed to connect."
-        action={typeof links === 'string' ? undefined : <Button variant="ghost" size="sm" onClick={() => form.onChange(setAt(form.value, ['links'], [...pairs, ['', '']]))}>Add link</Button>}>
-        {typeof links === 'string' ? <Field form={form} path={['links']} label="Machine links template" /> : null}
-        {pairs.map((_, i) => <SettingsList key={i}>
-          <Field form={form} path={['links', String(i), '0']} label={`Link ${i + 1} first machine`} />
-          <Field form={form} path={['links', String(i), '1']} label={`Link ${i + 1} second machine`} />
-          <Button variant="ghost" size="sm" onClick={() => form.onChange(setAt(form.value, ['links'], pairs.filter((_, index) => index !== i)))}>Remove link {i + 1}</Button>
-        </SettingsList>)}
-      </SettingsSection>
+      <MachineLinks form={form} />
     </details>
     {form.errors?.size ? <StatusPanel variant="alert" headline="Check the configuration fields" detail={[...form.errors.values()].join(' · ')} /> : null}
   </div>

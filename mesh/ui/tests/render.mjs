@@ -12,6 +12,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const require = createRequire(resolve(root, 'ade/web/package.json'))
 const { chromium, expect } = require('@playwright/test')
 const artifacts = process.env.MESH_UI_ARTIFACTS ?? '/tmp/mesh-task22-render'
+const opaqueOnly = process.env.MESH_UI_SCENARIO === 'opaque'
+const opaqueCase = process.env.MESH_UI_OPAQUE_CASE
 await mkdir(artifacts, { recursive: true })
 const portProbe = createServer()
 await new Promise((resolve) => portProbe.listen(0, '127.0.0.1', resolve))
@@ -71,6 +73,7 @@ try {
       const saved = []
       const calls = []
       let config = structuredClone(initialConfig)
+      let activeSchema = schema
       await page.routeWebSocket('**/ws', (socket) => {
         socket.onMessage(async (message) => {
           const frame = JSON.parse(String(message))
@@ -89,8 +92,8 @@ try {
             case 'mesh::configuration-id': assert.equal(frame.namespace, 'project'); return send({ id: 'mesh-lab' })
             case 'mesh::nodes::list': return mode === 'error' ? send(null, 'Mesh hub is unavailable. Reconnect, then retry.') : send(mode === 'empty' ? [] : mode === 'long' ? longNodes : nodes)
             case 'mesh::join::code': return mode === 'error' || mode === 'join-error' ? send(null, 'public_url is not set') : send({ code: joinCode, install: { unix, windows } })
-            case 'configuration::list': return send({ configurations: [entry] })
-            case 'configuration::schema': assert.equal(frame.data.id, 'mesh-lab'); return send(entry)
+            case 'configuration::list': return send({ configurations: [{ ...entry, schema: activeSchema }] })
+            case 'configuration::schema': assert.equal(frame.data.id, 'mesh-lab'); return send({ ...entry, schema: activeSchema })
             case 'configuration::get': assert.equal(frame.data.id, 'mesh-lab'); return send({ id: 'mesh-lab', value: config })
             case 'configuration::set': assert.equal(frame.data.id, 'mesh-lab'); saved.push(frame.data); config = frame.data.value; return send({ new_value: config, old_value: initialConfig })
             case 'engine::functions::list': return send({ functions: [] })
@@ -109,87 +112,203 @@ try {
         await page.screenshot({ path })
         results.push(path)
       }
-      await page.goto(`${url}/#/worker/mesh/mesh-manager`)
-      await expect(page.getByText('Loading machines and join instructions…')).toBeVisible()
-      await capture('loading')
-      await page.keyboard.press('Tab')
-      await expect(page.getByRole('button', { name: 'Configure worker', exact: true })).toBeFocused()
-      mode = 'empty'; waiting.splice(0).forEach((send) => send())
-      await expect(page.getByText('No machines joined', { exact: true })).toBeVisible()
-      await capture('empty')
-      mode = 'error'; await page.getByRole('button', { name: 'Refresh', exact: true }).click()
-      await expect(page.getByText('Could not load machines')).toBeVisible()
-      await expect(page.getByText('Join instructions unavailable')).toBeVisible()
-      await capture('error')
-      mode = 'populated'; await page.getByRole('button', { name: 'Retry', exact: true }).first().click()
-      await expect(page.getByRole('heading', { name: 'linux-workstation' })).toBeVisible()
-      await expect(page.getByText('Online', { exact: true })).toBeVisible()
-      await expect(page.getByText('Offline', { exact: true })).toBeVisible()
-      await capture('populated')
-      await page.getByRole('button', { name: 'Copy Join code', exact: true }).click()
-      await expect(page.getByText('Copied', { exact: true })).toBeVisible()
-      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), joinCode)
-      await page.getByRole('button', { name: 'Copy Linux / macOS command', exact: true }).click()
-      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), unix)
-      await page.getByRole('button', { name: 'Copy Windows PowerShell command', exact: true }).click()
-      assert.equal(await page.evaluate(() => navigator.clipboard.readText()), windows)
-      await capture('join-actions')
-      mode = 'join-error'; await page.getByRole('button', { name: 'Refresh', exact: true }).click()
-      await expect(page.getByText('Join instructions unavailable')).toBeVisible()
-      await expect(page.getByRole('heading', { name: 'linux-workstation' })).toBeVisible()
-      mode = 'long'; await page.getByRole('button', { name: 'Refresh', exact: true }).click()
-      await expect(page.getByRole('heading', { name: longNodes[0].name })).toBeVisible()
-      await capture('long')
-      await page.getByRole('button', { name: 'Configure worker', exact: true }).click()
-      await expect(page).toHaveURL(/#\/configuration\/workers\/mesh-lab$/)
-      const publicUrl = page.getByRole('textbox', { name: 'Public URL', exact: true })
-      await expect(publicUrl).toBeVisible()
-      await publicUrl.fill('https://mesh.example.com')
-      await expect(page.getByRole('button', { name: 'save', exact: true })).toBeEnabled()
-      // Reset an unsaved draft so reset and persistence checks have independent baselines.
-      const configCallsBeforeEdit = calls.filter((call) => call.id.startsWith('configuration::'))
-      await publicUrl.fill('https://changed.example.com')
-      try {
-        await expect(publicUrl).toHaveValue('https://changed.example.com')
-        await expect(page.getByRole('button', { name: 'reset', exact: true })).toBeVisible()
-      } catch (error) {
-        await page.screenshot({ path: resolve(artifacts, 'reset-diagnostic.png') })
-        await writeFile(resolve(artifacts, 'reset-diagnostic.json'), JSON.stringify({ before: configCallsBeforeEdit, after: calls.filter((call) => call.id.startsWith('configuration::')), value: await publicUrl.inputValue(), text: await page.locator('body').innerText() }, null, 2))
-        throw error
+      if (!opaqueOnly) {
+        await page.goto(`${url}/#/worker/mesh/mesh-manager`)
+        await expect(page.getByText('Loading machines and join instructions…')).toBeVisible()
+        await capture('loading')
+        await page.keyboard.press('Tab')
+        await expect(page.getByRole('button', { name: 'Configure worker', exact: true })).toBeFocused()
+        mode = 'empty'; waiting.splice(0).forEach((send) => send())
+        await expect(page.getByText('No machines joined', { exact: true })).toBeVisible()
+        await capture('empty')
+        mode = 'error'; await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+        await expect(page.getByText('Could not load machines')).toBeVisible()
+        await expect(page.getByText('Join instructions unavailable')).toBeVisible()
+        await capture('error')
+        mode = 'populated'; await page.getByRole('button', { name: 'Retry', exact: true }).first().click()
+        await expect(page.getByRole('heading', { name: 'linux-workstation' })).toBeVisible()
+        await expect(page.getByText('Online', { exact: true })).toBeVisible()
+        await expect(page.getByText('Offline', { exact: true })).toBeVisible()
+        await capture('populated')
+        await page.getByRole('button', { name: 'Copy Join code', exact: true }).click()
+        await expect(page.getByText('Copied', { exact: true })).toBeVisible()
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), joinCode)
+        await page.getByRole('button', { name: 'Copy Linux / macOS command', exact: true }).click()
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), unix)
+        await page.getByRole('button', { name: 'Copy Windows PowerShell command', exact: true }).click()
+        assert.equal(await page.evaluate(() => navigator.clipboard.readText()), windows)
+        await capture('join-actions')
+        mode = 'join-error'; await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+        await expect(page.getByText('Join instructions unavailable')).toBeVisible()
+        await expect(page.getByRole('heading', { name: 'linux-workstation' })).toBeVisible()
+        mode = 'long'; await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+        await expect(page.getByRole('heading', { name: longNodes[0].name })).toBeVisible()
+        await capture('long')
+        await page.getByRole('button', { name: 'Configure worker', exact: true }).click()
+        await expect(page).toHaveURL(/#\/configuration\/workers\/mesh-lab$/)
+        const publicUrl = page.getByRole('textbox', { name: 'Public URL', exact: true })
+        await expect(publicUrl).toBeVisible()
+        await publicUrl.fill('https://mesh.example.com')
+        await expect(page.getByRole('button', { name: 'save', exact: true })).toBeEnabled()
+        // Reset an unsaved draft so reset and persistence checks have independent baselines.
+        const configCallsBeforeEdit = calls.filter((call) => call.id.startsWith('configuration::'))
+        await publicUrl.fill('https://changed.example.com')
+        try {
+          await expect(publicUrl).toHaveValue('https://changed.example.com')
+          await expect(page.getByRole('button', { name: 'reset', exact: true })).toBeVisible()
+        } catch (error) {
+          await page.screenshot({ path: resolve(artifacts, 'reset-diagnostic.png') })
+          await writeFile(resolve(artifacts, 'reset-diagnostic.json'), JSON.stringify({ before: configCallsBeforeEdit, after: calls.filter((call) => call.id.startsWith('configuration::')), value: await publicUrl.inputValue(), text: await page.locator('body').innerText() }, null, 2))
+          throw error
+        }
+        await page.getByRole('button', { name: 'reset', exact: true }).click()
+        await expect(publicUrl).toHaveValue('')
+        await publicUrl.fill('https://mesh.example.com')
+        await page.getByRole('textbox', { name: 'Gateway port', exact: true }).fill('0')
+        await expect(page.getByRole('button', { name: 'save', exact: true })).toBeDisabled()
+        await page.getByRole('textbox', { name: 'Gateway port', exact: true }).fill('49135')
+        await page.getByRole('textbox', { name: 'New machine name', exact: true }).fill('constructor')
+        await expect(page.getByRole('button', { name: 'Add machine', exact: true })).toBeEnabled()
+        await page.getByRole('textbox', { name: 'New machine name', exact: true }).fill('laptop')
+        await page.getByRole('button', { name: 'Add machine', exact: true }).click()
+        await page.getByRole('region', { name: 'Workers', exact: true }).getByRole('button', { name: 'Add item' }).click()
+        await page.getByRole('textbox', { name: 'Workers 1', exact: true }).fill('ide')
+        await page.getByRole('textbox', { name: 'New drive name', exact: true }).fill('project')
+        await page.getByRole('button', { name: 'Add drive', exact: true }).click()
+        await page.getByRole('textbox', { name: 'Server machine', exact: true }).fill('laptop')
+        await page.getByRole('region', { name: 'Client machines', exact: true }).getByRole('button', { name: 'Add item' }).click()
+        await page.getByRole('textbox', { name: 'Client machines 1', exact: true }).fill('*')
+        await page.getByText('Advanced networking', { exact: true }).click()
+        await page.getByRole('button', { name: 'Add link', exact: true }).click()
+        await page.getByRole('textbox', { name: 'Link 1 first machine', exact: true }).fill('laptop')
+        await page.getByRole('textbox', { name: 'Link 1 second machine', exact: true }).fill('desktop')
+        await capture('configuration')
+        await page.getByRole('button', { name: 'save', exact: true }).click()
+        await expect.poll(() => saved.length).toBe(1)
+        await expect(page.getByRole('button', { name: 'save', exact: true })).toHaveCount(0)
+        assert.equal(saved[0].value.listen, initialConfig.listen, 'unrelated environment template preserved')
+        assert.deepEqual(saved[0].value.nodes.laptop.workers, ['ide'])
+        assert.deepEqual(saved[0].value.drives.project, { server: 'laptop', nodes: ['*'] })
+        assert.deepEqual(saved[0].value.links, [['laptop', 'desktop']])
+        assert(calls.some((call) => call.id === 'configuration::get' && call.data.raw === true && call.namespace === 'default'))
+        assert(calls.every((call) => !call.id.startsWith('configuration::') || call.namespace === 'default'))
+        assert.deepEqual(errors, [])
+        console.log(`PASS ${viewport.width}px ${theme}: loader, states, overflow, clipboard, dynamic identity, host validation/save/reset, templates, node/drive/link edits`)
       }
-      await page.getByRole('button', { name: 'reset', exact: true }).click()
-      await expect(publicUrl).toHaveValue('')
-      await publicUrl.fill('https://mesh.example.com')
-      await page.getByRole('textbox', { name: 'Gateway port', exact: true }).fill('0')
-      await expect(page.getByRole('button', { name: 'save', exact: true })).toBeDisabled()
-      await page.getByRole('textbox', { name: 'Gateway port', exact: true }).fill('49135')
-      await page.getByRole('textbox', { name: 'New machine name', exact: true }).fill('constructor')
-      await expect(page.getByRole('button', { name: 'Add machine', exact: true })).toBeEnabled()
-      await page.getByRole('textbox', { name: 'New machine name', exact: true }).fill('laptop')
-      await page.getByRole('button', { name: 'Add machine', exact: true }).click()
-      await page.getByRole('region', { name: 'Workers', exact: true }).getByRole('button', { name: 'Add item' }).click()
-      await page.getByRole('textbox', { name: 'Workers 1', exact: true }).fill('ide')
-      await page.getByRole('textbox', { name: 'New drive name', exact: true }).fill('project')
-      await page.getByRole('button', { name: 'Add drive', exact: true }).click()
-      await page.getByRole('textbox', { name: 'Server machine', exact: true }).fill('laptop')
-      await page.getByRole('region', { name: 'Client machines', exact: true }).getByRole('button', { name: 'Add item' }).click()
-      await page.getByRole('textbox', { name: 'Client machines 1', exact: true }).fill('*')
-      await page.getByText('Advanced networking', { exact: true }).click()
-      await page.getByRole('button', { name: 'Add link', exact: true }).click()
-      await page.getByRole('textbox', { name: 'Link 1 first machine', exact: true }).fill('laptop')
-      await page.getByRole('textbox', { name: 'Link 1 second machine', exact: true }).fill('desktop')
-      await capture('configuration')
-      await page.getByRole('button', { name: 'save', exact: true }).click()
-      await expect.poll(() => saved.length).toBe(1)
-      await expect(page.getByRole('button', { name: 'save', exact: true })).toHaveCount(0)
-      assert.equal(saved[0].value.listen, initialConfig.listen, 'unrelated environment template preserved')
-      assert.deepEqual(saved[0].value.nodes.laptop.workers, ['ide'])
-      assert.deepEqual(saved[0].value.drives.project, { server: 'laptop', nodes: ['*'] })
-      assert.deepEqual(saved[0].value.links, [['laptop', 'desktop']])
-      assert(calls.some((call) => call.id === 'configuration::get' && call.data.raw === true && call.namespace === 'default'))
-      assert(calls.every((call) => !call.id.startsWith('configuration::') || call.namespace === 'default'))
-      assert.deepEqual(errors, [])
-      console.log(`PASS ${viewport.width}px ${theme}: loader, states, overflow, clipboard, dynamic identity, host validation/save/reset, templates, node/drive/link edits`)
+      const openDraft = async (value) => {
+        config = structuredClone(value)
+        // A fresh document gives each draft its own host baseline/query cache.
+        // An unconstrained fixture schema lets the host serialize pre-existing custom shapes.
+        activeSchema = {}
+        mode = 'populated'
+        await page.goto(`${url}/?draft=${randomUUID()}#/worker/mesh/mesh-manager`)
+        await page.getByRole('button', { name: 'Configure worker', exact: true }).click()
+        await expect(page).toHaveURL(/#\/configuration\/workers\/mesh-lab$/)
+      }
+      const persist = async (expected) => {
+        const count = saved.length
+        await page.getByRole('button', { name: 'save', exact: true }).click()
+        await expect.poll(() => saved.length).toBe(count + 1)
+        await expect(page.getByRole('button', { name: 'save', exact: true })).toHaveCount(0)
+        assert.deepEqual(saved.at(-1).value, expected, 'host receives the entire preserved draft')
+      }
+      const replace = (label) => page.getByRole('button', { name: `Replace ${label} raw value with a literal value`, exact: true })
+      const unchanged = async () => {
+        await expect(page.getByRole('button', { name: 'save', exact: true })).toHaveCount(0)
+      }
+      if (!opaqueCase || opaqueCase === 'root') {
+        await openDraft('${MESH_CONFIG}')
+        await expect(page.getByRole('textbox', { name: 'Public URL', exact: true })).toHaveCount(0)
+        const rawRoot = page.getByRole('textbox', { name: 'Mesh configuration', exact: true })
+        await expect(rawRoot).toHaveValue('${MESH_CONFIG}')
+        await unchanged()
+        await capture('opaque-root')
+        await rawRoot.fill('${OTHER_MESH_CONFIG}')
+        await persist('${OTHER_MESH_CONFIG}')
+        await openDraft('${MESH_CONFIG}')
+        await replace('Mesh configuration').click()
+        await page.getByRole('textbox', { name: 'Public URL', exact: true }).fill('https://mesh.example.com')
+        await persist({ ...initialConfig, listen: '0.0.0.0:49180', public_url: 'https://mesh.example.com' })
+        console.log(`PASS ${viewport.width}px ${theme}: opaque root remains raw until explicit conversion; complete raw/default drafts round-trip through host`)
+      }
+      if (!opaqueCase || opaqueCase === 'link') {
+        const linkDraft = { ...initialConfig, links: ['${MESH_LINK}', ['alpha', 'beta']], unrelated: '${KEEP_THIS}' }
+        await openDraft(linkDraft)
+        await page.getByText('Advanced networking', { exact: true }).click()
+        await expect(page.getByRole('textbox', { name: 'Link 1 first machine', exact: true })).toHaveCount(0)
+        const rawLink = page.getByRole('textbox', { name: 'Link 1', exact: true })
+        await expect(rawLink).toHaveValue('${MESH_LINK}')
+        await rawLink.scrollIntoViewIfNeeded()
+        await unchanged()
+        await capture('opaque-link')
+        await page.getByRole('textbox', { name: 'Public URL', exact: true }).fill('https://mesh.example.com')
+        await persist({ ...linkDraft, public_url: 'https://mesh.example.com' })
+        await openDraft(linkDraft)
+        await page.getByText('Advanced networking', { exact: true }).click()
+        await replace('Link 1').click()
+        await page.getByRole('textbox', { name: 'Link 1 first machine', exact: true }).fill('laptop')
+        await page.getByRole('textbox', { name: 'Link 1 second machine', exact: true }).fill('desktop')
+        await persist({ ...linkDraft, links: [['laptop', 'desktop'], ['alpha', 'beta']] })
+        console.log(`PASS ${viewport.width}px ${theme}: opaque link and siblings survive unrelated edits; explicit conversion creates an array pair`)
+      }
+      if (!opaqueCase && viewport.width === 1440 && theme === 'light') {
+        for (const value of [null, false, 42, ['${ROOT_ITEM}']]) {
+          await openDraft(value)
+          const raw = page.getByRole('textbox', { name: 'Mesh configuration', exact: true })
+          await expect(raw).toHaveValue(JSON.stringify(value))
+          await expect(raw).toHaveJSProperty('readOnly', true)
+          await expect(page.getByRole('textbox', { name: 'Public URL', exact: true })).toHaveCount(0)
+          await unchanged()
+          if (value === 42) await capture('custom-root')
+          await replace('Mesh configuration').click()
+          await persist({ ...initialConfig, listen: '0.0.0.0:49180' })
+        }
+        const boundaries = [
+          { name: 'Machine workers', patch: { nodes: '${MESH_NODES}' }, after: { nodes: {} } },
+          { name: 'Shared drives', patch: { drives: ['${DRIVE_ITEM}'] }, after: { drives: {} } },
+          { name: 'Machine laptop settings', patch: { nodes: { laptop: '${LAPTOP}', other: '${OTHER_NODE}' } }, after: { nodes: { laptop: { workers: [], allow: [] }, other: '${OTHER_NODE}' } } },
+          { name: 'Drive archive settings', patch: { drives: { archive: false, other: '${OTHER_DRIVE}' } }, after: { drives: { archive: { server: '', nodes: [] }, other: '${OTHER_DRIVE}' } } },
+          { name: 'Workers', patch: { nodes: { laptop: { workers: { custom: '${WORKERS}' }, allow: ['${GRANT}'] } } }, after: { nodes: { laptop: { workers: [], allow: ['${GRANT}'] } } } },
+          { name: 'Workers 1', patch: { nodes: { laptop: { workers: [false, 'ide'], allow: [] } } }, after: { nodes: { laptop: { workers: ['', 'ide'], allow: [] } } } },
+          { name: 'Client machines', patch: { drives: { archive: { server: 'laptop', nodes: '${DRIVE_CLIENTS}' } } }, after: { drives: { archive: { server: 'laptop', nodes: [] } } } },
+          { name: 'Trusted proxies', advanced: true, patch: { trusted_proxies: null }, after: { trusted_proxies: [] } },
+          { name: 'Machine links', advanced: true, patch: { links: { custom: '${LINKS}' } }, after: { links: [] } },
+          { name: 'Link 1', advanced: true, patch: { links: [{ custom: '${PAIR}' }, ['alpha', 'beta']] }, after: { links: [['', ''], ['alpha', 'beta']] } },
+          { name: 'Public URL', patch: { public_url: { custom: '${URL}' } }, after: { public_url: '' } },
+          { name: 'Gateway port', patch: { gateway_port: '${GATEWAY_PORT}' }, after: { gateway_port: 49135 } },
+        ]
+        for (const boundary of boundaries) {
+          const draft = { ...initialConfig, ...boundary.patch, unrelated: '${KEEP_THIS}' }
+          await openDraft(draft)
+          if (boundary.advanced) await page.getByText('Advanced networking', { exact: true }).click()
+          const raw = page.getByRole('textbox', { name: boundary.name, exact: true })
+          await expect(raw).toBeVisible()
+          await unchanged()
+          if (boundary.name === 'Drive archive settings') {
+            await raw.scrollIntoViewIfNeeded()
+            await capture('custom-drive')
+          }
+          if (boundary.name !== 'Public URL') {
+            await page.getByRole('textbox', { name: 'Public URL', exact: true }).fill('https://mesh.example.com')
+            await persist({ ...draft, public_url: 'https://mesh.example.com' })
+            await openDraft(draft)
+            if (boundary.advanced) await page.getByText('Advanced networking', { exact: true }).click()
+          }
+          await replace(boundary.name).click()
+          await persist({ ...draft, ...boundary.after })
+        }
+        const absent = { public_url: '', listen: '${KEEP_LISTENER}' }
+        await openDraft(absent)
+        await unchanged()
+        await page.getByRole('textbox', { name: 'Public URL', exact: true }).fill('https://mesh.example.com')
+        await persist({ ...absent, public_url: 'https://mesh.example.com' })
+        await openDraft(absent)
+        await page.getByRole('textbox', { name: 'New machine name', exact: true }).fill('laptop')
+        await page.getByRole('button', { name: 'Add machine', exact: true }).click()
+        await persist({ ...absent, nodes: { laptop: { workers: [], allow: [] } } })
+        console.log('PASS opaque shape matrix: 4 custom roots, 12 nested boundaries, absent optional parents, explicit conversion and complete sibling/template preservation')
+      }
+      assert.deepEqual(errors, [], 'opaque drafts render without host/loader errors')
       await context.close()
     }
   }
