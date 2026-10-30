@@ -8,14 +8,18 @@
 //!
 //! Calls are fire-and-forget (`CallAction::Void`): iii delivers each one to
 //! the observers whose filters match, and the engine applies each observer's
-//! metadata (the harness's `__binding`) and target namespace.
+//! metadata (the harness's `__binding`) and target namespace. The overview a
+//! new observer receives first is a call of the function with metadata
+//! `{ for_observer: <observer id> }`, which the match hook gives to that
+//! observer alone; iii delivers it like every other call, so a target
+//! receives every overview in the shape its observer's `deliver` names.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallAction, CallRequest, IIIClient, Observer, RegisterFunction};
-use serde_json::Value;
+use iii_sdk::{Call, CallAction, CallRequest, IIIClient, Match, Observer, RegisterFunction};
+use serde_json::{json, Value};
 use tokio::sync::{Mutex, Notify};
 
 use crate::collector::Collector;
@@ -33,6 +37,20 @@ pub struct Monitor {
     /// first overview a new observer receives, so a state an observer
     /// already has is not sent again.
     last: Mutex<Option<Value>>,
+}
+
+/// The observer a call of [`ON_CHANGED_FN`] is for: its metadata's
+/// `for_observer`. `None` for a call every observer receives.
+fn for_observer(call: &Call) -> Option<&str> {
+    call.metadata
+        .as_ref()
+        .and_then(|metadata| metadata["for_observer"].as_str())
+}
+
+/// The match hook of [`ON_CHANGED_FN`]: a call for one observer goes to it
+/// alone, every other call to every observer.
+fn wants(observer_id: &str, call: &Call) -> bool {
+    for_observer(call).is_none_or(|id| id == observer_id)
 }
 
 /// The overview without its timestamps, so an unchanged state is not re-sent.
@@ -75,9 +93,11 @@ impl Monitor {
         }
     }
 
-    /// The current overview, to `observer` alone, once it is active. When
-    /// it is the first observer since the function was idle, the overview it
-    /// received is what the poll loop compares the next one with.
+    /// The current overview, to `observer` alone, once it is active: a call
+    /// of [`ON_CHANGED_FN`] with metadata `{ for_observer }`, which the match
+    /// hook gives to that observer only. A rejected observer gets nothing.
+    /// When it is the first observer since the function was idle, the
+    /// overview it received is what the poll loop compares the next one with.
     async fn send_current(&self, observer: Observer) {
         if let Err(error) = observer.accepted().await {
             tracing::debug!(observer_id = %observer.id(), %error, "observer not accepted");
@@ -87,7 +107,9 @@ impl Monitor {
             let mut last = self.last.lock().await;
             let overview = self.collector.overview().await;
             if let Ok(payload) = serde_json::to_value(&overview) {
-                let request = CallRequest::observer(&observer, payload).action(CallAction::Void);
+                let request = CallRequest::new(ON_CHANGED_FN, payload)
+                    .metadata(json!({ "for_observer": observer.id() }))
+                    .action(CallAction::Void);
                 match self.iii.call(request).await {
                     Ok(_) if last.is_none() => *last = fingerprint(&overview),
                     Ok(_) => {}
@@ -136,18 +158,23 @@ impl Monitor {
 }
 
 /// Registers [`ON_CHANGED_FN`]. Its added hook sends the new observer the
-/// current overview and wakes the poll loop.
+/// current overview and wakes the poll loop; its match hook gives that
+/// overview to the new observer alone.
 pub fn register(iii: &IIIClient, monitor: Arc<Monitor>) {
     iii.on_observer_added_for(ON_CHANGED_FN, move |observer: Observer| {
         let monitor = monitor.clone();
         async move {
             tracing::debug!(observer_id = %observer.id(), "live feed observed");
-            // A call through the observer reaches it only once it is active,
-            // which is after this hook returns.
+            // The observer becomes active once this hook returns; the task
+            // waits for that before calling the function for it.
             tokio::spawn(async move { monitor.send_current(observer).await });
             Ok(())
         }
     });
+    iii.on_observer_match_for(
+        ON_CHANGED_FN,
+        Match::predicate(|observer, call| wants(observer.id(), call)),
+    );
     iii.register_function(
         ON_CHANGED_FN,
         RegisterFunction::new(|overview: Overview| Ok::<_, Error>(overview))
@@ -180,6 +207,25 @@ mod tests {
                 generated_at_ms: at,
             },
         }
+    }
+
+    #[test]
+    fn a_call_for_one_observer_goes_to_it_alone() {
+        let ordinary = Call::default();
+        assert_eq!(for_observer(&ordinary), None);
+        assert!(wants("page", &ordinary) && wants("other", &ordinary));
+        let for_page = Call {
+            metadata: Some(json!({ "for_observer": "page" })),
+            ..Call::default()
+        };
+        assert_eq!(for_observer(&for_page), Some("page"));
+        assert!(wants("page", &for_page));
+        assert!(!wants("other", &for_page));
+        let other_metadata = Call {
+            metadata: Some(json!({ "__binding": "b1" })),
+            ..Call::default()
+        };
+        assert!(wants("page", &other_metadata));
     }
 
     #[test]
