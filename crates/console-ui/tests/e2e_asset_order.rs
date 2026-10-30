@@ -1,91 +1,47 @@
 //! `ConsoleUi::register` against a live engine: the order a console sees a
-//! worker's asset observers in.
+//! worker's asset observers in, and the content each one serves.
 //!
 //! A stand-in console hosts `console::ui::asset` with an added hook that
 //! records the order its hooks run in (the order the real console commits
-//! assets in) and fetches each asset through its observer. Every case runs
-//! in a namespace of its own. Needs an engine at `III_ENGINE_WS_URL`
-//! (default `ws://127.0.0.1:49134`); without one the tests skip, or fail when
+//! assets in). Once an observer is active, the console fetches its asset with
+//! a call of `console::ui::asset` for that observer alone (metadata
+//! `{ for_observer }`): the match hook gives the call to that observer, and
+//! the deliver hook calls its target, the worker's content function, with
+//! `{ path }` and answers with what the target returns. Every case runs in a
+//! namespace of its own. Needs an engine at `III_ENGINE_WS_URL` (default
+//! `ws://127.0.0.1:49134`); without one the tests skip, or fail when
 //! `III_E2E_REQUIRE` is set.
+
+mod common;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use common::{client, connected, engine_or_skip};
 use iii_console_ui::ConsoleUi;
 use iii_sdk::errors::Error;
-use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{
-    CallRequest, IIIClient, InitOptions, ObserveRejection, Observer, RegisterFunction,
-    register_worker,
-};
+use iii_sdk::{Call, CallRequest, IIIClient, Match, ObserveRejection, Observer, RegisterFunction};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-const DEFAULT_WS_URL: &str = "ws://127.0.0.1:49134";
 /// Fresh workers per case: the SDK replays observers created before the
 /// connection is up in an order of its own, so one run proves little.
 const RUNS: usize = 3;
 
-fn ws_url() -> String {
-    std::env::var("III_ENGINE_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string())
+const ASSET_FN: &str = "console::ui::asset";
+
+/// One asset fetched through its observer.
+struct Fetched {
+    observer_id: String,
+    args: Value,
+    content: Value,
 }
 
-fn client(namespace: &str, name: &str) -> Arc<IIIClient> {
-    Arc::new(register_worker(
-        &ws_url(),
-        InitOptions {
-            namespace: Some(namespace.to_string()),
-            metadata: Some(WorkerMetadata {
-                name: name.to_string(),
-                ..WorkerMetadata::default()
-            }),
-            ..InitOptions::default()
-        },
-    ))
-}
-
-/// Waits until `iii` reaches the engine; false after about 5 s.
-async fn connected(iii: &IIIClient) -> bool {
-    for _ in 0..20 {
-        let probe = iii
-            .call(
-                CallRequest {
-                    function_id: "engine::workers::list".to_string(),
-                    payload: json!({}),
-                    action: None,
-                    timeout_ms: Some(800),
-                }
-                .namespace("default"),
-            )
-            .await;
-        if probe.is_ok() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    false
-}
-
-/// True when an engine answers; otherwise skips, or panics under
-/// `III_E2E_REQUIRE`. `case` keeps concurrent probes apart.
-async fn engine_or_skip(case: &str) -> bool {
-    let probe = client(&format!("cui-{case}-probe-{}", std::process::id()), "probe");
-    let up = connected(&probe).await;
-    probe.shutdown_async().await;
-    if up {
-        return true;
-    }
-    if std::env::var("III_E2E_REQUIRE").is_ok() {
-        panic!(
-            "e2e requires a running iii engine at {} - set III_ENGINE_WS_URL",
-            ws_url()
-        );
-    }
-    eprintln!(
-        "[skip] no iii engine reachable at {} - skipping (set III_E2E_REQUIRE=1 to fail instead)",
-        ws_url()
-    );
-    false
+/// One run of the asset function's deliver hook: the observer the call was
+/// for, and the observers the match hook gave it.
+struct Delivery {
+    for_observer: Option<String>,
+    observers: Vec<String>,
 }
 
 /// A stand-in for the console's asset function. Other workers' assets (the
@@ -95,17 +51,27 @@ struct Console {
     iii: Arc<IIIClient>,
     /// Asset paths, in the order the added hook ran for them.
     hooks: Arc<Mutex<Vec<String>>>,
+    /// Every run of the deliver hook.
+    deliveries: Arc<Mutex<Vec<Delivery>>>,
     prefix: String,
-    /// `(args, content)` for every asset fetched through its observer.
-    fetched: mpsc::UnboundedReceiver<(Value, Value)>,
+    /// Every asset fetched through its observer.
+    fetched: mpsc::UnboundedReceiver<Fetched>,
+}
+
+/// The observer a call is for: `metadata.for_observer`.
+fn for_observer(call: &Call) -> Option<&str> {
+    call.metadata
+        .as_ref()
+        .and_then(|metadata| metadata["for_observer"].as_str())
 }
 
 fn console(namespace: &str, prefix: &str) -> Console {
     let iii = client(namespace, "console");
     let hooks = Arc::new(Mutex::new(Vec::new()));
+    let deliveries = Arc::new(Mutex::new(Vec::new()));
     let (tx, fetched) = mpsc::unbounded_channel();
     let (order, fetcher) = (hooks.clone(), iii.clone());
-    iii.on_observer_added_for("console::ui::asset", move |obs: Observer| {
+    iii.on_observer_added_for(ASSET_FN, move |obs: Observer| {
         let (order, tx, iii) = (order.clone(), tx.clone(), fetcher.clone());
         async move {
             let args: Value = obs.args()?;
@@ -117,17 +83,57 @@ fn console(namespace: &str, prefix: &str) -> Console {
                 if obs.accepted().await.is_err() {
                     return;
                 }
+                let fetch = CallRequest::new(ASSET_FN, json!({ "path": path }))
+                    .metadata(json!({ "for_observer": obs.id() }));
                 let content = iii
-                    .call(CallRequest::observer(&obs, json!({ "path": path })))
+                    .call(fetch)
                     .await
-                    .expect("the content function answers through the observer");
-                let _ = tx.send((args, content));
+                    .expect("the asset function answers with the target's content");
+                let _ = tx.send(Fetched {
+                    observer_id: obs.id().to_string(),
+                    args,
+                    content,
+                });
             });
             Ok(())
         }
     });
+    // A call for one observer goes to it alone; any other call to the
+    // observers of its path.
+    iii.on_observer_match_for(
+        ASSET_FN,
+        Match::predicate(|obs, call| match for_observer(call) {
+            Some(id) => id == obs.id(),
+            None => obs.args_value()["path"] == call.input["path"],
+        }),
+    );
+    // The target receives `{ path }`; the caller gets the target's answer.
+    let (record, deliverer) = (deliveries.clone(), iii.clone());
+    iii.on_observer_deliver_for(ASSET_FN, move |call: Call, observers: Vec<Observer>| {
+        let (record, iii) = (record.clone(), deliverer.clone());
+        async move {
+            record.lock().unwrap().push(Delivery {
+                for_observer: for_observer(&call).map(str::to_string),
+                observers: observers.iter().map(|obs| obs.id().to_string()).collect(),
+            });
+            let [obs] = observers.as_slice() else {
+                return Err(Error::Handler(format!(
+                    "{} observers serve {}",
+                    observers.len(),
+                    call.input["path"]
+                )));
+            };
+            if !obs.matches(&call) {
+                return Err(Error::Handler(
+                    "the observer's filters refuse the call".into(),
+                ));
+            }
+            iii.call(CallRequest::observer(obs, call.input.clone()))
+                .await
+        }
+    });
     iii.register_function(
-        "console::ui::asset",
+        ASSET_FN,
         RegisterFunction::new(|input: Value| Ok::<_, Error>(input))
             .args_format_value(json!({
                 "type": "object",
@@ -143,6 +149,7 @@ fn console(namespace: &str, prefix: &str) -> Console {
     Console {
         iii,
         hooks,
+        deliveries,
         prefix: format!("{prefix}/"),
         fetched,
     }
@@ -159,17 +166,18 @@ fn ui(prefix: &str) -> ConsoleUi {
 }
 
 /// Waits for all five assets, then checks that every module's hook ran
-/// before every script's and that each asset served its own content.
+/// before every script's, that each asset served its own content, and that
+/// each fetch reached its own observer alone, once.
 async fn assert_modules_before_scripts(console: &mut Console, case: &str) {
     let mut fetched = Vec::new();
     tokio::time::timeout(Duration::from_secs(20), async {
         while fetched.len() < 5 {
-            let (args, content) = console.fetched.recv().await.expect("fetch");
-            if args["path"]
+            let asset = console.fetched.recv().await.expect("fetch");
+            if asset.args["path"]
                 .as_str()
                 .is_some_and(|path| path.starts_with(&console.prefix))
             {
-                fetched.push((args, content));
+                fetched.push(asset);
             }
         }
     })
@@ -198,7 +206,28 @@ async fn assert_modules_before_scripts(console: &mut Console, case: &str) {
         "{case}: a script reached the console before a module: {hooks:?}"
     );
 
-    for (args, content) in fetched {
+    let deliveries = console.deliveries.lock().unwrap();
+    for asset in &fetched {
+        let id = asset.observer_id.as_str();
+        let reached: Vec<&Delivery> = deliveries
+            .iter()
+            .filter(|delivery| delivery.observers.iter().any(|obs| obs == id))
+            .collect();
+        assert_eq!(
+            reached.len(),
+            1,
+            "{case}: observer {id} got one call, its own fetch"
+        );
+        assert_eq!(reached[0].for_observer.as_deref(), Some(id), "{case}");
+        assert_eq!(
+            reached[0].observers,
+            [id],
+            "{case}: the fetch reached {id} alone"
+        );
+    }
+    drop(deliveries);
+
+    for Fetched { args, content, .. } in fetched {
         let path = args["path"].as_str().unwrap();
         let name = path
             .trim_start_matches(&console.prefix)
