@@ -32,8 +32,8 @@ pub const ON_READY_ID: &str = "router::on-ready";
 pub const ON_READY_DESC: &str =
     "The router is ready: each observer receives the event once the router has \
      booted and the observer is accepted, once per router start, and once more \
-     when its worker reconnects. Providers observe it to re-declare. Takes no \
-     args; the event is {}.";
+     when its worker reconnects within the observer grace period. Providers \
+     observe it to re-declare. Takes no args; the event is {}.";
 
 pub const ON_MODELS_CHANGED_ID: &str = "router::models::on-changed";
 pub const ON_MODELS_CHANGED_DESC: &str =

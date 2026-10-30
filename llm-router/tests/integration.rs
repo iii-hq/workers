@@ -12,10 +12,12 @@ use std::time::{Duration, Instant};
 use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    register_worker, Call, CallRequest, Deliver, IIIClient, Observer, RegisterFunction, Source,
+    register_worker, Call, CallRequest, Capture, Deliver, IIIClient, Observer, ObserverOptions,
+    RegisterFunction, Source,
 };
 use llm_router::channels::create_router_channel;
 use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value, ENTRY_ID};
+use llm_router::events::RouterEvents;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::provider_scaffold::router_client::observe_router_ready;
 use llm_router::register::register_router;
@@ -745,9 +747,20 @@ fn ready_target(name: &str) -> String {
     format!("probe::{name}::on_ready")
 }
 
-/// Observes `router::on-ready` with the default envelope.
+/// `router::on-ready` with the default envelope, capturing the call's
+/// metadata, so the target sees which observer each call was for.
+fn ready_envelope_source() -> Source {
+    Source::function("router::on-ready").capture([
+        Capture::Input,
+        Capture::Output,
+        Capture::Metadata,
+    ])
+}
+
+/// Observes `router::on-ready` with the default envelope and the call's
+/// metadata.
 fn observe_router_ready_envelope(iii: &IIIClient, target: &str) -> iii_sdk::ObserverHandle {
-    iii.observe(Source::function("router::on-ready"), target)
+    iii.observe(ready_envelope_source(), target)
 }
 
 async fn wait_active(observer: &iii_sdk::ObserverHandle, what: &str) {
@@ -786,8 +799,8 @@ fn assert_ready_events(received: &Received, what: &str) {
 }
 
 /// Every payload a default-envelope target received is an `Observed` envelope
-/// of a successful `router::on-ready` call, for `observer_id`, carrying the
-/// ready event as input and output.
+/// of a successful `router::on-ready` call for `observer_id` alone (metadata
+/// `for_observer`), carrying the ready event as input and output.
 fn assert_ready_envelopes(received: &Received, observer_id: &str, what: &str) {
     for envelope in received.lock().unwrap().iter() {
         assert_eq!(
@@ -795,9 +808,130 @@ fn assert_ready_envelopes(received: &Received, observer_id: &str, what: &str) {
             "{what}: {envelope}"
         );
         assert_eq!(envelope["observer_id"], observer_id, "{what}: {envelope}");
+        assert_eq!(
+            envelope["metadata"]["for_observer"], observer_id,
+            "{what}: a call for this observer alone: {envelope}"
+        );
         assert_eq!(envelope["output"], json!({}), "{what}: {envelope}");
         assert_eq!(envelope["input"], json!({}), "{what}: {envelope}");
         assert!(envelope.get("error").is_none(), "{what}: {envelope}");
+    }
+}
+
+/// A TCP proxy in front of the engine whose connections the test can cut:
+/// a worker connected through it loses its connection, and the SDK reattaches
+/// through the proxy, which keeps listening.
+struct SeverableProxy {
+    url: String,
+    open: Arc<std::sync::Mutex<Vec<std::net::TcpStream>>>,
+}
+
+impl SeverableProxy {
+    fn start(engine_url: &str) -> Self {
+        let upstream = engine_url
+            .strip_prefix("ws://")
+            .expect("a ws:// engine url")
+            .to_string();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the proxy");
+        let url = format!("ws://{}", listener.local_addr().expect("proxy address"));
+        let open: Arc<std::sync::Mutex<Vec<std::net::TcpStream>>> = Arc::default();
+        let streams = open.clone();
+        std::thread::spawn(move || {
+            for client in listener.incoming() {
+                let Ok(client) = client else { continue };
+                let Ok(server) = std::net::TcpStream::connect(&upstream) else {
+                    continue;
+                };
+                let (Ok(client_read), Ok(server_read), Ok(client_held), Ok(server_held)) = (
+                    client.try_clone(),
+                    server.try_clone(),
+                    client.try_clone(),
+                    server.try_clone(),
+                ) else {
+                    continue;
+                };
+                streams.lock().unwrap().extend([client_held, server_held]);
+                pipe(client_read, server);
+                pipe(server_read, client);
+            }
+        });
+        Self { url, open }
+    }
+
+    /// Closes every connection made through the proxy so far.
+    fn sever(&self) {
+        for stream in self.open.lock().unwrap().drain(..) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+/// Copies `from` into `to` on a thread of its own; closes both when `from`
+/// ends.
+fn pipe(mut from: std::net::TcpStream, mut to: std::net::TcpStream) {
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut from, &mut to);
+        let _ = to.shutdown(std::net::Shutdown::Both);
+        let _ = from.shutdown(std::net::Shutdown::Both);
+    });
+}
+
+/// What a router's worker-wide observer hooks saw, in order: `accepted` for an
+/// observer once the function's own added hook ran and the SDK accepted it,
+/// `removed` after the function's own removed hook ran.
+#[derive(Clone, Default)]
+struct HookLog(Arc<std::sync::Mutex<Vec<(&'static str, String)>>>);
+
+impl HookLog {
+    fn install(iii: &IIIClient) -> Self {
+        let log = Self::default();
+        let on_added = log.clone();
+        iii.on_observer_added(move |observer: Observer| {
+            let log = on_added.clone();
+            async move {
+                // The worker's added hook runs before the function's; the
+                // observer is accepted after both.
+                tokio::spawn(async move {
+                    if observer.accepted().await.is_ok() {
+                        log.push("accepted", observer.id());
+                    }
+                });
+                Ok(())
+            }
+        });
+        let on_removed = log.clone();
+        iii.on_observer_removed(move |observer: Observer| {
+            let log = on_removed.clone();
+            async move { log.push("removed", observer.id()) }
+        });
+        log
+    }
+
+    fn push(&self, event: &'static str, id: &str) {
+        self.0.lock().unwrap().push((event, id.to_string()));
+    }
+
+    fn count(&self, event: &str, id: &str) -> usize {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(e, i)| *e == event && i == id)
+            .count()
+    }
+
+    /// Waits until the hooks saw `event` for observer `id` `want` times.
+    async fn wait(&self, event: &str, id: &str, want: usize) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while self.count(event, id) < want {
+            assert!(
+                Instant::now() < deadline,
+                "router hooks: {event} {id} {} of {want} times; saw {:?}",
+                self.count(event, id),
+                self.0.lock().unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }
 
@@ -885,6 +1019,12 @@ async fn router_ready_reaches_a_pending_observer_once_per_router_start() {
 /// Observers added while the router boots (pending before it registers
 /// `router::on-ready`, added before it is ready, added after) each receive
 /// the ready event exactly once.
+///
+/// Exactly once holds by construction: every call the router makes of
+/// `router::on-ready` is a call for one observer, made once per added
+/// observer, so no other call reaches an observer that already has its
+/// event. The envelope observers (every other one) check that each delivery
+/// is a call for that observer; the counts check the outcome across the boot.
 #[tokio::test(flavor = "multi_thread")]
 async fn router_ready_reaches_each_observer_once_while_the_router_boots() {
     let engine = engine_or_skip!();
@@ -895,24 +1035,28 @@ async fn router_ready_reaches_each_observer_once_while_the_router_boots() {
     let (probe, received) = ready_probe(&engine.url, &name_refs);
     // Let the probe's targets register before observers name them.
     tokio::time::sleep(Duration::from_millis(300)).await;
+    // Even observers take the event as output (the provider shape), odd ones
+    // the envelope with the call's metadata.
+    let observe = |i: usize| {
+        let target = ready_target(&names[i]);
+        if i.is_multiple_of(2) {
+            observe_router_ready(&probe, &target)
+        } else {
+            observe_router_ready_envelope(&probe, &target)
+        }
+    };
 
     let router_iii = register_worker(&engine.url, test_init_options());
     let boot = tokio::spawn(register_router(router_iii.clone()));
     let mut observers = Vec::new();
     while !boot.is_finished() && observers.len() < MAX - 2 {
-        observers.push(observe_router_ready(
-            &probe,
-            &ready_target(&names[observers.len()]),
-        ));
+        observers.push(observe(observers.len()));
         tokio::time::sleep(Duration::from_millis(3)).await;
     }
     boot.await.expect("router boot task").expect("router boots");
     // Two more once it is ready.
     for _ in 0..2 {
-        observers.push(observe_router_ready(
-            &probe,
-            &ready_target(&names[observers.len()]),
-        ));
+        observers.push(observe(observers.len()));
     }
     assert!(
         observers.len() >= 3,
@@ -941,9 +1085,132 @@ async fn router_ready_reaches_each_observer_once_while_the_router_boots() {
     for (i, r) in received.iter().enumerate() {
         let want = usize::from(i < observers.len());
         assert_eq!(r.lock().unwrap().len(), want, "{}", names[i]);
-        assert_ready_events(r, &names[i]);
+        match observers.get(i) {
+            Some(observer) if !i.is_multiple_of(2) => {
+                assert_ready_envelopes(r, observer.id(), &names[i])
+            }
+            _ => assert_ready_events(r, &names[i]),
+        }
     }
 
+    probe.shutdown();
+    router_iii.shutdown();
+}
+
+/// An observer removed before the router is ready and added again (its
+/// worker reattached within the observer grace period, or it was disposed
+/// and observed again under its id) receives the ready event once, as does
+/// an observer that stayed: the removed hook stops the send it had pending.
+/// The test holds the router's event functions itself, so it says when the
+/// router is ready.
+#[tokio::test(flavor = "multi_thread")]
+async fn router_ready_reaches_an_observer_removed_before_ready_once() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    let hooks = HookLog::install(&router_iii);
+    let events = RouterEvents::register(&router_iii);
+
+    let proxy = SeverableProxy::start(&engine.url);
+    let (away_probe, away_received) = ready_probe(&proxy.url, &["away"]);
+    let (probe, received) = ready_probe(&engine.url, &["stays", "again"]);
+    let away = observe_router_ready_envelope(&away_probe, &ready_target("away"));
+    let stays = observe_router_ready_envelope(&probe, &ready_target("stays"));
+    const AGAIN: &str = "router-ready-observed-again";
+    let again_options = || ObserverOptions::default().id(AGAIN);
+    let again = probe.observe_with(
+        ready_envelope_source(),
+        ready_target("again"),
+        again_options(),
+    );
+    for (observer, what) in [(&away, "away"), (&stays, "stays"), (&again, "again")] {
+        wait_active(observer, what).await;
+        hooks.wait("accepted", observer.id(), 1).await;
+    }
+
+    // The away worker loses its connection: the engine withdraws its observer
+    // from the router and announces it again when the worker reattaches.
+    proxy.sever();
+    hooks.wait("removed", away.id(), 1).await;
+    hooks.wait("accepted", away.id(), 2).await;
+
+    // Disposed and observed again under the same id.
+    again.dispose().await.expect("dispose the observer");
+    hooks.wait("removed", AGAIN, 1).await;
+    let again = probe.observe_with(
+        ready_envelope_source(),
+        ready_target("again"),
+        again_options(),
+    );
+    wait_active(&again, "again, observed again").await;
+    hooks.wait("accepted", AGAIN, 2).await;
+
+    for (r, what) in [
+        (&away_received[0], "away"),
+        (&received[0], "stays"),
+        (&received[1], "again"),
+    ] {
+        assert!(
+            r.lock().unwrap().is_empty(),
+            "{what}: no event before the router is ready"
+        );
+    }
+
+    events.ready().await;
+    assert_count_settles(&away_received[0], 1, "observer whose worker reattached").await;
+    assert_count_settles(&received[0], 1, "observer that stayed").await;
+    assert_count_settles(&received[1], 1, "observer observed again").await;
+    assert_ready_envelopes(&away_received[0], away.id(), "away");
+    assert_ready_envelopes(&received[0], stays.id(), "stays");
+    assert_ready_envelopes(&received[1], AGAIN, "again");
+
+    away_probe.shutdown();
+    probe.shutdown();
+    router_iii.shutdown();
+}
+
+/// An observer whose worker reattaches after the router is ready (within the
+/// observer grace period) is added again and receives the ready event once
+/// more, in its shape; an observer that stayed receives nothing more.
+#[tokio::test(flavor = "multi_thread")]
+async fn router_ready_reaches_an_observer_again_when_its_worker_reattaches() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    let proxy = SeverableProxy::start(&engine.url);
+    let (away_probe, away_received) = ready_probe(&proxy.url, &["away", "away-envelope"]);
+    let (probe, received) = ready_probe(&engine.url, &["stays"]);
+    let away = observe_router_ready(&away_probe, &ready_target("away"));
+    let away_envelope = observe_router_ready_envelope(&away_probe, &ready_target("away-envelope"));
+    let stays = observe_router_ready_envelope(&probe, &ready_target("stays"));
+    for (observer, what) in [
+        (&away, "away"),
+        (&away_envelope, "away-envelope"),
+        (&stays, "stays"),
+    ] {
+        wait_active(observer, what).await;
+    }
+    assert_count_settles(&away_received[0], 1, "away, router ready").await;
+    assert_count_settles(&away_received[1], 1, "away-envelope, router ready").await;
+    assert_count_settles(&received[0], 1, "stays, router ready").await;
+
+    proxy.sever();
+    assert_count_settles(&away_received[0], 2, "away, its worker reattached").await;
+    assert_count_settles(&away_received[1], 2, "away-envelope, its worker reattached").await;
+    assert_ready_events(&away_received[0], "away");
+    assert_ready_envelopes(&away_received[1], away_envelope.id(), "away-envelope");
+    assert_eq!(
+        received[0].lock().unwrap().len(),
+        1,
+        "an observer that stayed receives no second event"
+    );
+    assert_ready_envelopes(&received[0], stays.id(), "stays");
+
+    away_probe.shutdown();
     probe.shutdown();
     router_iii.shutdown();
 }

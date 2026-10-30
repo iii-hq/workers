@@ -6,8 +6,9 @@
 //! - [`ON_READY_ID`] — the router is ready. Each observer receives the event
 //!   once the router has booted and the observer is accepted: once per router
 //!   start for an observer that stays, and once more each time it is added
-//!   again (its worker reconnected). So a provider that starts, or observes
-//!   again, after the router still re-declares.
+//!   again (its worker reconnected within the observer grace period). So a
+//!   provider that starts, or observes again, after the router still
+//!   re-declares.
 //! - [`ON_MODELS_CHANGED_ID`] — a provider reconciled its catalog slice.
 //! - [`ON_PROVIDER_CHANGED_ID`] — the provider registry changed.
 //!
@@ -45,9 +46,11 @@ pub struct RouterEvents {
 }
 
 /// The task that sends one observer of [`ON_READY_ID`] its ready event, by
-/// observer id. An observer removed before its event went out has its task
-/// aborted, so an observer added again (its worker reconnected) receives the
-/// event once.
+/// observer id, held from the observer's added hook to its removed hook. The
+/// removed hook aborts the task, so an observer removed before its event went
+/// out and added again (its worker reconnected within the observer grace
+/// period) receives the event once: the SDK runs an observer's removed hooks
+/// before it adds an observer with the same id again.
 type ReadyTasks = Arc<Mutex<HashMap<String, AbortHandle>>>;
 
 impl RouterEvents {
@@ -68,9 +71,7 @@ impl RouterEvents {
                     // active, which is after this hook returns.
                     let id = observer.id().to_string();
                     let task = tokio::spawn(send_ready(iii, ready, observer)).abort_handle();
-                    if let Some(earlier) = lock(&tasks).insert(id, task) {
-                        earlier.abort();
-                    }
+                    lock(&tasks).insert(id, task);
                     Ok(())
                 }
             });

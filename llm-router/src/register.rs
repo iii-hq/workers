@@ -346,13 +346,15 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     // (`events::RouterEvents`).
     events.ready().await;
 
-    // A provider that reconnects to the engine while the router stays up gets
-    // its FUNCTIONS replayed by the SDK, but not its catalog — that is
-    // application state this worker holds, and nothing re-pushes it until the
-    // provider's own periodic timer (three minutes for openai-codex). Observe
-    // the engine's registration stream and nudge each provider that is newly
-    // live, so a returning provider is resolvable in seconds instead of
-    // minutes. See `registry::rediscover`.
+    // A provider that reconnects to the engine within the observer grace
+    // period has its observer of `router::on-ready` added again, receives the
+    // ready event and re-declares. One that reconnects after the grace period
+    // gets its FUNCTIONS replayed by the SDK, but its observer is disposed, so
+    // nothing re-pushes its catalog (application state this worker holds)
+    // until the provider's own periodic timer (three minutes for
+    // openai-codex). Observe the engine's registration stream and nudge each
+    // provider that is newly live, so a returning provider is resolvable in
+    // seconds. See `registry::rediscover`.
     //
     // The same stream is how a router that booted before the secrets worker
     // learns it arrived: references that failed as unreachable are re-read,
