@@ -121,7 +121,8 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 			proxyBound := false
 			gets := 0
 			bound := false
-			for len(names) < 11 || len(defaultNames) < 2 || central && (!bound || !proxyBound || gets < 2 || proxyGets < 2 || proxyApplies < 1) {
+			uiAssets := map[string]bool{}
+			for len(uiAssets) < 2 || len(names) < 12 || len(defaultNames) < 2 || central && (!bound || !proxyBound || gets < 2 || proxyGets < 2 || proxyApplies < 1) {
 				select {
 				case f := <-frames:
 					switch string(f["type"]) {
@@ -145,6 +146,20 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 							}
 						}
 					case `"registertrigger"`:
+						if string(f["trigger_type"]) == `"console:script"` || string(f["trigger_type"]) == `"console:style"` {
+							var asset map[string]string
+							if err := json.Unmarshal(f["config"], &asset); err != nil {
+								t.Fatal(err)
+							}
+							path := asset["path"]
+							kind := string(f["trigger_type"])
+							if string(f["namespace"]) != `"`+ns+`"` || string(f["function_id"]) != `"mesh::ui-content"` ||
+								!(path == "mesh/page.js" && kind == `"console:script"` || path == "mesh/styles.css" && kind == `"console:style"`) {
+								t.Fatalf("invalid UI binding: %s", f)
+							}
+							uiAssets[path] = true
+							continue
+						}
 						bound = true
 						var gotNS string
 						json.Unmarshal(f["namespace"], &gotNS)
@@ -197,7 +212,7 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 					t.Fatalf("%v primary=%v default=%v", ctx.Err(), names, defaultNames)
 				}
 			}
-			for _, id := range []string{"mesh::status", "mesh::nodes::list", "mesh::nodes::get", "mesh::nodes::remove", "mesh::join::code", "mesh::join::cycle", "mesh::configuration-id", "mesh::on-config-change", "mesh::auth", "mesh::middleware", "mesh::on-trigger-registration"} {
+			for _, id := range []string{"mesh::ui-content", "mesh::status", "mesh::nodes::list", "mesh::nodes::get", "mesh::nodes::remove", "mesh::join::code", "mesh::join::cycle", "mesh::configuration-id", "mesh::on-config-change", "mesh::auth", "mesh::middleware", "mesh::on-trigger-registration"} {
 				if !names[id] {
 					t.Fatalf("missing %s", id)
 				}

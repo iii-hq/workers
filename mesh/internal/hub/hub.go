@@ -79,6 +79,10 @@ func Run(ctx context.Context, o Options) (err error) {
 		return fmt.Errorf("register configuration: %w", err)
 	}
 
+	if err := h.registerUI(client); err != nil {
+		return fmt.Errorf("register mesh UI: %w", err)
+	}
+
 	if local {
 		<-ctx.Done()
 		return nil

@@ -1,0 +1,34 @@
+[data-iii-ui="mesh"] .mesh-ui-main { overflow: auto; padding: 24px; }
+[data-iii-ui="mesh"] .mesh-ui-section { width: 100%; box-sizing: border-box; max-width: 1100px; margin: 0 auto 32px; }
+[data-iii-ui="mesh"] .mesh-ui-section-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+[data-iii-ui="mesh"] h2 { font-size: 14px; font-weight: 600; margin: 0; }
+[data-iii-ui="mesh"] h3 { font-size: 13px; font-weight: 500; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+[data-iii-ui="mesh"] .mesh-ui-muted { color: var(--color-ink-faint); font-size: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-nodes { display: flex; flex-direction: column; gap: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-node { padding: 16px; background: var(--color-panel-raised); border: 1px solid var(--color-edge); border-radius: var(--radius-lg); }
+[data-iii-ui="mesh"] .mesh-ui-node-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+[data-iii-ui="mesh"] .mesh-ui-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; margin: 0; }
+[data-iii-ui="mesh"] dt { color: var(--color-ink-faint); font-size: 12px; margin-bottom: 4px; }
+[data-iii-ui="mesh"] dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+[data-iii-ui="mesh"] code { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+[data-iii-ui="mesh"] .mesh-ui-component { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+[data-iii-ui="mesh"] .mesh-ui-component > span { color: var(--color-ink-faint); font-size: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-join { display: flex; flex-direction: column; gap: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-copy { background: var(--color-surface); border-radius: var(--radius-md); padding: 12px; min-width: 0; }
+[data-iii-ui="mesh"] .mesh-ui-copy-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-copy > code { display: block; white-space: pre-wrap; user-select: text; }
+[data-iii-ui="mesh"] .mesh-ui-configuration { display: flex; flex-direction: column; gap: 24px; }
+[data-iii-ui="mesh"] .mesh-ui-config-entry { margin: 12px 0; padding: 12px; border: 1px solid var(--color-edge); border-radius: var(--radius-lg); }
+[data-iii-ui="mesh"] summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; }
+[data-iii-ui="mesh"] summary::before { content: '+'; font-family: var(--font-mono); color: var(--color-ink-faint); }
+[data-iii-ui="mesh"] details[open] > summary::before { content: '−'; }
+[data-iii-ui="mesh"] .mesh-ui-form-item { display: flex; align-items: center; gap: 8px; padding-right: 8px; }
+[data-iii-ui="mesh"] .mesh-ui-form-item > div { flex: 1; min-width: 0; }
+[data-iii-ui="mesh"] .mesh-ui-form-add { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-form-empty { padding: 12px; color: var(--color-ink-faint); font-size: 12px; }
+[data-iii-ui="mesh"] .mesh-ui-advanced > section { margin-top: 16px; }
+@container (max-width: 560px) {
+  [data-iii-ui="mesh"] .mesh-ui-main { padding: 16px; }
+  [data-iii-ui="mesh"] .mesh-ui-details { grid-template-columns: minmax(0, 1fr); }
+  [data-iii-ui="mesh"] .mesh-ui-form-item { flex-wrap: wrap; padding: 8px; }
+}

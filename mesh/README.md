@@ -38,6 +38,28 @@ online state and worker state. An empty list means no machines have joined.
 An offline machine exposes no functions. Windows has no `shell::*` or
 `coder::*` until `ide` ships for Windows.
 
+## Console
+
+Open **Mesh** in the Console to see machine connectivity, connection path,
+version, workers and shared-drive state. Use **Refresh** for a new snapshot;
+the page also refreshes when you return to the tab. The join section shows the
+current device code and copyable Linux/macOS and Windows commands. If the
+public URL is missing, configure it through the page's **Configure worker**
+action, then refresh the join instructions.
+
+The settings action opens the hub's effective configuration entry, including
+an `III_CONFIG_NAME` override. Console owns validation, unsaved changes, save
+and reset. Machine worker lists, additional grants, drive servers and clients,
+network links and trusted proxies are editable there.
+
+Node worker identity discovery was checked against a real engine and proxy in
+both `default` and project namespaces: `laptop::ide::configuration-id` resolves
+to `laptop__ide`, whose form family is `ide`. Remote IDE UI asset registrations
+are currently rejected by Mesh's trigger policy. A Console with an already
+loaded IDE form can reuse that family; node-only form delivery needs follow-up.
+The exact configuration entry remains accessible through
+`configuration::get` / `configuration::set` with ID `<node>__<worker>`.
+
 ## Configuration
 
 The hub creates the `mesh` entry in the configuration worker. Edit it through
@@ -178,7 +200,7 @@ local equivalent is allowed. Supervisor, proxy, configuration-hook and console
 internals are denied to agents. An operator changes the desired worker list
 through configuration when a machine lacks tools.
 
-Shared drives are implemented; the console page is future work. A drive server
+Shared drives and the Console page are implemented. A drive server
 requires Linux with apt and no existing NFS exports or listener on port 445.
 Its first drive installs NFS and Samba. Data stays in `/srv/iii-mesh/<drive>`
 and belongs to that server's operator; exports permit only member addresses.
@@ -201,3 +223,24 @@ tests cover signed reconciliation and injected OS effects; native mount,
 service, packet-confinement and cross-machine locking acceptance remains
 unverified on all platforms. See [NOTICE](NOTICE) for upstream provenance and
 licenses.
+
+## Building the Console assets
+
+The Go binary embeds committed `assets/page.js` and `assets/styles.css` through
+its top-level assets package. A fresh `go vet`, `go test` or `make build` needs
+no Node installation or frontend output. After changing `ui/`, use the pinned
+repository Node/pnpm toolchain and rebuild before committing:
+
+```sh
+pnpm --filter '@iii-workers/mesh-ui...' install --frozen-lockfile
+make -C mesh ui
+```
+
+The UI uses the shared Console build driver, workspace catalog and lockfile.
+Mesh E2E CI rebuilds the frontend and checks that committed bundles match.
+Release builds use the embedded bundles without installing frontend packages.
+For browser checks, install the Console SPA's dependencies too, then run
+`node mesh/ui/tests/render.mjs` from the repository root. The check starts an
+isolated local Console with controlled bus fixtures and writes screenshots to
+`/tmp/mesh-task22-render` (override `MESH_UI_ARTIFACTS`). It does not verify
+native machine installation, tunnels or mounts.
