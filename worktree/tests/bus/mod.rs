@@ -295,13 +295,35 @@ pub fn spawn_http(bin: &Path, url: &str, dir: &Path, port: u16) -> Worker {
 /// status and its body as JSON (`null` when empty). `None` when nothing
 /// answers.
 pub async fn post(port: u16, path: &str, body: Value) -> Option<(u16, Value)> {
+    post_raw(port, path, &body.to_string()).await
+}
+
+/// `POST` with these exact body bytes (`Content-Length` framing), as
+/// [`post`] answers.
+pub async fn post_raw(port: u16, path: &str, body: &str) -> Option<(u16, Value)> {
+    let framed = format!("Content-Length: {}\r\n\r\n{body}", body.len());
+    send(port, path, framed).await
+}
+
+/// `POST` with these body bytes in one chunk (`Transfer-Encoding: chunked`,
+/// no `Content-Length`), as [`post`] answers.
+pub async fn post_chunked(port: u16, path: &str, body: &str) -> Option<(u16, Value)> {
+    let framed = format!(
+        "Transfer-Encoding: chunked\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
+        body.len()
+    );
+    send(port, path, framed).await
+}
+
+async fn send(port: u16, path: &str, framed: String) -> Option<(u16, Value)> {
     let path = path.to_string();
-    tokio::task::spawn_blocking(move || post_blocking(port, &path, &body.to_string()))
+    tokio::task::spawn_blocking(move || post_blocking(port, &path, &framed))
         .await
         .expect("the HTTP request task panicked")
 }
 
-fn post_blocking(port: u16, path: &str, body: &str) -> Option<(u16, Value)> {
+/// `framed`: the body's framing headers, the blank line, and the body.
+fn post_blocking(port: u16, path: &str, framed: &str) -> Option<(u16, Value)> {
     use std::io::{Read, Write};
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
@@ -310,8 +332,7 @@ fn post_blocking(port: u16, path: &str, body: &str) -> Option<(u16, Value)> {
         .ok()?;
     let request = format!(
         "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+         Connection: close\r\n{framed}"
     );
     stream.write_all(request.as_bytes()).ok()?;
     let mut raw = Vec::new();

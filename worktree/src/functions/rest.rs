@@ -8,11 +8,14 @@
 //! input (an empty body is `{}`), and returns the `HttpResponse`
 //! `{ status_code, body }`: `200` with the function's result, or an error
 //! status with `{ error: { code, message } }`, `code` being the function's
-//! `W###` code ([`status_for`]):
+//! `W###` code ([`status_for`]). A body that is not JSON answers `400`
+//! `W001` and runs no function: the http worker hands such a body over as
+//! `null`, and the request's `content-length` above 0 or its
+//! `transfer-encoding` tells it from an empty one ([`RestRequest::sent_a_body`]).
 //!
 //! | Status | `code` |
 //! |---|---|
-//! | 400 | `W001` (also a body that does not fit the function's input), `W110`, `W111`, `W112` |
+//! | 400 | `W001` (also a body that is not JSON or does not fit the function's input), `W110`, `W111`, `W112` |
 //! | 403 | `W500`-`W504` |
 //! | 404 | `W200`, `W201`, and `not_found` for a path no routed function has |
 //! | 409 | `W120`, `W210`-`W222`, `W401`-`W413` |
@@ -20,6 +23,7 @@
 //! | 504 | `W101` |
 //! | 500 | any other code |
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -38,9 +42,9 @@ pub const REST_DESC: &str =
     "Internal: target of the worktree REST routes, the http::on-request observers with args \
      { method: POST, path: /worktree/list | /worktree/get | /worktree/status | \
      /worktree/validate }. Receives the HttpRequest, runs the worktree::* function the \
-     route's path names with the request's JSON body, and returns the HttpResponse \
-     { status_code, body }: 200 with the function's result, or an error status with \
-     { error: { code, message } }.";
+     route's path names with the request's JSON body (an empty body is {}), and returns \
+     the HttpResponse { status_code, body }: 200 with the function's result, or an error \
+     status with { error: { code, message } }. A body that is not JSON answers 400 W001.";
 
 /// The functions served over HTTP: the read-only surface.
 pub const ROUTED: [&str; 4] = [
@@ -51,16 +55,49 @@ pub const ROUTED: [&str; 4] = [
 ];
 
 /// The `HttpRequest` fields the adapter reads. The http worker sends more
-/// (`method`, `query_params`, `path_params`, `headers` and the stream
-/// channels); they are ignored.
+/// (`method`, `query_params`, `path_params` and the stream channels); they
+/// are ignored.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RestRequest {
     /// The matched route's path: `/worktree/...`, the function id with `::`
     /// as `/`.
     pub path: String,
+    /// The request headers. `content-length` and `transfer-encoding` tell a
+    /// body that is not JSON from an empty one.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     /// The request body parsed as JSON; `null` when it is empty or not JSON.
     #[serde(default)]
     pub body: Value,
+}
+
+impl RestRequest {
+    /// Whether the client sent body bytes: a `content-length` above 0, or a
+    /// `transfer-encoding` (a chunked body carries no length). Header names
+    /// match in any case.
+    pub fn sent_a_body(&self) -> bool {
+        self.headers.iter().any(|(name, value)| {
+            if name.eq_ignore_ascii_case("content-length") {
+                value.trim().parse::<u64>().is_ok_and(|length| length > 0)
+            } else {
+                name.eq_ignore_ascii_case("transfer-encoding")
+            }
+        })
+    }
+
+    /// The routed function's input: the JSON body, `{}` for an empty body,
+    /// and `W001` for a body that is not JSON (`null` although bytes were
+    /// sent).
+    fn take_input(&mut self, function_id: &str) -> Result<Value, WError> {
+        match std::mem::take(&mut self.body) {
+            Value::Null if self.sent_a_body() => Err(WError::new(
+                codes::INVALID_REQUEST,
+                format!("invalid {function_id} input: the request body is not a JSON object"),
+            )),
+            Value::Null => Ok(json!({})),
+            body => Ok(body),
+        }
+    }
 }
 
 /// The `HttpResponse` the http worker answers with.
@@ -76,17 +113,18 @@ pub fn route_path(function_id: &str) -> String {
 }
 
 /// Run the routed function `request.path` names and answer as HTTP.
-pub async fn handle(deps: &Deps, request: RestRequest) -> RestResponse {
+pub async fn handle(deps: &Deps, mut request: RestRequest) -> RestResponse {
     let function_id = request
         .path
         .strip_prefix('/')
         .unwrap_or(&request.path)
         .replace('/', "::");
-    let input = match request.body {
-        Value::Null => json!({}),
-        body => body,
+    let result = match request.take_input(&function_id) {
+        Ok(input) => call_json(deps, &function_id, input).await,
+        Err(error) if ROUTED.contains(&function_id.as_str()) => Some(Err(error)),
+        Err(_) => None,
     };
-    match call_json(deps, &function_id, input).await {
+    match result {
         Some(Ok(body)) => RestResponse {
             status_code: 200,
             body,
@@ -227,6 +265,49 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(request.path, "/worktree/get");
+        assert_eq!(request.headers["content-type"], "application/json");
         assert_eq!(request.body, json!({ "worktree_id": "wt_1" }));
+    }
+
+    fn request_with_headers(headers: Value) -> RestRequest {
+        serde_json::from_value(json!({
+            "path": "/worktree/list",
+            "headers": headers,
+            "body": null,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_length_above_zero_or_a_transfer_encoding_is_a_sent_body() {
+        assert!(request_with_headers(json!({ "content-length": "14" })).sent_a_body());
+        assert!(request_with_headers(json!({ "Content-Length": "1" })).sent_a_body());
+        assert!(request_with_headers(json!({ "transfer-encoding": "chunked" })).sent_a_body());
+        assert!(!request_with_headers(json!({ "content-length": "0" })).sent_a_body());
+        assert!(!request_with_headers(json!({ "content-type": "application/json" })).sent_a_body());
+        assert!(!request_with_headers(json!({})).sent_a_body());
+    }
+
+    #[test]
+    fn a_null_body_is_an_empty_input_unless_bytes_were_sent() {
+        let mut empty = request_with_headers(json!({ "content-length": "0" }));
+        assert_eq!(empty.take_input("worktree::list").unwrap(), json!({}));
+
+        let mut not_json = request_with_headers(json!({ "content-length": "17" }));
+        let error = not_json.take_input("worktree::list").unwrap_err();
+        assert_eq!(error.code, codes::INVALID_REQUEST);
+        assert!(
+            error.message.contains("not a JSON object"),
+            "{}",
+            error.message
+        );
+
+        let mut object: RestRequest = serde_json::from_value(json!({
+            "path": "/worktree/list",
+            "headers": { "content-length": "2" },
+            "body": {},
+        }))
+        .unwrap();
+        assert_eq!(object.take_input("worktree::list").unwrap(), json!({}));
     }
 }

@@ -3,8 +3,9 @@
 //! port, and the worker binary, whose `http::on-request` observers route
 //! `POST /worktree/{list,get,status,validate}` to `worktree::rest`. Each
 //! route answers with its function's result as the response body, a `W###`
-//! error with its status and `{ error: { code, message } }`, and a path with
-//! no route with the http worker's 404.
+//! error with its status and `{ error: { code, message } }`, a body that is
+//! not JSON with 400 `W001`, and a path with no route with the http worker's
+//! 404.
 //!
 //! The engine and the worker come from the bus harness (tests/bus). Without
 //! an engine or `III_HTTP_BIN` the test skips; `III_E2E_REQUIRE=1` turns the
@@ -17,8 +18,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use bus::{
-    call, engine, free_port, git, http_bin, post, register_state, registered, request, require,
-    spawn_http, spawn_worker,
+    call, engine, free_port, git, http_bin, post, post_chunked, post_raw, register_state,
+    registered, request, require, spawn_http, spawn_worker,
 };
 use iii_sdk::{register_worker, InitOptions};
 use serde_json::{json, Value};
@@ -157,6 +158,44 @@ async fn read_routes_answer_through_the_http_worker() {
         .expect("POST /worktree/validate");
     assert_eq!(status, 400, "{body}");
     assert_eq!(body["error"]["code"], "W111");
+
+    // An empty body is `{}`: every managed worktree.
+    let (status, body) = post_raw(port, "/worktree/list", "")
+        .await
+        .expect("POST /worktree/list");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body["worktrees"].as_array().map(Vec::len),
+        Some(1),
+        "{body}"
+    );
+
+    // A truncated filter is not JSON: 400 `W001`, with a `Content-Length`
+    // and chunked alike.
+    let truncated = format!("{{\"repo_path\": \"{repo_path}");
+    let (status, body) = post_raw(port, "/worktree/list", &truncated)
+        .await
+        .expect("POST /worktree/list");
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "W001");
+    let (status, body) = post_chunked(port, "/worktree/list", &truncated)
+        .await
+        .expect("POST /worktree/list (chunked)");
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "W001");
+    let (status, body) = post_chunked(
+        port,
+        "/worktree/list",
+        &format!("{{\"repo_path\": \"{repo_path}\"}}"),
+    )
+    .await
+    .expect("POST /worktree/list (chunked)");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body["worktrees"].as_array().map(Vec::len),
+        Some(1),
+        "{body}"
+    );
 
     // Only the read surface has routes.
     let (status, _) = post(

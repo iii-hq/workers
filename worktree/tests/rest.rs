@@ -1,7 +1,8 @@
 //! `worktree::rest`, the target of the REST routes, in-process: each routed
 //! path runs its function with the request's JSON body and answers
 //! `{ status_code, body }`; a `W###` error answers its status with
-//! `{ error: { code, message } }`; a path no routed function has is a 404.
+//! `{ error: { code, message } }`; a body that is not JSON is a 400 `W001`;
+//! a path no routed function has is a 404.
 
 mod support;
 
@@ -12,10 +13,23 @@ use worktree::functions::rest::{self, RestRequest, ROUTED};
 
 /// What the http worker sends a route's target: the whole `HttpRequest`.
 fn http_request(path: &str, body: Value) -> RestRequest {
+    let length = match &body {
+        Value::Null => 0,
+        body => body.to_string().len(),
+    };
+    http_request_with(
+        path,
+        json!({ "content-type": "application/json", "content-length": length.to_string() }),
+        body,
+    )
+}
+
+/// An `HttpRequest` with these headers.
+fn http_request_with(path: &str, headers: Value, body: Value) -> RestRequest {
     serde_json::from_value(json!({
         "query_params": {},
         "path_params": {},
-        "headers": { "content-type": "application/json" },
+        "headers": headers,
         "path": path,
         "method": "POST",
         "body": body,
@@ -82,6 +96,56 @@ async fn an_empty_body_is_an_empty_input() {
     let listed = rest::handle(&env.deps, http_request("/worktree/list", Value::Null)).await;
     assert_eq!(listed.status_code, 200, "{:?}", listed.body);
     assert_eq!(listed.body["worktrees"], json!([]));
+}
+
+/// The http worker hands a body that is not JSON over as `null`; its
+/// `content-length` (or `transfer-encoding`) says bytes were sent. Such a
+/// request answers 400 `W001` and runs no function.
+#[tokio::test]
+async fn a_body_that_is_not_json_answers_400_w001() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_repo(&repo);
+    let env = make_env(tmp.path(), test_config(tmp.path()));
+    create::handle(&env.deps, create_request(&repo))
+        .await
+        .unwrap();
+
+    for headers in [
+        json!({ "content-type": "application/json", "content-length": "17" }),
+        json!({ "content-type": "application/json", "transfer-encoding": "chunked" }),
+    ] {
+        for function_id in ROUTED {
+            let response = rest::handle(
+                &env.deps,
+                http_request_with(&rest::route_path(function_id), headers.clone(), Value::Null),
+            )
+            .await;
+            assert_eq!(response.status_code, 400, "{function_id} {headers}");
+            assert_eq!(response.body["error"]["code"], "W001", "{function_id}");
+            assert!(
+                response.body["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not a JSON object"),
+                "{:?}",
+                response.body
+            );
+        }
+    }
+
+    // A path no routed function has stays a 404 whatever its body.
+    let response = rest::handle(
+        &env.deps,
+        http_request_with(
+            &rest::route_path("worktree::remove"),
+            json!({ "content-length": "17" }),
+            Value::Null,
+        ),
+    )
+    .await;
+    assert_eq!(response.status_code, 404);
+    assert_eq!(response.body["error"]["code"], "not_found");
 }
 
 #[tokio::test]

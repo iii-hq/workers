@@ -266,12 +266,13 @@ the worker observes `http::on-request` with `{ method: "POST", path }` for
 `/worktree/validate`, each targeting `worktree::rest`. It runs the function
 the path names (`/worktree/get` is `worktree::get`) with the request's JSON
 body as its input (an empty body is `{}`) and answers with the function's
-result as the response body, status `200`. An error answers
+result as the response body, status `200`. A body that is not JSON answers
+`400` `W001` and runs no function. An error answers
 `{ "error": { "code", "message" } }` with the status of its code:
 
 | Status | `code` |
 |---|---|
-| 400 | `W001` (also a body that does not fit the function's input), `W110`, `W111`, `W112` |
+| 400 | `W001` (also a body that is not JSON or does not fit the function's input), `W110`, `W111`, `W112` |
 | 403 | `W500`-`W504` |
 | 404 | `W200`, `W201` |
 | 409 | `W120`, `W210`-`W222`, `W401`-`W413` |
