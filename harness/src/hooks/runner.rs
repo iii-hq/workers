@@ -152,6 +152,25 @@ impl HookRegistry {
         v
     }
 
+    /// What static `inject_prompt` observers are selected against for a
+    /// turn's step: its pre_generate hook input, whose `generate` carries
+    /// what is known before assembly (`model`, `provider`, `expose`) and not
+    /// the assembled prompt, messages or tools those observers feed.
+    pub fn static_injection_input(&self, record: &TurnRecord, step: u64) -> Value {
+        let mut input = self.envelope(HookPoint::PreGenerate, record, step);
+        input["generate"] = serde_json::json!({
+            "model": record.options.model,
+            "provider": record.options.provider.clone().unwrap_or_default(),
+            "expose": record
+                .options
+                .functions
+                .as_ref()
+                .map(|functions| functions.expose)
+                .unwrap_or_default(),
+        });
+        input
+    }
+
     /// Call `point`'s hook function with `input` and read the merged
     /// outcome. `None` when nobody observes the point: the chain is empty.
     /// A failed call resolves by the point's default `on_error`.
@@ -837,7 +856,7 @@ pub(super) fn functions_match(binding: &HookBinding, function_id: &str) -> bool 
 
 /// Whether an observer's `sessions` globs match the turn's session (no
 /// filter → every session).
-fn sessions_match(binding: &HookBinding, session_id: &str) -> bool {
+pub(super) fn sessions_match(binding: &HookBinding, session_id: &str) -> bool {
     globs_match(binding.sessions.as_deref(), session_id)
 }
 

@@ -13,9 +13,12 @@
 //! instant's last observer, and the match hook gives each call to the
 //! observers of its own instant. Observer args replay unchanged, which is why
 //! the `harness::observe` intercept resolves `{ in_ms }` to `{ at }` before it
-//! observes. An observer whose instant already passed (a replay after
-//! downtime) receives the call as soon as it is active; the delivery hop's
-//! claim makes any double-fire a no-op.
+//! observes. The observers of an instant that already passed (a replay after
+//! downtime) share one call, made once the observers of that instant added
+//! together are active. An observer of that instant added after the call
+//! starts another one, which reaches every observer of the instant still
+//! present; the delivery hop's claim makes a second fire of a `once` binding
+//! a no-op.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,8 +39,18 @@ use crate::types::message::AgentMessage;
 pub const ON_TIMER_FN: &str = "harness::on-timer";
 pub const ON_TIMER_DESC: &str = "One-shot deadline: called once at `at` (epoch ms) with \
     { scheduled_at, actual_at }. Observe it with args { at }; an observer receives the call for \
-    its own `at` only. The natural second leg of any armed wake or fan-in gate: 'wake me when X \
-    happens, or tell me at T that it did not'. For recurrence observe cron::on-tick.";
+    its own `at` only. An `at` more than 7 days out is refused (CONFIG_ERROR); an `at` already \
+    past is called once as soon as its observers are active. The natural second leg of any armed \
+    wake or fan-in gate: 'wake me when X happens, or tell me at T that it did not'. For \
+    recurrence observe cron::on-tick.";
+
+/// How long a late call waits for one observer of its instant to become
+/// active; a rejected observer resolves at once, a removed one may never.
+const ACTIVE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a late call waits for more observers of its instant once every
+/// pending one is active: a replay adds an instant's observers in one burst.
+const COALESCE: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Timers stay armable for at most this far out — far beyond any deadline,
 /// and short enough that an epoch-SECONDS timestamp (off by 1000×) cannot
@@ -181,6 +194,9 @@ pub struct TimerBus {
     timers: OneShots,
     /// Observers per instant.
     observers: Arc<Mutex<HashMap<i64, usize>>>,
+    /// Per past instant with a late call pending: its observers not yet
+    /// known to be active.
+    due: Arc<Mutex<HashMap<i64, Vec<Observer>>>>,
 }
 
 impl TimerBus {
@@ -189,6 +205,7 @@ impl TimerBus {
             iii,
             timers: OneShots::new(),
             observers: Arc::new(Mutex::new(HashMap::new())),
+            due: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -242,6 +259,43 @@ impl TimerBus {
         self.timers.len()
     }
 
+    /// Call the function once for the past instant `at` when `obs`, and every
+    /// other observer of `at` added meanwhile, is active. An observer added
+    /// while a late call for its instant is pending joins it.
+    fn fire_late(&self, at: i64, obs: Observer) {
+        {
+            let mut due = self.due.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(waiting) = due.get_mut(&at) {
+                waiting.push(obs);
+                return;
+            }
+            due.insert(at, vec![obs]);
+        }
+        let bus = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let next = bus
+                    .due
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get_mut(&at)
+                    .and_then(Vec::pop);
+                if let Some(obs) = next {
+                    let _ = tokio::time::timeout(ACTIVE_WAIT, obs.accepted()).await;
+                    continue;
+                }
+                tokio::time::sleep(COALESCE).await;
+                let mut due = bus.due.lock().unwrap_or_else(|p| p.into_inner());
+                if due.get(&at).is_some_and(|waiting| !waiting.is_empty()) {
+                    continue;
+                }
+                due.remove(&at);
+                break;
+            }
+            bus.fire(at).await;
+        });
+    }
+
     /// Call the function once for `at`; the match hook hands the call to the
     /// observers of that instant.
     async fn fire(&self, at: i64) {
@@ -287,14 +341,9 @@ impl AddedHook for TimerBus {
                 self.arm(args.at);
             }
         } else {
-            // Already due (a replay after downtime): call once the observer
-            // is active, or the call would reach nobody.
-            let bus = self.clone();
-            tokio::spawn(async move {
-                if obs.accepted().await.is_ok() {
-                    bus.fire(args.at).await;
-                }
-            });
+            // Already due (a replay after downtime): call once the observers
+            // are active, or the call would reach nobody.
+            self.fire_late(args.at, obs);
         }
         Ok(())
     }
@@ -308,6 +357,14 @@ impl RemovedHook for TimerBus {
         };
         if self.release(args.at) {
             self.timers.cancel(&args.at.to_string());
+        }
+        if let Some(waiting) = self
+            .due
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(&args.at)
+        {
+            waiting.retain(|pending| pending.id() != obs.id());
         }
         tracing::info!(observer = %obs.id(), at = args.at, "timer observer removed");
     }

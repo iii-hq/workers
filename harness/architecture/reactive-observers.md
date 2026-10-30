@@ -139,7 +139,8 @@ response note.
 Delivers exactly once, on time, then the observer is removed. `in_ms` resolves
 to an absolute `at` when you observe, because observer args replay unchanged
 after a restart and a replayed countdown must not restart from zero. An `at`
-in the past or more than 7 days out is refused. `once: false` is refused;
+in the past or more than 7 days out is refused. A deadline that passes while
+the harness is down is delivered as soon as it is back. `once: false` is refused;
 recurrence is `cron::on-tick`'s job. "Wake me when X happens, or tell me at T
 that it did not" is a wake on X plus one timer observer.
 

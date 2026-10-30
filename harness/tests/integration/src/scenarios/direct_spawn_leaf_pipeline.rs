@@ -85,7 +85,11 @@ pub(super) fn scenario() -> ScenarioFixture {
     // the woken turn is the single terminal one.
     .terminal_turn_statuses(["completed", "completed"])
     .parked_completions(1)
-    .expect_traces(2)
+    // One trace: the leaf's turn is queued from the parent's, the state
+    // worker calls `state::on-changed` inside the leaf's `state::set`, and
+    // iii delivers that call to the wake observer in the same trace, so the
+    // woken parent turn continues the trace its first turn opened.
+    .expect_traces(1)
     .generation(
         Generation::new(1)
             .expect(
@@ -334,7 +338,7 @@ mod tests {
         fixture.validate().unwrap();
         assert_eq!(fixture.expected_turn_statuses.len(), 2);
         assert_eq!(fixture.expected_terminal_turns, 1);
-        assert_eq!(fixture.expected_traces(), 2);
+        assert_eq!(fixture.expected_traces(), 1);
         assert_eq!(
             fixture.script.dispatch,
             crate::types::script::RouterDispatchV1::MatchAny

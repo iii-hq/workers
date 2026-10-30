@@ -482,7 +482,8 @@ the truth for what ran and what the next send inherits — instead of
 rebuilding the built-in. Set `default_only: true` to read the exact embedded
 Harness default without consulting session or runtime state. Static
 `pre_generate` hooks publish their exact contribution as the observer arg
-`inject_prompt`; request-dependent hook functions and compaction are not run
+`inject_prompt`; the preview lists the ones whose `sessions` globs and filters
+select the session's next step. Request-dependent hook functions and compaction are not run
 by the read-only preview and may change content when the prompt is sent.
 
 The read-only `harness::context-policy` surface returns whether the destination model permits aged function-result pruning. Console context previews must use this response rather than maintaining a model list locally; failures or malformed responses are not a permission to infer a policy.
@@ -644,7 +645,7 @@ observes only `harness::on-timer` and its own post-turn validator.
 | `harness::on-observers-changed` | none | `input.session_id` | `{ session_id, timestamp }`: the session's observers or their fire counts changed; read `harness::observers::list`. |
 | `harness::on-compaction` | none | `input.session_id`, `input.compaction_id` | `{ session_id, compaction_id, phase, timestamp, ... }`: an explicit compaction started (`phase: started`) or finished (`phase: completed` with `status` ok/busy/empty/failed, the user-facing `message`, `tokens_before` / `tokens_after` and the transcript `entry_ids`). |
 | `harness::on-session-tree-deletion` | none | `input.session_id`, `input.operation_id` | `{ operation_id, attempt, session_id, status, deleted_session_ids, error? }`: a subtree deletion changed status; terminal statuses are `completed` and `failed`. |
-| `harness::on-timer` | `{ at }` (epoch ms) | — | `{ scheduled_at, actual_at }`: called once at `at`; an observer receives the call for its own `at`. `at` more than 7 days out is refused (`CONFIG_ERROR`). |
+| `harness::on-timer` | `{ at }` (epoch ms) | — | `{ scheduled_at, actual_at }`: called once at `at`; an observer receives the call for its own `at`. `at` more than 7 days out is refused (`CONFIG_ERROR`). An `at` already past (an observer added again after the harness was down) is called once, as soon as the observers of that instant added together are active. |
 
 An observer whose target is `harness::spawn` is refused (`FORBIDDEN`) on the
 turn events.
@@ -659,14 +660,22 @@ outcome. Its deliver hook runs the chain: the observers whose `sessions` and
 input as the previous one left it. A target answers
 `{ decision, reason?, mutations?, annotations? }`.
 
-| Function | Runs |
-|---|---|
-| `harness::hook::on-pre-turn` | First step of a turn, before any model spend. May veto. |
-| `harness::hook::on-pre-generate` | After context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as the arg `inject_prompt`; the harness appends it before context assembly, so the budget and compaction count it, and its target is not called. |
-| `harness::hook::on-post-generate` | After the final assistant message. Observe only. |
-| `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. |
-| `harness::hook::on-post-call` | After the called function returns, before the result is persisted. May rewrite the result. |
-| `harness::hook::on-post-turn` | At finalize, after the output contract validated the result. A deny re-prompts the turn (bounded by `max_validation_retries`). |
+The handler returns the hook input, so the function's `request_format` and
+`response_format` are the input, and that is what observers observe. Every
+input carries `{ point, session_id, turn_id, step, depth, metadata? }`
+(`metadata` is the turn's `options.metadata`) plus the point's own fields. The
+harness gets back the merged outcome, `{ decision, reason?, held_by?,
+system_prompt?, append_messages?, arguments?, result?, prompt?, annotations? }`,
+with `decision` `continue`, `deny` or `hold`.
+
+| Function | Runs | Input adds | The harness gets back |
+|---|---|---|---|
+| `harness::hook::on-pre-turn` | First step of a turn, before any model spend. May veto. | — | `decision`, `reason?` |
+| `harness::hook::on-pre-generate` | After context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as the arg `inject_prompt`; the harness appends it before context assembly to the turns its `sessions` globs and filters select (filters see the input without the assembled `system_prompt`, `messages` and `tools`), so the budget and compaction count it, and its target is not called. | `generate { system_prompt, messages, model, provider, functions_generation, tools, expose }` | `decision`, `reason?`, `system_prompt?`, `append_messages?`, `annotations?` |
+| `harness::hook::on-post-generate` | After the final assistant message. Observe only. | `generated { message }` | `decision: continue` |
+| `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. | `call { id, function_id, arguments }` | `decision`, `reason?`, `held_by?`, `arguments?`, `annotations?` |
+| `harness::hook::on-post-call` | After the called function returns, before the result is persisted. May rewrite the result. | `call`, `result { function_call_id, function_id, content, is_error, details }` | `decision`, `held_by?`, `result?`, `annotations?` |
+| `harness::hook::on-post-turn` | At finalize, after the output contract validated the result. A deny re-prompts the turn (bounded by `max_validation_retries`). | `result` (the turn's result) | `decision`, `reason?`, `prompt?` |
 
 Hook args: `{ functions?, sessions?, payload?, result_into?, retry_prompt?,
 priority?, timeout_ms?, on_error?, inject_prompt? }` — `functions` globs select

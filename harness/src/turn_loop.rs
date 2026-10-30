@@ -676,10 +676,15 @@ async fn generate_step(
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
     // Static hook injections join before assembly, so the budget, the
     // compaction gate and the request count the same prompt (MOT-5569). The
-    // pre_generate chain never calls an observer with a static contribution.
+    // pre_generate chain never calls an observer with a static contribution;
+    // the injections are the ones whose `sessions` globs and filters select
+    // this turn.
     let pre_generate = deps.hooks.bindings(crate::hooks::HookPoint::PreGenerate);
+    let static_injections = deps
+        .hooks
+        .static_injections(&deps.hooks.static_injection_input(&record, payload.step));
     let assembly_system_prompt =
-        crate::hooks::runner::with_static_prompts(&pre_generate, assembly_system_prompt);
+        crate::hooks::runner::with_static_prompts(&static_injections, assembly_system_prompt);
     // Registry-change notice: if a function this session may call changed or
     // left since it last acknowledged them, tell the model its cached
     // contracts may be stale. First sighting stamps silently, and so does a
@@ -1442,7 +1447,11 @@ async fn generate_step(
 ///
 /// This phase is separate from context assembly and provider generation so
 /// the executor does not poll one monolithic future with every turn-loop
-/// state in the same stack frame.
+/// state in the same stack frame. For the same reason every large tail it
+/// awaits (finalization, submit handling, spawn, the observe intercept and
+/// the stoppable dispatch) is boxed: a debug build reserves a slot in this
+/// function's frame for each future it builds inline, and the SDK thread
+/// polls it on a default-size stack (`stack_tests`).
 async fn finish_step(
     deps: &Deps,
     generated: Box<GeneratedStep>,
@@ -1462,7 +1471,7 @@ async fn finish_step(
     // Cancellation during generation finalises the partial as cancelled.
     if cancel_requested(record.abort, durable_abort, outcome.message.stop_reason) {
         record.abort = true;
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return Box::pin(finalize_cancelled(deps, &session, &mut record, "cancelled")).await;
     }
     if !outcome.ok {
         let generation_error = outcome.error.clone().unwrap_or_else(|| ChatError {
@@ -1549,7 +1558,14 @@ async fn finish_step(
             record.transient_resumes = attempt;
             return advance(deps, &mut record).await;
         }
-        return finalize_failed(deps, &session, &mut record, &reason, failure).await;
+        return Box::pin(finalize_failed(
+            deps,
+            &session,
+            &mut record,
+            &reason,
+            failure,
+        ))
+        .await;
     }
 
     if record.transient_resumes > 0 {
@@ -1605,7 +1621,8 @@ async fn finish_step(
             // so finalizing mid-loop loses nothing.
             if deps.cancels.is_fired(&record.turn_id) {
                 record.abort = true;
-                return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+                return Box::pin(finalize_cancelled(deps, &session, &mut record, "cancelled"))
+                    .await;
             }
 
             // Per-call checkpoint: skip done/pending, recover an interrupted
@@ -1904,9 +1921,9 @@ async fn finish_step(
             // Guard failures skip post_call.
             if call.function_id == crate::functions::SPAWN_ID {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                let (mut data, child) = match crate::subagent::spawn_from_turn(
+                let (mut data, child) = match Box::pin(crate::subagent::spawn_from_turn(
                     deps, &record, &call.id, &eff_args,
-                )
+                ))
                 .await
                 {
                     Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
@@ -1996,7 +2013,7 @@ async fn finish_step(
                 &record.session_id,
                 true,
             ) {
-                crate::functions::observe::invoke(
+                Box::pin(crate::functions::observe::invoke(
                     deps,
                     &engine,
                     &policy,
@@ -2007,7 +2024,7 @@ async fn finish_step(
                     Some(crate::functions::observe::CallerModel::from_options(
                         &record.options,
                     )),
-                )
+                ))
                 .await
             } else {
                 let dispatch = {
@@ -2030,7 +2047,12 @@ async fn finish_step(
                         .await
                     }
                 };
-                match dispatch_unless_stopped(deps.cancels.watch(&record.turn_id), dispatch).await {
+                match Box::pin(dispatch_unless_stopped(
+                    deps.cancels.watch(&record.turn_id),
+                    dispatch,
+                ))
+                .await
+                {
                     Some(raw) => raw,
                     None => {
                         append_unreturned(&session, &mut record, call, stopped_result(call))
@@ -2038,7 +2060,13 @@ async fn finish_step(
                         let eid = record_entry_id(&record, &call.id);
                         mark_done(&mut record, &call.id, &eid);
                         record.abort = true;
-                        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+                        return Box::pin(finalize_cancelled(
+                            deps,
+                            &session,
+                            &mut record,
+                            "cancelled",
+                        ))
+                        .await;
                     }
                 }
             };
@@ -2140,7 +2168,14 @@ async fn finish_step(
     // submit_result is terminal: dispatched calls already landed above; now
     // the harness consumes the submit_result (validate + record + finalise).
     if let Some(submit) = submit_call {
-        return handle_submit(deps, &session, &mut record, &strategy, submit).await;
+        return Box::pin(handle_submit(
+            deps,
+            &session,
+            &mut record,
+            &strategy,
+            submit,
+        ))
+        .await;
     }
 
     // With dispatched calls and no submit_result, re-enqueue so the model
@@ -2155,13 +2190,13 @@ async fn finish_step(
             && (has_user_after_watermark(&session, &record).await?
                 || has_queued(deps, &record).await?);
         if ends_after_ask(asked_this_step, submit_call.is_some(), steering) {
-            return finalize_with_contract(
+            return Box::pin(finalize_with_contract(
                 deps,
                 &session,
                 &mut record,
                 &strategy,
                 &outcome.message,
-            )
+            ))
             .await;
         }
         return advance(deps, &mut record).await;
@@ -2172,7 +2207,14 @@ async fn finish_step(
         return advance(deps, &mut record).await;
     }
 
-    finalize_with_contract(deps, &session, &mut record, &strategy, &outcome.message).await
+    Box::pin(finalize_with_contract(
+        deps,
+        &session,
+        &mut record,
+        &strategy,
+        &outcome.message,
+    ))
+    .await
 }
 
 /// Decide one in-turn `harness::ask` against the record's per-step markers

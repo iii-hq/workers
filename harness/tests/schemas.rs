@@ -249,3 +249,106 @@ fn deletion_snapshot_schema_rejects_zero_attempt() {
     assert!(!validator.is_valid(&invalid));
     assert!(serde_json::from_value::<Snapshot>(invalid).is_err());
 }
+
+/// Each hook function publishes its point's input as `request_format` and
+/// `response_format` (what observers observe), and `HookArgs` as
+/// `args_format`.
+#[test]
+fn hook_function_formats_match_goldens() {
+    use harness::hooks::{HookArgs, HookPoint};
+    let mut failures = Vec::new();
+    for point in HookPoint::all() {
+        let actual = serde_json::json!({
+            "function_id": point.function_id(),
+            "request_format": point.input_format(),
+            "response_format": point.input_format(),
+            "args_format": harness::surface::schema_value::<HookArgs>(),
+        });
+        if let Err(msg) = support::check_golden(
+            &golden_file_name(point.function_id()),
+            &(serde_json::to_string_pretty(&actual).unwrap() + "\n"),
+        ) {
+            failures.push(msg);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The inputs the harness calls the hook functions with validate against
+/// the formats those functions publish.
+#[test]
+fn hook_inputs_validate_against_their_published_formats() {
+    use harness::hooks::HookPoint;
+    use serde_json::{json, Value};
+
+    let call = json!({ "id": "c_1", "function_id": "shell::run", "arguments": { "cmd": "ls" } });
+    let cases: [(HookPoint, Value); 6] = [
+        (HookPoint::PreTurn, json!({})),
+        (
+            HookPoint::PreGenerate,
+            json!({ "generate": {
+                "system_prompt": "base",
+                "messages": [{ "role": "user", "content": "hi" }],
+                "model": "m",
+                "provider": "p",
+                "functions_generation": 3,
+                "tools": [{ "name": "shell::run" }],
+                "expose": "agent_call",
+            } }),
+        ),
+        (
+            HookPoint::PostGenerate,
+            json!({ "generated": { "message": { "role": "assistant" } } }),
+        ),
+        (
+            HookPoint::PreCall,
+            json!({ "call": call, "resume_after": "gate::hold" }),
+        ),
+        (
+            HookPoint::PostCall,
+            json!({ "call": call, "result": {
+                "function_call_id": "c_1",
+                "function_id": "shell::run",
+                "content": [{ "type": "text", "text": "ok" }],
+                "is_error": false,
+                "details": null,
+            } }),
+        ),
+        (HookPoint::PostTurn, json!({ "result": { "rows": 4 } })),
+    ];
+    for (point, extra) in cases {
+        let mut input = json!({
+            "point": point.input_name(),
+            "session_id": "s_1",
+            "turn_id": "t_1",
+            "step": 2,
+            "depth": 1,
+            "metadata": { "tenant": "acme" },
+        });
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let schema = point.input_format();
+        let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
+        assert!(
+            validator.is_valid(&input),
+            "{} input {input} against {schema}",
+            point.function_id()
+        );
+        if point != HookPoint::PreTurn {
+            // The point's own field is required.
+            let mut bare = input.clone();
+            for key in extra.as_object().unwrap().keys() {
+                if key != "resume_after" {
+                    bare.as_object_mut().unwrap().remove(key);
+                }
+            }
+            assert!(
+                !validator.is_valid(&bare),
+                "{} without {extra}",
+                point.function_id()
+            );
+        }
+    }
+}

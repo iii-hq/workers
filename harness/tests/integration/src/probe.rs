@@ -258,15 +258,19 @@ impl ScenarioProbe {
     /// Add a second completion observer for direct children of `session_id`.
     /// The root observer remains session-scoped; the parent filter captures
     /// every in-turn `harness::spawn` child without needing runtime child ids
-    /// before the first generation runs.
+    /// before the first generation runs. A spawned child's event names its
+    /// parent in `parent.session_id`, a displayed child's in
+    /// `parent_session_id`; the filter takes either.
     pub async fn bind_child_completion_observer(
         &self,
         parent_session_id: &str,
         deadline: Deadline,
     ) -> anyhow::Result<()> {
         let children = self.observe(
-            Source::function(ON_TURN_COMPLETED_FN)
-                .filters(json!({ "input.parent_session_id": { "$eq": parent_session_id } })),
+            Source::function(ON_TURN_COMPLETED_FN).filters(json!({ "$or": [
+                { "input.parent.session_id": { "$eq": parent_session_id } },
+                { "input.parent_session_id": { "$eq": parent_session_id } },
+            ] })),
             ON_TURN_COMPLETED_FN,
             LIFECYCLE_FUNCTION_ID,
         )?;
