@@ -17,7 +17,7 @@ use crate::backend::Backend;
 use crate::config::{BucketConfig, WorkerConfig};
 use crate::events::dispatcher::EngineDispatcher;
 use crate::events::pollers::{cf_queue, pubsub, sqs};
-use crate::events::source::WiredBuckets;
+use crate::events::source::{self, WiredBuckets};
 use crate::handlers::{AppState, Catalog};
 use crate::material::{self, BucketError, Material, Stage};
 use crate::secrets::Refetch;
@@ -306,6 +306,7 @@ impl StorageRuntime {
             }
         }
         let new_wired_buckets = wired_buckets(&cfg, &new_backends, &notification_errors);
+        let sourced = sourced_buckets(&cfg);
 
         // Requests and signed HTTP handlers take the read side only while
         // selecting an Arc-backed generation. Holding the write side here makes
@@ -314,6 +315,8 @@ impl StorageRuntime {
         self.local.commit(local_update).await;
         *state.backends.write().await = new_backends;
         *self.wired_buckets.write().await = new_wired_buckets;
+        // Under the gate: an observer admitted from here on sees the new set.
+        source::revalidate_observers(&self.dispatcher.iii, &sourced);
         {
             let mut pollers = self.pollers.lock().await;
             pollers.retain(|key, handle| {
@@ -515,6 +518,24 @@ fn wired_buckets(
             };
             wired.then(|| name.clone())
         })
+        .collect()
+}
+
+/// Buckets whose configuration names a notifications source (a local bucket
+/// always has one), running or not, and stored entries that are invalid as
+/// they are. Their observers stay through a reconfiguration; observers of any
+/// other bucket are rejected ([`source::revalidate_observers`]).
+fn sourced_buckets(cfg: &WorkerConfig) -> HashSet<String> {
+    cfg.buckets
+        .iter()
+        .filter(|(_, bucket)| match bucket {
+            BucketConfig::S3(value) => value.notifications.is_some(),
+            BucketConfig::Gcs(value) => value.notifications.is_some(),
+            BucketConfig::R2(value) => value.notifications.is_some(),
+            BucketConfig::Local(_) => true,
+        })
+        .map(|(name, _)| name.clone())
+        .chain(cfg.invalid.keys().cloned())
         .collect()
 }
 
@@ -988,6 +1009,32 @@ mod tests {
     fn live_configuration_accepts_zero_buckets() {
         let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
         assert!(cfg.buckets.is_empty());
+    }
+
+    // Observers stay through a reconfiguration for a bucket whose source is
+    // configured, running or not, and for an entry invalid as stored; any
+    // other bucket's observers are rejected.
+    #[test]
+    fn sourced_buckets_keep_their_observers() {
+        let cfg = WorkerConfig::from_json_isolating(&serde_json::json!({
+            "buckets": {
+                "local": { "provider": "local" },
+                "cold": { "provider": "s3", "region": "us-east-1" },
+                "events": {
+                    "provider": "s3",
+                    "region": "us-east-1",
+                    "notifications": { "sqs_queue_url": "https://sqs.test/q" }
+                },
+                "typo": { "provider": "s3", "region": 7 }
+            }
+        }))
+        .unwrap();
+        assert!(cfg.invalid.contains_key("typo"));
+        let sourced = sourced_buckets(&cfg);
+        assert_eq!(
+            sourced,
+            HashSet::from(["local".into(), "events".into(), "typo".into()])
+        );
     }
 
     #[test]

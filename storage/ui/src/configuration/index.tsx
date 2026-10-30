@@ -465,7 +465,7 @@ function NotificationFields({
         id={`storage-cfg-${name}-notifications`}
         path={`buckets/${name}/notifications`}
         label="Enable object event notifications"
-        hint="Saving starts or stops the provider poller immediately. Existing observers remain intact."
+        hint="Saving starts or stops the provider poller immediately. Turning notifications off rejects the observers of this bucket (CONFIG_ERROR)."
         checked={notificationsEnabled}
         onChange={(checked) => {
           const next = { ...bucket }

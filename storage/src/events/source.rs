@@ -8,7 +8,9 @@
 //! filters match the event, each bounded by its `handler_timeout_ms`, and
 //! answers `{ acked }`: true when every target returned `null` or
 //! `{ ack: true }`. The notifications source acks the upstream message on
-//! `acked` and leaves it for redelivery otherwise.
+//! `acked` and leaves it for redelivery otherwise. A reconfiguration that
+//! removes a bucket, or its `notifications:`, rejects the bucket's observers
+//! with `CONFIG_ERROR` ([`revalidate_observers`]).
 
 use super::normalize::EventKind;
 use super::object_created::{
@@ -139,6 +141,38 @@ async fn admit(
         "object event observer added"
     );
     Ok(())
+}
+
+/// After a reconfiguration: rejects, with `CONFIG_ERROR`, every observer of
+/// either function whose bucket is not in `sourced` (the bucket was removed,
+/// or its `notifications:` was). The rejection removes the observer. An
+/// observer of a bucket whose source is configured but failed to start, or
+/// whose entry is invalid as stored, stays and receives events once the
+/// source runs again.
+pub fn revalidate_observers(iii: &IIIClient, sourced: &HashSet<String>) {
+    for function_id in [ON_OBJECT_CREATED_FN, ON_OBJECT_DELETED_FN] {
+        for obs in iii.observers(function_id) {
+            let Ok(args) = obs.args::<ObjectArgs>() else {
+                continue;
+            };
+            if sourced.contains(&args.bucket) {
+                continue;
+            }
+            tracing::info!(
+                observer = obs.id(),
+                function = function_id,
+                bucket = %args.bucket,
+                "object event observer rejected: its bucket has no notifications source"
+            );
+            obs.reject(
+                "CONFIG_ERROR",
+                format!(
+                    "bucket `{}` no longer has a notifications source in the configuration",
+                    args.bucket
+                ),
+            );
+        }
+    }
 }
 
 /// `onObserverDeliver`: calls the target of every matching observer whose
