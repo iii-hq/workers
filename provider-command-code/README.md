@@ -48,7 +48,7 @@ const result = await iii.call({
       },
     ],
   },
-  timeout_ms: 320_000,
+  timeoutMs: 320_000,
 });
 ```
 

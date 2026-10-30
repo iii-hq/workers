@@ -23,7 +23,7 @@ channel's **write** endpoint, and reading frames from the **read** endpoint
 while `router::chat` runs. Any SDK works; Node shown:
 
 ```ts
-import { createChannel } from 'iii-sdk';
+import { createChannel } from 'iii-sdk/helpers';
 
 const { reader, writerRef } = await createChannel(iii);
 reader.onMessage((frame) => {
@@ -38,7 +38,7 @@ const res = await iii.call({
     model: 'claude-sonnet-4',
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
   },
-  timeout_ms: 620_000, // outer timeout ≥ the router's 600s stream budget
+  timeoutMs: 620_000, // outer timeout ≥ the router's 600s stream budget
 });
 // res: { ok, provider, model, stop_reason, usage }
 ```
