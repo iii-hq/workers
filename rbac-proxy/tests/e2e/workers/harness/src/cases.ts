@@ -33,6 +33,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /** The calls `shared::source` (a private function of `down`) handled, by payload. */
 const sourceCalls: Json[] = []
+let sharedSourceRegistered = false
 
 /** Resolve once the engine lists `functionId` (asked on the unfiltered connection). */
 async function waitForFunction(support: IIIClient, functionId: string): Promise<void> {
@@ -49,6 +50,26 @@ async function waitForFunction(support: IIIClient, functionId: string): Promise<
     await sleep(200)
   }
   throw new Error(`the engine did not list ${functionId}`)
+}
+
+/**
+ * Register `shared::source`, a private function of `down` that records each
+ * call's payload in `sourceCalls`, unless an earlier case did; resolve once
+ * the engine lists it as `tenant1::shared::source`.
+ */
+async function ensureSharedSource(down: IIIClient, support: IIIClient): Promise<void> {
+  if (!sharedSourceRegistered) {
+    down.registerFunction(
+      'shared::source',
+      async (input: Json) => {
+        sourceCalls.push(input)
+        return { handled: true }
+      },
+      { private: true },
+    )
+    sharedSourceRegistered = true
+  }
+  await waitForFunction(support, 'tenant1::shared::source')
 }
 
 /** A raw worker connection through the proxy, read frame by frame. */
@@ -298,15 +319,7 @@ export const CASES: TestCase[] = [
   {
     name: 'own-private-call-runs-in-process-under-middleware',
     async run({ down, support }) {
-      down.registerFunction(
-        'shared::source',
-        async (input: Json) => {
-          sourceCalls.push(input)
-          return { handled: true }
-        },
-        { private: true },
-      )
-      await waitForFunction(support, 'tenant1::shared::source')
+      await ensureSharedSource(down, support)
       const before = middlewareCalls.length
       let local = false
       // Until `functionregistered` reaches the SDK, the call goes through the
@@ -331,7 +344,8 @@ export const CASES: TestCase[] = [
   // engine refuses: only the host may call a private function.
   {
     name: 'another-workers-call-of-a-private-function-goes-through-middleware',
-    async run({ expectError }) {
+    async run({ down, support, expectError }) {
+      await ensureSharedSource(down, support)
       const other = registerWorker(PROXY_URL, {
         workerName: 'rbac-e2e-other',
         headers: { authorization: 'Bearer test-token' },

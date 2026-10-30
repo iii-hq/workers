@@ -51,7 +51,7 @@ run-tests.sh
 | `prefix-self-invoke-roundtrip` | the session invokes its own bare `myfn`; the proxy resolves + dispatches back (prefix stripped), the handler runs, and the call goes through middleware |
 | `local-dispatch-offered-for-own-private-functions` | with middleware set, `workerregistered` keeps `local-dispatch.v1`, and `functionregistered` says `local_dispatch: true` for a private function of the connection and `false` for an ordinary one |
 | `own-private-call-runs-in-process-under-middleware` | the session's call of its own private `shared::source` runs in-process (the handler receives the caller's payload object) and never reaches middleware |
-| `another-workers-call-of-a-private-function-goes-through-middleware` | another session's call of `tenant1::shared::source` (exposed) reaches middleware, whose forward the engine refuses with `FORBIDDEN`; the handler does not run |
+| `another-workers-call-of-a-private-function-goes-through-middleware` | another session's call of `tenant1::shared::source` (exposed) reaches middleware, whose forward the engine refuses with `FORBIDDEN`; the handler does not run (the case registers `shared::source` itself when it runs alone) |
 | `observe-to-forbidden-target-denied` | an observer whose target is a forbidden function is refused with `FORBIDDEN` and never forwarded (the engine holds no observer targeting it) |
 | `observer-registration-hook-denies` | the `on_observer_registration` hook runs before the engine sees an observer; its throw refuses the observer with `FORBIDDEN` |
 | `observer-of-exposed-function-fires-through-proxy` | an observer of `api::echo` targeting the session's own `on-echo` goes active, and a call of `api::echo` runs `on-echo` through the proxy with the `Observed` envelope |
