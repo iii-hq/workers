@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use cron::Schedule;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -142,16 +142,35 @@ impl Scheduler {
     }
 }
 
+/// The fire a job waits for: the first one after the current time and after
+/// the job's previous fire. The sleep runs on tokio's monotonic clock and the
+/// schedule on the wall clock, so a job can wake a little before the fire it
+/// slept for; counting from the previous fire keeps it from firing that time
+/// twice. Counting from the current time skips the fires missed while the
+/// job was not running (no catch-up).
+fn next_fire(
+    schedule: &Schedule,
+    current: DateTime<Utc>,
+    previous: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    let from = previous.map_or(current, |previous| previous.max(current));
+    schedule.after(&from).next()
+}
+
 fn spawn_job(schedule: Schedule, expression: String, ticker: Arc<dyn Ticker>) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut previous = None;
         loop {
-            let now = Utc::now();
-            let Some(next) = schedule.upcoming(Utc).next() else {
+            let current = Utc::now();
+            let Some(next) = next_fire(&schedule, current, previous) else {
                 tracing::info!(expression = %expression, "schedule exhausted; stopping job");
                 break;
             };
-            let wait = (next - now).to_std().unwrap_or(std::time::Duration::ZERO);
+            let wait = (next - current)
+                .to_std()
+                .unwrap_or(std::time::Duration::ZERO);
             tokio::time::sleep(wait).await;
+            previous = Some(next);
 
             ticker.tick(CronTick {
                 expression: expression.clone(),
@@ -220,6 +239,33 @@ pub(crate) mod tests {
     async fn settle() {
         // Past any fire already in progress, then one more period.
         tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+    }
+
+    #[test]
+    fn a_job_that_wakes_before_its_fire_on_the_wall_clock_fires_the_next_one() {
+        use chrono::TimeZone;
+        let schedule = Schedule::from_str(EVERY_SECOND).unwrap();
+        let fire = Utc.with_ymd_and_hms(2026, 10, 30, 14, 1, 14).unwrap();
+        let early = fire - chrono::Duration::microseconds(500);
+        assert_eq!(next_fire(&schedule, early, None), Some(fire));
+        assert_eq!(
+            next_fire(&schedule, early, Some(fire)),
+            Some(fire + chrono::Duration::seconds(1)),
+            "the fire it slept for is not fired twice"
+        );
+    }
+
+    #[test]
+    fn a_job_skips_the_fires_it_missed() {
+        use chrono::TimeZone;
+        let schedule = Schedule::from_str(EVERY_SECOND).unwrap();
+        let previous = Utc.with_ymd_and_hms(2026, 10, 30, 14, 1, 14).unwrap();
+        let late = previous + chrono::Duration::milliseconds(5_300);
+        assert_eq!(
+            next_fire(&schedule, late, Some(previous)),
+            Some(previous + chrono::Duration::seconds(6)),
+            "the next fire after the current time, with no catch-up"
+        );
     }
 
     #[tokio::test]
