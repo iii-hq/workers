@@ -62,7 +62,7 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 						}
 						pending = nil
 					}
-					if connectionNamespace == "" && string(frame["type"]) == `"registerfunction"` {
+					if connectionNamespace == "" && (string(frame["type"]) == `"registerfunction"` || string(frame["type"]) == `"registertriggertype"`) {
 						pending = append(pending, frame)
 						continue
 					}
@@ -122,10 +122,18 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 			gets := 0
 			bound := false
 			uiAssets := map[string]bool{}
-			for len(uiAssets) < 2 || len(names) < 12 || len(defaultNames) < 2 || central && (!bound || !proxyBound || gets < 2 || proxyGets < 2 || proxyApplies < 1) {
+			nodeEventsRegistered := false
+			for !nodeEventsRegistered || len(uiAssets) < 2 || len(names) < 12 || len(defaultNames) < 2 || central && (!bound || !proxyBound || gets < 2 || proxyGets < 2 || proxyApplies < 1) {
 				select {
 				case f := <-frames:
 					switch string(f["type"]) {
+					case `"registertriggertype"`:
+						if string(f["id"]) == `"mesh::node-changed"` {
+							if string(f["connection_namespace"]) != `"`+ns+`"` {
+								t.Fatalf("event type namespace: %s", f)
+							}
+							nodeEventsRegistered = true
+						}
 					case `"registerfunction"`:
 						var id string
 						json.Unmarshal(f["id"], &id)

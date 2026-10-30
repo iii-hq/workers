@@ -51,6 +51,9 @@ func (c *Coordinator) SetRuntimeMetadata(name string, metadata RuntimeMetadata) 
 		n.RuntimeMetadata = old
 		return err
 	}
+	if old.Version != metadata.Version {
+		c.notifyNode(n, "version")
+	}
 	c.wake()
 	return nil
 }

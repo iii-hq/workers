@@ -37,6 +37,7 @@ type Hooks struct {
 }
 
 type Hub struct {
+	events          *nodeEvents
 	nodeReconciler  *nodeReconciler
 	nodeClient      rpc
 	resolveArtifact func(context.Context, string, string, string) (registry.Artifact, error)
@@ -415,6 +416,12 @@ func (h *Hub) Close() error {
 		h.cancel()
 	}
 	var err error
+	if h.events != nil {
+		if h.Coordinator != nil {
+			h.Coordinator.SetNodeObserver(nil)
+		}
+		h.events.close()
+	}
 	if hooks.Close != nil {
 		err = hooks.Close()
 	}

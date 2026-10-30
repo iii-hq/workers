@@ -99,29 +99,30 @@ type NodeInfo struct {
 }
 
 type Coordinator struct {
-	clock       tstime.Clock
-	limit       *join.Limit
-	key         key.MachinePrivate
-	file        string
-	join        func(secret, addr string) (string, error)
-	self        string
-	gone        func(name string)
-	mu          sync.Mutex
-	st          state
-	host        string
-	relayPort   int
-	stunPort    int
-	gatewayPort int
-	links       map[[2]string]bool
-	drives      map[string]Drive
-	ver         uint64
-	wakes       map[chan struct{}]bool
-	taken       func(string) bool
-	trusted     []netip.Prefix
-	ctx         context.Context
-	cancel      context.CancelFunc
-	life        sync.Mutex
-	backend     *userspace
+	clock        tstime.Clock
+	limit        *join.Limit
+	key          key.MachinePrivate
+	file         string
+	join         func(secret, addr string) (string, error)
+	self         string
+	gone         func(name string)
+	nodeObserver func(NodeChange)
+	mu           sync.Mutex
+	st           state
+	host         string
+	relayPort    int
+	stunPort     int
+	gatewayPort  int
+	links        map[[2]string]bool
+	drives       map[string]Drive
+	ver          uint64
+	wakes        map[chan struct{}]bool
+	taken        func(string) bool
+	trusted      []netip.Prefix
+	ctx          context.Context
+	cancel       context.CancelFunc
+	life         sync.Mutex
+	backend      *userspace
 }
 
 func (c *Coordinator) Public() key.MachinePublic { return c.key.Public() }
@@ -237,6 +238,7 @@ func (c *Coordinator) Remove(name string) error {
 		return err
 	}
 	c.changed(n)
+	c.notifyNode(n, "removed")
 	if c.gone != nil {
 		go c.gone(n.Name)
 	}
@@ -298,6 +300,7 @@ func (c *Coordinator) scheduleExpiry(n *node, delay time.Duration) {
 			return
 		}
 		c.wake()
+		c.notifyNode(n, "removed")
 		if c.gone != nil {
 			go c.gone(n.Name)
 		}
@@ -471,6 +474,7 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 				n.timer.Stop()
 			}
 			c.wake()
+			c.notifyNode(n, "removed")
 			if c.gone != nil {
 				go c.gone(n.Name)
 			}
@@ -530,6 +534,9 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 			return tailcfg.RegisterResponse{Error: err.Error()}
 		}
 		c.changed(n)
+		if !existed {
+			c.notifyNode(n, "joined")
+		}
 		c.expire(n)
 	} else {
 		before := *n
@@ -583,12 +590,18 @@ func (c *Coordinator) serveMap(w http.ResponseWriter, r *http.Request, machine k
 	wake := make(chan struct{}, 1)
 	c.wakes[wake] = true
 	n.streams++
+	if n.streams == 1 && c.authorized(n) {
+		c.notifyNode(n, "online")
+	}
 	c.changed(n)
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		delete(c.wakes, wake)
 		if n.streams--; n.streams == 0 {
+			if c.authorized(n) && slices.Contains(c.st.Nodes, n) {
+				c.notifyNode(n, "offline")
+			}
 			c.expire(n)
 		}
 		c.changed(n)

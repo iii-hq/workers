@@ -38,6 +38,37 @@ online state and worker state. An empty list means no machines have joined.
 An offline machine exposes no functions. Windows has no `shell::*` or
 `coder::*` until `ide` ships for Windows.
 
+## Node events
+
+Bind `mesh::node-changed` to a function in the hub's project. The binding config
+accepts only an optional node name: `{}` watches all nodes and
+`{"node":"laptop"}` watches one. Unknown keys, including condition callbacks,
+are refused. For example, with a connected Go SDK client:
+
+```go
+err := client.RegisterTriggerNamespaced(
+    "laptop-changes", "mesh::node-changed", "audit::node-change", "my-project",
+    json.RawMessage(`{"node":"laptop"}`),
+)
+```
+
+The target receives `{"name":"laptop","event":"online","at":"2026-10-30T12:00:00Z"}`.
+Events are `joined`, `online`, `offline`, `removed` and `outdated`. Connectivity
+follows the node's active control streams. Removal includes logout and ephemeral
+expiry. `outdated` is emitted when authenticated runtime metadata changes to a
+version different from the hub, matching the status count. The hub itself is
+excluded.
+
+Delivery is best effort, with no event history or replay for new bindings.
+Restored inventory is a baseline; use `mesh::nodes::list` for a current snapshot.
+The worker permits 256 active bindings and 256 pending deliveries, drops overflow
+and skips canceled or disconnected bindings. A slow callback can delay other
+callbacks for up to five seconds. The SDK owns reconnect and may still transmit
+a frame already handed to it during a disconnect; removing a binding cannot
+recall an invocation already sent. Node worker grants are unchanged; this type
+is not added to their default grants. Local tests cover SDK delivery and control
+transitions; native machine, tunnel and mount acceptance remains unverified.
+
 ## Console
 
 Open **Mesh** in the Console to see machine connectivity, connection path,

@@ -69,6 +69,9 @@ func Run(ctx context.Context, o Options) (err error) {
 		}
 	}
 	defer h.Close()
+	if err := h.registerNodeEvents(ctx, client); err != nil {
+		return fmt.Errorf("register mesh node events: %w", err)
+	}
 	if err := h.registerFunctions(client); err != nil {
 		return fmt.Errorf("register mesh functions: %w", err)
 	}
