@@ -330,7 +330,11 @@ describe('loading without a loading event', () => {
   it('a navigation the page made shows the bar until the next title, or 3 s', async () => {
     const { host } = await opened('t1')
     expect(loading(host)).toBe(false)
-    await host.emitObserved('browser::on-navigated', { session_id: 't1', url: 'https://example.com/clicked', timestamp: 1 })
+    await host.emitObserved('browser::on-navigated', {
+      session_id: 't1',
+      url: 'https://example.com/clicked',
+      timestamp: 1,
+    })
     expect(loading(host)).toBe(true)
     expect(host.find('address').props?.text).toBe('example.com/clicked')
     await host.emitObserved('browser::on-session-updated', {
@@ -343,7 +347,11 @@ describe('loading without a loading event', () => {
     expect(loading(host)).toBe(false)
     expect(host.find('tab').props?.title).toBe('Clicked')
 
-    await host.emitObserved('browser::on-navigated', { session_id: 't1', url: 'https://example.com/again', timestamp: 3 })
+    await host.emitObserved('browser::on-navigated', {
+      session_id: 't1',
+      url: 'https://example.com/again',
+      timestamp: 3,
+    })
     expect(loading(host)).toBe(true)
     await host.tick(2999)
     expect(loading(host)).toBe(true)

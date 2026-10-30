@@ -234,7 +234,10 @@ describe('adversarial: data from the worker', () => {
     await host.type('console-filter', '(a+)+$')
     await host.tick(300)
     const t0 = Date.now()
-    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: consoleEntry(1, `${'a'.repeat(26)}!`) })
+    await host.emitObserved('browser::on-console-event', {
+      session_id: 't1',
+      entry: consoleEntry(1, `${'a'.repeat(26)}!`),
+    })
     expect(Date.now() - t0).toBeLessThan(1000)
     expect(host.failed).toBeNull()
   })
@@ -310,7 +313,10 @@ describe('adversarial: data from the worker', () => {
     const { host } = await opened('t1', { ui: answers(6) })
     await host.press('tab-menu')
     await host.settle()
-    await host.emitObserved('browser::on-network-event', { session_id: 't1', entry: networkEntry(1, { mime_type: 42 }) })
+    await host.emitObserved('browser::on-network-event', {
+      session_id: 't1',
+      entry: networkEntry(1, { mime_type: 42 }),
+    })
     expect(keysOf(host, 'network-list')).toEqual(['1'])
   })
 
@@ -349,7 +355,11 @@ describe('adversarial: data from the worker', () => {
     const { host } = await opened('t1')
     const before = callsOf(host, 'browser::sessions::list').length
     for (let i = 0; i < 200; i++) {
-      await host.emitObserved('browser::on-navigated', { session_id: 't1', url: `https://example.com/${i}`, timestamp: i })
+      await host.emitObserved('browser::on-navigated', {
+        session_id: 't1',
+        url: `https://example.com/${i}`,
+        timestamp: i,
+      })
     }
     await host.tick(200)
     expect(callsOf(host, 'browser::sessions::list').length - before).toBeLessThanOrEqual(1)
@@ -364,7 +374,12 @@ describe('adversarial: memory', () => {
     fake.hold('browser::console::read')
     await host.press('tab-menu')
     const text = 'x'.repeat(2000)
-    await flood(host, 'browser::on-console-event', (i) => ({ session_id: 't1', entry: consoleEntry(i + 1, text) }), 40_000)
+    await flood(
+      host,
+      'browser::on-console-event',
+      (i) => ({ session_id: 't1', entry: consoleEntry(i + 1, text) }),
+      40_000,
+    )
     expect(host.failed).toBeNull()
     expect(host.memory().memory_used_size).toBeLessThan(HEAP_BUDGET)
     fake.release('browser::console::read')

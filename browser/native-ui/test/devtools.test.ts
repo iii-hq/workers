@@ -139,7 +139,10 @@ describe('the console', () => {
     expect(host.find('console-filter').props?.error).toBeUndefined()
     expect(callsOf(host, 'browser::console::read').at(-1)?.pattern).toBe('(?i)a\\.b \\(x\\)\\|y')
     await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(8, 'log', 'aXb (x)|y') })
-    await host.emitObserved('browser::on-console-event', { session_id: 't1', entry: entry(9, 'log', 'see A.B (X)|Y here') })
+    await host.emitObserved('browser::on-console-event', {
+      session_id: 't1',
+      entry: entry(9, 'log', 'see A.B (X)|Y here'),
+    })
     expect(keys(host, 'console-list').at(-1)).toBe('9')
     expect(keys(host, 'console-list')).not.toContain('8')
   })
