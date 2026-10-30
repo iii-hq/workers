@@ -75,7 +75,10 @@ function engine(registered = ['typesafe', 'semif']) {
     status: {} as Record<string, unknown>,
     addReply: { status: 'accepted' } as unknown,
     operation: { status: 'running' } as unknown,
+    /** A worker's configuration entry when it is not named after the worker (`III_CONFIG_NAME`). */
+    configurationIds: {} as Record<string, string>,
   }
+  const entryOf = (worker: string) => state.configurationIds[worker] ?? worker
   const call = vi.fn(async (id: string, payload?: Record<string, unknown>) => {
     if (id === 'engine::functions::list') {
       return {
@@ -85,13 +88,14 @@ function engine(registered = ['typesafe', 'semif']) {
         ]),
       }
     }
-    if (id === 'judge::configuration-id') return { id: 'judge' }
-    const identity = /^(judge-[a-z0-9-]+)::configuration-id$/.exec(id)
-    if (identity) return { id: identity[1] }
+    const identity = /^(judge(?:-[a-z0-9-]+)?)::configuration-id$/.exec(id)
+    if (identity) return { id: entryOf(identity[1]) }
     const status = /^judge-([a-z0-9-]+)::status$/.exec(id)
     if (status) return state.status[status[1]]
     if (id === 'configuration::get') {
-      return payload?.id === 'judge' ? { value: { provider: 'typesafe' } } : { value: { model: state.models[String(payload?.id)] } }
+      return payload?.id === entryOf('judge')
+        ? { value: { provider: 'typesafe' } }
+        : { value: { model: state.models[String(payload?.id)] } }
     }
     if (id === 'compose::add') {
       if (state.addReply instanceof Error) throw state.addReply
@@ -108,6 +112,8 @@ function engine(registered = ['typesafe', 'semif']) {
   // The bus: handlers the page registers and the observers that route to them.
   const handlers = new Map<string, (payload: unknown) => void>()
   const observers: Observer[] = []
+  /** Each disposal, with how many observers of that function were active just before it. */
+  const disposals: { function_id: string; active: number }[] = []
   const on = vi.fn((id: string, handler: (payload: unknown) => void) => {
     handlers.set(id, handler)
     return () => handlers.delete(id)
@@ -120,7 +126,12 @@ function engine(registered = ['typesafe', 'semif']) {
     observers.push(observer)
     return () => {
       const at = observers.indexOf(observer)
-      if (at >= 0) observers.splice(at, 1)
+      if (at < 0) return
+      disposals.push({
+        function_id: observer.function_id,
+        active: observers.filter((entry) => entry.function_id === observer.function_id).length,
+      })
+      observers.splice(at, 1)
     }
   })
   /** A call of `functionId` with `event`: it reaches every observer whose filters match it. */
@@ -130,26 +141,46 @@ function engine(registered = ['typesafe', 'semif']) {
       handlers.get(observer.target.replace(/::console-test$/, ''))?.(event)
     }
   }
-  return Object.assign({ call, on, observe, browserId: 'console-test' }, { state, observers, handlers, emit })
+  return Object.assign(
+    { call, on, observe, browserId: 'console-test' },
+    { state, observers, disposals, handlers, emit },
+  )
 }
 
-type Filters = Record<string, { $eq?: unknown }>
+interface Condition {
+  $eq?: unknown
+  $in?: unknown[]
+  $prefix?: string
+}
+type Filters = Record<string, Condition | Filters[]>
 interface Observer {
   function_id: string
   filters: Filters
   target: string
 }
 
-/** The `{ 'input.<field>': { $eq: value } }` filters the page uses, applied to an event source's input. */
+/**
+ * The filters the page uses (`$eq`, `$in` and `$prefix` on `input.<field>`,
+ * and `$or`), applied to an event source's input the way iii applies them.
+ */
 function matches(filters: Filters, input: Record<string, unknown>): boolean {
-  return Object.entries(filters).every(([path, condition]) => input[path.replace(/^input\./, '')] === condition.$eq)
+  return Object.entries(filters).every(([path, clause]) => {
+    if (path === '$or') return (clause as Filters[]).some((alternative) => matches(alternative, input))
+    const value = input[path.replace(/^input\./, '')]
+    return Object.entries(clause as Condition).every(([operator, operand]) => {
+      if (operator === '$eq') return value === operand
+      if (operator === '$in') return (operand as unknown[]).includes(value)
+      if (operator === '$prefix') return typeof value === 'string' && value.startsWith(operand as string)
+      throw new Error(`the fake bus has no ${operator}`)
+    })
+  })
 }
 
 /** The operation id the page observes `compose::on-operation-progress` for. */
 function observedOperation(iii: ReturnType<typeof engine>): string {
   const observer = iii.observers.find((entry) => entry.function_id === 'compose::on-operation-progress')
   if (!observer) throw new Error('no compose::on-operation-progress observer')
-  return String(observer.filters['input.operation_id']?.$eq)
+  return String((observer.filters['input.operation_id'] as Condition | undefined)?.$eq)
 }
 
 /** Compose ends the operation: its terminal event reaches the page. */
@@ -523,8 +554,11 @@ describe('per-session judge provider', () => {
       await vi.advanceTimersByTimeAsync(60_000)
     })
     expect(lists()).toBe(before)
-    // The configuration observer has no filters; another worker's entry is not news.
-    expect(iii.observers.find((entry) => entry.function_id === 'configuration::on-updated')?.filters).toEqual({})
+    // The configuration observer selects the entries the picker reads by id:
+    // another worker's entry never reaches it.
+    expect(iii.observers.find((entry) => entry.function_id === 'configuration::on-updated')?.filters).toEqual({
+      $or: [{ 'input.id': { $in: ['judge', 'judge-semif', 'judge-typesafe'] } }, { 'input.id': { $prefix: 'judge-' } }],
+    })
     await act(async () =>
       iii.emit('configuration::on-updated', {
         type: 'configuration',
@@ -563,6 +597,53 @@ describe('per-session judge provider', () => {
       'secrets::on-changed',
     ])
     // Unmounting drops them.
+    act(() => root?.unmount())
+    root = null
+    expect(iii.observers).toEqual([])
+  })
+
+  it('observes the configuration entries of judges listed under other names, the new observer before the old is gone', async () => {
+    const iii = engine()
+    iii.state.configurationIds = { judge: 'judge-hub-prod', 'judge-semif': 'semif-prod' }
+    iii.state.models['semif-prod'] = 'qwen3.5-4b'
+    const { labels } = await mount({}, { iii })
+    const configurationObservers = () =>
+      iii.observers.filter((entry) => entry.function_id === 'configuration::on-updated')
+    expect(configurationObservers()).toHaveLength(1)
+    expect(configurationObservers()[0].filters).toEqual({
+      $or: [
+        { 'input.id': { $in: ['judge', 'judge-hub-prod', 'judge-typesafe', 'semif-prod'] } },
+        { 'input.id': { $prefix: 'judge-' } },
+      ],
+    })
+    // Each change of the set (the hub's id read, the judges listed) is
+    // observed first; the observer it replaces is disposed after.
+    const observed = iii.observe.mock.calls.filter(
+      ([source]) => typeof source === 'object' && source.function_id === 'configuration::on-updated',
+    )
+    expect(observed.length).toBeGreaterThan(1)
+    const replaced = iii.disposals.filter((entry) => entry.function_id === 'configuration::on-updated')
+    expect(replaced).toHaveLength(observed.length - 1)
+    expect(replaced.every((entry) => entry.active === 2)).toBe(true)
+    // One handler throughout.
+    expect(new Set(observed.map(([, target]) => target)).size).toBe(1)
+    // An entry named after no judge is news when a listed judge reads it.
+    vi.useFakeTimers()
+    const lists = () => iii.call.mock.calls.filter(([id]) => id === 'engine::functions::list').length
+    const before = lists()
+    iii.state.models['semif-prod'] = 'qwen3.5-9b'
+    await act(async () =>
+      iii.emit('configuration::on-updated', {
+        type: 'configuration',
+        event_type: 'configuration:updated',
+        id: 'semif-prod',
+      }),
+    )
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+    expect(lists()).toBe(before + 1)
+    expect(labels()).toContain('qwen3.5-9b')
     act(() => root?.unmount())
     root = null
     expect(iii.observers).toEqual([])
