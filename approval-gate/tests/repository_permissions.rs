@@ -77,7 +77,7 @@ fn configuration_ensure_is_denied() {
 
 /// `harness::on-session-deleted` is the `session::on-deleted` cleanup target, engine
 /// plumbing like the other internal harness hooks. Called directly with a live
-/// session id, it would wipe that session's turn record and bindings.
+/// session id, it would wipe that session's turn record and drop its observers.
 #[test]
 fn harness_on_session_deleted_is_denied() {
     assert!(matches!(

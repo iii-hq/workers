@@ -26,9 +26,9 @@ worker:
 
 The worker keeps **no resolved-approval history**: a record exists only while
 a call is held; every record has an explicit deletion path (resolve, turn
-abort, session delete). The transcript's `function_result` and the
-`pending_resolved` event are the audit trail. Holds do not expire — they wait
-until a human resolves or the turn/session is purged.
+abort, session delete). The transcript's `function_result` and the calls of
+`approval::on-pending-resolved` are the audit trail. Holds do not expire:
+they wait until a human resolves or the turn/session is purged.
 
 ## Standalone caveat
 
