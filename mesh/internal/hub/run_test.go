@@ -91,6 +91,11 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 							}
 							proxyMu.Unlock()
 						}
+					case `"rbac-proxy::on-config-change"`:
+						proxyMu.Lock()
+						applied, _ := proxyValue.(map[string]any)
+						value = map[string]any{"ok": true, "applied_config": applied, "bound_host": applied["host"], "bound_port": applied["port"]}
+						proxyMu.Unlock()
 					case `"engine::functions::list"`:
 						value = map[string]any{"functions": []any{map[string]string{"function_id": "analytics::report"}}}
 					}
@@ -109,10 +114,11 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 			names := map[string]bool{}
 			defaultNames := map[string]bool{}
 			proxyGets := 0
+			proxyApplies := 0
 			proxyBound := false
 			gets := 0
 			bound := false
-			for len(names) < 11 || len(defaultNames) < 2 || central && (!bound || !proxyBound || gets < 2 || proxyGets < 2) {
+			for len(names) < 11 || len(defaultNames) < 2 || central && (!bound || !proxyBound || gets < 2 || proxyGets < 2 || proxyApplies < 1) {
 				select {
 				case f := <-frames:
 					switch string(f["type"]) {
@@ -153,6 +159,14 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 						id := string(f["function_id"])
 						if !central && id != `"engine::workers::register"` {
 							t.Fatalf("interface mode invoked backend %s", id)
+						}
+						if id == `"rbac-proxy::on-config-change"` {
+							proxyApplies++
+							var callNS string
+							json.Unmarshal(f["namespace"], &callNS)
+							if callNS != ns {
+								t.Fatalf("proxy apply outside primary namespace: %s", callNS)
+							}
 						}
 						if strings.Contains(id, "configuration::") {
 							if string(f["namespace"]) != `"default"` {

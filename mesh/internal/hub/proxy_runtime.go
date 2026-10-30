@@ -6,6 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/netip"
+	"net/url"
+	"reflect"
+	"strconv"
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
@@ -83,6 +87,10 @@ func (h *Hub) reconcileProxy(ctx context.Context) (err error) {
 	if closed {
 		return errors.New("hub is closed")
 	}
+	host, port, err := proxyEndpoint(h.Config().ProxyURL)
+	if err != nil {
+		return err
+	}
 	current, err := fetchProxyConfig(ctx, h.proxyClient)
 	if err != nil {
 		return fmt.Errorf("read proxy configuration: %w", err)
@@ -92,6 +100,8 @@ func (h *Hub) reconcileProxy(ctx context.Context) (err error) {
 		return errors.New(status)
 	}
 	if write {
+		next["engine_url"] = h.proxyEngineURL()
+		next["host"], next["port"] = host, port
 		if current == nil {
 			_, err = configCall(ctx, h.proxyClient, "configuration::ensure", map[string]any{"id": "rbac-proxy", "name": "RBAC Proxy", "description": "Mesh gateway proxy", "schema": map[string]any{}, "initial_value": next})
 		} else {
@@ -115,6 +125,15 @@ func (h *Hub) reconcileProxy(ctx context.Context) (err error) {
 	}
 	if !validProxyHooks(next) {
 		return errors.New("proxy mesh hooks or grants are invalid")
+	}
+	if next["host"] != host || next["port"] != float64(port) {
+		return errors.New("proxy listener does not match the configured loopback endpoint")
+	}
+	if next["engine_url"] != h.proxyEngineURL() {
+		return errors.New("proxy engine URL does not match the Hub bus")
+	}
+	if err := h.applyProxy(ctx, next); err != nil {
+		return err
 	}
 	h.setProxyHealth("ok", true)
 	return nil
@@ -162,4 +181,70 @@ func (h *Hub) refreshProxy(ctx context.Context) {
 	if err := h.reconcileProxy(ctx); err != nil {
 		log.Printf("mesh proxy: %v", err)
 	}
+}
+
+func (h *Hub) proxyEngineURL() string {
+	if h.Client != nil {
+		return h.Client.Address()
+	}
+	return "ws://127.0.0.1:49134"
+}
+
+type proxyApplyResult struct {
+	OK            bool           `json:"ok"`
+	AppliedConfig map[string]any `json:"applied_config"`
+	BoundHost     string         `json:"bound_host"`
+	BoundPort     int            `json:"bound_port"`
+	Error         string         `json:"error"`
+}
+
+func (h *Hub) applyProxy(ctx context.Context, desired map[string]any) error {
+	raw, err := h.proxyClient.Trigger(ctx, iii.TriggerRequest{FunctionID: "rbac-proxy::on-config-change", Namespace: h.Namespace, Data: json.RawMessage(`{"id":"rbac-proxy"}`), Timeout: 15 * time.Second})
+	if err != nil {
+		return fmt.Errorf("apply proxy configuration: %w", err)
+	}
+	var result proxyApplyResult
+	if json.Unmarshal(raw, &result) != nil {
+		return errors.New("malformed proxy application response")
+	}
+	if !result.OK || result.Error != "" {
+		return fmt.Errorf("proxy configuration was not applied: %s", result.Error)
+	}
+	_, write, status := EnsureProxyConfig(result.AppliedConfig)
+	if write || status != "ok" || !validProxyHooks(result.AppliedConfig) || !configContains(result.AppliedConfig, desired) {
+		return errors.New("proxy applied configuration does not match mesh ownership")
+	}
+	if result.BoundPort < 1 || result.BoundHost != result.AppliedConfig["host"] || float64(result.BoundPort) != result.AppliedConfig["port"] {
+		return errors.New("proxy applied listener does not match configuration")
+	}
+	return nil
+}
+
+// The proxy fills serde defaults, so require every desired value while allowing
+// its additional defaulted fields in the authoritative applied snapshot.
+func configContains(applied, desired map[string]any) bool {
+	for key, want := range desired {
+		if child, ok := want.(map[string]any); ok {
+			got, ok := applied[key].(map[string]any)
+			if !ok || !configContains(got, child) {
+				return false
+			}
+		} else if !reflect.DeepEqual(applied[key], want) {
+			return false
+		}
+	}
+	return true
+}
+
+func proxyEndpoint(raw string) (string, int, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", 0, errors.New("invalid proxy endpoint")
+	}
+	address, err := netip.ParseAddr(u.Hostname())
+	port, portErr := strconv.Atoi(u.Port())
+	if err != nil || !address.IsLoopback() || u.Scheme != "ws" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || portErr != nil || port < 1 || port > 65535 {
+		return "", 0, errors.New("proxy endpoint must be direct ws on a numeric loopback address and explicit port")
+	}
+	return address.String(), port, nil
 }

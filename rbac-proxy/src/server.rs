@@ -9,7 +9,8 @@
 //! CatalogCache), the live-connection gauge, and the actually-bound address
 //! (the source of truth `rbac-proxy::status` reports).
 
-use std::sync::atomic::AtomicU32;
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -73,12 +74,14 @@ async fn not_found() -> (StatusCode, &'static str) {
 }
 
 /// A rebindable public listener. Holds the shutdown trigger for the currently
-/// live accept loop; [`rebind`](ServerHandle::rebind) binds a new
-/// listener (last-good on failure) and gracefully retires the old one.
+/// live accept loop; [`rebind`](ServerHandle::rebind) stages replacements
+/// where possible and rolls back overlapping same-port replacements on failure.
 pub struct ServerHandle {
     state: ProxyState,
     /// Graceful-shutdown trigger for the live server (replaced on rebind).
-    current: Mutex<Option<watch::Sender<bool>>>,
+    current: Mutex<Option<RunningServer>>,
+    pub(crate) reload: Mutex<()>,
+    closed: AtomicBool,
 }
 
 impl ServerHandle {
@@ -92,38 +95,87 @@ impl ServerHandle {
         Ok(Self {
             state,
             current: Mutex::new(Some(tx)),
+            reload: Mutex::new(()),
+            closed: AtomicBool::new(false),
         })
     }
 
-    /// Rebind to a new `host:port`. Binds the **new** listener first; on
-    /// success swaps it in and gracefully retires the old server (existing
-    /// connections drain on the old listener). On **bind failure** the
-    /// previous listener is kept (last-good) and the error is returned so the
-    /// caller can also keep the previous config.
+    /// Stage non-overlapping binds. Same-port wildcard changes must release
+    /// the old socket first; a failed replacement restores the previous bind.
     pub async fn rebind(&self, host: &str, port: u16) -> Result<(), String> {
-        let listener = bind(host, port)
-            .await
-            .map_err(|e| format!("binding {host}:{port}: {e}"))?;
+        let mut cur = self.current.lock().await;
+        if self.closed.load(Ordering::Relaxed) {
+            return Err("proxy server is shut down".to_string());
+        }
+        let previous = self.state.bound.read().await.clone();
+        let overlapping = cur.is_some() && overlaps(&previous, host, port);
+        if overlapping {
+            cur.take().unwrap().stop().await;
+            *self.state.bound.write().await = (String::new(), 0);
+        }
+        let listener = match bind(host, port).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                if overlapping {
+                    match bind(&previous.0, previous.1).await {
+                        Ok(listener) => {
+                            *cur = Some(spawn_server(listener, self.state.clone()));
+                            *self.state.bound.write().await = previous;
+                        }
+                        Err(rollback) => return Err(format!("replacement failed: {error:#}; restoring previous listener failed: {rollback:#}")),
+                    }
+                }
+                return Err(format!("binding {host}:{port}: {error:#}"));
+            }
+        };
         let addr = listener
             .local_addr()
             .map_err(|e| format!("reading local_addr: {e}"))?;
-
-        let tx = spawn_server(listener, self.state.clone());
-        let mut cur = self.current.lock().await;
-        if let Some(old) = cur.take() {
-            let _ = old.send(true); // graceful: stop accepting, drain in-flight
+        let next = spawn_server(listener, self.state.clone());
+        if let Some(old) = cur.replace(next) {
+            old.stop().await;
         }
-        *cur = Some(tx);
         *self.state.bound.write().await = (host.to_string(), addr.port());
         tracing::info!(addr = %addr, "rbac-proxy listener rebound");
         Ok(())
     }
 
-    /// Gracefully stop the live server (used on process shutdown).
+    pub async fn bound_address(&self) -> (String, u16) {
+        self.state.bound.read().await.clone()
+    }
+
+    /// Stop accepting and await release of the listening socket.
     pub async fn shutdown(&self) {
-        if let Some(tx) = self.current.lock().await.take() {
-            let _ = tx.send(true);
+        let _reload = self.reload.lock().await;
+        let mut current = self.current.lock().await;
+        self.closed.store(true, Ordering::Relaxed);
+        if let Some(server) = current.take() {
+            server.stop().await;
         }
+        *self.state.bound.write().await = (String::new(), 0);
+    }
+}
+
+fn overlaps(previous: &(String, u16), host: &str, port: u16) -> bool {
+    if previous.1 != port || port == 0 || previous.0 == host {
+        return false;
+    }
+    match (previous.0.parse::<IpAddr>(), host.parse::<IpAddr>()) {
+        (Ok(old), Ok(new)) => {
+            old.is_ipv4() == new.is_ipv4() && (old.is_unspecified() || new.is_unspecified())
+        }
+        _ => false,
+    }
+}
+
+struct RunningServer {
+    shutdown: watch::Sender<bool>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl RunningServer {
+    async fn stop(self) {
+        let _ = self.shutdown.send(true);
+        let _ = self.task.await;
     }
 }
 
@@ -140,10 +192,9 @@ async fn bind(host: &str, port: u16) -> anyhow::Result<TcpListener> {
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Spawn the accept loop on `listener`, returning its graceful-shutdown
-/// trigger. The `JoinHandle` is intentionally detached: when the trigger
-/// fires the loop stops accepting and tells every connection in flight to
-/// shut down gracefully.
-fn spawn_server(listener: TcpListener, state: ProxyState) -> watch::Sender<bool> {
+/// trigger and task handle, so a replacement can await listening-socket release.
+/// Existing HTTP connections shut down gracefully; upgraded sessions continue.
+fn spawn_server(listener: TcpListener, state: ProxyState) -> RunningServer {
     serve_with_deadline(listener, state, HEADER_READ_TIMEOUT)
 }
 
@@ -153,10 +204,10 @@ fn serve_with_deadline(
     listener: TcpListener,
     state: ProxyState,
     header_timeout: Duration,
-) -> watch::Sender<bool> {
+) -> RunningServer {
     let (tx, mut rx) = watch::channel(false);
     let app = router(state);
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         // Once the loop stops: idle keep-alive connections close at once, the
         // rest after their response (the engine listener's shutdown).
         let (conn_shutdown_tx, _) = watch::channel(false);
@@ -234,7 +285,7 @@ fn serve_with_deadline(
         }
         let _ = conn_shutdown_tx.send(true);
     });
-    tx
+    RunningServer { shutdown: tx, task }
 }
 
 #[cfg(test)]
@@ -270,7 +321,7 @@ mod tests {
         h.shutdown().await;
     }
 
-    async fn serve(header_timeout: Duration) -> (watch::Sender<bool>, SocketAddr) {
+    async fn serve(header_timeout: Duration) -> (RunningServer, SocketAddr) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         (serve_with_deadline(listener, state(), header_timeout), addr)
@@ -289,7 +340,7 @@ mod tests {
             closed.is_ok(),
             "a connection whose headers never ended stayed open"
         );
-        let _ = tx.send(true);
+        tx.stop().await;
     }
 
     #[tokio::test]
@@ -308,7 +359,38 @@ mod tests {
         let head = String::from_utf8_lossy(&buf);
         // ws_upgrade reads ConnectInfo before WebSocketUpgrade: a missing peer is a 500.
         assert!(head.starts_with("HTTP/1.1 4"), "{head}");
-        let _ = tx.send(true);
+        tx.stop().await;
+    }
+
+    #[tokio::test]
+    async fn running_default_wildcard_listener_can_narrow_to_loopback() {
+        let h = ServerHandle::bind_and_serve(state(), "0.0.0.0", 0)
+            .await
+            .unwrap();
+        let port = h.state.bound.read().await.1;
+        h.rebind("127.0.0.1", port)
+            .await
+            .expect("claim default wildcard listener on the same port");
+        assert_eq!(*h.state.bound.read().await, ("127.0.0.1".to_string(), port));
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        h.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn failed_overlapping_bind_restores_wildcard_listener() {
+        let h = ServerHandle::bind_and_serve(state(), "0.0.0.0", 0)
+            .await
+            .unwrap();
+        let before = h.bound_address().await;
+        assert!(h.rebind("203.0.113.1", before.1).await.is_err());
+        assert_eq!(h.bound_address().await, before);
+        tokio::net::TcpStream::connect(("127.0.0.1", before.1))
+            .await
+            .unwrap();
+        h.rebind("127.0.0.1", before.1).await.unwrap();
+        h.shutdown().await;
     }
 
     #[tokio::test]

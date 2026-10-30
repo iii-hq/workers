@@ -181,6 +181,11 @@ pub struct OnConfigChangeEvent {
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct OnConfigChangeResponse {
     pub ok: bool,
+    pub applied_config: WorkerConfig,
+    pub bound_host: String,
+    pub bound_port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Selects the `configuration:updated` events of this worker's entry.
@@ -218,8 +223,7 @@ pub fn observe_config_changes(
             let server = server_fn.clone();
             let url = url_fn.clone();
             async move {
-                on_config_change(&iii, &cell, &server, &url).await;
-                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
+                Ok::<OnConfigChangeResponse, Error>(on_config_change(&iii, &cell, &server, &url).await)
             }
         })
         .description(
@@ -255,30 +259,35 @@ async fn on_config_change(
     cell: &ConfigCell,
     server: &ServerHandle,
     default_engine_url: &str,
-) {
-    let new = match fetch_config(iii, default_engine_url).await {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::error!(error = %e, "config-change: failed to fetch authoritative configuration; keeping previous config");
-            return;
-        }
-    };
-
-    let current = cell.read().await.clone();
-    if current.requires_rebind(&new) {
-        match server.rebind(&new.host, new.port).await {
-            Ok(()) => {
-                apply_config(cell, new).await;
-                tracing::info!("rbac-proxy configuration reloaded (listener rebound)");
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "config-change: rebinding the public listener failed; keeping the previous listener and config (last-good)");
-            }
-        }
-    } else {
-        apply_config(cell, new).await;
-        tracing::info!("rbac-proxy configuration reloaded (snapshot swap)");
+) -> OnConfigChangeResponse {
+    let _reload = server.reload.lock().await;
+    let result = reload_authoritative_config(iii, cell, server, default_engine_url).await;
+    if let Err(error) = &result {
+        tracing::error!(error, "config-change: retaining previous applied config");
     }
+    let (bound_host, bound_port) = server.bound_address().await;
+    OnConfigChangeResponse {
+        ok: result.is_ok(),
+        applied_config: cell.read().await.as_ref().clone(),
+        bound_host,
+        bound_port,
+        error: result.err(),
+    }
+}
+
+async fn reload_authoritative_config(
+    iii: &IIIClient,
+    cell: &ConfigCell,
+    server: &ServerHandle,
+    default_engine_url: &str,
+) -> Result<(), String> {
+    let new = fetch_config(iii, default_engine_url).await?;
+    let current = cell.read().await.clone();
+    if current.requires_rebind(&new) || server.bound_address().await.1 == 0 {
+        server.rebind(&new.host, new.port).await?;
+    }
+    apply_config(cell, new).await;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +437,93 @@ mod tests {
         )
         .await;
         assert_eq!(cell.read().await.port, 50001);
+    }
+
+    #[tokio::test]
+    async fn authoritative_reload_reports_application_and_retries_unchanged_config() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let engine = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", engine.local_addr().unwrap());
+        let desired = Arc::new(RwLock::new(WorkerConfig::default()));
+        let desired_rpc = desired.clone();
+        let rpc = tokio::spawn(async move {
+            let (stream, _) = engine.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(message) = ws.next().await {
+                let Ok(Message::Text(text)) = message else {
+                    continue;
+                };
+                let frame: Value = serde_json::from_str(&text).unwrap();
+                if frame["function_id"] != "configuration::get" {
+                    continue;
+                }
+                let result = json!({"value": desired_rpc.read().await.to_json()});
+                ws.send(Message::Text(json!({"type":"invocationresult","invocation_id":frame["invocation_id"],"function_id":frame["function_id"],"result":result}).to_string())).await.unwrap();
+            }
+        });
+        let iii = Arc::new(iii_sdk::register_worker(
+            &url,
+            iii_sdk::InitOptions::default(),
+        ));
+        let initial = WorkerConfig {
+            port: 0,
+            ..WorkerConfig::default()
+        };
+        let cell = Arc::new(RwLock::new(Arc::new(initial.clone())));
+        let server = ServerHandle::bind_and_serve(
+            crate::server::ProxyState::new(cell.clone(), iii.clone()),
+            "0.0.0.0",
+            0,
+        )
+        .await
+        .unwrap();
+        let port = server.bound_address().await.1;
+        {
+            let mut cfg = desired.write().await;
+            cfg.host = "203.0.113.1".to_string();
+            cfg.port = port;
+            cfg.rbac.auth_function_id = Some("mesh::auth".to_string());
+        }
+        let failed = on_config_change(&iii, &cell, &server, &url).await;
+        assert!(!failed.ok);
+        assert!(failed.error.is_some());
+        assert_eq!(failed.applied_config, initial);
+        assert_eq!(
+            (failed.bound_host.as_str(), failed.bound_port),
+            ("0.0.0.0", port)
+        );
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        desired.write().await.host = "127.0.0.1".to_string();
+        let applied = on_config_change(&iii, &cell, &server, &url).await;
+        assert!(applied.ok, "{:?}", applied.error);
+        assert_eq!(
+            applied.applied_config.rbac.auth_function_id.as_deref(),
+            Some("mesh::auth")
+        );
+        assert_eq!(
+            (applied.bound_host.as_str(), applied.bound_port),
+            ("127.0.0.1", port)
+        );
+        let blocker = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let next_port = blocker.local_addr().unwrap().port();
+        desired.write().await.port = next_port;
+        let failed = on_config_change(&iii, &cell, &server, &url).await;
+        assert!(!failed.ok);
+        assert_eq!(failed.applied_config, applied.applied_config);
+        assert_eq!(failed.bound_port, port);
+        drop(blocker);
+        let recovered = on_config_change(&iii, &cell, &server, &url).await;
+        assert!(recovered.ok, "{:?}", recovered.error);
+        assert_eq!(recovered.applied_config.port, next_port);
+        assert_eq!(recovered.bound_port, next_port);
+        server.shutdown().await;
+        let stopped = on_config_change(&iii, &cell, &server, &url).await;
+        assert!(!stopped.ok, "reload reopened deliberately stopped server");
+        assert_eq!(stopped.bound_port, 0);
+        rpc.abort();
     }
 
     #[test]
