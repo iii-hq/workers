@@ -166,17 +166,17 @@ impl TurnEvents {
         let ready = Arc::new(AtomicBool::new(false));
 
         // An observer added after boot receives the current ready state
-        // through itself once it is active.
+        // through itself once it is active. Readiness is read after the
+        // observer is active: a ready call made before that missed it, and
+        // one made after reaches it (a second ready event is harmless).
         iii.on_observer_added_for(ON_READY_FN, {
             let iii = iii.clone();
             let ready = ready.clone();
             move |obs: Observer| {
                 let iii = iii.clone();
-                let ready = ready.load(Ordering::Acquire);
+                let ready = ready.clone();
                 async move {
-                    if ready {
-                        tokio::spawn(send_ready(iii, obs));
-                    }
+                    tokio::spawn(send_ready(iii, ready, obs));
                     Ok::<(), ObserveRejection>(())
                 }
             }
@@ -242,7 +242,7 @@ impl TurnEvents {
     /// Announce readiness after all turn dependencies and lifecycle observers
     /// are in place. Observers added later receive it from the added hook.
     pub async fn emit_ready(&self) {
-        self.ready.store(true, Ordering::Release);
+        self.ready.store(true, Ordering::SeqCst);
         self.emit(ON_READY_FN, ready_payload()).await;
     }
 
@@ -406,9 +406,10 @@ fn ready_payload() -> Value {
     })
 }
 
-/// Send the ready event through `obs` once the observer is active.
-async fn send_ready(iii: Arc<IIIClient>, obs: Observer) {
-    if obs.accepted().await.is_err() {
+/// Send the ready event through `obs` once the observer is active, when the
+/// harness is ready by then.
+async fn send_ready(iii: Arc<IIIClient>, ready: Arc<AtomicBool>, obs: Observer) {
+    if obs.accepted().await.is_err() || !ready.load(Ordering::SeqCst) {
         return;
     }
     let request = CallRequest::observer(&obs, ready_payload()).action(CallAction::Void);

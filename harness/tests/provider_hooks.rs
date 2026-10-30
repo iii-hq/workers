@@ -466,3 +466,23 @@ async fn static_injections_follow_session_globs_and_filters() {
     assert_eq!(s2, vec!["E", "F"]);
     assert_eq!(injected("s3"), vec!["E"]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_on_ready_observer_added_after_boot_receives_the_ready_event() {
+    let engine = Engine::start().await;
+    engine.deps.events.emit_ready().await;
+    engine.push(host::observer_added(
+        "ready-late",
+        harness::events::ON_READY_FN,
+        "test::on-ready",
+        json!({}),
+        json!({}),
+    ));
+    engine.ack("ready-late").await;
+    let call = engine
+        .frame("the ready event through the observer", |frame| {
+            frame["type"] == "invokefunction" && frame["function_id"] == "test::on-ready"
+        })
+        .await;
+    assert_eq!(call["data"]["status"], json!("ready"), "{call}");
+}
