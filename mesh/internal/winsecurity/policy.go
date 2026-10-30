@@ -20,6 +20,22 @@ type ace struct {
 	inheritOnly bool
 }
 
+// File objects map generic rights even when an inheritable ACE retains its
+// generic form. Validate both forms identically, including inherit-only grants.
+func fileRights(mask uint32) uint32 {
+	for _, mapping := range []struct{ generic, file uint32 }{
+		{0x80000000, 0x120089}, // GENERIC_READ -> FILE_GENERIC_READ
+		{0x40000000, 0x120116}, // GENERIC_WRITE -> FILE_GENERIC_WRITE
+		{0x20000000, 0x1200a0}, // GENERIC_EXECUTE -> FILE_GENERIC_EXECUTE
+		{0x10000000, fullAccess},
+	} {
+		if mask&mapping.generic != 0 {
+			mask = mask & ^mapping.generic | mapping.file
+		}
+	}
+	return mask
+}
+
 func validateACL(owner string, protected bool, acl []ace, public, ancestor bool) error {
 	if owner != adminsSID && owner != systemSID && !(ancestor && owner == trustedInstallerSID) {
 		return fmt.Errorf("untrusted Windows path owner %s", owner)
@@ -31,6 +47,11 @@ func validateACL(owner string, protected bool, acl []ace, public, ancestor bool)
 	for _, a := range acl {
 		if ancestor && a.inheritOnly {
 			continue
+		}
+		// Keep the stricter existing generic-write ancestor rule. Boundary
+		// objects need the file mapping for effective and inheritable grants.
+		if !ancestor {
+			a.mask = fileRights(a.mask)
 		}
 		if a.sid == systemSID {
 			system = system || !a.inheritOnly && a.mask&fullAccess == fullAccess

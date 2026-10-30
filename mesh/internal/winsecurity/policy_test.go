@@ -45,3 +45,30 @@ func TestWindowsACLInheritancePolicy(t *testing.T) {
 		t.Fatal("cache grants no effective traversal")
 	}
 }
+
+func TestWindowsACLGenericFileRights(t *testing.T) {
+	base := []ace{{sid: systemSID, mask: fullAccess}, {sid: adminsSID, mask: fullAccess}}
+	for _, tc := range []struct {
+		name   string
+		public bool
+		users  []ace
+		valid  bool
+	}{
+		{"generic effective", true, []ace{{usersSID, 0xa0000000, false}}, true},
+		// Windows retains the generic inherit-only ACE alongside mapped access.
+		{"mapped effective and generic inheritance", true, []ace{{usersSID, readExecute, false}, {usersSID, 0xa0000000, true}}, true},
+		{"generic inheritance lacks traversal", true, []ace{{usersSID, 0xa0000000, true}}, false},
+		{"generic write", true, []ace{{usersSID, 0xe0000000, false}}, false},
+		{"generic inherited write", true, []ace{{usersSID, readExecute, false}, {usersSID, 0xe0000000, true}}, false},
+		{"generic all", true, []ace{{usersSID, 0x10000000, false}}, false},
+		{"private generic read", false, []ace{{usersSID, 0x80000000, false}}, false},
+		{"private inherited generic read", false, []ace{{usersSID, 0x80000000, true}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acl := append(append([]ace{}, base...), tc.users...)
+			if err := validateACL(adminsSID, true, acl, tc.public, false); (err == nil) != tc.valid {
+				t.Fatalf("valid=%v error=%v", tc.valid, err)
+			}
+		})
+	}
+}

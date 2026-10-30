@@ -174,3 +174,71 @@ func TestRunOperatorClosesInheritedPipes(t *testing.T) {
 		t.Fatalf("waited for descendant-held pipes until context deadline: %s", elapsed)
 	}
 }
+
+func TestStartOperatorPreservesStandardIO(t *testing.T) {
+	s := testSupervisor(t)
+	cmd := exec.Command("/bin/sh", "-c", "read line; printf 'out:%s' \"$line\"; printf 'err:%s' \"$line\" >&2")
+	cmd.Stdin = strings.NewReader("operator input\n")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	cleanup, err := StartOperator(cmd, s.operator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "out:operator input" || stderr.String() != "err:operator input" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestStartOperatorFailureTransfersNoCleanup(t *testing.T) {
+	s := testSupervisor(t)
+	cmd := exec.Command(filepath.Join(t.TempDir(), "missing-executable"))
+	cleanup, err := StartOperator(cmd, s.operator)
+	if err == nil || cleanup != nil {
+		t.Fatalf("error=%v cleanup=%v", err, cleanup != nil)
+	}
+}
+
+func TestStartOperatorCleanupStopsInheritedOutput(t *testing.T) {
+	s := testSupervisor(t)
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30 & echo ready; wait")
+	ready := make(commandReady, 1)
+	cmd.Stdout, cmd.Stderr = ready, ready
+	cmd.WaitDelay = 10 * time.Second
+	cleanup, err := StartOperator(cmd, s.operator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-ready:
+	case <-time.After(3 * time.Second):
+		t.Fatal("command did not start its descendant")
+	}
+	cleanup()
+	cleanup()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled command succeeded")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cleanup left command or inherited output running")
+	}
+}
+
+type commandReady chan struct{}
+
+func (ready commandReady) Write(p []byte) (int, error) {
+	select {
+	case ready <- struct{}{}:
+	default:
+	}
+	return len(p), nil
+}

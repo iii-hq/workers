@@ -4,7 +4,7 @@ package supervisor
 
 import "os/exec"
 
-func PrepareCommand(cmd *exec.Cmd, op Operator) (func(), error) {
+func prepareCommand(cmd *exec.Cmd, op Operator) (func(), error) {
 	if cmd.Env == nil {
 		cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + op.home, "USER=" + op.name, "LOGNAME=" + op.name}
 	}
@@ -14,5 +14,5 @@ func PrepareCommand(cmd *exec.Cmd, op Operator) (func(), error) {
 	return func() {}, runAs(cmd, op)
 }
 func startOperator(cmd *exec.Cmd, op Operator) error {
-	return withPreparedCommand(func() (func(), error) { return PrepareCommand(cmd, op) }, cmd.Start)
+	return withPreparedCommand(func() (func(), error) { return prepareCommand(cmd, op) }, cmd.Start)
 }

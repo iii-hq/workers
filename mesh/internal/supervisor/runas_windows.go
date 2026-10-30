@@ -120,17 +120,18 @@ func operatorToken(op Operator) (windows.Token, error) {
 	if err == nil {
 		err = windows.GetTokenInformation(t, windows.TokenSessionId, (*byte)(unsafe.Pointer(&session)), 4, &size)
 	}
-	if err != nil || u.User.Sid.String() != op.sid || session != id || t.IsElevated() {
+	if err == nil {
+		err = validateSessionToken(op.sid, id, u.User.Sid.String(), session, t.IsElevated())
+	}
+	if err != nil {
 		t.Close()
-		return 0, errors.New("operator token identity, session or elevation mismatch")
+		return 0, err
 	}
 	return t, nil
 }
 
-// PrepareCommand obtains the original operator's unelevated interactive token.
-// The caller MUST call cleanup after Start (including failures). The token does
-// not outlive process creation; RunOperator additionally owns descendant cleanup.
-func PrepareCommand(cmd *exec.Cmd, op Operator) (cleanup func(), err error) {
+// The token is retained only until the session parent and target are created.
+func prepareCommand(cmd *exec.Cmd, op Operator) (cleanup func(), err error) {
 	if !filepath.IsAbs(cmd.Path) {
 		return nil, errors.New("operator command must have an absolute executable")
 	}
@@ -138,7 +139,12 @@ func PrepareCommand(cmd *exec.Cmd, op Operator) (cleanup func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	cleanup = func() { t.Close() }
+	cleanup = func() {
+		t.Close()
+		if cmd.SysProcAttr != nil {
+			cmd.SysProcAttr.Token = 0
+		}
+	}
 	env, err := t.Environ(false)
 	if err != nil {
 		cleanup()
