@@ -63,9 +63,14 @@ it creates, in a `finally`.
 
 The engine listens on a random high port, never 49134 — a developer's own
 stack usually holds that one, and a harness that hijacked it would take their
-workers down. The port is verified free before use, because the engine logs
-"address already in use" and then keeps running, which would otherwise produce
-a harness talking to somebody else's engine and reporting nonsense about it.
+workers down. `III_E2E_PORT=<port>` picks the port. The port is verified free
+before use, because the engine logs "address already in use" and then keeps
+running, which would otherwise produce a harness talking to somebody else's
+engine and reporting nonsense about it.
+
+The worker is built with `cargo build --release` and run from
+`$CARGO_TARGET_DIR/release` when `CARGO_TARGET_DIR` is set, `target/release`
+otherwise.
 
 ## Artifacts
 
