@@ -23,7 +23,8 @@ use crate::board::{
 use crate::config::Column;
 use crate::config::KanbanConfig;
 use crate::events::{
-    ChangeEvent, CommentEvent, ObserverCounts, emit_change, emit_comment, observer_counts,
+    ChangeEvent, CommentEvent, ON_CHANGE_FN, ON_COMMENT_FN, ObserverCounts, emit_change,
+    emit_comment, observer_counts,
 };
 use crate::mentions;
 use crate::plan::{
@@ -654,6 +655,9 @@ pub fn change_events(
 
 /// Run one mutation under the store lock, then call `kanban::on-change` (and,
 /// for a comment, `kanban::on-comment`) with the result when they are observed.
+/// The events are built only for a function that is observed: the change
+/// events (and the releases they select observers by) under the lock, after
+/// one `is_observed` load; the comment event after the write.
 async fn apply<T>(
     ctx: &Ctx,
     event: &str,
@@ -664,13 +668,17 @@ async fn apply<T>(
         .update(|board, config| {
             let at = board::next_at(board, chrono::Utc::now().timestamp_millis());
             let outcome = run(board, &BoardContext::from(config), &at)?;
-            let events = change_events(
-                board,
-                event,
-                &outcome.tickets,
-                outcome.comment.as_ref(),
-                &at,
-            );
+            let events = if ctx.iii.is_observed(ON_CHANGE_FN) {
+                change_events(
+                    board,
+                    event,
+                    &outcome.tickets,
+                    outcome.comment.as_ref(),
+                    &at,
+                )
+            } else {
+                Vec::new()
+            };
             Ok((outcome, at, events))
         })
         .await
@@ -678,22 +686,28 @@ async fn apply<T>(
     for event in &events {
         emit_change(&ctx.iii, event).await;
     }
-    if let (Some(view), Some(comment)) = (outcome.tickets.first(), &outcome.comment) {
-        emit_comment(
-            &ctx.iii,
-            &CommentEvent {
-                event: "comment.created".to_string(),
-                ticket_id: view.ticket.id.clone(),
-                ticket_key: view.ticket.key.clone(),
-                ticket: view.clone().into(),
-                comment: comment.clone(),
-                author: comment.author.clone(),
-                at,
-            },
-        )
-        .await;
+    if let Some(event) = comment_event(&ctx.iii, &outcome, at) {
+        emit_comment(&ctx.iii, &event).await;
     }
     Ok(outcome)
+}
+
+/// The `kanban::on-comment` event of a write that created a comment, when
+/// that function is observed.
+fn comment_event<T>(iii: &IIIClient, outcome: &Outcome<T>, at: String) -> Option<CommentEvent> {
+    let (view, comment) = (outcome.tickets.first()?, outcome.comment.as_ref()?);
+    if !iii.is_observed(ON_COMMENT_FN) {
+        return None;
+    }
+    Some(CommentEvent {
+        event: "comment.created".to_string(),
+        ticket_id: view.ticket.id.clone(),
+        ticket_key: view.ticket.key.clone(),
+        ticket: view.clone().into(),
+        comment: comment.clone(),
+        author: comment.author.clone(),
+        at,
+    })
 }
 
 /// The views of these tickets on the board as it is now (unknown ids skipped).
