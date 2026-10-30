@@ -506,8 +506,8 @@ export function extractEmbeddedSCode(message: string): string | null {
 
 /** Strip the harness/SDK Display prefixes ("call_failed: <Class>: ",
     "handler error: ", "serialization error: ") for the headline — the
-    raw text stays available in the raw-json tab. Stored conversations
-    carry the same class prefix as "trigger_failed: <Class>: ". */
+    raw text stays available in the raw-json tab. Conversations stored
+    before 0.26 carry the same class prefix as "trigger_failed: <Class>: ". */
 export function stripHandlerPrefix(message: string): string {
   return message
     .replace(/^(?:call|trigger)_failed:.*?:\s*/, '')

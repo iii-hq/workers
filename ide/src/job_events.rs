@@ -1,4 +1,4 @@
-//! `shell::on-job-finished` — called once when a background job reaches a
+//! `shell::on-job-finished` — called when a background job reaches a
 //! terminal status, so a consumer never has to poll `shell::status`.
 //!
 //! `shell::exec_bg` hands back a `job_id` and nothing else; without this
@@ -10,20 +10,24 @@
 //! This wake cannot strand its observer: the producer is the job, the job
 //! is already running, and the runtime stamps the exact moment it ends.
 //!
-//! The function's match hook files an observer with `args: { job_id }` under
-//! that id and one without under `*`; a call matches its job's id and `*`,
-//! so it reaches the observers of its job and every catch-all, and iii
-//! delivers it. An observer of one job added after that job finished, while
-//! the worker still retains its record, receives the terminal event through
-//! itself once it is accepted.
+//! The function's match hook picks the observers a call reaches: a job's
+//! completion reaches every observer without a `job_id` and each observer of
+//! that job, and iii delivers it. An observer of one job added after that
+//! job finished, while the worker still retains its record, receives the
+//! completion from a second call of the function once it is accepted. That
+//! call names the observer in its metadata (`replay`), so it reaches that
+//! observer alone, and iii delivers it as it delivers the first: with the
+//! observer's `deliver`, filters and `on`. The match hook claims a
+//! completion for an observer of its job under one lock, whichever call
+//! comes first, so the observer receives it once.
 
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::{
-    AddedHook, Call, CallAction, CallRequest, IIIClient, Keys, Match, ObserveRejection, Observer,
+    AddedHook, Call, CallAction, CallRequest, IIIClient, Match, ObserveRejection, Observer,
     RegisterFunction, RemovedHook,
 };
 use schemars::JsonSchema;
@@ -35,8 +39,9 @@ use crate::jobs::{JobRecord, JobStatus};
 /// The function a consumer observes to be woken when a job ends.
 pub const ON_JOB_FINISHED_FN: &str = "shell::on-job-finished";
 
-/// The match key of an observer without a `job_id`, and of every call.
-const ANY_JOB: &str = "*";
+/// The call metadata field naming the one observer a replayed completion
+/// is for.
+const REPLAY_META: &str = "replay";
 
 /// An observer's args: one background job, or every future completion.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -84,23 +89,39 @@ impl JobFinishedEvent {
     }
 }
 
-/// The key an observer is filed under: its `job_id`, or `*`.
-fn observer_key(args: &Value) -> &str {
-    args.get("job_id")
-        .and_then(Value::as_str)
-        .unwrap_or(ANY_JOB)
+/// One run of a job ending: what each observer of the job receives once.
+/// A named job's id is free again once its record is pruned, so the times
+/// tell its runs apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Completion {
+    job_id: String,
+    started_at_ms: u64,
+    finished_at_ms: u64,
 }
 
-/// The keys a call matches: its job's id and `*`.
-fn call_keys(input: &Value) -> Vec<&str> {
-    match input.get("job_id").and_then(Value::as_str) {
-        Some(job_id) => vec![job_id, ANY_JOB],
-        None => Vec::new(),
+impl Completion {
+    /// The completion a call carries in its input.
+    fn of(input: &Value) -> Option<Self> {
+        Some(Self {
+            job_id: input.get("job_id")?.as_str()?.to_string(),
+            started_at_ms: input.get("started_at_ms")?.as_u64()?,
+            finished_at_ms: input.get("finished_at_ms")?.as_u64()?,
+        })
+    }
+}
+
+impl From<&JobFinishedEvent> for Completion {
+    fn from(event: &JobFinishedEvent) -> Self {
+        Self {
+            job_id: event.job_id.clone(),
+            started_at_ms: event.started_at_ms,
+            finished_at_ms: event.finished_at_ms,
+        }
     }
 }
 
 /// The client calls go through, installed once at startup. `None` in unit
-/// tests, which makes [`fire`] a no-op rather than a panic.
+/// tests, which makes [`fire`] and the replay no-ops rather than panics.
 ///
 /// A process global next to [`crate::jobs::JOBS`] and its kill-signal map,
 /// for the same reason those are: the job registry is process-wide, and
@@ -108,65 +129,105 @@ fn call_keys(input: &Value) -> Vec<&str> {
 /// detached tasks that carry no worker state.
 static CLIENT: OnceLock<IIIClient> = OnceLock::new();
 
-/// Observers of one job that its live call reached, by observer id: their
-/// replay, when it has yet to run, stays silent. An entry goes with its
+/// The completion each observer of one job has taken, by observer id. The
+/// match hook claims it under this lock for the live call and the replay
+/// alike, so an observer receives a completion once. An entry goes with its
 /// observer.
-static REACHED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static CLAIMED: OnceLock<Mutex<HashMap<String, Completion>>> = OnceLock::new();
 
-fn reached() -> std::sync::MutexGuard<'static, HashSet<String>> {
-    REACHED
-        .get_or_init(|| Mutex::new(HashSet::new()))
+fn claimed() -> MutexGuard<'static, HashMap<String, Completion>> {
+    CLAIMED
+        .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Claims `completion` for observer `id`; false when the observer has it.
+fn claim(id: &str, completion: &Completion) -> bool {
+    let mut claimed = claimed();
+    if claimed.get(id) == Some(completion) {
+        return false;
+    }
+    claimed.insert(id.to_string(), completion.clone());
+    true
+}
+
+/// Whether observer `id` has taken `completion`.
+fn has_claimed(id: &str, completion: &Completion) -> bool {
+    claimed().get(id) == Some(completion)
+}
+
+/// The observer a replayed call is for, from the call's metadata.
+fn replay_target(call: &Call) -> Option<&str> {
+    call.metadata.as_ref()?.get(REPLAY_META)?.as_str()
+}
+
+/// The function's match hook: whether observer `id`, with `args`, takes
+/// `call`. A job's completion reaches every observer without a `job_id`,
+/// and each observer of that job that has not taken it; a replay reaches
+/// the one observer it names, unless that observer has taken it.
+fn wants(id: &str, args: &Value, call: &Call) -> bool {
+    let Some(completion) = Completion::of(&call.input) else {
+        return false;
+    };
+    let job_id = args.get("job_id").and_then(Value::as_str);
+    match (replay_target(call), job_id) {
+        (None, None) => true,
+        (Some(_), None) => false,
+        (None, Some(job_id)) => job_id == completion.job_id && claim(id, &completion),
+        (Some(target), Some(job_id)) => {
+            target == id && job_id == completion.job_id && claim(id, &completion)
+        }
+    }
 }
 
 /// Announce a terminal job record. Call it from a job's finalize path
 /// AFTER the record is published, never while holding the job's lock: a
 /// slow target must not delay the job that woke it.
 ///
-/// Silent no-op when the job is not terminal, when nobody observes the job,
-/// or before the function is registered.
+/// Silent no-op when the job is not terminal, when nobody observes the
+/// function, or before the function is registered.
 pub async fn fire(record: &JobRecord) {
     let Some(event) = JobFinishedEvent::from_record(record) else {
         return;
     };
-    announce(&event).await;
+    #[cfg(test)]
+    tests::record_announced(&event);
+    if CLIENT
+        .get()
+        .is_some_and(|iii| iii.is_observed(ON_JOB_FINISHED_FN))
+    {
+        call(&event, None).await;
+    }
 }
 
-async fn announce(event: &JobFinishedEvent) {
-    #[cfg(test)]
-    tests::record_announced(event);
+/// Calls the function with `event`, for every observer it reaches or, with
+/// `replay`, for that one observer.
+async fn call(event: &JobFinishedEvent, replay: Option<&str>) {
     let Some(iii) = CLIENT.get() else {
         return;
     };
-    let input = json!({ "job_id": event.job_id });
-    let probe = Call {
-        input,
-        ..Call::default()
-    };
-    if !iii.is_observed_for(ON_JOB_FINISHED_FN, &probe) {
-        return;
-    }
     let Ok(payload) = serde_json::to_value(event) else {
         return;
     };
-    // The observers of this job active now are the ones the call reaches.
-    reached().extend(
-        iii.observers(ON_JOB_FINISHED_FN)
-            .iter()
-            .filter(|obs| observer_key(obs.args_value()) == event.job_id)
-            .map(|obs| obs.id().to_string()),
-    );
     let request = CallRequest {
         function_id: ON_JOB_FINISHED_FN.to_string(),
         payload,
         action: Some(CallAction::Void),
         timeout_ms: None,
     };
-    if let Err(e) = iii.call(request).await {
-        tracing::warn!(job_id = %event.job_id, error = %e, "{ON_JOB_FINISHED_FN} call failed");
-    } else {
-        tracing::info!(job_id = %event.job_id, "{ON_JOB_FINISHED_FN} called");
+    let result = match replay {
+        None => iii.call(request).await,
+        Some(observer_id) => {
+            iii.call(request.metadata(json!({ REPLAY_META: observer_id })))
+                .await
+        }
+    };
+    match result {
+        Err(e) => {
+            tracing::warn!(job_id = %event.job_id, replay, error = %e, "{ON_JOB_FINISHED_FN} call failed")
+        }
+        Ok(_) => tracing::info!(job_id = %event.job_id, replay, "{ON_JOB_FINISHED_FN} called"),
     }
 }
 
@@ -183,17 +244,25 @@ async fn retained_event(job_id: &str) -> Option<JobFinishedEvent> {
     JobFinishedEvent::from_record(&h.record)
 }
 
-/// Whether observer `id` still needs its job's terminal event replayed:
-/// the live call has not reached it.
-fn wants_replay(id: &str) -> bool {
-    !reached().contains(id)
+/// Replays job `job_id`'s completion to observer `observer_id`, an accepted
+/// observer of that job: a call only that observer takes, when the job has
+/// finished and the observer has not taken its completion. A job that ends
+/// later reaches the observer through its first call.
+async fn replay(observer_id: &str, job_id: &str) {
+    let Some(event) = retained_event(job_id).await else {
+        return;
+    };
+    if has_claimed(observer_id, &Completion::from(&event)) {
+        return;
+    }
+    #[cfg(test)]
+    tests::record_replayed(observer_id, &event);
+    call(&event, Some(observer_id)).await;
 }
 
 /// `shell::on-job-finished`'s hooks.
 #[derive(Clone)]
-struct JobFinishedSource {
-    iii: IIIClient,
-}
+struct JobFinishedSource;
 
 #[async_trait]
 impl AddedHook for JobFinishedSource {
@@ -209,26 +278,11 @@ impl AddedHook for JobFinishedSource {
         let Some(job_id) = args.job_id else {
             return Ok(());
         };
-        // A call through an observer that is not active yet fails: replay
-        // once the SDK has accepted it. A job that finishes after that
-        // reaches it through the live call.
-        let iii = self.iii.clone();
+        // A call made before the observer is active does not reach it:
+        // replay once the SDK has accepted it.
         tokio::spawn(async move {
-            if obs.accepted().await.is_err() {
-                return;
-            }
-            let Some(event) = retained_event(&job_id).await else {
-                return;
-            };
-            if !wants_replay(obs.id()) {
-                return;
-            }
-            let Ok(payload) = serde_json::to_value(&event) else {
-                return;
-            };
-            let request = CallRequest::observer(&obs, payload).action(CallAction::Void);
-            if let Err(e) = iii.call(request).await {
-                tracing::warn!(job_id = %job_id, error = %e, "{ON_JOB_FINISHED_FN} replay failed");
+            if obs.accepted().await.is_ok() {
+                replay(obs.id(), &job_id).await;
             }
         });
         Ok(())
@@ -239,7 +293,7 @@ impl AddedHook for JobFinishedSource {
 impl RemovedHook for JobFinishedSource {
     async fn on_removed(&self, obs: Observer) {
         tracing::info!(function_id = ON_JOB_FINISHED_FN, observer_id = %obs.id(), "job watch released");
-        reached().remove(obs.id());
+        claimed().remove(obs.id());
     }
 }
 
@@ -247,26 +301,24 @@ impl RemovedHook for JobFinishedSource {
 /// run for every observer, and install the client calls go through.
 pub fn register_job_finished(iii: &IIIClient) {
     let _ = CLIENT.set(iii.clone());
-    let source = JobFinishedSource { iii: iii.clone() };
-    iii.on_observer_added_for(ON_JOB_FINISHED_FN, source.clone())
-        .on_observer_removed_for(ON_JOB_FINISHED_FN, source)
+    iii.on_observer_added_for(ON_JOB_FINISHED_FN, JobFinishedSource)
+        .on_observer_removed_for(ON_JOB_FINISHED_FN, JobFinishedSource)
         .on_observer_match_for(
             ON_JOB_FINISHED_FN,
-            Match::keys(
-                |obs| Keys::from(observer_key(obs.args_value())),
-                |call| Keys::from(call_keys(&call.input)),
-            ),
+            Match::predicate(|obs, call| wants(obs.id(), obs.args_value(), call)),
         );
     iii.register_function(
         ON_JOB_FINISHED_FN,
         RegisterFunction::new(|event: JobFinishedEvent| Ok::<_, Error>(event))
             .description(
-                "Called once when a shell::exec_bg background job reaches a terminal status \
+                "Called when a shell::exec_bg background job reaches a terminal status \
                  (finished, killed, or failed); observers receive { job_id, argv, status, \
                  exit_code, started_at_ms, finished_at_ms, duration_ms }. Observe with args \
-                 { job_id } to wake on one job (an observer added after the job finished \
-                 receives its result while the job is retained), or without args for every \
-                 future completion. Call shell::status for the job's output.",
+                 { job_id } to wake on one job, or without args for every future completion. \
+                 An observer of one job added after the job finished receives its completion \
+                 while the job is retained, from a call only that observer receives \
+                 (metadata { replay: <observer id> }). Each observer of a job receives its \
+                 completion once. Call shell::status for the job's output.",
             )
             .args_format::<JobFinishedArgs>()
             .private(),
@@ -284,6 +336,49 @@ mod tests {
 
     static TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static ANNOUNCED: OnceLock<Mutex<HashMap<String, Vec<JobFinishedEvent>>>> = OnceLock::new();
+    static REPLAYED: OnceLock<Mutex<HashMap<String, Vec<JobFinishedEvent>>>> = OnceLock::new();
+
+    /// Every replayed event, by observer id: the SDK boundary without a live
+    /// engine.
+    pub(super) fn record_replayed(observer_id: &str, event: &JobFinishedEvent) {
+        REPLAYED
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap()
+            .entry(observer_id.to_string())
+            .or_default()
+            .push(event.clone());
+    }
+
+    fn replayed(observer_id: &str) -> Vec<JobFinishedEvent> {
+        REPLAYED
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap()
+            .remove(observer_id)
+            .unwrap_or_default()
+    }
+
+    /// The call that announces `event` to every observer it reaches.
+    fn live_call(event: &JobFinishedEvent) -> Call {
+        Call {
+            function_id: ON_JOB_FINISHED_FN.into(),
+            input: serde_json::to_value(event).unwrap(),
+            ..Call::default()
+        }
+    }
+
+    /// The call that replays `event` to observer `observer_id`.
+    fn replay_call(event: &JobFinishedEvent, observer_id: &str) -> Call {
+        Call {
+            metadata: Some(json!({ REPLAY_META: observer_id })),
+            ..live_call(event)
+        }
+    }
+
+    fn observer_id() -> String {
+        format!("obs-{}", uuid::Uuid::new_v4())
+    }
 
     /// Every announced event, by job id: the SDK boundary without a live
     /// engine.
@@ -357,18 +452,28 @@ mod tests {
     async fn an_observer_added_after_completion_gets_the_retained_event() {
         let _test_guard = TEST_GUARD.lock().await;
         let mut finished = record(JobStatus::Finished, Some(crate::jobs::now_ms()));
-        finished.id = "job-late-observer".into();
+        finished.id = format!("job-late-observer-{}", uuid::Uuid::new_v4());
         crate::jobs::JOBS
             .map
             .lock()
             .await
             .insert(finished.id.clone(), retain(finished.clone(), true));
-        let event = retained_event(&finished.id).await;
+        let (late, never) = (observer_id(), observer_id());
+        replay(&late, &finished.id).await;
+        replay(&never, "job-never-ran").await;
         crate::jobs::JOBS.map.lock().await.remove(&finished.id);
-        let event = event.expect("a finalized terminal job replays");
-        assert_eq!(event.job_id, finished.id);
-        assert_eq!(event.status, JobStatus::Finished);
-        assert!(retained_event("job-never-ran").await.is_none());
+        let events = replayed(&late);
+        assert_eq!(events.len(), 1, "a finalized terminal job replays");
+        assert_eq!(events[0].job_id, finished.id);
+        assert_eq!(events[0].status, JobStatus::Finished);
+        // The replay names its observer: that observer takes it, no other.
+        let call = replay_call(&events[0], &late);
+        let args = json!({ "job_id": finished.id });
+        assert!(!wants(&observer_id(), &args, &call));
+        assert!(!wants(&observer_id(), &json!({}), &call));
+        assert!(wants(&late, &args, &call));
+        claimed().remove(&late);
+        assert!(replayed(&never).is_empty(), "a job never retained");
     }
 
     #[tokio::test]
@@ -601,32 +706,143 @@ mod tests {
     // The whole point of the job_id arg: a wake armed on one job must not
     // fire for another's, and one without it hears every job.
     #[test]
-    fn a_job_id_selects_its_job_and_an_absent_one_takes_every_job() {
-        let (job_1, job_2, any) = (
-            json!({ "job_id": "job-1" }),
-            json!({ "job_id": "job-2" }),
-            json!({}),
+    fn a_completion_reaches_the_observers_of_its_job_and_every_catch_all() {
+        let mut event = JobFinishedEvent::from_record(&record(JobStatus::Finished, Some(2_000)))
+            .expect("terminal record");
+        event.job_id = format!("job-{}", uuid::Uuid::new_v4());
+        let call = live_call(&event);
+        let (mine, other, any) = (observer_id(), observer_id(), observer_id());
+        assert!(wants(&mine, &json!({ "job_id": event.job_id }), &call));
+        assert!(!wants(&other, &json!({ "job_id": "job-2" }), &call));
+        assert!(wants(&any, &json!({}), &call));
+        assert!(wants(&any, &json!({ "job_id": null }), &call));
+        // A catch-all takes every completion and is never claimed.
+        assert!(wants(&any, &json!({}), &call));
+        assert!(!claimed().contains_key(&any));
+        assert!(
+            !wants(&any, &json!({}), &Call::default()),
+            "no job, no match"
         );
-        assert_eq!(observer_key(&job_1), "job-1");
-        assert_eq!(observer_key(&any), ANY_JOB);
-        let keys = call_keys(&job_1);
-        assert_eq!(keys, ["job-1", ANY_JOB]);
-        assert!(keys.contains(&observer_key(&job_1)));
-        assert!(!keys.contains(&observer_key(&job_2)));
-        assert!(keys.contains(&observer_key(&any)));
-        assert!(call_keys(&any).is_empty());
+        claimed().remove(&mine);
     }
 
-    // An observer the live call reached is not replayed; its entry goes
-    // with it.
+    // An observer added while its job ends sees two calls, the live one and
+    // its replay; whichever is matched first is the one it takes.
     #[test]
-    fn an_observer_reached_live_is_not_replayed() {
-        let id = format!("obs-{}", uuid::Uuid::new_v4());
-        assert!(wants_replay(&id));
-        reached().insert(id.clone());
-        assert!(!wants_replay(&id));
-        reached().remove(&id);
-        assert!(wants_replay(&id));
+    fn an_observer_takes_a_completion_once_whichever_call_comes_first() {
+        let mut event = JobFinishedEvent::from_record(&record(JobStatus::Finished, Some(2_000)))
+            .expect("terminal record");
+        event.job_id = format!("job-{}", uuid::Uuid::new_v4());
+        let args = json!({ "job_id": event.job_id });
+        let (live_first, replay_first) = (observer_id(), observer_id());
+        assert!(wants(&live_first, &args, &live_call(&event)));
+        assert!(!wants(
+            &live_first,
+            &args,
+            &replay_call(&event, &live_first)
+        ));
+        assert!(wants(
+            &replay_first,
+            &args,
+            &replay_call(&event, &replay_first)
+        ));
+        assert!(!wants(&replay_first, &args, &live_call(&event)));
+        assert!(!wants(
+            &replay_first,
+            &args,
+            &replay_call(&event, &replay_first)
+        ));
+        // The same id run again after its record was pruned is a new
+        // completion.
+        let mut again = event.clone();
+        again.started_at_ms += 10_000;
+        again.finished_at_ms += 10_000;
+        assert!(wants(&live_first, &args, &live_call(&again)));
+        // An entry goes with its observer.
+        claimed().remove(&live_first);
+        claimed().remove(&replay_first);
+        assert!(!has_claimed(&live_first, &Completion::from(&again)));
+    }
+
+    // The SDK matches the live call and a replay on different tasks: each
+    // observer of the job takes the completion exactly once.
+    #[test]
+    fn racing_matches_give_each_observer_the_completion_once() {
+        let mut event = JobFinishedEvent::from_record(&record(JobStatus::Finished, Some(2_000)))
+            .expect("terminal record");
+        event.job_id = format!("job-{}", uuid::Uuid::new_v4());
+        let args = json!({ "job_id": event.job_id });
+        let observers: Vec<String> = (0..64).map(|_| observer_id()).collect();
+        let taken = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for id in &observers {
+                    if wants(id, &args, &live_call(&event)) {
+                        taken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            });
+            scope.spawn(|| {
+                for id in observers.iter().rev() {
+                    if wants(id, &args, &replay_call(&event, id)) {
+                        taken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            });
+        });
+        assert_eq!(taken.into_inner(), observers.len());
+        for id in &observers {
+            claimed().remove(id);
+        }
+    }
+
+    // A job that ends while an observer's replay task is reading it: the
+    // live call is matched before the replay looks, and the replay stays
+    // silent; or the replay is sent first, and its observer takes one of
+    // the two calls.
+    #[tokio::test]
+    async fn a_completion_landing_while_the_replay_reads_the_job_reaches_the_observer_once() {
+        let _test_guard = TEST_GUARD.lock().await;
+        let mut running = record(JobStatus::Running, None);
+        running.id = format!("job-race-{}", uuid::Uuid::new_v4());
+        let job_id = running.id.clone();
+        let handle = retain(running, false);
+        crate::jobs::JOBS
+            .map
+            .lock()
+            .await
+            .insert(job_id.clone(), handle.clone());
+        let args = json!({ "job_id": job_id });
+
+        let (first, second) = (observer_id(), observer_id());
+        let mut h = handle.lock().await;
+        let reading = tokio::spawn({
+            let (first, job_id) = (first.clone(), job_id.clone());
+            async move { replay(&first, &job_id).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!reading.is_finished(), "the replay waits on the job's lock");
+        h.record.status = JobStatus::Finished;
+        h.record.finished_at_ms = Some(2_000);
+        h.finalized = true;
+        let event = JobFinishedEvent::from_record(&h.record).unwrap();
+        drop(h);
+        // The finalize path's call is matched before the replay looks.
+        assert!(wants(&first, &args, &live_call(&event)));
+        reading.await.unwrap();
+        assert!(replayed(&first).is_empty(), "the live call reached it");
+
+        // The replay looks first: it is sent, and the observer takes
+        // whichever of the two calls the SDK matches first.
+        replay(&second, &job_id).await;
+        assert_eq!(replayed(&second).len(), 1);
+        let replay_taken = wants(&second, &args, &replay_call(&event, &second));
+        let live_taken = wants(&second, &args, &live_call(&event));
+        assert!(replay_taken ^ live_taken);
+
+        crate::jobs::JOBS.map.lock().await.remove(&job_id);
+        claimed().remove(&first);
+        claimed().remove(&second);
     }
 
     // Without a client installed (unit tests, or before startup wiring

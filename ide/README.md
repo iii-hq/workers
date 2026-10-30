@@ -399,7 +399,7 @@ want it.
 
 | Function | Called when | Args | Event |
 |---|---|---|---|
-| `shell::on-job-finished` | A background job finishes, is killed, or fails. An observer with a `job_id` added after its job finished receives the retained terminal event once it is accepted. | `{ job_id? }` | `{ job_id, argv, status, exit_code, started_at_ms, finished_at_ms, duration_ms }` |
+| `shell::on-job-finished` | A background job finishes, is killed, or fails. An observer with a `job_id` added after its job finished receives the retained completion once it is accepted, from a call only that observer receives. | `{ job_id? }` | `{ job_id, argv, status, exit_code, started_at_ms, finished_at_ms, duration_ms }` |
 | `shell::on-changed` | A file or directory under the observed directory changes. | `{ path, include_ignored? }` | `{ path, kind, root, dir, ignored }` |
 | `shell::on-git-changed` | The repository `args.path` sits in changes state: HEAD, the index, refs, another worktree, or the repository itself appearing or going (a path in no repository is watched for a `.git`). One call per ~200 ms batch. `.git` is what `shell::on-changed` leaves out. | `{ path }` | `{ path, worktree?, git_dir?, common_dir?, changes: ["head" \| "index" \| "refs" \| "worktrees" \| "repository"] }` |
 | `shell::turns::on-changed` | A session's change history (`shell::turns::list`) is stored again: a turn opened or closed, a change recorded. At most one call per session per ~200 ms. | none; filter on `input.session_id` | `{ session_id }` |
@@ -463,9 +463,14 @@ The function's args accept one field:
 
 An observer with a `job_id` also receives the result if its job has already
 completed, including a job that finished before `shell::exec_bg` returned.
-The live call and the replay reach that observer once. An observer without a
-`job_id` receives future completions only; it does not replay existing
-records.
+Once iii accepts the observer, the worker calls the function again with the
+retained event and `{ "replay": "<observer id>" }` as the call's metadata,
+and only that observer receives the call. iii delivers it as it delivers a
+live completion: in the shape the observer's `deliver` asks for (the
+`Observed` envelope by default), through its filters and `on`. Each observer
+of a job receives its completion once, from the live call or from the
+replay. An observer without a `job_id` receives future completions only; it
+does not replay existing records.
 
 For a harness agent, generate a new ID, such as `job-` followed by a UUID.
 Call `harness::observe` with that ID and wait for it to return before starting

@@ -181,9 +181,14 @@
   `shell::job-finished` pass their old config as args; consumers of
   `shell::turns::changed` filter on `input.session_id`. Each
   watch starts with its first observer and stops with its last; a call
-  reaches the observers of its watch, path or job through the function's
-  match keys. The worker observes `configuration::on-updated`,
-  `harness::hook::on-pre-turn`, `on-post-turn`, `on-pre-call` and
+  reaches the observers of its watch or path through the function's match
+  keys, and the observers of its job through its match predicate. An
+  observer of a job added after the job finished receives the retained
+  completion from a call that only it receives, delivered with its
+  `deliver`, filters and `on` like a live one; each observer of a job
+  receives the completion once. The worker observes
+  `configuration::on-updated`, `harness::hook::on-pre-turn`, `on-post-turn`,
+  `on-pre-call` and
   `on-post-call` (its handlers are `shell::turns::on-pre-call` and
   `shell::turns::on-post-call`), and `harness::on-turn-started` /
   `on-turn-completed`, and calls every function with `iii.call`. The console
