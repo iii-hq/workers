@@ -132,10 +132,10 @@ let xtermLoad: Promise<XtermModule> | null = null
 
 /**
  * The terminal emulator, imported once on first use: it ships as its own
- * console:module (ui/xterm.ts) so a console tab that never opens a terminal
- * never downloads it. A failed import clears the memo so the next attempt
- * imports again. The memo outlives a hot reload of xterm.js alone: new bytes
- * reach a tab when page.js reloads.
+ * module asset (ui/xterm.ts, kind `module`) so a console tab that never
+ * opens a terminal never downloads it. A failed import clears the memo so
+ * the next attempt imports again. The memo outlives a hot reload of
+ * xterm.js alone: new bytes reach a tab when page.js reloads.
  */
 function loadXterm(host: Host): Promise<XtermModule> {
   if (!host.importModule) {

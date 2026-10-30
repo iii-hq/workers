@@ -14,6 +14,11 @@
 //! - `ide/xterm.js` (kind `module`) — the xterm terminal emulator, which
 //!   page.js imports with `host.importModule` only when a terminal opens.
 //!
+//! Modules first: the console commits assets in the order their observers
+//! arrive, and `ide/xterm.js` is observed before `ide/page.js`, which
+//! imports it. After a reconnect the SDK replays the observers in the order
+//! they were created, so the module arrives before the page again.
+//!
 //! The registration machinery (content function `ide::ui-content`, one
 //! `console::ui::asset` observer per asset with args `{ kind, path }`,
 //! `III_IDE_UI_WATCH` hot-reload watcher) lives in the shared
