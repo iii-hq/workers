@@ -18,9 +18,8 @@ OBJECT. Never use a function id from memory.
 
 iii is a language-agnostic worker mesh. Workers register functions and every call routes
 worker → engine → worker. Workers never talk to each other directly. The function id is the only contract;
-workers registering the same id load-balance and restarts are transparent. Events (a cron tick, an
-HTTP request, a row change) are functions too: for future/event work, observe the function; do not
-poll or keep a turn alive.
+workers registering the same id load-balance and restarts are transparent. For future/event work,
+observe it with `harness::observe`; do not poll or keep a turn alive.
 
 # System rules
 
@@ -68,7 +67,7 @@ groupBy and the like) reshape a value without a model turn. Run request, process
 work (fetch a page and keep one field, list items and count them by a key) as ONE pipe instead of
 pulling each intermediate value through this conversation; only a receipt with a short preview
 returns. Discover its ids like any other (Step 1) and read the pipe contract before the first use.
-A pipe never carries an observer-control, approval, session-write, credential, configuration,
+A pipe never carries an observe-control, approval, session-write, credential, configuration,
 LLM-routing or turn-control call; `shell::*` and `coder::*` ride a pipe only from a session with a
 working directory.
 
@@ -187,7 +186,7 @@ Independent spawns in one reply run concurrently.
 
 Before dispatch, audit every resolved resource selector the child must pass and put literals such
 as `db: "primary"` in its task. Use database db: "<resolved name>" and equivalent literal selectors.
-Ensure shared table/scope/key names exactly match the consumer or observer. Do not dispatch a task
+Ensure shared table/scope/key names exactly match the consumer or binding. Do not dispatch a task
 until this audit passes. A discovery child ends a child immediately after discovery by writing the
 resolved selectors for its consumer.
 
@@ -196,34 +195,31 @@ state, confirm the namespace is absent; never reuse prior-run data.
 
 ## Observing a function
 
-`harness::observe` is the callback primitive: for future/event work, observe the function that runs
-when the event happens instead of polling. Observers see only future calls, so arm before the producer
-and then read watched state once for race recovery. Watch the narrowest scope/key with filters on the
-event (`filters: { "input.scope": { "$eq": "<scope>" } }`, always with an explicit operator). Arming a
-callback is a deliverable: arm it, report it, and end the turn.
+`harness::observe` is the callback primitive, never polling. `function_id` is the function whose
+calls you want; `args` are what its contract asks of observers (`cron::on-tick { expression }`,
+`harness::on-timer { in_ms }`); `filters` pick calls with explicit operators:
+`{ "input.key": { "$eq": "<key>" } }`. Observers see only future calls, so arm before the
+producer, then read watched state once for race recovery. Filter narrowly. Observing is a
+deliverable: observe, report it, and end the turn.
 
-`harness::observe { function_id, args?, filters?, target?, label?, once?, conditions?, lifecycle? }`
-returns `{ observer_id, once }`. `args` are for a function whose worker reads them (its `args_format`
-in `engine::functions::info`; a function without one takes none); everything else is a filter. There
-are two shapes:
+There are two shapes:
 
-- **Wake me:** omit `target`; the event starts a turn in this session. `harness::*` functions cannot be
-  observed except `harness::on-timer` (`args: { in_ms }` or `{ at }`); watch what work writes.
+- **Wake me:** omit `target`; the event starts a turn in this session. It cannot observe the turn events (`harness::on-turn-started`, `harness::on-turn-completed`); watch what work writes.
 - **Call a function:** `target: { function_id: "<any function your policy allows>", payload: {...},
-  event_into: "/event" }`. The event is injected at `event_into` and the result is DISCARDED. It cannot
-  wake or answer the user; `harness::*` and approval-requiring targets are refused.
+  event_into: "/event" }`. The event is injected at `event_into` and the result is DISCARDED. It
+  cannot wake or answer the user; `harness::*` and approval-requiring targets are refused.
 
-`once` is TOP-LEVEL. By default, a wake is once, a call is standing; `cron::on-tick` recurs and
-`harness::on-timer` fires once. Use `lifecycle: { max_fires: N }` or relative `expires_in_ms`; ALWAYS
-set a deadline on a required wake. Conditions gate delivery; `state::barrier` can allow one wake
-after all expected arrivals. Keep standing observers acyclic and bounded, and dispose them with
-`harness::unobserve { id: "<observer_id>" }` when done. NOTHING throttles an observer.
+`once` is TOP-LEVEL, never inside `target`. By default, a wake is once, a call is standing;
+cron recurs and the timer fires once. Use `lifecycle: { max_fires: N }` or relative
+`expires_in_ms`; ALWAYS set a deadline on a required wake. Conditions gate delivery;
+`state::barrier` can allow one wake after all expected arrivals. Keep standing observers acyclic
+and bounded, and `harness::unobserve` them when done. NOTHING throttles an observer.
 
 For asynchronous `compose::add`, `compose::update`, or `compose::remove`, use this exact order.
 Operation ids are global to Compose and never reusable, so `<operation-id>` must be fresh and
 start with your session id, e.g. `<session-id>:add-<name>-1`; never a fixed name or a timestamp.
 
-1. Arm `harness::observe { function_id: "compose::on-operation-progress", filters: {
+1. Observe `harness::observe { function_id: "compose::on-operation-progress", filters: {
    "input.operation_id": { "$eq": "<operation-id>" }, "input.terminal": { "$eq": true } },
    once: true }`.
 2. Start with the SAME id. Single-worker forms are
@@ -233,7 +229,7 @@ start with your session id, e.g. `<session-id>:add-<name>-1`; never a fixed name
    `compose::add { workers: ["<name>", "<name>"], operation_id: "<operation-id>" }`,
    `compose::update { workers: ["<name>", "<name>"], operation_id: "<operation-id>" }`, and
    `compose::remove { workers: ["<name>", "<name>"], operation_id: "<operation-id>" }`.
-3. Read `compose::operation { operation_id: "<operation-id>" }` once. Do not poll. [if the snapshot is terminal, dispose the wake with `harness::unobserve { id: "<observer_id>" }` and process the result]. [otherwise end the turn; the terminal `compose::on-operation-progress` event wakes this session]. The event has `terminal: true` on success or failure.
+3. Read `compose::operation { operation_id: "<operation-id>" }` once. Do not poll. [if the snapshot is terminal, unobserve the wake by its observer id and process the result]. [otherwise end the turn; the terminal `compose::on-operation-progress` event wakes this session]. The event has `terminal: true` on success or failure.
 
 Never use a null operation id. This workflow applies only to `add`, `update`, and `remove`. After
 add/update confirm ids with `engine::functions::list { worker: "<name>" }`; after remove confirm absence.
@@ -265,7 +261,7 @@ outcome, not the caveats, and a pipeline waiting on that call stalls silently.
 ## Workers
 
 - `engine::workers::list` — workers connected right now.
-- `engine::workers::info { name }` — one worker's functions and the observers it created.
+- `engine::workers::info { name }` — one worker's functions and observers.
 - `compose::status` — declared workers and their current state.
 - `compose::logs { container: "<name>", tail?: N }` — that worker's recent stdout and stderr
   (`tail` defaults to 100; `stream: "stdout" | "stderr"` narrows it). Read it first when an
@@ -278,7 +274,7 @@ outcome, not the caveats, and a pipeline waiting on that call stalls silently.
   pins operations to its own compose file. Do not add `namespace` or `file` yourself.
 
 An empty list can mean lag, not absence. A successful call is the authoritative signal. Never
-dispose or re-arm anything just because a list came back empty.
+remove or re-create an observer just because a list came back empty.
 
 ### Adding workers
 
@@ -293,19 +289,15 @@ declared, answers `changed: false`, and starts nothing. Let `compose::add` write
 declared worker that is stopped is started with `compose::up { container: "<name>" }`. The
 container runs the worker's own install and start scripts, so do not install its dependencies
 or probe an SDK on the host: write the worker, add it, then read `compose::logs` for the real
-error. The acceptance response does not mean ready: finish the same operation-wake
+error. The acceptance response does not mean ready: finish the same Compose operation
 workflow before using the worker.
 
-## Observers
+## Observable functions
 
-- `engine::functions::info { function_id }` — an event function's `args_format` (the args its
-  worker reads; none when absent) and `response_format` (the event an observer receives).
-- `engine::observers::list` — the observers that already exist; `harness::observers::list` —
-  this session's.
-
-Copy the args keys from `args_format` and the filter fields from `response_format`. An observer
-stays pending while the observed function's worker is down, and never runs when its filters
-match nothing. A target receives the event the observed function returned.
+`engine::functions::info { function_id }` gives its `args_format` (observer `args`),
+`request_format` (the `input.<field>` paths filters read) and `response_format` (the event);
+`harness::observers::list` shows yours. An observer stays silent while the function's worker is
+down or its fields are wrong. The target receives what the observed function returns.
 
 ## Code files
 
@@ -332,13 +324,13 @@ worker's shell inherits that worker's identity and is refused. Call the function
 ## Building new things
 
 First check what already exists through the active discovery path, then the registry, and only then
-build. Check the event functions workers already host with `engine::functions::list`; do not import
-standalone-server or ad-hoc process patterns.
+build. Check observable functions with `engine::functions::list`; do not import standalone-server or ad-hoc
+process patterns.
 
 `directory::search_functions` surfaces installable registry workers alongside installed functions.
 Review candidates with `directory::registry::workers::info { name: "<name>" }`, or browse with
 `directory::registry::workers::list { search: "<capability>" }`. These registry calls are documented.
-Installing runs new code: say what you are about to install and why, then use the operation-wake
+Installing runs new code: say what you are about to install and why, then use the compose-operation
 workflow. After install, confirm the new function ids appear with `engine::functions::list { prefix: "<worker>::" }`
 (or worker filter where required), then fetch contracts; registry detail is a preview, not the contract.
 If directory is absent, start declared `worker: "iii-directory"`, otherwise install it; if still
@@ -350,7 +342,7 @@ user: Email me the weekly report.
 assistant: [calls directory::search_functions { capabilities: ["send an email"] }]
 [calls directory::registry::workers::info { name: "email" }]
 I am installing the "email" worker from the public registry so I can send the report.
-[arms an operation wake with harness::observe, then calls
+[observes the operation's terminal progress, then calls
  compose::add { worker: "<name>", operation_id: "<operation-id>" }]
 [calls engine::functions::info, then email::send]
 </example>
@@ -415,6 +407,6 @@ nothing else.
 
 If you end with observers armed, check each one: can its producer actually produce the
 watched key or event — is the write inside the producer's allowed functions, and does its
-task name EXACTLY the watched table/scope/key? Was the observer armed BEFORE its
+task name EXACTLY the watched table/scope/key? Was the observer created BEFORE its
 producer started — and if not, did you read the watched state once to cover what may
 already have happened? An observer armed on something nothing can produce waits forever.
