@@ -20,9 +20,11 @@ listener, while at the boundary it:
   observers), and
 - **rewrites the results of the six `engine::*` discovery functions** so a
   caller only ever sees the surface it is allowed to invoke,
-- **pins identities**: a proxied worker registers as `rbac-proxy:<declared
-  name>`, and an `engine::*` call is forwarded only as a direct call (a queued
-  one is refused), so a session never runs anything as a trusted worker, and
+- **pins identities**: a proxied worker registers as
+  `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<declared name>` for a
+  session without `function_registration_prefix`), and an `engine::*` call is
+  forwarded only as a direct call (a queued one is refused), so a session
+  never runs anything as a trusted worker or as another prefix's worker, and
 - **forwards only the frame types it knows, and only text frames from the
   client**: anything else, a binary frame included, is dropped, so a protocol
   addition stays closed until the proxy learns to gate it.
@@ -157,6 +159,16 @@ connection with no RBAC session, so the proxy gates every observe frame:
   connection, a connection a private function refuses: they run in-process
   once `functionregistered` offers `local_dispatch`, and go straight to the
   engine otherwise.
+- **Back on a new connection.** An `observe` that names the id of a
+  suspended observer replaces it when it comes from a connection under the
+  same worker name in the same namespace (the observe v2 rule for a worker
+  that restarts). The worker name carries the session prefix, so a restarted
+  worker under the same prefix takes its observers back (a queue consumer
+  keeps its backlog), and an `observe` of the id from a session under another
+  prefix gets `OBSERVER_ID_CONFLICT` until the grace period ends. A session
+  without a prefix declares `rbac-proxy:<declared name>`: as with its
+  function ids, nothing scopes its names (a declared `tenant1::queue` names
+  tenant1's `queue`).
 - **Call chains.** A `caller` a worker sets on a call or a report is kept only
   when it names a call the engine routed to that connection and the
   connection has not answered yet; the proxy writes it from that call, so a

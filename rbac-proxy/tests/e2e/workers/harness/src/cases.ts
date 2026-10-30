@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto'
 import { type IIIClient, registerWorker } from 'iii-sdk'
 import { createChannel } from 'iii-sdk/helpers'
 import WebSocket from 'ws'
-import { middlewareCalls } from './support.ts'
+import { middlewareCalls, TENANT1_TOKEN, TENANT2_TOKEN } from './support.ts'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any
@@ -72,6 +72,21 @@ async function ensureSharedSource(down: IIIClient, support: IIIClient): Promise<
   await waitForFunction(support, 'tenant1::shared::source')
 }
 
+/** Resolve with the engine's `ObserverInfo` for `id` once `ready` accepts it. */
+async function waitForObserver(support: IIIClient, id: string, ready: (info: Json) => boolean): Promise<Json> {
+  let info: Json
+  for (let i = 0; i < 50; i++) {
+    try {
+      info = await support.call({ function_id: 'engine::observers::get', payload: { id } })
+      if (ready(info)) return info
+    } catch (e) {
+      info = { error: String(e) }
+    }
+    await sleep(100)
+  }
+  throw new Error(`observer ${id} did not reach the expected state: ${JSON.stringify(info)}`)
+}
+
 /** A raw worker connection through the proxy, read frame by frame. */
 interface RawSession {
   send(frame: Json): void
@@ -80,9 +95,9 @@ interface RawSession {
   close(): void
 }
 
-function openRaw(): Promise<RawSession> {
+function openRaw(token = TENANT1_TOKEN): Promise<RawSession> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(PROXY_URL, { headers: { authorization: 'Bearer test-token' } })
+    const ws = new WebSocket(PROXY_URL, { headers: { authorization: token } })
     const inbox: Json[] = []
     const waiters: { pick: (frame: Json) => boolean; done: (frame: Json) => void }[] = []
     ws.on('message', (raw) => {
@@ -126,6 +141,31 @@ function openRaw(): Promise<RawSession> {
   })
 }
 
+/** Call `functionId` on a raw session and resolve with its `invocationresult`. */
+async function rawCall(raw: RawSession, functionId: string, data: Json): Promise<Json> {
+  const invocationId = randomUUID()
+  raw.send({ type: 'invokefunction', function_id: functionId, invocation_id: invocationId, data })
+  return raw.next((f) => f?.type === 'invocationresult' && f.invocation_id === invocationId)
+}
+
+/** A raw session of `token`'s tenant that declared `name` on `engine::workers::register`. */
+async function openDeclared(token: string, name: string): Promise<RawSession> {
+  const raw = await openRaw(token)
+  try {
+    await raw.next((f) => f?.type === 'workerregistered')
+    const declared = await rawCall(raw, 'engine::workers::register', {
+      runtime: 'node',
+      name,
+      features: ['observe.v1', 'observe.v2'],
+    })
+    if (declared.error) throw new Error(`engine::workers::register failed: ${JSON.stringify(declared.error)}`)
+    return raw
+  } catch (e) {
+    raw.close()
+    throw e
+  }
+}
+
 /**
  * Invoke `functionId` on a fresh session and resolve with its invocation
  * result. The frame goes out in 1 MiB fragments, the way browsers send large
@@ -136,7 +176,7 @@ function rawInvoke(functionId: string, data: Json, timeoutMs = 10_000): Promise<
   const frame = JSON.stringify({ type: 'invokefunction', function_id: functionId, invocation_id: invocationId, data })
   const fragment = 1024 * 1024
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(PROXY_URL, { headers: { authorization: 'Bearer test-token' } })
+    const ws = new WebSocket(PROXY_URL, { headers: { authorization: TENANT1_TOKEN } })
     const fail = (e: Error) => {
       clearTimeout(timer)
       ws.terminate()
@@ -348,7 +388,7 @@ export const CASES: TestCase[] = [
       await ensureSharedSource(down, support)
       const other = registerWorker(PROXY_URL, {
         workerName: 'rbac-e2e-other',
-        headers: { authorization: 'Bearer test-token' },
+        headers: { authorization: TENANT1_TOKEN },
         otel: { enabled: false },
       })
       try {
@@ -419,6 +459,73 @@ export const CASES: TestCase[] = [
       }
       if (seen?.function_id !== 'api::echo' || seen?.input?.ping !== 'observed') {
         throw new Error(`the observer's target did not receive the call of api::echo: ${JSON.stringify(seen)}`)
+      }
+    },
+  },
+
+  // Decision 51 through the proxy: a worker back on a new connection observes
+  // under the id of its suspended observer and takes it over. The engine knows
+  // a proxied connection as `rbac-proxy:<prefix>::<declared name>`, so a
+  // tenant2 session declaring the same name is another worker: its `observe`
+  // of the id gets OBSERVER_ID_CONFLICT and the observer stays tenant1's. The
+  // tenant1 worker, back on a third connection, takes the observer over.
+  {
+    name: 'suspended-observer-replaced-only-by-its-own-tenants-worker',
+    async run({ support }) {
+      const id = randomUUID()
+      const workerName = 'rbac-e2e-restarting'
+      const observe = {
+        type: 'observe',
+        id,
+        source: { function_id: 'api::echo' },
+        target: { function_id: 'api::sink' },
+      }
+      const answer = (raw: RawSession) => raw.next((f) => f?.type === 'observeresult' && f.id === id)
+
+      const first = await openDeclared(TENANT1_TOKEN, workerName)
+      try {
+        first.send(observe)
+        const created = await answer(first)
+        if (created.state === 'error') throw new Error(`the first observe failed: ${JSON.stringify(created)}`)
+        await waitForObserver(support, id, (o) => o?.state === 'active')
+      } finally {
+        first.close()
+      }
+      const suspended = await waitForObserver(support, id, (o) => o?.state === 'suspended')
+
+      const other = await openDeclared(TENANT2_TOKEN, workerName)
+      try {
+        other.send(observe)
+        const refused = await answer(other)
+        if (refused.state !== 'error' || refused.error?.code !== 'OBSERVER_ID_CONFLICT') {
+          throw new Error(`another tenant's worker took the suspended observer over: ${JSON.stringify(refused)}`)
+        }
+      } finally {
+        other.close()
+      }
+      const kept: Json = await support.call({ function_id: 'engine::observers::get', payload: { id } })
+      if (kept?.state !== 'suspended' || kept?.worker?.worker_id !== suspended.worker?.worker_id) {
+        throw new Error(`the suspended observer did not stay the first connection's: ${JSON.stringify(kept)}`)
+      }
+
+      const back = await openDeclared(TENANT1_TOKEN, workerName)
+      try {
+        back.send(observe)
+        const replaced = await answer(back)
+        if (replaced.state === 'error') {
+          throw new Error(`the tenant's own worker could not take its observer over: ${JSON.stringify(replaced)}`)
+        }
+        const active = await waitForObserver(
+          support,
+          id,
+          (o) => o?.state === 'active' && o?.worker?.worker_id !== suspended.worker?.worker_id,
+        )
+        if (active.worker?.worker_name !== `rbac-proxy:tenant1::${workerName}`) {
+          throw new Error(`the engine knows the worker under another name: ${JSON.stringify(active.worker)}`)
+        }
+        back.send({ type: 'unobserve', id })
+      } finally {
+        back.close()
       }
     },
   },

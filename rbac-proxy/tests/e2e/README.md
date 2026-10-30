@@ -32,7 +32,8 @@ run-tests.sh
   ├─ start rbac-proxy --url ws://…:49134 --config data/seed.yaml   (binds :49271)
   └─ run the Node harness (workers/harness), which:
        1. registers the support fns on the engine:
-          support::auth (bearer-token gate, per-tenant prefix + context),
+          support::auth (bearer-token gate: test-token is tenant1,
+          test-token-tenant2 is tenant2; per-tenant prefix + context),
           support::middleware, support::on-fn-reg, support::on-observer-reg,
           api::echo, secret::echo
        2. connects a downstream worker THROUGH the proxy (Bearer test-token)
@@ -55,6 +56,7 @@ run-tests.sh
 | `observe-to-forbidden-target-denied` | an observer whose target is a forbidden function is refused with `FORBIDDEN` and never forwarded (the engine holds no observer targeting it) |
 | `observer-registration-hook-denies` | the `on_observer_registration` hook runs before the engine sees an observer; its throw refuses the observer with `FORBIDDEN` |
 | `observer-of-exposed-function-fires-through-proxy` | an observer of `api::echo` targeting the session's own `on-echo` goes active, and a call of `api::echo` runs `on-echo` through the proxy with the `Observed` envelope |
+| `suspended-observer-replaced-only-by-its-own-tenants-worker` | a tenant1 worker's observer, suspended when its connection closes, is refused to a tenant2 session that declares the same worker name (`OBSERVER_ID_CONFLICT`) and taken over by the tenant1 worker back on a new connection; the engine knows the worker as `rbac-proxy:tenant1::<name>` |
 | `channel-roundtrip-through-proxy` | a channel round-trips through the proxy's `/ws/channels` bridge |
 | `oversized-call-without-poisoning` | a call over 16 MiB (sent fragmented, as browsers do) round-trips through middleware, the proxy's control connection carrying it as a large message; middleware calls and new sessions keep working afterwards |
 

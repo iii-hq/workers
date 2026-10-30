@@ -153,9 +153,6 @@ const INVALID_ARGS: &str = "INVALID_ARGS";
 /// the client keeps its own timeout.
 const MIDDLEWARE_TIMEOUT_MS: u64 = 610_000;
 
-/// Prefix of every worker name a proxied connection declares.
-const WORKER_NAME_PREFIX: &str = "rbac-proxy:";
-
 /// What the downstream→engine pump should do with a frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DownstreamAction {
@@ -1042,10 +1039,13 @@ impl Interceptor {
         }
         if let Some(data) = v.get_mut("data").and_then(Value::as_object_mut) {
             retain_supported_features(data);
-            // A proxied worker cannot claim a trusted worker's name (the engine
-            // keeps one live worker per name and rejects the other one).
+            // The name carries `rbac-proxy:` and the session prefix: a proxied
+            // worker never holds a trusted worker's name, and another
+            // prefix's session declaring the same name is another worker, to
+            // the engine's one-live-worker-per-name rule and to the
+            // replacement of a suspended observer (decision 51).
             if let Some(Value::String(name)) = data.get_mut("name") {
-                *name = format!("{WORKER_NAME_PREFIX}{name}");
+                *name = self.session.proxied_worker_name(name);
             }
         }
         DownstreamAction::Forward(v.to_string())
@@ -1741,6 +1741,36 @@ mod tests {
         });
         let v = forwarded(i.handle_downstream(&frame.to_string()).await);
         assert_eq!(v["data"]["name"], "rbac-proxy:queue");
+    }
+
+    /// Decision 51 replaces a suspended observer from a connection under the
+    /// same worker name and namespace, so sessions under different prefixes
+    /// declaring one name must reach the engine as different workers.
+    #[tokio::test]
+    async fn declared_worker_name_carries_the_session_prefix() {
+        let frame = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": { "name": "queue", "runtime": "node" },
+            "action": { "type": "void" }
+        })
+        .to_string();
+        let mut names = Vec::new();
+        for prefix in ["tenant1", "tenant2"] {
+            let i = interceptor(
+                config_with(expose(&["api::*"]), None),
+                session(Some(prefix)),
+            );
+            let v = forwarded(i.handle_downstream(&frame).await);
+            names.push(v["data"]["name"].clone());
+        }
+        assert_eq!(
+            names,
+            vec![
+                json!("rbac-proxy:tenant1::queue"),
+                json!("rbac-proxy:tenant2::queue")
+            ]
+        );
     }
 
     #[tokio::test]

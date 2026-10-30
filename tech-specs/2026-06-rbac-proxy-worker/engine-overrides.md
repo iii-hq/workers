@@ -69,7 +69,7 @@ this connection created.
 | `engine::observers::list` | pass through | keep `observers[]` rows where `own(o)`, or `A(function_id)` and `A(target.function_id)`; `strip` both ids | filtered list |
 | `engine::observers::get` | pass through | as one row of `engine::observers::list` | **`OBSERVER_NOT_FOUND`** when the row is hidden (engine parity: an observer the caller may not see does not exist for it) |
 | `engine::observers::dispose` | forwarded only when `own(id)`; else `FORBIDDEN` | none | — |
-| `engine::workers::register` | the session's own setup call (infra carve-out) | none (response is `{ success }`) | pass through; the proxy prefixes the declared worker name with `rbac-proxy:` |
+| `engine::workers::register` | the session's own setup call (infra carve-out) | none (response is `{ success }`) | pass through; the proxy declares the worker as `rbac-proxy:<prefix>::<name>` (`rbac-proxy:<name>` without a prefix), so the engine's one live worker per name and its replacement of a suspended observer from a new connection of its worker (observe v2 decision 51) stay within one prefix, and every proxied worker's name starts with `rbac-proxy:` |
 
 > **Denied-call error code (engine parity vs hardening).** The engine's
 > `engine::functions::info` returns `FORBIDDEN` for a function the session may
@@ -141,13 +141,17 @@ When a session has a `function_registration_prefix`, its **own** functions live
 in the engine registry as `{prefix}::{id}` and surface that way in discovery
 results (`engine::functions::list` would show `tenant1::foo`). The worker
 registered them bare (`foo`) and must see them bare. So the proxy **strips its
-own session prefix** from every id and worker name in a discovery result:
+own session prefix** from every id and worker name in a discovery result that
+starts with `{prefix}::`:
 
 - `function_id` / referenced `function_id` that start with `{prefix}::` → strip
   to the bare id the worker knows.
 - A foreign function (another session's namespace, or an unprefixed global) is
   shown with its canonical id — it is not the caller's prefix and is not
   stripped.
+- A proxied worker's name starts with `rbac-proxy:` and keeps the prefix: the
+  session's own workers are listed as `rbac-proxy:<prefix>::<declared name>`,
+  the name `engine::workers::info` takes.
 
 This is symmetric with the dispatch-path strip in
 [protocol-interception.md § Prefix resolution](protocol-interception.md#prefix-resolution):

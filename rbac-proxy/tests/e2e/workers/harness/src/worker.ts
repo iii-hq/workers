@@ -10,7 +10,7 @@
 
 import { registerWorker } from 'iii-sdk'
 import { resolve } from 'node:path'
-import { registerSupport } from './support.ts'
+import { registerSupport, TENANT1_TOKEN } from './support.ts'
 import { Runner } from './runner.ts'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
@@ -59,7 +59,7 @@ async function waitForAuthFn(support: ReturnType<typeof registerWorker>): Promis
 
     down = registerWorker(PROXY_URL, {
       workerName: 'rbac-e2e-downstream',
-      headers: { authorization: 'Bearer test-token' },
+      headers: { authorization: TENANT1_TOKEN },
       // The proxy intentionally exposes only the worker protocol endpoint.
       // Telemetry continues through the trusted upstream worker connection.
       otel: { enabled: false },
