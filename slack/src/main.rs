@@ -6,7 +6,6 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
-use slack::approval_gate::{self, ApprovalGateStatus};
 use slack::clients::slack as slack_client;
 use slack::configuration::{self, ConfigCell};
 use slack::deps::Deps;
@@ -84,20 +83,14 @@ async fn main() -> Result<()> {
         .context("slack requires a non-empty bot_token in configuration")?;
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
-    let gate = Arc::new(ApprovalGateStatus::new());
-    let deps = Arc::new(Deps::new(iii.clone(), cell.clone(), gate.clone()));
+    let deps = Arc::new(Deps::new(iii.clone(), cell.clone()));
 
     functions::register_all(&iii, &deps);
 
-    // Probe the optional approval-gate worker; observe its events if present.
-    gate.set_present(approval_gate::probe_presence(&iii).await);
-    bindings::observe_session_events(&iii);
-    if gate.is_available() {
-        bindings::observe_approval_events(&iii);
-        tracing::info!("approval-gate present — inline approvals enabled");
-    } else {
-        tracing::info!("approval-gate absent — approvals disabled");
-    }
+    // Session, harness and approval observers, created at once. Each stays
+    // `pending` until its worker registers the function, so an approval-gate
+    // that connects later is observed with no extra step.
+    bindings::observe_events(&iii);
 
     configuration::observe_config_changes(&iii, cell, deps.clone());
 

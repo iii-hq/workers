@@ -1,7 +1,10 @@
 //! Bridge observers: drive Slack streaming and approvals from the events of
 //! session-manager (`session::on-message-*`), the harness
 //! (`harness::on-turn-completed`) and approval-gate (`approval::on-pending-*`).
-//! Each target receives the event itself (`deliver: output`).
+//! Each target receives the event itself (`deliver: output`). The observers
+//! are created at boot and stay `pending` while their worker is absent; an
+//! `approval::on-pending-created` event comes from a connected approval-gate,
+//! so the prompt it posts can be answered.
 
 use std::sync::Arc;
 
@@ -136,9 +139,6 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
 }
 
 async fn post_approval(deps: &Deps, rec: &PendingApprovalRecord) -> Result<(), Error> {
-    if !deps.approval_gate.is_available() {
-        return Ok(());
-    }
     let Some(target) = kv::session_target(deps, &rec.session_id).await else {
         return Ok(());
     };
@@ -207,17 +207,18 @@ pub fn approval_observers() -> [(&'static str, &'static str, Option<Value>); 2] 
     ]
 }
 
-/// Observe the session and harness events. Each observer stays `pending`
-/// while its worker is absent and becomes active when it registers.
-pub fn observe_session_events(iii: &Arc<IIIClient>) {
-    for (source, target, filters) in session_observers() {
-        observe(iii, source, target, filters);
-    }
+/// `(source, target, filters)` of every observer [`observe_events`] creates.
+pub fn boot_observers() -> Vec<(&'static str, &'static str, Option<Value>)> {
+    session_observers()
+        .into_iter()
+        .chain(approval_observers())
+        .collect()
 }
 
-/// Observe the approval events (only meaningful when `approval-gate` is present).
-pub fn observe_approval_events(iii: &Arc<IIIClient>) {
-    for (source, target, filters) in approval_observers() {
+/// Observe the session, harness and approval events. Each observer stays
+/// `pending` while its worker is absent and becomes active when it registers.
+pub fn observe_events(iii: &Arc<IIIClient>) {
+    for (source, target, filters) in boot_observers() {
         observe(iii, source, target, filters);
     }
 }
@@ -257,10 +258,9 @@ mod tests {
     }
 
     #[test]
-    fn observed_functions_are_the_v2_event_sources() {
-        let sources: Vec<_> = session_observers()
+    fn boot_observes_the_session_harness_and_approval_events() {
+        let sources: Vec<_> = boot_observers()
             .into_iter()
-            .chain(approval_observers())
             .map(|(source, target, _)| (source, target))
             .collect();
         assert_eq!(
