@@ -1071,7 +1071,12 @@ mod tests {
     async fn finalize_calls_the_event_function_once_per_terminal_run() {
         let def = one_node_def();
         let cases = [
-            (RunStatus::Completed, done_cp(), Some(json!({ "answer": 42 })), None),
+            (
+                RunStatus::Completed,
+                done_cp(),
+                Some(json!({ "answer": 42 })),
+                None,
+            ),
             (
                 RunStatus::Failed,
                 failed_cp(Some("boom")),
