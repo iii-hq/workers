@@ -216,7 +216,14 @@ mod tests {
     fn the_formats_describe_the_event() {
         let format = event_format();
         let properties = format["properties"].as_object().expect("object schema");
-        for field in ["type", "event_type", "scope", "key", "old_value", "new_value"] {
+        for field in [
+            "type",
+            "event_type",
+            "scope",
+            "key",
+            "old_value",
+            "new_value",
+        ] {
             assert!(properties.contains_key(field), "missing {field}");
         }
     }

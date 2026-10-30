@@ -493,9 +493,13 @@ async fn filters_select_events_by_key_and_event_type() {
     )
     .await
     .expect("set other");
-    call(&iii, "state::delete", json!({"scope": scope, "key": "other"}))
-        .await
-        .expect("delete other");
+    call(
+        &iii,
+        "state::delete",
+        json!({"scope": scope, "key": "other"}),
+    )
+    .await
+    .expect("delete other");
 
     let status = tokio::time::timeout(Duration::from_secs(3), status_rx.recv())
         .await
