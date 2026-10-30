@@ -295,11 +295,17 @@ supervisor:
    - `III_URL=ws://hub.iii.internal:49135`;
    - `III_NAMESPACE=<the hub's namespace>`, so the harness finds its
      functions;
-   - `III_WORKER_NAME=<node>.<worker>`, because `rbac-proxy` names a proxied
-     worker `rbac-proxy:<name>`, the engine keeps one live worker per name,
-     and two nodes running `ide` must not collide;
-   - `III_CONFIG_NAME=<node>.<worker>`, so its configuration entry is its
-     own;
+   - `III_WORKER_NAME=<worker>`. The client cannot be trusted to choose a
+     unique name: the engine keeps one live worker per name, and a malicious
+     node could take `ide` and lock another node's `ide` out. So `rbac-proxy`
+     names a prefixed session's worker `rbac-proxy:<prefix>::<name>`, from
+     the authenticated grant (see
+     [Required changes](#required-changes-outside-mesh)).
+   - `III_CONFIG_NAME=<node>__<worker>`, so its configuration entry is its
+     own. The engine accepts only `[a-z0-9_-]{1,64}` as a configuration id
+     (`ConfigurationStore::validate_id`). Node names contain no `_`, so the
+     `__` separator cannot be ambiguous: `lap__x` and `laptop__x` never
+     overlap.
 3. restarts it with backoff from 1 s up to 60 s;
 4. stops the workers that are no longer desired;
 5. writes each worker's log to the node state dir, rotated.
@@ -338,14 +344,25 @@ rbac:
   on_trigger_registration_function_id: mesh::on-trigger-registration
 ```
 
-`mesh` registers three functions for the proxy:
+`mesh` registers three functions for the proxy. The proxy resolves the
+middleware in the caller's namespace (`rbac-proxy/src/interceptor.rs`), and
+node workers call `configuration::*` in `default`, as the configuration
+contract requires (`ide/src/configuration.rs`). So the hub registers
+`mesh::middleware` and `mesh::on-trigger-registration` both in its own
+namespace and in `default`. When the two differ, that takes a second SDK
+connection pinned to `default`; both connections serve the same session-key
+table.
 
 - **`mesh::auth`** consumes the ticket. It refuses a missing, used or expired
   one. Otherwise it returns:
   - `function_registration_prefix: <node>`;
-  - `namespaces: {<hub namespace>: default_allow ∪ nodes.<node>.allow}`. Only
-    namespace-scoped grants take globs; top-level `allowed_functions` is exact
-    match.
+  - namespace-scoped grants (only these take globs; top-level
+    `allowed_functions` is exact match):
+    - `<hub namespace>: default_allow ∪ nodes.<node>.allow`;
+    - `default: [configuration::get, configuration::ensure, configuration::register, configuration::set]`,
+      which the middleware then confines.
+
+    When the hub runs in `default`, the two merge.
   - `allow_trigger_type_registration: true` and
     `allowed_trigger_types: [<node>::*, configuration, …default_trigger_types]`;
   - `context: {mesh_node: <node>, session_key: <32 random bytes>}`. The hub
@@ -357,13 +374,13 @@ rbac:
     no key and is refused. Without this check the middleware would forward
     the agent's calls with `mesh`'s own authority.
   - **Configuration.** It confines `configuration::*` to entries named
-    `<node>.*`, and never lets hub environment values reach a node:
+    `<node>__*`, and never lets hub environment values reach a node:
     - `configuration::get` is forwarded with `raw: true`;
     - `ensure`, `register` and `set` are forwarded with `expand: false` (see
       [Required changes](#required-changes-outside-mesh));
     - every other `configuration::*` call is refused.
 
-    Without this, a node could seed `<node>.probe` with `${OPENAI_API_KEY}`
+    Without this, a node could seed `<node>__probe` with `${OPENAI_API_KEY}`
     and read the key back expanded.
   - **Everything else** is forwarded to its target, and the target's result
     is returned. The timeout follows the proxy's 610 s middleware budget.
@@ -371,8 +388,16 @@ rbac:
   context. It refuses:
   - any `harness::hook::*` binding: a hook sees, and can rewrite, the
     arguments and results of every call on the hub, approved ones included;
-  - a `configuration` binding whose filter names an entry outside `<node>.*`;
-  - a binding to any type outside the grant.
+  - a `configuration` binding whose filter names an entry outside `<node>__*`;
+  - a binding to any type outside the grant;
+  - a binding whose config has any key outside that type's known shape.
+
+    This covers `condition_function_id` in particular. The engine runs a
+    trigger's condition function with its own authority, outside the proxy,
+    so a node naming `tailscale::logout` as the condition of its own binding
+    would run a function it was never granted. The same rule is also
+    enforced in `rbac-proxy` itself (see
+    [Required changes](#required-changes-outside-mesh)).
 
   `ide` binds `harness::hook::pre-turn`, `post-turn`, `pre-trigger` and
   `post-trigger` for its turn log (`ide/src/turns.rs`). A refused binding
@@ -507,16 +532,25 @@ These ship before or with phase 1.
 
      A pipe or batch can then no longer reach what a direct call is denied.
 
-   The node's `ide` then applies its own configured roots from `<node>.ide`.
+   The node's `ide` then applies its own configured roots from `<node>__ide`.
    Approval-gate's access-watch binds only unprefixed `shell::*` / `coder::*`
    and does not cover remote calls, which the permission rules above route to
    approval instead.
-2. **rbac-proxy: prefix trigger types.** A prefixed session's trigger type ids
-   are registered bare today (`rbac-proxy/src/interceptor.rs`), and
-   engine→worker `registertrigger` frames are never un-prefixed. A node's
-   `ide` would either be refused its `shell::job-finished` type or clash with
-   the hub's. The change prefixes trigger type ids from a prefixed session,
-   and strips the prefix on frames back to it.
+2. **rbac-proxy: a prefix confines everything the session names.** In
+   `rbac-proxy/src/interceptor.rs`, for a session with
+   `function_registration_prefix`:
+   - **Trigger types.** Ids are registered bare today, and engine→worker
+     `registertrigger` frames are never un-prefixed. A node's `ide` would
+     either be refused its `shell::job-finished` type or clash with the hub's.
+     The change prefixes trigger type ids from the session, and strips the
+     prefix on frames back to it.
+   - **Worker name.** Today it is `rbac-proxy:<name>`, with the name the client
+     chose. The change makes it `rbac-proxy:<prefix>::<name>`, so a session
+     can never hold a name that belongs to another prefix.
+   - **Condition functions.** A trigger registration's
+     `condition_function_id` (and any other function id in its config) must
+     name a function the session registered, or one it may call. It is
+     refused otherwise, because the engine runs it with its own authority.
 3. **A resolver for worker artifacts.** The hub needs, for a worker reference
    and a target (os/arch), an HTTPS artifact URL and its sha256.
    `iii-compose`'s `registry::install` does this without a project, but it is
@@ -532,7 +566,7 @@ These ship before or with phase 1.
      payloads and mutator results always return the stored value unexpanded.
    - **Who sets it:** `mesh::middleware` forces it on every node mutation, so
      a node cannot make the hub expand a template. An operator-created
-     `<node>.*` entry that a node writes becomes non-expanding too.
+     `<node>__*` entry that a node writes becomes non-expanding too.
    - **Semantics:** a node's config never draws on the hub's environment.
      Expanding against the node's own environment is a follow-up.
 
@@ -573,7 +607,7 @@ These ship before or with phase 1.
 ## Dependencies
 
 - **`configuration`** (required): the `mesh` config, the `rbac-proxy` config
-  `mesh` owns, and each node worker's `<node>.<worker>` entry.
+  `mesh` owns, and each node worker's `<node>__<worker>` entry.
 - **`rbac-proxy`** (required, owned by `mesh`).
 - **`ade`** (optional, phase 2): the Console page, which shows nodes, path,
   version, workers and drives, and the join code with its one-liners. Links,
@@ -617,6 +651,11 @@ Follow `whatsapp/` (the repo's Go worker) and `docs/sops/go-binary-worker.md`:
 **Integration** (Linux CI, no root):
 - A hub and two userspace nodes (tsnet) in one test process, with a real
   engine and `rbac-proxy`.
+- **Real bootstrap, two namespaces.** A real `ide` boots on a node twice: once
+  with the hub in `default`, once with the hub in a project namespace. Each
+  time its `configuration::ensure` and `get` on `<node>__ide` succeed in
+  `default`, and `<node>::shell::exec` is callable from a harness in the hub's
+  namespace.
 - Join, then a map without links (the nodes cannot see each other), then with
   a link (they can).
 - Removal reaches the peers in under 5 s. The removed node, re-registering
@@ -628,7 +667,7 @@ Follow `whatsapp/` (the repo's Go worker) and `docs/sops/go-binary-worker.md`:
 - A loopback client that dials the proxy without a ticket is refused.
 
 **Adversarial** (a malicious node and a malicious agent):
-- **Templates:** a node `ensure`s `<node>.probe` with
+- **Templates:** a node `ensure`s `<node>__probe` with
   `${OPENAI_API_KEY}` as its value. Its `get` returns the literal template.
 - **Hooks:** a node binding `harness::hook::pre-trigger` or `post-trigger` is
   refused, and a hub call made afterwards reaches no node.
@@ -638,6 +677,13 @@ Follow `whatsapp/` (the repo's Go worker) and `docs/sops/go-binary-worker.md`:
   refused.
 - **Middleware reach:** an agent calls `mesh::middleware` without a session
   key and is refused.
+- **Condition callbacks:** a node registers a `configuration` binding on its
+  own entry with `condition_function_id: tailscale::logout` (or any function
+  outside its grants), then changes the entry. The binding is refused by both
+  `mesh` and `rbac-proxy`, and the function never runs.
+- **Name squatting:** node `evil` connects a worker named `ide` while node
+  `mac` is offline. It is registered as `rbac-proxy:evil::ide`, and `mac`'s
+  `ide` connects normally when `mac` returns.
 - **Revocation:** an id is removed from `nodes.<name>.allow`. The next call
   to it from an already-connected node worker is refused within 5 s.
 - **Tokens (phase 3):**
@@ -691,7 +737,11 @@ network, Windows 11 (phase 2), and the hub behind a named Cloudflare tunnel.
      `fp::pipe` and `fp::batch` alike.
    - It cannot read a hub environment variable through a configuration
      template.
-   - It cannot bind a harness hook.
+   - It cannot bind a harness hook, or have the engine run a function outside
+     its grants as a trigger condition.
+   - It cannot take a worker name that belongs to another node.
+   - A real `ide` on a node boots and serves with the hub inside and outside
+     `default`.
    - It loses a revoked grant within 5 s, without being removed.
    - No agent can drive `mesh-node::*` or `mesh::middleware`, by any path.
 10. A capture at the front door shows no plaintext except CPace messages and
@@ -719,7 +769,7 @@ Each of these sets a default list or a follow-up, not the design.
 2. **Console forms for node workers.** Check whether the Console finds them
    through `<node>::ide::configuration-id`. If it does not, that is a
    follow-up; config stays editable through `configuration::set` on
-   `<node>.<worker>`.
+   `<node>__<worker>`.
 3. **`ide` on Windows.** It ships no Windows build today. Phase 2 ships
    Windows nodes either way, and the skill says which machines lack shell and
    file functions.
