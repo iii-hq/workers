@@ -50,7 +50,10 @@ What `register` does:
 
 - registers the content function (`{path}` → `{content, content_type}`,
   MIME derived from the asset kind), flagged `internal: true` so it stays
-  console plumbing rather than discoverable API;
+  console plumbing rather than discoverable API. It registers as a standby:
+  while another instance of the worker hosts it, the SDK registers it again
+  every second, and this instance serves its own assets once the other one
+  leaves;
 - observes `console::ui::asset` once per asset, with the content function
   as the target: modules and styles at once, and each script once every
   module observer is active or has failed, so the console commits the
