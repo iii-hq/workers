@@ -649,6 +649,99 @@ async fn max_value_bytes_rejects_oversized_set() {
     iii.shutdown_async().await;
 }
 
+/// The `## Functions` section of the worker's README.
+fn readme_functions_section() -> &'static str {
+    const README: &str = include_str!("../README.md");
+    let start = README
+        .find("\n## Functions\n")
+        .expect("the README has a Functions section");
+    let rest = &README[start + 1..];
+    let end = rest[3..].find("\n## ").map_or(rest.len(), |at| at + 3);
+    &rest[..end]
+}
+
+#[tokio::test]
+#[serial]
+async fn the_readme_lists_every_function_the_worker_registers() {
+    // A named connection: the engine lists each function with the name of
+    // the worker hosting it, and a claim is granted to that name only.
+    let name = unique("e2e-readme");
+    let Some(iii) = engine::connect_fresh_named(&name).await else {
+        return;
+    };
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
+        .await
+        .expect("state worker should boot");
+    let config_observer =
+        configuration::observe_config_changes(&iii, boot.ctx.clone(), boot.apply_lock.clone());
+    // A claim registers the namespace's accessors.
+    call(
+        &iii,
+        "state::claim-namespace",
+        json!({"functions_prefix": name, "scopes": [unique("readme-private")]}),
+    )
+    .await
+    .expect("claim a namespace");
+
+    let section = readme_functions_section();
+    let accessor_prefix = format!("{name}::");
+    let mut registered = Vec::new();
+    for _ in 0..40 {
+        // Internal functions (`metadata.internal`) are listed on request.
+        let listed = call(
+            &iii,
+            "engine::functions::list",
+            json!({"worker": name, "include_internal": true}),
+        )
+        .await
+        .expect("engine::functions::list");
+        registered = listed["functions"]
+            .as_array()
+            .expect("functions array")
+            .iter()
+            .filter(|function| function["worker_name"] == json!(name))
+            .filter_map(|function| function["function_id"].as_str())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if registered.iter().any(|id| id.starts_with(&accessor_prefix)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for expected in [
+        "state::set",
+        "state::ui-content",
+        "state::compare-and-set",
+        "state::barrier",
+        "state::claim-namespace",
+        "state::on-config-change",
+    ] {
+        assert!(
+            registered.iter().any(|id| id == expected),
+            "{expected} is registered: {registered:?}"
+        );
+    }
+    let missing: Vec<String> = registered
+        .iter()
+        .map(|id| match id.strip_prefix(&accessor_prefix) {
+            Some(accessor) => format!("`<prefix>::{accessor}`"),
+            None => format!("`{id}`"),
+        })
+        .filter(|listed| !section.contains(listed.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the README Functions table leaves out {missing:?}"
+    );
+
+    config_observer
+        .dispose()
+        .await
+        .expect("dispose configuration observer");
+    boot.shutdown().await;
+    iii.shutdown_async().await;
+}
+
 /// Assert a public `state::*` call is locked out of a reserved scope.
 async fn expect_reserved(iii: &iii_sdk::IIIClient, function_id: &str, payload: Value) {
     let err = call(iii, function_id, payload)

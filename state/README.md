@@ -4,8 +4,10 @@ Distributed key-value state storage with scope-based organization and an
 observable change event. Values are addressed by a `scope` (namespace) and a
 `key`, shared across every worker connected to the engine, and persisted
 through a pluggable adapter (`kv` or `redis`). Callers reach the store
-through six functions — `state::set`, `state::get`, `state::delete`,
-`state::update`, `state::list`, `state::list_groups` — and after every
+through `state::set`, `state::get`, `state::delete`, `state::update`,
+`state::compare-and-set`, `state::list`, `state::list_keys` and
+`state::list_groups` (the [Functions](#functions) table lists every function
+the worker provides), and after every
 successful mutation the worker calls `state::on-changed` with a
 `state:created`, `state:updated`, or `state:deleted` event, so downstream
 functions observe data changes without polling. This worker is the
@@ -37,11 +39,16 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 | `state::get` | `{ scope, key }` | the value, or `null` | — |
 | `state::delete` | `{ scope, key }` | the deleted value, or `null` | `state:deleted` (even when the key did not exist) |
 | `state::update` | `{ scope, key, ops }` — ordered atomic ops: `set`, `merge`, `increment`, `decrement`, `append`, `remove` | `{ old_value, new_value, errors }` | `state:created` or `state:updated` |
+| `state::compare-and-set` | `{ scope, key, expected?, value }` — writes `value` only when the stored value equals `expected`; without `expected`, only when the key is absent | `{ swapped, current? }` — `current` is the stored value when the swap did not happen | `state:created` or `state:updated` when it swaps |
+| `state::barrier` | `{ event, condition_config: { id, expect, key_from?, carry? } }` — records one arrival at the barrier `id`: `expect` is a count or the list of arrival keys, `key_from` a JSON pointer to the arrival key in `event` (default `/key`), `carry` a JSON pointer to the value to keep (default: the whole event) | `{ decision: "allow", payload, reason }` exactly once, on the arrival that completes the set (`payload` carries every arrival's value); `{ decision: "skip", reason }` otherwise | — |
+| `state::claim-namespace` | `{ functions_prefix, scopes }` — `functions_prefix` must equal the calling worker's name | `{ claimed, scopes, functions }` — the scopes leave the public `state::*` functions and `state::on-changed`; `claimed` is `false` when the worker already owned them all; `functions` names its accessors (next row) | — |
+| `<prefix>::state::get`, `<prefix>::state::list`, `<prefix>::state::compare-and-set` | as `state::get`, `state::list` and `state::compare-and-set`, limited to the scopes the worker `<prefix>` claimed; `compare-and-set` also takes `durable` (see [Install](#install)) | as their public counterparts; `compare-and-set` adds `durable` | — (registered by the first `state::claim-namespace` of `<prefix>`, internal) |
 | `state::list` | `{ scope }` | flat array of every value in the scope | — |
 | `state::list_keys` | `{ scope }` | `{ keys }` — the keys stored in the scope, adapter order (additive; no builtin counterpart — added for the console state UI, whose per-item navigation `state::list`'s values-only shape cannot drive) | — |
 | `state::list_groups` | `{}` | `{ groups }` — sorted, deduplicated scope names | — |
 | `state::ui-content` | `{ path }` | `{ content, content_type }` — content function for the injected console UI (internal; see [Console UI](#console-ui)) | — |
 | `state::on-changed` | the change event (see [Observing changes](#observing-changes)) | the same event | — (observe it; private: only this worker calls it) |
+| `state::on-config-change` | the `configuration:updated` event of the worker's entry (ignored) | `{ ok: true }` — internal: the target of the worker's observer of `configuration::on-updated`; it re-reads the entry and applies it (see [Configuration](#configuration)) | — |
 
 The `harness_binding` and `harness_binding_owner` scopes are reserved
 control-plane state: public functions reject direct access, omit them from
