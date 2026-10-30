@@ -308,8 +308,8 @@ pub(crate) struct WatchStart {
 
 /// Opens the watcher's connection on `path`, creates the changelog when it
 /// is missing, and reads where the watcher starts. Skips history: only
-/// changes committed from now on are announced. `None` (logged) when the
-/// database cannot be opened.
+/// changes committed after it returns are announced. `None` (logged) when
+/// the database cannot be opened.
 pub(crate) fn open_watch(db_name: &str, path: &Path) -> Option<WatchStart> {
     let conn = match Connection::open(path) {
         Ok(c) => c,

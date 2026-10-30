@@ -411,8 +411,8 @@ impl NativeCapture {
         removed
     }
 
-    /// Late-rejects an accepted observer: forgets it now, and its removed
-    /// hook finds nothing left to release.
+    /// Late-rejects an accepted observer: forgets it at once, and its
+    /// removed hook finds nothing left to release.
     fn reject(&self, observer_id: &str, code: &str, message: String) {
         if let Some(admitted) = self.forget(observer_id) {
             tracing::info!(observer = %observer_id, code, %message, "row-changed observer rejected");
@@ -489,7 +489,7 @@ impl NativeCapture {
             .collect();
         let pools = self.pools.read().await.clone();
 
-        // Capture installed through a pool its database no longer has.
+        // Capture installed through another pool than its database's.
         let moved: Vec<(Installed, Option<Pool>)> = self
             .installed
             .lock()
