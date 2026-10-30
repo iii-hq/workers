@@ -2,7 +2,10 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -142,14 +145,26 @@ func (r *nodeReconciler) watch() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	previous := map[string]bool{}
+	previousMembership := ""
 	for {
 		current := map[string]bool{}
-		for _, n := range r.hub.Coordinator.Nodes() {
+		var membership []string
+		nodes := r.hub.Coordinator.Nodes()
+		for _, n := range nodes {
+			if n.Name != "hub" {
+				membership = append(membership, fmt.Sprintf("%s/%s/%s/%t", n.Name, n.Addr, n.OS, n.Ephemeral))
+			}
+		}
+		slices.Sort(membership)
+		nextMembership := strings.Join(membership, "\n")
+		changed := nextMembership != previousMembership
+		previousMembership = nextMembership
+		for _, n := range nodes {
 			if n.Name == "hub" || !n.Online {
 				continue
 			}
 			current[n.Name] = true
-			if !previous[n.Name] {
+			if !previous[n.Name] || changed {
 				r.enqueue(n.Name)
 			}
 		}

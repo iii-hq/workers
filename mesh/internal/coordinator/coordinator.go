@@ -109,6 +109,7 @@ type Coordinator struct {
 	stunPort    int
 	gatewayPort int
 	links       map[[2]string]bool
+	drives      map[string]Drive
 	ver         uint64
 	wakes       map[chan struct{}]bool
 	taken       func(string) bool
@@ -693,7 +694,7 @@ func (c *Coordinator) sees(a, b *node) bool {
 	case a.Name == "hub" || b.Name == "hub":
 		return true
 	}
-	return c.links[pair(a.Name, b.Name)]
+	return c.links[pair(a.Name, b.Name)] || c.serves(a, b) || c.serves(b, a)
 }
 
 // Link makes each pair of workers, by name, see each other, and no others,

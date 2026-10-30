@@ -55,7 +55,10 @@ nodes:
   laptop:
     workers: [ide]                  # worker names, optionally name@version
     allow: []                       # extra hub function grants for this node
-drives: {}                          # drive controllers are not available yet
+drives:
+  proj:
+    server: linuxbox                 # joined Linux node with apt
+    nodes: ["*"]                    # every persistent node; or explicit names
 ```
 
 Set `public_url` to a reachable front door before joining a machine. Put the
@@ -175,6 +178,26 @@ local equivalent is allowed. Supervisor, proxy, configuration-hook and console
 internals are denied to agents. An operator changes the desired worker list
 through configuration when a machine lacks tools.
 
-Drive mounting/cleanup and the console page are future work; the skill's drive
-paths describe the intended contract, not verified installed mounts. See
-[NOTICE](NOTICE) for upstream source provenance and licenses.
+Shared drives are implemented; the console page is future work. A drive server
+requires Linux with apt and no existing NFS exports or listener on port 445.
+Its first drive installs NFS and Samba. Data stays in `/srv/iii-mesh/<drive>`
+and belongs to that server's operator; exports permit only member addresses.
+The dedicated `iii-mesh-smbd` service admits only the mesh IPv6 /48 and uses
+SMB3. Drive membership adds connectivity between the server and each member.
+
+Linux mounts use `/drives/<drive>` over NFSv4; macOS uses `/Volumes/<drive>`
+over NFSv4.0. Windows assigns available letters from `W:` downward and runs
+mapping commands in the saved operator's authenticated session. That operator
+must be logged in. Wildcards exclude ephemeral nodes; name them explicitly to
+grant access. Use fcntl (`lockf`) for shared locks, because local `flock` locks
+on the server do not coordinate with NFS clients.
+
+An unreachable server leaves file operations waiting. Normal service restarts
+and updates preserve mounts. Removing membership or leaving the mesh unmounts
+owned drives; a server with no drives stops its exports and dedicated Samba
+service. Packages and `/srv/iii-mesh` data remain. Cleanup failures retain
+ownership state for retry and prevent successful leave acknowledgment. Local
+tests cover signed reconciliation and injected OS effects; native mount,
+service, packet-confinement and cross-machine locking acceptance remains
+unverified on all platforms. See [NOTICE](NOTICE) for upstream provenance and
+licenses.

@@ -187,6 +187,13 @@ func trustedPrefixes(c Config) []netip.Prefix {
 }
 func (h *Hub) applyCoordinator(cfg Config) {
 	h.Coordinator.Link(cfg.Links)
+	ds := make(map[string]coordinator.Drive, len(cfg.Drives))
+	for name, d := range cfg.Drives {
+		ds[name] = coordinator.Drive{Server: d.Server, Nodes: d.Nodes}
+	}
+	for _, err := range h.Coordinator.SetDrives(ds) {
+		log.Printf("mesh drives: %v", err)
+	}
 	h.Coordinator.SetTrustedProxies(trustedPrefixes(cfg))
 	relayURL := cfg.PublicURL
 	if relayURL == "" {

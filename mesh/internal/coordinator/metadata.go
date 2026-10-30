@@ -51,5 +51,6 @@ func (c *Coordinator) SetRuntimeMetadata(name string, metadata RuntimeMetadata) 
 		n.RuntimeMetadata = old
 		return err
 	}
+	c.wake()
 	return nil
 }

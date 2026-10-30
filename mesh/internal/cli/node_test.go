@@ -58,7 +58,7 @@ func testApp(t *testing.T) (*app, *fakeNetwork, *[]string) {
 	dir := t.TempDir()
 	events := []string{}
 	network := &fakeNetwork{events: &events, removed: make(chan struct{})}
-	a := &app{serveStatus: func(report func() string) (io.Closer, error) {
+	a := &app{drives: func(State) (driveService, error) { return &fakeDrives{}, nil }, serveStatus: func(report func() string) (io.Closer, error) {
 		if !strings.Contains(report(), "removed from the mesh") {
 			t.Fatal(report())
 		}

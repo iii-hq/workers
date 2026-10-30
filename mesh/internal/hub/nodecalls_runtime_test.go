@@ -241,17 +241,26 @@ func TestDelayedRegisteredNodeReceivesHubSignedLatestConfig(t *testing.T) {
 }
 
 type signedDrives struct {
-	mu      sync.Mutex
-	applied []node.DrivesRequest
+	controller node.DriveController
+	mu         sync.Mutex
+	applied    []node.DrivesRequest
 }
 
-func (d *signedDrives) Apply(_ context.Context, request node.DrivesRequest) ([]node.DriveStatus, error) {
+func (d *signedDrives) Apply(ctx context.Context, request node.DrivesRequest) ([]node.DriveStatus, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.applied = append(d.applied, request)
+	if d.controller != nil {
+		return d.controller.Apply(ctx, request)
+	}
 	return []node.DriveStatus{}, nil
 }
-func (*signedDrives) Status() []node.DriveStatus { return []node.DriveStatus{} }
+func (d *signedDrives) Status() []node.DriveStatus {
+	if d.controller != nil {
+		return d.controller.Status()
+	}
+	return []node.DriveStatus{}
+}
 
 func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *testing.T) {
 	h, _ := nodeCallHub(t)
@@ -265,7 +274,8 @@ func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *test
 	if err := client.Connect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	workers, drives := &signedWorkers{}, &signedDrives{}
+	driveHost := newHubDriveHost()
+	workers, drives := &signedWorkers{}, &signedDrives{controller: realDriveController(t, driveHost)}
 	n, err := node.New(node.Options{Mesh: signedNetwork{}, HubIdentity: h.Coordinator.Identity().Public().(ed25519.PublicKey), Version: h.Version, Operator: "alice", Workers: workers, Drives: drives})
 	if err != nil {
 		t.Fatal(err)
@@ -305,7 +315,8 @@ func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *test
 			}
 			resolveFailure = failure
 			h.config.Nodes["laptop"] = NodeConfig{Workers: []string{"unsupported", "valid"}}
-			h.config.Drives = map[string]DriveConfig{"work": {Server: "desktop", Nodes: []string{"laptop"}}}
+			h.config.Drives = map[string]DriveConfig{"work": {Server: "laptop", Nodes: []string{"laptop"}}}
+			h.applyCoordinator(h.config)
 			if err = h.OnNodeOnline(ctx, "laptop"); !errors.Is(err, failure) {
 				t.Fatalf("aggregate error %v, want %v", err, failure)
 			}
@@ -326,6 +337,9 @@ func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
+			if !slices.ContainsFunc(status.Drives, func(d node.DriveStatus) bool { return d.Name == "work" && d.State == "mounted" }) {
+				t.Fatalf("signed manager did not mount: %+v", status.Drives)
+			}
 			raw, _ := json.Marshal(status)
 			var wire struct {
 				Workers []struct{ Name, Version, State, Error string }
@@ -340,7 +354,8 @@ func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *test
 			}
 
 			h.config.Nodes["laptop"] = NodeConfig{Workers: []string{"unsupported"}}
-			h.config.Drives = map[string]DriveConfig{"archive": {Server: "desktop", Nodes: []string{"laptop"}}}
+			h.config.Drives = map[string]DriveConfig{"archive": {Server: "laptop", Nodes: []string{"laptop"}}}
+			h.applyCoordinator(h.config)
 			if err = h.OnNodeOnline(ctx, "laptop"); !errors.Is(err, failure) {
 				t.Fatalf("drive-only aggregate error: %v", err)
 			}
@@ -355,4 +370,29 @@ func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *test
 			}
 		})
 	}
+	h.config.Nodes["laptop"] = NodeConfig{}
+	h.config.Drives = map[string]DriveConfig{"failed": {Server: "laptop", Nodes: []string{"laptop"}}}
+	h.applyCoordinator(h.config)
+	driveHost.fail = "mount"
+	if err = h.OnNodeOnline(ctx, "laptop"); err == nil || !strings.Contains(err.Error(), "injected mount failure") {
+		t.Fatalf("drive refusal missing from hub errors: %v", err)
+	}
+	status, err := h.fetchNodeStatus(ctx, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(status.Drives, func(d node.DriveStatus) bool { return d.Name == "failed" && d.State == "error" && d.Error != "" }) {
+		t.Fatalf("drive failure missing from status: %+v", status.Drives)
+	}
+	driveHost.fail = ""
+	h.config.Drives = nil
+	h.applyCoordinator(h.config)
+	if err = h.OnNodeOnline(ctx, "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	status, err = h.fetchNodeStatus(ctx, "laptop")
+	if err != nil || len(status.Drives) != 0 {
+		t.Fatalf("empty signed replacement left resources: %+v %v", status.Drives, err)
+	}
+
 }

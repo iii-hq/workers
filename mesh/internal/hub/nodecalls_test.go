@@ -132,14 +132,15 @@ func TestApplyOnReconnect(t *testing.T) {
 	r.status.Version = h.Version
 	h.config.Nodes["laptop"] = NodeConfig{Workers: []string{"old"}}
 	h.config.Nodes["laptop"] = NodeConfig{Workers: []string{"ide@^0.12", "shell"}}
-	h.config.Drives["work"] = DriveConfig{Server: "desktop", Nodes: []string{"*"}}
+	h.config.Drives["work"] = DriveConfig{Server: "laptop", Nodes: []string{"*"}}
+	h.applyCoordinator(h.config)
 	if err := h.OnNodeOnline(t.Context(), "laptop"); err != nil {
 		t.Fatal(err)
 	}
 	if len(r.workers.Workers) != 2 || r.workers.Workers[0].Name != "ide" || r.workers.Workers[0].Version != "^0.12" || r.workers.Workers[1].Name != "shell" || r.workers.Namespace != "project" {
 		t.Fatalf("stale apply %+v", r.workers)
 	}
-	if len(r.drives.Mount) != 1 || r.drives.Mount[0].Name != "work" || r.drives.Mount[0].Server != "desktop" {
+	if len(r.drives.Mount) != 1 || r.drives.Mount[0].Name != "work" || r.drives.Mount[0].Server != "laptop" {
 		t.Fatalf("drives %+v", r.drives)
 	}
 	r.calls = nil
@@ -152,5 +153,34 @@ func TestApplyOnReconnect(t *testing.T) {
 	r.status.Target = ""
 	if err := h.OnNodeOnline(t.Context(), "laptop"); !errors.Is(err, node.ErrUnsupportedTarget) || len(r.calls) != 0 {
 		t.Fatalf("unsupported target: %v calls %v", err, r.calls)
+	}
+}
+
+func TestHubDesiredDrivesConfigReplacementAndFailure(t *testing.T) {
+	h, r := nodeCallHub(t)
+	r.status.Version = h.Version
+	if _, err := h.fetchNodeStatus(t.Context(), "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := h.Config()
+	cfg.Drives = map[string]DriveConfig{"proj": {Server: "laptop", Nodes: []string{"laptop"}}}
+	if err := h.applyConfig(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.OnNodeOnline(t.Context(), "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.drives.Serve) != 1 || len(r.drives.Mount) != 1 || !r.drives.Prefix.IsValid() || !r.drives.Mount[0].Addr.IsValid() {
+		t.Fatalf("signed request dropped authority: %+v", r.drives)
+	}
+	cfg.Drives = nil
+	if err := h.applyConfig(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.OnNodeOnline(t.Context(), "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.drives.Serve)+len(r.drives.Mount) != 0 {
+		t.Fatal("removed config retained drive")
 	}
 }

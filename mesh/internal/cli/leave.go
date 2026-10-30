@@ -38,6 +38,11 @@ func (a *app) leave(ctx context.Context) error {
 			return fmt.Errorf("hub logout failed: %s; run the installed mesh node with elevation to complete logout, then retry mesh leave", result)
 		}
 	}
+	if enrolled {
+		if err := a.cleanupSavedDrives(); err != nil {
+			return err
+		}
+	}
 	cleanErr := a.clean()
 	return errors.Join(cleanErr, os.RemoveAll(a.paths.Cache), os.RemoveAll(a.paths.State), removeInstalled(a.paths))
 }

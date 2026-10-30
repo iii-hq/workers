@@ -8,6 +8,7 @@ import (
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+	"github.com/iii-hq/workers/mesh/internal/drives"
 	"github.com/iii-hq/workers/mesh/internal/meshnet"
 )
 
@@ -34,19 +35,8 @@ type WorkersRequest struct {
 	Namespace string   `json:"namespace"`
 	Workers   []Worker `json:"workers"`
 }
-type Drive struct {
-	Name   string `json:"name"`
-	Server string `json:"server"`
-}
-type DrivesRequest struct {
-	Serve []Drive `json:"serve"`
-	Mount []Drive `json:"mount"`
-}
-type DriveStatus struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
-	Error string `json:"error,omitempty"`
-}
+type DrivesRequest = drives.Desired
+type DriveStatus = drives.Result
 type Status struct {
 	Name          string               `json:"name"`
 	Address       string               `json:"address"`
@@ -169,7 +159,10 @@ func (n *Node) handle(ctx context.Context, fn string, s Signed) (json.RawMessage
 		}
 		if n.drives == nil {
 			result = []DriveStatus{}
-			for _, d := range append(request.Serve, request.Mount...) {
+			for _, d := range request.Serve {
+				result = append(result.([]DriveStatus), DriveStatus{Name: d.Name, State: "unavailable", Error: "drive service is not installed"})
+			}
+			for _, d := range request.Mount {
 				result = append(result.([]DriveStatus), DriveStatus{Name: d.Name, State: "unavailable", Error: "drive service is not installed"})
 			}
 		} else {

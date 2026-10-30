@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -151,24 +149,20 @@ func (h *Hub) OnNodeOnline(ctx context.Context, name string) error {
 			applyErrors = append(applyErrors, fmt.Errorf("worker %s: %s", result.Name, result.Error))
 		}
 	}
-	_, err = h.callNode(ctx, name, "mesh-node::drives::apply", nodeDrives(cfg, name))
-	return errors.Join(append(applyErrors, err)...)
-}
-func nodeDrives(cfg Config, name string) node.DrivesRequest {
-	request := node.DrivesRequest{Serve: []node.Drive{}, Mount: []node.Drive{}}
-	names := make([]string, 0, len(cfg.Drives))
-	for name := range cfg.Drives {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, drive := range names {
-		cfg := cfg.Drives[drive]
-		entry := node.Drive{Name: drive, Server: cfg.Server}
-		if cfg.Server == name {
-			request.Serve = append(request.Serve, entry)
-		} else if slices.Contains(cfg.Nodes, name) || slices.Contains(cfg.Nodes, "*") {
-			request.Mount = append(request.Mount, entry)
+	raw, err = h.callNode(ctx, name, "mesh-node::drives::apply", h.Coordinator.Desired(name))
+	if err != nil {
+		applyErrors = append(applyErrors, err)
+	} else {
+		var results []node.DriveStatus
+		if err = json.Unmarshal(raw, &results); err != nil {
+			applyErrors = append(applyErrors, fmt.Errorf("invalid drives apply result: %w", err))
+		} else {
+			for _, r := range results {
+				if r.Error != "" {
+					applyErrors = append(applyErrors, fmt.Errorf("drive %s: %s", r.Name, r.Error))
+				}
+			}
 		}
 	}
-	return request
+	return errors.Join(applyErrors...)
 }

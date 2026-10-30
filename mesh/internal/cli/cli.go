@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/iii-hq/workers/mesh/internal/drives"
 	"github.com/iii-hq/workers/mesh/internal/elevate"
 	"github.com/iii-hq/workers/mesh/internal/join"
 	"github.com/iii-hq/workers/mesh/internal/meshnet"
@@ -26,6 +27,19 @@ type workerService interface {
 	node.WorkerController
 	Close() error
 }
+type driveService interface {
+	node.DriveController
+	Close() error
+	Drop(context.Context) error
+}
+type ownedDrives struct {
+	node.DriveController
+	manager *drives.Manager
+}
+
+func (d ownedDrives) Close() error                   { return d.manager.Close() }
+func (d ownedDrives) Drop(ctx context.Context) error { return d.manager.Drop(ctx) }
+
 type runner interface{ Run(context.Context) error }
 type app struct {
 	serveStatus          func(func() string) (io.Closer, error)
@@ -41,6 +55,7 @@ type app struct {
 	uninstall, clean     func() error
 	up                   func(State, string) (networkService, error)
 	workers              func(State) (workerService, error)
+	drives               func(State) (driveService, error)
 	newNode              func(node.Options) (runner, error)
 }
 type ownedWorkers struct {
@@ -62,6 +77,13 @@ func defaults(version string) *app {
 			}
 			w := supervisor.New(paths.Cache, filepath.Join(paths.State, "logs"), op, "", "")
 			return ownedWorkers{node.NewWorkerController(w), w}, nil
+		},
+		drives: func(s State) (driveService, error) {
+			m, err := drives.New(paths.State, s.operatorAccount())
+			if err != nil {
+				return nil, err
+			}
+			return ownedDrives{node.NewDriveController(m), m}, nil
 		},
 		newNode: func(o node.Options) (runner, error) { return node.New(o) }})
 }

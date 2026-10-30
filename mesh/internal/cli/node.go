@@ -7,43 +7,56 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iii-hq/workers/mesh/internal/node"
 )
 
 func (a *app) node(ctx context.Context) error {
+	s, err := loadState(a.paths.State)
+	if err != nil {
+		return err
+	}
+	d, err := a.drives(s)
+	if err != nil {
+		return err
+	}
+	closeDrives := sync.OnceValue(d.Close)
+	defer closeDrives()
 	if removedStatus(a.paths.State) {
+		if err := dropDrives(d); err != nil {
+			return a.driveCleanupFailure(err)
+		}
 		if exists(filepath.Join(a.paths.State, "leave-request")) {
 			return writePrivate(a.paths.State, "logout-result", []byte("ok"))
 		}
 		return a.park(ctx)
-	}
-	s, err := loadState(a.paths.State)
-	if err != nil {
-		return err
 	}
 	network, err := a.up(s, a.paths.State)
 	if err != nil {
 		return err
 	}
 	if exists(filepath.Join(a.paths.State, "leave-request")) {
-		err := a.logout(ctx, network)
-		return errors.Join(err, network.Close())
+		err := a.leaveRuntime(ctx, network, d)
+		return errors.Join(err, closeDrives(), network.Close())
 	}
 	workers, err := a.workers(s)
 	if err != nil {
-		return errors.Join(err, network.Close())
+		return errors.Join(err, closeDrives(), network.Close())
 	}
-	runtime, err := a.newNode(node.Options{Mesh: network, Workers: workers, HubIdentity: s.Identity.Identity, Version: a.version, Operator: s.Operator, BinaryPath: a.paths.Bin})
+	runtime, err := a.newNode(node.Options{Mesh: network, Workers: workers, Drives: d, HubIdentity: s.Identity.Identity, Version: a.version, Operator: s.Operator, BinaryPath: a.paths.Bin})
 	if err != nil {
-		return errors.Join(err, workers.Close(), network.Close())
+		return errors.Join(err, workers.Close(), closeDrives(), network.Close())
 	}
 	network.Report(func() string {
 		var b strings.Builder
 		fmt.Fprintf(&b, "Hub: %s\nOperator: %s\n", s.PublicURL, s.Operator)
 		for _, w := range workers.Status() {
 			fmt.Fprintf(&b, "Worker: %s %s %s\n", w.Name, w.Version, w.State)
+		}
+		for _, drive := range d.Status() {
+			fmt.Fprintf(&b, "Drive: %s %s %s %s\n", drive.Name, drive.Path, drive.State, drive.Error)
 		}
 		return b.String()
 	})
@@ -79,14 +92,18 @@ func (a *app) node(ctx context.Context) error {
 	cancel()
 	ticker.Stop()
 	closeErr := workers.Close()
-	if exists(filepath.Join(a.paths.State, "leave-request")) {
-		closeErr = errors.Join(closeErr, a.logout(ctx, network))
-	}
-	closeErr = errors.Join(closeErr, network.Close(), persistErr)
 	if errors.Is(err, node.ErrRemoved) {
-		if markerErr := writePrivate(a.paths.State, "removed", []byte("removed by hub\n")); markerErr != nil {
-			return errors.Join(markerErr, closeErr)
+		closeErr = errors.Join(closeErr, writePrivate(a.paths.State, "removed", []byte("removed by hub\n")), dropDrives(d))
+	}
+	if exists(filepath.Join(a.paths.State, "leave-request")) {
+		if closeErr != nil {
+			closeErr = a.driveCleanupFailure(closeErr)
+		} else {
+			closeErr = a.leaveRuntime(ctx, network, d)
 		}
+	}
+	closeErr = errors.Join(closeErr, closeDrives(), network.Close(), persistErr)
+	if errors.Is(err, node.ErrRemoved) {
 		if closeErr != nil {
 			return closeErr
 		}
@@ -161,4 +178,33 @@ func awaitEnrollment(ctx context.Context, network networkService) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func dropDrives(d driveService) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return d.Drop(ctx)
+}
+func (a *app) driveCleanupFailure(err error) error {
+	if exists(filepath.Join(a.paths.State, "leave-request")) {
+		return errors.Join(err, writePrivate(a.paths.State, "logout-result", []byte(err.Error())))
+	}
+	return err
+}
+func (a *app) leaveRuntime(ctx context.Context, n networkService, d driveService) error {
+	if err := dropDrives(d); err != nil {
+		return a.driveCleanupFailure(err)
+	}
+	return a.logout(ctx, n)
+}
+func (a *app) cleanupSavedDrives() error {
+	s, err := loadState(a.paths.State)
+	if err != nil {
+		return err
+	}
+	d, err := a.drives(s)
+	if err != nil {
+		return err
+	}
+	return errors.Join(dropDrives(d), d.Close())
 }
