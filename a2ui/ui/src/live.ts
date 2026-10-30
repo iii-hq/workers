@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { Host } from '@iii-dev/console-ui'
-import type { JsonValue, LiveBinding, SurfaceRecord } from './types'
+import type { JsonValue, LiveBinding, RetiredBinding, SurfaceRecord } from './types'
 import { getPath } from './bindings'
 import { applyBinding, refreshBinding } from './data'
 
@@ -16,6 +16,16 @@ const LEGACY_STREAM_FN = 'stream::on-changed'
 /** True for bindings on the deprecated `stream::on-changed` source (iii-stream). */
 export function isDeprecatedBinding(binding: LiveBinding): boolean {
   return binding.function_id === LEGACY_STREAM_FN
+}
+
+/**
+ * The notice for bindings stored under iii 0.25 that the worker could not
+ * translate, or `null` when there are none.
+ */
+export function retiredBindingDetail(retired: RetiredBinding[]): string | null {
+  if (retired.length === 0) return null
+  const items = retired.map((item) => `${item.id} (${item.function_id}): ${item.reason}`)
+  return `${items.join('; ')}. Bind again with a2ui::binding::set, or remove with a2ui::binding::delete.`
 }
 
 interface StateEvent {

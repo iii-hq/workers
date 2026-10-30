@@ -39,7 +39,16 @@ export interface SurfaceRecord {
   last_action: ActionRecord | null
   pinned: boolean
   bindings: LiveBinding[]
+  /** Bindings stored under iii 0.25 that could not be translated, with the reason. */
+  retired_bindings?: RetiredBinding[]
   history: SurfaceRevision[]
+}
+
+export interface RetiredBinding {
+  id: string
+  /** The function the stored type reads as. */
+  function_id: string
+  reason: string
 }
 
 export interface SurfaceRevision { revision: number; title: string; updated_at_ms: number; reason: string }

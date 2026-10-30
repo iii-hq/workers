@@ -1,6 +1,11 @@
 import type { Host } from '@iii-dev/console-ui'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { isDeprecatedBinding, subscribeLiveBinding, subscribeSurfaceEvents } from './live'
+import {
+  isDeprecatedBinding,
+  retiredBindingDetail,
+  subscribeLiveBinding,
+  subscribeSurfaceEvents,
+} from './live'
 import type { LiveBinding, SurfaceRecord } from './types'
 
 afterEach(() => vi.useRealTimers())
@@ -153,6 +158,20 @@ describe("A2UI bindings to a worker's event functions", () => {
     await vi.advanceTimersByTimeAsync(120)
     expect(mock.call).toHaveBeenCalledWith('a2ui::binding::apply', expect.objectContaining({ binding_id: 'events' }))
     off()
+  })
+
+  it('names each retired binding with its function and reason', () => {
+    expect(retiredBindingDetail([])).toBeNull()
+    expect(
+      retiredBindingDetail([
+        { id: 'models', function_id: 'router::models::on-changed', reason: 'function `router::models::on-changed` is not registered with the engine' },
+        { id: 'notes', function_id: 'notes::on-saved', reason: 'binding filters must be an object' },
+      ]),
+    ).toBe(
+      'models (router::models::on-changed): function `router::models::on-changed` is not registered with the engine; '
+        + 'notes (notes::on-saved): binding filters must be an object. '
+        + 'Bind again with a2ui::binding::set, or remove with a2ui::binding::delete.',
+    )
   })
 })
 

@@ -42,18 +42,28 @@ Interactive surfaces automatically submit their complete bound data model with b
 
 `a2ui::binding::set` binds a JSON Pointer in the surface data model to live data. A binding names a function to observe, with `args` when the function takes them and `filters` on its calls. The Console page observes it for its own view (`deliver: "output"`, so each event is the function's return value) and stores each delivered value, so a binding is active while the surface is open. Bindings are declarative and cannot invoke arbitrary functions. A surface holds at most 32 bindings.
 
-- **A worker's event function** (recommended): `function_id` is any function another worker hosts, for example `orders::on-changed`. The function must be registered when the binding is set. `args` are validated against the `args_format` the function registered, and a function without one takes no args: select its calls with `filters` on `input.<field>`. In event mode, each event (or `event_path` inside it) is applied. With a `query`, the event is only a notification. The page reads the query when it opens the surface (after observing) and again after each notification, through the Console-only `a2ui::binding::refresh`. That covers the initial read, recovery after a reconnect and latest-state semantics. The query function must be registered by the same worker as the observed function, with metadata `{"read_only": true}`, and its payload is validated against the function's request schema.
+- **A worker's event function** (recommended): `function_id` is a private function another worker hosts (registered with `private: true`, its handler returning the event), for example `orders::on-changed`. The function must be registered when the binding is set and each time it is refreshed. A function that is not private, such as `state::set`, is rejected. `args` are validated against the `args_format` the function registered, and a function without one takes no args: select its calls with `filters` on `input.<field>`. In event mode, each event (or `event_path` inside it) is applied. With a `query`, the event is only a notification. The page reads the query when it opens the surface (after observing) and again after each notification, through the Console-only `a2ui::binding::refresh`. That covers the initial read, recovery after a reconnect and latest-state semantics. The query function must be registered by the same worker as the observed function, with metadata `{"read_only": true}`, and its payload is validated against the function's request schema.
 - **`state::on-changed`** takes no args and exactly the filters `{ "input.scope": { "$eq": <scope> }, "input.key": { "$eq": <key> } }`; the page reads the entry with `state::get` on each event. **`shell::on-changed`** takes exactly the args `{ "path": <path> }`.
-- Reserved functions are rejected: `engine::*`, `harness::*`, `browser::*` (Console-side observation would bypass Browser approval boundaries), `a2ui::*`, `iii::*`, any id with a `hook` segment, `http::on-request`, `cron::on-tick`, `queue::on-message`, `publish`, `stream::on-join`, `stream::on-leave` and `console::ui::asset`.
+- Reserved functions are rejected: `engine::*`, `harness::*`, `browser::*` (Console-side observation would bypass Browser approval boundaries), `a2ui::*`, `observability::*` (each applied value logs and traces again), `iii::*`, any id with a `hook` segment, `http::on-request`, `cron::on-tick`, `queue::on-message`, `publish`, `stream::on-join`, `stream::on-leave` and `console::ui::asset`.
 - **`stream::on-changed`** (filters on `input.stream_name` and `input.group_id`, optional `input.id`) is deprecated legacy compatibility. It is still accepted and keeps working on engines that run iii-stream. The receipt carries a `deprecation` notice, the worker logs a warning, and the page marks the surface. Move these bindings to the producing worker's own event function; see the guide "Migrate from iii-stream and pubsub".
 
-A binding stored under iii 0.25, with `trigger_type` and `config`, loads as the function that replaced the type: `state` as `state::on-changed` with `scope` and `key` filters, `shell::changed` as `shell::on-changed` with `config` as args, `stream` as `stream::on-changed` with `stream_name`, `group_id` and `item_id` (`input.id`) filters, and a worker's `W::X` as `W::on-X` with `config` as args. The surface's next change writes it back in the current shape.
+A binding stored under iii 0.25, with `trigger_type` and `config`, loads as the function that replaced the type: `state` as `state::on-changed` with `scope` and `key` filters, `shell::changed` as `shell::on-changed` with `config` as args, `stream` as `stream::on-changed` with `stream_name`, `group_id` and `item_id` (`input.id`) filters, and a worker's `W::X` as `W::on-X`. For `W::on-X` the worker reads `engine::functions::info` when the session loads: `config` (without `metadata` and `condition_function_id`) becomes the args when the function registered an `args_format`, and one `{ "input.<field>": { "$eq": <value> } }` filter per field when it takes none. The result passes the same checks as `a2ui::binding::set`. When the function is not registered or a check fails, the binding moves to the surface's `retired_bindings` (`{ id, function_id, reason }`) and the page lists it; `a2ui::binding::set` with the same id replaces it and `a2ui::binding::delete` removes it. The surface's next change writes the result back in the current shape.
 
 The runnable provider in `examples/counter_provider.rs` (`cargo run --example counter_provider -- ws://127.0.0.1:49134`) hosts one event function:
 
 | Function | Args | Delivery | Event |
 |---|---|---|---|
-| `demo::on-counter-changed` | `{ counter }` | observers whose `args.counter` is the event's `counter`; at most 64 observers (`OBSERVER_LIMIT`) | `{ counter, revision }`, called after each committed `demo::counter::bump` |
+| `demo::on-counter-changed` | `{ counter }`, 1-64 bytes (`INVALID_ARGS` otherwise) | observers whose `args.counter` is the event's `counter`; at most 64 observers (`OBSERVER_LIMIT`) | `{ counter, revision }`, called after each committed `demo::counter::bump` |
+
+An observer of it, from any worker:
+
+```typescript
+const clicks = iii.observe(
+  { function_id: 'demo::on-counter-changed', args: { counter: 'clicks' }, deliver: 'output' },
+  'my-app::on-clicks', // receives { counter, revision }
+)
+await clicks.ready() // rejected with OBSERVER_LIMIT past 64 observers
+```
 
 A binding to it:
 

@@ -9,7 +9,7 @@ import {
 } from '@iii-dev/console-ui'
 import { sendAction } from './data'
 import { getPath, setPath } from './bindings'
-import { isDeprecatedBinding, useLiveBindings } from './live'
+import { isDeprecatedBinding, retiredBindingDetail, useLiveBindings } from './live'
 import type { A2uiComponent, JsonValue, SurfaceRecord } from './types'
 
 interface SurfaceProps {
@@ -184,6 +184,7 @@ export function Surface({ host, surface, compact = false }: SurfaceProps) {
   const deprecatedBindings = compact
     ? []
     : (surface.bindings ?? []).filter(isDeprecatedBinding).map((binding) => binding.id)
+  const retiredDetail = compact ? null : retiredBindingDetail(surface.retired_bindings ?? [])
 
   return (
     <div className={`a2ui-surface${compact ? ' compact' : ''}`}>
@@ -193,6 +194,9 @@ export function Surface({ host, surface, compact = false }: SurfaceProps) {
           headline="Deprecated live binding"
           detail={`${deprecatedBindings.join(', ')} observes stream::on-changed. stream is deprecated (iii-stream) and will be removed in an upcoming release. Bind to the producing worker's own event function.`}
         />
+      ) : null}
+      {retiredDetail ? (
+        <StatusPanel variant="warn" headline="Retired live binding" detail={retiredDetail} />
       ) : null}
       {components.has('root') ? (
         renderComponent('root')
