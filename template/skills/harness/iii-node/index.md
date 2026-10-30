@@ -397,7 +397,33 @@ iii
 
 - Hooks of one function run one at a time. Chain them on `registerFunction`, or set them by id before it, so they see every observer.
 - `onObserverRemoved` runs exactly once for every accepted observer, and never for a rejected one.
-- A new observer that needs the current state gets it through itself once it is accepted. From `onObserverAdded`, without awaiting it: `void obs.accepted().then(() => iii.call({ observer: obs, payload: current, action: CallAction.Void() }))`. A call through an observer runs its target with the observer's policy and metadata; only the worker that hosts the observed function may make one.
+- A new observer that needs the current state gets a call of its own once it is accepted: the function is called with metadata `{ for_observer: obs.id }`, and its match hook gives that call to that observer alone. iii delivers it like every call, with the observer's `deliver`, filters and policy, so the target receives every event of the function in one shape. The added hook starts the call without awaiting it, and a rejected observer gets nothing:
+
+```ts
+const ON_STOCK_FN = '<worker-name>::on-stock-changed'
+
+iii
+  .registerFunction(ON_STOCK_FN, (event: { sku: string; available: number }) => event, { private: true })
+  .onObserverAdded((obs) => {
+    void obs
+      .accepted()
+      .then(() =>
+        iii.call({
+          function_id: ON_STOCK_FN,
+          payload: inventory.current(),
+          metadata: { for_observer: obs.id },
+          action: CallAction.Void(),
+        }),
+      )
+      .catch(() => undefined)
+  })
+  // a call for one observer goes to it alone, every other call to every observer
+  .onObserverMatch((obs, call) => !call.metadata?.for_observer || call.metadata.for_observer === obs.id)
+```
+
+With keys, the observer function also returns `` `for_observer:${obs.id}` `` and the call function returns that one key for a call for one observer.
+
+- A call through an observer (`iii.call({ observer, payload })`) runs its target with the observer's policy and metadata, and belongs in `onObserverDeliver`, whose function documents what its targets receive. Only the worker that hosts the observed function may make one.
 - `onObserverDeliver` receives the call and the observers that matched it, delivers the call itself, and returns what the caller gets back. It applies each observer's filters with `obs.matches(call)`:
 
 ```ts

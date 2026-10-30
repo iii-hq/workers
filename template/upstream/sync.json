@@ -11,7 +11,7 @@
     "skills/harness/ade-worker-design/index.md": "50c4de466a1e57eb4b499b5e2fce736acf1a1188b0fe74b66d21bdc701c7dc03",
     "skills/harness/ade-worker-design/patterns.md": "43b2f8e69c45203c7785892b01c080e19737cbbf9d4df3643d7d0ee338e291e3",
     "skills/harness/frontend/frontend-testing.md": "bcdbf91e7d5e68adac93b53b2f7f37df2983661d55c380319fa9e352a562430b",
-    "skills/harness/frontend/iii-browser-sdk.md": "f6c2ba7ca791458eda6d8ca774219d97203f79407d2ccb90821ef161b420cb5d",
+    "skills/harness/frontend/iii-browser-sdk.md": "df7ee43a3c34ae65b67f954d67398db2e59259612fcfb848560c6987faf0a0f0",
     "skills/harness/frontend/index.md": "74f3cedf376401d2ff8000c96fe2e30bb567d94c3958659a537365d6040ab25e",
     "skills/harness/frontend/react.md": "e7c9dddce2f0f7bcaacaeb5cbf44cf87fc8a9cbbf8cf13a29e4e0b46afd9dd37",
     "skills/harness/frontend/tanstack-query.md": "a4a42dc64a42369b39d1245bb82ecf58140ea3cf5ccbbff761d686ae662b4b62",
@@ -20,7 +20,7 @@
     "skills/harness/frontend/web-accessibility.md": "3d2f8dbbe09069bd317fcd785e18117051371831fe72f2e079ee1ba441c61df3",
     "skills/harness/frontend/web-performance.md": "90f2fef8197ae22a4800b0bef24bd12790cbdc7c8801397cbd449e8dfb8c46be",
     "skills/harness/iii-node/configuration.md": "21be3a299382757994cd1f9bf34df9c9d4930fe27818e44b7ff7ce99412ff6c3",
-    "skills/harness/iii-node/index.md": "b3f561557c21de5a4933d3002bbfefff21e494956803ef7ad4deef7551e5f91b",
+    "skills/harness/iii-node/index.md": "66538b395fb9c656751bcfe09b8b3a136ebc002b201b6187b4bd93cb5fb4bf80",
     "skills/harness/orchestration/index.md": "9176a7021d21604178ce91407a8794e5e5f0ece29d4d2a5a5804f651a3a9f492",
     "skills/harness/orchestration/report.md": "3814911aa2b2711903ad4afadd9cd01a949b4f928178689f57e8016a4a1e6a4b"
   },
