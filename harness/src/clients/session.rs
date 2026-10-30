@@ -700,12 +700,6 @@ fn init_payload(
     payload
 }
 
-/// The `session::append` request for a bookkeeping entry. The record MUST ride
-/// the dedicated `custom` field: `session::append` only creates a
-/// `kind: "custom"` entry from it — a `role: "custom"` message wrapper is
-/// stored as a plain `kind: "message"` entry, which `session::messages`
-/// returns with `custom: None`, so the record would never be found on
-/// read-back (the compaction round-trip depends on this).
 /// One `session::messages` page request of [`SessionClient::messages_from`].
 fn messages_page_payload(
     session_id: &str,
@@ -737,6 +731,12 @@ fn messages_page_payload(
     payload
 }
 
+/// The `session::append` request for a bookkeeping entry. The record MUST ride
+/// the dedicated `custom` field: `session::append` only creates a
+/// `kind: "custom"` entry from it — a `role: "custom"` message wrapper is
+/// stored as a plain `kind: "message"` entry, which `session::messages`
+/// returns with `custom: None`, so the record would never be found on
+/// read-back (the compaction round-trip depends on this).
 fn custom_append_payload(
     session_id: &str,
     custom_type: &str,
