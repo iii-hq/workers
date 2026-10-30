@@ -368,6 +368,15 @@ fn wi_readme_non_empty(world: &mut IiiSkillsWorld) {
     assert!(!r.is_empty(), "expected non-empty readme; got: {v}");
 }
 
+#[then("the registry worker-info response has no readme")]
+fn wi_readme_absent(world: &mut IiiSkillsWorld) {
+    if world.iii.is_none() {
+        return;
+    }
+    let v = last_ok(world);
+    assert!(v.get("readme").is_none(), "expected no readme; got: {v}");
+}
+
 #[then(regex = r#"^the registry worker-info api_reference functions count is (\d+)$"#)]
 fn wi_functions_count(world: &mut IiiSkillsWorld, n: usize) {
     if world.iii.is_none() {

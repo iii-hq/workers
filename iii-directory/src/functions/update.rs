@@ -264,7 +264,7 @@ fn register_update_skill(
                 events::emit(
                     &iii,
                     source,
-                    json!({ "op": "update", "namespace": namespace, "id": out.id }),
+                    json!({ "op": "update", "namespace": namespace, "name": out.id, "id": out.id }),
                 )
                 .await;
                 Ok::<_, Error>(out)
@@ -310,7 +310,7 @@ fn register_create_skill(
                 events::emit(
                     &iii,
                     source,
-                    json!({ "op": "create", "namespace": namespace, "id": out.id }),
+                    json!({ "op": "create", "namespace": namespace, "name": out.id, "id": out.id }),
                 )
                 .await;
                 Ok::<_, Error>(out)
@@ -348,7 +348,7 @@ fn register_delete_skill(
                 events::emit(
                     &iii,
                     source,
-                    json!({ "op": "delete", "namespace": namespace, "id": out.id }),
+                    json!({ "op": "delete", "namespace": namespace, "name": out.id, "id": out.id }),
                 )
                 .await;
                 Ok::<_, Error>(out)

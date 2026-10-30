@@ -1051,7 +1051,7 @@ filters on the event's fields.
 
 | Function | Called when | Filter on | Event |
 |---|---|---|---|
-| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, a `directory::skills::update`, `create`, or `delete`, a kit apply that wrote skills, or external (file pasted/edited/deleted directly on disk — including under `agents_skills_folder`) | `input.op`, `input.namespace` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "namespace": "<ns>", "id": "<id>" }`; kit: `{ "op": "kit", "kit", "plan_id" }`; external: `{ "op": "external" }` |
+| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, a `directory::skills::update`, `create`, or `delete`, a kit apply that wrote skills, or external (file pasted/edited/deleted directly on disk — including under `agents_skills_folder`) | `input.op`, `input.name`, `input.namespace` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "namespace": "<ns>", "name": "<id>", "id": "<id>" }`; kit: `{ "op": "kit", "kit", "plan_id" }`; external: `{ "op": "external" }` |
 | `directory::system-prompts::on-change` | After a `directory::skills::download` that wrote at least one system prompt markdown file, a `directory::system-prompts::update`, `create`, `delete`, or external file change | `input.op`, `input.name` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<name>" }`; external: `{ "op": "external" }` |
 | `directory::agents::on-change` | After a `directory::skills::download` that wrote at least one agent profile, a `directory::agents::update`, `create`, `delete`, a kit apply that wrote profiles, or external file change | `input.op`, `input.name` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<id>" }`; kit: `{ "op": "kit", "kit", "plan_id" }`; external: `{ "op": "external" }` |
 | `directory::kits::on-change` | A kit plan is created or discarded, an apply makes progress or lands, or an update check changes the set of available updates | `input.op`, `input.plan_id`, `input.kit` | `{ "op": "plan", "kit", "plan_id", "kind" }`, `{ "op": "discard", "kit", "plan_id" }`, `{ "op": "progress", "plan_id", "kit", "steps": [{ id, label, state, detail? }], "error"? }`, `{ "op": "apply", "kit", "plan_id", "kind" }`, `{ "op": "updates", "kit"? }` |
@@ -1133,6 +1133,7 @@ cargo test
 
 # One feature group at a time. Available tags:
 #   @engine  @read  @download  @download_repo  @download_registry
+#   @registry  @registry_worker_list  @registry_worker_info  @on_change
 cargo test --test bdd -- --tags @download
 ```
 

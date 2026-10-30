@@ -174,7 +174,7 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
 
    The report goes on the run ticket, into the chat and to `notify`.
 
-A command that outlives the foreground cap (`shell::exec` stops at 120 s), such as the baseline, the full suite or the first build in a fresh ticket worktree, runs as a background job (`shell::exec_bg`), in any phase. The agent observes `shell::on-job-finished` with args `{ job_id }` for that job and ends its turn; the harness wakes it with the exit code when the job ends. It never polls, and it kills a job whose wake expires. This needs the observe v2 release of `ide`, which hosts `shell::on-job-finished`.
+A command that outlives the foreground cap (`shell::exec` stops at 120 s), such as the baseline, the full suite or the first build in a fresh ticket worktree, runs as a background job (`shell::exec_bg`), in any phase. The agent observes `shell::on-job-finished` with args `{ job_id }` for that job, reads `shell::status` once (a job that already ended is read there), and otherwise ends its turn; the harness wakes it with the exit code when the job ends. It never polls, and it kills a job whose wake expires. This needs the observe v2 release of `ide`, which hosts `shell::on-job-finished`.
 
 Results go through `state` rather than kanban events. State has compare-and-set, and a kanban outage won't lose results.
 

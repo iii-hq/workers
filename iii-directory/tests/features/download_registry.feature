@@ -54,10 +54,11 @@ Feature: directory::skills::download worker= source (workers registry HTTP)
     Then the directory::skills::download call succeeds
     And  the file "resend/index.md" in skills_folder contains "tagged"
 
-  Scenario: registry HTTP error surfaces in the failure message
+  Scenario: a worker the registry does not have fails with D310 not_found
     Given a wiremock registry that returns 404 for worker "missing"
     When I call directory::skills::download with worker="missing" tag="latest"
-    Then the directory::skills::download call fails with a message mentioning "404"
+    Then the directory::skills::download call fails with a message mentioning "D310 not_found"
+    And  the directory::skills::download call fails with a message mentioning "has no published skills bundle"
 
   Scenario: worker without version or tag defaults to tag=latest
     Given a wiremock registry serving worker "resend" at tag "latest" with body:

@@ -59,7 +59,7 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
       """
     When I call directory::registry::workers::info with payload:
       """
-      {"name": "resend", "tag": "latest"}
+      {"name": "resend", "tag": "latest", "readme": true}
       """
     Then the directory::registry::workers::info call succeeds
     And  the registry worker-info worker name is "resend"
@@ -99,6 +99,7 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
       """
     Then the directory::registry::workers::info call succeeds
     And  the registry worker-info worker name is "resend"
+    And  the registry worker-info response has no readme
 
   Scenario: workers::info rejects both version and tag
     When I call directory::registry::workers::info with payload:
@@ -114,14 +115,16 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
       """
     Then the directory::registry::workers::info call fails with a message mentioning "non-empty"
 
-  Scenario: workers::info HTTP 404 surfaces in the failure message
+  Scenario: workers::info of a worker the registry does not have fails with D310 not_found
     Given a wiremock registry that returns 404 for worker info "missing"
     And a wiremock registry that returns 404 for worker skills "missing"
     When I call directory::registry::workers::info with payload:
       """
       {"name": "missing", "tag": "latest"}
       """
-    Then the directory::registry::workers::info call fails with a message mentioning "404"
+    Then the directory::registry::workers::info call fails with a message mentioning "D310 not_found"
+    And  the directory::registry::workers::info call fails with a message mentioning "missing@latest"
+    And  the directory::registry::workers::info call fails with a message mentioning "does not exist"
 
   Scenario: workers::info caches identical lookups within the TTL window
     Given a wiremock registry serving worker info "cached" at tag "latest" with body:

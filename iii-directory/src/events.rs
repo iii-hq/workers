@@ -53,11 +53,12 @@ pub struct ChangeEvent {
     /// `kit` (a kit apply) or `external` (an edit on disk outside this
     /// worker).
     pub op: String,
-    /// `create`, `update`, `delete`: the edited system prompt or agent
-    /// profile.
+    /// `create`, `update`, `delete`: the edited skill (its id), system
+    /// prompt or agent profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// `create`, `update`, `delete` of a skill: its id within `namespace`.
+    /// `create`, `update`, `delete` of a skill: its id, the same value as
+    /// `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// The namespace written (skill edits, `download`).
@@ -172,7 +173,8 @@ pub fn register_all(iii: &IIIClient) -> ChangeSources {
                  markdown file, or a directory::skills::update, create, or delete. Also called \
                  with { op: \"external\" } when a watched skills root changes on disk outside \
                  this worker, including the read-only agents skills root when that root exists \
-                 at startup. Observe it; filter on input.op or input.namespace.",
+                 at startup. Observe it; filter on input.op, input.name (the skill id) or \
+                 input.namespace.",
             )
             .private(),
     );

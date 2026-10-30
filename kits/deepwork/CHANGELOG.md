@@ -2,7 +2,7 @@
 
 ## 0.6.0
 
-- Every wake is an observer armed with `harness::observe`: a long run observes `shell::on-job-finished` with args `{ job_id }`, wave, phase and critic barriers observe `state::on-changed` filtered on `input.scope` with the `state::barrier` condition, and the kanban retry observes `harness::on-timer` with args `{ in_ms }`. Wakes are removed with `harness::unobserve` and listed with `harness::observers::list`, and those three are what the profiles and the spawn allow lists name. The README's CLI lines use `iii call`. Requires the observe v2 releases of `harness`, `ide`, `state` and `kanban`.
+- Every wake is an observer armed with `harness::observe`: a long run observes `shell::on-job-finished` with args `{ job_id }`, wave, phase and critic barriers observe `state::on-changed` filtered on `input.scope` with the `state::barrier` condition, and the kanban retry observes `harness::on-timer` with args `{ in_ms }`. A long run reads `shell::status` once after arming its observer, so a job that ended first is read at once. Wakes are removed with `harness::unobserve` and listed with `harness::observers::list`, and those three are what the profiles and the spawn allow lists name. The README's CLI lines use `iii call`. Requires the observe v2 releases of `harness`, `ide`, `state` and `kanban`.
 
 ## 0.5.2
 

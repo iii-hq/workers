@@ -219,11 +219,14 @@ with them.
 ```json
 harness::observe {
   "function_id": "cron::on-tick",
-  "args": { "expression": "0 * * * *" },
+  "args": { "expression": "0 0 * * * *" },
   "once": false,
   "label": "KAN-7-check-in"
 }
 ```
+
+`expression` has six fields (sec min hour day month weekday, UTC):
+`0 0 * * * *` fires at the top of every hour.
 
 On each fire, read what you missed and move the watermark forward:
 
