@@ -156,12 +156,9 @@ func (s *Shim) bridge(w http.ResponseWriter, r *http.Request) {
 		headers.Set(derpCertHeader, s.derpCert)
 	}
 	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second)
-	ws, resp, err := websocket.Dial(dialCtx, target.String(), &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{protocol}, CompressionMode: websocket.CompressionDisabled})
+	ws, err := dialFrontDoor(dialCtx, target.String(), &websocket.DialOptions{HTTPHeader: headers, Subprotocols: []string{protocol}, CompressionMode: websocket.CompressionDisabled}, r.URL.Path == "/ts2021")
 	dialCancel()
 	if err != nil {
-		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
-		}
 		http.Error(w, "front door upgrade failed", http.StatusBadGateway)
 		return
 	}
@@ -202,6 +199,50 @@ func (s *Shim) bridge(w http.ResponseWriter, r *http.Request) {
 	local.Close()
 	remote.Close()
 	<-done
+}
+
+func dialFrontDoor(ctx context.Context, target string, options *websocket.DialOptions, retryControl bool) (*websocket.Conn, error) {
+	// A transient 502 at the native HTTP-only control dialer stalls it until
+	// its deadline. Recover before upgrading, while no Noise bytes have flowed.
+	backoff := 25 * time.Millisecond
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		ws, resp, err := websocket.Dial(ctx, target, options)
+		if err == nil {
+			return ws, nil
+		}
+		if ws != nil {
+			ws.CloseNow()
+		}
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		if !retryControl || !transientControlUpgrade(resp, err) {
+			return nil, err
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		backoff = min(2*backoff, 250*time.Millisecond)
+	}
+}
+
+func transientControlUpgrade(resp *http.Response, err error) bool {
+	if resp != nil {
+		switch resp.StatusCode {
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+		return false
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, errControlConnRefused) || errors.Is(err, errControlConnReset) || errors.Is(err, errControlBrokenPipe)
 }
 
 func headerToken(value, token string) bool {
