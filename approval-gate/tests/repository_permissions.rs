@@ -211,3 +211,33 @@ fn kanban_planning_and_ticket_deletion_are_denied() {
         );
     }
 }
+
+/// opengantry's registration hooks are bus-internal: the engine calls them when
+/// a worker on the governed listener registers a function or creates an
+/// observer, and agents are denied both. gantry::verify and gantry::middleware
+/// match no rule and wait for a person.
+#[test]
+fn gantry_registration_hooks_are_denied() {
+    let permissions = repository_permissions();
+    for id in [
+        "gantry::on-function-registration",
+        "gantry::on-observer-registration",
+    ] {
+        assert!(
+            matches!(
+                permissions.check(id, &json!({}), PermissionMode::Manual),
+                Decision::Deny { .. }
+            ),
+            "{id} should be denied"
+        );
+    }
+    for id in ["gantry::verify", "gantry::middleware"] {
+        assert!(
+            matches!(
+                permissions.check(id, &json!({}), PermissionMode::Manual),
+                Decision::NeedsApproval
+            ),
+            "{id} should wait for a person"
+        );
+    }
+}
