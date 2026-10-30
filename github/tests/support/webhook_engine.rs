@@ -11,7 +11,8 @@
 //! engine does for a worker back on a new connection: the function's host
 //! hears `observerremoved` for the suspended one and `observeradded` for the
 //! new one. An id another live connection holds is refused with
-//! `OBSERVER_ID_CONFLICT`.
+//! `OBSERVER_ID_CONFLICT`, and keeps nothing for the refused connection: an
+//! `unobserve` from any connection but the observing one is ignored.
 //! Registered function handlers and observer hooks run on their real SDK
 //! connections.
 use futures::{SinkExt, StreamExt};
@@ -540,7 +541,20 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                     .send(state_changed(&id, observer.state, refused));
             }
         }
-        "unobserve" => dispose(state, &text("id")),
+        "unobserve" => {
+            // Only the observing connection disposes its observer this way;
+            // the engine ignores, and does not answer, anyone else's.
+            let id = text("id");
+            let owned = state
+                .observers
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_some_and(|o| o.observing.same_channel(tx));
+            if owned {
+                dispose(state, &id);
+            }
+        }
         "invocationresult" => {
             if let Some(target) = state.pending.lock().unwrap().remove(&text("invocation_id")) {
                 // The engine activates `observed` itself and strips it.

@@ -841,6 +841,82 @@ async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
     }
 }
 
+/// Another connection holds the queue observer's id: the engine refuses the
+/// github worker's observe with `OBSERVER_ID_CONFLICT`, keeps nothing for it
+/// and ignores its `unobserve`. The worker observes again after 1 s, then 2 s,
+/// then 4 s, and its observer is active once the id is free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_observer_id_another_connection_holds_is_observed_again_after_1_then_2_s() {
+    let dir = tempfile::tempdir().unwrap();
+    let gh_path = dir.path().join("gh-state.json");
+    std::fs::write(
+        &gh_path,
+        json!({"prs":{}, "hook":null, "calls":[]}).to_string(),
+    )
+    .unwrap();
+    let db_path = dir.path().join("private/store.sqlite3");
+    let mut engine = Engine::start().await;
+    let iii = engine.client(PROVIDER).await;
+    let queue = Queue::default();
+    queue.register(&iii);
+    let topic = WebhookConfig::default().queue;
+    let id = github::webhooks::queue_observer_id(Some(PROVIDER), github::WORKER_NAME, &topic);
+
+    // The squatter holds the id.
+    let squatter = engine.client(PROVIDER).await;
+    squatter.register_function(
+        "squatter::process",
+        RegisterFunction::new(|_: Value| Ok::<_, Error>(Value::Null)),
+    );
+    let held = squatter.observe_with(
+        Source::function("queue::on-message").args(json!({"topic": topic, "group": "squatters"})),
+        "squatter::process",
+        ObserverOptions::default().id(id.as_str()),
+    );
+    tokio::time::timeout(Duration::from_secs(10), held.ready())
+        .await
+        .expect("the squatter's observer is active in time")
+        .unwrap();
+
+    let github = engine.client(PROVIDER).await;
+    github::webhooks::register(&github, &config_cell(&gh_path, &db_path), &engine.url).await;
+    // The squatter's observe, then the worker's.
+    let observes = || {
+        engine
+            .frames()
+            .iter()
+            .filter(|f| f["type"] == "observe" && f["id"] == id.as_str())
+            .count()
+    };
+    wait(|| observes() >= 2).await;
+    let refused = tokio::time::Instant::now();
+    tokio::time::sleep_until(refused + Duration::from_millis(4_500)).await;
+    let again = observes() - 2;
+    // At 1 s and at 3 s: neither the 5 s an unconfirmed disposal would wait,
+    // nor a constant 1 s.
+    assert!(
+        (1..=2).contains(&again),
+        "observed again {again} times within 4.5 s of the refusal"
+    );
+
+    held.dispose().await.unwrap();
+    engine
+        .observed("queue::on-message", "github::webhooks::process")
+        .await;
+    let holders: Vec<String> = queue
+        .observers
+        .values()
+        .iter()
+        .map(|obs| obs.id().to_owned())
+        .collect();
+    assert_eq!(holders, std::slice::from_ref(&id));
+    assert_eq!(
+        queue.observers.values()[0].target(),
+        "github::webhooks::process"
+    );
+    engine.shutdown().await;
+}
+
 /// The removed hook of `github::pr::on-event`: disposing an observer drops
 /// its subscriber, and marks the watches it was the last listener of as
 /// orphaned; they stop after `orphan_grace_minutes` unless an observer

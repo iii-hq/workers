@@ -57,7 +57,12 @@ pub fn queue_observer_id(namespace: Option<&str>, worker_name: &str, queue: &str
 /// previous process that the engine has not seen close yet, or by another
 /// worker until the engine's grace period (`observers.observer_grace_ms`,
 /// 30 s by default) ends.
-const HELD_BY_ANOTHER_OBSERVER: &[&str] = &["HTTP_ROUTE_CONFLICT", "OBSERVER_ID_CONFLICT"];
+const HELD_BY_ANOTHER_OBSERVER: &[&str] = &["HTTP_ROUTE_CONFLICT", ID_HELD_BY_ANOTHER_CONNECTION];
+
+/// The refusal the engine answers itself when another connection holds the
+/// observer's id. The engine keeps nothing under the id for the refused
+/// connection, so it never confirms an `unobserve` of the refused observer.
+const ID_HELD_BY_ANOTHER_CONNECTION: &str = "OBSERVER_ID_CONFLICT";
 
 /// First wait before observing a refused source again; it doubles up to
 /// [`REOBSERVE_MAX_SECS`].
@@ -506,16 +511,23 @@ pub(super) fn observed_sources(
 /// becomes active once it registers; one still pending after
 /// [`ACTIVATION_WAIT_SECS`] is logged. A refusal is recorded as the webhook
 /// health's `last_error`. A refusal in [`HELD_BY_ANOTHER_OBSERVER`] (the
-/// route or the observer id still held by another observer) disposes the
-/// refused observer and observes again with the same `options`, waiting
-/// [`REOBSERVE_FIRST_SECS`] and then twice as long each time up to
-/// [`REOBSERVE_MAX_SECS`]; once the observer is active, the error it
-/// recorded is cleared.
+/// route or the observer id still held by another observer) observes again
+/// with the same `options`, waiting [`REOBSERVE_FIRST_SECS`] and then twice
+/// as long each time up to [`REOBSERVE_MAX_SECS`]; once the observer is
+/// active, the error it recorded is cleared.
+///
+/// The SDK replays a refused observer until it is disposed or another
+/// observe under its id takes its place. An observer its function's host
+/// refused (`HTTP_ROUTE_CONFLICT`) stays with the engine, which confirms its
+/// disposal at once, so it is disposed before the wait. The engine keeps
+/// nothing for an id it refused itself ([`ID_HELD_BY_ANOTHER_CONNECTION`])
+/// and never confirms an `unobserve` of it, so that observer is not
+/// disposed: the next observe uses its id and takes its place.
 async fn keep_observed(
     s: Arc<Service>,
     source: Source,
     target: &'static str,
-    options: ObserverOptions,
+    mut options: ObserverOptions,
 ) {
     let mut retry = std::time::Duration::from_secs(REOBSERVE_FIRST_SECS);
     let mut recorded: Option<String> = None;
@@ -570,8 +582,15 @@ async fn keep_observed(
         if !held {
             return;
         }
-        // A refused observer is kept and replayed by the SDK until disposed.
-        let _ = handle.dispose().await;
+        if code == ID_HELD_BY_ANOTHER_CONNECTION {
+            // Its `dispose` would wait 5 s for a confirmation the engine
+            // never sends. The next observe, under the same id, replaces it
+            // in the SDK; with no disposal of it pending, nothing forgets
+            // that id after the new observer has it.
+            options = options.id(handle.id());
+        } else {
+            let _ = handle.dispose().await;
+        }
         tokio::time::sleep(retry).await;
         retry = (retry * 2).min(std::time::Duration::from_secs(REOBSERVE_MAX_SECS));
     }

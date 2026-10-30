@@ -6,6 +6,10 @@
 //! the killed process left unacked wait in the durable queue of its consumer
 //! group, and reach the new process once each.
 //!
+//! While another worker holds that id, the engine refuses the github
+//! worker's observe with `OBSERVER_ID_CONFLICT`, and the worker observes
+//! again after 1 s, then 2 s, then 4 s.
+//!
 //! Runs the `github` binary against a real engine (`III_ENGINE_BIN`), with
 //! the contract mock of the queue worker and the http worker on connections
 //! of this test. Skips when `III_ENGINE_BIN` is not set.
@@ -25,7 +29,7 @@ use iii_http::{
     boot,
     config::{RestApiConfig, WebhookListenerConfig},
 };
-use iii_sdk::{Deliver, Error, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Deliver, Error, IIIClient, ObserverOptions, RegisterFunction, Source};
 use mocks::Queue;
 use real_engine::{call, RealEngine};
 use serde_json::{json, Value};
@@ -54,7 +58,8 @@ impl Github {
             .env("III_URL", &engine.url)
             .env("III_TELEMETRY_ENABLED", "false")
             .env("OTEL_ENABLED", "false")
-            .env("RUST_LOG", "info")
+            // The worker logs each refusal after the first at debug.
+            .env("RUST_LOG", "info,github::webhooks=debug")
             .env_remove("III_WORKER_NAME")
             .env_remove("III_NAMESPACE")
             .stdout(out.try_clone().unwrap())
@@ -339,6 +344,95 @@ async fn a_restarted_worker_keeps_its_queue_observer_id_and_gets_its_unacked_job
     drop(second);
     http.shutdown().await;
     for client in [queue_host, http_host, recorder] {
+        client.shutdown_async().await;
+    }
+}
+
+/// Another worker holds the queue observer's id: the engine refuses the
+/// github worker's observe with `OBSERVER_ID_CONFLICT`, keeps nothing for it
+/// and ignores an `unobserve` of it. The worker observes again after 1 s,
+/// then 2 s, then 4 s, and its observer is active once the id is free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_id_another_worker_holds_is_observed_again_after_1_then_2_s() {
+    let Some(engine) = RealEngine::start().await else {
+        eprintln!("III_ENGINE_BIN is not set; skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    let topic = github::webhooks::WebhookConfig::default().queue;
+    let stable = github::webhooks::queue_observer_id(None, github::WORKER_NAME, &topic);
+
+    let queue_host = engine.client("queue").await;
+    let queue = Queue::default();
+    queue.register(&queue_host);
+
+    // Another worker observes the queue under the id.
+    let squatter = engine.client("squatter").await;
+    squatter.register_function(
+        "squatter::process",
+        RegisterFunction::new(|_: Value| Ok::<_, Error>(Value::Null)),
+    );
+    let squatting = squatter.observe_with(
+        Source::function("queue::on-message").args(json!({ "topic": topic, "group": "squatters" })),
+        "squatter::process",
+        ObserverOptions::default().id(stable.as_str()),
+    );
+    tokio::time::timeout(Duration::from_secs(30), squatting.ready())
+        .await
+        .expect("the squatter's observer is active in time")
+        .unwrap();
+
+    let github = Github::start(&engine, dir.path(), 1);
+    // "webhook observer refused", then "webhook observer refused again".
+    let refusals = || {
+        github
+            .log()
+            .lines()
+            .filter(|line| line.contains("webhook observer refused") && line.contains(&stable))
+            .count()
+    };
+    wait_until("the engine refuses the github queue observer", || {
+        refusals() >= 1
+    })
+    .await;
+    let refused = tokio::time::Instant::now();
+    tokio::time::sleep_until(refused + Duration::from_millis(4_500)).await;
+    let again = refusals() - 1;
+    // At 1 s and at 3 s: neither the 5 s an unconfirmed disposal would wait,
+    // nor a constant 1 s.
+    assert!(
+        (1..=2).contains(&again),
+        "observed again {again} times within 4.5 s of the refusal\ngithub log:\n{}",
+        github.log()
+    );
+
+    // The id is free: the next observe, 4 s after the last, is accepted.
+    squatting.dispose().await.unwrap();
+    let listed = wait_observers(&queue_host, QUEUE_ON_MESSAGE, &github, |o| {
+        o.iter().any(|o| o["state"] == "active")
+    })
+    .await;
+    assert_eq!(ids(&listed), [stable.as_str()], "{listed:#?}");
+    assert_eq!(
+        listed[0]["worker"]["worker_name"],
+        github::WORKER_NAME,
+        "{listed:#?}"
+    );
+    wait_until("the queue worker holds the github observer", || {
+        held(&queue) == [stable.clone()]
+    })
+    .await;
+    assert!(
+        github
+            .log()
+            .contains("webhook observer active after a refusal"),
+        "{}",
+        github.log()
+    );
+
+    drop(github);
+    for client in [queue_host, squatter] {
         client.shutdown_async().await;
     }
 }
