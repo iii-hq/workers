@@ -1,7 +1,9 @@
-/* The database worker's console stylesheet (`console:style`, link-swapped on
- * change). Every rule is scoped under [data-iii-ui="database"]; keyframes keep
- * the db-ui- prefix. Surfaces and type come from the console's tokens: sans is
- * the chrome, mono only on identifiers, SQL, plans and database values. */
+/* The database worker's console stylesheet (its `console::ui::asset` observer
+ * has args { kind: "style", path: "database/styles.css" }; the console
+ * link-swaps it on change). Every rule is scoped under [data-iii-ui="database"];
+ * keyframes keep the db-ui- prefix. Surfaces and type come from the console's
+ * tokens: sans is the chrome, mono only on identifiers, SQL, plans and database
+ * values. */
 
 /* --- function-call message (chat / traces card) ---------------------- */
 [data-iii-ui="database"] .db-ui-msg {
