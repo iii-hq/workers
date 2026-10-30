@@ -12,6 +12,7 @@ use std::io::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
@@ -165,14 +166,27 @@ impl Stack {
     }
 }
 
-/// Boot an engine and register this worker against it, or `None` when no
-/// engine binary is available.
+/// Boot an engine and register this worker against it the way the binary
+/// does (named `pdf`: its functions, its console UI, its configuration
+/// observer), or `None` when no engine binary is available.
 pub async fn boot() -> Option<Stack> {
     let engine = spawn_engine().await?;
-    let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
+    let iii = Arc::new(register_worker(
+        &engine.url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                runtime: "rust".to_string(),
+                name: "pdf".to_string(),
+                ..WorkerMetadata::default()
+            }),
+            ..InitOptions::default()
+        },
+    ));
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(WorkerConfig::default())));
     pdf::functions::register_all(&iii, &cell);
+    pdf::ui::register(&iii);
+    pdf::configuration::register_config_observer(&iii, cell.clone());
 
     // Let the registrations land before the first call.
     tokio::time::sleep(Duration::from_millis(500)).await;
