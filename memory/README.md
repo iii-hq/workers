@@ -89,7 +89,12 @@ Every observer is created once at startup. Observed before its owning sibling (h
 | `memory::doctor` | End-to-end self-test (roundtrip, sibling reachability, embeddings, recent extraction failures) |
 | `memory::reload` | Reload every bank from disk after hand-editing files |
 
-Every function above doubles as a REST route through the http worker: the worker observes `http::on-request` with args `{ method: "POST", path }` per function, the path being the function id with `::` as `/` (`POST /memory/save`, `POST /memory/bank/create`).
+Every function above is also a REST route through the http worker: the worker observes `http::on-request` with args `{ method: "POST", path }` per function, the path being the function id with `::` as `/` (`POST /memory/save`, `POST /memory/bank/create`). Every route targets `memory::rest` (internal), which receives the `HttpRequest`, runs the function with the request's JSON body as its input (an empty body is `{}`), and returns the `HttpResponse`: `200` with the function's result, or `{ error: { code, message } }` with `400` (`invalid_input`, also a body that does not fit the function's input), `404` (`bank_not_found`, `memory_not_found`), `500` (`storage`) or `503` (`sibling_unavailable`).
+
+```bash
+curl -X POST localhost:3111/memory/save -H 'content-type: application/json' \
+  -d '{"bank":"blog","text":"The blog deploys on Fridays"}'
+```
 
 ## Change functions
 
@@ -160,7 +165,7 @@ III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns> EXTRACTION_MODEL=<id> cargo tes
 
 ## Permissions
 
-Suggested defaults ship in [`iii-permissions.yaml`](iii-permissions.yaml): agents get `memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`; the hook/pipeline internals are denied, and bank/rule writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default.
+Suggested defaults ship in [`iii-permissions.yaml`](iii-permissions.yaml): agents get `memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`; the hook/pipeline internals and the REST adapter `memory::rest` are denied, and bank/rule writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default.
 
 ## The memory family
 

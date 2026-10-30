@@ -37,6 +37,7 @@ use tokio::sync::RwLock;
 use memory::configuration::{self, ConfigCell, StoreCell};
 use memory::deps::Deps;
 use memory::events::{self, Emitter};
+use memory::functions::rest;
 use memory::store::Store;
 use memory::{config, functions, hooks, manifest};
 
@@ -104,11 +105,11 @@ fn seam_observers() -> Vec<(Source, &'static str)> {
 }
 
 /// The REST route of a public function: `POST /memory/...`, the function id
-/// with `::` as `/`.
+/// with `::` as `/`. Its target is `memory::rest`.
 fn rest_route(function_id: &str) -> Source {
     Source::function(HTTP_ON_REQUEST_FN).args(json!({
         "method": "POST",
-        "path": format!("/{}", function_id.replace("::", "/")),
+        "path": rest::route_path(function_id),
     }))
 }
 
@@ -210,6 +211,7 @@ async fn main() -> Result<()> {
     });
 
     functions::register_all(&iii, &deps);
+    rest::register(&iii, &deps);
     register_hook_functions(&iii, &deps);
 
     // Injectable console UI — after the memory::* functions so the console can
@@ -238,11 +240,12 @@ async fn main() -> Result<()> {
     // unavailable (delayed so the router and providers finish booting).
     memory::embed_client::backfill_all(deps.clone());
 
-    // Reuse the http worker: every public function doubles as a REST
-    // route (`POST /memory/...`). Without the http worker the routes stay
-    // pending and the bus surface still serves everything.
+    // Reuse the http worker: every public function is also a REST route
+    // (`POST /memory/...`) served by `memory::rest`, which takes the
+    // HttpRequest and answers { status_code, body }. Without the http worker
+    // the routes stay pending and the bus surface still serves everything.
     for spec in functions::catalog() {
-        let observer = iii.observe(rest_route(spec.function_id), spec.function_id);
+        let observer = iii.observe(rest_route(spec.function_id), rest::REST_ID);
         tracing::debug!(
             function_id = spec.function_id,
             observer_id = observer.id(),
@@ -255,7 +258,7 @@ async fn main() -> Result<()> {
     configuration::observe_config_changes(&iii, cell, store_cell);
 
     tracing::info!(
-        "memory ready: 14 memory::* functions + 2 change functions + REST via http::on-request"
+        "memory ready: 17 memory::* functions + 2 change functions + REST via http::on-request"
     );
 
     tokio::signal::ctrl_c().await?;
@@ -321,6 +324,11 @@ mod tests {
 
     #[test]
     fn rest_routes_take_the_leading_slash() {
+        assert_eq!(
+            rest_route("memory::save"),
+            Source::function("http::on-request")
+                .args(json!({ "method": "POST", "path": "/memory/save" }))
+        );
         assert_eq!(
             rest_route("memory::bank::create"),
             Source::function("http::on-request")
