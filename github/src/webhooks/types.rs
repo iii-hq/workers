@@ -8,7 +8,8 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebhookConfig {
-    /// Default delivery policy; individual subscriptions can override it. Hot-reloaded.
+    /// Default delivery policy; an observer of github::pr::on-event can override
+    /// it with its `notifications` arg. Hot-reloaded.
     pub notifications: super::notifications::NotificationPolicy,
     /// Opt in only after configuring the durable queue and public HTTP listener.
     pub enabled: bool,

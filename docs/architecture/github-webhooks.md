@@ -55,7 +55,7 @@ returned `restart_required` flag remains set until the `github` worker is
 restarted with the requested setting active. Disabling follows the same
 restart model.
 
-## Subscription lifecycle
+## Observer lifecycle
 
 A consumer chooses a unique watch ID, observes `github::pr::on-event` with args
 `{ watch_id }` for that ID, and then calls `github::pr::watch`. It reads the
@@ -111,10 +111,10 @@ another worker's public endpoint.
 
 ## Tunnel URL rotation and outages
 
-A recreated Quick Tunnel may receive a new URL. Consumers subscribe to tunnel
-changes before acquiring a lease and read its status once afterward. A generation
-identifies a process incarnation; stale events must not overwrite the current
-endpoint. URL updates preserve the existing hook secret.
+A recreated Quick Tunnel may receive a new URL. Consumers observe
+`quick-tunnel::on-changed` before acquiring a lease and read its status once
+afterward. A generation identifies a process incarnation; stale events must not
+overwrite the current endpoint. URL updates preserve the existing hook secret.
 
 GitHub does **not** automatically retry failed webhook deliveries. Startup,
 reconnection, and manual recovery therefore request available failed-delivery
