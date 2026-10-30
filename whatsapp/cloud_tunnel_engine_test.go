@@ -133,6 +133,7 @@ func (p *smokeTunnelProvider) change(t *testing.T, state string, origin any) {
 	p.mu.Unlock()
 	p.deliver(t, state, origin)
 }
+
 // deliver calls the synthetic source once; iii delivers the change to every
 // observer whose filters match it.
 func (p *smokeTunnelProvider) deliver(t *testing.T, state string, origin any) {
