@@ -39,7 +39,10 @@ type cloudReceiveRequest struct {
 
 func registerCloudWebhooks(client *iii.Client, manager *Manager, engineURL string) error {
 	metadata := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
-	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::webhook::verify", cloudVerificationHandler(manager), metadata); err != nil {
+	// Meta's verification request carries the configured verify token in hub.verify_token.
+	verify := metadata
+	verify.Observable = notObservable()
+	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::webhook::verify", cloudVerificationHandler(manager), verify); err != nil {
 		return err
 	}
 	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::cloud::webhook::receive", func(ctx context.Context, input callbackRequest[cloudReceiveRequest]) (cloudHTTPResponse, error) {

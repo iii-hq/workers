@@ -280,6 +280,10 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 		status.Active = accepted.Redacted()
 		return nil
 	}
+	// Its input is the configuration::on-updated event, whose new_value holds the
+	// Cloud access token, app secret, verify token and Flow private key.
+	credentialInput := internal
+	credentialInput.Observable = notObservable()
 	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::on-config-change", func(ctx context.Context, _ callbackRequest[callbackNotification]) (callbackOK, error) {
 		if m.interfaceOnly {
 			return callbackOK{}, interfaceCallbackError()
@@ -288,7 +292,7 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 			return callbackOK{}, err
 		}
 		return callbackOK{OK: true}, nil
-	}, internal); err != nil {
+	}, credentialInput); err != nil {
 		return err
 	}
 	if err := observeFunction(client, iii.Source{

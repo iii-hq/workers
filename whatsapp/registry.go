@@ -186,13 +186,36 @@ func (wireResponse[T]) JSONSchema() *reflectschema.Schema {
 	var t T
 	return &reflectschema.Schema{Extras: catalogEntries[t.ID()].ResponseFormat}
 }
+
+// credentialOperations are the catalog functions whose input or output carries
+// a credential: the linked-phone pairing QR payload and pairing code, the Cloud
+// phone number's verification code and its two-step verification PIN. They are
+// registered with observable: false, so observing them fails with NOT_OBSERVABLE.
+var credentialOperations = map[string]bool{
+	"whatsapp::sessions::qr":                      true,
+	"whatsapp::sessions::pair_code":               true,
+	"whatsapp::cloud::phone_numbers::verify_code": true,
+	"whatsapp::cloud::phone_numbers::register":    true,
+	"whatsapp::cloud::phone_numbers::set_pin":     true,
+}
+
+// notObservable is the Observable option of a function nobody may observe.
+func notObservable() *bool {
+	observable := false
+	return &observable
+}
+
 func installOperation[T operation](client *iii.Client, r *Registry) error {
 	var t T
 	metadata, _ := json.Marshal(map[string]any{"description": catalogEntries[t.ID()].Description})
+	options := iii.RegisterFunctionOptions{Metadata: metadata}
+	if credentialOperations[t.ID()] {
+		options.Observable = notObservable()
+	}
 	_, err := iii.RegisterFunctionTyped[wireRequest[T], wireResponse[T]](client, t.ID(), func(ctx context.Context, input wireRequest[T]) (wireResponse[T], error) {
 		result, err := r.Invoke(ctx, t.ID(), map[string]any(input))
 		return wireResponse[T]{result}, err
-	}, iii.RegisterFunctionOptions{Metadata: metadata})
+	}, options)
 	return err
 }
 

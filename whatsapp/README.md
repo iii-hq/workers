@@ -203,6 +203,20 @@ Read the [observer walkthrough](https://github.com/iii-hq/workers/blob/main/what
 
 Each observer stays pending until its provider runs; a refused observer is logged and the worker keeps serving its own functions.
 
+### Functions nobody can observe
+
+These functions carry a credential in their input or output. They are registered with `observable: false`, so observing them fails with `NOT_OBSERVABLE`; calling them works as for any other function. Every other function the worker registers is observable.
+
+| Function | Credential |
+| --- | --- |
+| `whatsapp::sessions::qr` | output: the pairing QR payload |
+| `whatsapp::sessions::pair_code` | output: the phone pairing code |
+| `whatsapp::cloud::phone_numbers::verify_code` | input: the verification code Meta sent to the phone |
+| `whatsapp::cloud::phone_numbers::register` | input: the two-step verification PIN |
+| `whatsapp::cloud::phone_numbers::set_pin` | input: the two-step verification PIN |
+| `whatsapp::cloud::webhook::verify` | input: Meta's `hub.verify_token`, which equals the configured verify token |
+| `whatsapp::on-config-change` | input: the `configuration::on-updated` event, whose `new_value` holds the access token, app secret, verify token and Flow private key |
+
 ## Limits and differences from OpenWA
 
 Use this worker's typed functions and inspect their contracts with `iii worker info whatsapp`. It is not an HTTP-compatible OpenWA deployment. The [native API boundaries](https://github.com/iii-hq/workers/blob/main/whatsapp/docs/native-api.md#limits-and-differences-from-openwa) list unsupported operations and nullable metadata.
