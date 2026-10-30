@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	validate "github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -80,4 +83,71 @@ func TestCloudEventPayloadSchemaMatchesPublishedEvents(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCloudEventFunctionWireSchemas(t *testing.T) {
+	peer := newCallbackPeer(t, nil)
+	peer.registerWorker(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := registerCloudEvents(ctx, peer.client, &Manager{CloudEventQueue: make(chan CloudEvent)}); err != nil {
+		t.Fatal(err)
+	}
+	var frame map[string]json.RawMessage
+	for frame == nil {
+		select {
+		case received := <-peer.frames:
+			if string(received["type"]) == `"registerfunction"` && string(received["id"]) == `"whatsapp::cloud::on-events"` {
+				frame = received
+			}
+		case <-ctx.Done():
+			t.Fatal("Cloud event function registration was not sent")
+		}
+	}
+	if string(frame["private"]) != "true" {
+		t.Error("whatsapp::cloud::on-events must be private: only this worker calls it")
+	}
+	if len(frame["args_format"]) != 0 {
+		t.Error("whatsapp::cloud::on-events takes no args; observers filter on its input")
+	}
+	if len(frame["observable"]) != 0 {
+		t.Errorf("whatsapp::cloud::on-events must stay observable, got observable: %s", frame["observable"])
+	}
+	formats := make(map[string]any)
+	for _, field := range []string{"request_format", "response_format"} {
+		var document map[string]any
+		if err := json.Unmarshal(frame[field], &document); err != nil || len(document) == 0 {
+			t.Fatalf("Cloud event function sends no typed %s", field)
+		}
+		formats[field] = document
+	}
+	if !reflect.DeepEqual(formats["request_format"], formats["response_format"]) {
+		t.Fatal("the event source must return the event it is called with")
+	}
+	var published map[string]any
+	if err := json.Unmarshal(cloudEventPayloadSchema, &published); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(formats["response_format"], published) {
+		t.Fatal("whatsapp::cloud::on-events must register the published Cloud event schema")
+	}
+	t.Run("filters select kind and chat", func(t *testing.T) {
+		filters := map[string]any{
+			"input.kind":    map[string]any{"$eq": "message.received"},
+			"input.chat_id": map[string]any{"$in": []string{"+15550000009", "+15550000010"}},
+		}
+		for _, tc := range []struct {
+			event CloudEvent
+			match bool
+		}{
+			{CloudEvent{Kind: "message.received", ChatID: "+15550000009", Data: json.RawMessage(`{}`)}, true},
+			{CloudEvent{Kind: "message.received", ChatID: "+15550000010", Data: json.RawMessage(`{}`)}, true},
+			{CloudEvent{Kind: "message.status", ChatID: "+15550000009", Data: json.RawMessage(`{}`)}, false},
+			{CloudEvent{Kind: "message.received", ChatID: "+15550000011", Data: json.RawMessage(`{}`)}, false},
+		} {
+			if got := filterSelects(t, filters, tc.event); got != tc.match {
+				t.Errorf("%s/%s: selected = %t, want %t", tc.event.Kind, tc.event.ChatID, got, tc.match)
+			}
+		}
+	})
 }
