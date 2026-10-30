@@ -82,15 +82,20 @@ iii.observe_with(
 ```
 
 - **Fan-out.** Every subscriber of a topic receives every message, with the
-  same payload, except that the members of a group share one queue.
+  same payload, except that the members of a group share one queue. A member
+  whose worker disconnects leaves the group, and the group's messages go to
+  the members that stay.
 - **Durable identity.** A subscriber outside a group has the durable queue
   `<topic>::observer:<observer id>` (builtin) or
   `iii.<topic>.observer:<observer id>.queue` (RabbitMQ); a group has
   `@<group>`. The SDK keeps an observer's id across reconnects, and the `id`
-  observe option pins it across restarts of the observing worker: the same id
-  finds the same queue and its backlog (with a file-backed store or RabbitMQ).
-  A second live observer under the same id is refused with
-  `OBSERVER_ID_CONFLICT`.
+  observe option pins it across restarts of the observing worker: the
+  restarted worker, connecting under the same worker name in the same
+  namespace, observes under the same id, replaces the observer it left
+  behind, and finds the same queue and its backlog (with a file-backed store
+  or RabbitMQ). Any other worker that observes under an id that is live, or
+  left behind within the engine's `observers.observer_grace_ms`, is refused
+  with `OBSERVER_ID_CONFLICT`.
 - **Lifecycle.** When a subscriber's observer is removed (`dispose()`, or
   its observing worker disconnected), its consumer stops at once: nothing more
   is delivered from its queue. The queue keeps receiving the topic for

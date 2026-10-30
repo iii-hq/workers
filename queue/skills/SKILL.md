@@ -89,7 +89,8 @@ Args:
 - `queue_config` (optional): per-subscriber tuning (`type: fifo`,
   `concurrency`, `maxPriority` on RabbitMQ).
 - `group` (optional): observers naming the same group share one queue, so the
-  group handles each message once.
+  group handles each message once. A member whose worker disconnects leaves
+  the group, and the group's messages go to the members that stay.
 
 The target receives the published data. Returning acks the message; throwing
 retries it with backoff and then moves it to the DLQ. The worker calls the
@@ -104,7 +105,11 @@ refused with `INVALID_ARGS`.
 
 Each subscriber's durable queue is keyed by its observer id: pin the `id`
 option to keep the queue and its backlog across restarts of the observing
-worker. When the observer is removed (`dispose()`, or its worker
+worker. The restarted worker, connecting under the same worker name in the
+same namespace, observes under the same id and replaces the observer it left
+behind; any other worker that observes under that id is refused with
+`OBSERVER_ID_CONFLICT` until the engine's `observers.observer_grace_ms` ends.
+When the observer is removed (`dispose()`, or its worker
 disconnected), the consumer stops at once and the queue keeps receiving the
 topic for `subscriber_retention_ms` (30 s by default, like the engine's
 `observers.observer_grace_ms`): a worker that restarts under the same name
