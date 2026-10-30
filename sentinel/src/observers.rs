@@ -3,8 +3,7 @@
 //! Every observer lives in a slot that follows the live configuration:
 //! observed when its source is enabled, disposed when it is turned off. An
 //! observer whose function is not registered yet — the harness or `cron` is
-//! not up — stays pending and becomes active when that worker registers it,
-//! so a monitor never has to retry its way back to watching.
+//! not up — stays pending and becomes active when that worker registers it.
 
 use iii_config_client::ObserverSlot;
 use iii_sdk::{Deliver, IIIClient, Source};
