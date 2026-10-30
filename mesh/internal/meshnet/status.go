@@ -32,6 +32,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"tailscale.com/safesocket"
 	"text/tabwriter"
 	"time"
 )
@@ -195,4 +196,30 @@ func (m *Mesh) status() string {
 		b.WriteString("\n" + hint)
 	}
 	return b.String()
+}
+
+// ServeStatus preserves the read-only status endpoint after a removed node has
+// released its native backend. Closing the listener releases the socket.
+func ServeStatus(report func() string) (io.Closer, error) {
+	listener, err := safesocket.Listen(socket)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				_ = c.SetDeadline(time.Now().Add(askWait))
+				line, err := bufio.NewReader(c).ReadString('\n')
+				if err == nil && strings.TrimSpace(line) == "status" {
+					_, _ = io.WriteString(c, report())
+				}
+			}()
+		}
+	}()
+	return listener, nil
 }
