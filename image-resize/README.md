@@ -10,17 +10,16 @@ iii call compose::add worker=image-resize
 
 ## Configuration
 
-Add the worker to your pipeline configuration:
+The worker reads its settings from the YAML file passed with `--config`
+(default `./config.yaml`):
 
 ```yaml
-- name: image-resize
-  config:
-    height: 200
-    quality:
-      jpeg: 85
-      webp: 80
-    strategy: scale-to-fit
-    width: 200
+height: 200
+quality:
+  jpeg: 85
+  webp: 80
+strategy: scale-to-fit
+width: 200
 ```
 
 ### Options
