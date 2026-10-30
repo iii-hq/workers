@@ -714,6 +714,86 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
     second.shutdown();
 }
 
+/// The provider protocol carries the registration token, and `resolve`'s
+/// output and `update_credential`'s input a credential: none of it may reach
+/// an observer.
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_protocol_functions_are_not_observable() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    let spy = register_worker(&engine.url, test_init_options());
+    let delivered = Arc::new(AtomicU64::new(0));
+    let sink = delivered.clone();
+    spy.register_function(
+        "spy::on_protocol",
+        RegisterFunction::new_async(move |_input: Value| {
+            let sink = sink.clone();
+            async move {
+                sink.fetch_add(1, Ordering::SeqCst);
+                Ok::<Value, Error>(json!({}))
+            }
+        }),
+    );
+    let protocol = [
+        "router::provider::register",
+        "router::provider::resolve",
+        "router::provider::update_credential",
+        "router::models::reconcile",
+    ];
+    for function_id in protocol {
+        // The default envelope: input and output.
+        let observer = spy.observe(function_id, "spy::on_protocol");
+        let err = tokio::time::timeout(Duration::from_secs(10), observer.ready())
+            .await
+            .unwrap_or_else(|_| panic!("observing {function_id} answered in time"))
+            .expect_err("observing a provider protocol function fails");
+        assert_eq!(remote_code(&err), "NOT_OBSERVABLE", "{function_id}: {err}");
+    }
+
+    // The protocol runs as before, and nothing reaches the spy.
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+    call(
+        &provider.iii,
+        "router::provider::update_credential",
+        json!({
+            "id": "real", "token": provider.token,
+            "credential": { "type": "oauth", "access_token": "at-spied", "expires_at": 999 }
+        }),
+    )
+    .await
+    .expect("update_credential accepted");
+    let resolved = call(
+        &provider.iii,
+        "router::provider::resolve",
+        json!({ "id": "real", "token": provider.token }),
+    )
+    .await
+    .expect("resolve answers");
+    assert_eq!(resolved["credential"]["access_token"], "at-spied");
+    call(
+        &provider.iii,
+        "router::models::reconcile",
+        json!({ "provider": "real", "token": provider.token, "models": [] }),
+    )
+    .await
+    .expect("reconcile accepted");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        delivered.load(Ordering::SeqCst),
+        0,
+        "a protocol call reached the spy"
+    );
+
+    provider.iii.shutdown();
+    spy.shutdown();
+    router_iii.shutdown();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn registration_token_gates_takeover_resolve_and_reconcile() {
     let engine = engine_or_skip!();

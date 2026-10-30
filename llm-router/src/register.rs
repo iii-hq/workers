@@ -243,7 +243,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             invalid_request_from_serde,
         )
         .description(surface::PROVIDER_REGISTER_DESC)
-        .metadata(internal_meta()),
+        .metadata(internal_meta())
+        .observable(false),
     );
     iii.register_function(
         surface::PROVIDER_RESOLVE_ID,
@@ -254,7 +255,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             secrets.clone(),
         ))
         .description(surface::PROVIDER_RESOLVE_DESC)
-        .metadata(internal_meta()),
+        .metadata(internal_meta())
+        .observable(false),
     );
     iii.register_function(
         surface::UPDATE_CREDENTIAL_ID,
@@ -265,7 +267,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             entry_lock.clone(),
         ))
         .description(surface::UPDATE_CREDENTIAL_DESC)
-        .metadata(internal_meta()),
+        .metadata(internal_meta())
+        .observable(false),
     );
     iii.register_function(
         surface::MODELS_RECONCILE_ID,
@@ -281,7 +284,8 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             invalid_request_from_serde,
         )
         .description(surface::MODELS_RECONCILE_DESC)
-        .metadata(internal_meta()),
+        .metadata(internal_meta())
+        .observable(false),
     );
 
     // 6. Observe configuration changes only after every consumer of the live

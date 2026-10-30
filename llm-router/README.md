@@ -97,6 +97,11 @@ registration token, and every later protocol call must present it.
 | `router::provider::update_credential` | Persist a refreshed credential (OAuth write-back). |
 | `router::models::reconcile` | Replace the provider's catalog slice in one write. |
 
+These four are registered with `observable: false`: their payloads carry the
+registration token (every one) or a credential (`resolve`'s output,
+`update_credential`'s input), so an `observe` of any of them fails with
+`NOT_OBSERVABLE`.
+
 The provider worker itself exposes `provider::<id>::stream` and, when
 capable, `provider::<id>::refresh_models` (model discovery),
 `provider::<id>::count_tokens` (prompt token counting),
@@ -285,7 +290,9 @@ and provider workers reach the full surface — only in-run agents are
 restricted. Provider credentials live in the configuration entry, or behind a
 `secret://` or `env://` reference in the `secrets` worker, and are never readable back
 through any allowed function: `router::provider::list` reports where a
-credential comes from, never its value.
+credential comes from, never its value. The provider protocol functions are
+not observable, so registration tokens and credentials reach no observer (see
+[Provider protocol](#provider-protocol)).
 
 ## Events
 
