@@ -91,12 +91,19 @@ iii.observe_with(
   finds the same queue and its backlog (with a file-backed store or RabbitMQ).
   A second live observer under the same id is refused with
   `OBSERVER_ID_CONFLICT`.
-- **Lifecycle.** `dispose()`, or the observing worker gone past the engine's
-  grace period, stops the subscriber's consumer; its queue and backlog stay
-  for a later observer with the same id. While the observer is suspended (its
-  worker briefly disconnected, or its target unregistered), the call through
-  it fails with `OBSERVER_NOT_ACTIVE`: the message stays queued and is
-  retried.
+- **Lifecycle.** When a subscriber's observer is removed (`dispose()`, or
+  its observing worker disconnected), its consumer stops at once: nothing more
+  is delivered from its queue. The queue keeps receiving the topic for
+  `subscriber_retention_ms` (30 s by default, the engine's default
+  `observers.observer_grace_ms`), and an observer with the same id within
+  that time consumes it, including everything published meanwhile. After
+  that the queue keeps only what it holds, for a later observer with the same
+  id. A worker that restarts under the same name within the engine's grace
+  period re-observes its id and receives everything: its unacked backlog and
+  each message published while it was away, once. A group's queue keeps its
+  consumer while any member remains. A call through an observer that is not
+  active (its target unregistered, say) fails with `OBSERVER_NOT_ACTIVE`: the
+  message stays queued and is retried.
 - **Timeouts.** The worker calls each target through its observer, and the
   engine bounds every call through an observer by
   `observers.activation_timeout_ms` (30 s by default). A target that has not
@@ -192,6 +199,20 @@ change, never on a timer. The same feed drives the
 definitions validate): consumers wake on enqueue, and a backed-off retry is
 delivered at exactly its due time.
 
+`subscriber_retention_ms` (default `30000`, the engine's default
+`observers.observer_grace_ms`) is how long the queue of a `queue::on-message`
+subscriber whose observer is removed keeps receiving its topic (see
+**Lifecycle** above). `0` stops it receiving when the observer is removed. A
+change applies to the next observer removed. A retention lives in the
+running adapter: an adapter swap or a restart of the queue worker ends it. It
+applies to the `builtin` adapter; a `rabbitmq` subscriber queue stays bound to
+its topic, so it keeps receiving the topic whatever this setting, and `redis`
+holds no subscriber queue.
+
+```yaml
+subscriber_retention_ms: 30000
+```
+
 `adapter.name` selects the transport: `builtin` (default), `redis`, or
 `rabbitmq`. Changing the adapter config hot-swaps the transport and
 restarts every consumer — the new adapter is built first, so a bad config
@@ -230,7 +251,8 @@ adapter:
 
 Pub/sub only — 1:1 port of the engine builtin's `RedisAdapter`, including
 its limitations. There is no DLQ, no retries, and no message durability: a
-message published with no subscriber connected is lost.
+message published with no subscriber connected is lost, so
+`subscriber_retention_ms` does not apply.
 Redis does not currently support named function-queue consumers, so a
 persisted `queue_configs` entry fails boot with an explicit unsupported error.
 
@@ -257,6 +279,10 @@ standard and FIFO queue modes. On by default (the `rabbitmq` cargo feature
 is feature-default-on); building with `--no-default-features` drops it,
 and selecting `adapter.name: rabbitmq` in that build fails boot with an
 error naming the missing feature.
+
+A subscriber's queue stays declared and bound to its topic when its observer
+is removed, so it keeps receiving the topic for a later observer with the same
+id, whatever `subscriber_retention_ms`.
 
 RabbitMQ's `x-max-priority` queue argument is immutable. An existing named
 queue cannot change `max_priority` in place; delete and recreate its broker
