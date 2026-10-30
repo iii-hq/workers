@@ -74,7 +74,10 @@ Any of these makes `mesh` a failure even if everything else works:
 - `mesh` making the engine, or the proxy, reachable from the mesh or the front
   door. Only the gateway faces the mesh.
 - A node escaping its grants:
-  - registering a function or trigger type outside its own `<node>::` prefix;
+  - registering a function, trigger type or worker name outside its own
+    `<node>::` prefix;
+  - getting the engine to run a function outside its grants, for example as
+    a trigger condition;
   - binding a trigger type it was not granted;
   - seeing or rewriting hub calls through a harness hook;
   - reading another worker's configuration, or the hub's environment through
