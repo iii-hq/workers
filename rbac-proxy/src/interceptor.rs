@@ -1283,8 +1283,10 @@ impl Interceptor {
             );
         }
 
-        // An activation of an observer this connection created: its
+        // iii's delivery to an observer this connection created: its
         // `Observed` envelope names the observed function by its engine id.
+        // A call through the same observer carries the host's payload, which
+        // goes to the target as the host sent it.
         if let Some(observer_id) = v.pointer("/activation/observer_id").and_then(Value::as_str) {
             let envelope = self
                 .observers
@@ -1294,7 +1296,7 @@ impl Interceptor {
                 .get(observer_id)
                 .copied()
                 .unwrap_or(false);
-            if envelope {
+            if envelope && carries_its_envelope(&v) {
                 if let Some(data) = v.get_mut("data") {
                     self.strip_field(data, "function_id");
                 }
@@ -1441,6 +1443,22 @@ fn requested_namespace(v: &Value) -> Option<String> {
         Some(Value::String(ns)) => Some(ns.clone()),
         Some(_) => None,
     }
+}
+
+/// Whether an activation's `data` is the engine's `Observed` envelope for
+/// that activation: the envelope names the activation's `observer_id` and
+/// `activation_id`. A call through an observer gets a fresh `activation_id`
+/// from the engine, so a host's payload never names it.
+fn carries_its_envelope(v: &Value) -> bool {
+    let (Some(activation), Some(data)) = (v.get("activation"), v.get("data")) else {
+        return false;
+    };
+    ["observer_id", "activation_id"].into_iter().all(|key| {
+        matches!(
+            (activation.get(key), data.get(key)),
+            (Some(Value::String(a)), Some(Value::String(d))) if a == d
+        )
+    })
 }
 
 /// The `namespace` of an engine frame about a function (`default` when it
@@ -2300,6 +2318,7 @@ mod tests {
             "function_id": "tenant1::sink",
             "data": {
                 "observer_id": OBSERVER_ID,
+                "activation_id": "2d4f6a8c-0e2b-4d6f-9a1c-3e5a7c9e1b3d",
                 "function_id": "tenant1::orders",
                 "status": "success",
                 "input": { "id": 1 }

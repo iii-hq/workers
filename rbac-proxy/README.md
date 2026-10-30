@@ -137,7 +137,10 @@ connection with no RBAC session, so the proxy gates every observe frame:
   carve-out, the discovery functions, `engine::observers::*` and the engine
   events whose calls list functions, workers or observers
   (`engine::on-functions-changed`, `engine::on-workers-changed`,
-  `engine::on-observers-changed`).
+  `engine::on-observers-changed`). The `Observed` envelope iii delivers for
+  an observer the connection created names the observed function without the
+  prefix; a call through that observer reaches the target with the payload
+  as the host sent it.
 - **Hosting.** `functionregistered`, `observeradded`, `observerremoved`,
   `observerack`, `invocationsobserved` and `localinvocationstats` pass for the
   functions the connection registered, with the session prefix removed toward
