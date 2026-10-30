@@ -144,7 +144,7 @@ async fn replay_observers(deps: &Deps, bindings: Vec<crate::bindings::Binding>) 
             // A record without a source: nothing to observe.
             continue;
         };
-        take_over_from_previous_connection(deps, &binding, handle);
+        take_over_held_observer_id(deps, &binding, handle);
         match store.rearm_observer_id(&binding, &binding.id).await {
             Ok(crate::bindings::AttachOutcome::Attached(current)) => {
                 binding = *current;
@@ -167,11 +167,14 @@ async fn replay_observers(deps: &Deps, bindings: Vec<crate::bindings::Binding>) 
     (rearmed, caught_up)
 }
 
-/// A harness that restarted within the engine's suspension grace finds its
-/// observer ids still held by its previous connection
-/// (`OBSERVER_ID_CONFLICT`). Dispose the stale one through the engine and
-/// observe again, in the background so the replay never waits on it.
-fn take_over_from_previous_connection(
+/// A binding's observer id held by an observer the engine does not replace
+/// (`OBSERVER_ID_CONFLICT`). Dispose that one through the engine and observe
+/// again, in the background so the replay never waits on it. A harness that
+/// restarted within the engine's suspension grace needs none of this: its
+/// previous connection's suspended observer is replaced by the new observe,
+/// since both connections declare the worker name `harness` in the same
+/// namespace.
+fn take_over_held_observer_id(
     deps: &Deps,
     binding: &crate::bindings::Binding,
     handle: iii_sdk::ObserverHandle,
@@ -191,7 +194,7 @@ fn take_over_from_previous_connection(
             return;
         }
         if super::observe_binding(&deps, &binding).is_some() {
-            tracing::info!(binding = %binding.id, "observer taken over from the previous connection");
+            tracing::info!(binding = %binding.id, "observer id taken over from the observer that held it");
         }
     });
 }

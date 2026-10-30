@@ -239,9 +239,11 @@ boot (`bindings/gc.rs`):
 2. **Sweep** — owner-gone bindings are deleted, stale spawn-target records are
    retired loudly, and delivery observers without a record are disposed.
 3. **Replay** — every surviving binding's observer is re-created with the same
-   id. When the previous connection still holds the id
-   (`OBSERVER_ID_CONFLICT`, within the engine's suspension grace), the harness
-   disposes the old one through `engine::observers::dispose` and observes
+   id. Within the engine's suspension grace the previous connection's observer
+   is still there, suspended; the engine replaces it with the new one, since
+   both connections declare the worker name `harness` in the same namespace.
+   When the id is held some other way (`OBSERVER_ID_CONFLICT`), the harness
+   disposes that observer through `engine::observers::dispose` and observes
    again.
 4. **Catch up** — a one-shot `state::on-changed` wake that never delivered reads
    its watched key and delivers the value it missed.

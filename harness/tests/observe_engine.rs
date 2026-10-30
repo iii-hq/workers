@@ -7,7 +7,9 @@
 //!   its `deliver` asks for, and no other observer receives it;
 //! - `harness::observer::deliver` fires a binding from the `Observed`
 //!   envelope of iii's delivery and from the raw payload a source's deliver
-//!   hook sends through the observer.
+//!   hook sends through the observer;
+//! - a harness back on a new connection under the same worker name replaces
+//!   its binding's suspended observer by observing the same id again.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -18,6 +20,7 @@ use harness::bindings::{Binding, BindingTarget, Lifecycle, OwnerScope, SourceSpe
 use harness::config::WorkerConfig;
 use harness::deps::Deps;
 use harness::events::{TurnEvents, ON_READY_FN};
+use harness::functions::observer_deliver::DELIVER_ID;
 use harness::types::turn::FunctionPolicy;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
@@ -462,6 +465,83 @@ async fn a_binding_fires_from_an_envelope_and_from_a_deliver_hook_payload() {
 
     source.shutdown_async().await;
     deps.iii.shutdown_async().await;
+    stub.shutdown_async().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_harness_replaces_its_suspended_binding_observer() {
+    let Some(engine) = isolated_engine().await else {
+        eprintln!("skipping: iii engine is unavailable");
+        return;
+    };
+    let stack = Stack::default();
+    let stub = register_worker(&engine.url, worker_options("stack"));
+    stack.register(&stub);
+    stub.wait_until_registered(Duration::from_secs(5))
+        .await
+        .expect("stack registered");
+    let source = event_sources(&engine).await;
+    let binding = sink_binding("sub_stable", "demo::on-event");
+    stack.insert_binding(&binding);
+
+    let first = harness_connection(&engine).await;
+    let handle = harness::bindings::observe_binding(&first, &binding).expect("a source");
+    handle.ready().await.expect("first observer active");
+    // The connection goes away without disposing anything: the engine
+    // suspends the observer for its grace period.
+    first.iii.shutdown_async().await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let listed = source
+            .call(CallRequest::new("engine::observers::list", json!({})))
+            .await
+            .expect("engine::observers::list");
+        let state = listed["observers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|observer| observer["id"] == "sub_stable")
+            .map(|observer| observer["state"].clone());
+        if state == Some(json!("suspended")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never suspended: {listed}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // The harness back on a new connection observes the same id, under the
+    // same worker name: the engine replaces the suspended observer with it.
+    let second = harness_connection(&engine).await;
+    let handle = harness::bindings::observe_binding(&second, &binding).expect("a source");
+    tokio::time::timeout(Duration::from_secs(10), handle.ready())
+        .await
+        .expect("observer settles")
+        .expect("the same id is active again");
+    assert_eq!(handle.id(), "sub_stable");
+
+    emit(&source, "demo::on-event", json!({ "n": 1 })).await;
+    let sink = stack.wait_sink(1).await;
+    assert_eq!(sink[0]["event"], json!({ "n": 1 }), "{sink:?}");
+    let listed = source
+        .call(CallRequest::new("engine::observers::list", json!({})))
+        .await
+        .expect("engine::observers::list");
+    let held: Vec<&Value> = listed["observers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|observer| observer["id"] == "sub_stable")
+        .collect();
+    assert_eq!(held.len(), 1, "{listed}");
+    assert_eq!(held[0]["state"], json!("active"), "{listed}");
+    assert_eq!(
+        held[0]["target"]["function_id"],
+        json!(DELIVER_ID),
+        "{listed}"
+    );
+
+    source.shutdown_async().await;
+    second.iii.shutdown_async().await;
     stub.shutdown_async().await;
 }
 
