@@ -473,9 +473,15 @@ making. What an event says is still what the database told the worker:
   `database::query` too) or write the SQLite changelog, and the event
   carries no caller.
 
-Nobody observing costs nothing: no event is built, the function is not
-called, and nothing goes on the wire. Observers of other tables cost a hash
-lookup per key.
+With nobody observing the function, no event is built: the worker
+classifies no SQL (except an interactive transaction's statements, held
+until its commit for an observer added before it), parses or decodes
+nothing a `native` database sends, does not call the function, and puts
+nothing on the wire. A `native` database still sends what it captures (a
+Postgres notification, the MySQL binlog stream, rows in the SQLite
+changelog, which the worker deletes), and the worker drops it without
+decoding it. With observers of other tables only, the event is built and
+costs a hash lookup per key; it is not serialized.
 
 **Which rows changed — `returning`.** The event never invents row data:
 

@@ -170,6 +170,21 @@ struct Payload {
     keys: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
 }
 
+/// The event a notification announces, or None: another channel, nobody
+/// observing `database::on-row-changed` (`observed` false: the payload is not
+/// parsed), or a payload this worker did not shape.
+pub(crate) fn notification_event(
+    db: &str,
+    channel: &str,
+    payload: &str,
+    observed: bool,
+) -> Option<RowChangedEvent> {
+    if channel != CHANNEL || !observed {
+        return None;
+    }
+    parse_notification(db, payload)
+}
+
 /// A NOTIFY payload as a bus event, or None (with a warning) for payloads
 /// this worker did not shape — someone else may NOTIFY on our channel.
 pub(crate) fn parse_notification(db: &str, payload: &str) -> Option<RowChangedEvent> {
@@ -323,6 +338,10 @@ impl NativeListeners {
                     tracing::warn!(db = %name, "native capture needs a file-backed sqlite url");
                     return None;
                 };
+                // Where the watcher starts is read here, before the spawn
+                // returns: a write committed once capture is installed is
+                // past it, however late the thread runs.
+                let start = super::sqlite_watch::open_watch(name, &path)?;
                 let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
                 let bus = Arc::clone(&self.bus);
@@ -333,12 +352,14 @@ impl NativeListeners {
                 if let Err(e) = std::thread::Builder::new()
                     .name(format!("sqlite-capture-{name}"))
                     .spawn(move || {
-                        super::sqlite_watch::run_watcher(
+                        super::sqlite_watch::watch(
                             &db_name,
                             &path,
+                            start,
                             &thread_stop,
                             thread_wake,
                             &wake_rx,
+                            || bus.is_observed(),
                             |event| {
                                 // Bridge sync → async: the watcher thread parks
                                 // on the runtime while the bus fans out.
@@ -437,10 +458,10 @@ where
                 None => return Ok(()),
                 Some(Err(e)) => return Err(e.to_string()),
                 Some(Ok(AsyncMessage::Notification(n))) => {
-                    if n.channel() == CHANNEL {
-                        if let Some(event) = parse_notification(db, n.payload()) {
-                            bus.emit_event(event).await;
-                        }
+                    if let Some(event) =
+                        notification_event(db, n.channel(), n.payload(), bus.is_observed())
+                    {
+                        bus.emit_event(event).await;
                     }
                 }
                 // Notices and any future message kinds (enum is non_exhaustive).
@@ -531,6 +552,15 @@ mod tests {
             parse_notification("primary", r#"{"table":"t","op":"insert","n":1,"keys":"x"}"#)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn notifications_are_parsed_only_on_our_channel_while_observed() {
+        let payload = r#"{"table":"public.orders","op":"insert","n":1}"#;
+        let event = notification_event("primary", CHANNEL, payload, true).unwrap();
+        assert_eq!(event.affected_rows, 1);
+        assert!(notification_event("primary", CHANNEL, payload, false).is_none());
+        assert!(notification_event("primary", "other_channel", payload, true).is_none());
     }
 
     #[test]

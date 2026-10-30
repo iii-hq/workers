@@ -15,9 +15,11 @@
 //!   `capture: native` databases hear every client instead (`native.rs`,
 //!   `sqlite_watch.rs`, `mysql_binlog.rs`) and hand their events to
 //!   [`RowChangeBus::emit_event`] already shaped.
-//! * **Nothing is serialized for nobody.** With no active observer an event
-//!   costs one atomic load; with observers of other tables only, a hash
-//!   lookup per key.
+//! * **Nothing is built for nobody.** With no active observer the statements
+//!   path classifies no SQL outside an interactive transaction (one atomic
+//!   load), and the native producers parse and decode nothing. With observers
+//!   of other tables only, an event built costs a hash lookup per key and is
+//!   not serialized.
 //!
 //! The event never invents row data. On the statements path `returning` is the
 //! writer's own `RETURNING` projection, forwarded verbatim; on the native path
@@ -226,6 +228,14 @@ impl RowChangeBus {
 
     pub fn capture(&self) -> &Arc<NativeCapture> {
         &self.capture
+    }
+
+    /// Whether `database::on-row-changed` has any active observer: one
+    /// atomic load. Native producers check it before they parse or decode
+    /// what the database sent.
+    #[inline]
+    pub fn is_observed(&self) -> bool {
+        self.capture.is_observed()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Buffer> {
