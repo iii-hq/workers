@@ -1,8 +1,8 @@
 /**
  * The one esbuild driver every worker's injected console UI runs:
  *
- *   page.tsx   → dist/page.js    (injected over `console:script`)
- *   styles.css → dist/styles.css (injected over `console:style`)
+ *   page.tsx   → dist/page.js    (observed as a `console::ui::asset` with `{ kind: 'script', path }`)
+ *   styles.css → dist/styles.css (observed as a `console::ui::asset` with `{ kind: 'style', path }`)
  *
  * The six shared specifiers stay EXTERNAL — they resolve at runtime through
  * the console's import map (a bundled React copy surfaces as a cryptic
