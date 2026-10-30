@@ -64,10 +64,20 @@ const CONFIG_BUS_TIMEOUT_MS: u64 = 10_000;
 /// Register the `state` configuration entry: schema + metadata refresh on
 /// every boot; `initial_value` (the `--config` seed, or built-in defaults) is
 /// included only when nothing is stored yet, so runtime edits survive
-/// restarts.
+/// restarts. A value stored by an earlier release is then migrated to the
+/// schema (see [`migrate_stored_entry`]).
 pub async fn register_config(iii: &IIIClient, seed: Option<&StateConfig>) -> Result<(), String> {
+    register_config_as(iii, config_id(), seed).await
+}
+
+/// [`register_config`] for the configuration entry `id`.
+pub async fn register_config_as(
+    iii: &IIIClient,
+    id: &str,
+    seed: Option<&StateConfig>,
+) -> Result<(), String> {
     let mut payload = json!({
-        "id": config_id(),
+        "id": id,
         "name": "State",
         "description": "State store settings — storage adapter (kv/redis), the state::on-changed event gate, max value size, and file-store flush cadence.",
         "schema": StateConfig::json_schema(),
@@ -83,19 +93,67 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&StateConfig>) -> Res
     initialization::ensure_with(payload, |function, payload| {
         call_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
     })
+    .await?;
+    migrate_stored_entry(iii, id).await
+}
+
+/// Rewrite the value of the entry `id` when an earlier release stored it.
+///
+/// `configuration::ensure` installs this worker's schema and keeps a stored
+/// value verbatim, and `configuration::get` validates the value against that
+/// schema, so an entry that names the events knob
+/// [`crate::config::EARLIER_EVENTS_KEY`] would fail every read with
+/// `SCHEMA_INVALID`. This reads the raw value (placeholders unexpanded),
+/// applies [`StateConfig::migrate_stored`] and writes the result back with
+/// `configuration::set`, which validates it and emits `configuration:updated`.
+/// An absent or current entry is left untouched.
+async fn migrate_stored_entry(iii: &IIIClient, id: &str) -> Result<(), String> {
+    let mut value = match call_configuration_with_retry(
+        iii,
+        "configuration::get",
+        json!({ "id": id, "raw": true }),
+        CONFIG_BUS_TIMEOUT_MS,
+    )
     .await
+    {
+        Ok(response) => response.get("value").cloned().unwrap_or(Value::Null),
+        Err(e) if is_not_found(&e) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if !StateConfig::migrate_stored(&mut value) {
+        return Ok(());
+    }
+    call_configuration_with_retry(
+        iii,
+        "configuration::set",
+        json!({ "id": id, "value": value }),
+        CONFIG_BUS_TIMEOUT_MS,
+    )
+    .await
+    .map_err(|e| format!("migrating the stored `{id}` configuration entry: {e}"))?;
+    tracing::info!(
+        config_entry = id,
+        "stored configuration entry migrated: `{}` is `events_enabled`",
+        crate::config::EARLIER_EVENTS_KEY
+    );
+    Ok(())
 }
 
 /// Read the live configuration value. A missing/null value falls back to the
 /// built-in default; a malformed stored value is an error so callers keep
 /// their previous config.
 pub async fn fetch_config(iii: &IIIClient) -> Result<StateConfig, String> {
-    match try_get_config_value(iii).await? {
+    fetch_config_from(iii, config_id()).await
+}
+
+/// [`fetch_config`] for the configuration entry `id`.
+pub async fn fetch_config_from(iii: &IIIClient, id: &str) -> Result<StateConfig, String> {
+    match try_get_config_value(iii, id).await? {
         Some(value) if !value.is_null() => StateConfig::from_json(&value),
         _ => {
             tracing::info!(
                 "no `{config_entry}` configuration value stored; using built-in default",
-                config_entry = config_id()
+                config_entry = id
             );
             Ok(StateConfig::default().normalized())
         }
@@ -131,11 +189,11 @@ fn is_not_found(error: &str) -> bool {
 }
 
 /// Resolve the authoritative entry without conflating lookup failure with first boot.
-async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
+async fn try_get_config_value(iii: &IIIClient, id: &str) -> Result<Option<Value>, String> {
     match call_configuration_with_retry(
         iii,
         "configuration::get",
-        json!({ "id": config_id() }),
+        json!({ "id": id }),
         CONFIG_BUS_TIMEOUT_MS,
     )
     .await

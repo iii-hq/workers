@@ -167,7 +167,10 @@ Configuration is owned by the `configuration` worker — edit it from the
 console (**Configuration → Workers → state**) or seed it once via the
 worker's config block in `config.yaml` on first boot. `events_enabled` and
 `max_value_bytes` apply on the next write, `save_interval_ms` hot-retunes
-the save loop, and `adapter` takes effect on the next restart.
+the save loop, and `adapter` takes effect on the next restart. An entry or
+seed written by a release before 0.26 names the `events_enabled` knob
+differently; the worker rewrites the stored entry to the field names above
+when it boots, before it reads it.
 
 ### Requires removing the legacy built-in state service
 

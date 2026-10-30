@@ -16,7 +16,7 @@ use std::time::Duration;
 use common::engine;
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
-use iii_state::config::StateConfig;
+use iii_state::config::{EARLIER_EVENTS_KEY, StateConfig};
 use iii_state::configuration;
 use iii_state::functions::ConfigCell;
 use iii_state::on_changed::ON_CHANGED_FN;
@@ -646,6 +646,98 @@ async fn max_value_bytes_rejects_oversized_set() {
         .await
         .expect("dispose configuration observer");
     boot.shutdown().await;
+    iii.shutdown_async().await;
+}
+
+/// An entry an earlier release left in the configuration worker: its own
+/// schema, and the events knob under [`EARLIER_EVENTS_KEY`].
+async fn store_earlier_release_entry(iii: &IIIClient, id: &str, value: Value) {
+    call(
+        iii,
+        "configuration::ensure",
+        json!({
+            "id": id,
+            "name": "State",
+            "description": "the entry as an earlier state release registered it",
+            "schema": {"type": "object"},
+            "initial_value": value,
+        }),
+    )
+    .await
+    .expect("configuration::ensure the earlier entry");
+}
+
+#[tokio::test]
+#[serial]
+async fn an_entry_stored_by_an_earlier_release_loads_through_the_configuration_worker() {
+    let Some(iii) = engine::connect_fresh().await else {
+        return;
+    };
+
+    // The knob under its earlier name only: it becomes `events_enabled`.
+    let id = unique("state-upgrade");
+    store_earlier_release_entry(
+        &iii,
+        &id,
+        json!({ EARLIER_EVENTS_KEY: false, "max_value_bytes": 64 }),
+    )
+    .await;
+    configuration::register_config_as(&iii, &id, None)
+        .await
+        .expect("registering over the earlier entry");
+    let loaded = configuration::fetch_config_from(&iii, &id)
+        .await
+        .expect("the earlier entry loads through configuration::get");
+    assert_eq!(loaded.events_enabled, Some(false));
+    assert_eq!(loaded.max_value_bytes, Some(64));
+    let stored = call(&iii, "configuration::get", json!({"id": id, "raw": true}))
+        .await
+        .expect("raw configuration::get");
+    assert_eq!(
+        stored["value"],
+        json!({"events_enabled": false, "max_value_bytes": 64}),
+        "the stored entry is rewritten to the published schema"
+    );
+    let schema = call(&iii, "configuration::schema", json!({"id": id}))
+        .await
+        .expect("configuration::schema");
+    assert_eq!(
+        schema["schema"]["additionalProperties"],
+        json!(false),
+        "the published schema stays closed: {schema}"
+    );
+
+    // Both names: `events_enabled` wins and the earlier key goes.
+    let both = unique("state-upgrade-both");
+    store_earlier_release_entry(
+        &iii,
+        &both,
+        json!({ EARLIER_EVENTS_KEY: true, "events_enabled": false }),
+    )
+    .await;
+    configuration::register_config_as(&iii, &both, None)
+        .await
+        .expect("registering over an entry naming both knobs");
+    let loaded = configuration::fetch_config_from(&iii, &both)
+        .await
+        .expect("an entry naming both knobs loads");
+    assert_eq!(loaded.events_enabled, Some(false));
+
+    // A current entry stays as stored.
+    let current = unique("state-current");
+    store_earlier_release_entry(&iii, &current, json!({"events_enabled": false})).await;
+    configuration::register_config_as(&iii, &current, None)
+        .await
+        .expect("registering over a current entry");
+    let stored = call(
+        &iii,
+        "configuration::get",
+        json!({"id": current, "raw": true}),
+    )
+    .await
+    .expect("raw configuration::get");
+    assert_eq!(stored["value"], json!({"events_enabled": false}));
+
     iii.shutdown_async().await;
 }
 
