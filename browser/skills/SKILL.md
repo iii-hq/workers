@@ -186,9 +186,11 @@ a second call to parse what you fetched. Each takes a single `url` or a bulk
   only a ≤10-item sample; page through every item with
   `browser::crawl::items { crawl_id: <crawl.id>, after?, limit? }` (retained
   in memory for 1 h, last 32 crawls). For items live while it runs, observe
-  `browser::on-crawl-item` with args `{ crawl_id }` first, then call
-  `browser::crawl { crawl_id }`; missed or dropped events (`seq` gaps,
-  `dropped_events`) are read back with `browser::crawl::items`.
+  `browser::on-crawl-item` with args `{ crawl_id }`, wait until the observer
+  is active, then call `browser::crawl { crawl_id }`. The crawl waits for
+  each observer to answer (5 s each), so a slow consumer slows it; missed
+  events (`seq` gaps, `dropped_events`) are read back with
+  `browser::crawl::items`.
   `stream_name` is deprecated and ignored (a `warnings` entry says so).
 
 Safe mode refuses private, loopback and cloud-metadata addresses on every one

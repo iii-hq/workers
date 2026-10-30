@@ -726,10 +726,7 @@ mod tests {
                     .map(|(u, h)| page(u, h));
                 async move { found.ok_or_else(|| "404 not found".to_string()) }
             },
-            |item| {
-                feed.push(item);
-                Box::pin(async {})
-            },
+            |item| feed.push(item),
         )
         .await;
         let summary = feed.finish(&json!({"crawled": out.crawled})).await;
@@ -757,6 +754,80 @@ mod tests {
         for (i, sample) in out.items.iter().enumerate() {
             assert_eq!(sample, &retained[i]["item"]);
         }
+    }
+
+    #[tokio::test]
+    async fn a_slow_consumer_slows_the_crawl() {
+        use crate::scrapling::crawl_feed::{CrawlFeedHub, FeedSink};
+        use std::sync::{Arc, Mutex};
+        use tokio::sync::Notify;
+
+        /// Observes every crawl; each delivery waits for the gate.
+        #[derive(Default)]
+        struct Slow {
+            gate: Notify,
+            seen: Mutex<Vec<String>>,
+        }
+        #[async_trait::async_trait]
+        impl FeedSink for Slow {
+            fn is_observed(&self, _crawl_id: &str) -> bool {
+                true
+            }
+
+            async fn deliver(&self, event: Value) -> Result<(), String> {
+                self.gate.notified().await;
+                let label = format!("{}:{}", event["event"], event["seq"]);
+                self.seen.lock().unwrap().push(label);
+                Ok(())
+            }
+        }
+
+        let o = opts(json!({
+            "start_urls": ["https://e.com/1", "https://e.com/2", "https://e.com/3"],
+            "concurrency": 1,
+            "max_depth": 0,
+        }));
+        let sink = Arc::new(Slow::default());
+        let hub = CrawlFeedHub::new(sink.clone());
+        let mut feed = hub.start("slow").unwrap();
+        let started = RefCell::new(0usize);
+        let payload = json!({});
+        let crawl = run(
+            &o,
+            &payload,
+            None,
+            |url| {
+                *started.borrow_mut() += 1;
+                async move { Ok(page(&url, "")) }
+            },
+            |item| feed.push(item),
+        );
+        let consumer = async {
+            for answered in 0..3 {
+                for _ in 0..20 {
+                    tokio::task::yield_now().await;
+                }
+                assert_eq!(
+                    *started.borrow(),
+                    answered + 1,
+                    "the crawl fetches nothing more while the consumer holds an item"
+                );
+                assert_eq!(sink.seen.lock().unwrap().len(), answered);
+                sink.gate.notify_one();
+            }
+        };
+        let (out, ()) = tokio::join!(crawl, consumer);
+        assert_eq!(out.crawled, 3);
+
+        let stats = json!({"crawled": out.crawled});
+        let finish = feed.finish(&stats);
+        sink.gate.notify_one();
+        let summary = finish.await;
+        assert_eq!(summary.dropped_events, 0);
+        assert_eq!(
+            *sink.seen.lock().unwrap(),
+            [r#""item":1"#, r#""item":2"#, r#""item":3"#, r#""done":4"#]
+        );
     }
 
     #[tokio::test]

@@ -428,14 +428,16 @@ function_id, retained, dropped_events }` says where the rest is:
   and 128 MiB in total, not across worker restarts. A crawl that hit a cap
   reports `retained` below `stats.crawled` and the read says `truncated`.
 - **Live, while it runs:** observe `browser::on-crawl-item` with args
-  `{ crawl_id }` *before* calling `browser::crawl { crawl_id }`. Each target
-  receives `{ crawl_id, event: "item", seq, item, truncated }` per page, in
-  `seq` order, then one `{ event: "done", seq: n+1, stats, retained,
-  dropped_events }`. Event items cut page content to 64 KiB
-  (`truncated: true`); the full item is in `browser::crawl::items`. Delivery
-  goes through a bounded per-crawl queue and never slows the crawl: when a
-  slow consumer fills it, events are dropped and counted in `dropped_events`,
-  and the consumer reads the missing `seq`s back with `browser::crawl::items`.
+  `{ crawl_id }` and await the observer's `ready()` *before* calling
+  `browser::crawl { crawl_id }`. Each target receives `{ crawl_id, event:
+  "item", seq, item, truncated }` per page, in `seq` order, then one
+  `{ event: "done", seq: n+1, stats, retained, dropped_events }`. Event items
+  cut page content to 64 KiB (`truncated: true`); the full item is in
+  `browser::crawl::items`. The crawl calls `browser::on-crawl-item` for every
+  event and awaits the call, which returns `null` once every matching target
+  answered or timed out (5 s each), so a slow consumer slows the crawl. A
+  call that fails is counted in `dropped_events`; a consumer reads any `seq`
+  it missed back with `browser::crawl::items`.
 
 `crawl_id` is optional (default: a random id) and must not name a crawl that
 is still running. The legacy `group_id` input works as the crawl id.
@@ -657,11 +659,12 @@ two exceptions:
   `max_in_flight: 1`: one still painting a frame skips the frames that
   arrive meanwhile.
 - `browser::on-crawl-item` calls each matching observer's target itself, with
-  the event as its payload, and waits for the answer (5 s each), so a
-  consumer's events arrive in `seq` order and a slow one fills its crawl's
-  bounded queue. `deliver` does not apply. The worker accepts at most 64
-  observers (`OBSERVER_LIMIT`); an empty or longer than 256 bytes `crawl_id`
-  is `INVALID_ARGS`.
+  the event as its payload, and waits for the answer (5 s each). The caller
+  gets `null` once every target answered or timed out. The crawl awaits each
+  call, so a consumer's events arrive in `seq` order and a slow consumer
+  slows the crawl. `deliver` does not apply. The worker accepts at most 64
+  observers (`OBSERVER_LIMIT`), and a disposed observer frees its place; an
+  empty or longer than 256 bytes `crawl_id` is `INVALID_ARGS`.
 
 Every other function takes no args: an observer that passes args gets
 `INVALID_ARGS` from the engine.
@@ -688,9 +691,14 @@ iii.observe(
   { max_in_flight: 1 },
 )
 
-// one crawl's items: observe first, then crawl
-iii.observe({ function_id: 'browser::on-crawl-item', args: { crawl_id: 'docs' } }, 'my-worker::on-crawl-item')
+// one crawl's items: observe, wait until the observer is active, then crawl
+const items = iii.observe(
+  { function_id: 'browser::on-crawl-item', args: { crawl_id: 'docs' } },
+  'my-worker::on-crawl-item',
+)
+await items.ready()
 await iii.call({ function_id: 'browser::crawl', payload: { url: 'https://example.com/', crawl_id: 'docs' } })
+await items.dispose()
 ```
 
 `browser::on-console-event` is high-volume; observe it with an
