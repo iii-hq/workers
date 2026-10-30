@@ -1512,6 +1512,8 @@ fn superseded_generation(
         "usage": reply.usage.as_ref()?,
         "model": reply.model,
         "provider": reply.provider,
+        // A fork's baseline counts the kept generations it copied by this.
+        "timestamp": reply.timestamp,
     });
     let prefix = ids::superseded_generation_entry_prefix(turn_id, step);
     let kept: Vec<&LoadedEntry> = entries
@@ -4468,7 +4470,8 @@ mod tests {
             "timestamp": 1, "content": [{"type": "text", "text": "hi"}],
             "usage": {"input": 10, "output": 4, "cost_usd": 0.25}}});
         let kept = serde_json::json!({
-            "usage": {"input": 10, "output": 4, "cost_usd": 0.25}, "model": "m", "provider": "p"
+            "usage": {"input": 10, "output": 4, "cost_usd": 0.25}, "model": "m", "provider": "p",
+            "timestamp": 1
         });
 
         // First regeneration over a billed reply: kept under the first id.
