@@ -3,8 +3,10 @@
 //! as their `SessionStore`, plus the event ingest that makes the main
 //! the single fan-out point.
 //!
-//! Only authoritative (fs-mode) instances register these; bridge mode
-//! never serves them (a bridge forwarding to itself would recurse).
+//! Every instance registers these, so an adapter hot-reload needs no
+//! registration, and only an authoritative (fs-mode) instance serves them:
+//! in bridge mode each call is refused (a bridge forwarding to itself would
+//! recurse).
 //! These functions bypass all domain logic — they are deployment
 //! plumbing, not an app API. Deny them to agents like every other
 //! mutating surface.

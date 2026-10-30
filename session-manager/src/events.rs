@@ -57,8 +57,8 @@ pub const ON_STATUS_CHANGED_FN: &str = "session::on-status-changed";
 pub const ON_META_UPDATED_FN: &str = "session::on-meta-updated";
 pub const ON_DELETED_FN: &str = "session::on-deleted";
 
-/// Internal: the envelope feed bridged instances observe. Called only by
-/// the main (fs-mode) instance.
+/// Internal: the envelope feed bridged instances observe. Registered on
+/// every instance and called only by the main (fs-mode) instance.
 pub const STORE_ON_EVENTS_FN: &str = "session::store::on-events";
 
 /// Which of the six event functions an event belongs to.
