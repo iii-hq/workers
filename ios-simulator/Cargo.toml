@@ -33,3 +33,6 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# A scripted engine for tests/events.rs; both are already in the graph through iii-sdk.
+futures-util = "0.3"
+tokio-tungstenite = "0.28"
