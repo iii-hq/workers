@@ -14,6 +14,7 @@ type State struct {
 	PublicURL     string        `json:"public_url"`
 	Secret        string        `json:"secret"`
 	Identity      join.Identity `json:"hub_identity"`
+	OperatorID    string        `json:"operator_id,omitempty"`
 	Operator      string        `json:"operator"`
 	RequestedName string        `json:"requested_name"`
 	Name          string        `json:"name,omitempty"`
@@ -33,19 +34,6 @@ func (s State) validate() error {
 		return errors.New("invalid saved node state")
 	}
 	return nil
-}
-func privateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	st, err := os.Lstat(dir)
-	if err != nil {
-		return err
-	}
-	if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
-		return errors.New("node state must be a private directory")
-	}
-	return os.Chmod(dir, 0700)
 }
 func writePrivate(dir, name string, b []byte) error {
 	if err := privateDir(dir); err != nil {
@@ -80,6 +68,9 @@ func saveState(dir string, s State) error {
 }
 func loadState(dir string) (State, error) {
 	var s State
+	if err := checkPrivateState(dir, "join.json"); err != nil {
+		return s, err
+	}
 	b, err := os.ReadFile(filepath.Join(dir, "join.json"))
 	if err != nil {
 		return s, err
@@ -90,3 +81,10 @@ func loadState(dir string) (State, error) {
 	return s, s.validate()
 }
 func exists(path string) bool { _, err := os.Stat(path); return !os.IsNotExist(err) }
+
+func (s State) operatorAccount() string {
+	if s.OperatorID != "" {
+		return s.OperatorID
+	}
+	return s.Operator
+}

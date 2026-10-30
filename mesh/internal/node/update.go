@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -73,7 +72,7 @@ func (u *Updater) Apply(ctx context.Context, r UpdateRequest) error {
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("download mesh: HTTP %s", response.Status)
 	}
-	file, err := os.CreateTemp(filepath.Dir(u.BinaryPath), ".mesh-update-*")
+	file, err := updateTemp(u.BinaryPath)
 	if err != nil {
 		return err
 	}
@@ -89,7 +88,7 @@ func (u *Updater) Apply(ctx context.Context, r UpdateRequest) error {
 	if err = ctx.Err(); err != nil {
 		return err
 	}
-	if err = file.Chmod(0755); err != nil {
+	if err = publishUpdatePermissions(file); err != nil {
 		return err
 	}
 	if err = file.Sync(); err != nil {

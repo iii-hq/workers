@@ -26,6 +26,9 @@ its input fields are unknown.
 An offline machine has **no functions**. Inspect its discovery metadata and
 wait for it to reconnect before calling its tools. A Windows machine has no
 `shell::*` or `coder::*` until `ide` ships for Windows, even when online.
+Windows nodes support amd64 and arm64. Their workers need the saved operator
+logged in; a missing session is a worker error that the operator must resolve.
+Native Windows networking and session acceptance remain unverified.
 
 Discovery reads are allowed. Remote calls need approval by default; a local
 tool's allow rule does not grant access to its remote counterpart.

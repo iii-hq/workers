@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/iii-hq/workers/mesh/internal/cli"
+	"github.com/iii-hq/workers/mesh/internal/elevate"
 	"github.com/iii-hq/workers/mesh/internal/hub"
 	"github.com/iii-hq/workers/mesh/internal/node"
 )
@@ -25,6 +26,11 @@ func main() {
 	}
 }
 func run(ctx context.Context, args []string, w io.Writer) error {
+	var err error
+	args, err = elevate.Arguments(args)
+	if err != nil {
+		return err
+	}
 	if len(args) > 0 {
 		switch args[0] {
 		case "join", "status", "leave", "node":

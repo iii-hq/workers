@@ -246,7 +246,7 @@ func (s *Supervisor) start(ctx context.Context, w *worker) (err error) {
 		err = ctx.Err()
 	}
 	if err == nil {
-		err = cmd.Start()
+		err = startOperator(cmd, s.operator)
 	}
 	if err != nil {
 		log.Close()

@@ -47,10 +47,7 @@ var blockLines = regexp.MustCompile("(?ms)^" + begin + "\r?\n.*?^" + end + "\r?(
 var nodeName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
 
 func hostsPath() string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(os.Getenv("SystemRoot"), "System32", "drivers", "etc", "hosts")
-	}
-	return "/etc/hosts"
+	return platformHostsPath()
 }
 
 func names(nm *netmap.NetworkMap) map[string]netip.Addr {
@@ -95,6 +92,11 @@ func WriteHostsBlock(path string, names map[string]netip.Addr) error {
 		b.WriteString(end + nl)
 	}
 	content := string(old)
+	// Count every marker before matching: a valid block must not hide a
+	// nested or trailing marker elsewhere in the file.
+	if strings.Count(content, begin) != strings.Count(content, end) || strings.Count(content, begin) > 1 {
+		return fmt.Errorf("malformed mesh hosts markers")
+	}
 	locations := blockLines.FindAllStringIndex(content, -1)
 	if len(locations) > 1 {
 		return fmt.Errorf("multiple mesh hosts blocks")

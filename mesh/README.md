@@ -79,7 +79,7 @@ and enrollment state. Node worker configuration IDs are `<node>__<worker>`.
 
 ## Join a machine
 
-Have an operator call `iii trigger mesh::join::code` and run the returned Unix
+Have an operator call `iii trigger mesh::join::code` and run the returned platform
 install command on the machine to join. The code is a credential and this call
 requires approval. The versioned command has this form; substitute the returned
 version, public URL and code:
@@ -97,8 +97,23 @@ Registry artifacts and versioned installer URLs must be published first.
 Fresh-host native installation and acceptance have not been verified.
 
 Run as the intended non-root operator; join records that user through sudo.
-Linux systemd and macOS launchd service installation are implemented. Windows
-service installation and its PowerShell installer are not available yet.
+Linux systemd, macOS launchd, and Windows service installation are implemented.
+On Windows 11 (amd64 or arm64), run the returned PowerShell command as the
+intended operator:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iii-hq/workers/mesh/v<version>/mesh/install/install.ps1))) <version> <public_url> XXXX-XXXX
+```
+
+The PowerShell installer verifies the exact registry artifact before running
+`mesh join`, which requests UAC elevation and preserves the original caller's
+SID even when another administrator supplies credentials. Windows runs workers
+in that saved operator's existing logon session, preferring an active session.
+An absent operator produces a worker error; it never selects another account.
+Use `& "$env:ProgramFiles\iii-mesh\mesh.exe" status` after installation.
+Windows installation, UAC, session execution, TUN/routes/hosts and direct/relayed
+network acceptance remain unverified; local tests and cross-builds cover the
+implemented boundaries.
 
 | Command | Purpose |
 | --- | --- |
@@ -114,20 +129,29 @@ entry is `<node>__<worker>`. Self-updates restart through the service manager.
 
 ## Local state and removal
 
-Both platforms install the executable at `/usr/local/bin/mesh`. Worker binaries
+Linux and macOS install the executable at `/usr/local/bin/mesh`. Worker binaries
 are verified in a separate public cache so operator-run workers can execute
 them without reading private enrollment credentials.
 
-| Location | Linux | macOS |
-| --- | --- | --- |
-| Service | `/etc/systemd/system/iii-mesh.service` | `/Library/LaunchDaemons/dev.iii.mesh.plist` |
-| Private state | `/var/lib/iii-mesh` | `/Library/Application Support/iii-mesh` |
-| Worker cache | `/var/cache/iii-mesh/workers` | `/Library/Caches/iii-mesh/workers` |
-| Service logs | systemd journal (`iii-mesh.service`) | `node.log` under private state |
+| Location | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| Service | `/etc/systemd/system/iii-mesh.service` | `/Library/LaunchDaemons/dev.iii.mesh.plist` | SCM service `iii-mesh` (LocalSystem) |
+| Private state | `/var/lib/iii-mesh` | `/Library/Application Support/iii-mesh` | `%ProgramData%\iii-mesh` |
+| Worker cache | `/var/cache/iii-mesh/workers` | `/Library/Caches/iii-mesh/workers` | `%ProgramData%\iii-mesh-workers` |
+| Service logs | systemd journal (`iii-mesh.service`) | `node.log` under private state | `node.log` under private state |
+
+Windows installs `mesh.exe` and pinned Wintun 0.14.1 beside each other under
+`%ProgramFiles%\iii-mesh`. The known system folders are resolved through the
+Windows API. Private state has a protected ACL granting only SYSTEM and
+Administrators full access. The binary directory and worker cache grant those
+accounts full access and Builtin Users read/execute access. Cache entries are
+`<sha256>.exe`; temporary downloads are admin-only until verified. Existing
+unsafe owners, ACLs, and reparse paths are refused. Wintun's archive and both
+architecture DLL digests are pinned, and the DLL is verified before TUN creation.
 
 Private state contains `join.json`, backend keys under `mesh/`, worker logs
 under `logs/`, and lifecycle markers. `mesh status` reads the local
-`/var/run/iii-mesh.sock` socket. After hub removal, the service closes workers
+`/var/run/iii-mesh.sock` socket, or `\\.\pipe\iii-mesh` on Windows. After hub removal, the service closes workers
 and networking, records removal and parks with a read-only status listener.
 It stays inert across restarts until explicit `mesh leave`; it does not rejoin.
 
@@ -137,7 +161,10 @@ logout acknowledgement returns an error and retains the material needed to
 retry, even though the service may already be unregistered. Restore hub
 reachability, run `sudo mesh node` to finish the pending logout, then retry
 `mesh leave`. Do not delete the retained enrollment state to bypass this step.
-Native systemd/launchd operation and cleanup on fresh hosts remain unverified.
+On Windows, run the installed `mesh.exe node` from an elevated terminal for a
+pending logout retry. Windows may schedule deletion of a loaded executable for
+the next reboot. Native service operation and cleanup on fresh hosts remain
+unverified on all platforms.
 
 ## Agent access
 

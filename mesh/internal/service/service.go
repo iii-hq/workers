@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iii-hq/workers/mesh/internal/elevate"
 	"github.com/iii-hq/workers/mesh/internal/supervisor"
 )
 
@@ -48,7 +49,7 @@ func DefaultPaths() Paths {
 		p.State = "/Library/Application Support/iii-mesh"
 		p.Unit = "/Library/LaunchDaemons/dev.iii.mesh.plist"
 	}
-	return p
+	return platformPaths(p)
 }
 
 type manager struct {
@@ -59,17 +60,23 @@ type manager struct {
 
 func native() manager { return manager{runtime.GOOS, DefaultPaths(), run} }
 func Install(binPath, operator string) error {
-	if os.Geteuid() != 0 {
+	if !elevate.Is() {
 		return errors.New("service installation requires root")
 	}
 	if _, err := supervisor.LookupOperator(operator); err != nil {
 		return err
 	}
+	if runtime.GOOS == "windows" {
+		return nativeInstall(binPath)
+	}
 	return native().install(binPath)
 }
 func Uninstall() error {
-	if os.Geteuid() != 0 {
+	if !elevate.Is() {
 		return errors.New("service removal requires root")
+	}
+	if runtime.GOOS == "windows" {
+		return nativeUninstall()
 	}
 	return native().uninstall()
 }

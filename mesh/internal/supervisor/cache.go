@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/iii-hq/workers/mesh/internal/registry"
@@ -35,10 +36,14 @@ func (s *Supervisor) artifact(ctx context.Context, d Desired) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if info.Mode().Perm()&0022 != 0 || info.Mode()&os.ModeSticky != 0 {
+	if runtime.GOOS != "windows" && (info.Mode().Perm()&0022 != 0 || info.Mode()&os.ModeSticky != 0) {
 		return "", errors.New("worker cache directory must not be shared or writable by another account")
 	}
-	path := filepath.Join(dir, d.SHA256)
+	filename := d.SHA256
+	if runtime.GOOS == "windows" {
+		filename += ".exe"
+	}
+	path := filepath.Join(dir, filename)
 	if _, err = os.Lstat(path); err == nil {
 		return path, verifyArtifact(path, d.SHA256)
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -70,7 +75,7 @@ func (s *Supervisor) artifact(ctx context.Context, d Desired) (string, error) {
 	if response.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download %s: HTTP %s", d.Name, response.Status)
 	}
-	file, err := os.CreateTemp(dir, ".download-*")
+	file, err := createArtifactTemp(dir)
 	if err != nil {
 		return "", err
 	}
@@ -87,7 +92,7 @@ func (s *Supervisor) artifact(ctx context.Context, d Desired) (string, error) {
 	if err = ctx.Err(); err != nil {
 		return "", err
 	}
-	if err = file.Chmod(0555); err != nil {
+	if err = protectArtifact(file); err != nil {
 		return "", err
 	}
 	if err = file.Sync(); err != nil {
@@ -106,10 +111,10 @@ func verifyArtifact(path, digest string) error {
 	if err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0555 {
+	if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm() != 0555 {
 		return fmt.Errorf("unsafe cached artifact permissions: %s", path)
 	}
-	if err = trustedOwner(info); err != nil {
+	if err = checkArtifact(path, info); err != nil {
 		return err
 	}
 	file, err := os.Open(path)
@@ -126,53 +131,4 @@ func verifyArtifact(path, digest string) error {
 		return fmt.Errorf("worker SHA256 mismatch: expected %s, got %s", digest, actual)
 	}
 	return nil
-}
-
-// Canonical paths keep trusted system aliases (such as macOS /var) usable.
-// Every directory is checked before creation beneath it; existing modes stay
-// untouched so selecting a secret-state parent cannot make it public.
-func secureDirectory(path string, mode os.FileMode, operator *Operator) (string, error) {
-	if !filepath.IsAbs(path) {
-		return "", errors.New("supervisor directory must be absolute")
-	}
-	path = filepath.Clean(path)
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			if err = trustedOwner(info); err != nil {
-				return "", err
-			}
-			path, err = filepath.EvalSymlinks(path)
-			if err != nil {
-				return "", err
-			}
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	parent := filepath.Dir(path)
-	if parent != path {
-		canonical, err := secureDirectory(parent, mode, operator)
-		if err != nil {
-			return "", err
-		}
-		path = filepath.Join(canonical, filepath.Base(path))
-	}
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		if err = os.Mkdir(path, mode); err != nil {
-			return "", err
-		}
-		// A private service umask must not make new cache directories unreachable.
-		if err = os.Chmod(path, mode); err != nil {
-			return "", err
-		}
-		info, err = os.Lstat(path)
-	}
-	if err != nil {
-		return "", err
-	}
-	if err = checkDirectory(path, info, operator); err != nil {
-		return "", err
-	}
-	return path, nil
 }

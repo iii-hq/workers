@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/iii-hq/workers/mesh/internal/elevate"
 	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/iii-hq/workers/mesh/internal/elevate"
 	"github.com/iii-hq/workers/mesh/internal/join"
 )
 
@@ -98,6 +98,12 @@ func (a *app) join(ctx context.Context, publicURL, code string, port int) error 
 		return err
 	}
 	s := State{PublicURL: publicURL, Secret: secret, Identity: identity, Operator: operator, RequestedName: requestedName(hostname), Port: port}
+	if a.resolveOperator != nil {
+		s.Operator, s.OperatorID, err = a.resolveOperator(operator)
+		if err != nil {
+			return err
+		}
+	}
 	if err = saveState(a.paths.State, s); err != nil {
 		return err
 	}
@@ -105,7 +111,7 @@ func (a *app) join(ctx context.Context, publicURL, code string, port int) error 
 	if err != nil {
 		return err
 	}
-	if err = a.install(binary, operator); err != nil {
+	if err = a.install(binary, s.operatorAccount()); err != nil {
 		return fmt.Errorf("saved enrollment but service installation failed (run mesh leave before retrying): %w", err)
 	}
 	return nil

@@ -17,9 +17,6 @@ func workerCommand(path, name string, op Operator, rt Runtime, log *rotatingLog)
 	cmd.Stdout = log
 	cmd.Stderr = log
 	cmd.WaitDelay = 2 * time.Second
-	if err := runAs(cmd, op); err != nil {
-		return nil, err
-	}
 	return cmd, nil
 }
 func (s *Supervisor) monitor(ctx context.Context, w *worker, path string, cmd *exec.Cmd, log *rotatingLog, rt Runtime) {
@@ -53,7 +50,7 @@ func (s *Supervisor) monitor(ctx context.Context, w *worker, path string, cmd *e
 				err = ctx.Err()
 			}
 			if err == nil {
-				err = cmd.Start()
+				err = startOperator(cmd, s.operator)
 			}
 			if ctx.Err() != nil {
 				if err == nil {

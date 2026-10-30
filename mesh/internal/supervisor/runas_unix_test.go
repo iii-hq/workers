@@ -3,6 +3,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestOperatorRefusesRootAndMissingIdentity(t *testing.T) {
@@ -146,5 +148,29 @@ func TestNewCacheIsTraversableUnderPrivateServiceUmask(t *testing.T) {
 	info, err := os.Stat(s.cacheDir)
 	if err != nil || info.Mode().Perm() != 0755 {
 		t.Fatalf("cache must retain operator traversal under service umask: %v %v", info, err)
+	}
+}
+
+func TestRunOperatorUsesCleanEnvironment(t *testing.T) {
+	s := testSupervisor(t)
+	t.Setenv("MESH_SERVICE_PRIVATE_TEST", "not-for-workers")
+	cmd := exec.Command("/bin/sh", "-c", "test -z \"$MESH_SERVICE_PRIVATE_TEST\" && test \"$HOME\" = \"$PWD\"")
+	if err := RunOperator(context.Background(), cmd, s.operator); err != nil {
+		t.Fatalf("operator command inherited service environment or directory: %v", err)
+	}
+}
+
+func TestRunOperatorClosesInheritedPipes(t *testing.T) {
+	s := testSupervisor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30 &")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	started := time.Now()
+	_ = RunOperator(ctx, cmd, s.operator)
+	if elapsed := time.Since(started); elapsed >= 4*time.Second {
+		t.Fatalf("waited for descendant-held pipes until context deadline: %s", elapsed)
 	}
 }

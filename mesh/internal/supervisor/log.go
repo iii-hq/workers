@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -30,7 +31,7 @@ func openLog(dir, name string) (*rotatingLog, error) {
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode().Perm() != 0700 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0700 {
 		return nil, errors.New("worker log directory must be private (0700)")
 	}
 	path := filepath.Join(dir, name+".log")
@@ -53,10 +54,10 @@ func openLog(dir, name string) (*rotatingLog, error) {
 }
 func openLogFile(path string) (*os.File, error) {
 	if info, err := os.Lstat(path); err == nil {
-		if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 			return nil, fmt.Errorf("unsafe worker log: %s", path)
 		}
-		if err = trustedOwner(info); err != nil {
+		if err = checkLog(path, info); err != nil {
 			return nil, err
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {

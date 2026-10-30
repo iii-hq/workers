@@ -32,6 +32,7 @@ type app struct {
 	paths                service.Paths
 	version              string
 	operator             func() (string, error)
+	resolveOperator      func(string) (string, string, error)
 	checkOperator        func(string) error
 	hostname, executable func() (string, error)
 	redeem               func(context.Context, string, string) (string, ed25519.PublicKey, error)
@@ -50,19 +51,19 @@ type ownedWorkers struct {
 func (w ownedWorkers) Close() error { return w.supervisor.Close() }
 func defaults(version string) *app {
 	paths := service.DefaultPaths()
-	return &app{serveStatus: meshnet.ServeStatus, paths: paths, version: version, operator: elevate.Operator, checkOperator: func(name string) error { _, err := supervisor.LookupOperator(name); return err }, hostname: os.Hostname, executable: os.Executable, redeem: join.Redeem, identity: join.FetchIdentity, install: service.Install, uninstall: service.Uninstall, clean: meshnet.Clean,
+	return configurePlatform(&app{serveStatus: meshnet.ServeStatus, paths: paths, version: version, operator: elevate.Operator, checkOperator: func(name string) error { _, err := supervisor.LookupOperator(name); return err }, hostname: os.Hostname, executable: os.Executable, redeem: join.Redeem, identity: join.FetchIdentity, install: service.Install, uninstall: service.Uninstall, clean: meshnet.Clean,
 		up: func(s State, dir string) (networkService, error) {
 			return meshnet.UpWithPort(filepath.Join(dir, "mesh"), s.PublicURL, s.Secret, s.RequestedName, s.Identity.Control, uint16(s.Port))
 		},
 		workers: func(s State) (workerService, error) {
-			op, err := supervisor.LookupOperator(s.Operator)
+			op, err := supervisor.LookupOperator(s.operatorAccount())
 			if err != nil {
 				return nil, err
 			}
 			w := supervisor.New(paths.Cache, filepath.Join(paths.State, "logs"), op, "", "")
 			return ownedWorkers{node.NewWorkerController(w), w}, nil
 		},
-		newNode: func(o node.Options) (runner, error) { return node.New(o) }}
+		newNode: func(o node.Options) (runner, error) { return node.New(o) }})
 }
 func Execute(ctx context.Context, args []string, version string, w io.Writer) error {
 	if len(args) == 0 {
@@ -94,7 +95,7 @@ func Execute(ctx context.Context, args []string, version string, w io.Writer) er
 		if !elevate.Is() {
 			return errors.New("mesh node requires root")
 		}
-		return defaults(version).node(ctx)
+		return service.RunNode(ctx, defaults(version).node)
 	default:
 		return errors.New("unknown mesh command")
 	}

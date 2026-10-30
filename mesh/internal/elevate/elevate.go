@@ -23,30 +23,11 @@
 package elevate
 
 import (
-	"errors"
 	"os"
-	"os/user"
 )
 
 func Root(args ...string) {
 	if !Is() {
 		os.Exit(Run(args...))
 	}
-}
-func Operator() (string, error) {
-	current, err := user.Current()
-	if err != nil {
-		return "", err
-	}
-	return operatorName(os.Geteuid(), current.Username, os.Getenv("SUDO_USER"))
-}
-func operatorName(uid int, current, sudo string) (string, error) {
-	name := current
-	if uid == 0 {
-		name = sudo
-	}
-	if name == "" || name == "root" {
-		return "", errors.New("join requires a non-root operator; run mesh join as that user through sudo")
-	}
-	return name, nil
 }

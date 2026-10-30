@@ -58,3 +58,19 @@ func TestStateRefusesSymlink(t *testing.T) {
 		t.Fatal("followed state symlink")
 	}
 }
+
+func TestStateKeepsCanonicalOperatorIdentity(t *testing.T) {
+	s := testState(t)
+	s.OperatorID = "S-1-5-21-123-456-789-1001"
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := saveState(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Operator != "alice" || got.operatorAccount() != s.OperatorID {
+		t.Fatal("lost original stable operator identity")
+	}
+}

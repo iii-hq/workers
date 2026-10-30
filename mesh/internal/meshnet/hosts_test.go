@@ -56,3 +56,37 @@ func TestHostsBlockRejectsInvalidNamesWithoutChangingFile(t *testing.T) {
 		}
 	}
 }
+
+func TestHostsBlockWindowsCRLF(t *testing.T) {
+	for _, sequence := range []string{"begin begin end", "end begin end", "begin end begin", "begin end end", "begin end begin end", "begin", "end", "end begin"} {
+		t.Run(sequence, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hosts")
+			content := "# keep\r\n"
+			for _, marker := range strings.Fields(sequence) {
+				content += "# iii mesh " + marker + "\r\n"
+			}
+			content += "127.0.0.1 localhost\r\n"
+			if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteHostsBlock(path, map[string]netip.Addr{"hub": netip.MustParseAddr("fd42::1")}); err == nil {
+				t.Fatal("accepted malformed marker sequence")
+			}
+			got, _ := os.ReadFile(path)
+			if string(got) != content {
+				t.Fatal("modified malformed file")
+			}
+		})
+	}
+	path := filepath.Join(t.TempDir(), "hosts")
+	before, after := "# keep\t\r\n", "# tail without newline"
+	os.WriteFile(path, []byte(before+begin+"\r\nstale\r\n"+end+"\r\n"+after), 0600)
+	if err := WriteHostsBlock(path, map[string]netip.Addr{"hub": netip.MustParseAddr("fd42::1")}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	want := before + begin + "\r\nfd42::1 hub.iii.internal\r\n" + end + "\r\n" + after
+	if string(got) != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
