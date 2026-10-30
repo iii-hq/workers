@@ -18,4 +18,4 @@ func (*osRouter) Up() error           { return unsupported() }
 func add(string, netip.Prefix) error  { return unsupported() }
 func keep(string, netip.Prefix) error { return unsupported() }
 func del(string, netip.Prefix) error  { return unsupported() }
-func dropRule()                       {}
+func dropRule() error                 { return unsupported() }

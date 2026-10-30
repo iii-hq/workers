@@ -302,7 +302,7 @@ func Clean() error {
 	if err := alone(); err != nil {
 		return err
 	}
-	dropRule()
+	ruleErr := dropRule()
 	var err error
 	if runtime.GOOS != "windows" {
 		if c, e := net.Dial("unix", socket); e == nil {
@@ -311,7 +311,7 @@ func Clean() error {
 			err = e
 		}
 	}
-	return errors.Join(err, WriteHostsBlock(hostsPath(), nil))
+	return errors.Join(ruleErr, err, WriteHostsBlock(hostsPath(), nil))
 }
 
 type osRouter struct {

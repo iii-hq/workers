@@ -82,7 +82,7 @@ func keep(tun string, a netip.Prefix) error {
 }
 
 // dropRule has nothing to drop: the route goes with the TUN.
-func dropRule() {}
+func dropRule() error { return nil }
 
 // del takes the route only from tun: route delete takes it from whatever
 // interface holds it.

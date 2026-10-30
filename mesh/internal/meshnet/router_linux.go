@@ -28,6 +28,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -72,7 +73,9 @@ func (r *osRouter) Up() error { return run("ip", "link", "set", "dev", r.tun, "u
 // A rule a killed worker left goes first; its route and address went with
 // its TUN.
 func add(tun string, a netip.Prefix) error {
-	dropRule()
+	if err := dropRule(); err != nil {
+		return err
+	}
 	p := project(a).String()
 	for _, args := range [][]string{
 		{"-6", "addr", "replace", a.String(), "dev", tun, "nodad"},
@@ -109,8 +112,8 @@ func keep(tun string, a netip.Prefix) error {
 }
 
 func del(tun string, a netip.Prefix) error {
-	dropRule()
 	return errors.Join(
+		dropRule(),
 		run("ip", "-6", "route", "flush", "table", table),
 		run("ip", "-6", "addr", "del", a.String(), "dev", tun),
 	)
@@ -118,7 +121,20 @@ func del(tun string, a netip.Prefix) error {
 
 // dropRule removes every rule to our table, which outlives a worker that
 // was killed.
-func dropRule() {
-	for run("ip", "-6", "rule", "del", "table", table) == nil {
+func dropRule() error {
+	args := []string{"-6", "rule", "del", "table", table}
+	for {
+		cmd := exec.Command("ip", args...)
+		// iproute2 reports an absent rule through a localized ENOENT diagnostic.
+		cmd.Env = append(os.Environ(), "LC_ALL=C")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			continue
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 && strings.TrimSpace(string(out)) == "RTNETLINK answers: No such file or directory" {
+			return nil
+		}
+		return fmt.Errorf("ip %s: %w: %s", strings.Join(args, " "), err, out)
 	}
 }
