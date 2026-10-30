@@ -13,7 +13,7 @@ containers:
       adapter:
         name: kv
         config: { store_method: in_memory }
-      triggers_enabled: true
+      events_enabled: true
     scripts: { run: cargo run --locked --bin state }
   queue:
     worker: path://../queue
