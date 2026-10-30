@@ -1516,7 +1516,7 @@ mod tests {
             assert_eq!(payload["cmd"], "python3");
             if args[0] == "-m" {
                 assert_eq!(args[1], "pip");
-                assert!(args.iter().any(|a| a == "iii-sdk"), "{args:?}");
+                assert!(args.iter().any(|a| a == GUEST_PYTHON_SDK), "{args:?}");
             } else {
                 assert_eq!(args[0], "/opt/sandbox-code-runner/run.py");
             }

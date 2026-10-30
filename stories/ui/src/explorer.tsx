@@ -67,7 +67,7 @@ type Tab = 'preview' | 'changes' | 'props'
 const NARROW_BELOW = 760
 const WIDE_FROM = 1080
 
-/** `stories:changed` re-runs every fetch; `stories:build` is bound by the page. */
+/** `stories::on-changed` re-runs every fetch; the page observes `stories::on-build` itself. */
 const LIVE = ['stories::on-changed'] as const
 
 const isChanged = (kind: ChangeKind | undefined) => kind !== undefined && kind !== 'unchanged'

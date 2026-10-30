@@ -549,7 +549,8 @@ fn wait_bounded(mut child: std::process::Child, secs: u64) -> WrapperOutcome {
 
 /// Plant the run wrapper + iii library + the code file into `dir` and run
 /// `<interpreter> run.<ext> code.<ext>` with the given env — exactly the
-/// argv/env shape `run` execs inside the VM.
+/// argv/env shape `run` execs inside the VM. `III_URL` comes only from
+/// `envs`, as inside the VM, never from the shell running the tests.
 fn run_eval_wrapper(lang: Lang, code: &str, envs: &[(&str, &str)], dir: &Path) -> WrapperOutcome {
     std::fs::create_dir_all(dir).unwrap();
     let wrapper = dir.join(basename(lang.run_wrapper_path()));
@@ -563,6 +564,7 @@ fn run_eval_wrapper(lang: Lang, code: &str, envs: &[(&str, &str)], dir: &Path) -
     cmd.arg(&wrapper)
         .arg(&code_file)
         .env_remove("FORCE_COLOR")
+        .env_remove("III_URL")
         .env("NO_COLOR", "1");
     for (k, v) in envs {
         cmd.env(k, v);
