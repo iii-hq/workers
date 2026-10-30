@@ -41,6 +41,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/iii-hq/workers/mesh/internal/join"
 	"golang.org/x/net/http2"
@@ -69,6 +71,9 @@ type node struct {
 	Keys      []key.NodePublic  `json:"keys"`
 	Ephemeral bool              `json:"ephemeral,omitempty"`
 	Removed   bool              `json:"removed,omitempty"`
+	Operator  string            `json:"operator"`
+	JoinedAt  time.Time         `json:"joined_at"`
+	LastSeen  time.Time         `json:"last_seen"`
 	Disco     key.DiscoPublic   `json:"disco"`
 	Endpoints []netip.AddrPort  `json:"endpoints"`
 	Hostinfo  *tailcfg.Hostinfo `json:"hostinfo"`
@@ -80,9 +85,12 @@ type node struct {
 }
 
 type NodeInfo struct {
-	Name   string     `json:"name"`
-	Addr   netip.Addr `json:"addr"`
-	Online bool       `json:"online"`
+	Name     string     `json:"name"`
+	Addr     netip.Addr `json:"addr"`
+	Online   bool       `json:"online"`
+	Operator string     `json:"operator"`
+	JoinedAt time.Time  `json:"joined_at"`
+	LastSeen time.Time  `json:"last_seen"`
 }
 
 type Coordinator struct {
@@ -140,13 +148,13 @@ func (c *Coordinator) Known(k key.NodePublic) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n := c.byKey(k)
-	return n != nil && !n.Removed
+	return c.authorized(n)
 }
 func (c *Coordinator) Node(a netip.Addr) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, n := range c.st.Nodes {
-		if !n.Removed && c.address(n.ID) == a {
+		if c.authorized(n) && c.address(n.ID) == a {
 			return n.Name, true
 		}
 	}
@@ -157,12 +165,42 @@ func (c *Coordinator) Nodes() []NodeInfo {
 	defer c.mu.Unlock()
 	nodes := make([]NodeInfo, 0, len(c.st.Nodes))
 	for _, n := range c.st.Nodes {
-		if !n.Removed {
-			nodes = append(nodes, NodeInfo{Name: n.Name, Addr: c.address(n.ID), Online: n.streams > 0})
+		if c.authorized(n) {
+			nodes = append(nodes, NodeInfo{Name: n.Name, Addr: c.address(n.ID), Online: n.streams > 0, Operator: n.Operator, JoinedAt: n.JoinedAt, LastSeen: n.LastSeen})
 		}
 	}
 	return nodes
 }
+
+// SetOperator is called by authenticated node integration, never from
+// untrusted registration hostinfo.
+func (c *Coordinator) SetOperator(name, operator string) error {
+	if operator == "" || len(operator) > 256 || !utf8.ValidString(operator) || strings.TrimSpace(operator) != operator {
+		return errors.New("invalid operator account name")
+	}
+	for _, r := range operator {
+		if unicode.IsControl(r) {
+			return errors.New("invalid operator account name")
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := c.byName(name)
+	if !c.authorized(n) {
+		return fmt.Errorf("no authorized node %q", name)
+	}
+	old := n.Operator
+	if old == operator {
+		return nil
+	}
+	n.Operator = operator
+	if err := c.save(); err != nil {
+		n.Operator = old
+		return err
+	}
+	return nil
+}
+
 func (c *Coordinator) Remove(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -364,9 +402,17 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 	if slices.Contains(c.st.RefusedNodes, req.NodeKey) || slices.Contains(c.st.RefusedMachines, machine) {
 		return tailcfg.RegisterResponse{Error: "node keys refused"}
 	}
+	for _, owner := range c.st.Nodes {
+		if owner.Machine != machine && slices.Contains(owner.Keys, req.NodeKey) {
+			return tailcfg.RegisterResponse{Error: "node key registered to another machine"}
+		}
+	}
 	n = c.byKey(req.NodeKey)
 	if n != nil && n.Machine != machine {
 		return tailcfg.RegisterResponse{Error: "node key registered to another machine"}
+	}
+	if n != nil && !c.authorized(n) {
+		return tailcfg.RegisterResponse{Error: "node keys refused"}
 	}
 	if !req.Expiry.IsZero() && req.Expiry.Before(time.Now()) {
 		if n != nil {
@@ -393,7 +439,7 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 		existed := n != nil
 		if existed {
 			old = *n
-			if n.Removed {
+			if !c.authorized(n) {
 				return tailcfg.RegisterResponse{Error: "node keys refused"}
 			}
 		} else {
@@ -414,6 +460,7 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 		}
 		n.Key, n.Hostinfo = req.NodeKey, req.Hostinfo.Clone()
 		n.Keys = append(slices.Clone(n.Keys), req.NodeKey)
+		n.recordActivity()
 		if err := c.save(); err != nil {
 			c.st = before
 			if existed {
@@ -423,8 +470,15 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 		}
 		c.changed(n)
 		c.expire(n)
+	} else {
+		before := *n
+		n.recordActivity()
+		if err := c.save(); err != nil {
+			*n = before
+			return tailcfg.RegisterResponse{Error: err.Error()}
+		}
 	}
-	return tailcfg.RegisterResponse{MachineAuthorized: !n.Removed, User: tailcfg.User{ID: user, DisplayName: "iii mesh"}, Login: tailcfg.Login{ID: tailcfg.LoginID(user), LoginName: "iii mesh", DisplayName: "iii mesh"}}
+	return tailcfg.RegisterResponse{MachineAuthorized: c.authorized(n), User: tailcfg.User{ID: user, DisplayName: "iii mesh"}, Login: tailcfg.Login{ID: tailcfg.LoginID(user), LoginName: "iii mesh", DisplayName: "iii mesh"}}
 }
 
 func (c *Coordinator) address(id tailcfg.NodeID) netip.Addr {
@@ -449,7 +503,18 @@ func (c *Coordinator) serveMap(w http.ResponseWriter, r *http.Request, machine k
 		http.Error(w, "node not found", http.StatusNotFound)
 		return
 	}
-	c.update(n, req)
+	if c.authorized(n) {
+		if err := c.update(n, req); err != nil {
+			c.mu.Unlock()
+			log.Printf("coordinator: map update: %v", err)
+			http.Error(w, "could not persist node activity", http.StatusServiceUnavailable)
+			return
+		}
+	} else if !req.Stream {
+		c.mu.Unlock()
+		http.Error(w, "node keys refused", http.StatusForbidden)
+		return
+	}
 	if !req.Stream {
 		c.mu.Unlock()
 		return
@@ -486,6 +551,9 @@ func (c *Coordinator) serveMap(w http.ResponseWriter, r *http.Request, machine k
 				return
 			}
 			tick.Reset(ka)
+			if resp.Node != nil && !resp.Node.MachineAuthorized {
+				return
+			}
 		}
 		select {
 		case <-c.ctx.Done():
@@ -503,7 +571,7 @@ func (c *Coordinator) serveMap(w http.ResponseWriter, r *http.Request, machine k
 
 // update takes what a map request says about n. Peers see a new disco key,
 // endpoints or home relay; the rest they do not need.
-func (c *Coordinator) update(n *node, req tailcfg.MapRequest) {
+func (c *Coordinator) update(n *node, req tailcfg.MapRequest) error {
 	before := *n
 	moved := false
 	if !req.DiscoKey.IsZero() && req.DiscoKey != n.Disco {
@@ -521,16 +589,31 @@ func (c *Coordinator) update(n *node, req tailcfg.MapRequest) {
 		n.Hostinfo = hi
 	}
 	n.capVer = req.Version
-	if moved || req.Hostinfo != nil {
-		if err := c.save(); err != nil {
-			*n = before
-			log.Printf("coordinator: map update: %v", err)
-			return
-		}
+	n.recordActivity()
+	if err := c.save(); err != nil {
+		*n = before
+		return err
 	}
 	if moved {
 		c.changed(n)
 	}
+	return nil
+}
+
+func (n *node) recordActivity() {
+	now := time.Now().UTC()
+	if n.JoinedAt.IsZero() {
+		n.JoinedAt = now
+	}
+	if n.LastSeen.Before(now) {
+		n.LastSeen = now
+	}
+}
+
+// Refusal wins over an existing registration, including state written by
+// versions that allowed a historical node key to change machines.
+func (c *Coordinator) authorized(n *node) bool {
+	return n != nil && !n.Removed && !slices.Contains(c.st.RefusedNodes, n.Key) && !slices.Contains(c.st.RefusedMachines, n.Machine)
 }
 
 // delta is what n has not seen: itself and every peer it sees whose version
@@ -539,7 +622,7 @@ func (c *Coordinator) update(n *node, req tailcfg.MapRequest) {
 // nothing, and not ok once n itself is gone, or removed since the full map,
 // which told it so.
 func (c *Coordinator) delta(n *node, sent map[tailcfg.NodeID]uint64, host *string, full bool, relay *tailcfg.DERPNode) (*tailcfg.MapResponse, bool) {
-	if !slices.Contains(c.st.Nodes, n) || n.Removed && !full {
+	if !slices.Contains(c.st.Nodes, n) || !c.authorized(n) && !full {
 		return nil, false
 	}
 	r := &tailcfg.MapResponse{}
@@ -597,7 +680,7 @@ func (c *Coordinator) delta(n *node, sent map[tailcfg.NodeID]uint64, host *strin
 // only when linked. A removed node sees none and is seen by none.
 func (c *Coordinator) sees(a, b *node) bool {
 	switch {
-	case a.Removed || b.Removed:
+	case !c.authorized(a) || !c.authorized(b):
 		return false
 	case a.Name == "hub" || b.Name == "hub":
 		return true
@@ -639,7 +722,7 @@ func (c *Coordinator) tail(n *node) *tailcfg.Node {
 		HomeDERP:          home(n.Hostinfo),
 		Hostinfo:          n.Hostinfo.View(),
 		Cap:               n.capVer,
-		MachineAuthorized: !n.Removed,
+		MachineAuthorized: c.authorized(n),
 		Online:            &online,
 	}
 }

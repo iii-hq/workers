@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -389,7 +390,9 @@ func TestFailedMapUpdateIsNotPublished(t *testing.T) {
 	file := c.file
 	c.file = filepath.Join(file, "impossible")
 	old := n.Disco
-	c.update(n, tailcfg.MapRequest{DiscoKey: key.NewDisco().Public(), Endpoints: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:41643")}})
+	if err := c.update(n, tailcfg.MapRequest{DiscoKey: key.NewDisco().Public(), Endpoints: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:41643")}}); err == nil {
+		t.Fatal("failed write did not return an error")
+	}
 	if n.Disco != old || len(n.Endpoints) != 0 {
 		t.Fatal("unpersisted map published")
 	}
@@ -500,5 +503,247 @@ func TestStateStoreCopiesAndDeletes(t *testing.T) {
 	c = newCoordinator(t, dir)
 	if _, err := c.StateStore().ReadState("key"); !errors.Is(err, ipn.ErrStateNotExist) {
 		t.Fatalf("deleted state reappeared: %v", err)
+	}
+}
+
+func TestHistoricalNodeKeyCannotChangeOwner(t *testing.T) {
+	dir := t.TempDir()
+	c := newCoordinator(t, dir)
+	machine, old := registerNode(t, c, "a")
+	next := key.NewNode().Public()
+	r := c.register(machine, "127.0.0.1", tailcfg.RegisterRequest{NodeKey: next, Auth: &tailcfg.RegisterResponseAuth{AuthKey: rand.Text()}})
+	if !r.MachineAuthorized {
+		t.Fatal(r)
+	}
+	foreign := key.NewMachine().Public()
+	r = c.register(foreign, "127.0.0.1", tailcfg.RegisterRequest{NodeKey: old, Hostinfo: &tailcfg.Hostinfo{Hostname: "b"}, Auth: &tailcfg.RegisterResponseAuth{AuthKey: rand.Text()}})
+	if r.MachineAuthorized {
+		t.Error("historical key reassigned to another machine")
+	}
+	if err := c.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	if c.Known(old) {
+		t.Error("reassigned historical key survived removal")
+	}
+	c.Close()
+	c = newCoordinator(t, dir)
+	if c.Known(old) {
+		t.Fatal("reassigned historical key survived restart")
+	}
+}
+
+func TestRefusedKeysOverrideExistingRegistrations(t *testing.T) {
+	dir := t.TempDir()
+	c := newCoordinator(t, dir)
+	registerNode(t, c, "hub")
+	_, aKey := registerNode(t, c, "a")
+	bMachine, bKey := registerNode(t, c, "b")
+	// Earlier versions allowed b's current key to overlap a's historical keys.
+	c.byKey(aKey).Keys = append(c.byKey(aKey).Keys, bKey)
+	if err := c.save(); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	c = newCoordinator(t, dir)
+	b := c.byKey(bKey)
+	addr := c.address(b.ID)
+	sent, host := map[tailcfg.NodeID]uint64{}, ""
+	if _, ok := c.delta(b, sent, &host, true, nil); !ok {
+		t.Fatal("initial map missing")
+	}
+	if err := c.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	if c.Known(bKey) {
+		t.Error("refusal did not override existing relay admission")
+	}
+	if _, ok := c.Node(addr); ok {
+		t.Error("refused node still resolves by address")
+	}
+	if _, ok := c.delta(b, sent, &host, false, nil); ok {
+		t.Error("refused existing map stream continues")
+	}
+	for _, info := range c.Nodes() {
+		if info.Name == "b" {
+			t.Error("refused node remains listed as active")
+		}
+	}
+	for iteration := 0; iteration < 2; iteration++ {
+		b = c.byKey(bKey)
+		host = ""
+		response, ok := c.delta(b, map[tailcfg.NodeID]uint64{}, &host, true, nil)
+		if ok && (response.Node.MachineAuthorized || len(response.Peers) > 0) {
+			t.Error("refused node received an authorized map")
+		}
+		if c.sees(c.byName("hub"), b) {
+			t.Error("refused node remains visible to hub")
+		}
+		r := c.register(bMachine, "127.0.0.1", tailcfg.RegisterRequest{NodeKey: bKey})
+		if r.MachineAuthorized || c.Known(bKey) {
+			t.Error("existing refused key authorized")
+		}
+		c.Close()
+		c = newCoordinator(t, dir)
+	}
+}
+
+func TestFailedMapPersistenceRejectsHTTPAndAllowsRetry(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			dir := t.TempDir()
+			c := newCoordinator(t, dir)
+			machine, k := registerNode(t, c, "a")
+			n := c.byKey(k)
+			oldDisco, oldSeen := n.Disco, n.LastSeen
+			req := tailcfg.MapRequest{NodeKey: k, Stream: stream, DiscoKey: key.NewDisco().Public(), Endpoints: []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:41643")}}
+			body, _ := json.Marshal(req)
+			request := func() *httptest.ResponseRecorder {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				response := httptest.NewRecorder()
+				c.serveMap(&firstFrame{ResponseRecorder: response, cancel: cancel}, httptest.NewRequest("POST", "/machine/map", bytes.NewReader(body)).WithContext(ctx), machine)
+				return response
+			}
+			file := c.file
+			c.file = filepath.Join(file, "impossible")
+			failed := request()
+			if failed.Code != http.StatusServiceUnavailable {
+				t.Errorf("failed disk write acknowledged with HTTP %d", failed.Code)
+			}
+			if failed.Flushed {
+				t.Error("failed disk write started map stream")
+			}
+			if n.Disco != oldDisco || len(n.Endpoints) != 0 || !n.LastSeen.Equal(oldSeen) {
+				t.Fatal("failed write changed peer discovery state")
+			}
+			c.file = file
+			retry := request()
+			if retry.Code != http.StatusOK || stream && !retry.Flushed {
+				t.Fatalf("retry did not succeed: HTTP %d", retry.Code)
+			}
+			c.Close()
+			c = newCoordinator(t, dir)
+			n = c.byKey(k)
+			if n.Disco != req.DiscoKey || !slices.Equal(n.Endpoints, req.Endpoints) {
+				t.Fatal("acknowledged retry was not persisted")
+			}
+		})
+	}
+}
+
+func TestNodeMetadataSurvivesRegistrationActivityAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	c := newCoordinator(t, dir)
+	before := time.Now().UTC()
+	machine, k := registerNode(t, c, "a")
+	after := time.Now().UTC()
+	n := c.byKey(k)
+	joined := n.JoinedAt
+	if joined.Before(before) || joined.After(after) || !n.LastSeen.Equal(joined) {
+		t.Fatalf("registration timestamps: joined=%v seen=%v", joined, n.LastSeen)
+	}
+	if err := c.SetOperator("a", `DOMAIN\Alice User`); err != nil {
+		t.Fatal(err)
+	}
+	reconnect := time.Now().UTC()
+	r := c.register(machine, "127.0.0.1", tailcfg.RegisterRequest{NodeKey: k})
+	if !r.MachineAuthorized || n.LastSeen.Before(reconnect) || !n.JoinedAt.Equal(joined) {
+		t.Fatal("reconnect did not preserve join time and record activity")
+	}
+	next := key.NewNode().Public()
+	r = c.register(machine, "127.0.0.1", tailcfg.RegisterRequest{NodeKey: next, Auth: &tailcfg.RegisterResponseAuth{AuthKey: rand.Text()}})
+	if !r.MachineAuthorized || !n.JoinedAt.Equal(joined) || n.Operator != `DOMAIN\Alice User` {
+		t.Fatal("key rotation replaced durable metadata")
+	}
+	activity := time.Now().UTC()
+	body, _ := json.Marshal(tailcfg.MapRequest{NodeKey: next})
+	response := httptest.NewRecorder()
+	c.serveMap(response, httptest.NewRequest("POST", "/machine/map", bytes.NewReader(body)), machine)
+	if response.Code != http.StatusOK || n.LastSeen.Before(activity) {
+		t.Fatal("authenticated map activity was not recorded")
+	}
+	seen := n.LastSeen
+	c.Close()
+	c = newCoordinator(t, dir)
+	info := c.Nodes()[0]
+	if info.Operator != `DOMAIN\Alice User` || !info.JoinedAt.Equal(joined) || !info.LastSeen.Equal(seen) {
+		t.Fatalf("metadata changed on restart: %+v", info)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted struct {
+		Nodes []map[string]json.RawMessage `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"operator", "joined_at", "last_seen"} {
+		if _, ok := persisted.Nodes[0][field]; !ok {
+			t.Errorf("state is missing %s", field)
+		}
+	}
+}
+
+func TestOperatorUpdateValidationAndRollback(t *testing.T) {
+	dir := t.TempDir()
+	c := newCoordinator(t, dir)
+	_, k := registerNode(t, c, "a")
+	if err := c.SetOperator("a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	for _, operator := range []string{"", " alice", "alice ", "ali\nce", "ali\x00ce", string([]byte{0xff}), strings.Repeat("a", 257)} {
+		if err := c.SetOperator("a", operator); err == nil {
+			t.Errorf("accepted invalid operator %q", operator)
+		}
+	}
+	if err := c.SetOperator("missing", "alice"); err == nil {
+		t.Fatal("updated unknown node")
+	}
+	file := c.file
+	c.file = filepath.Join(file, "impossible")
+	if err := c.SetOperator("a", "bob"); err == nil {
+		t.Fatal("operator write unexpectedly succeeded")
+	}
+	c.file = file
+	if c.byKey(k).Operator != "alice" {
+		t.Fatal("failed update changed operator")
+	}
+	c.Close()
+	c = newCoordinator(t, dir)
+	if c.Nodes()[0].Operator != "alice" {
+		t.Fatal("invalid or failed operator update was persisted")
+	}
+	if err := c.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetOperator("a", "bob"); err == nil {
+		t.Fatal("updated removed node")
+	}
+}
+
+func TestLastSeenNeverRegresses(t *testing.T) {
+	c := newCoordinator(t, t.TempDir())
+	machine, k := registerNode(t, c, "a")
+	n := c.byKey(k)
+	future := time.Now().UTC().Add(time.Hour)
+	n.LastSeen = future
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			body, _ := json.Marshal(tailcfg.MapRequest{NodeKey: k})
+			response := httptest.NewRecorder()
+			c.serveMap(response, httptest.NewRequest("POST", "/machine/map", bytes.NewReader(body)), machine)
+			if response.Code != http.StatusOK {
+				t.Errorf("activity: HTTP %d", response.Code)
+			}
+		})
+	}
+	wg.Wait()
+	r := c.register(machine, "127.0.0.1", tailcfg.RegisterRequest{NodeKey: k})
+	if !r.MachineAuthorized || !n.LastSeen.Equal(future) {
+		t.Fatal("authenticated activity regressed last_seen")
 	}
 }
