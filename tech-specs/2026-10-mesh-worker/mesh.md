@@ -47,22 +47,33 @@ What changes in the port:
 
 Mainplane's harness and its HTTP API are not ported.
 
-`tailscale.com` comes through an iii-owned fork (`go.mod`:
-`replace tailscale.com => github.com/iii-hq/tailscale <tag>-iii.N`). The fork
-carries the same three patches as `mainplane-ai/tailscale
-v1.102.4-mainplane.8`:
+**Upstream `tailscale.com`, no fork** (decided, so the whole worker fits one
+PR in this repo). Mainplane carries a fork
+(`mainplane-ai/tailscale v1.102.4-mainplane.8`). Each of its patches is
+replaced here by something upstream or something inside `mesh`:
 
-1. **WebSocket control and DERP clients on every OS**, so the front door can
-   sit behind Cloudflare or any WebSocket-only proxy. WebSocket control is
-   opt-in through `TS_CONTROL_WEBSOCKET`, which the node service sets when
-   `public_url` needs it. The same patch adds the control-key and
-   relay-admission hooks, and removes log upload, the sockstat logger, and
-   the DNS fallback to Tailscale's DERP servers.
-2. **netcheck** plans no STUN probe of a node whose STUN is off.
-3. **netstack** passes an IPv6 first fragment on to reassembly.
+| Fork patch | Replaced by |
+| --- | --- |
+| WebSocket control client on every OS | The node's front-door shim (below). Control dials the shim with a plain HTTP upgrade, and the shim carries it to the front door over a WebSocket. |
+| WebSocket DERP client on every OS (upstream: wasm only, or Linux/macOS behind the `ts_debug_websockets` build tag) | The same shim, for `/derp`. |
+| Control-key hook | The shim answers the control client's `GET /key` with the control key the node pinned at join (signed by `/id`). The ts2021 Noise handshake then proves that the front door holds that key, so a man in the middle cannot pose as the coordinator, even over plain HTTP. |
+| Relay-admission hook | Upstream `derpserver.Server.SetVerifyClientURL`, pointed at a loopback endpoint of the hub that admits registered node keys only, failing closed. |
+| No log upload, sockstat logger or DNS fallback | `mesh` never starts `logtail` or `logpolicy`, and sets `TS_NO_LOGS_NO_SUPPORT=true`. Control and DERP URLs are loopback IPs (the shim), so the DNS fallback to Tailscale's servers never runs. The DERP map lists only the hub. |
+| netcheck plans no STUN probe when STUN is off | Not replaced: netcheck probes the hub's DERP node for STUN and times out. That costs a slower netcheck and reaches no third party. |
+| netstack passes an IPv6 first fragment to reassembly | Not replaced: see [Open items](#open-items). It matters only for Windows nodes on paths whose MTU forces fragments. |
 
-Rebase the fork on each Tailscale release we take. Never depend on
-Mainplane's fork directly.
+Pin `tailscale.com` to one release in `go.mod`, and bump it deliberately.
+
+**Front-door shim.** The node runs a loopback HTTP listener, which is the
+`ServerURL` its control client sees and the URL of the single DERP node in
+its map. It does three things:
+- answers `GET /key` with the pinned control key;
+- turns the client's ts2021 or DERP HTTP upgrade into a WebSocket to
+  `public_url`, then copies bytes both ways;
+- nothing else.
+
+A front door that passes HTTP upgrades, such as a LAN address or a reverse
+proxy, still works, because the shim always speaks WebSocket outward.
 
 ## Front door
 
@@ -72,13 +83,15 @@ The hub listens on `listen` (default `0.0.0.0:49180`), and nodes reach it at
 | Route | Purpose |
 | --- | --- |
 | `GET /id` | the hub's identity key, and its control key signed by it |
-| `/ts2021` | Tailscale control: Noise inside an HTTP upgrade or a WebSocket |
-| `/derp`, `/derp/probe`, `/derp/latency-check` | the relay; admits registered nodes only |
+| `/ts2021` | Tailscale control: Noise inside a WebSocket (or an HTTP upgrade) |
+| `/derp`, `/derp/probe`, `/derp/latency-check` | the relay, over WebSocket (or an HTTP upgrade); admits registered nodes only |
 | `POST /join` | CPace device-code exchange |
 
 Nothing else listens there, and the hub serves nothing executable. Install
-scripts and binaries come from the `mesh` GitHub release over HTTPS (see
-[Join](#join)).
+scripts come from this repo at the `mesh` release tag, and binaries come from
+the iii registry, both over HTTPS (see [Join](#join) and
+[Registry](#registry)). The relay's admission endpoint is on a separate
+loopback listener.
 
 Everything on the front door is either end-to-end encrypted (Noise, WireGuard
 inside DERP), self-authenticating (CPace, the signed `/id`), or harmless. So
@@ -181,18 +194,19 @@ A man in the middle gets one guess at the code and nothing else.
 **One-liners** (from `mesh::join::code`):
 
 ```sh
-curl -fsSL https://github.com/iii-hq/workers/releases/download/<mesh release>/install.sh | sh -s -- <public_url> XXXX-XXXX
+curl -fsSL https://raw.githubusercontent.com/iii-hq/workers/mesh/v<version>/mesh/install/install.sh | sh -s -- <version> <public_url> XXXX-XXXX
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://github.com/iii-hq/workers/releases/download/<mesh release>/install.ps1))) <public_url> XXXX-XXXX
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/iii-hq/workers/mesh/v<version>/mesh/install/install.ps1))) <version> <public_url> XXXX-XXXX
 ```
 
-`<mesh release>` is the hub's own release. The builder uses the asset URL
-scheme that `go-binary` releases actually publish. The script:
-1. downloads `mesh` for the machine's OS and architecture from the same
-   release;
-2. checks it against the release's sha256 list;
+`<version>` is the hub's own version, and `mesh/v<version>` is the git tag
+its release created. So the script that runs as root is exactly the one
+reviewed in this repo at that tag, served over HTTPS. The script:
+1. asks the registry for `mesh` at that exact version for the machine's OS
+   and architecture (see [Registry](#registry));
+2. downloads the binary over HTTPS and checks its sha256;
 3. runs `mesh join` elevated.
 
 **Names.** The hostname is lowercased and reduced to `^[a-z][a-z0-9-]{0,30}$`.
@@ -262,7 +276,7 @@ these functions, which the gateway prefixes with `<node>::`:
 | Function | Input → output |
 | --- | --- |
 | `mesh-node::status` | `{}` → `{name, address, os, arch, version, peers: [{name, path}], workers: [{name, version, state, restarts, log_tail}], drives: [{name, state, error?}]}` |
-| `mesh-node::update` | `{version}` → downloads `mesh` for this target from that GitHub release, checks its sha256, replaces itself and restarts the service |
+| `mesh-node::update` | `{version, artifact_url, sha256}` (the hub resolved them) → downloads `mesh` for this target, checks its sha256, replaces itself and restarts the service |
 | `mesh-node::workers::apply` | `{workers: [{name, artifact_url, sha256, version}]}` → per-worker result |
 | `mesh-node::drives::apply` | `{serve: [...], mount: [...]}` → per-drive result |
 
@@ -286,10 +300,9 @@ differ, it calls `mesh-node::update` before it applies workers or drives. The
 `mesh-node::*` shapes stay compatible within a major version. A node on
 another major gets only `update`, and shows as `outdated` until it updates.
 
-**Supervisor.** The hub resolves every worker in `nodes.<name>.workers` to an
-artifact for that node's target: an HTTPS URL and a sha256 (see
-[Required changes](#required-changes-outside-mesh)). For each, the
-supervisor:
+**Supervisor.** The hub resolves every worker in `nodes.<name>.workers`
+(`ide`, or `ide@^0.12`) to an artifact for that node's target: an HTTPS URL
+and a sha256 (see [Registry](#registry)). For each, the supervisor:
 1. downloads it into the cache and checks the sha256;
 2. starts it as the operator with this environment:
    - `III_URL=ws://hub.iii.internal:49135`;
@@ -310,6 +323,33 @@ supervisor:
 4. stops the workers that are no longer desired;
 5. writes each worker's log to the node state dir, rotated.
 
+## Registry
+
+Worker binaries are not GitHub release assets: a worker's release tag
+(`ide/v0.12.36`) carries none. They come from the public iii registry, the
+same one `iii` installs from (`crates/iii-compose/src/registry.rs` in the
+engine repo).
+
+The hub and the install script are thin clients of one endpoint:
+
+```
+POST https://api.workers.iii.dev/resolve
+{"worker": "<name>", "version": "<range>", "target": "<os-arch target>"}
+→ {graph: [{name, version, type, binaries: {<target>: {url, sha256}}}, ...], edges: [...]}
+```
+
+The client:
+- takes the entry whose `name` is the worker asked for;
+- uses `binaries[<target>]`, checking that the url is HTTPS and the sha256
+  has 64 hex digits;
+- ignores the rest of the graph, because a node worker's dependencies stay
+  on the hub's bus.
+
+Version ranges and the graph stay the registry's: `mesh` only sends the range
+it was given. A worker whose type is not `binary`, or that has no build for
+the node's target, is reported in `mesh-node::status` and not started. This
+is a client of a public HTTP API, not a second registry: no resolution logic
+is copied.
 ## Gateway
 
 The gateway is a TCP listener on the hub's userspace node, on `gateway_port`
@@ -376,12 +416,18 @@ table.
   - **Configuration.** It confines `configuration::*` to entries named
     `<node>__*`, and never lets hub environment values reach a node:
     - `configuration::get` is forwarded with `raw: true`;
-    - `ensure`, `register` and `set` are forwarded with `expand: false` (see
-      [Required changes](#required-changes-outside-mesh));
+    - `ensure`, `register` and `set` are refused when any string in the value
+      or initial value contains `${`, so a node can never store a template
+      for the hub to expand;
     - every other `configuration::*` call is refused.
 
     Without this, a node could seed `<node>__probe` with `${OPENAI_API_KEY}`
-    and read the key back expanded.
+    and read the key back expanded. As a result, a node's config never draws
+    on the hub's environment. Templates expanded against the node's own
+    environment are a follow-up.
+
+    An operator who writes a template into a `<node>__*` entry chooses to
+    hand that value to the node.
   - **Everything else** is forwarded to its target, and the target's result
     is returned. The timeout follows the proxy's 610 s middleware budget.
 - **`mesh::on-trigger-registration`** also requires a live session key in the
@@ -509,7 +555,7 @@ matching the devin and hermes feeds.
 
 ## Required changes outside mesh
 
-These ship before or with phase 1.
+Both live in this repo and ship in the same PR as `mesh`.
 
 1. **Harness and fp: remote calls get no hub scope.**
    - **Where:** `harness/src/filesystem_scope.rs` `is_scoped_function` and
@@ -551,24 +597,11 @@ These ship before or with phase 1.
      `condition_function_id` (and any other function id in its config) must
      name a function the session registered, or one it may call. It is
      refused otherwise, because the engine runs it with its own authority.
-3. **A resolver for worker artifacts.** The hub needs, for a worker reference
-   and a target (os/arch), an HTTPS artifact URL and its sha256.
-   `iii-compose`'s `registry::install` does this without a project, but it is
-   Rust under the Elastic License 2.0, so the Go hub cannot link it. If
-   compose exposes resolution as a bus function, use it. Otherwise add one
-   there, so registry logic keeps one owner. Do not write a registry client
-   in `mesh`.
-4. **configuration: entries that never expand.** Today `configuration::get`
-   expands `${VAR:default}` against the configuration process's environment
-   unless the read is `raw: true` (`docs/sops/configuration.md`).
-   - **The change:** `ensure`, `register` and `set` accept `expand: false`,
-     stored with the entry. For such an entry, `get`, `list`, change-trigger
-     payloads and mutator results always return the stored value unexpanded.
-   - **Who sets it:** `mesh::middleware` forces it on every node mutation, so
-     a node cannot make the hub expand a template. An operator-created
-     `<node>__*` entry that a node writes becomes non-expanding too.
-   - **Semantics:** a node's config never draws on the hub's environment.
-     Expanding against the node's own environment is a follow-up.
+Nothing outside this repo changes. In particular:
+- the engine's `configuration` worker is untouched: `mesh::middleware`'s
+  raw reads and its template refusal do the job;
+- `iii-compose` is untouched: the hub calls the registry's public `/resolve`;
+- there is no Tailscale fork: see [Code reuse](#code-reuse-decided).
 
 ## Boundaries
 
@@ -594,8 +627,10 @@ These ship before or with phase 1.
 - Nodes make outbound connections only to:
   - `public_url`;
   - linked peers and the hub, over UDP;
-  - GitHub releases over HTTPS, for `mesh`, the install scripts and worker
-    artifacts;
+  - `raw.githubusercontent.com` over HTTPS, for the install scripts at the
+    `mesh` tag;
+  - `api.workers.iii.dev` and the artifact URLs it returns, over HTTPS, for
+    `mesh` and worker binaries;
   - wintun.net over HTTPS, on Windows.
 
   Nothing a node runs as root is fetched over plain HTTP. The binary makes no
@@ -614,8 +649,9 @@ These ship before or with phase 1.
   drives and node workers are edited through the generated config form.
 - **Go:**
   - the current `iii` Go SDK (`whatsapp` pins an older one);
-  - the `tailscale.com` fork;
+  - upstream `tailscale.com`, pinned;
   - `filippo.io/cpace`.
+- **The iii registry** (`api.workers.iii.dev/resolve`), read-only and public.
 - **On nodes:** apt (drive servers) and wintun (Windows).
 
 ## File layout
@@ -626,12 +662,13 @@ Follow `whatsapp/` (the repo's Go worker) and `docs/sops/go-binary-worker.md`:
   `manifest: package.json`), `package.json` (version), `Makefile`
   (`CGO_ENABLED=0 go build -trimpath`), `go.mod`, `main.go`, `NOTICE`.
 - **`internal/`:** `{coordinator,meshnet,join,elevate,relay,drives,service,gateway,supervisor,hub}/`.
-- **`install/`:** `install.sh` and `install.ps1`, published as release assets.
+- **`install/`:** `install.sh` and `install.ps1`, served from the repo at the
+  `mesh/v<version>` tag.
 - **`skills/`:** `SKILL.md`.
 - **Also:** `iii-permissions.yaml`, `README.md`, and `ui/` (phase 2).
 - **Repo files to touch:**
-  - a `.deploy/workers.yaml` entry with `kind: go-binary`, Windows targets,
-    and the install scripts as assets;
+  - a `.deploy/workers.yaml` entry with `kind: go-binary` and Windows
+    targets;
   - the root `iii-permissions.yaml` rules;
   - the [required changes](#required-changes-outside-mesh).
 
@@ -667,8 +704,10 @@ Follow `whatsapp/` (the repo's Go worker) and `docs/sops/go-binary-worker.md`:
 - A loopback client that dials the proxy without a ticket is refused.
 
 **Adversarial** (a malicious node and a malicious agent):
-- **Templates:** a node `ensure`s `<node>__probe` with
-  `${OPENAI_API_KEY}` as its value. Its `get` returns the literal template.
+- **Templates:**
+  - A node `ensure`s `<node>__probe` with `${OPENAI_API_KEY}` as its value,
+    or in an initial value, and is refused.
+  - A node's `get` of an operator-written `<node>__*` entry returns it raw.
 - **Hooks:** a node binding `harness::hook::pre-trigger` or `post-trigger` is
   refused, and a hub call made afterwards reaches no node.
 - **Supervisor reach:** an agent calls `<node>::mesh-node::workers::apply`
@@ -780,3 +819,13 @@ Each of these sets a default list or a follow-up, not the design.
    reconnecting when the engine refuses a registration. Check the Rust SDK,
    because `ide` and most workers on nodes use it. The supervisor's restart
    covers both cases, but the log should say why.
+6. **IPv6 first fragments in the hub's netstack.** Without Mainplane's
+   netstack patch, the hub's userspace node may drop an IPv6 first fragment.
+   This hits Windows nodes, whose TCP ignores the MSS clamp, on paths that
+   force fragments. Acceptance 1–6 on Windows include a relayed path to catch
+   it. If it fails, send the patch upstream to Tailscale, and carry it until
+   then as a minimal fork in a follow-up PR. It does not block the other
+   platforms.
+7. **The registry's `target` names.** Use the strings `iii` sends
+   (`host_targets()` in `crates/iii-compose`) for each OS and architecture,
+   and confirm the Windows ones on a `go-binary` worker.

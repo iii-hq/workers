@@ -114,7 +114,7 @@ flowchart LR
   W -- "ws://hub.iii.internal:49135 over WireGuard" --> M
   S -- "control /ts2021, relay /derp, join" --> F["front door<br/>public_url"]
   F --> M
-  R["GitHub release (HTTPS)<br/>install script, binaries"] -. "install, update" .-> S
+  R["this repo at the mesh tag: install script<br/>iii registry: binaries (HTTPS)"] -. "install, update" .-> S
 ```
 
 - **Hub** is `mesh` running as an ordinary worker beside the engine. It runs:
@@ -158,12 +158,14 @@ flowchart LR
    - takes ownership of the `rbac-proxy` config (see
      [mesh.md § Gateway](mesh.md#gateway));
    - opens the front door.
-2. `mesh::join::code` returns the code and two one-liners. Each fetches the
-   install script for the hub's own `mesh` release from GitHub over HTTPS and
-   passes it `<public_url>` and the code. One is for sh, one for PowerShell.
-3. The script downloads the `mesh` binary for the machine's OS and
-   architecture from the same release, checks its sha256, and runs
-   `mesh join <public_url> <code>` elevated (sudo or UAC asks once).
+2. `mesh::join::code` returns the code and two one-liners, one for sh and one
+   for PowerShell. Each fetches the install script from this repo at the
+   hub's `mesh/v<version>` tag over HTTPS, and passes it the version,
+   `<public_url>` and the code.
+3. The script resolves `mesh` at that version for the machine's OS and
+   architecture through the iii registry, downloads it over HTTPS, checks its
+   sha256, and runs `mesh join <public_url> <code>` elevated (sudo or UAC asks
+   once).
 4. The node and hub run CPace over `POST /join`, bound to the hub's identity
    key, and the hub answers with the join secret, sealed under the shared key.
    - **A wrong code** learns nothing and costs one try from that address.
@@ -234,19 +236,37 @@ through `mesh leave` and a fresh join.
 
 Neither change needs a restart.
 
-## Phases
+## Delivery
 
-| Phase | Ships | Acceptance ([mesh.md § Acceptance](mesh.md#acceptance-criteria)) |
+Everything ships in **one PR** to this repo. Nothing outside it changes:
+- upstream Tailscale plus a node-side shim replace a fork;
+- `mesh::middleware` replaces a change to the engine's `configuration`
+  worker;
+- the registry's public `/resolve` replaces a change to `iii-compose`.
+
+The PR touches `mesh/` (new), `harness/`, `fp/`, `rbac-proxy/`, the root
+`iii-permissions.yaml` and `.deploy/workers.yaml`.
+
+Inside the PR, the work lands as the phases below, in order. Each phase is a
+run of commits that ends with every touched worker's CI gates green. A
+reviewer can read the PR phase by phase, and "phase N" elsewhere in these
+documents means this order, not a separate release.
+
+| Phase | Lands | Acceptance ([mesh.md § Acceptance](mesh.md#acceptance-criteria)) |
 | --- | --- | --- |
-| 1. Core | Tailscale fork; coordinator, relay, device-code join; Linux and macOS nodes (service, TUN, hosts, self-update); links; removal; `mesh::status` / `nodes::*` / `join::*`; gateway with `rbac-proxy`; node supervisor running `ide`; skill; [required changes](mesh.md#required-changes-outside-mesh) in harness, fp, rbac-proxy and configuration | 1–7, 9, 10 |
+| 0. Prerequisites | [required changes](mesh.md#required-changes-outside-mesh) in harness, fp and rbac-proxy, each with its tests | the adversarial tests that cover them |
+| 1. Core | coordinator, relay, front-door shim, device-code join; Linux and macOS nodes (service, TUN, hosts, self-update); links; removal; `mesh::status` / `nodes::*` / `join::*`; gateway with `rbac-proxy`; registry client; node supervisor running `ide`; skill | 1–7, 9, 10 |
 | 2. Reach | Windows nodes (wintun, service, hosts), drives (NFS and SMB), Console page | 8, and 1–6 on Windows 11 |
-| 3. Automation | Join tokens and ephemeral nodes, `mesh::node-changed`, `browser` / `computer` / `tmux` on nodes | 11 |
+| 3. Automation | join tokens and ephemeral nodes, `mesh::node-changed`, `browser` / `computer` / `tmux` on nodes | 11 |
+
+The PR is large, on the order of 10k lines, most of it ported. Its
+description maps each phase to its commits.
 
 ## Alternatives considered
 
 - **Ride the user's tailnet.** The gateway would listen on the Tailscale
-  address and use Tailscale's WhoIs, which removes the fork, the coordinator
-  and the TUN code. It was rejected as the primary design because it needs a
+  address and use Tailscale's WhoIs, which removes the coordinator and the
+  TUN code. It was rejected as the primary design because it needs a
   Tailscale account, exposes every device in the tailnet, and gives no
   per-iii isolation. It stays cheap to add later: the gateway, supervisor and
   drives need only a WhoIs lookup from the network beneath them.
@@ -262,6 +282,17 @@ Neither change needs a restart.
   lines, MIT, and already handles the Windows adapter, the MSS clamp and IPv6
   fragmentation on real hardware. That count is the network and drive code;
   service install adds ~0.8k. Port it.
+- **Fork Tailscale as Mainplane does.** Rejected for v1: a fork is a second
+  repository to own and rebase, and it would split the work across PRs. A
+  loopback shim on each node, plus upstream's DERP client-verification hook,
+  covers what the fork's patches buy (see
+  [mesh.md § Code reuse](mesh.md#code-reuse-decided)). One netstack patch
+  remains a risk for Windows on fragmenting paths, and is upstreamed or
+  forked only if acceptance shows it is needed.
+- **Change the engine's `configuration` worker, or `iii-compose`.** Rejected:
+  both live in the engine repo. `mesh` stays within its own boundary instead:
+  raw reads plus a refusal of templates in node writes, and a client of the
+  registry's public `/resolve`.
 
 ## Spec index
 
@@ -277,7 +308,8 @@ Neither change needs a restart.
     coordination.
   - `pkg/auth/code.go`: the CPace device code, via `filippo.io/cpace`.
   - `pkg/elevate`, `pkg/worker/drives_*` and `pkg/worker/install_*`.
-  - The fork `mainplane-ai/tailscale v1.102.4-mainplane.8`.
+  - The fork `mainplane-ai/tailscale v1.102.4-mainplane.8`, whose patches
+    `mesh` replaces rather than carries.
   - `docs/self-hosting.md`: the mesh and drive behaviour this spec follows.
 - **headscale**: the control protocol server Mainplane's coordinator trims.
 - **Tailscale** `tsnet`, `derpserver`, `wgengine`: the network stack.
