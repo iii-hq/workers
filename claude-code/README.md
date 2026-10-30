@@ -2,7 +2,7 @@
 
 Claude Code as an iii worker: the Claude Code API exposed as functions on the iii bus, nothing else. The worker spawns the same `claude` binary the user runs in their terminal, with the same login, the same filesystem, and the same tools (file edits, shell, web). `claude::run` executes one headless turn and returns the result; the raw Claude Code messages are published verbatim on the `claude::on-raw-event` function, and a translated AgentEvent view on `claude::on-agent-event`, so the iii console, the acp worker, and any sibling worker observe a Claude Code run exactly like a native harness turn. The worker also registers `run::start_and_wait`, the same entrypoint the console and the acp worker drive, so both run Claude Code with no changes.
 
-The same worker also runs Claude Code as a **terminal on the console**: `claude::terminal::*` installs the CLI on the terminal host, equips a workspace with the iii skills, and opens Claude in a `shell::pty` session on its own page — always Claude, never a shell. Both halves report onto one events stream, so a headless turn and a typed turn look the same in the console. Whether they also share one login depends on where each half runs: from a local checkout both are host processes and read the same `~/.claude`, while a worker installed from the registry runs the headless half in a microVM that cannot (see [Logging in](#logging-in)). Its sibling [`pi`](https://github.com/iii-hq/workers/tree/main/pi) is the same shape for the pi agent.
+The same worker also runs Claude Code as a **terminal on the console**: `claude::terminal::*` installs the CLI on the terminal host, equips a workspace with the iii skills, and opens Claude in a `shell::pty` session on its own page — always Claude, never a shell. Both halves report onto one feed, `claude::on-agent-event`, so a headless turn and a typed turn look the same in the console. Whether they also share one login depends on where each half runs: from a local checkout both are host processes and read the same `~/.claude`, while a worker installed from the registry runs the headless half in a microVM that cannot (see [Logging in](#logging-in)). Its sibling [`pi`](https://github.com/iii-hq/workers/tree/main/pi) is the same shape for the pi agent.
 
 ## Install
 
@@ -102,7 +102,7 @@ Long turns: use `claude::start` to return immediately, then observe `claude::on-
 | `claude::sessions::list` | All sessions this worker has run |
 | `run::start_and_wait` | Alias for `claude::run` under the entrypoint the console and acp worker drive |
 | `claude::terminal::describe` | What a terminal session runs: program, argv, cwd, env — the page passes it straight to `shell::pty::open` — plus `activity_bridge` and `detail`, which say whether the hooks can reach the bus. Internal. |
-| `claude::terminal::activity` | One Claude Code hook event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the stream, not the delivery. |
+| `claude::terminal::activity` | One Claude Code hook event in, AgentEvent frames out. Internal, and `trace_hidden` — the signal is the feed, not the delivery. |
 | `claude::auth::status` | Which plan a terminal session spends (see [Billing](#billing-which-plan-a-session-spends)). Agent-denied. |
 | `claude::ui-content` | Console page assets. Internal. |
 

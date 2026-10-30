@@ -153,19 +153,25 @@ iii.registerFunction(
 
 /**
  * The topic every completed step is announced on, so anything that wants to
- * follow a tour (the engine's telemetry among them) subscribes instead of
- * reaching into this worker's state.
+ * follow a tour (the engine's telemetry among them) subscribes to the topic
+ * and never reads this worker's state.
  */
 const STEP_TOPIC = 'onboarding:steps:complete'
 
 /**
- * Published through the `queue` worker, not fire-and-forget pub/sub: a step
- * closes once, and the message waits in the queue and is retried until a
- * subscriber takes it, rather than being dropped when nothing is listening at
- * that instant.
+ * Published through the `queue` worker, because a step closes once: the
+ * message waits in each subscriber's durable queue until that subscriber
+ * takes it, and a failed delivery is retried.
  *
- * The publish itself is still best effort — a missing `queue` worker is
- * logged and never fails the step.
+ * A subscriber observes `queue::on-message` with args `{ topic: STEP_TOPIC }`
+ * under a stable observer id (`{ id: '<subscriber>' }`). The queue is keyed
+ * by that id, so a subscriber that restarts under the same worker name and id
+ * within the engine's grace period takes its queue back, with the steps
+ * published while it was away. The engine's telemetry subscribes as
+ * `iii-telemetry::onboarding-step-watch`.
+ *
+ * The publish itself is best effort: a missing `queue` worker is logged and
+ * never fails the step.
  */
 const publishStep = (data) =>
   iii
