@@ -170,7 +170,7 @@ fn schema() -> Value {
             },
             "injectableUi": {
                 "type": "object",
-                "description": "Injectable worker UI controls (console:script / console:style / console:module assets).",
+                "description": "Injectable worker UI controls (the assets workers ship as console::ui::asset observers of kind script, style or module).",
                 "properties": {
                     "disabledWorkers": {
                         "type": "array",
@@ -674,6 +674,10 @@ mod tests {
         let section = &s["properties"]["injectableUi"]["properties"]["disabledWorkers"];
         assert_eq!(section["type"], "array");
         assert_eq!(section["items"]["type"], "string");
+        let description = s["properties"]["injectableUi"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(description.contains("console::ui::asset"), "{description}");
     }
 
     #[test]
