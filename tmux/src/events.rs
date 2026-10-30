@@ -16,7 +16,7 @@ use std::time::Duration;
 use iii_sdk::errors::Error;
 use iii_sdk::{CallAction, CallRequest, IIIClient, Observer, RegisterFunction};
 use serde_json::Value;
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
 
 use crate::collector::Collector;
 use crate::model::Overview;
@@ -28,6 +28,11 @@ pub struct Monitor {
     iii: IIIClient,
     collector: Arc<Collector>,
     wake: Notify,
+    /// The fingerprint of the overview the observers last received, `None`
+    /// while nothing observes the function. Shared by the poll loop and the
+    /// first overview a new observer receives, so a state an observer
+    /// already has is not sent again.
+    last: Mutex<Option<Value>>,
 }
 
 /// The overview without its timestamps, so an unchanged state is not re-sent.
@@ -44,6 +49,7 @@ impl Monitor {
             iii,
             collector,
             wake: Notify::new(),
+            last: Mutex::new(None),
         })
     }
 
@@ -69,17 +75,26 @@ impl Monitor {
         }
     }
 
-    /// The current overview, to `observer` alone, once it is active.
+    /// The current overview, to `observer` alone, once it is active. When
+    /// it is the first observer since the function was idle, the overview it
+    /// received is what the poll loop compares the next one with.
     async fn send_current(&self, observer: Observer) {
         if let Err(error) = observer.accepted().await {
             tracing::debug!(observer_id = %observer.id(), %error, "observer not accepted");
             return;
         }
-        let overview = self.collector.overview().await;
-        if let Ok(payload) = serde_json::to_value(&overview) {
-            let request = CallRequest::observer(&observer, payload).action(CallAction::Void);
-            if let Err(error) = self.iii.call(request).await {
-                tracing::debug!(observer_id = %observer.id(), %error, "first overview not delivered");
+        {
+            let mut last = self.last.lock().await;
+            let overview = self.collector.overview().await;
+            if let Ok(payload) = serde_json::to_value(&overview) {
+                let request = CallRequest::observer(&observer, payload).action(CallAction::Void);
+                match self.iii.call(request).await {
+                    Ok(_) if last.is_none() => *last = fingerprint(&overview),
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::debug!(observer_id = %observer.id(), %error, "first overview not delivered");
+                    }
+                }
             }
         }
         self.poke();
@@ -89,23 +104,26 @@ impl Monitor {
     pub fn spawn(self: &Arc<Self>) {
         let monitor = self.clone();
         tokio::spawn(async move {
-            let mut last: Option<Value> = None;
             loop {
                 let wake = monitor.wake.notified();
                 tokio::pin!(wake);
                 wake.as_mut().enable();
-                if !monitor.observed() {
-                    last = None;
-                    wake.await;
-                    continue;
-                }
-                let overview = monitor.collector.overview().await;
-                let print = fingerprint(&overview);
-                if print.is_some() && print != last {
-                    if let Ok(payload) = serde_json::to_value(&overview) {
-                        monitor.emit(payload).await;
+                {
+                    let mut last = monitor.last.lock().await;
+                    if !monitor.observed() {
+                        *last = None;
+                        drop(last);
+                        wake.await;
+                        continue;
                     }
-                    last = print;
+                    let overview = monitor.collector.overview().await;
+                    let print = fingerprint(&overview);
+                    if print.is_some() && print != *last {
+                        if let Ok(payload) = serde_json::to_value(&overview) {
+                            monitor.emit(payload).await;
+                        }
+                        *last = print;
+                    }
                 }
                 let interval = Duration::from_millis(monitor.collector.config().poll_interval_ms);
                 tokio::select! {
