@@ -301,6 +301,7 @@ jobs:
       - name: Build immutable artifact
         env:
           BUILD_UNIT: ${{ inputs.unit }}
+          SKIP_UI_BUILD: '1'
           RUSTC_WRAPPER: ${{ steps.sccache.outputs.wrapper }}
           RUSTFLAGS: ${{ endsWith(inputs.target, '-pc-windows-msvc') && '-C link-arg=/Brepro' || '' }}
           SOURCE_DATE_EPOCH: '0'
