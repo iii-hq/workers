@@ -431,7 +431,9 @@ async fn observers_receive_each_change_event() {
     assert_eq!(deleted["new_value"], Value::Null);
 
     // `state::on-changed` is private: another worker cannot forge a change.
-    if let Some(other) = engine::connect_fresh().await {
+    // The other worker has its own name: the engine refuses a second live
+    // worker under this process's default name.
+    if let Some(other) = engine::connect_fresh_named(&unique("e2e-forger")).await {
         let err = call(
             &other,
             ON_CHANGED_FN,
