@@ -49,7 +49,7 @@
       },
       "BindingQuery": {
         "additionalProperties": false,
-        "description": "Read-only query the worker that hosts an observed event source exposes for the current data. The function must be registered by the same worker as the observed function with metadata `{\"read_only\": true}`.",
+        "description": "Read-only query the worker that hosts an observed event function exposes for the current data. The function must be registered by the same worker as the observed function with metadata `{\"read_only\": true}`.",
         "properties": {
           "function_id": {
             "description": "Provider function that returns the current value.",
@@ -107,7 +107,7 @@
             "description": "Filters selecting which calls are delivered, each with an explicit operator: `{ \"input.status\": { \"$eq\": \"open\" } }`."
           },
           "function_id": {
-            "description": "Function to observe: a worker's event source (for example `orders::on-changed`), `state::on-changed`, or `shell::on-changed`. `stream::on-changed` is accepted only as deprecated legacy compatibility.",
+            "description": "Function to observe: another worker's private event function (for example `orders::on-changed`), `state::on-changed`, or `shell::on-changed`. `stream::on-changed` is accepted only as deprecated legacy compatibility.",
             "type": "string"
           },
           "id": {
@@ -134,6 +134,29 @@
           "function_id",
           "id",
           "target_path"
+        ],
+        "type": "object"
+      },
+      "RetiredBinding": {
+        "description": "A binding stored under iii 0.25 as a worker's type `W::X` whose function `W::on-X` was not registered, or failed the binding checks, when its session loaded.",
+        "properties": {
+          "function_id": {
+            "description": "The function the stored type reads as.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The binding id.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why the binding could not be translated.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_id",
+          "id",
+          "reason"
         ],
         "type": "object"
       },
@@ -233,6 +256,13 @@
       },
       "protocol_version": {
         "type": "string"
+      },
+      "retired_bindings": {
+        "description": "Bindings stored under iii 0.25 that could not be translated when the session loaded, each with the reason. The page lists them; `a2ui::binding::set` with the same id replaces one and `a2ui::binding::delete` removes it.",
+        "items": {
+          "$ref": "#/definitions/RetiredBinding"
+        },
+        "type": "array"
       },
       "revision": {
         "format": "uint64",

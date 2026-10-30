@@ -1,0 +1,32 @@
+# The demo stack: the http worker serves the demo routes on 127.0.0.1:3111,
+# image-resize resizes, and image-resize-demo registers the routes by observing
+# http::on-request. Start it from this directory with `iii compose --up`.
+engine:
+  url: ws://127.0.0.1:49134
+
+containers:
+  http:
+    worker: path://../../http
+    config_override:
+      port: 3111
+      host: 127.0.0.1
+      default_timeout: 30000
+      concurrency_request_limit: 1024
+      cors:
+        allowed_origins: ['*']
+        allowed_methods: [GET, POST, PUT, DELETE, OPTIONS]
+    scripts:
+      run: cargo run --release --bin http
+
+  image-resize:
+    # Reads ../config.yaml (width, height, strategy, quality).
+    worker: path://..
+    scripts:
+      run: cargo run --release --bin image-resize
+
+  image-resize-demo:
+    worker: path://.
+    start_after: [http, image-resize]
+    scripts:
+      pre_run: npm install
+      run: npm run dev

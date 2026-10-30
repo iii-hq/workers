@@ -72,22 +72,32 @@ impl Store {
     }
 
     pub async fn load(&self, session_id: &str) -> Result<SessionState, String> {
-        let value = match &self.backend {
+        let value = self.load_value(session_id).await?;
+        Self::parse(session_id, value)
+    }
+
+    /// The stored session as JSON (`null` when there is none).
+    pub async fn load_value(&self, session_id: &str) -> Result<Value, String> {
+        match &self.backend {
             Backend::Bus(iii) => {
                 Self::bus_call(
                     iii,
                     "state::get",
                     json!({"scope": STATE_SCOPE, "key": session_id}),
                 )
-                .await?
+                .await
             }
-            Backend::Memory(values) => values
+            Backend::Memory(values) => Ok(values
                 .lock()
                 .expect("store lock")
                 .get(session_id)
                 .cloned()
-                .unwrap_or(Value::Null),
-        };
+                .unwrap_or(Value::Null)),
+        }
+    }
+
+    /// Read a stored session value; `null` is an empty session.
+    pub fn parse(session_id: &str, value: Value) -> Result<SessionState, String> {
         if value.is_null() {
             return Ok(SessionState::empty(session_id));
         }
@@ -105,11 +115,16 @@ impl Store {
     pub async fn save(&self, state: &SessionState) -> Result<(), String> {
         let value =
             serde_json::to_value(state).map_err(|error| format!("session serialize: {error}"))?;
+        self.save_value(&state.session_id, value).await
+    }
+
+    /// Store a session value as is.
+    pub async fn save_value(&self, session_id: &str, value: Value) -> Result<(), String> {
         match &self.backend {
             Backend::Bus(iii) => Self::bus_call(
                 iii,
                 "state::set",
-                json!({"scope": STATE_SCOPE, "key": state.session_id, "value": value}),
+                json!({"scope": STATE_SCOPE, "key": session_id, "value": value}),
             )
             .await
             .map(|_| ()),
@@ -117,7 +132,7 @@ impl Store {
                 values
                     .lock()
                     .expect("store lock")
-                    .insert(state.session_id.clone(), value);
+                    .insert(session_id.to_string(), value);
                 Ok(())
             }
         }

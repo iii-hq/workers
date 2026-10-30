@@ -1,5 +1,7 @@
 //! Typed public and internal functions for the A2UI worker.
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
@@ -15,8 +17,9 @@ use crate::configuration::{ConfigCell, OnConfigChangeEvent, OnConfigChangeRespon
 use crate::hook::{StampSessionEvent, StampSessionResponse, STAMP_SESSION_ID};
 use crate::protocol::{
     apply_messages, enforce_state_limits, export_surface, now_ms, push_history, set_data_path,
-    snapshot, validate_identifier, validate_live_binding, validate_renderable, ActionRecord,
-    BindingKind, DeleteSurface, DeleteSurfaceMessage, LiveBinding, ServerMessage, SessionState,
+    snapshot, stored_event_function_id, stored_worker_type, translate_stored_binding,
+    validate_identifier, validate_live_binding, validate_renderable, ActionRecord, BindingKind,
+    DeleteSurface, DeleteSurfaceMessage, LiveBinding, RetiredBinding, ServerMessage, SessionState,
     SurfaceExport, SurfaceRecord, SurfaceRevision, SurfaceStatus, SurfaceSummary, SurfaceTemplate,
     CATALOG_ID, MAX_BINDINGS_PER_SURFACE, PAGE_ID, PROTOCOL_VERSION, STREAM_BINDING_DEPRECATION,
 };
@@ -66,7 +69,7 @@ const IMPORT_DESC: &str =
     "Import a portable A2UI surface package into the current Harness session.";
 const EXPORT_CODE_DESC: &str =
     "Generate source code from an A2UI surface: a React app or a data-serving iii worker.";
-const BINDING_SET_DESC: &str = "Attach a declarative live binding to a surface: a worker's event function observed with args or filters (optionally with its worker's read-only query), state::on-changed, or shell::on-changed. Legacy stream::on-changed bindings are deprecated.";
+const BINDING_SET_DESC: &str = "Attach a declarative live binding to a surface: a worker's private event function observed with args or filters (optionally with its worker's read-only query), state::on-changed, or shell::on-changed. Legacy stream::on-changed bindings are deprecated.";
 const BINDING_DELETE_DESC: &str = "Remove a declarative live event binding from an A2UI surface.";
 const BINDING_APPLY_DESC: &str =
     "Console-only: persist a value delivered by a declared A2UI live binding.";
@@ -577,7 +580,7 @@ pub async fn generate(deps: &Deps, req: GenerateRequest) -> Result<SurfaceReceip
         .await?;
 
     let _guard = deps.store.mutation_guard(&session_id).await;
-    let mut state = deps.store.load(&session_id).await?;
+    let mut state = load_session(deps, &session_id).await?;
     let replaced = state.get(&surface_id).cloned();
     if replaced.is_some() {
         if !req.replace {
@@ -595,6 +598,7 @@ pub async fn generate(deps: &Deps, req: GenerateRequest) -> Result<SurfaceReceip
         surface.revision = previous.revision + 1;
         surface.pinned = previous.pinned;
         surface.bindings = previous.bindings;
+        surface.retired_bindings = previous.retired_bindings;
         surface.history = previous.history;
         push_history(surface, entry, cfg.max_history_per_surface);
     }
@@ -611,7 +615,7 @@ pub async fn apply(deps: &Deps, req: ApplyRequest) -> Result<SurfaceReceipt, Str
     let session_id = require_session(req.session_id)?;
     let cfg = deps.config.read().await.clone();
     let _guard = deps.store.mutation_guard(&session_id).await;
-    let mut state = deps.store.load(&session_id).await?;
+    let mut state = load_session(deps, &session_id).await?;
     let before = req
         .messages
         .first()
@@ -649,8 +653,7 @@ pub async fn apply(deps: &Deps, req: ApplyRequest) -> Result<SurfaceReceipt, Str
 
 pub async fn get(deps: &Deps, req: GetRequest) -> Result<SurfaceRecord, String> {
     let session_id = require_session(req.session_id)?;
-    deps.store
-        .load(&session_id)
+    load_session(deps, &session_id)
         .await?
         .get(&req.surface_id)
         .cloned()
@@ -659,9 +662,7 @@ pub async fn get(deps: &Deps, req: GetRequest) -> Result<SurfaceRecord, String> 
 
 pub async fn list(deps: &Deps, req: ListRequest) -> Result<ListResponse, String> {
     let session_id = require_session(req.session_id)?;
-    let mut surfaces: Vec<SurfaceSummary> = deps
-        .store
-        .load(&session_id)
+    let mut surfaces: Vec<SurfaceSummary> = load_session(deps, &session_id)
         .await?
         .surfaces
         .iter()
@@ -716,9 +717,7 @@ pub async fn patch(deps: &Deps, req: PatchRequest) -> Result<SurfaceReceipt, Str
         ));
     }
     validate_data_size(req.data.as_ref(), cfg.max_data_bytes)?;
-    let original = deps
-        .store
-        .load(&session_id)
+    let original = load_session(deps, &session_id)
         .await?
         .get(&req.surface_id)
         .cloned()
@@ -748,7 +747,7 @@ pub async fn patch(deps: &Deps, req: PatchRequest) -> Result<SurfaceReceipt, Str
         .await?;
 
     let _guard = deps.store.mutation_guard(&session_id).await;
-    let mut state = deps.store.load(&session_id).await?;
+    let mut state = load_session(deps, &session_id).await?;
     let current = state
         .get(&req.surface_id)
         .cloned()
@@ -774,6 +773,7 @@ pub async fn patch(deps: &Deps, req: PatchRequest) -> Result<SurfaceReceipt, Str
     surface.last_action = current.last_action;
     surface.pinned = current.pinned;
     surface.bindings = current.bindings;
+    surface.retired_bindings = current.retired_bindings;
     surface.history = current.history.clone();
     push_history(surface, entry, cfg.max_history_per_surface);
     let result = receipt(surface, SurfaceStatus::Active);
@@ -784,7 +784,7 @@ pub async fn patch(deps: &Deps, req: PatchRequest) -> Result<SurfaceReceipt, Str
 
 pub async fn export(deps: &Deps, req: ExportRequest) -> Result<SurfaceExport, String> {
     let session_id = require_session(req.session_id)?;
-    let state = deps.store.load(&session_id).await?;
+    let state = load_session(deps, &session_id).await?;
     let surface = state
         .get(&req.surface_id)
         .ok_or_else(|| format!("surface `{}` was not found", req.surface_id))?;
@@ -803,7 +803,7 @@ pub async fn action(deps: &Deps, req: ActionRequest) -> Result<ActionResponse, S
     validate_data_size(Some(&req.context), cfg.max_data_bytes)?;
     let (revision, timestamp_ms, context, data_model) = {
         let _guard = deps.store.mutation_guard(&session_id).await;
-        let mut state = deps.store.load(&session_id).await?;
+        let mut state = load_session(deps, &session_id).await?;
         let surface = state
             .get_mut(&req.surface_id)
             .ok_or_else(|| format!("surface `{}` was not found", req.surface_id))?;
@@ -929,7 +929,7 @@ pub async fn undo(deps: &Deps, req: UndoRequest) -> Result<SurfaceReceipt, Strin
     let session_id = require_session(req.session_id)?;
     let cfg = deps.config.read().await.clone();
     let _guard = deps.store.mutation_guard(&session_id).await;
-    let mut state = deps.store.load(&session_id).await?;
+    let mut state = load_session(deps, &session_id).await?;
     let surface = state
         .get_mut(&req.surface_id)
         .ok_or_else(|| format!("surface `{}` was not found", req.surface_id))?;
@@ -967,7 +967,7 @@ pub async fn duplicate(deps: &Deps, req: DuplicateRequest) -> Result<SurfaceRece
     validate_identifier("new_surface_id", &req.new_surface_id)?;
     let cfg = deps.config.read().await.clone();
     let _guard = deps.store.mutation_guard(&session_id).await;
-    let mut state = deps.store.load(&session_id).await?;
+    let mut state = load_session(deps, &session_id).await?;
     if state.get(&req.new_surface_id).is_some() {
         return Err(format!("surface `{}` already exists", req.new_surface_id));
     }
@@ -998,7 +998,7 @@ pub async fn pin(deps: &Deps, req: PinRequest) -> Result<SurfaceReceipt, String>
     let session_id = require_session(req.session_id)?;
     let cfg = deps.config.read().await.clone();
     let _guard = deps.store.mutation_guard(&session_id).await;
-    let mut state = deps.store.load(&session_id).await?;
+    let mut state = load_session(deps, &session_id).await?;
     let surface = state
         .get_mut(&req.surface_id)
         .ok_or_else(|| format!("surface `{}` was not found", req.surface_id))?;
@@ -1050,6 +1050,141 @@ pub async fn import_surface(deps: &Deps, req: ImportRequest) -> Result<SurfaceRe
     .await
 }
 
+/// Load a session. Bindings stored under iii 0.25 as a worker's type `W::X`
+/// are translated first ([`translate_stored_bindings`]), so every function
+/// reads, and writes back, the current shape.
+async fn load_session(deps: &Deps, session_id: &str) -> Result<SessionState, String> {
+    let mut value = deps.store.load_value(session_id).await?;
+    translate_stored_bindings(&mut value, |function_id: String| async move {
+        function_facts(deps, &function_id).await
+    })
+    .await;
+    Store::parse(session_id, value)
+}
+
+/// Translate every binding in a stored session (JSON) that names a worker's
+/// type `W::X`, with `lookup` answering `engine::functions::info`. The config
+/// becomes the args of `W::on-X` when the function registered an
+/// `args_format`, and `$eq` filters on `input.<field>` when it takes none
+/// ([`translate_stored_binding`]). The result passes the same checks as
+/// `a2ui::binding::set`; a binding whose function is not registered, or that
+/// fails a check, moves to the surface's `retired_bindings` with the reason.
+pub async fn translate_stored_bindings<F, Fut>(value: &mut Value, mut lookup: F)
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<FunctionFacts, String>>,
+{
+    let Some(surfaces) = value.get_mut("surfaces").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut known = HashMap::new();
+    for surface in surfaces.iter_mut().filter_map(Value::as_object_mut) {
+        let Some(bindings) = surface.get_mut("bindings").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if !bindings
+            .iter()
+            .any(|stored| stored_worker_type(stored).is_some())
+        {
+            continue;
+        }
+        let mut kept = Vec::with_capacity(bindings.len());
+        let mut retired = Vec::new();
+        for stored in std::mem::take(bindings) {
+            if stored_worker_type(&stored).is_none() {
+                kept.push(stored);
+                continue;
+            }
+            match translate_stored(&stored, &mut known, &mut lookup).await {
+                Ok(binding) => kept.push(json!(binding)),
+                Err(retirement) => retired.push(retirement),
+            }
+        }
+        *bindings = kept;
+        if retired.is_empty() {
+            continue;
+        }
+        let list = surface
+            .entry("retired_bindings")
+            .or_insert_with(|| json!([]));
+        if let Some(list) = list.as_array_mut() {
+            list.retain(|item| {
+                !retired.iter().any(|retirement| {
+                    item.get("id").and_then(Value::as_str) == Some(&retirement.id)
+                })
+            });
+            list.extend(retired.iter().map(|retirement| json!(retirement)));
+        }
+    }
+}
+
+async fn translate_stored<F, Fut>(
+    stored: &Value,
+    known: &mut HashMap<String, Result<FunctionFacts, String>>,
+    lookup: &mut F,
+) -> Result<LiveBinding, RetiredBinding>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<FunctionFacts, String>>,
+{
+    let id = stored
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let function_id = stored_worker_type(stored)
+        .map(stored_event_function_id)
+        .unwrap_or_default();
+    let retire = |reason: String| RetiredBinding {
+        id: id.clone(),
+        function_id: function_id.clone(),
+        reason,
+    };
+    let source = cached_facts(known, lookup, &function_id)
+        .await
+        .map_err(|error| {
+            retire(format!(
+                "function `{function_id}` is not registered with the engine ({error})"
+            ))
+        })?;
+    let binding =
+        translate_stored_binding(stored, source.args_format.is_some()).map_err(&retire)?;
+    if validate_live_binding(&binding).map_err(&retire)? == BindingKind::Owned {
+        let query = match &binding.query {
+            Some(query) => Some(
+                cached_facts(known, lookup, &query.function_id)
+                    .await
+                    .map_err(|error| {
+                        retire(format!(
+                            "binding query function `{}` is not registered with the engine ({error})",
+                            query.function_id
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
+        check_owned_binding(&binding, &source, query.as_ref()).map_err(&retire)?;
+    }
+    Ok(binding)
+}
+
+async fn cached_facts<F, Fut>(
+    known: &mut HashMap<String, Result<FunctionFacts, String>>,
+    lookup: &mut F,
+    function_id: &str,
+) -> Result<FunctionFacts, String>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<FunctionFacts, String>>,
+{
+    if let Some(found) = known.get(function_id) {
+        return found.clone();
+    }
+    let found = lookup(function_id.to_string()).await;
+    known.insert(function_id.to_string(), found.clone());
+    found
+}
+
 pub async fn set_binding(deps: &Deps, req: BindingSetRequest) -> Result<BindingSetReceipt, String> {
     let kind = validate_live_binding(&req.binding)?;
     if kind == BindingKind::Owned {
@@ -1070,6 +1205,9 @@ pub async fn set_binding(deps: &Deps, req: BindingSetRequest) -> Result<BindingS
         "binding changed",
         true,
         |surface| {
+            surface
+                .retired_bindings
+                .retain(|retired| retired.id != req.binding.id);
             if let Some(item) = surface
                 .bindings
                 .iter_mut()
@@ -1108,6 +1246,10 @@ pub struct FunctionFacts {
     /// JSON Schema of the function's observer args; absent when it takes none.
     #[serde(default)]
     pub args_format: Option<Value>,
+    /// `true` when only the hosting worker may call the function: an event
+    /// source whose handler returns the event.
+    #[serde(default)]
+    pub private: bool,
     /// `false` when nobody may observe the function.
     #[serde(default)]
     pub observable: Option<bool>,
@@ -1170,10 +1312,11 @@ async fn registry_facts(
     Ok((source, query))
 }
 
-/// Registry checks for a binding on a worker's function: the function is
-/// observable, `args` match its registered `args_format` (and are absent when
-/// it takes none), and the optional query is a read-only function registered
-/// by the same worker as the observed function.
+/// Registry checks for a binding on a worker's function: the function is a
+/// private, observable event source of another worker, `args` match its
+/// registered `args_format` (and are absent when it takes none), and the
+/// optional query is a read-only function registered by the same worker as
+/// the observed function.
 pub fn check_owned_binding(
     binding: &LiveBinding,
     source: &FunctionFacts,
@@ -1189,6 +1332,12 @@ pub fn check_owned_binding(
     if source.observable == Some(false) {
         return Err(format!(
             "function `{}` is not observable",
+            binding.function_id
+        ));
+    }
+    if !source.private {
+        return Err(format!(
+            "function `{}` is not an event source: a binding observes a private function (`private: true`) whose handler returns its event",
             binding.function_id
         ));
     }
@@ -1268,9 +1417,7 @@ pub async fn refresh_binding(
     req: BindingRefreshRequest,
 ) -> Result<BindingRefreshReceipt, String> {
     let session_id = require_session(req.session_id)?;
-    let binding = deps
-        .store
-        .load(&session_id)
+    let binding = load_session(deps, &session_id)
         .await?
         .get(&req.surface_id)
         .ok_or_else(|| format!("surface `{}` was not found", req.surface_id))?
@@ -1311,7 +1458,7 @@ async fn persist_refresh(
 ) -> Result<BindingRefreshReceipt, String> {
     let cfg = deps.config.read().await.clone();
     let _guard = deps.store.mutation_guard(session_id).await;
-    let mut state = deps.store.load(session_id).await?;
+    let mut state = load_session(deps, session_id).await?;
     let surface = state
         .get_mut(surface_id)
         .ok_or_else(|| format!("surface `{surface_id}` was not found"))?;
@@ -1352,9 +1499,12 @@ pub async fn delete_binding(
         "binding removed",
         true,
         |surface| {
-            let before = surface.bindings.len();
+            let before = surface.bindings.len() + surface.retired_bindings.len();
             surface.bindings.retain(|item| item.id != req.binding_id);
-            if before == surface.bindings.len() {
+            surface
+                .retired_bindings
+                .retain(|item| item.id != req.binding_id);
+            if before == surface.bindings.len() + surface.retired_bindings.len() {
                 return Err("binding was not found".into());
             }
             Ok(())
@@ -1405,7 +1555,7 @@ where
     let session_id = require_session(session)?;
     let cfg = deps.config.read().await.clone();
     let _guard = deps.store.mutation_guard(&session_id).await;
-    let mut state = deps.store.load(&session_id).await?;
+    let mut state = load_session(deps, &session_id).await?;
     let surface = state
         .get_mut(id)
         .ok_or_else(|| format!("surface `{id}` was not found"))?;
@@ -1430,7 +1580,7 @@ pub async fn save_template(
     validate_identifier("template_id", &req.template_id)?;
     let cfg = deps.config.read().await.clone();
     let _guard = deps.store.mutation_guard(&session_id).await;
-    let mut state = deps.store.load(&session_id).await?;
+    let mut state = load_session(deps, &session_id).await?;
     let surface = state
         .get(&req.surface_id)
         .cloned()
@@ -1470,7 +1620,7 @@ pub async fn list_templates(
     req: TemplateListRequest,
 ) -> Result<TemplateListResponse, String> {
     let session = require_session(req.session_id)?;
-    let mut templates = deps.store.load(&session).await?.templates;
+    let mut templates = load_session(deps, &session).await?.templates;
     templates.sort_by_key(|item| std::cmp::Reverse(item.updated_at_ms));
     Ok(TemplateListResponse {
         count: templates.len(),
@@ -1483,8 +1633,7 @@ pub async fn get_template(
 ) -> Result<SurfaceTemplate, String> {
     let session = require_session(req.session_id)?;
     validate_identifier("template_id", &req.template_id)?;
-    deps.store
-        .load(&session)
+    load_session(deps, &session)
         .await?
         .templates
         .into_iter()
@@ -1558,7 +1707,7 @@ pub async fn delete_template(deps: &Deps, req: TemplateSelectRequest) -> Result<
     validate_identifier("template_id", &req.template_id)?;
     let cfg = deps.config.read().await.clone();
     let _guard = deps.store.mutation_guard(&session).await;
-    let mut state = deps.store.load(&session).await?;
+    let mut state = load_session(deps, &session).await?;
     let before = state.templates.len();
     state.templates.retain(|v| v.template_id != req.template_id);
     if before == state.templates.len() {
@@ -2475,6 +2624,7 @@ mod tests {
                     "properties": {"counter": {"type": "string", "minLength": 1}},
                     "additionalProperties": false
                 })),
+                private: true,
                 ..FunctionFacts::default()
             }
         }
@@ -2631,6 +2781,31 @@ mod tests {
             let error = check_owned_binding(&binding, &hidden, Some(&query_facts())).unwrap_err();
             assert!(error.contains("not observable"), "{error}");
 
+            // A public function (`state::set`, `orders::list`) is a call,
+            // not an event source: observing it would deliver every caller's
+            // writes, a2ui's own included.
+            let mut public = source_facts();
+            public.private = false;
+            let error = check_owned_binding(&binding, &public, Some(&query_facts())).unwrap_err();
+            assert!(error.contains("is not an event source"), "{error}");
+            let state_set = LiveBinding {
+                id: "loop".into(),
+                function_id: "state::set".into(),
+                args: None,
+                filters: Some(json!({"input.scope": {"$eq": "a2ui"}})),
+                target_path: "/v".into(),
+                event_path: None,
+                query: None,
+            };
+            assert_eq!(validate_live_binding(&state_set), Ok(BindingKind::Owned));
+            let state_worker = FunctionFacts {
+                function_id: "state::set".into(),
+                worker_name: "state".into(),
+                ..FunctionFacts::default()
+            };
+            let error = check_owned_binding(&state_set, &state_worker, None).unwrap_err();
+            assert!(error.contains("is not an event source"), "{error}");
+
             let mut unowned = source_facts();
             unowned.worker_name = String::new();
             assert!(check_owned_binding(&binding, &unowned, Some(&query_facts())).is_err());
@@ -2730,6 +2905,203 @@ mod tests {
             .unwrap();
             let error = refresh_binding(&deps, refresh).await.unwrap_err();
             assert_eq!(error, "binding was not found");
+        }
+
+        /// A session stored under iii 0.25, with one surface whose bindings
+        /// name workers' types and the built-in `state` type.
+        fn stored_session() -> Value {
+            let mut state = SessionState::empty("s1");
+            let messages: Vec<ServerMessage> = serde_json::from_value(json!([
+                {"version": PROTOCOL_VERSION, "createSurface": {"surfaceId": "live", "catalogId": CATALOG_ID}},
+                {"version": PROTOCOL_VERSION, "updateComponents": {"surfaceId": "live", "components": [
+                    {"id": "root", "component": "Text", "text": {"path": "/count"}}
+                ]}}
+            ]))
+            .unwrap();
+            apply_messages(&mut state, &messages, None, &WorkerConfig::default()).unwrap();
+            let mut value = serde_json::to_value(&state).unwrap();
+            value["surfaces"][0]["bindings"] = json!([
+                {
+                    "id": "models",
+                    "trigger_type": "router::models::changed",
+                    "config": {"provider": "openai", "metadata": {"source": "agent"}},
+                    "target_path": "/models"
+                },
+                {
+                    "id": "counter",
+                    "trigger_type": "demo::counter-changed",
+                    "config": {"counter": "clicks"},
+                    "target_path": "/count",
+                    "query": {"function_id": "demo::counter::get", "payload": {"counter": "clicks"}, "result_path": "/value"}
+                },
+                {
+                    "id": "orders",
+                    "trigger_type": "orders::changed",
+                    "config": {"status": "open"},
+                    "target_path": "/orders"
+                },
+                {
+                    "id": "notes",
+                    "trigger_type": "notes::saved",
+                    "config": {},
+                    "target_path": "/notes"
+                },
+                {
+                    "id": "status",
+                    "trigger_type": "state",
+                    "config": {"scope": "orders", "key": "open"},
+                    "target_path": "/status"
+                }
+            ]);
+            value
+        }
+
+        fn registry(function_id: String) -> Result<FunctionFacts, String> {
+            match function_id.as_str() {
+                "router::models::on-changed" => Ok(FunctionFacts {
+                    function_id,
+                    worker_name: "llm-router".into(),
+                    private: true,
+                    ..FunctionFacts::default()
+                }),
+                "demo::on-counter-changed" => Ok(source_facts()),
+                "demo::counter::get" => Ok(query_facts()),
+                // Registered, but a call rather than an event source.
+                "notes::on-saved" => Ok(FunctionFacts {
+                    function_id,
+                    worker_name: "notes".into(),
+                    ..FunctionFacts::default()
+                }),
+                _ => Err(format!("FUNCTION_NOT_FOUND: {function_id}")),
+            }
+        }
+
+        #[tokio::test]
+        async fn stored_worker_types_translate_through_the_registry_or_retire() {
+            let mut value = stored_session();
+            let mut lookups = Vec::new();
+            translate_stored_bindings(&mut value, |function_id: String| {
+                lookups.push(function_id.clone());
+                std::future::ready(registry(function_id))
+            })
+            .await;
+            let state = Store::parse("s1", value).unwrap();
+            let surface = state.get("live").unwrap();
+
+            let models = &surface.bindings[0];
+            assert_eq!(models.function_id, "router::models::on-changed");
+            assert_eq!(models.args, None, "the function takes no args");
+            assert_eq!(
+                models.filters,
+                Some(json!({"input.provider": {"$eq": "openai"}}))
+            );
+            let counter = &surface.bindings[1];
+            assert_eq!(counter.function_id, "demo::on-counter-changed");
+            assert_eq!(counter.args, Some(json!({"counter": "clicks"})));
+            assert_eq!(counter.filters, None);
+            assert_eq!(surface.bindings[2].id, "status");
+            assert_eq!(surface.bindings[2].function_id, "state::on-changed");
+            assert_eq!(surface.bindings.len(), 3);
+
+            let retired: Vec<(&str, &str)> = surface
+                .retired_bindings
+                .iter()
+                .map(|item| (item.id.as_str(), item.function_id.as_str()))
+                .collect();
+            assert_eq!(
+                retired,
+                [
+                    ("orders", "orders::on-changed"),
+                    ("notes", "notes::on-saved")
+                ]
+            );
+            assert!(surface.retired_bindings[0]
+                .reason
+                .contains("is not registered with the engine"));
+            assert!(surface.retired_bindings[1]
+                .reason
+                .contains("is not an event source"));
+            // One lookup per function, the query's included.
+            assert_eq!(lookups.len(), 5, "{lookups:?}");
+        }
+
+        #[tokio::test]
+        async fn retired_bindings_are_listed_until_set_again_or_deleted() {
+            let mut value = stored_session();
+            translate_stored_bindings(&mut value, |function_id: String| {
+                std::future::ready(registry(function_id))
+            })
+            .await;
+            // Still in the 0.25 shape: every load translates it, and the
+            // engine (never connected here) cannot confirm `late::on-changed`.
+            value["surfaces"][0]["bindings"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                    "id": "late",
+                    "trigger_type": "late::changed",
+                    "config": {"key": "k"},
+                    "target_path": "/late"
+                }));
+            let deps = deps();
+            deps.store.save_value("s1", value).await.unwrap();
+
+            set_binding(
+                &deps,
+                set_request(json!({
+                    "id": "orders",
+                    "function_id": "shell::on-changed",
+                    "args": {"path": "/workspace"},
+                    "target_path": "/orders"
+                })),
+            )
+            .await
+            .unwrap();
+            let surface = get(
+                &deps,
+                serde_json::from_value(json!({"session_id": "s1", "surface_id": "live"})).unwrap(),
+            )
+            .await
+            .unwrap();
+            let ids: Vec<&str> = surface
+                .bindings
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect();
+            assert_eq!(ids, ["models", "counter", "status", "orders"]);
+            let wire = serde_json::to_value(&surface).unwrap();
+            assert_eq!(
+                wire["retired_bindings"],
+                json!([
+                    {
+                        "id": "notes",
+                        "function_id": "notes::on-saved",
+                        "reason": surface.retired_bindings[0].reason
+                    },
+                    {
+                        "id": "late",
+                        "function_id": "late::on-changed",
+                        "reason": surface.retired_bindings[1].reason
+                    }
+                ])
+            );
+            assert!(surface.retired_bindings[1]
+                .reason
+                .contains("is not registered with the engine"));
+
+            let delete: BindingDeleteRequest = serde_json::from_value(json!({
+                "session_id": "s1", "surface_id": "live", "binding_id": "notes"
+            }))
+            .unwrap();
+            delete_binding(&deps, delete).await.unwrap();
+            let after = stored(&deps).await;
+            assert_eq!(after.bindings.len(), 4);
+            let ids: Vec<&str> = after
+                .retired_bindings
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect();
+            assert_eq!(ids, ["late"]);
         }
     }
 }

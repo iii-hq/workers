@@ -28,7 +28,7 @@ Surfaces belong to the current Harness session. The Harness pre-call hook stamps
 - Generated surfaces use the fixed Console catalog; they cannot execute HTML, JavaScript, CSS, or arbitrary components.
 - Use `canvas` for diagrams and freeform drawing, and use a domain worker directly when no visual surface is needed.
 - `a2ui::action`, `a2ui::binding::apply`, `a2ui::binding::refresh`, `a2ui::stamp-session`, and `a2ui::on-config-change` are internal Console/Harness lifecycle functions, not agent tools.
-- Live bindings never observe `browser::*`, `harness::*`, `engine::*`, hook, `http::on-request`, `cron::on-tick`, or `queue::on-message`. A binding passes `args` only to a function that registered an `args_format`; otherwise it selects calls with `filters` on `input.<field>`. A binding `query` must be a function registered by the observed function's own worker with metadata `{"read_only": true}`.
+- Live bindings observe another worker's private event function (registered with `private: true`), `state::on-changed` or `shell::on-changed`, and never `browser::*`, `harness::*`, `engine::*`, `observability::*`, hook, `http::on-request`, `cron::on-tick`, or `queue::on-message`. A binding passes `args` only to a function that registered an `args_format`; otherwise it selects calls with `filters` on `input.<field>`. A binding `query` must be a function registered by the observed function's own worker with metadata `{"read_only": true}`.
 - Do not create new `stream::on-changed` bindings: iii-stream is deprecated and will be removed in an upcoming release. Existing ones keep working while iii-stream runs. Bind the producing worker's own event function.
 
 ## Functions

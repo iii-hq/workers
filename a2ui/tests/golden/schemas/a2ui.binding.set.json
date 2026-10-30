@@ -1,5 +1,5 @@
 {
-  "description": "Attach a declarative live binding to a surface: a worker's event function observed with args or filters (optionally with its worker's read-only query), state::on-changed, or shell::on-changed. Legacy stream::on-changed bindings are deprecated.",
+  "description": "Attach a declarative live binding to a surface: a worker's private event function observed with args or filters (optionally with its worker's read-only query), state::on-changed, or shell::on-changed. Legacy stream::on-changed bindings are deprecated.",
   "function_id": "a2ui::binding::set",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -7,7 +7,7 @@
     "definitions": {
       "BindingQuery": {
         "additionalProperties": false,
-        "description": "Read-only query the worker that hosts an observed event source exposes for the current data. The function must be registered by the same worker as the observed function with metadata `{\"read_only\": true}`.",
+        "description": "Read-only query the worker that hosts an observed event function exposes for the current data. The function must be registered by the same worker as the observed function with metadata `{\"read_only\": true}`.",
         "properties": {
           "function_id": {
             "description": "Provider function that returns the current value.",
@@ -47,7 +47,7 @@
             "description": "Filters selecting which calls are delivered, each with an explicit operator: `{ \"input.status\": { \"$eq\": \"open\" } }`."
           },
           "function_id": {
-            "description": "Function to observe: a worker's event source (for example `orders::on-changed`), `state::on-changed`, or `shell::on-changed`. `stream::on-changed` is accepted only as deprecated legacy compatibility.",
+            "description": "Function to observe: another worker's private event function (for example `orders::on-changed`), `state::on-changed`, or `shell::on-changed`. `stream::on-changed` is accepted only as deprecated legacy compatibility.",
             "type": "string"
           },
           "id": {

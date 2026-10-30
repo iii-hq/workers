@@ -16,7 +16,7 @@ use std::time::Duration;
 use a2ui::composer::Composer;
 use a2ui::config::WorkerConfig;
 use a2ui::functions::{
-    delete_binding, refresh_binding, set_binding, BindingDeleteRequest, BindingRefreshRequest,
+    delete_binding, get, refresh_binding, set_binding, BindingDeleteRequest, BindingRefreshRequest,
     BindingSetRequest, Deps,
 };
 use a2ui::protocol::{
@@ -205,6 +205,17 @@ async fn owned_function_binding_end_to_end() {
     println!("reserved function -> {error}");
     assert!(error.contains("reserved"));
 
+    // A registered function that is not private is a call, not an event
+    // source: observing it would deliver every caller's calls.
+    let public = json!({
+        "id": "bumps",
+        "function_id": "demo::counter::bump",
+        "target_path": "/bumps"
+    });
+    let error = set_binding(&deps, set_request(public)).await.unwrap_err();
+    println!("public function -> {error}");
+    assert!(error.contains("is not an event source"), "{error}");
+
     // 2. Legacy stream binding is still accepted, flagged deprecated, on an
     //    engine without iii-stream.
     let legacy = set_binding(
@@ -332,6 +343,99 @@ async fn owned_function_binding_end_to_end() {
         "binding was not found"
     );
     println!("unbind cleanup -> provider observers 0, no delivery, binding removed");
+
+    // 7. Bindings stored under iii 0.25 translate through the registry when
+    //    the session loads: args for a function with an args_format, `$eq`
+    //    filters for one without, retired when the function is missing.
+    iii.register_function(
+        "a2ui-live::on-note-saved",
+        RegisterFunction::new(|event: Value| Ok::<Value, Error>(event))
+            .description("Live check: a private event function that takes no args.")
+            .private(),
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let stored_session = "live-stored";
+    let mut stored = SessionState::empty(stored_session);
+    apply_messages(&mut stored, &messages, None, &WorkerConfig::default()).unwrap();
+    let mut value = serde_json::to_value(&stored).unwrap();
+    value["surfaces"][0]["bindings"] = json!([
+        {
+            "id": "clicks-count",
+            "trigger_type": "demo::counter-changed",
+            "config": {"counter": "clicks"},
+            "target_path": "/count",
+            "query": {"function_id": "demo::counter::get", "payload": {"counter": "clicks"}, "result_path": "/value"}
+        },
+        {
+            "id": "note",
+            "trigger_type": "a2ui-live::note-saved",
+            "config": {"note": "n1", "metadata": {"from": "0.25"}},
+            "target_path": "/note"
+        },
+        {
+            "id": "gone",
+            "trigger_type": "demo::counter-reset",
+            "config": {"counter": "clicks"},
+            "target_path": "/reset"
+        }
+    ]);
+    deps.store.save_value(stored_session, value).await.unwrap();
+    let surface = get(
+        &deps,
+        serde_json::from_value(json!({"session_id": stored_session, "surface_id": SURFACE}))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    println!(
+        "stored 0.25 bindings -> bindings={} retired={}",
+        serde_json::to_string(&surface.bindings).unwrap(),
+        serde_json::to_string(&surface.retired_bindings).unwrap()
+    );
+    assert_eq!(surface.bindings.len(), 2);
+    assert_eq!(surface.bindings[0].function_id, "demo::on-counter-changed");
+    assert_eq!(surface.bindings[0].args, Some(json!({"counter": "clicks"})));
+    assert_eq!(surface.bindings[1].function_id, "a2ui-live::on-note-saved");
+    assert_eq!(surface.bindings[1].args, None);
+    assert_eq!(
+        surface.bindings[1].filters,
+        Some(json!({"input.note": {"$eq": "n1"}}))
+    );
+    assert_eq!(surface.retired_bindings.len(), 1);
+    assert_eq!(surface.retired_bindings[0].id, "gone");
+    assert_eq!(
+        surface.retired_bindings[0].function_id,
+        "demo::on-counter-reset"
+    );
+    assert!(surface.retired_bindings[0]
+        .reason
+        .contains("is not registered with the engine"));
+
+    // The engine accepts the translated observer, and refuses the args the
+    // stored config would otherwise have become.
+    let translated = iii.observe(
+        Source::function("a2ui-live::on-note-saved")
+            .filters(json!({"input.note": {"$eq": "n1"}}))
+            .deliver(Deliver::Output),
+        "a2ui-live::on-counter",
+    );
+    tokio::time::timeout(Duration::from_secs(5), translated.ready())
+        .await
+        .expect("translated observer settles")
+        .unwrap();
+    translated.dispose().await.unwrap();
+    let as_args = iii.observe(
+        Source::function("a2ui-live::on-note-saved")
+            .args(json!({"note": "n1"}))
+            .deliver(Deliver::Output),
+        "a2ui-live::on-counter",
+    );
+    let error = tokio::time::timeout(Duration::from_secs(5), as_args.ready())
+        .await
+        .expect("args observer settles")
+        .unwrap_err();
+    println!("args on a function without args_format -> {error}");
+    assert!(error.to_string().contains("INVALID_ARGS"), "{error}");
     iii.shutdown_async().await;
 }
 
