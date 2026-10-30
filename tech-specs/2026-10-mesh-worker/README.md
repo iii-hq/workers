@@ -73,9 +73,15 @@ Any of these makes `mesh` a failure even if everything else works:
 
 - `mesh` making the engine, or the proxy, reachable from the mesh or the front
   door. Only the gateway faces the mesh.
-- A node registering a function or trigger type outside its own `<node>::`
-  prefix, binding a trigger type it was not granted, or reading another
-  worker's configuration.
+- A node escaping its grants:
+  - registering a function or trigger type outside its own `<node>::` prefix;
+  - binding a trigger type it was not granted;
+  - seeing or rewriting hub calls through a harness hook;
+  - reading another worker's configuration, or the hub's environment through
+    a configuration template;
+  - keeping a grant after the grant changes.
+- An agent driving a node's supervisor or drives, or `mesh`'s middleware, by
+  any path, `fp::pipe` and `fp::batch` included.
 - Workers on a node running as root or admin.
 - Anything a node runs as root that was fetched over plain HTTP.
 - Any phone-home: no Tailscale log upload, no Tailscale DERP, STUN or DNS
@@ -127,8 +133,14 @@ flowchart LR
   a one-time ticket. The proxy asks `mesh::auth`, which returns that node's
   grants:
   - everything the node registers is prefixed with `<node>::`;
-  - the node may call only its allow list, through `mesh::middleware`;
-  - it may bind only the trigger types it was granted.
+  - the node may call only its allow list, through `mesh::middleware`, which
+    keeps hub environment values out of its configuration reads;
+  - it may bind only granted trigger types whose deliveries stay confined to
+    the node, never the harness hooks.
+
+  A change to the grants closes and re-authenticates the node's sessions.
+  The hub drives each node's supervisor with requests signed by its identity
+  key, so no agent can drive it.
 
   Nodes hold no engine credential: membership in the mesh is the credential.
 
@@ -197,8 +209,10 @@ that dials the proxy directly therefore gets nothing.
 ### Removal
 
 1. `mesh::nodes::remove` deletes the node, adds its keys to the refused list,
-   and cycles the device code. Join secrets derive from the code, so a removed
-   machine that kept the code and its state still cannot register new keys.
+   cycles the device code, and (phase 3) revokes the join token that created
+   the node. Join secrets derive from the code, and tokens are single use
+   unless they are reusable and ephemeral. So a removed machine that kept its
+   code, token and state still cannot register new keys.
 2. Map deltas drop it from every peer within seconds.
 3. The gateway closes its connections, so its functions leave the engine, and
    `node-changed` fires `removed`.
@@ -221,7 +235,7 @@ Neither change needs a restart.
 
 | Phase | Ships | Acceptance ([mesh.md § Acceptance](mesh.md#acceptance-criteria)) |
 | --- | --- | --- |
-| 1. Core | Tailscale fork; coordinator, relay, device-code join; Linux and macOS nodes (service, TUN, hosts, self-update); links; removal; `mesh::status` / `nodes::*` / `join::*`; gateway with `rbac-proxy`; node supervisor running `ide`; skill; [required changes](mesh.md#required-changes-outside-mesh) in harness, fp and rbac-proxy | 1–7, 9, 10 |
+| 1. Core | Tailscale fork; coordinator, relay, device-code join; Linux and macOS nodes (service, TUN, hosts, self-update); links; removal; `mesh::status` / `nodes::*` / `join::*`; gateway with `rbac-proxy`; node supervisor running `ide`; skill; [required changes](mesh.md#required-changes-outside-mesh) in harness, fp, rbac-proxy and configuration | 1–7, 9, 10 |
 | 2. Reach | Windows nodes (wintun, service, hosts), drives (NFS and SMB), Console page | 8, and 1–6 on Windows 11 |
 | 3. Automation | Join tokens and ephemeral nodes, `mesh::node-changed`, `browser` / `computer` / `tmux` on nodes | 11 |
 
