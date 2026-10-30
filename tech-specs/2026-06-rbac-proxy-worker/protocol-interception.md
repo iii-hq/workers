@@ -141,7 +141,7 @@ engine drops an item for a call it routed to the connection.
 |---|---|
 | `WorkerRegistered` | Reduce `features` to what the proxy enforces → forward. |
 | `RegistrationRejected` | The id stops being the session's own; strip `{prefix}::` from `function_id` → forward. |
-| `FunctionRegistered` | Record its observers as the ones this connection hosts; strip `{prefix}::` from `id` and from each `observers[].target`; set `local_dispatch: false` when middleware is configured → forward. |
+| `FunctionRegistered` | Record its observers as the ones this connection hosts; strip `{prefix}::` from `id` and from each `observers[].target`; set `local_dispatch: false` when middleware is configured, unless this connection registered the function `private: true` in its namespace → forward. |
 | `ObserverAdded` / `ObserverRemoved` | Add or remove the observer among the ones this connection hosts; strip `{prefix}::` from `function_id` (and `observer.target`) → forward. |
 | `ObserveResult` / `ObserverStateChanged` | Track the observers this connection created (accepted until `error` or `disposed`) → forward. |
 | `InvokeFunction` (engine dispatching a call **to** the worker) | Remember the call until the worker answers it (what a `caller` must name) → strip `{prefix}::` from `function_id` so the worker SDK finds its local handler; for an activation of an observer this connection created that delivers the `Observed` envelope, strip it from `data.function_id` too → forward. Middleware does **not** apply to inbound dispatch. |
@@ -164,12 +164,14 @@ runs them for a proxied connection with no RBAC session, so the proxy gates
 them from both sides.
 
 - **Features.** `data.features` of `engine::workers::register` and `features`
-  of `WorkerRegistered` keep `observe.v1` and `observe.v2`. `local-dispatch.v1`
-  is kept only when no `middleware_function_id` is set: an in-process call
-  never reaches the middleware. With middleware set, every `FunctionRegistered`
-  reaches the worker with `local_dispatch: false`, so the SDK routes its own
-  calls through the engine and the proxy. `large-messages.v1` is removed: the
-  proxy forwards text frames only.
+  of `WorkerRegistered` keep `observe.v1`, `observe.v2` and
+  `local-dispatch.v1`. With `middleware_function_id` set, a
+  `FunctionRegistered` reaches the worker with `local_dispatch: false` unless
+  the connection registered the function `private: true` (observe v2
+  decision 46). An in-process call never reaches the middleware, so the SDK
+  routes its own calls of every other function through the engine and the
+  proxy; its own calls of a private function skip the middleware on either
+  path. `large-messages.v1` is removed: the proxy forwards text frames only.
 - **Observing.** An `Observe` is gated like a call of both functions it names
   (see the flowchart below and [rbac.md § Observer registration RBAC](rbac.md#observer-registration-rbac)).
   On top of the engine's checks, the proxy refuses an `engine::*` target, since

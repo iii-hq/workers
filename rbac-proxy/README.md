@@ -122,12 +122,14 @@ Workers behind the proxy observe functions and host observable functions as
 they do against the engine. The engine runs observers for a proxied
 connection with no RBAC session, so the proxy gates every observe frame:
 
-- **Features.** `observe.v1` and `observe.v2` are kept in what the worker
-  declares and what the engine answers. `local-dispatch.v1` is kept only when
-  no `middleware_function_id` is set: a call that runs in-process never
-  reaches the middleware. With middleware set, `functionregistered` reaches
-  the worker with `local_dispatch: false`. `large-messages.v1` is removed (the
-  proxy forwards text frames only).
+- **Features.** `observe.v1`, `observe.v2` and `local-dispatch.v1` are kept
+  in what the worker declares and what the engine answers. With
+  `middleware_function_id` set, `functionregistered` reaches the worker with
+  `local_dispatch: false` for every function except the ones the connection
+  registered `private: true`: a call that runs in-process never reaches the
+  middleware, and the connection's own calls of a private function skip it
+  (see **Registrations**). `large-messages.v1` is removed (the proxy forwards
+  text frames only).
 - **Observing.** An `observe` runs `on_observer_registration_function_id`,
   then needs the session to be allowed to call both the observed function and
   the target, each in the namespace it names. The session's own
@@ -150,9 +152,11 @@ connection with no RBAC session, so the proxy gates every observe frame:
   `NOT_FUNCTION_OWNER`. `invocationresult.observed` and `output_is_input`
   pass as sent, and the engine checks them.
 - **Registrations.** `private`, `observable` and `args_format` on
-  `registerfunction` pass to the engine. The connection's calls to its own
-  private functions go straight to the engine: the middleware runs on the
-  proxy's control connection, which a private function refuses.
+  `registerfunction` pass to the engine. The connection's calls of its own
+  private functions skip the middleware, which runs on the proxy's control
+  connection, a connection a private function refuses: they run in-process
+  once `functionregistered` offers `local_dispatch`, and go straight to the
+  engine otherwise.
 - **Call chains.** A `caller` a worker sets on a call or a report is kept only
   when it names a call the engine routed to that connection and the
   connection has not answered yet; the proxy writes it from that call, so a

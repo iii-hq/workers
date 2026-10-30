@@ -8,8 +8,7 @@
 //! with no RBAC session of its own, so a frame type the proxy has not learned
 //! to gate is a frame nothing gates: protocol additions are closed until the
 //! proxy learns them. Of the protocol features either side declares, it keeps
-//! the ones it enforces end to end ([`SUPPORTED_FEATURES`], and
-//! [`LOCAL_DISPATCH`] when no middleware is configured). The frame types the
+//! the ones it enforces end to end ([`SUPPORTED_FEATURES`]). The frame types the
 //! iii protocol removed ([`REMOVED_FRAMES`]) are dropped with one `warn` per
 //! connection and frame type, naming what replaces each, as the engine does.
 //!
@@ -94,11 +93,12 @@ pub const UPSTREAM_TYPES: &[&str] = &[
 /// They are kept in what the worker declares on `engine::workers::register`
 /// and in the engine's `workerregistered`; every other feature is removed.
 /// `large-messages.v1` is not among them: the proxy forwards text frames only.
-pub const SUPPORTED_FEATURES: &[&str] = &["observe.v1", "observe.v2"];
-
-/// In-process calls of a worker's own functions. Kept only when no
-/// middleware is configured: a local call never reaches the middleware.
-pub const LOCAL_DISPATCH: &str = "local-dispatch.v1";
+///
+/// `local-dispatch.v1` lets the SDK run its own functions in-process once
+/// `functionregistered` says `local_dispatch: true`, which the proxy decides
+/// per function (see [`Interceptor::on_function_registered`]): an in-process
+/// call never reaches the middleware.
+pub const SUPPORTED_FEATURES: &[&str] = &["observe.v1", "observe.v2", "local-dispatch.v1"];
 
 /// The frame types the iii protocol removed (0.25's binding messages), with
 /// what replaces each (the engine's `REMOVED_MESSAGES`). A worker that sends
@@ -228,7 +228,8 @@ pub struct Interceptor {
     registered_ids: Mutex<HashSet<String>>,
     /// The engine ids among `registered_ids` registered `private: true`. Only
     /// their host may call them, and the middleware runs on the control
-    /// connection, so this connection's calls to them skip the middleware.
+    /// connection, so this connection's calls to them skip the middleware,
+    /// and `functionregistered` keeps offering them `local_dispatch`.
     private_ids: Mutex<HashSet<String>>,
     /// The namespace this connection declared on `engine::workers::register`
     /// (`None` until it does, which the engine treats as `default`). Its own
@@ -311,10 +312,16 @@ impl Interceptor {
         }
     }
 
-    /// Whether this connection's own calls may run in-process: only when no
-    /// middleware is configured, which a local call would never reach.
-    fn local_dispatch(&self) -> bool {
+    /// Whether this connection's own calls of `engine_id`, registered in
+    /// `namespace`, may run in-process: always without middleware, which a
+    /// local call never reaches, and for a function the connection hosts
+    /// privately, whose own calls skip the middleware anyway (the
+    /// middleware's forward comes from the control connection, which a
+    /// private function refuses).
+    async fn local_dispatch(&self, namespace: &str, engine_id: &str) -> bool {
         self.config.middleware_function_id.is_none()
+            || (self.is_own(namespace, engine_id).await
+                && self.private_ids.lock().await.contains(engine_id))
     }
 
     /// The namespace this connection's own registrations live in.
@@ -977,7 +984,7 @@ impl Interceptor {
     /// (and registering) in `default`. An unscoped session declares freely.
     ///
     /// The worker's `features` are reduced to the ones the proxy enforces
-    /// ([`SUPPORTED_FEATURES`], and [`LOCAL_DISPATCH`] without middleware).
+    /// ([`SUPPORTED_FEATURES`]).
     async fn on_register_worker(&self, mut v: Value, inv_id: Option<Uuid>) -> DownstreamAction {
         let declared = v
             .get("data")
@@ -1033,9 +1040,8 @@ impl Interceptor {
         if let Some(namespace) = declared {
             *self.connection_namespace.lock().await = Some(namespace);
         }
-        let local_dispatch = self.local_dispatch();
         if let Some(data) = v.get_mut("data").and_then(Value::as_object_mut) {
-            retain_supported_features(data, local_dispatch);
+            retain_supported_features(data);
             // A proxied worker cannot claim a trusted worker's name (the engine
             // keeps one live worker per name and rejects the other one).
             if let Some(Value::String(name)) = data.get_mut("name") {
@@ -1176,9 +1182,8 @@ impl Interceptor {
             // The engine's protocol features, reduced to what the proxy
             // enforces, so the SDK speaks the protocol the proxy can gate.
             "workerregistered" => {
-                let local_dispatch = self.local_dispatch();
                 if let Some(obj) = v.as_object_mut() {
-                    retain_supported_features(obj, local_dispatch);
+                    retain_supported_features(obj);
                 }
                 UpstreamAction::Forward(v.to_string())
             }
@@ -1312,11 +1317,15 @@ impl Interceptor {
     /// `functionregistered`: the engine's ack of one of this connection's
     /// registrations, with every observer of the function. The observers are
     /// the ones this connection may call through; ids reach the worker
-    /// without the session prefix, and in-process calls stay off while
-    /// middleware is configured.
+    /// without the session prefix. While middleware is configured,
+    /// `local_dispatch` stays `true` only for a function the connection hosts
+    /// privately (decision 46): its own calls of any other function run on
+    /// the wire, through the middleware.
     async fn on_function_registered(&self, mut v: Value) -> UpstreamAction {
+        let mut local_dispatch = false;
         if let Some(engine_id) = v.get("id").and_then(Value::as_str) {
             let key = (frame_namespace(&v), engine_id.to_string());
+            local_dispatch = self.local_dispatch(&key.0, engine_id).await;
             let ids: Vec<String> = v
                 .get("observers")
                 .and_then(Value::as_array)
@@ -1339,7 +1348,7 @@ impl Interceptor {
                 self.strip_field(observer, "target");
             }
         }
-        if !self.local_dispatch() {
+        if !local_dispatch {
             v["local_dispatch"] = Value::Bool(false);
         }
         UpstreamAction::Forward(v.to_string())
@@ -1516,21 +1525,16 @@ fn parent_of(caller: &Value) -> Option<Value> {
 }
 
 /// Keep only the features the proxy enforces in an object's `features` list
-/// ([`SUPPORTED_FEATURES`], and [`LOCAL_DISPATCH`] when `local_dispatch`),
-/// and drop the key when none is left (an absent list reads as "no features"
-/// on both sides).
-fn retain_supported_features(obj: &mut serde_json::Map<String, Value>, local_dispatch: bool) {
+/// ([`SUPPORTED_FEATURES`]), and drop the key when none is left (an absent
+/// list reads as "no features" on both sides).
+fn retain_supported_features(obj: &mut serde_json::Map<String, Value>) {
     let kept: Vec<Value> = obj
         .get("features")
         .and_then(Value::as_array)
         .map(|features| {
             features
                 .iter()
-                .filter(|f| {
-                    f.as_str().is_some_and(|f| {
-                        SUPPORTED_FEATURES.contains(&f) || (local_dispatch && f == LOCAL_DISPATCH)
-                    })
-                })
+                .filter(|f| f.as_str().is_some_and(|f| SUPPORTED_FEATURES.contains(&f)))
                 .cloned()
                 .collect()
         })
@@ -2059,8 +2063,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dispatch_is_removed_when_middleware_is_set() {
-        let i = interceptor(config_with(expose(&[]), Some("p::mw")), session(None));
+    async fn under_middleware_local_dispatch_is_offered_for_own_private_functions_only() {
+        let i = interceptor(
+            config_with(expose(&[]), Some("p::mw")),
+            session(Some("tenant1")),
+        );
         let o = forwarded(
             i.handle_downstream(&register_with_features(&[
                 "observe.v1",
@@ -2068,26 +2075,71 @@ mod tests {
             ]))
             .await,
         );
-        assert_eq!(o["data"]["features"], json!(["observe.v1"]));
+        assert_eq!(
+            o["data"]["features"],
+            json!(["observe.v1", "local-dispatch.v1"])
+        );
 
         let o = forwarded_up(
             i.handle_upstream(&registered_with_features(&["local-dispatch.v1"]))
                 .await,
         );
-        assert!(o.get("features").is_none());
+        assert_eq!(o["features"], json!(["local-dispatch.v1"]));
 
-        // The engine would run the worker's own calls in-process; the proxy
-        // keeps them on the wire, through the middleware.
+        let ack = |id: &str, namespace: &str, local_dispatch: bool| {
+            json!({
+                "type": "functionregistered",
+                "id": id,
+                "namespace": namespace,
+                "revision": 1,
+                "local_dispatch": local_dispatch,
+                "observers": []
+            })
+            .to_string()
+        };
+
+        // An ordinary own function: its own calls run on the wire, through
+        // the middleware.
         register(&i, "ledger::post").await;
-        let ack = json!({
-            "type": "functionregistered",
-            "id": "ledger::post",
-            "namespace": "default",
-            "revision": 1,
-            "local_dispatch": true,
-            "observers": []
-        });
-        let o = forwarded_up(i.handle_upstream(&ack.to_string()).await);
+        let o = forwarded_up(
+            i.handle_upstream(&ack("tenant1::ledger::post", "default", true))
+                .await,
+        );
+        assert_eq!(o["id"], "ledger::post");
+        assert_eq!(o["local_dispatch"], false);
+
+        // A private one: its own calls skip the middleware, so they may run
+        // in-process.
+        let private =
+            json!({ "type": "registerfunction", "id": "ledger::on-posted", "private": true });
+        forwarded(i.handle_downstream(&private.to_string()).await);
+        let o = forwarded_up(
+            i.handle_upstream(&ack("tenant1::ledger::on-posted", "default", true))
+                .await,
+        );
+        assert_eq!(o["id"], "ledger::on-posted");
+        assert_eq!(o["local_dispatch"], true);
+
+        // The engine's `false` stands.
+        let o = forwarded_up(
+            i.handle_upstream(&ack("tenant1::ledger::on-posted", "default", false))
+                .await,
+        );
+        assert_eq!(o["local_dispatch"], false);
+
+        // The same id in another namespace is not the connection's.
+        let o = forwarded_up(
+            i.handle_upstream(&ack("tenant1::ledger::on-posted", "orders", true))
+                .await,
+        );
+        assert_eq!(o["local_dispatch"], false);
+
+        // Registered again without `private`: an ordinary function.
+        register(&i, "ledger::on-posted").await;
+        let o = forwarded_up(
+            i.handle_upstream(&ack("tenant1::ledger::on-posted", "default", true))
+                .await,
+        );
         assert_eq!(o["local_dispatch"], false);
     }
 
