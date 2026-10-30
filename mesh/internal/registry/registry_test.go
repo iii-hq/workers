@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolvePicksNamedEntry(t *testing.T) {
@@ -125,6 +127,60 @@ func TestResolveCanceledContext(t *testing.T) {
 	defer server.Close()
 	if _, err := Resolve(ctx, server.Client(), server.URL, "ide", "*", "target"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestResolveBoundsStalledResponses(t *testing.T) {
+	for _, stage := range []string{"headers", "body", "body EOF"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				if stage != "headers" {
+					body := `{"graph":[`
+					if stage == "body EOF" {
+						body = `{"graph":[]}`
+					}
+					fmt.Fprint(w, body)
+					w.(http.Flusher).Flush()
+				}
+				<-r.Context().Done()
+			}))
+			t.Cleanup(server.Close)
+			t.Cleanup(cancel)
+			done := make(chan error, 1)
+			go func() {
+				_, err := Resolve(ctx, nil, server.URL, "ide", "*", "target")
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("stalled %s error = %v, want deadline exceeded", stage, err)
+				}
+				if ctx.Err() != nil {
+					t.Fatalf("resolution canceled its caller: %v", ctx.Err())
+				}
+			case <-time.After(12 * time.Second):
+				t.Fatalf("stalled %s blocked resolution", stage)
+			}
+		})
+	}
+}
+
+func TestResolveHonorsEarlierCallerDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := Resolve(ctx, server.Client(), server.URL, "ide", "*", "target")
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > time.Second {
+		t.Fatalf("earlier caller deadline ignored: %v after %s", err, time.Since(start))
 	}
 }
 

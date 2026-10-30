@@ -1,8 +1,8 @@
 # Local Mesh delivery evidence
 
-This records the local delivery preparation before the controller's final whole-branch review. Publication and that review remain separate gates. The user explicitly chose local tests and left native acceptance unverified.
+This records local implementation, the final whole-branch review corrections, and their evidence. The latest user instruction keeps the branch/worktree local: no ticket, push, PR or publication is requested. Native acceptance remains explicitly unverified; the controller owns the scoped re-review.
 
-The branch was clean at `99f65195eb6d467538d7c6318973e75501ec2b08`. Fetch advanced `origin/main` to `60dc4b4ad7efdc4215d6c4f0ccadc7b3447d85e3`; all 48 branch commits rebased without conflict to `2a01cdf5a7448b2af56a6a358b5d44cb7d78963f`. The old merge base was `e466d21d659297c877127f9055ac8a282944562d`; the new merge base is the fetched main commit. A local recovery ref retains the original tip. The final compatibility correction is `9d194cef7`.
+The branch was clean at `99f65195eb6d467538d7c6318973e75501ec2b08`. Fetch advanced `origin/main` to `60dc4b4ad7efdc4215d6c4f0ccadc7b3447d85e3`; all 48 branch commits rebased without conflict to `2a01cdf5a7448b2af56a6a358b5d44cb7d78963f`. The old merge base was `e466d21d659297c877127f9055ac8a282944562d`; the new merge base is the fetched main commit. A local recovery ref retains the original tip. The Task26 compatibility correction is `9d194cef7`.
 
 ## Phase and commit map
 
@@ -21,7 +21,7 @@ Ranges below are inclusive and refer to the rebased history.
 
 The frozen frontend preparation initially exited 2 at tmux's TypeScript check: `TS2353`, because `details` is absent from `ConfirmOptions`. Upstream `c15a1990f` explicitly removed that property from both `ConfirmDialogProps` and `ConfirmOptions`, defining a title, short description and actions. The correction removes the obsolete entry; the existing named session title, consequence description, danger tone and confirmation action remain. The affected `pnpm --dir tmux/ui build` then exited 0: typecheck, bundle and strict UI lint all passed, with zero lint errors or warnings. No timeout, dependency version or shared UI contract was changed.
 
-## Pinned local gates
+## Task26 local gates before final review
 
 Go **1.27.1**, Rust/cargo **1.97.1**, Node **22.23.4** and pnpm **11.13.1** were used. Go commands set `CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=readonly GOTOOLCHAIN=local TS_NO_LOGS_NO_SUPPORT=true`. Installer tests also had portable PowerShell **7.4.13** available. The frozen frontend install selected 12 workspace projects without changing the lockfile; all eight required frontend builds completed, with the diagnosed tmux correction above. Generated Mesh assets stayed byte-identical.
 
@@ -94,18 +94,35 @@ SDK worker registration uses the proxy registration path, without a new ordinary
 
 Real IDE direct/harness shell and scoped coder paths, browser start/snapshot/stop in both namespaces, and tmux create/capture/kill are exercised. Supervised computer bootstraps and serves but its clean environment has no display: native start returns the observed missing-display error. After that process is stopped, the same binary is launched separately through the gateway with an owned 800×600 Xvfb display and completes start/screenshot/stop. Supplemental capture does not prove supervised desktop capture or native acceptance. Browser profiles, tmux sockets, displays and processes are isolated and owned by the fixtures.
 
-The final runner regenerated six observation artifacts. Counts below are outgoing RPCs / bindings / type registrations. Hashes identify the complete private payload/response records, with no enrollment values or operation image responses in those observation files.
+The final-fix runner regenerated six observation artifacts, replacing the Task26 identities below; the Task26 manifest remains in its private archive. Counts below are outgoing RPCs / bindings / type registrations. Hashes identify the complete private payload/response records, with no enrollment values or operation image responses in those observation files.
 
 | Observation artifact | Counts | SHA256 |
 | --- | --- | --- |
-| `TestE2EBootstrapIDEDefaultNamespace-observations.json` | 8 / 4 / 0 | `f096e83eaaf8518b6ffdc8a1735c8a7d932b0de588037ee7f58764132513666d` |
-| `TestE2EBootstrapIDEProjectNamespace-observations.json` | 8 / 4 / 0 | `2fc2d59d22cb1e0b5b1f43f38111e2700b8ed91c5afd79f1f117b210d472aaab` |
-| `TestE2EBrowserOnNode-default-observations.json` | 5 / 4 / 13 | `c3d80d1bfbb960363efe28f6a554bdd7e35cf2a946e6d1bd9f7468aedaa44982` |
-| `TestE2EBrowserOnNode-project-observations.json` | 5 / 4 / 13 | `2d3618475b895c104042782dbfe305a6eee96caa5d23a548ed59ac30dcc623c6` |
-| `TestE2EComputerOnNode-observations.json` | 12 / 6 / 8 | `e1569945a3ea943e6e334a1da39f52a5df9175bf95fa2edebcbed5c6597804c9` |
-| `TestE2ETmuxOnNode-observations.json` | 6 / 4 / 1 | `7e17dee629d77cab2221aad60cf8a0bcdcdb9a86e4173481366d1b439c44d3ca` |
+| `TestE2EBootstrapIDEDefaultNamespace-observations.json` | 8 / 4 / 0 | `215b2f89923b1ad8c86a469899624795fcbb364e5ac155c66061fefaf666a355` |
+| `TestE2EBootstrapIDEProjectNamespace-observations.json` | 8 / 4 / 0 | `d6154c08032a3f7bff8ca1747aea61578cd4770595b0ed9d318ecffbea0719ee` |
+| `TestE2EBrowserOnNode-default-observations.json` | 5 / 4 / 13 | `4819132a417c49c9f64d9a4a2c7528b1327297e898df21a934b8b1918101d602` |
+| `TestE2EBrowserOnNode-project-observations.json` | 5 / 4 / 13 | `b9a0fc6444b01b04c6e930ffc81832516b50edc5f2a4dd703a16c5ad43c96871` |
+| `TestE2EComputerOnNode-observations.json` | 12 / 6 / 8 | `c7c3eb2018d297bc0b6acf859e8c1763dc4cc65de15cf4cc76945fd5789a9bf1` |
+| `TestE2ETmuxOnNode-observations.json` | 6 / 4 / 1 | `6447240f5f041820e1c9dbab7a524a4d5b83652881545b3baa65031a65039b93` |
 
-Computer has 26 entries: 12 no-acknowledgement records, five successes, four `FORBIDDEN`, four `REGISTRATION_DENIED`, and one confirmed configuration delivery. Its supervised binding on connection 2 delivered; its supplemental binding on connection 5 has no acknowledgement observed. Connections are forwarding socket epochs, not process IDs. Correlation requires later frames on the same known connection, the owned configuration identity and matching receiver; earlier process history cannot prove a later binding.
+Computer has 26 entries: 12 no-acknowledgement records, five successes, four `FORBIDDEN`, four `REGISTRATION_DENIED`, and one confirmed configuration delivery. Its current supervised binding on connection 3 delivered; its supplemental binding on connection 4 has no acknowledgement observed. The earlier Task26 run used connections 2 and 5, respectively. Connections are forwarding socket epochs, not process IDs. Correlation requires later frames on the same known connection, the owned configuration identity and matching receiver; earlier process history cannot prove a later binding.
+
+## Final-review local corrections and gates
+
+The complete four-finding fix wave after `89ed9b0a0` is implemented locally:
+
+- Registry resolutions have a **10-second child request deadline**, covering response headers, JSON decoding and final EOF. The budget matches the existing join HTTP operation; caller cancellation/deadlines remain effective and the outer reconciliation stays alive. Real hanging-header/body regressions pass through the actual signed node handlers: a valid later worker applies, the old worker is removed, the timeout remains visible per worker, and drives reach their controller. That drive test uses fixture host operations, not native mounts.
+- Configuration deep links open all ancestor disclosures before focusing. The actual Console host verifies initially closed advanced fields and manually collapsed machine/drive entries at desktop/mobile sizes in both themes. Opaque draft preservation still passes; existing field accessibility metadata remains intact.
+- The locale-clean tmux regression retains only `TMUX_TMPDIR` from the parent for consistent creation/teardown. Its nondefault-directory test verifies that the owned server and socket are gone. Production UTF-8 mode is unchanged.
+- CI uploads only a generated **`public-report.json`**, containing test outcomes/counts and curated observation identities/statuses. Raw frames, payload/config bodies, error text and process dumps remain private. A runtime-generated credential regression and scans of both retained and fresh real reports prove the selected file excludes all six captured ephemeral engine registration credentials. No publication or production credential exposure is claimed.
+
+Final affected Go fmt/vet/all 17 tested packages/build/E2E-tag-vet and Windows amd64/arm64, macOS amd64/arm64 and Linux arm64 cross-builds passed. The first gate wrapper's `umask 077` altered two existing permission fixtures: requested 0555 became 0500 and requested 0755 became 0700. The original exit 1 log is retained. Exact failing cases then passed with normal 022, followed by one successful final full Go gate; no product permission check, fixture or deadline was weakened.
+
+Affected tmux fmt/clippy with `-D warnings`/all-features tests passed **96 tests**, with the existing ignored child fixture invoked by its passing parent. Pinned Node 22.23.4/pnpm 11.13.1 rebuilt Mesh assets with clean strict lint. The complete actual-host UI matrix passed, including **16 focus cases**, opaque/custom preservation and 54 captures. Frozen Console dependency preparation and test selector updates follow the rebased host's `Settings`, `Save changes` and `Reset` names; their earlier setup/selector failures are retained separately from the meaningful hidden-target RED.
+
+The unfiltered final-source Mesh E2E run passed **20/20 top-level tests in 169.322s**, zero failures/skips. Current observation counts remain IDE 8/4/0 each, browser 5/4/13 each, tmux 6/4/1 and computer 12/6/8. The selected public report contains 20 passing outcomes and 105 curated records; SHA256 `c4abffa18ffdff3ae908c3fe34a999840517590f20d453086dc600f193548a78`. Its two raw credential-bearing frame captures are excluded. Untouched harness/fp/proxy/approval gates and the independent proxy 10/10 result above remain Task26 evidence and were not rerun.
+
+The rebuilt Linux Mesh binary is 22,118,560 bytes, SHA256 `97ed3f429bff22dfa3d7d64614b5102e742b12de3534ad7d75be052a473228ec`. Embedded JS is 15,695 bytes, SHA256 `587ef0deb1a6c8d59207d5be1f343fa8870661b8446f287c0c9e114d2b50eb1e`; CSS remains unchanged. All actual worker/engine binaries retain their Task26 identities; tmux was rebuilt and rehashed. Full new logs, original failures, manifests, browser captures and the detailed fix report remain private under `/home/anderson/mesh-worker-delivery/final-fix/`. The original Task26 archive and earlier-source evidence boundaries remain intact.
 
 ## Evidence boundaries and remaining review items
 
@@ -117,8 +134,8 @@ Node-change events have bounded queues, publication-time eligible binding genera
 
 Reviewed restart and gateway corrections have scoped diagnoses and regression evidence. The original natural WireGuard packet-loss location and production cold-first-request latency remain unproved. Historical failures are retained rather than erased by later successful gates.
 
-The Console rapid post-save edit/reset visibility observation has no established cause or fix. Prior independent reset/save checks and the actual-host render matrix passed at their recorded source states. Final review still owns the deferred Console accessibility/deep-link items and tmux regression cleanup with a nondefault `TMUX_TMPDIR`; no closure is claimed here. Retained Mesa/XKB and networking diagnostics remain visible in private logs.
+The Console rapid post-save edit/reset visibility observation has no established cause or fix. Prior independent reset/save checks and the actual-host render matrix passed at their recorded source states. The final-review fix wave covers disclosure/deep-link focus and tmux regression cleanup under a nondefault `TMUX_TMPDIR`; the current actual-host matrix includes opaque-value preservation. The already-correct SettingsField accessibility metadata was retained. Retained Mesa/XKB and networking diagnostics remain visible in private logs.
 
 Native Ubuntu 26.04/macOS/Windows 11 installation, privileged services/UAC/TUN/routes/hosts, named tunnel and cross-network paths, drive mounts/locking, packet-capture acceptance, live Registry artifact publication, installer resolution and remote CI remain **unverified**. Cross-builds establish compilation only. The unrelated engine on port 49134 was left untouched.
 
-The implementation plan explicitly requests a Linear ticket. Local workflow inspection found no title/ticket enforcement; the observed main ruleset is disabled, and the CLI reported no branch protection. Organization/external checks remain unverified. No ticket ID has been invented, and no issue, PR or push occurred during local preparation.
+The earlier ticket/PR delivery plan is superseded by the latest local-only user instruction. No ticket ID has been invented, and no issue, PR, push or other external write occurred. The existing local branch/worktree is preserved.

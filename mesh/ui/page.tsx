@@ -223,6 +223,9 @@ function MeshConfiguration(form: ConfigFormProps) {
   useEffect(() => {
     if (!focus) return
     const target = root.current?.querySelector<HTMLElement>(`[data-field="${CSS.escape(focus)}"]`)
+    for (let ancestor = target?.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      if (ancestor instanceof HTMLDetailsElement) ancestor.open = true
+    }
     target?.focus(); target?.scrollIntoView({ block: 'center' })
   }, [focus])
   if (!isRecord(form.value)) return <div className="mesh-ui-configuration" ref={root}>

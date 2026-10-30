@@ -13,6 +13,7 @@ const require = createRequire(resolve(root, 'ade/web/package.json'))
 const { chromium, expect } = require('@playwright/test')
 const artifacts = process.env.MESH_UI_ARTIFACTS ?? '/tmp/mesh-task22-render'
 const opaqueOnly = process.env.MESH_UI_SCENARIO === 'opaque'
+const focusOnly = process.env.MESH_UI_SCENARIO === 'focus'
 const opaqueCase = process.env.MESH_UI_OPAQUE_CASE
 await mkdir(artifacts, { recursive: true })
 const portProbe = createServer()
@@ -112,12 +113,12 @@ try {
         await page.screenshot({ path })
         results.push(path)
       }
-      if (!opaqueOnly) {
+      if (!opaqueOnly && !focusOnly) {
         await page.goto(`${url}/#/worker/mesh/mesh-manager`)
         await expect(page.getByText('Loading machines and join instructions…')).toBeVisible()
         await capture('loading')
         await page.keyboard.press('Tab')
-        await expect(page.getByRole('button', { name: 'Configure worker', exact: true })).toBeFocused()
+        await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeFocused()
         mode = 'empty'; waiting.splice(0).forEach((send) => send())
         await expect(page.getByText('No machines joined', { exact: true })).toBeVisible()
         await capture('empty')
@@ -144,28 +145,28 @@ try {
         mode = 'long'; await page.getByRole('button', { name: 'Refresh', exact: true }).click()
         await expect(page.getByRole('heading', { name: longNodes[0].name })).toBeVisible()
         await capture('long')
-        await page.getByRole('button', { name: 'Configure worker', exact: true }).click()
+        await page.getByRole('button', { name: 'Settings', exact: true }).click()
         await expect(page).toHaveURL(/#\/configuration\/workers\/mesh-lab$/)
         const publicUrl = page.getByRole('textbox', { name: 'Public URL', exact: true })
         await expect(publicUrl).toBeVisible()
         await publicUrl.fill('https://mesh.example.com')
-        await expect(page.getByRole('button', { name: 'save', exact: true })).toBeEnabled()
+        await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled()
         // Reset an unsaved draft so reset and persistence checks have independent baselines.
         const configCallsBeforeEdit = calls.filter((call) => call.id.startsWith('configuration::'))
         await publicUrl.fill('https://changed.example.com')
         try {
           await expect(publicUrl).toHaveValue('https://changed.example.com')
-          await expect(page.getByRole('button', { name: 'reset', exact: true })).toBeVisible()
+          await expect(page.getByRole('button', { name: 'Reset', exact: true })).toBeVisible()
         } catch (error) {
           await page.screenshot({ path: resolve(artifacts, 'reset-diagnostic.png') })
           await writeFile(resolve(artifacts, 'reset-diagnostic.json'), JSON.stringify({ before: configCallsBeforeEdit, after: calls.filter((call) => call.id.startsWith('configuration::')), value: await publicUrl.inputValue(), text: await page.locator('body').innerText() }, null, 2))
           throw error
         }
-        await page.getByRole('button', { name: 'reset', exact: true }).click()
+        await page.getByRole('button', { name: 'Reset', exact: true }).click()
         await expect(publicUrl).toHaveValue('')
         await publicUrl.fill('https://mesh.example.com')
         await page.getByRole('textbox', { name: 'Gateway port', exact: true }).fill('0')
-        await expect(page.getByRole('button', { name: 'save', exact: true })).toBeDisabled()
+        await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled()
         await page.getByRole('textbox', { name: 'Gateway port', exact: true }).fill('49135')
         await page.getByRole('textbox', { name: 'New machine name', exact: true }).fill('constructor')
         await expect(page.getByRole('button', { name: 'Add machine', exact: true })).toBeEnabled()
@@ -183,9 +184,9 @@ try {
         await page.getByRole('textbox', { name: 'Link 1 first machine', exact: true }).fill('laptop')
         await page.getByRole('textbox', { name: 'Link 1 second machine', exact: true }).fill('desktop')
         await capture('configuration')
-        await page.getByRole('button', { name: 'save', exact: true }).click()
+        await page.getByRole('button', { name: 'Save changes', exact: true }).click()
         await expect.poll(() => saved.length).toBe(1)
-        await expect(page.getByRole('button', { name: 'save', exact: true })).toHaveCount(0)
+        await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toHaveCount(0)
         assert.equal(saved[0].value.listen, initialConfig.listen, 'unrelated environment template preserved')
         assert.deepEqual(saved[0].value.nodes.laptop.workers, ['ide'])
         assert.deepEqual(saved[0].value.drives.project, { server: 'laptop', nodes: ['*'] })
@@ -202,19 +203,49 @@ try {
         activeSchema = {}
         mode = 'populated'
         await page.goto(`${url}/?draft=${randomUUID()}#/worker/mesh/mesh-manager`)
-        await page.getByRole('button', { name: 'Configure worker', exact: true }).click()
+        try {
+          await page.getByRole('button', { name: 'Settings', exact: true }).click()
+        } catch (error) {
+          await writeFile(resolve(artifacts, 'host-open-draft-diagnostic.json'), JSON.stringify({ errors, calls, body: await page.locator('body').innerText() }, null, 2))
+          throw error
+        }
         await expect(page).toHaveURL(/#\/configuration\/workers\/mesh-lab$/)
       }
       const persist = async (expected) => {
         const count = saved.length
-        await page.getByRole('button', { name: 'save', exact: true }).click()
+        await page.getByRole('button', { name: 'Save changes', exact: true }).click()
         await expect.poll(() => saved.length).toBe(count + 1)
-        await expect(page.getByRole('button', { name: 'save', exact: true })).toHaveCount(0)
+        await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toHaveCount(0)
         assert.deepEqual(saved.at(-1).value, expected, 'host receives the entire preserved draft')
       }
       const replace = (label) => page.getByRole('button', { name: `Replace ${label} raw value with a literal value`, exact: true })
       const unchanged = async () => {
-        await expect(page.getByRole('button', { name: 'save', exact: true })).toHaveCount(0)
+        await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toHaveCount(0)
+      }
+      if (!opaqueOnly) {
+        const focusDraft = { ...initialConfig, trusted_proxies: ['127.0.0.1/32'], links: [['laptop', 'desktop']], nodes: { laptop: { workers: ['ide'] } }, drives: { project: { server: 'laptop', nodes: ['*'] } } }
+        for (const field of ['trusted_proxies.0', 'links.0.0', 'nodes.laptop.workers.0', 'drives.project.server']) {
+          await openDraft(focusDraft)
+          const target = page.locator(`[data-field="${field}"]`)
+          await expect(target).toHaveCount(1)
+          const disclosure = target.locator('xpath=ancestor::details[1]')
+          if (field.startsWith('nodes.') || field.startsWith('drives.')) {
+            await disclosure.locator('summary').click()
+          }
+          await expect(disclosure).not.toHaveAttribute('open', '')
+          await expect(target).toBeHidden()
+          await page.evaluate((field) => { window.location.hash = `/configuration/workers/mesh-lab/${field.split('.').join('/')}` }, field)
+          await expect(target).toBeVisible()
+          await expect(target).toBeFocused()
+          await expect(disclosure).toHaveAttribute('open', '')
+          await unchanged()
+          await capture(`focus-${field}`)
+        }
+        console.log(`PASS ${viewport.width}px ${theme}: deep links reveal and focus closed advanced settings and manually collapsed machine/drive entries`)
+      }
+      if (focusOnly) {
+        await context.close()
+        continue
       }
       if (!opaqueCase || opaqueCase === 'root') {
         await openDraft('${MESH_CONFIG}')

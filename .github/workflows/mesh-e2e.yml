@@ -94,11 +94,17 @@ jobs:
           iii --version
           mkdir -p mesh/tests/e2e/reports
           III_BIN=$(command -v iii) MESH_TEST_CHROMIUM_BIN=$(command -v google-chrome) mesh/tests/e2e/run-tests.sh 2>&1 | tee mesh/tests/e2e/reports/results.log
+      - name: Prepare credential-free public report
+        if: always()
+        run: |
+          node --test mesh/tests/e2e/public-report.test.mjs
+          mkdir -p mesh/tests/e2e/reports
+          node mesh/tests/e2e/public-report.mjs mesh/tests/e2e/reports
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: mesh-e2e-report
-          path: mesh/tests/e2e/reports/
+          path: mesh/tests/e2e/reports/public-report.json
           retention-days: 7
 
   windows-crossbuild:

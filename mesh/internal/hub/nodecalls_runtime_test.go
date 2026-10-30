@@ -396,3 +396,120 @@ func TestResolutionFailuresReachSignedNodeAndDoNotBlockOtherDesiredState(t *test
 	}
 
 }
+
+func TestStalledRegistryDoesNotBlockSignedDesiredState(t *testing.T) {
+	for _, stage := range []string{"headers", "body"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			h, _ := nodeCallHub(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			r := &registeredNodeRPC{registered: map[string]bool{}, replies: map[string]chan map[string]json.RawMessage{}, notReady: make(chan struct{}, 8)}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { r.serve(ctx, w, req) }))
+			defer server.Close()
+			client := iii.New("ws"+strings.TrimPrefix(server.URL, "http"), iii.WithName("mesh-node"), iii.WithNamespace("default"))
+			defer client.Close()
+			if err := client.Connect(ctx); err != nil {
+				t.Fatal(err)
+			}
+			workers := &signedWorkers{}
+			drives := &signedDrives{controller: realDriveController(t, newHubDriveHost(t))}
+			n, err := node.New(node.Options{Mesh: signedNetwork{}, HubIdentity: h.Coordinator.Identity().Public().(ed25519.PublicKey), Version: h.Version, Operator: "alice", Workers: workers, Drives: drives})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := n.Register(client); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.After(3 * time.Second)
+			ticker := time.NewTicker(time.Millisecond)
+			defer ticker.Stop()
+			for {
+				r.mu.Lock()
+				ready := len(r.registered) == 4 && r.namespace == "default"
+				r.mu.Unlock()
+				if ready {
+					break
+				}
+				select {
+				case <-ticker.C:
+				case <-deadline:
+					t.Fatal("handlers not ready")
+				}
+			}
+			registryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				var request struct{ Worker, Target string }
+				if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+					t.Error(err)
+					return
+				}
+				if request.Worker == "stalled" {
+					if stage == "body" {
+						fmt.Fprint(w, `{"graph":[`)
+						w.(http.Flusher).Flush()
+					}
+					<-req.Context().Done()
+					return
+				}
+				fmt.Fprintf(w, `{"graph":[{"name":%q,"version":"1.0.0","type":"binary","binaries":{%q:{"url":"https://artifacts.example/worker","sha256":%q}}}]}`, request.Worker, request.Target, strings.Repeat("a", 64))
+			}))
+			t.Cleanup(registryServer.Close)
+			t.Cleanup(cancel)
+			h.nodeClient = r
+			h.resolveArtifact = func(ctx context.Context, worker, version, target string) (registry.Artifact, error) {
+				return registry.Resolve(ctx, nil, registryServer.URL, worker, version, target)
+			}
+			h.config.Nodes["laptop"] = NodeConfig{Workers: []string{"old"}}
+			if err := h.OnNodeOnline(ctx, "laptop"); err != nil {
+				t.Fatal(err)
+			}
+			h.config.Nodes["laptop"] = NodeConfig{Workers: []string{"stalled", "valid"}}
+			h.config.Drives = map[string]DriveConfig{"work": {Server: "laptop", Nodes: []string{"laptop"}}}
+			h.applyCoordinator(h.config)
+			done := make(chan error, 1)
+			go func() { done <- h.OnNodeOnline(ctx, "laptop") }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("aggregate error = %v, want registry deadline exceeded", err)
+				}
+			case <-time.After(12 * time.Second):
+				cancel()
+				<-done
+				t.Fatal("stalled first lookup blocked complete worker and drive apply")
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("outer reconciliation context canceled: %v", ctx.Err())
+			}
+			workers.mu.Lock()
+			current := append([]node.Worker{}, workers.workers...)
+			stopped := append([]string{}, workers.stopped...)
+			workers.mu.Unlock()
+			if len(current) != 1 || current[0].Name != "valid" || !slices.Contains(stopped, "old") {
+				t.Fatalf("runnable=%+v stopped=%v", current, stopped)
+			}
+			status, err := h.fetchNodeStatus(ctx, "laptop")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(status.Workers) != 2 || !slices.ContainsFunc(status.Workers, func(w node.WorkerStatus) bool {
+				return w.Name == "stalled" && w.State == "error" && strings.Contains(w.Error, "context deadline exceeded")
+			}) {
+				t.Fatalf("signed node lost per-worker timeout: %+v", status.Workers)
+			}
+			if !slices.ContainsFunc(status.Drives, func(d node.DriveStatus) bool { return d.Name == "work" && d.State == "mounted" }) {
+				t.Fatalf("stalled lookup blocked drive mount: %+v", status.Drives)
+			}
+			h.config.Nodes["laptop"] = NodeConfig{}
+			h.config.Drives = nil
+			h.applyCoordinator(h.config)
+			if err := h.OnNodeOnline(ctx, "laptop"); err != nil {
+				t.Fatalf("subsequent reconciliation failed: %v", err)
+			}
+			status, err = h.fetchNodeStatus(ctx, "laptop")
+			if err != nil || len(status.Workers) != 0 || len(status.Drives) != 0 {
+				t.Fatalf("subsequent empty desired state not applied: %+v, %v", status, err)
+			}
+		})
+	}
+}

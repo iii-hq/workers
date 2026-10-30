@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const DefaultBase = "https://api.workers.iii.dev"
@@ -30,6 +31,9 @@ type Artifact struct {
 
 // Resolve uses DefaultBase and http.DefaultClient when base and c are unset.
 func Resolve(ctx context.Context, c *http.Client, base, worker, versionRange, target string) (Artifact, error) {
+	// A stalled registry must release reconciliation to apply other workers and drives.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	if base == "" {
 		base = DefaultBase
 	}
@@ -73,6 +77,9 @@ func Resolve(ctx context.Context, c *http.Client, base, worker, versionRange, ta
 		return Artifact{}, fmt.Errorf("registry resolve: %w", err)
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
+		if err != nil {
+			return Artifact{}, fmt.Errorf("registry resolve: %w", err)
+		}
 		return Artifact{}, errors.New("registry resolve: trailing response data")
 	}
 	index := -1
