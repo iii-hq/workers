@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::WorkerConfig;
+use crate::events::EventKind;
 use crate::runtime::{build_runtime, SessionBuildContext, SessionRuntime};
 
 /// Hot-swappable config snapshot shared with `SessionService`. The
@@ -272,10 +273,15 @@ pub async fn apply_runtime(state: &AppState, cfg: WorkerConfig) -> Result<(), St
         return Ok(());
     }
 
-    // Adapter changed: snapshot the pre-swap sessions (for delete signalling),
-    // build the new runtime, swap it in, then replay current state through the
+    // Adapter changed: build the new runtime, snapshot the pre-swap sessions
+    // (for delete signalling, only while `session::on-deleted` reaches
+    // anything), swap the runtime in, then replay current state through the
     // new local emitter so open views reconcile in place.
-    let old_metas = {
+    let new_runtime = build_runtime(&cfg, &state.ctx)?;
+    let new_store = new_runtime.store.clone();
+    let new_emitter = new_runtime.local_emitter.clone();
+
+    let old_metas = if new_emitter.wants(EventKind::Deleted) {
         let store = state.runtime.read().await.store.clone();
         store.list_metas().await.unwrap_or_else(|e| {
             tracing::warn!(
@@ -284,11 +290,9 @@ pub async fn apply_runtime(state: &AppState, cfg: WorkerConfig) -> Result<(), St
             );
             Vec::new()
         })
+    } else {
+        Vec::new()
     };
-
-    let new_runtime = build_runtime(&cfg, &state.ctx)?;
-    let new_store = new_runtime.store.clone();
-    let new_emitter = new_runtime.local_emitter.clone();
 
     // Swap the shared config snapshot first so any concurrent list call sees
     // limits consistent with the new runtime, then swap the runtime itself.
@@ -621,6 +625,31 @@ mod tests {
         assert!(
             !Arc::ptr_eq(&store_before, &store_after),
             "store must be rebuilt on a data_dir change"
+        );
+    }
+
+    /// Nothing observes the session event functions (the engine handle never
+    /// connects): an adapter change reads neither the previous store nor the
+    /// new one for the resync.
+    #[tokio::test]
+    async fn an_unobserved_adapter_change_lists_no_sessions() {
+        use crate::store::counting::CountingStore;
+        use crate::store::FsStore;
+
+        let tmp1 = tempfile::tempdir().unwrap();
+        let tmp2 = tempfile::tempdir().unwrap();
+        let state = fs_state(tmp1.path());
+        let previous = Arc::new(CountingStore::new(FsStore::new(tmp1.path()).unwrap()));
+        state.runtime.write().await.store = previous.clone();
+
+        apply_runtime(&state, fs_config(tmp2.path()))
+            .await
+            .expect("adapter reload");
+
+        assert_eq!(
+            previous.reads(),
+            (0, 0),
+            "the previous store was not listed"
         );
     }
 

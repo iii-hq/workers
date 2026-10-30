@@ -18,8 +18,10 @@
 //! `session::on-deleted`, as of just before deletion), so a tenancy filter
 //! needs no lookup. The emitter calls a function only while something
 //! observes it ([`EventDeliverer::is_observed`]), so an unobserved event is
-//! never serialized, and append, append-many and update-message build their
-//! event only when the sink wants it ([`EventSink::wants`]).
+//! never serialized; append, append-many and update-message build their
+//! event only when the sink wants it ([`EventSink::wants`]), and the
+//! post-reload resync builds only the events its emitter wants
+//! ([`Emitter::wants`]).
 //!
 //! Cross-instance propagation (bridge topology): the **main** (fs-mode)
 //! instance is the single fan-out point. Besides its own event functions,

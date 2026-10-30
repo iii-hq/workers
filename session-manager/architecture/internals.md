@@ -15,7 +15,7 @@ in-process.
 | [src/config.rs](../src/config.rs) | `WorkerConfig { adapter, default_list_limit, max_list_limit }` with serde + `schemars::JsonSchema`. `adapter` is an adjacently tagged enum `StorageAdapter` (`name` + `config`, `rename_all = "snake_case"`) → `Fs(FsBackendConfig)` / `Bridge(BridgeBackendConfig)`, each `config` a typed `deny_unknown_fields` struct; `schemars` emits a `oneOf` so the console shows a variant picker plus the selected adapter's fields. `resolve_adapter()` returns the typed selection; bridge `url` is required at parse time. `~/` expansion for `data_dir`; `${VAR}` seed expansion; `json_schema()` / `to_json` / `from_json` / `from_file`; `boot_signature()` = the `adapter` half, compared on reload to decide rebuild-vs-tune. |
 | [src/configuration.rs](../src/configuration.rs) | Integration with the `configuration` worker: `register_config` (schema + seed), `fetch_config`, the hot-swappable `AppState` (live `SessionRuntime` + reload lock + `ReloadStatus`), `apply_runtime` / `reload_serialized` (build a candidate then swap; last-good on failure), `register_config_observer` (registers `session::on-config-change` and observes `configuration::on-updated` with it, filtered to this entry's `configuration:updated` events), `register_config_status` (`session::config-status`), `ConfigCell` (per-call list-limit snapshot). |
 | [src/runtime.rs](../src/runtime.rs) | `SessionRuntime` (store + service + sink + local emitter + `AdapterMode` + optional bridge remote and relay; `close_bridge` retires both), `SessionBuildContext`, `build_runtime` (constructs the runtime for an adapter; pure, so the reload path builds a candidate and only swaps on success). |
-| [src/resync.rs](../src/resync.rs) | `resync_observers`: after an adapter swap, replays the new store's state (`session::on-created` + per-entry `session::on-message-added` / `session::on-message-updated`) through the local emitter and calls `session::on-deleted` for vanished sessions, so observers stay real-time without a refetch. |
+| [src/resync.rs](../src/resync.rs) | `resync_observers`: after an adapter swap, replays the new store's state (`session::on-created` + per-entry `session::on-message-added` / `session::on-message-updated`) through the local emitter and calls `session::on-deleted` for vanished sessions, so observers stay real-time without a refetch. It builds only the events the emitter wants (`Emitter::wants`), reads entries only while a message event is wanted, and reads nothing when no event is. |
 | [src/manifest.rs](../src/manifest.rs) | `--manifest` JSON for the registry publish pipeline; `default_config` mirrors `WorkerConfig::default()`. |
 | [src/types.rs](../src/types.rs) | Wire contracts: `Role`, `ContentBlock` (5 variants), `AgentMessage` (4 roles), `SessionEntry` (message/custom envelope), `SessionMeta`, `SessionStatus`, `CustomPayload`, `metadata_matches` (subset-equality helper for `session::list`). All serde + `schemars::JsonSchema`; serde tags keep the JSON byte-compatible with the spec's TypeScript. |
 | [src/error.rs](../src/error.rs) | `SessionError` — every variant renders as `code: message` with a stable `session/*` code; `From<SessionError> for Error` puts that string on the bus. |
@@ -373,8 +373,10 @@ Boot rules (see `main.rs` header for the full sequence):
     On success the runtime is swapped under the write lock, then `resync_observers`
     replays the new store's state through the event functions (and
     `session::on-deleted` for sessions gone across the swap) so observers stay
-    real-time. The previous bridge relay's observer is disposed and its
-    connection shut down afterward.
+    real-time. The replay asks the new emitter which events it wants first and
+    builds only those; the pre-swap sessions are listed only while
+    `session::on-deleted` is wanted. The previous bridge relay's observer is
+    disposed and its connection shut down afterward.
 
   The handler ignores the delivered event and re-reads via `configuration::get`,
   so a direct call cannot inject config — it is denied to agents in
