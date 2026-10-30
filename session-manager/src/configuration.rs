@@ -407,7 +407,8 @@ pub fn register_config_observer(iii: &IIIClient, state: AppState) {
         .description(
             "Internal: hot-reload session-manager from the authoritative configuration when it \
              changes — rebuilds the storage adapter and event plumbing on an adapter change \
-             (replaying current state to subscribers) and swaps the list limits otherwise.",
+             (replaying current state to the session event observers) and swaps the list \
+             limits otherwise.",
         )
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );

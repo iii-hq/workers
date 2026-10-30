@@ -8,12 +8,12 @@ use std::time::Duration;
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use iii_sdk::{CallRequest, Deliver, Source};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use session_manager::events::EventKind;
 
 use super::common_steps::{lookup_path, parse_expected};
-use crate::common::engine::{received_by, register_recorder_function};
+use crate::common::engine::{outsider, received_by, register_recorder_function};
 use crate::common::world::{EngineObserver, SessionWorld};
 
 #[given("the iii engine is reachable")]
@@ -289,6 +289,145 @@ async fn every_engine_delivery_has(
             "delivery {i} to {alias} field `{path}` mismatch: {p}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Event function registration: private, no args
+// ---------------------------------------------------------------------------
+
+/// `engine::functions::info` reports the registration options the engine
+/// holds for `function`.
+#[then(regex = r#"^the engine lists "([^"]+)" as private with no args_format$"#)]
+async fn engine_lists_private_without_args(world: &mut SessionWorld, function: String) {
+    let Some(iii) = world.engine.clone() else {
+        return;
+    };
+    let info = iii
+        .call(CallRequest {
+            function_id: "engine::functions::info".to_string(),
+            payload: json!({ "function_id": function }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+        .unwrap_or_else(|e| panic!("engine::functions::info for {function} failed: {e}"));
+    assert_eq!(info["function_id"], json!(function), "{info:#}");
+    assert_eq!(
+        info["private"],
+        json!(true),
+        "{function} must be private (only session-manager calls it): {info:#}"
+    );
+    assert!(
+        info.get("args_format").is_none(),
+        "{function} takes no args, so it declares no args_format: {info:#}"
+    );
+}
+
+/// Call `function` from a connection that hosts none of session-manager's
+/// functions, as another worker would.
+#[when(regex = r#"^another engine connection calls "([^"]+)" with:$"#)]
+async fn outsider_call(world: &mut SessionWorld, function: String, step: &Step) {
+    if world.engine.is_none() {
+        return;
+    }
+    let outsider = outsider()
+        .await
+        .expect("a second engine connection while the first one is connected");
+    let raw = world.substitute(step.docstring.as_deref().unwrap_or("{}"));
+    let payload: Value = serde_json::from_str(raw.trim())
+        .unwrap_or_else(|e| panic!("payload docstring must be valid JSON: {e}"));
+    match outsider
+        .call(CallRequest {
+            function_id: function,
+            payload,
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await
+    {
+        Ok(v) => {
+            world.last_response = Some(v);
+            world.last_error = None;
+        }
+        Err(e) => {
+            world.last_response = None;
+            world.last_error = Some(e.to_string());
+        }
+    }
+}
+
+/// Observe `source` from the second connection, with no args, and wait
+/// until the observer is active.
+#[then(regex = r#"^another engine connection can observe "([^"]+)"$"#)]
+async fn outsider_observes(world: &mut SessionWorld, source: String) {
+    let Some(iii) = world.engine.clone() else {
+        return;
+    };
+    let outsider = outsider()
+        .await
+        .expect("a second engine connection while the first one is connected");
+    let target = register_recorder_function(&iii);
+    let handle = outsider.observe(
+        Source::function(source.as_str()).deliver(Deliver::Output),
+        target.as_str(),
+    );
+    match tokio::time::timeout(Duration::from_secs(10), handle.ready()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("another connection's observer of {source} was refused: {e}"),
+        Err(_) => panic!("another connection's observer of {source} stayed inactive for 10s"),
+    }
+    world.engine_observers.insert(
+        format!("outsider:{source}"),
+        EngineObserver { target, handle },
+    );
+}
+
+/// Observe `source` passing `args`; the outcome (active, or the refusal)
+/// is checked by the next step.
+#[when(regex = r#"^an engine observer of "([^"]+)" passes the args:$"#)]
+async fn engine_observer_with_args(world: &mut SessionWorld, source: String, step: &Step) {
+    let Some(iii) = world.engine.clone() else {
+        return;
+    };
+    let raw = world.substitute(step.docstring.as_deref().unwrap_or("{}"));
+    let args: Value = serde_json::from_str(raw.trim())
+        .unwrap_or_else(|e| panic!("args docstring must be valid JSON: {e}"));
+    let target = register_recorder_function(&iii);
+    let handle = iii.observe(
+        Source::function(source.as_str())
+            .args(args)
+            .deliver(Deliver::Output),
+        target.as_str(),
+    );
+    match tokio::time::timeout(Duration::from_secs(10), handle.ready()).await {
+        Ok(Ok(())) => {
+            world.last_response = Some(json!({ "observer": handle.id() }));
+            world.last_error = None;
+        }
+        Ok(Err(e)) => {
+            world.last_response = None;
+            world.last_error = Some(e.to_string());
+        }
+        Err(_) => panic!("the observer of {source} with args neither activated nor failed in 10s"),
+    }
+    world
+        .engine_observers
+        .insert(format!("args:{source}"), EngineObserver { target, handle });
+}
+
+#[then(regex = r#"^the observer is refused with code "([^"]+)"$"#)]
+async fn observer_refused(world: &mut SessionWorld, code: String) {
+    if world.engine.is_none() {
+        return;
+    }
+    let err = world
+        .last_error
+        .as_ref()
+        .unwrap_or_else(|| panic!("expected the observer to be refused with {code}, it is active"));
+    assert!(
+        err.contains(&code),
+        "expected an observer refusal with `{code}`, got `{err}`"
+    );
 }
 
 // ---------------------------------------------------------------------------

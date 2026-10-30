@@ -18,7 +18,8 @@
 //! `session::on-deleted`, as of just before deletion), so a tenancy filter
 //! needs no lookup. The emitter calls a function only while something
 //! observes it ([`EventDeliverer::is_observed`]), so an unobserved event is
-//! never serialized.
+//! never serialized, and append, append-many and update-message build their
+//! event only when the sink wants it ([`EventSink::wants`]).
 //!
 //! Cross-instance propagation (bridge topology): the **main** (fs-mode)
 //! instance is the single fan-out point. Besides its own event functions,
@@ -56,8 +57,8 @@ pub const ON_STATUS_CHANGED_FN: &str = "session::on-status-changed";
 pub const ON_META_UPDATED_FN: &str = "session::on-meta-updated";
 pub const ON_DELETED_FN: &str = "session::on-deleted";
 
-/// Internal: the envelope feed bridged instances observe. Called only by
-/// the main (fs-mode) instance.
+/// Internal: the envelope feed bridged instances observe. Registered on
+/// every instance and called only by the main (fs-mode) instance.
 pub const STORE_ON_EVENTS_FN: &str = "session::store::on-events";
 
 /// Which of the six event functions an event belongs to.
@@ -471,6 +472,11 @@ impl EventDeliverer for IiiDeliverer {
 /// [`RemotePublisher`].
 #[async_trait]
 pub trait EventSink: Send + Sync {
+    /// Whether an event of `kind` reaches anything. A mutation on the hot
+    /// paths (append, append-many, update-message) builds its event only
+    /// when this holds, so an unobserved streaming delta copies neither the
+    /// message nor the session metadata.
+    fn wants(&self, kind: EventKind) -> bool;
     async fn publish_all(&self, events: &[EmittableEvent]);
 }
 
@@ -504,6 +510,14 @@ impl Emitter {
 
     pub fn feeds_bridges(&self) -> bool {
         self.feeds_bridges
+    }
+
+    /// Whether [`Self::emit_all`] would call anything for an event of
+    /// `kind`: its function is observed, or (main mode) a bridged instance
+    /// observes the [`STORE_ON_EVENTS_FN`] feed.
+    pub fn wants(&self, kind: EventKind) -> bool {
+        self.deliverer.is_observed(kind.function_id())
+            || (self.feeds_bridges && self.deliverer.is_observed(STORE_ON_EVENTS_FN))
     }
 
     pub async fn emit_all(&self, events: &[EmittableEvent]) {
@@ -557,6 +571,10 @@ impl Emitter {
 
 #[async_trait]
 impl EventSink for Emitter {
+    fn wants(&self, kind: EventKind) -> bool {
+        Emitter::wants(self, kind)
+    }
+
     async fn publish_all(&self, events: &[EmittableEvent]) {
         self.emit_all(events).await;
     }
@@ -580,6 +598,13 @@ impl RemotePublisher {
 
 #[async_trait]
 impl EventSink for RemotePublisher {
+    /// Always: the main instance's observers and every bridged instance's
+    /// observers are out of sight here, and the main's [`Emitter`] gates
+    /// each call on them.
+    fn wants(&self, _kind: EventKind) -> bool {
+        true
+    }
+
     async fn publish_all(&self, events: &[EmittableEvent]) {
         if events.is_empty() {
             return;
@@ -912,6 +937,43 @@ mod tests {
         let emitter = Emitter::new(deliverer.clone());
         emitter.emit_all(&[deleted(None)]).await;
         assert!(deliverer.calls.lock().unwrap().is_empty());
+    }
+
+    /// `wants` answers what `emit_all` would call: the kind's own function,
+    /// or (main mode only) the bridge feed.
+    #[test]
+    fn an_emitter_wants_an_event_only_while_something_would_receive_it() {
+        let nothing = TestDeliverer::observing(&[]);
+        assert!(!Emitter::new(nothing.clone()).wants(EventKind::MessageUpdated));
+        assert!(!Emitter::feeding_bridges(nothing).wants(EventKind::MessageUpdated));
+
+        let own = TestDeliverer::observing(&[ON_MESSAGE_UPDATED_FN]);
+        let emitter = Emitter::new(own);
+        assert!(emitter.wants(EventKind::MessageUpdated));
+        assert!(!emitter.wants(EventKind::MessageAdded));
+
+        let feed = TestDeliverer::observing(&[STORE_ON_EVENTS_FN]);
+        assert!(Emitter::feeding_bridges(feed.clone()).wants(EventKind::MessageUpdated));
+        assert!(
+            !Emitter::new(feed).wants(EventKind::MessageUpdated),
+            "a bridged instance's emitter never calls the feed"
+        );
+    }
+
+    /// A bridged instance sends every event to the main, whose emitter gates
+    /// each call on the observers it sees.
+    #[test]
+    fn a_remote_publisher_wants_every_event() {
+        // register_worker returns at once; nothing connects for this check.
+        let remote = Arc::new(iii_sdk::register_worker(
+            "ws://127.0.0.1:59625",
+            iii_sdk::InitOptions::default(),
+        ));
+        let publisher = RemotePublisher::new(remote.clone(), 1_000);
+        for kind in EventKind::all() {
+            assert!(EventSink::wants(&publisher, kind));
+        }
+        remote.shutdown();
     }
 
     #[tokio::test]

@@ -84,8 +84,8 @@ Feature: engine reactivity — real observers receive filtered events
     And some engine delivery to "R_STATUS" has "status" = "done"
     And some engine delivery to "R_STATUS" has "previous_status" = "working"
 
-    # -- the roles filter held: the assistant append never reached the
-    #    user-only observer --
+    # -- the input.message.role filter held: the assistant append never
+    #    reached the user-only observer --
     And within 10 seconds the engine observer "R_USER_ONLY" receives at least 1 delivery
     And after 1 second the engine observer "R_USER_ONLY" has received exactly 1 delivery
     And every engine delivery to "R_USER_ONLY" has "message.role" = "user"

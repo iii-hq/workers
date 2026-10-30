@@ -104,16 +104,18 @@ one is a regression even if all types still line up):
    `forked_from` set, new active leaf = copy of the fork point. After the
    fork the two sessions share nothing — deleting one never affects the other.
 10. **Delete removes everything** (entries, leaf pointer, meta) and is a
-    `{ deleted: false }` no-op without an event for unknown ids. The
-    `session::deleted` event's metadata filter is evaluated against the meta
-    **as of deletion** (the row is already gone when the event lands).
+    `{ deleted: false }` no-op without an event for unknown ids. A
+    `session::on-deleted` observer's `input.session_metadata.<key>` filter is
+    evaluated against the meta **as of deletion** (the row is already gone
+    when the event lands).
 11. **Reads return null, mutations throw.** `get` / `get_message` return
     `null` for unknown ids; every mutating function and path-read
     (`messages`, `fork`, `set_active_leaf`, ...) rejects with `session/not_found`
     / `session/entry_not_found`.
-12. **Exactly one of `message` / `custom` per append.** Custom-entry appends
-    fire `session::message-added` with a `custom` field instead of `message`,
-    and never match a `roles` filter.
+12. **Exactly one of `message` / `custom` per append.** A custom-entry append
+    calls `session::on-message-added` with a `custom` field and no `message`,
+    so a filter on `input.message.role` (for example
+    `{ "input.message.role": { "$in": ["assistant"] } }`) never matches it.
 
 Cursors (both `list` and `messages`): opaque base64(JSON). The list cursor
 embeds `(order_tag, sort_key, session_id)` and is **bound to the order it was

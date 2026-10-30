@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Deps;
 use crate::error::SessionError;
+use crate::events::EventKind;
 use crate::types::{AgentMessage, JsonMap};
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -30,7 +31,8 @@ pub async fn handle(
     deps: &Deps,
     req: AppendManyRequest,
 ) -> Result<AppendManyResponse, SessionError> {
-    let (resp, events) = deps.service.append_many(req).await?;
+    let wants_event = deps.sink.wants(EventKind::MessageAdded);
+    let (resp, events) = deps.service.append_many(req, wants_event).await?;
     deps.sink.publish_all(&events).await;
     Ok(resp)
 }
