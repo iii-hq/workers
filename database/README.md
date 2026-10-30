@@ -458,9 +458,12 @@ the worker files each observer under its `db`, its `table` (or every table)
 and each of its `ops` (or every operation), and looks each event up under its
 db, its table and every table, its op and every op. The observer's filters
 then apply as usual. The worker calls the function from the task that
-announces the write and waits for the call, so one transaction's statements,
-and one native database's changes, reach iii's delivery in commit order;
-the call does not wait for the observers' targets.
+announces the write and waits for the call, which does not wait for the
+observers' targets. iii runs each delivery as a call of the target of its
+own, so a target can receive row events in any order, the statements of one
+transaction included. An observer with `max_in_flight: 1` receives them one
+at a time, in the order the worker called the function: commit order for one
+transaction's statements and for one native database's changes.
 
 **Only the database worker calls it.** The function is private: the engine
 refuses a call from any other connection (`FORBIDDEN`) and refuses it as an
@@ -509,8 +512,9 @@ Worth knowing:
 - **Announced on commit, never before.** Statements inside an interactive
   transaction are buffered until `commitTransaction`; a rollback — including
   the timeout watcher's — drops the buffer. Atomic batches announce their
-  statements in order only after the whole batch commits. Native capture is
-  commit-gated by the database itself.
+  statements only after the whole batch commits. Native capture is
+  commit-gated by the database itself. **Delivery** above says in what order
+  a target receives them.
 - **Delivery is best-effort.** The call happens after commit and is not durable
   or atomic with the database write. There is no replay, retry, or exactly-once
   guarantee; a crash between commit and the call can lose an event. A target's

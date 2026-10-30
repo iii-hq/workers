@@ -246,7 +246,9 @@ impl NativeCapture {
     /// The call runs in-process (the handler returns the event) and iii's
     /// delivery does not wait for the observers' targets; `call_timeout_ms`
     /// bounds the round trip when the engine has not yet confirmed
-    /// in-process calls.
+    /// in-process calls. Each delivery is a call of the target of its own,
+    /// so a target can receive the events in any order; an observer with
+    /// `max_in_flight: 1` receives them in the order of these calls.
     pub async fn call(&self, event: &RowChangedEvent) {
         let Some(function) = self.function.get() else {
             return;

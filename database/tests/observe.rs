@@ -581,7 +581,8 @@ async fn config_reload_installs_capture_for_existing_observers() {
     db.iii.shutdown_async().await;
 }
 
-/// A transaction's statements arrive in commit order; a rollback emits nothing.
+/// An observer with `max_in_flight: 1` receives a transaction's statements in
+/// commit order; a rollback emits nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn commit_order_and_rollback() {
     let Some(url) = engine_url() else {
