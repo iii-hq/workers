@@ -17,10 +17,11 @@ the adapter to the sandbox contract major the engine supports:
 iii trigger compose::add worker=iii-sandbox
 ```
 
-Older Compose has no such alias, so pin the major yourself:
+Older Compose has no such alias, so pin the range yourself (0.2.x implements
+sandbox contract 1):
 
 ```bash
-iii trigger compose::add worker=sandbox-libkrun@^1
+iii trigger compose::add worker=sandbox-libkrun@^0.2
 ```
 
 Calling `sandbox::*` through the router needs iii 0.26 or later; the
