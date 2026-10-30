@@ -84,14 +84,18 @@ its row (`publish` is public; the guest rows describe an API).
   `queue::on-message`, `storage::on-object-*`, `harness::hook::on-*`,
   `github::pr::on-event`) or holds the caller for back-pressure
   (`browser::on-crawl-item`) is called without an action and awaited.
-  `database::on-row-changed` is called without an action and awaited too,
-  so its events reach iii's delivery in the order the worker calls the
-  function (commit order for a transaction's statements and for one native
-  database's changes); a `Void` call runs as a task of its own. iii runs
-  each delivery as a call of the target of its own, so a target can receive
-  the events of any function in any order; an observer with
-  `max_in_flight: 1` receives them one at a time, in the order the worker
-  called the function.
+  `database::on-row-changed` and `console::ui::on-assets-changed` are called
+  without an action and awaited too, so their events reach iii's delivery in
+  the order the worker calls the function (commit order for a transaction's
+  statements and for one native database's changes; the order of the ADE's
+  asset queue, row 121). An awaited call returns once the handler has run
+  and its delivery is queued; it does not wait for targets. A `Void` call
+  runs as a task of its own, so `Void` calls reach iii's delivery in the
+  order they finish. iii runs each delivery as a call of the target of its
+  own, so a target can receive the events of any function in any order. An
+  observer with `max_in_flight: 1` receives them one at a time, in the order
+  they reach iii's delivery: for a function the worker calls without an
+  action and awaits, the order the worker calls it.
 - **Gate on observation.** Before building an event, the emitter checks
   `is_observed(id)` (one atomic load). A function matched by keys checks
   `is_observed_for(id, &call)` with the call's input, which looks up the
@@ -404,7 +408,7 @@ fields where the name does not say them), and the consumers in this repo
 | 24 | browser | `browser::crawl-item` | `browser::on-crawl-item` | `{ crawl_id? }` (at most 256 bytes) | custom, with match(o: `args.crawl_id` or `*`, c: `[input.crawl_id, *]`) picks observers; the hook awaits `call({ observer, payload, timeout_ms })` for each matching observer in `seq` order, so a slow consumer slows the crawl; added: validates `crawl_id`, `OBSERVER_LIMIT` past 64 | `CrawlItemEvent` (the crawl result's `trigger_type` field becomes `function_id`) | browser:tests/crawl_feed_live.rs |
 | 25 | claude-code | `claude::agent-event` | `claude::on-agent-event` | `{ session_id }` (required, 1..512 chars) | match(o: `args.session_id`, c: `input.session_id`); added: `OBSERVER_LIMIT` past 256; emitter gates on `isObserved(ID, { input: { session_id } })` | `FeedPayload { session_id, event_id, seq, epoch, source, event }` | acp:src/handler.rs, acp:src/agent_feed.rs |
 | 26 | claude-code | `claude::raw-event` | `claude::on-raw-event` | `{ session_id }` | as row 25, its own `seq` | `FeedPayload` (raw CLI message) | none in repo |
-| 27 | code-runner | guest-defined (`iii.registerTriggerType` in guest code) | guest-defined, through the guest API of §4.4 | guest-defined `args_format` | iii's delivery, or the guest's calls through observers (§4.4) | guest-defined | guest code (code-runner:src/node_bus.rs) |
+| 27 | code-runner | guest-defined (`iii.registerTriggerType` in guest code) | guest-defined, through the guest API of §4.4 | guest-defined `args_format` | default: iii's delivery (§4.4) | guest-defined | guest code (code-runner:src/node_bus.rs) |
 | 28 | codex | `codex::agent-event` | `codex::on-agent-event` | `{ session_id }` | as row 25 | `FeedPayload` | acp:src/handler.rs, acp:src/agent_feed.rs |
 | 29 | codex | `codex::raw-event` | `codex::on-raw-event` | `{ session_id }` | as row 25 | `FeedPayload` (raw thread event) | none in repo |
 | 30 | computer | `computer::session-started` | `computer::on-session-started` | none; filters `input.session_id` | default | `SessionStartedEvent` | computer:ui/src/page/index.tsx |
@@ -436,8 +440,8 @@ fields where the name does not say them), and the consumers in this repo
 | 56 | ios-simulator | `ios-simulator::media-changed` | `ios-simulator::on-media-changed` | none; filters `input.tenant`, `input.udid` | default | `MediaChangedEvent` | ios-simulator:ui/src/page/Media.tsx |
 | 57 | ios-simulator | `ios-simulator::frame-event` | `ios-simulator::on-frame-event` | `{ tenant?, udid? }` | match(o: `tenant or *\|udid or *`, c: `{tenant,*}\|{udid,*}`, four keys); the bridge gates on `is_observed_for(call)` before encoding; viewers observe with `max_in_flight: 1` | `FrameEvent` | ios-simulator:ui/src/page/live.ts |
 | 58 | ios-simulator | `ios-simulator::activity` | `ios-simulator::on-activity` | none; filters `input.tenant`, `input.udid` | default | `ActivityEvent` | ios-simulator:ui/src/overlay/SimulatorOverlay.tsx |
-| 59 | kanban | `kanban:change` | `kanban::on-change` | `{ ticket_id?, parent_id?, release_id?, ticket?: 'full' \| 'summary', events? }` | custom: selects observers with `matches_change(args, input)` (`matches_config` for `config.updated`) and `obs.matches(call)`; passes `ticket: full` observers to `next`; calls each `ticket: summary` observer through itself with the summarized payload (`Void`) | `ChangeEvent` or `ConfigEvent` | kanban:ui/src/shared.tsx, kanban:native-ui/src/api.ts |
-| 60 | kanban | `kanban:comment` | `kanban::on-comment` | `{ ticket_id?, parent_id?, author?, exclude_author?, root_only?, ticket? }` (one of `ticket_id`, `parent_id` required) | custom: `matches_comment(args, input)` and the summary split of row 59 | `CommentEvent` | kanban:skills/SKILL.md (through `harness::observe`) |
+| 59 | kanban | `kanban:change` | `kanban::on-change` | `{ ticket_id?, parent_id?, release_id?, ticket?: 'full' \| 'summary', events? }` | custom, with match(`(obs, call) => wants_change(obs.args, call)`: `ticket_id` and `parent_id` against the event's ticket, `release_id` against the call's `releases` metadata, `events` against the event's kind, `matches_config` for `config.updated`) picks observers; the deliver hook calls each picked observer whose filters match (`obs.matches(call)`) through itself (`Void`): the event for `ticket: full`, the event with its ticket cut to the board-card fields for `ticket: summary`; the caller gets the event back | `ChangeEvent` or `ConfigEvent` | kanban:ui/src/shared.tsx, kanban:native-ui/src/api.ts |
+| 60 | kanban | `kanban:comment` | `kanban::on-comment` | `{ ticket_id?, parent_id?, author?, exclude_author?, root_only?, ticket? }` (one of `ticket_id`, `parent_id` required) | custom, with match(`(obs, call) => wants_comment(obs.args, call)`) picks observers; the deliver hook of row 59 | `CommentEvent` | kanban:skills/SKILL.md (through `harness::observe`) |
 | 61 | llm-router | `router::ready` | `router::on-ready` | none | match(`(obs, call) => !call.metadata?.for_observer \|\| call.metadata.for_observer === obs.id`): a call for one observer reaches it alone, every other call every observer (§1.2); added: when the router is ready, after `obs.accepted()` call the function for that observer with the ready event | `RouterReadyEvent {}` | provider-anthropic, provider-claude-code, provider-command-code, provider-deepseek, provider-elevenlabs, provider-github-copilot, provider-kimi, provider-llamacpp, provider-openai, provider-openai-codex, provider-opencode-go, provider-openrouter, provider-sarvam, provider-xai, provider-zai (each src/register.rs, through `router_client::observe_router_ready`), cursor:src/provider.ts, llm-router:tests/integration.rs |
 | 62 | llm-router | `router::models::changed` | `router::models::on-changed` | none; filters `input.provider` | default | `ModelsChangedEvent { provider, count }` | sentinel:ui/src/settings/useModelCatalog.ts, context-manager:src/adapters/cache.rs, security-scan:ui/src/page/security-scan-data.ts, ade:ui/src/configuration-forms/model-catalog.ts, ade:web/src/lib/models-catalog.ts, provider-xai:tests/integration.rs, llm-router:tests/integration.rs |
 | 63 | llm-router | `router::provider::changed` | `router::provider::on-changed` | none; filters `input.provider`, `input.op` | default | `ProviderChangedEvent { provider, op: register \| discovery \| available \| unavailable }` | ade:web/src/lib/models-catalog.ts |
@@ -525,7 +529,7 @@ Decisions 29 and 32. Every function is private.
 | 118 | ade | `console:script` | `console::ui::asset` | `{ kind: 'script', path }` | custom (§5.2), with match(`(obs, call) => call.metadata?.for_observer === obs.id`): only a call for one observer reaches it; the deliver hook calls the target through that observer with `{ path }` and returns what the target answers; added: validate `path` and `kind`; after `obs.accepted()`, fetch the content with a call of the function for that observer, `{ path }` (§1.2); a failed fetch calls `obs.reject('UI_ASSET_FETCH_FAILED', …)`; a later observer of the same path supersedes it (`obs.reject('UI_ASSET_SUPERSEDED', …)`); removed: drop the asset | `{ path }` (the ADE calls it only for one observer); the target receives `UiContentInput { path }` and returns `UiContentResult { content, content_type? }`, which the caller gets back | crates/console-ui:src/lib.rs (every worker with a console UI), vscode:src/index.ts, claude-code:src/terminal/ui.ts, pi:src/terminal/ui.ts, onboarding:src/index.mjs, whatsapp:ui.go |
 | 119 | ade | `console:style` | `console::ui::asset` | `{ kind: 'style', path }` | as row 118 | as row 118 | as row 118 |
 | 120 | ade | `console:module` | `console::ui::asset` | `{ kind: 'module', path }` | as row 118 | as row 118 | crates/console-ui:src/lib.rs (ide, kanban, tmux) |
-| 121 | ade | `console:assets` | `console::ui::on-assets-changed` | none | match(`(obs, call) => !call.metadata?.for_observer \|\| call.metadata.for_observer === obs.id`): a call for one observer reaches it alone, every other call every observer (§1.2); added: after `obs.accepted()`, call the function for that observer with `{ op: 'sync', assets }`, awaited, so the `set` and `delete` calls after it follow it | `UiAssetsEvent { op: 'sync' \| 'set' \| 'delete', assets?, asset?, path? }` | ade:web/src/lib/ui-loader.tsx |
+| 121 | ade | `console:assets` | `console::ui::on-assets-changed` | none | match(`(obs, call) => !call.metadata?.for_observer \|\| call.metadata.for_observer === obs.id`): a call for one observer reaches it alone, every other call every observer (§1.2); added: after `obs.accepted()`, call the function for that observer with `{ op: 'sync', assets }`; the ADE's one asset queue makes that call and every `set` and `delete` call, each without an action and awaited (§1.2), and tabs observe with `max_in_flight: 1`, so a tab receives them in the order the queue makes them | `UiAssetsEvent { op: 'sync' \| 'set' \| 'delete', assets?, asset?, path? }` | ade:web/src/lib/ui-loader.tsx |
 | 122 | ade | `console::workspace::changed` | `console::workspace::on-changed` | none | match(`(obs, call) => !call.metadata?.for_observer \|\| call.metadata.for_observer === obs.id`): a call for one observer reaches it alone, every other call every observer (§1.2); added: after `obs.accepted()`, call the function for that observer with `{}`; store writes call the function, throttled by `RING_GAP` | `WorkspaceChangedEvent {}` | ade:web/src/hooks/use-workspace-tabs.ts, onboarding:ui/src/use-tour.ts, onboarding:ui/src/spotlight.ts |
 | 123 | ade | `console::compose::changed` | `console::compose::on-changed` | none; filters `input.kind`, `input.file`, `input.namespace` | default; added: start the state watcher with the first observer; removed: close it with the last | `ComposeChangedEvent { kind, file, namespace, state_dir, path, captured_at }` | ade:web/src/pages/Workers/index.tsx |
 
@@ -665,8 +669,7 @@ that the test calls, and it waits on the observer handle's state
 Guest surface (`globalThis.iii`, pinned in `tests/golden/iii-surface.txt`):
 
 ```ts
-iii.call(request: { function_id: string; payload?: unknown; action?: { type: 'void' }; timeout_ms?: number }
-                | { observer: GuestObserver; payload?: unknown; action?: { type: 'void' } }): Promise<unknown>
+iii.call(request: { function_id: string; payload?: unknown; action?: { type: 'void' }; timeout_ms?: number }): Promise<unknown>
 iii.trigger                       // the same function as iii.call
 iii.registerFunction(id: string, handler: (input) => unknown, options?: {
   description?: string; request_format?: object; response_format?: object;
@@ -684,18 +687,20 @@ interface GuestObserver { id: string; function_id: string; args: object; filters
 ```
 
 A guest hook that throws rejects the observer (`OBSERVE_REJECTED`, or the
-thrown error's `code`). Guests have no `onObserverDeliver`: a guest source
-is delivered by iii, or calls its observers itself with
-`iii.call({ observer, payload })`. `registerTrigger`, `registerTriggerType`
-and `unregisterTriggerType` leave the surface.
+thrown error's `code`). A guest source is delivered by iii. The guest
+surface has no match or deliver hook, and a call through an observer
+belongs in a deliver hook (decision 52), so the guest `iii.call` takes no
+`observer` and the host's `Engine` has no call through an observer. A guest
+source sends one observer nothing of its own: a call for one observer
+(§1.2) needs a match hook and call metadata, which the guest surface does
+not have. `registerTrigger`, `registerTriggerType` and
+`unregisterTriggerType` leave the surface.
 
 Host side (`crates/node-core/src/engine.rs`):
 
 ```rust
 pub trait Engine: Send + Sync + 'static {
     fn call(&self, fn_id: String, payload: Value, timeout_ms: u64, action: Option<String>)
-        -> BoxFuture<'static, CallResult>;
-    fn call_observer(&self, observer_id: String, payload: Value, timeout_ms: u64, action: Option<String>)
         -> BoxFuture<'static, CallResult>;
     fn register(&self, fn_id: String, description: Option<String>, request_format: Option<Value>,
                 response_format: Option<Value>, options: GuestFunctionOptions, handler: ProxyHandler)
@@ -962,11 +967,15 @@ The harness observes, for its own plumbing: `engine::on-workers-changed`,
   calls `obs.reject("UI_ASSET_FETCH_FAILED", ..)`; a superseded asset's
   observer gets `obs.reject("UI_ASSET_SUPERSEDED", ..)`. Each change calls
   `console::ui::on-assets-changed` with `set` or `delete`.
-- **`console::ui::on-assets-changed`** (row 121): browser tabs observe it;
-  each new observer receives `{ op: 'sync', assets }` from a call of the
-  function for it alone once it is accepted (§1.2), delivered like every
-  call, so a tab receives every event of the function in one shape.
-  `console::ui-manifest` is unchanged.
+- **`console::ui::on-assets-changed`** (row 121): browser tabs observe it
+  with `max_in_flight: 1`; each new observer receives `{ op: 'sync', assets }`
+  from a call of the function for it alone once it is accepted (§1.2),
+  delivered like every call, so a tab receives every event of the function
+  in one shape. The asset queue makes that call and every `set` and
+  `delete` call without an action and awaits each, so they reach iii's
+  delivery in queue order, and a tab receives them in that order (§1.2): an
+  asset committed after a tab's sync reaches the tab after the sync, and the
+  sync never removes it. `console::ui-manifest` is unchanged.
 - **`console::workspace::on-changed`** (row 122) and
   **`console::compose::on-changed`** (row 123).
 - **Consumers in the ADE:** `console::on-config-change` observes
