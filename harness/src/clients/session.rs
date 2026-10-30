@@ -482,6 +482,17 @@ impl SessionClient {
         Ok(resp.get("revision").and_then(Value::as_u64).unwrap_or(0))
     }
 
+    /// An entry's revision (0 when it is gone): every `update_message` moves it.
+    pub async fn revision(&self, session_id: &str, entry_id: &str) -> Result<u64, HarnessError> {
+        let resp = self
+            .call(
+                "session::get-message",
+                json!({ "session_id": session_id, "entry_id": entry_id }),
+            )
+            .await?;
+        Ok(resp["entry"]["revision"].as_u64().unwrap_or(0))
+    }
+
     /// Load the **entire** active path, oldest first. `include_custom`
     /// interleaves `kind: custom` entries (where the compaction record lives).
     ///

@@ -77,7 +77,7 @@ pub fn notice_entry_prefix(turn_id: &str, step: u64) -> String {
 }
 
 /// The id prefix of the generations a regenerated step overwrote:
-/// `e_<turn_id>_<step>_superseded_<index>`.
+/// `e_<turn_id>_<step>_superseded_<reply revision>`.
 pub fn superseded_generation_entry_prefix(turn_id: &str, step: u64) -> String {
     format!("e_{turn_id}_{step}_superseded_")
 }

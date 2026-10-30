@@ -1136,14 +1136,30 @@ async fn generate_step(
     // keeps that generation's usage first, so metrics still see the spend.
     let superseded = superseded_generation(&entries, &record.turn_id, payload.step);
     let appended = async {
-        if let Some((entry_id, data)) = superseded {
+        if let Some(data) = superseded {
+            // Named by the reply's revision: a delivery that dies before the
+            // clear below keeps it again under the same id (append is
+            // idempotent), and the clear moves the revision, so the next
+            // generation is kept under a new id even when it bills the same.
+            let revision = session.revision(&record.session_id, &assistant_id).await?;
+            let prefix = ids::superseded_generation_entry_prefix(&record.turn_id, payload.step);
             session
                 .append_custom(
                     &record.session_id,
                     SUPERSEDED_GENERATION,
                     data,
-                    &entry_id,
+                    &format!("{prefix}{revision}"),
                     Some(&origin(&record.turn_id)),
+                )
+                .await?;
+            session
+                .update_message(
+                    &record.session_id,
+                    &assistant_id,
+                    &[],
+                    Some(&crate::types::event::Usage::default()),
+                    None,
+                    Some(&assistant_origin),
                 )
                 .await?;
         }
@@ -1491,44 +1507,28 @@ async fn generate_step(
 /// overwrote; `harness::metrics` adds it to tokens and cost, not to steps.
 pub(crate) const SUPERSEDED_GENERATION: &str = "superseded_generation";
 
-/// The entry keeping this step's billed reply when a redelivered step is
-/// about to regenerate over it: `update_message` overwrites the reply's
-/// usage, while the running `session_cost_usd` already counted it. Numbered
-/// after the ones already kept; `None` when the stored reply has no usage or
-/// the newest kept one already holds it (a delivery that died between keeping
-/// it and overwriting the reply).
-fn superseded_generation(
-    entries: &[LoadedEntry],
-    turn_id: &str,
-    step: u64,
-) -> Option<(String, Value)> {
+/// The usage to keep when a redelivered step is about to regenerate over its
+/// billed reply: `update_message` overwrites the reply's usage, while the
+/// running `session_cost_usd` already counted it. `None` when the stored reply
+/// has no usage, or only the empty one a previous keep cleared it to.
+fn superseded_generation(entries: &[LoadedEntry], turn_id: &str, step: u64) -> Option<Value> {
     let own = ids::assistant_entry_id(turn_id, step);
     let Some(AgentMessage::Assistant(reply)) =
         entries.iter().find(|e| e.entry_id == own)?.message.as_ref()
     else {
         return None;
     };
-    let data = json!({
-        "usage": reply.usage.as_ref()?,
+    let usage = reply
+        .usage
+        .as_ref()
+        .filter(|usage| **usage != crate::types::event::Usage::default())?;
+    Some(json!({
+        "usage": usage,
         "model": reply.model,
         "provider": reply.provider,
         // A fork's baseline counts the kept generations it copied by this.
         "timestamp": reply.timestamp,
-    });
-    let prefix = ids::superseded_generation_entry_prefix(turn_id, step);
-    let kept: Vec<&LoadedEntry> = entries
-        .iter()
-        .filter(|e| e.entry_id.starts_with(&prefix))
-        .collect();
-    // shortcut: two generations with identical usage read as one; a per-generation id is the upgrade if that ever matters.
-    if kept
-        .last()
-        .and_then(|e| e.custom.as_ref())
-        .is_some_and(|c| c.data == data)
-    {
-        return None;
-    }
-    Some((format!("{prefix}{}", kept.len()), data))
+    }))
 }
 
 /// This step's stored reply when one of its calls was dispatched and never
@@ -4469,43 +4469,25 @@ mod tests {
             "role": "assistant", "stop_reason": "end", "model": "m", "provider": "p",
             "timestamp": 1, "content": [{"type": "text", "text": "hi"}],
             "usage": {"input": 10, "output": 4, "cost_usd": 0.25}}});
-        let kept = serde_json::json!({
-            "usage": {"input": 10, "output": 4, "cost_usd": 0.25}, "model": "m", "provider": "p",
-            "timestamp": 1
-        });
-
-        // First regeneration over a billed reply: kept under the first id.
-        let (id, data) =
-            super::superseded_generation(&entries(serde_json::json!([reply])), "t1", 2)
-                .expect("the billed reply is kept");
-        assert_eq!(id, "e_t1_2_superseded_0");
-        assert_eq!(data, kept);
-
-        // A delivery that died after keeping it, before overwriting the reply,
-        // must not keep the same generation twice.
-        let logged = serde_json::json!({"entry_id": "e_t1_2_superseded_0",
-            "custom": {"custom_type": super::SUPERSEDED_GENERATION, "data": kept}});
         assert_eq!(
-            super::superseded_generation(&entries(serde_json::json!([logged, reply])), "t1", 2),
-            None
+            super::superseded_generation(&entries(serde_json::json!([reply])), "t1", 2),
+            Some(serde_json::json!({
+                "usage": {"input": 10, "output": 4, "cost_usd": 0.25}, "model": "m",
+                "provider": "p", "timestamp": 1
+            }))
         );
 
-        // A later generation overwritten in turn is numbered after it.
-        let mut newer = reply.clone();
-        newer["message"]["usage"] = serde_json::json!({"input": 10, "output": 7, "cost_usd": 0.3});
-        let (id, _) =
-            super::superseded_generation(&entries(serde_json::json!([logged, newer])), "t1", 2)
-                .unwrap();
-        assert_eq!(id, "e_t1_2_superseded_1");
-
-        // Nothing billed to keep: a first delivery, or a reply cut before usage.
-        let mut unbilled = reply.clone();
-        unbilled["message"]["usage"] = serde_json::Value::Null;
-        assert_eq!(
-            super::superseded_generation(&entries(serde_json::json!([unbilled])), "t1", 2),
-            None
-        );
+        // Nothing billed to keep: a first delivery, a reply cut before usage,
+        // or one a previous keep cleared.
         assert_eq!(super::superseded_generation(&[], "t1", 2), None);
+        for usage in [serde_json::Value::Null, serde_json::json!({})] {
+            let mut unbilled = reply.clone();
+            unbilled["message"]["usage"] = usage;
+            assert_eq!(
+                super::superseded_generation(&entries(serde_json::json!([unbilled])), "t1", 2),
+                None
+            );
+        }
     }
 
     #[test]

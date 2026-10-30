@@ -311,6 +311,44 @@ async fn a_redelivered_text_only_step_keeps_the_billed_generation_it_regenerates
     assert_eq!(totals.turns, 1);
 }
 
+/// A third delivery whose second generation billed exactly what the first
+/// did is still kept: the kept entry is named by the reply's revision, which
+/// every generation's writes move, and the reply's usage is cleared once kept
+/// (a delivery that dies before the clear keeps it again under the same id).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_generation_billing_what_the_one_before_did_is_still_kept() {
+    let first = json!({"usage": {"input": 10, "output": 2, "cost_usd": 0.25},
+        "model": "fake", "provider": "fake", "timestamp": 2});
+    let (_, calls, _) = redeliver(
+        json!({}),
+        json!([
+            {"entry_id": "e_t1_1_superseded_3", "custom": {
+                "custom_type": crate::turn_loop::SUPERSEDED_GENERATION, "data": first}},
+            text_reply(0.25)
+        ]),
+    )
+    .await;
+    let writes: Vec<(&str, &Value)> = calls
+        .iter()
+        .filter(|(f, _)| f == "session::append" || f == "session::update-message")
+        .map(|(f, data)| (f.as_str(), data))
+        .collect();
+    let kept = writes
+        .iter()
+        .position(|(_, data)| data["entry_id"] == "e_t1_1_superseded_7")
+        .unwrap_or_else(|| panic!("not kept under the reply's revision: {writes:?}"));
+    assert_eq!(writes[kept].1["custom"]["data"], first);
+    let cleared = writes
+        .iter()
+        .position(|(f, data)| {
+            *f == "session::update-message"
+                && data["entry_id"] == "e_t1_1_assistant"
+                && data["usage"] == json!({})
+        })
+        .unwrap_or_else(|| panic!("the kept usage stays on the reply: {writes:?}"));
+    assert!(kept < cleared, "cleared before it was kept");
+}
+
 fn hold_reply() -> Value {
     json!({"entry_id": "e_t1_1_assistant", "message": {
         "role": "assistant", "stop_reason": "function_call",
@@ -392,6 +430,11 @@ async fn redeliver(
                     messages.extend(stored.as_array().unwrap().iter().cloned());
                     json!({ "messages": messages })
                 }
+                "session::get-message" => json!({"entry": {
+                    "kind": "message", "id": data["entry_id"], "parent_id": null,
+                    "timestamp": 2, "revision": 7,
+                    "message": text_reply(0.25)["message"]}}),
+                "session::update-message" => json!({"updated": true, "revision": 8}),
                 "context::assemble" => json!({
                     "messages": [{"role": "user", "timestamp": 1,
                         "content": [{"type": "text", "text": "hold"}]}],
