@@ -151,3 +151,8 @@ iii.registerFunction('my-worker::on-tmux', async ({ sessions, ports }) => {
 })
 iii.observe({ function_id: 'tmux::on-changed', deliver: 'output' }, 'my-worker::on-tmux')
 ```
+
+The Console page's terminal functions, `tmux::terminal::open`, `write`,
+`resize`, `switch`, `replay`, `redraw` and `close`, cannot be observed
+(`NOT_OBSERVABLE`): `open` returns the terminal's access key, every other call
+carries it, and `write` carries what is typed into the terminal.
