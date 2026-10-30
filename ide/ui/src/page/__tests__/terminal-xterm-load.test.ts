@@ -5,7 +5,7 @@ vi.mock('@iii-workers/terminal-font', () => ({
   useTerminalFontSize: () => [13, () => undefined],
 }))
 
-// The ide/xterm.js console:module, as far as the mount effect uses it.
+// The ide/xterm.js module asset, as far as the mount effect uses it.
 const built: Array<{ focused: boolean }> = []
 const disposable = () => ({ dispose: () => undefined })
 class Terminal {
