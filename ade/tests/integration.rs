@@ -20,10 +20,12 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
+use iii_sdk::runtime::{IIIConnectionState, WorkerIdentityMode, WorkerMetadata};
 use iii_sdk::{register_worker, IIIClient, InitOptions, ObserverHandle, ObserverState};
 use iii_sdk::{CallRequest, Deliver, Error, RegisterFunction, Source};
 use serde_json::{json, Value};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
@@ -513,8 +515,8 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         "integration::workspace-rung",
     );
     active(&observer, "the console::workspace::on-changed observer").await;
-    // The ring is a call through the observer: the payload arrives as the
-    // console sent it.
+    // The ring is a call of the function for this observer: `deliver: output`
+    // hands the target the function's output, the empty event.
     assert_eq!(next_event(&mut rung, "the workspace ring").await, json!({}));
     observer.dispose().await.expect("dispose failed");
 
@@ -525,11 +527,12 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
 }
 
 /// `console::ui::on-assets-changed` and `console::ui::asset` against the
-/// engine: a tab's observer receives the served set through itself once it
-/// is active; an asset observer's content is fetched through it with
-/// `{ path }`, served at `/ui/<path>` and announced to every tab as a `set`;
-/// a later observer of the path supersedes it; a failed fetch rejects the
-/// observer; removing the asset's observer announces a `delete`.
+/// engine: a tab's observer receives the served set in a call for it alone
+/// once it is active; an asset observer's content function receives
+/// `{ path }` once the observer is active and its answer is served at
+/// `/ui/<path>` and announced to every tab as a `set`; a later observer of
+/// the path supersedes it; a failed fetch rejects the observer; removing the
+/// asset's observer announces a `delete`.
 async fn ui_assets(client: &IIIClient, base: &str) {
     const ASSET_FN: &str = "console::ui::asset";
     const ON_ASSETS_CHANGED_FN: &str = "console::ui::on-assets-changed";
@@ -565,7 +568,7 @@ async fn ui_assets(client: &IIIClient, base: &str) {
         )
     };
 
-    // A tab: its first delivery is the sync, through its own observer.
+    // A tab: its first delivery is the sync, a call for its observer alone.
     let mut tab_events = recording_target(client, "integration::assets-tab");
     let tab = client.observe(
         Source::function(ON_ASSETS_CHANGED_FN).deliver(Deliver::Output),
@@ -576,7 +579,8 @@ async fn ui_assets(client: &IIIClient, base: &str) {
     assert_eq!(sync["op"], "sync", "a new tab observer was sent {sync}");
     assert!(sync["assets"].is_array(), "sync without assets: {sync}");
 
-    // An asset: fetched through its observer, served, announced.
+    // An asset: its content function receives `{ path }`; the content is
+    // served and announced.
     let first = observe_asset("module", PATH, "integration::ui-content");
     active(&first, "the asset observer").await;
     assert_eq!(
@@ -618,11 +622,16 @@ async fn ui_assets(client: &IIIClient, base: &str) {
     );
     late.dispose().await.expect("dispose the late tab");
 
-    // A later observer of the path supersedes the first.
+    // A later observer of the path supersedes the first. Its fetch is a call
+    // for it alone: the first observer's content function is not called.
     let next = observe_asset("module", PATH, "integration::ui-content-next");
     active(&next, "the superseding asset observer").await;
     let set = asset_event(&mut tab_events, "set", PATH).await;
     assert_ne!(set["asset"]["hash"], first_hash, "content changed: {set}");
+    assert!(
+        fetches.try_recv().is_err(),
+        "the fetch for the superseding observer reached the first one's content function"
+    );
     assert_eq!(
         rejected(&first, "the superseded asset observer").await,
         "UI_ASSET_SUPERSEDED"
@@ -654,6 +663,403 @@ async fn ui_assets(client: &IIIClient, base: &str) {
     tab.dispose().await.expect("dispose the tab");
     let _ = first.dispose().await;
     let _ = broken.dispose().await;
+}
+
+const WORKSPACE_CHANGED_FN: &str = "console::workspace::on-changed";
+const ASSETS_CHANGED_FN: &str = "console::ui::on-assets-changed";
+const ASSET_FN: &str = "console::ui::asset";
+
+/// How long a target stays quiet before the test concludes nothing more is
+/// coming for it.
+const QUIET: Duration = Duration::from_millis(750);
+
+/// Waits [`QUIET`] and fails when `rx` received anything meanwhile.
+async fn quiet(rx: &mut UnboundedReceiver<Value>, what: &str) {
+    sleep(QUIET).await;
+    if let Ok(event) = rx.try_recv() {
+        panic!("{what}: {event}");
+    }
+}
+
+/// The top-level keys of a delivered envelope, sorted.
+fn keys_of(envelope: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = envelope
+        .as_object()
+        .unwrap_or_else(|| panic!("not an envelope: {envelope}"))
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    keys
+}
+
+/// `own` (a call for one observer) and `ordinary` (any other call of the
+/// same function) reached a default-envelope observer in one shape.
+fn same_envelope(own: &Value, ordinary: &Value, function_id: &str, observer_id: &str) {
+    assert_eq!(keys_of(own), keys_of(ordinary), "{own:#}\n{ordinary:#}");
+    for envelope in [own, ordinary] {
+        assert_eq!(envelope["function_id"], function_id, "{envelope:#}");
+        assert_eq!(envelope["observer_id"], observer_id, "{envelope:#}");
+        assert!(envelope.get("output").is_some(), "{envelope:#}");
+    }
+}
+
+/// Stores the layout: every store write rings `console::workspace::on-changed`.
+async fn write_layout(client: &IIIClient) {
+    client
+        .call(CallRequest {
+            function_id: "console::workspace::set".to_string(),
+            payload: json!({ "value": {} }),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("console::workspace::set failed");
+}
+
+/// Resolves once the console serves its own four assets, so no `set` of
+/// them reaches a tab the test observes afterwards.
+async fn console_assets_served(client: &IIIClient) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let manifest = client
+            .call(CallRequest {
+                function_id: "console::ui-manifest".to_string(),
+                payload: json!({}),
+                action: None,
+                timeout_ms: Some(2_000),
+            })
+            .await;
+        let served = manifest.as_ref().map_or(0, |m| {
+            m["assets"].as_array().map_or(0, |assets| {
+                assets
+                    .iter()
+                    .filter(|a| {
+                        a["path"]
+                            .as_str()
+                            .is_some_and(|p| p.starts_with("console/"))
+                    })
+                    .count()
+            })
+        });
+        if served == 4 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the console never served its own assets: {manifest:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// iii decision 52 against the engine: the call the console makes for one
+/// new observer (the workspace ring, a tab's asset `sync`, an asset's
+/// content fetch) reaches that observer alone, and reaches it in the shape
+/// of every other call of the function: the envelope for a default
+/// observer, the event for a `deliver: output` one.
+#[tokio::test]
+async fn a_call_for_one_observer_reaches_it_alone_in_the_shape_of_every_event() {
+    let Some(harness) = boot().await else {
+        return;
+    };
+    let client = &harness.client;
+    console_assets_served(client).await;
+
+    // console::workspace::on-changed. A takes the envelope, B the output.
+    let mut ring_a = recording_target(client, "integration::ring-envelope");
+    let mut ring_b = recording_target(client, "integration::ring-output");
+    let a = client.observe(
+        Source::function(WORKSPACE_CHANGED_FN),
+        "integration::ring-envelope",
+    );
+    active(&a, "the envelope ring observer").await;
+    let own_a = next_event(&mut ring_a, "A's own ring").await;
+    let b = client.observe(
+        Source::function(WORKSPACE_CHANGED_FN).deliver(Deliver::Output),
+        "integration::ring-output",
+    );
+    active(&b, "the output ring observer").await;
+    assert_eq!(next_event(&mut ring_b, "B's own ring").await, json!({}));
+    quiet(&mut ring_a, "B's own ring reached A").await;
+    quiet(&mut ring_b, "B got a second ring of its own").await;
+    // A store write rings both, once each.
+    write_layout(client).await;
+    let ordinary_a = next_event(&mut ring_a, "A's ring after a write").await;
+    assert_eq!(
+        next_event(&mut ring_b, "B's ring after a write").await,
+        json!({})
+    );
+    same_envelope(&own_a, &ordinary_a, WORKSPACE_CHANGED_FN, a.id());
+    assert_eq!(own_a["output"], json!({}));
+    assert_eq!(ordinary_a["output"], json!({}));
+    quiet(&mut ring_a, "A got a second ring for one write").await;
+    a.dispose().await.expect("dispose A");
+    b.dispose().await.expect("dispose B");
+
+    // console::ui::on-assets-changed. Tab A takes the envelope, tab B the
+    // output.
+    let mut tab_a = recording_target(client, "integration::tab-envelope");
+    let mut tab_b = recording_target(client, "integration::tab-output");
+    let a = client.observe(
+        Source::function(ASSETS_CHANGED_FN),
+        "integration::tab-envelope",
+    );
+    active(&a, "the envelope tab").await;
+    let sync_a = next_event(&mut tab_a, "tab A's sync").await;
+    assert_eq!(sync_a["output"]["op"], "sync", "{sync_a:#}");
+    let b = client.observe(
+        Source::function(ASSETS_CHANGED_FN).deliver(Deliver::Output),
+        "integration::tab-output",
+    );
+    active(&b, "the output tab").await;
+    let sync_b = next_event(&mut tab_b, "tab B's sync").await;
+    assert_eq!(sync_b["op"], "sync", "{sync_b}");
+    assert_eq!(sync_b["assets"], sync_a["output"]["assets"]);
+    quiet(&mut tab_a, "tab B's sync reached tab A").await;
+
+    // An asset change reaches both tabs; its fetch reaches its own content
+    // function alone.
+    const PATH: &str = "integration/shape.js";
+    let mut fetches_one = recording_content(client, "integration::content-one", "1");
+    let mut fetches_two = recording_content(client, "integration::content-two", "2");
+    let one = client.observe(
+        Source::function(ASSET_FN).args(json!({ "kind": "script", "path": PATH })),
+        "integration::content-one",
+    );
+    active(&one, "the first asset observer").await;
+    assert_eq!(
+        next_event(&mut fetches_one, "the first fetch").await,
+        json!({ "path": PATH })
+    );
+    let set_a = next_event(&mut tab_a, "tab A's set").await;
+    assert_eq!(set_a["output"]["op"], "set", "{set_a:#}");
+    assert_eq!(set_a["output"]["asset"]["path"], PATH);
+    let set_b = next_event(&mut tab_b, "tab B's set").await;
+    assert_eq!(set_b["op"], "set", "{set_b}");
+    same_envelope(&sync_a, &set_a, ASSETS_CHANGED_FN, a.id());
+
+    let two = client.observe(
+        Source::function(ASSET_FN)
+            .args(json!({ "kind": "script", "path": "integration/other.js" })),
+        "integration::content-two",
+    );
+    active(&two, "the second asset observer").await;
+    assert_eq!(
+        next_event(&mut fetches_two, "the second fetch").await,
+        json!({ "path": "integration/other.js" })
+    );
+    asset_event(&mut tab_b, "set", "integration/other.js").await;
+    quiet(
+        &mut fetches_one,
+        "the second asset's fetch reached the first content function",
+    )
+    .await;
+
+    for observer in [a, b, one, two] {
+        let _ = observer.dispose().await;
+    }
+    harness.client.shutdown_async().await;
+}
+
+/// Register `id` as a content function answering `version`; it forwards
+/// each request it receives.
+fn recording_content(client: &IIIClient, id: &str, version: &str) -> UnboundedReceiver<Value> {
+    let (tx, rx) = unbounded_channel();
+    let content = format!("export const version = {version}\n");
+    client.register_function(
+        id,
+        RegisterFunction::new(move |input: Value| {
+            let _ = tx.send(without_caller(input));
+            Ok::<_, Error>(json!({ "content": content }))
+        }),
+    );
+    rx
+}
+
+/// A TCP proxy between a worker and the engine that can cut every
+/// connection it carries; the worker reconnects through it and reattaches.
+struct DropProxy {
+    url: String,
+    drop_all: broadcast::Sender<()>,
+}
+
+impl DropProxy {
+    async fn start(engine_url: &str) -> Self {
+        let upstream = engine_url
+            .trim_start_matches("ws://")
+            .trim_end_matches('/')
+            .to_string();
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the proxy");
+        let url = format!("ws://{}", listener.local_addr().expect("proxy address"));
+        let (drop_all, _) = broadcast::channel(4);
+        let dropper = drop_all.clone();
+        tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                let Ok(server) = TcpStream::connect(&upstream).await else {
+                    continue;
+                };
+                let mut dropped = dropper.subscribe();
+                tokio::spawn(async move {
+                    let (mut client_rx, mut client_tx) = client.into_split();
+                    let (mut server_rx, mut server_tx) = server.into_split();
+                    tokio::select! {
+                        _ = tokio::io::copy(&mut client_rx, &mut server_tx) => {}
+                        _ = tokio::io::copy(&mut server_rx, &mut client_tx) => {}
+                        _ = dropped.recv() => {}
+                    }
+                });
+            }
+        });
+        Self { url, drop_all }
+    }
+
+    /// Cuts every proxied connection.
+    fn drop_connections(&self) {
+        let _ = self.drop_all.send(());
+    }
+}
+
+async fn connection(client: &IIIClient, connected: bool, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while (client.get_connection_state() == IIIConnectionState::Connected) != connected {
+        assert!(Instant::now() < deadline, "{what}");
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// An observer whose worker's connection drops is withdrawn from the
+/// console and announced to it again when the worker reattaches (iii
+/// decision 47); the console then sends it its current state again in a
+/// call for it alone (decision 52): a tab gets a new `sync` and a new ring,
+/// an asset's content is fetched again and the asset announced again. A tab
+/// on another connection gets none of the calls for those observers, and
+/// sees the asset deleted while its worker is away and set again after.
+#[tokio::test]
+async fn an_observer_that_reattaches_gets_its_current_state_again() {
+    let Some(harness) = boot().await else {
+        return;
+    };
+    let client = &harness.client;
+    console_assets_served(client).await;
+
+    // A tab on the harness's own connection, which stays up.
+    let mut steady = recording_target(client, "integration::steady-tab");
+    let steady_tab = client.observe(
+        Source::function(ASSETS_CHANGED_FN).deliver(Deliver::Output),
+        "integration::steady-tab",
+    );
+    active(&steady_tab, "the steady tab").await;
+    assert_eq!(
+        next_event(&mut steady, "the steady tab's sync").await["op"],
+        "sync"
+    );
+    let mut steady_ring = recording_target(client, "integration::steady-ring");
+    let steady_ringer = client.observe(
+        Source::function(WORKSPACE_CHANGED_FN).deliver(Deliver::Output),
+        "integration::steady-ring",
+    );
+    active(&steady_ringer, "the steady ring observer").await;
+    next_event(&mut steady_ring, "the steady ring observer's own ring").await;
+
+    // A worker behind the proxy: a tab, a ring observer and an asset.
+    const PATH: &str = "integration/away.js";
+    let proxy = DropProxy::start(&harness.engine_url).await;
+    // Its own worker name: the engine admits one live worker per name.
+    let away = register_worker(
+        &proxy.url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: format!("integration-away-{}", Uuid::new_v4()),
+                ..WorkerMetadata::default()
+            }),
+            identity: WorkerIdentityMode::Explicit,
+            ..InitOptions::default()
+        },
+    );
+    let mut tab = recording_target(&away, "integration::away-tab");
+    let mut ring = recording_target(&away, "integration::away-ring");
+    let mut fetches = recording_content(&away, "integration::away-content", "1");
+    let away_tab = away.observe(
+        Source::function(ASSETS_CHANGED_FN).deliver(Deliver::Output),
+        "integration::away-tab",
+    );
+    let away_ringer = away.observe(
+        Source::function(WORKSPACE_CHANGED_FN).deliver(Deliver::Output),
+        "integration::away-ring",
+    );
+    active(&away_tab, "the tab behind the proxy").await;
+    active(&away_ringer, "the ring observer behind the proxy").await;
+    assert_eq!(next_event(&mut tab, "the first sync").await["op"], "sync");
+    assert_eq!(next_event(&mut ring, "the first ring").await, json!({}));
+    let asset = away.observe(
+        Source::function(ASSET_FN).args(json!({ "kind": "script", "path": PATH })),
+        "integration::away-content",
+    );
+    active(&asset, "the asset behind the proxy").await;
+    assert_eq!(
+        next_event(&mut fetches, "the first fetch").await,
+        json!({ "path": PATH })
+    );
+    let set = asset_event(&mut steady, "set", PATH).await;
+    let hash = set["asset"]["hash"].clone();
+    // the tab behind the proxy sees the set too
+    let away_set = asset_event(&mut tab, "set", PATH).await;
+    assert_eq!(away_set["asset"]["hash"], hash);
+
+    // The worker's connection drops and comes back.
+    proxy.drop_connections();
+    connection(
+        &away,
+        false,
+        "the worker behind the proxy never saw the drop",
+    )
+    .await;
+    // While it is away its asset is withdrawn.
+    asset_event(&mut steady, "delete", PATH).await;
+    connection(&away, true, "the worker behind the proxy never reconnected").await;
+    active(&away_tab, "the tab after it reattached").await;
+    active(&asset, "the asset after it reattached").await;
+
+    // Each observer behind the proxy gets its current state again.
+    let sync = loop {
+        let event = next_event(&mut tab, "the sync after the reattach").await;
+        if event["op"] == "sync" {
+            break event;
+        }
+    };
+    assert!(sync["assets"].is_array(), "{sync}");
+    assert_eq!(
+        next_event(&mut ring, "the ring after the reattach").await,
+        json!({})
+    );
+    assert_eq!(
+        next_event(&mut fetches, "the fetch after the reattach").await,
+        json!({ "path": PATH })
+    );
+    let set = asset_event(&mut steady, "set", PATH).await;
+    assert_eq!(set["asset"]["hash"], hash, "the same content: {set}");
+
+    // The steady observers got none of those calls.
+    quiet(
+        &mut steady_ring,
+        "a ring for the reattached observer reached the steady one",
+    )
+    .await;
+    while let Ok(event) = steady.try_recv() {
+        assert_ne!(
+            event["op"], "sync",
+            "a sync for the reattached tab reached the steady one"
+        );
+    }
+
+    for observer in [steady_tab, steady_ringer] {
+        let _ = observer.dispose().await;
+    }
+    away.shutdown_async().await;
+    harness.client.shutdown_async().await;
 }
 
 /// A page cannot register a function the console hosts through `/ws`, and

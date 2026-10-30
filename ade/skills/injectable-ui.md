@@ -447,7 +447,7 @@ reconnect.
 |---|---|
 | Function | `console::ui::asset`; never observe the tab-only `console::ui::on-assets-changed` |
 | Args | `{ "kind": "script" \| "module" \| "style", "path": string }`, nothing else: `script` is ESM JS imported at mount, `module` ESM JS imported only by `host.importModule` (kind `module` in the manifest and tab pushes), `style` CSS |
-| Target | the worker's content function, called through the observer once it is active |
+| Target | the worker's content function: once the observer is active it receives `{ path }`, in a call of `console::ui::asset` for that observer alone that the function's deliver hook hands to it |
 | Path rules | lowercase `[a-z0-9._-]` segments, no leading slash, no `.`/`..` segments, ≤ 512 chars; extension must match the kind (`.js` for scripts and modules, `.css`); **convention: first segment = worker name** — it becomes the `data-iii-ui` scope and the only human-readable attribution |
 | Content function | input `{ "path": string }` → output `{ "content": string, "content_type"?: string }` |
 | Size cap | 8 MiB per asset — a larger asset's observer is rejected (the driver fails first) |

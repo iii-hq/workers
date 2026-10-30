@@ -33,6 +33,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::for_observer;
 use crate::workspace_store::{self, WorkspaceStore};
 
 pub const CHAT_SCREEN: &str = "chat";
@@ -841,8 +842,10 @@ pub struct ChangedEvent {}
 /// tab that has to show the result.
 fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
     // Every observer is rung once as soon as it is active: a browser's first
-    // read raced its observe, and an observer replayed after a reconnect
-    // missed whatever was written while the socket was down.
+    // read raced its observe, and an observer announced again after its
+    // browser reattached missed whatever was written while it was away. The
+    // ring is a call of the function for that observer alone, delivered like
+    // every ring.
     let ring_iii = iii.clone();
     iii.on_observer_added_for(ON_CHANGED_FN, move |obs: Observer| {
         let iii = ring_iii.clone();
@@ -851,7 +854,7 @@ fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
                 if obs.accepted().await.is_err() {
                     return;
                 }
-                let request = CallRequest::observer(&obs, json!({})).action(CallAction::Void);
+                let request = for_observer::void_call(ON_CHANGED_FN, json!({}), obs.id());
                 if let Err(error) = iii.call(request).await {
                     tracing::debug!(observer_id = obs.id(), %error, "workspace ring failed");
                 }
@@ -859,14 +862,15 @@ fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
             Ok(())
         }
     });
+    iii.on_observer_match_for(ON_CHANGED_FN, for_observer::every_call());
     iii.register_function(
         ON_CHANGED_FN,
         RegisterFunction::new(|event: ChangedEvent| Ok::<_, Error>(event))
             .description(
                 "Called after every change to the console workspace layout: open, close, or \
-                 a browser's own edit. Each new observer is also called once, through \
-                 itself, as soon as it is active. The event is empty; re-read the layout \
-                 with console::workspace::list.",
+                 a browser's own edit. Each new observer also gets one call of its own as \
+                 soon as it is active (metadata for_observer). The event is empty; re-read \
+                 the layout with console::workspace::list.",
             )
             .private(),
     );

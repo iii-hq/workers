@@ -117,18 +117,21 @@ report changes.
   `{ kind: 'script' | 'style' | 'module', path }`; `path` is the identity
   (`<worker>/page.js`, at most 512 bytes) and the observer's target is the
   worker's content function, returning `{ content, content_type? }` for
-  `{ path }`. Once the observer is active the console calls the content
-  function through it. A later observer of the same path supersedes the
-  earlier one (`UI_ASSET_SUPERSEDED`); a content fetch that fails rejects the
-  observer (`UI_ASSET_FETCH_FAILED`). The function itself is never called.
+  `{ path }`. Once the observer is active the console calls the function
+  with `{ path }` for that observer alone, and its deliver hook calls the
+  content function through the observer. A later observer of the same path
+  supersedes the earlier one (`UI_ASSET_SUPERSEDED`); a content fetch that
+  fails rejects the observer (`UI_ASSET_FETCH_FAILED`).
 - `console::ui::on-assets-changed` — a tab's live-update feed, no args. Each
-  new observer receives `{ op: 'sync', assets }` through itself; every later
-  change is `{ op: 'set', asset }` or `{ op: 'delete', path }`. The console's
-  tabs observe it themselves.
+  new observer gets one call of its own once it is accepted,
+  `{ op: 'sync', assets }`; every later change is `{ op: 'set', asset }` or
+  `{ op: 'delete', path }`. iii delivers each like every call, so a tab
+  receives every event in one shape. The console's tabs observe it
+  themselves.
 - `console::workspace::on-changed` — called after every workspace layout
-  write (`open`, `close`, a browser's own edit), and once through each new
-  observer when it is accepted. No args, empty event: a page that watches the
-  layout observes it and re-reads `console::workspace::list`.
+  write (`open`, `close`, a browser's own edit), and once for each new
+  observer alone when it is accepted. No args, empty event: a page that
+  watches the layout observes it and re-reads `console::workspace::list`.
 - `console::compose::on-changed` — called when the Compose daemon writes
   `state.json` or the compose file changes. No args; filter on `input.kind`,
   `input.file` or `input.namespace`.

@@ -3,9 +3,10 @@
  * (iii/tech-specs/2026-07-17-injectable-ui/hot-reload.md).
  *
  * Boot is one step: observe `console::ui::on-assets-changed` with this tab's
- * own handler as the target. The console worker sends the new observer a
- * `sync` event through itself (the observer IS the seed) and follows with
- * incremental `set`/`delete` events. The loader diffs every event against
+ * own handler as the target. Once the observer is active the console calls
+ * the function for it alone with a `sync` event (the observer IS the seed)
+ * and follows with incremental `set`/`delete` events; every event arrives in
+ * the same shape. The loader diffs every event against
  * loaded state — new/changed
  * hash ⇒ cache-busted import + `setup(host)` + atomic swap; missing path ⇒
  * dispose. Styles are `<link>` swaps; scripts are ES modules; modules are
