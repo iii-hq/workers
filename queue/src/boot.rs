@@ -76,7 +76,7 @@ pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::
         config.clone(),
         apply_lock.clone(),
     );
-    let subscribers = Subscribers::new(adapter.clone());
+    let subscribers = Subscribers::new(adapter.clone()).with_config(config.clone());
 
     // Restore every authoritative queue before exposing queue::define. This
     // closes the startup race where a concurrent definition could otherwise

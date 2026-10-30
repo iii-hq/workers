@@ -13,6 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
@@ -23,6 +24,8 @@ use serde_json::{json, Value};
 use tokio::sync::{watch, Mutex};
 
 use crate::adapter::{QueueAdapter, SwappableAdapter};
+use crate::boot::ConfigCell;
+use crate::config::DEFAULT_SUBSCRIBER_RETENTION_MS;
 use crate::on_message::{ON_MESSAGE_FN, SUBSCRIBER_METADATA_KEY};
 use crate::subscriber_config::SubscriberQueueConfig;
 
@@ -568,6 +571,10 @@ pub struct Subscribers {
     /// The registration each live adapter subscription delivers into, by
     /// `(queue, key)`. Locked only under `registrations`.
     served_by: Arc<Mutex<HashMap<(String, String), String>>>,
+    /// The live configuration, read for `subscriber_retention_ms` when an
+    /// observer leaves. Without it the retention is
+    /// [`DEFAULT_SUBSCRIBER_RETENTION_MS`].
+    config: Option<ConfigCell>,
 }
 
 impl Subscribers {
@@ -576,6 +583,23 @@ impl Subscribers {
             adapter,
             registrations: Arc::new(Mutex::new(HashMap::new())),
             served_by: Arc::new(Mutex::new(HashMap::new())),
+            config: None,
+        }
+    }
+
+    /// Read `subscriber_retention_ms` from `config` each time an observer
+    /// leaves, so a configuration change applies to the next one.
+    pub fn with_config(mut self, config: ConfigCell) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// How long the queue of a subscription no observer serves keeps
+    /// receiving its topic.
+    async fn retention(&self) -> Duration {
+        match &self.config {
+            Some(config) => config.read().await.subscriber_retention(),
+            None => Duration::from_millis(DEFAULT_SUBSCRIBER_RETENTION_MS),
         }
     }
 
@@ -630,7 +654,9 @@ impl Subscribers {
 
     /// Track `registration` and attach it to the adapter. Its consumer starts
     /// here, before the SDK acks the observer, so no message published after
-    /// the observer is active is missed.
+    /// the observer is active is missed. A subscription whose queue is within
+    /// its retention (see [`Self::unregister`]) is consumed again from
+    /// everything it holds.
     pub async fn register(&self, registration: RegisteredSubscriber) -> Result<(), RegisterError> {
         if registration.spec.queue.trim().is_empty() {
             return Err(RegisterError::InvalidConfig(format!(
@@ -660,8 +686,13 @@ impl Subscribers {
         Ok(())
     }
 
-    /// Unregister the observer `id`: its consumer stops, and its backlog
-    /// stays for a later observer with the same id.
+    /// Unregister the observer `id`. When no other observer serves its
+    /// subscription, the subscription's consumer stops at once and its queue
+    /// keeps receiving the topic for `subscriber_retention_ms`: an observer
+    /// with the same subscription key within that time consumes everything
+    /// it received. After it, the queue keeps only what it holds, for a later
+    /// observer with the same id. A group's subscription that delivered into
+    /// the observer re-opens toward a member that stays.
     ///
     /// The registrations lock is deliberately held across `unsubscribe`:
     /// releasing it first opens a window where a same-key register sees no
@@ -682,10 +713,13 @@ impl Subscribers {
             .find(|r| r.spec.queue == registration.spec.queue && r.subscription_key() == key)
             .cloned();
         let served_this = self.served_by.lock().await.get(&served) == Some(&registration.id);
+        // Also on a re-open: the queue keeps receiving the topic while the
+        // subscription moves to the member that stays.
+        let retain = self.retention().await;
         match next {
             None => {
                 self.adapter
-                    .unsubscribe(&registration.spec.queue, &key)
+                    .unsubscribe(&registration.spec.queue, &key, retain)
                     .await;
                 self.served_by.lock().await.remove(&served);
             }
@@ -693,7 +727,7 @@ impl Subscribers {
             // left: re-open it toward a member that stays.
             Some(next) if served_this => {
                 self.adapter
-                    .unsubscribe(&registration.spec.queue, &key)
+                    .unsubscribe(&registration.spec.queue, &key, retain)
                     .await;
                 self.subscribe_for(&next, &key).await;
             }
@@ -790,6 +824,7 @@ mod tests {
         Unsubscribe {
             topic: String,
             id: String,
+            retain: Duration,
         },
     }
 
@@ -830,10 +865,11 @@ mod tests {
             });
         }
 
-        async fn unsubscribe(&self, topic: &str, id: &str) {
+        async fn unsubscribe(&self, topic: &str, id: &str, retain: Duration) {
             self.calls.lock().unwrap().push(Call::Unsubscribe {
                 topic: topic.to_string(),
                 id: id.to_string(),
+                retain,
             });
         }
 
@@ -1095,9 +1131,51 @@ mod tests {
             &Call::Unsubscribe {
                 topic: "demo".to_string(),
                 id: "observer:obs-1".to_string(),
+                retain: Duration::from_secs(30),
             }
         );
         assert!(subscribers.registrations().await.is_empty());
+    }
+
+    /// The retention an observer's leaving passes is the live configuration's
+    /// `subscriber_retention_ms`, read when it leaves.
+    #[tokio::test]
+    async fn unregister_passes_the_configured_retention() {
+        let (subscribers, mock) = subscribers_with_mock();
+        let config = crate::configuration::new_cell(crate::config::QueueConfig {
+            subscriber_retention_ms: 0,
+            ..Default::default()
+        });
+        let subscribers = subscribers.with_config(config.clone());
+        for id in ["obs-1", "obs-2"] {
+            subscribers
+                .register(registration(id, json!({"topic": "demo"})))
+                .await
+                .unwrap();
+        }
+
+        subscribers.unregister("obs-1").await;
+        *config.write().await = Arc::new(crate::config::QueueConfig {
+            subscriber_retention_ms: 1_500,
+            ..Default::default()
+        });
+        subscribers.unregister("obs-2").await;
+
+        let retained: Vec<_> = mock
+            .calls()
+            .into_iter()
+            .filter_map(|call| match call {
+                Call::Unsubscribe { id, retain, .. } => Some((id, retain)),
+                Call::Subscribe { .. } => None,
+            })
+            .collect();
+        assert_eq!(
+            retained,
+            vec![
+                ("observer:obs-1".to_string(), Duration::ZERO),
+                ("observer:obs-2".to_string(), Duration::from_millis(1_500)),
+            ]
+        );
     }
 
     #[tokio::test]

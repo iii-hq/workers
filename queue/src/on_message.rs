@@ -9,8 +9,10 @@
 //!   [`Subscribers`], which opens its consumer on the adapter before the SDK
 //!   acks it (`INVALID_ARGS` without a topic, `OBSERVER_ID_CONFLICT` for an id
 //!   already subscribed).
-//! - **Removed.** The observer's consumer stops; its durable queue and backlog
-//!   stay for a later observer with the same id.
+//! - **Removed.** The observer's consumer stops at once; its durable queue
+//!   keeps receiving the topic for `subscriber_retention_ms`, then keeps what
+//!   it holds, for a later observer with the same id
+//!   ([`Subscribers::unregister`]).
 //! - **Match.** By keys: an observer is filed under its id, and a call
 //!   matches the subscriber its metadata names (`{ "subscriber": <id> }`).
 //! - **Deliver.** The consumer loops call the function once per message with
@@ -293,8 +295,9 @@ impl OnMessageObservers {
             })
     }
 
-    /// Unsubscribe the observer `id`: its consumer stops, and its backlog
-    /// stays for a later observer with the same id.
+    /// Unsubscribe the observer `id`: its consumer stops at once, and its
+    /// queue stays for a later observer with the same id
+    /// ([`Subscribers::unregister`]).
     pub async fn remove(&self, id: &str) {
         self.subscribers.unregister(id).await;
     }
@@ -319,6 +322,8 @@ mod tests {
     use super::*;
     use crate::adapter::{QueueAdapter, SwappableAdapter};
     use crate::adapters::builtin::BuiltinAdapter;
+    use crate::config::QueueConfig;
+    use crate::configuration::new_cell;
     use crate::store::{InMemoryStore, QueueStore};
     use crate::subscribers::Invoker;
     use std::collections::HashMap;
@@ -465,12 +470,16 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
+        fixture_with(QueueConfig::default())
+    }
+
+    fn fixture_with(config: QueueConfig) -> Fixture {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let engine = Arc::new(FakeEngine::default());
         let builtin: Arc<dyn QueueAdapter> =
             Arc::new(BuiltinAdapter::new(store.clone(), engine.clone()));
         let adapter = Arc::new(SwappableAdapter::new(builtin, "builtin"));
-        let subscribers = Subscribers::new(adapter.clone());
+        let subscribers = Subscribers::new(adapter.clone()).with_config(new_cell(config));
         let observers = OnMessageObservers::new(subscribers.clone());
         Fixture {
             store,
@@ -787,9 +796,10 @@ mod tests {
         f.subscribers.shutdown().await;
     }
 
-    /// Removing an observer stops its consumer: later messages reach the
-    /// subscribers that stay, and an observer back under the same id gets
-    /// its own queue again.
+    /// Removing an observer stops its consumer at once: later messages reach
+    /// the subscribers that stay and none reach it. Its queue keeps receiving
+    /// the topic for the retention window, so an observer back under the same
+    /// id within it gets what was published while it was gone.
     #[tokio::test]
     async fn removal_stops_delivery_and_keeps_the_queue_for_the_same_id() {
         let f = fixture();
@@ -815,15 +825,89 @@ mod tests {
             "no delivery after removal"
         );
 
-        // Back under the same id: its queue was kept, but the topic does not
-        // fan out to it while it is gone.
+        // Back under the same id within the window: its queue kept receiving
+        // the topic, so it gets 2 as well as 3, each once.
+        let again = FakeObserver::new("obs-1");
+        f.add(&again, json!({ "topic": "orders" })).await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 3 }), None, None)
+            .await;
+        wait_until(|| async { again.delivered().await.len() == 2 }).await;
+        sleep(Duration::from_millis(100)).await;
+        let mut delivered = again.delivered().await;
+        delivered.sort_by_key(|message| message["n"].as_i64());
+        assert_eq!(delivered, vec![json!({ "n": 2 }), json!({ "n": 3 })]);
+        f.subscribers.shutdown().await;
+    }
+
+    /// With `subscriber_retention_ms: 0` the topic stops routing to a removed
+    /// observer's queue at once: an observer back under the same id gets
+    /// what is published after it is back, and not what was published while
+    /// it was gone.
+    #[tokio::test]
+    async fn with_no_retention_the_queue_stops_receiving_when_the_observer_is_removed() {
+        let f = fixture_with(QueueConfig {
+            subscriber_retention_ms: 0,
+            ..QueueConfig::default()
+        });
+        let leaves = FakeObserver::new("obs-1");
+        f.add(&leaves, json!({ "topic": "orders" })).await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 1 }), None, None)
+            .await;
+        wait_until(|| async { leaves.delivered().await.len() == 1 }).await;
+
+        f.remove("obs-1").await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 2 }), None, None)
+            .await;
         let again = FakeObserver::new("obs-1");
         f.add(&again, json!({ "topic": "orders" })).await;
         f.adapter
             .enqueue("orders", json!({ "n": 3 }), None, None)
             .await;
         wait_until(|| async { again.delivered().await.len() == 1 }).await;
+        sleep(Duration::from_millis(100)).await;
         assert_eq!(again.delivered().await, vec![json!({ "n": 3 })]);
+        assert_eq!(
+            f.store.topic_stats("orders").await.depth,
+            1,
+            "2 on the bare topic"
+        );
+        f.subscribers.shutdown().await;
+    }
+
+    /// A group's queue keeps being consumed while a member remains: when the
+    /// member it delivered into leaves, the one that stays takes every later
+    /// message, before and after the retention.
+    #[tokio::test(start_paused = true)]
+    async fn a_group_keeps_its_queue_while_a_member_remains() {
+        let f = fixture();
+        let a = FakeObserver::new("obs-a");
+        let b = FakeObserver::new("obs-b");
+        let group = json!({ "topic": "orders", "group": "billing" });
+        f.add(&a, group.clone()).await;
+        f.add(&b, group).await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 1 }), None, None)
+            .await;
+        wait_until(|| async { a.delivered().await.len() == 1 }).await;
+
+        f.remove("obs-a").await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 2 }), None, None)
+            .await;
+        wait_until(|| async { b.delivered().await.len() == 1 }).await;
+        sleep(Duration::from_secs(60)).await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 3 }), None, None)
+            .await;
+        wait_until(|| async { b.delivered().await.len() == 2 }).await;
+        assert_eq!(a.delivered().await, vec![json!({ "n": 1 })]);
+        assert_eq!(
+            b.delivered().await,
+            vec![json!({ "n": 2 }), json!({ "n": 3 })]
+        );
         f.subscribers.shutdown().await;
     }
 

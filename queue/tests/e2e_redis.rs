@@ -123,7 +123,7 @@ async fn publish_delivers_unwrapped_payload_to_subscriber_connect_or_skip() {
     assert!(seen[0].get("data").is_none());
     drop(seen);
 
-    adapter.unsubscribe(&topic, "sub-1").await;
+    adapter.unsubscribe(&topic, "sub-1", Duration::ZERO).await;
     adapter.shutdown().await;
     iii.shutdown_async().await;
 }
