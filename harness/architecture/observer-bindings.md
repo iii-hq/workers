@@ -50,8 +50,8 @@ There is no spawn shape: an observer never starts an agent.
 The delivery hop is an ordinary, catalog-hidden function (`metadata.internal`).
 It is not private, because a private function cannot be an observer's target.
 It takes a call in two shapes. From iii's delivery it gets the `Observed`
-envelope and reads the event from its `output` — for an event source, the
-event itself — falling back to `input` when the output was not captured. A
+envelope and reads the event from its `output` (for an event source, the
+event itself), falling back to `input` when the output was not captured. A
 source that delivers itself (an `onObserverDeliver` hook: `kanban::on-change`,
 `stories::on-changed`) calls through the observer, and the payload it sends is
 the event, without the engine's `_caller_worker_id` stamp. Both calls carry the
@@ -234,8 +234,9 @@ boot (`bindings/gc.rs`):
 1. **Migrate** — records written before 0.26 name a trigger type and config.
    Each is rewritten through the spec's table (`W::X` becomes `W::on-X`; config
    becomes args for a function that takes args, `$eq` filters on
-   `input.<field>` otherwise). One that does not translate — a harness event,
-   an unknown shape — is retired and its owner told what to observe instead.
+   `input.<field>` otherwise). One that does not translate (a harness event;
+   a console UI asset, whose observer serves the asset's content; an unknown
+   shape) is retired and its owner told what to observe instead.
 2. **Sweep** — owner-gone bindings are deleted, stale spawn-target records are
    retired loudly, and delivery observers without a record are disposed.
 3. **Replay** — every surviving binding's observer is re-created with the same

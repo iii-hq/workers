@@ -283,17 +283,12 @@ pub fn translate(trigger_type: &str, config: &Value, created_at: i64) -> Option<
             Some(worker_events(config)),
         ),
         "console:assets" => source("console::ui::on-assets-changed", None, None),
-        // One asset of the console UI, named by its `path` (contract rows
-        // 118-120): `console::ui::asset` with args `{ kind, path }`.
-        "console:script" | "console:style" | "console:module" => {
-            let kind = trigger_type.trim_start_matches("console:");
-            let path = config.get("path")?.as_str()?;
-            source(
-                "console::ui::asset",
-                Some(json!({ "kind": kind, "path": path })),
-                None,
-            )
-        }
+        // An observer of `console::ui::asset` is its asset's content source
+        // (contract rows 118-120): the ADE calls its target with `{ path }`
+        // and stores the `content` of the answer. A binding's target is the
+        // delivery hop, whose answer carries no content, so the record is
+        // retired.
+        "console:script" | "console:style" | "console:module" => return None,
         other if other.starts_with("harness::") => return None,
         other => {
             let function_id = on_function(other)?;
@@ -394,8 +389,9 @@ fn retirement_reason(trigger_type: Option<&str>) -> &'static str {
              harness::observe."
         }
         Some("console:script" | "console:style" | "console:module") => {
-            "its stored config names no asset `path`. To be told when console UI assets \
-             change, observe console::ui::on-assets-changed through harness::observe."
+            "an observer of console::ui::asset serves its asset's content to the console, \
+             and a binding's target answers with no content. To be told when console UI \
+             assets change, observe console::ui::on-assets-changed through harness::observe."
         }
         Some(other) if other.starts_with("harness::") => {
             "an agent observes no harness function except harness::on-timer. Watch the work \
@@ -675,21 +671,13 @@ mod tests {
             tr("console:assets", &json!({})),
             Some(spec("console::ui::on-assets-changed", None, None))
         );
-        for (asset, kind) in [
-            ("console:script", "script"),
-            ("console:style", "style"),
-            ("console:module", "module"),
-        ] {
+        for asset in ["console:script", "console:style", "console:module"] {
             assert_eq!(
                 tr(
                     asset,
                     &json!({ "path": "demo/page.js", "metadata": { "x": 1 } })
                 ),
-                Some(spec(
-                    "console::ui::asset",
-                    Some(json!({ "kind": kind, "path": "demo/page.js" })),
-                    None
-                )),
+                None,
                 "{asset}"
             );
             assert_eq!(tr(asset, &json!({})), None, "{asset} without a path");
@@ -872,26 +860,40 @@ mod tests {
         );
     }
 
+    /// A stored console asset binding (here a wake) becomes no observer: the
+    /// ADE would call its target for the asset's content on every boot,
+    /// firing the binding each time. The owner is told what to observe for
+    /// asset changes.
     #[test]
-    fn a_stored_console_asset_binding_observes_its_asset() {
-        let raw = stored(json!({
-            "trigger_type": "console:module",
-            "config": { "path": "demo/chart.js" },
-        }));
-        let Upgrade::Rewrite { next } = upgrade(&raw) else {
-            panic!("a console asset with a path translates");
-        };
-        let source = next.source.as_ref().unwrap();
-        assert_eq!(source.function_id, "console::ui::asset");
-        assert_eq!(
-            source.args,
-            Some(json!({ "kind": "module", "path": "demo/chart.js" }))
-        );
-        assert_eq!(source.filters, None);
-        assert_eq!(
-            next.dedup_key.as_ref().unwrap()["function_id"],
-            json!("console::ui::asset")
-        );
+    fn a_stored_console_asset_binding_is_retired_with_an_asset_notice() {
+        for (asset, path) in [
+            ("console:script", "demo/page.js"),
+            ("console:style", "demo/page.css"),
+            ("console:module", "demo/chart.js"),
+        ] {
+            let raw = stored(json!({
+                "trigger_type": asset,
+                "config": { "path": path },
+            }));
+            let Upgrade::Retire {
+                binding,
+                watched,
+                why,
+            } = upgrade(&raw)
+            else {
+                panic!("{asset}: a console asset binding is retired");
+            };
+            assert!(watched.contains(asset), "{watched}");
+            assert!(watched.contains(path), "{watched}");
+            let notice = retirement_notice(&binding, &watched, why);
+            assert!(notice.contains("RETIRED"), "{notice}");
+            assert!(notice.contains("console::ui::asset"), "{notice}");
+            assert!(
+                notice.contains("console::ui::on-assets-changed"),
+                "{notice}"
+            );
+            assert!(!notice.contains("engine::functions::list"), "{notice}");
+        }
     }
 
     #[test]
@@ -928,9 +930,8 @@ mod tests {
         let Upgrade::Retire { why, .. } = upgrade(&stored(
             json!({ "trigger_type": "console:style", "config": {} }),
         )) else {
-            panic!("a console asset without a path names no asset");
+            panic!("a console asset without a path is retired too");
         };
-        assert!(why.contains("`path`"), "{why}");
         assert!(why.contains("console::ui::on-assets-changed"), "{why}");
         let keyless = stored(Value::Null);
         assert!(matches!(upgrade(&keyless), Upgrade::Retire { .. }));
