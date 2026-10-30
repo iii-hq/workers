@@ -2,9 +2,8 @@ Mesh worker upstream provenance
 
 The upstream source for the Mainplane port is https://github.com/mainplane-ai/mainplane
 at commit a6cfbc24a6fa520c08cf1509a06fec458303c811.
-This initial scaffold does not yet include the coordinator or networking port.
-The original Mainplane MIT license and its coordinator's headscale BSD-3 notice
-are preserved below for the port.
+The coordinator and networking ports retain the original Mainplane MIT license.
+Its coordinator's headscale BSD-3 notice is also preserved below.
 
 MIT License
 

@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	filippo.io/cpace v0.0.0-20210101143347-24d601e2e469
+	github.com/coder/websocket v1.8.14
 	github.com/iii-hq/iii/sdk/packages/go/iii v0.24.6-rc.1.0.20261002194513-a075c6e40389
 	golang.org/x/net v0.56.0
 	tailscale.com v1.102.4
@@ -16,7 +17,6 @@ require (
 	github.com/axiomhq/hyperloglog v0.0.0-20240319100328-84253e514e02 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
-	github.com/coder/websocket v1.8.14 // indirect
 	github.com/creachadair/msync v0.8.1 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa // indirect
 	github.com/dgryski/go-metro v0.0.0-20180109044635-280f6062b5bc // indirect
