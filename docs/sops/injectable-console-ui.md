@@ -109,6 +109,14 @@ pub fn register(iii: &Arc<IIIClient>) {
   `dist/<name>.js`. The console serves it but never imports it at mount; the
   page calls `host.importModule<typeof import('./<name>')>(path)` and imports
   the library itself only as types (`ade/injectable-ui` › Lazy modules).
+- Modules come first, in every SDK. The console commits assets in the order
+  their observers reach it, and every SDK sends a worker's observers to the
+  engine in the order the worker created them, on the first connection and
+  on every reconnect. `register` observes modules and styles at once, and
+  each script once every module observer is active or has failed, so the
+  console serves the modules a script imports before the script reaches a
+  tab. A Node or Go worker that observes `console::ui::asset` itself
+  observes its module assets before its scripts.
 - The builder panics on a path the console would reject: empty, over 512
   characters, a leading `/`, an empty, `.` or `..` segment, characters outside
   `[a-z0-9._-]`, an extension that does not match the asset kind, or a
