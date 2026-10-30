@@ -272,7 +272,7 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     }
 
     for frame in terminal_frames(&outcome.result_text, &record.model, &outcome.stop_reason) {
-        emit_agent_event(&iii, &session_id, frame).await;
+        emit_agent_event(&iii, &session_id, || frame).await;
     }
 
     json!({
@@ -356,8 +356,9 @@ async fn stream_turn(
                 break;
             }
         };
-        // Mirror the raw line verbatim onto the raw feed.
-        emit_raw_event(iii, session_id, stdout_frame(&line)).await;
+        // Mirror the raw line verbatim onto the raw feed; the frame is built
+        // only when the session is observed.
+        emit_raw_event(iii, session_id, || stdout_frame(&line)).await;
         // Accumulate into the turn result.
         if !outcome.result_text.is_empty() {
             outcome.result_text.push('\n');
