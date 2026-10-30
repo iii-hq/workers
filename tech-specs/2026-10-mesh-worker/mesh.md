@@ -568,8 +568,11 @@ Both live in this repo and ship in the same PR as `mesh`.
      a scoped id, strip any `fs_scope` and stamp none. Stamping the hub's root
      would not help: `ide` canonicalizes it on the node, where the path does
      not exist.
-   - **Shape:** one shared predicate used by both, plus a test per call path:
-     a direct call, `fp::pipe` and `fp::batch`.
+   - **Shape:** harness and `fp` share no crate, and today's pair is
+     already a byte-identical mirror (`fp/src/pipe.rs` says so). The new
+     predicate follows that pattern: one copy in each, the same table of
+     cases tested in both, and a test per call path: a direct call,
+     `fp::pipe` and `fp::batch`.
    - **fp refused steps.** `fp`'s refused-step ids are exact today
      (`fp/src/pipe.rs`). The same predicate makes them also refuse:
      - `<segment>::<refused id>`;
