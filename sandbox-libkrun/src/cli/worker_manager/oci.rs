@@ -1,0 +1,2385 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
+// See LICENSE and PATENTS files for details.
+
+//! OCI image pulling, extraction, and rootfs search.
+
+use anyhow::{Context, Result};
+use colored::Colorize;
+use std::path::Component;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+/// Maximum total extracted size (10 GiB).
+const MAX_TOTAL_SIZE: u64 = 10 * 1024 * 1024 * 1024;
+/// Maximum single file size (5 GiB).
+const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+/// Maximum number of tar entries.
+const MAX_ENTRY_COUNT: u64 = 1_000_000;
+/// Maximum path depth.
+const MAX_PATH_DEPTH: usize = 128;
+
+/// Name under the rootfs root that iii writes itself; no image layer may
+/// provide it.
+const RESERVED_ROOTFS_NAME_OCI_CONFIG: &str = ".oci-config.json";
+
+/// Write `contents` to `path` without ever following a symlink at the
+/// final path component. A hostile image layer (or, without overlay, the
+/// guest) can leave a symlink at a host-written name inside the rootfs
+/// (e.g. `.oci-config.json`, `etc/hosts`, `init.krun`) pointing outside it;
+/// `std::fs::write` or `std::fs::copy` would follow it and clobber an
+/// arbitrary host file. Unlink any non-directory entry left at the name (a
+/// directory there makes this fail with `EEXIST`), then create the file with
+/// O_CREAT|O_EXCL|O_NOFOLLOW so a racing symlink is refused rather than
+/// followed. With `mode`, the permissions are set exactly on the open
+/// descriptor (independent of the umask); without it, the default creation
+/// mode applies, as with `std::fs::write`.
+pub(crate) fn write_rootfs_file_no_follow(
+    path: &std::path::Path,
+    contents: &[u8],
+    mode: Option<u32>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    // remove_file unlinks a symlink itself (it does not follow it).
+    let _ = std::fs::remove_file(path);
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW);
+    if let Some(mode) = mode {
+        options.mode(mode);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(contents)?;
+    if let Some(mode) = mode {
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
+    Ok(())
+}
+
+/// Make `<root>/<rel>` a real directory without following a symlink at any
+/// component below `root`, and return it. `root` is a guest-writable share, so
+/// any component may be a guest-planted symlink to a host path: it (or any
+/// other non-directory) is unlinked and replaced by an empty directory.
+/// shortcut: checks then creates, so it assumes the guest is not running; a
+/// live guest racing the walk needs openat-based traversal instead.
+pub(crate) fn ensure_rootfs_dir_no_follow(
+    root: &std::path::Path,
+    rel: &str,
+) -> std::io::Result<PathBuf> {
+    let mut dir = root.to_path_buf();
+    for part in std::path::Path::new(rel).components() {
+        dir.push(part);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() => continue,
+            Ok(_) => std::fs::remove_file(&dir)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        std::fs::create_dir(&dir)?;
+    }
+    Ok(dir)
+}
+
+/// Read `<rootfs>/<rel>` whole; see [`open_rootfs_file_no_follow`].
+pub(crate) fn read_rootfs_file_no_follow(
+    rootfs: &std::path::Path,
+    rel: &std::path::Path,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let mut data = Vec::new();
+    open_rootfs_file_no_follow(rootfs, rel)?.read_to_end(&mut data)?;
+    Ok(data)
+}
+
+/// Open `<rootfs>/<rel>` for reading without following a symlink anywhere
+/// below `rootfs`: every ancestor must be a real directory and the final entry
+/// a regular file. The rootfs comes from the image (and, without overlay,
+/// keeps what the guest wrote), so any component may be a symlink to a host
+/// path (reading through it would expose host contents or hit a device such
+/// as `/dev/zero`) or a FIFO. The final entry is opened with O_NOFOLLOW and
+/// its type is checked on the descriptor, so it cannot be swapped between the
+/// check and the read; O_NONBLOCK keeps a FIFO from blocking the open.
+pub(crate) fn open_rootfs_file_no_follow(
+    rootfs: &std::path::Path,
+    rel: &std::path::Path,
+) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let refuse = |why: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{why}: {}", rel.display()),
+        )
+    };
+    let mut path = rootfs.to_path_buf();
+    let mut components = rel
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir | Component::RootDir))
+        .peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(part) = component else {
+            return Err(refuse("path escapes the rootfs"));
+        };
+        path.push(part);
+        if components.peek().is_some() && !std::fs::symlink_metadata(&path)?.is_dir() {
+            return Err(refuse("non-directory ancestor in rootfs path"));
+        }
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)?;
+    if !file.metadata()?.is_file() {
+        return Err(refuse("not a regular file"));
+    }
+    Ok(file)
+}
+
+/// Read `<rootfs>/.oci-config.json` as text, refusing symlinks and
+/// non-regular files (see [`read_rootfs_file_no_follow`]).
+fn read_oci_config_contents(rootfs: &std::path::Path) -> Option<String> {
+    let rel = std::path::Path::new(RESERVED_ROOTFS_NAME_OCI_CONFIG);
+    String::from_utf8(read_rootfs_file_no_follow(rootfs, rel).ok()?).ok()
+}
+
+/// Write the default guest `/etc/hosts`, unless the rootfs already ships a
+/// regular file there, and never by following a symlink. Both `exists()` and
+/// `fs::write` follow links, so a layer shipping `etc/hosts` (or `etc`
+/// itself) as a symlink could otherwise make the host create or clobber a
+/// file outside the rootfs. Trade-off: an image whose `/etc/hosts` is a
+/// symlink gets the default file instead, and an image whose `/etc` is a
+/// symlink gets no default hosts file.
+pub(crate) fn write_default_hosts_no_follow(hosts_path: &std::path::Path) {
+    const DEFAULT_HOSTS: &[u8] = b"127.0.0.1\tlocalhost\n::1\t\tlocalhost\n";
+    // `etc` comes from the image too. O_NOFOLLOW only guards the final path
+    // component, so if a layer made `etc` a symlink, unlinking or creating
+    // `etc/hosts` would act outside the rootfs. Only proceed when the parent
+    // is a real directory.
+    match hosts_path.parent().map(std::fs::symlink_metadata) {
+        Some(Ok(meta)) if meta.file_type().is_dir() => {}
+        Some(Ok(_)) => {
+            tracing::warn!(
+                path = %hosts_path.display(),
+                "parent of etc/hosts is not a real directory; skipping default hosts file"
+            );
+            return;
+        }
+        // No `etc` at all: nothing to write into.
+        Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Some(Err(e)) => {
+            tracing::warn!(
+                path = %hosts_path.display(),
+                error = %e,
+                "cannot inspect parent of etc/hosts; skipping default hosts file"
+            );
+            return;
+        }
+        None => return,
+    }
+    match std::fs::symlink_metadata(hosts_path) {
+        // Image already provides a real /etc/hosts — leave it untouched.
+        Ok(meta) if meta.file_type().is_file() => {}
+        // Missing, or a symlink/other non-regular entry: write a fresh
+        // regular file without following whatever is there.
+        _ => {
+            if let Err(e) = write_rootfs_file_no_follow(hosts_path, DEFAULT_HOSTS, None) {
+                tracing::warn!(
+                    path = %hosts_path.display(),
+                    error = %e,
+                    "failed to write default etc/hosts"
+                );
+            }
+        }
+    }
+}
+
+/// Apply an OCI whiteout: `<dir>/.wh.<name>` deletes `<dir>/<name>` that
+/// lower layers created. The path comes from the image, and earlier entries
+/// may have turned `<dir>` or one of its ancestors into a symlink pointing
+/// outside the rootfs. `remove_dir_all` only refuses a symlink as the final
+/// component, so walk the ancestors and require each one to be a real
+/// directory inside `dest`, and refuse names (empty, `.`, `..`) that would
+/// resolve to the directory itself or to its parent. The opaque marker
+/// `<dir>/.wh..wh..opq` (target `.wh..opq`) instead clears every child
+/// lower layers gave `<dir>`, keeping `<dir>` itself.
+fn apply_whiteout(
+    dest: &std::path::Path,
+    entry_path: &std::path::Path,
+    target_name: &str,
+    layer_index: usize,
+) {
+    if target_name.is_empty() || target_name == "." || target_name == ".." {
+        tracing::warn!(
+            layer = layer_index + 1,
+            path = %entry_path.display(),
+            "ignoring whiteout with an invalid target name"
+        );
+        return;
+    }
+    let mut dir = dest.to_path_buf();
+    for component in entry_path.parent().into_iter().flat_map(|p| p.components()) {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(part) => dir.push(part),
+            // Absolute paths and `..` are rejected before this point.
+            _ => return,
+        }
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.file_type().is_dir() => {}
+            Ok(_) => {
+                tracing::warn!(
+                    layer = layer_index + 1,
+                    path = %entry_path.display(),
+                    "ignoring whiteout under a non-directory (symlink?) ancestor"
+                );
+                return;
+            }
+            // Ancestor missing: nothing to delete.
+            Err(_) => return,
+        }
+    }
+    let targets: Vec<PathBuf> = if target_name == ".wh..opq" {
+        let children = std::fs::read_dir(&dir).into_iter().flatten().flatten();
+        children.map(|child| child.path()).collect()
+    } else {
+        vec![dir.join(target_name)]
+    };
+    for target in targets {
+        // Neither call follows a symlink in the final component.
+        let _ = std::fs::remove_file(&target);
+        let _ = std::fs::remove_dir_all(&target);
+    }
+}
+
+/// OCI image to use as rootfs for each `runtime.kind` value. Keep in sync
+/// with `project::SUPPORTED_KINDS` and `project::infer_scripts`.
+pub fn oci_image_for_kind(kind: &str) -> &'static str {
+    match kind {
+        "typescript" | "javascript" => "docker.io/iiidev/node:latest",
+        // `kind: bun` gets the oven image by default — ships bun
+        // preinstalled so no bootstrap is needed and startup is fast.
+        // Users can still override with `runtime.base_image` for a
+        // pinned version (e.g. `oven/bun:1.3`).
+        "bun" => "docker.io/oven/bun:latest",
+        "python" => "docker.io/iiidev/python:latest",
+        "rust" => "docker.io/library/rust:slim-bookworm",
+        _ => "docker.io/iiidev/node:latest",
+    }
+}
+
+/// Sanitize an OCI image reference into a cache-dir-safe name so two
+/// workers using different base images don't collide on disk under
+/// `~/.iii/cache/<slug>/`. Keeps it human-readable for easier
+/// troubleshooting: `oven/bun:1` → `docker.io-oven-bun-1-<hash>`,
+/// `ghcr.io/my-org/my-worker:latest` → `ghcr.io-my-org-my-worker-latest-<hash>`.
+///
+/// The input is first normalized through `oci_client::Reference` so
+/// equivalent shorthand refs hit the same slug — `iiidev/node:latest`,
+/// `docker.io/iiidev/node:latest`, and `docker.io/iiidev/node` (tag
+/// inferred as `:latest`) all canonicalize to the same whole-form ref
+/// and therefore share one cache dir. Refs that fail to parse (pure-
+/// separator gibberish, malformed test inputs) fall through to the
+/// raw string so the slug is still deterministic.
+///
+/// The 16-hex-digit FNV-1a suffix is derived from the canonical form.
+/// It makes the slug injective: inputs that sanitize to the same
+/// human-readable base (e.g. `ghcr.io/foo/bar:1` and `ghcr.io/foo-bar:1`
+/// both collapse to `ghcr.io-foo-bar-1`) hash differently, so their
+/// cache dirs never collide. Cost is 17 trailing characters on every
+/// dir name.
+pub fn rootfs_slug_for_image(image: &str) -> String {
+    slug_from_text(&canonicalize_oci_ref(image.trim()))
+}
+
+/// Parse `image` as an OCI reference and return its canonical whole
+/// form (registry/namespace/repo:tag with all defaults materialized).
+/// Falls back to the raw string when the parser rejects it, so edge-
+/// case inputs (test fixtures, malformed refs) still produce a stable
+/// slug instead of panicking.
+fn canonicalize_oci_ref(raw: &str) -> String {
+    raw.parse::<oci_client::Reference>()
+        .map(|r| r.whole())
+        .unwrap_or_else(|_| raw.to_string())
+}
+
+/// Sanitize + hash. Kept private so `rootfs_slug_for_image` is the only
+/// caller and the canonicalization boundary stays crisp.
+fn slug_from_text(s: &str) -> String {
+    let hash = fnv1a64(s.as_bytes());
+    // Single-pass emit + coalesce runs of `-`; O(n) vs the previous
+    // `while contains("--") { replace("--","-") }` O(n²) loop.
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let ch = match c {
+            'A'..='Z' => c.to_ascii_lowercase(),
+            'a'..='z' | '0'..='9' | '.' | '-' | '_' => c,
+            _ => '-',
+        };
+        if ch == '-' && out.ends_with('-') {
+            continue;
+        }
+        out.push(ch);
+    }
+    let base = out
+        .trim_matches(|c: char| c == '-' || c == '.' || c == '_')
+        .to_string();
+    if base.is_empty() {
+        format!("image-{hash:016x}")
+    } else {
+        format!("{base}-{hash:016x}")
+    }
+}
+
+/// 64-bit FNV-1a. Picked over SHA because a) we only need collision
+/// resistance against accidental slug overlap, not cryptographic
+/// strength, and b) no external dependency — the whole hash is 4 lines.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Determine the rootfs path for a given `runtime.kind`, optionally
+/// overriding the default base image. If the rootfs doesn't exist
+/// locally, pulls the OCI image and extracts it into the rootfs cache.
+///
+/// `base_image_override` comes from `runtime.base_image` in
+/// `iii.worker.yaml`.
+pub async fn prepare_rootfs(kind: &str, base_image_override: Option<&str>) -> Result<PathBuf> {
+    let oci_image = match base_image_override.map(str::trim) {
+        Some(img) if !img.is_empty() => img.to_string(),
+        _ => oci_image_for_kind(kind).to_string(),
+    };
+
+    let image_for_log = oci_image.clone();
+    let rootfs_dir = crate::cli::rootfs_cache::ensure_rootfs(&oci_image, move || {
+        eprintln!("  Pulling rootfs {image_for_log}...");
+    })
+    .await?;
+
+    // Post-populate runtime-expected dirs even on a cache hit; these are
+    // idempotent and cheap.
+    let workspace = rootfs_dir.join("workspace");
+    std::fs::create_dir_all(&workspace).ok();
+
+    let hosts_path = rootfs_dir.join("etc/hosts");
+    write_default_hosts_no_follow(&hosts_path);
+
+    Ok(rootfs_dir)
+}
+
+/// Give the extracting user rwx on an extracted image directory.
+///
+/// tar-rs applies a directory's mode as soon as its entry is unpacked, so an
+/// image directory shipped without owner write/search bits (Red Hat UBI and
+/// RHEL: `/usr/bin`, `/usr/lib`, `/usr/sbin` and ca-trust's
+/// `directory-hash` are 0555, `/root` is 0550) blocks every later write into
+/// it when the puller is not root: the entries that follow it, the next
+/// layers' files and whiteouts, and `remove_dir_all` of a failed staging dir
+/// or a stale cache. Only the owner bits change; group/other and the special
+/// bits are kept. Root inside the guest bypasses directory permission bits,
+/// so the image behaves the same.
+///
+/// The final component must be a real directory, never a symlink, so the
+/// chmod cannot be redirected; `unpack_in` already refused parents that
+/// resolve outside the rootfs.
+fn keep_dir_owner_writable(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.file_type().is_dir() {
+        return Ok(());
+    }
+    let mode = meta.permissions().mode() & 0o7777;
+    if mode & 0o700 != 0o700 {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o700))?;
+    }
+    Ok(())
+}
+
+/// Setuid + setgid bit mask.
+///
+/// Both bits combined (0o4000 | 0o2000). Applied with a bitwise-NOT to
+/// clear them: `mode & !SETID_BITS`. Stripped during OCI extraction — see
+/// [`extract_layer_with_limits`] for the rationale.
+const SETID_BITS: u32 = 0o6000;
+
+/// Extract a single OCI layer with safety limits.
+///
+/// Setuid and setgid bits are masked off every entry as it lands, whatever
+/// its type: tar writes sparse, device, FIFO and unknown entries as regular
+/// files, so a per-type strip would leave a setuid file in the host cache.
+/// The microVM rootfs is served read-only through PassthroughFs with no UID
+/// translation: host ownership surfaces verbatim inside the guest. When the
+/// extracting user is not root (the common case), setuid binaries carry the
+/// host user's UID + setuid bit, and the guest kernel's setuid semantics
+/// *drop* the caller from euid=0 to that non-zero UID on exec — the classic
+/// example being `/bin/mount` refusing to run with "must be superuser".
+/// Stripping setuid/setgid at extraction time lets these binaries inherit
+/// the PID-1 euid (root) on exec, which is what a single-tenant microVM
+/// guest actually wants. There is no privilege boundary *inside* the VM
+/// for setuid to defend, so removing the bit is strictly a fix.
+///
+/// `media_type` is the layer descriptor's: uncompressed and gzip tar layers
+/// are supported (OCI spells gzip `tar+gzip`, Docker `tar.gzip`); anything
+/// else, zstd included, is refused by name. Gzip or zstd magic bytes at the
+/// start of `data` override the label.
+pub fn extract_layer_with_limits(
+    data: &[u8],
+    media_type: &str,
+    dest: &std::path::Path,
+    layer_index: usize,
+    layer_count: usize,
+    total_size: &mut u64,
+) -> Result<()> {
+    // A magic number in the bytes beats the label, as in containerd, so a
+    // gzip layer labelled plain `tar` still extracts.
+    let zstd = data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]);
+    let gzip = data.starts_with(&[0x1f, 0x8b])
+        || media_type.ends_with("tar+gzip")
+        || media_type.ends_with("tar.gzip");
+    if zstd || !(gzip || media_type.ends_with("tar")) {
+        anyhow::bail!(
+            "Layer {}/{}: unsupported {} {media_type:?} \
+             (only uncompressed and gzip tar layers can be extracted)",
+            layer_index + 1,
+            layer_count,
+            if zstd {
+                "zstd layer"
+            } else {
+                "layer media type"
+            }
+        );
+    }
+
+    let start_total = *total_size;
+    // Whiteouts hide lower-layer files only (OCI image spec), so all of this
+    // layer's are applied before any of its own entries land: a whiteout
+    // listed after a same-layer file or directory must not delete it.
+    for whiteout_pass in [true, false] {
+        // Both passes enforce the size limits before tar reads a payload;
+        // the second pass's count is the one that stands.
+        *total_size = start_total;
+        let reader: Box<dyn std::io::Read + '_> = if gzip {
+            Box::new(flate2::read::GzDecoder::new(data))
+        } else {
+            Box::new(data)
+        };
+        let mut archive = tar::Archive::new(reader);
+        archive.set_preserve_permissions(true);
+        // Applied when tar sets the mode, so the bits never exist on disk.
+        archive.set_mask(SETID_BITS);
+        archive.set_overwrite(true);
+
+        let mut entry_count: u64 = 0;
+
+        for entry in archive.entries().context("Failed to read layer tar")? {
+            let mut entry = entry.context("Failed to read tar entry")?;
+
+            entry_count += 1;
+            if entry_count > MAX_ENTRY_COUNT {
+                anyhow::bail!(
+                    "Layer {}/{}: exceeded max entry count ({})",
+                    layer_index + 1,
+                    layer_count,
+                    MAX_ENTRY_COUNT
+                );
+            }
+
+            let path = entry
+                .path()
+                .context("Failed to get entry path")?
+                .into_owned();
+
+            if path.is_absolute() {
+                anyhow::bail!(
+                    "Layer {}/{}: absolute path in tar entry: {}",
+                    layer_index + 1,
+                    layer_count,
+                    path.display()
+                );
+            }
+
+            for component in path.components() {
+                if matches!(component, Component::ParentDir) {
+                    anyhow::bail!(
+                        "Layer {}/{}: path traversal in tar entry: {}",
+                        layer_index + 1,
+                        layer_count,
+                        path.display()
+                    );
+                }
+            }
+
+            let depth = path
+                .components()
+                .filter(|c| matches!(c, Component::Normal(_)))
+                .count();
+            if depth > MAX_PATH_DEPTH {
+                anyhow::bail!(
+                    "Layer {}/{}: path too deep ({} components): {}",
+                    layer_index + 1,
+                    layer_count,
+                    depth,
+                    path.display()
+                );
+            }
+
+            let entry_size = entry.size();
+            if entry_size > MAX_FILE_SIZE {
+                anyhow::bail!(
+                    "Layer {}/{}: file too large: {} bytes (max {})",
+                    layer_index + 1,
+                    layer_count,
+                    entry_size,
+                    MAX_FILE_SIZE
+                );
+            }
+
+            *total_size += entry_size;
+            if *total_size > MAX_TOTAL_SIZE {
+                anyhow::bail!(
+                    "Layer {}/{}: total extraction size exceeded {} bytes",
+                    layer_index + 1,
+                    layer_count,
+                    MAX_TOTAL_SIZE
+                );
+            }
+
+            let whiteout = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix(".wh."));
+            if whiteout_pass {
+                if let Some(target_name) = whiteout {
+                    apply_whiteout(dest, &path, target_name, layer_index);
+                }
+                continue;
+            }
+            if whiteout.is_some() {
+                continue;
+            }
+
+            // Reserved metadata name: iii writes `<rootfs>/.oci-config.json`
+            // itself after extraction, so skip any entry at that root name or
+            // beneath it (a leading `./` included) — above all a symlink. Defense
+            // in depth behind the no-follow write in pull_and_extract_rootfs.
+            let is_reserved_root = matches!(
+                path.components().find(|c| !matches!(c, Component::CurDir)),
+                Some(Component::Normal(first))
+                    if first == std::ffi::OsStr::new(RESERVED_ROOTFS_NAME_OCI_CONFIG)
+            );
+            if is_reserved_root {
+                tracing::warn!(
+                    layer = layer_index + 1,
+                    path = %path.display(),
+                    "layer entry uses the reserved name .oci-config.json; skipping"
+                );
+                continue;
+            }
+
+            let entry_type = entry.header().entry_type();
+
+            let unpacked = entry
+                .unpack_in(dest)
+                .with_context(|| format!("Failed to extract: {}", path.display()))?;
+
+            // `unpack_in` returns Ok(false) when it intentionally skips an entry
+            // (e.g. path traversal, no parent). Don't touch the dest path in
+            // that case — the file wasn't written and the resolved path could
+            // point outside the rootfs.
+            if !unpacked {
+                continue;
+            }
+
+            // Keep extracted directories writable for the extracting user, or a
+            // directory shipped as 0555 refuses its own entries (see
+            // `keep_dir_owner_writable`).
+            if entry_type.is_dir() {
+                keep_dir_owner_writable(&dest.join(&path))
+                    .with_context(|| format!("Failed to keep {} owner-writable", path.display()))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Collect registries that should use HTTP instead of HTTPS.
+/// `localhost`/`127.0.0.1` (any port) always; anything else only via
+/// `III_INSECURE_REGISTRIES` — which emits a per-pull warning so a
+/// forgotten env var can't silently enable LAN MITM.
+fn insecure_registries(reference: &oci_client::Reference) -> Vec<String> {
+    let mut registries: Vec<String> = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+
+    let host = reference.registry();
+    if let Some(hostname) = host.split(':').next()
+        && (hostname == "localhost" || hostname == "127.0.0.1")
+        && !registries.contains(&host.to_string())
+    {
+        registries.push(host.to_string());
+    }
+
+    if let Ok(extra) = std::env::var("III_INSECURE_REGISTRIES") {
+        let extras: Vec<&str> = extra
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "localhost" && *s != "127.0.0.1")
+            .collect();
+        if !extras.is_empty() {
+            eprintln!(
+                "  {} III_INSECURE_REGISTRIES is active — plain-HTTP pulls permitted for: {}. \
+                 MITM on the LAN can serve poisoned images. Unset the env var if this is not \
+                 intentional.",
+                "warning:".yellow(),
+                extras.join(", ")
+            );
+        }
+        for r in extras {
+            if !registries.contains(&r.to_string()) {
+                registries.push(r.to_string());
+            }
+        }
+    }
+
+    registries
+}
+
+/// Pull an OCI image and extract it as a rootfs directory.
+///
+/// **Atomicity contract:** `dest` is produced via rename(2) from a sibling
+/// temp directory, so observers either see the fully-extracted rootfs or
+/// nothing at all. A SIGTERM / network failure / disk-full partway through
+/// extraction leaves an orphaned `.tmp-*` sibling that the next pull
+/// cleans up. The cache-hit check (`rootfs_cache::is_populated`) can
+/// therefore trust that `dest` existing with `bin/` means the rootfs is
+/// complete.
+///
+/// Atomicity scope is `dest` ONLY — callers can rely on
+/// `dest` either existing with the full rootfs or not existing. Sibling
+/// metadata (the rootfs cache's digest sidecar) is written by the caller
+/// AFTER this function returns and is not covered by the same rename; a
+/// missing sidecar beside a valid rootfs makes a digest-pinned ref miss
+/// upstream instead of trusting the rootfs.
+///
+/// Returns the manifest digests that name the pulled image: the one `image`
+/// resolved to, then the platform manifest's when that was an image index.
+pub async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<Vec<String>> {
+    use oci_client::client::{ClientConfig, ClientProtocol};
+    use oci_client::secrets::RegistryAuth;
+    use oci_client::{Client, Reference};
+
+    let reference: Reference = image
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid image reference '{}': {}", image, e))?;
+
+    let host_arch = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+
+    let available_platforms = Arc::new(Mutex::new(Vec::<String>::new()));
+    let platforms_capture = Arc::clone(&available_platforms);
+    let target_arch_str = host_arch.to_string();
+
+    let http_exceptions = insecure_registries(&reference);
+    let protocol = if http_exceptions.is_empty() {
+        ClientProtocol::Https
+    } else {
+        ClientProtocol::HttpsExcept(http_exceptions)
+    };
+
+    let config = ClientConfig {
+        protocol,
+        platform_resolver: Some(Box::new(move |manifests| {
+            let mut platforms = platforms_capture.lock().unwrap();
+            for m in manifests {
+                if let Some(ref platform) = m.platform {
+                    platforms.push(format!("{}/{}", platform.os, platform.architecture));
+                }
+            }
+            drop(platforms);
+
+            let target_arch = match target_arch_str.as_str() {
+                "arm64" => oci_spec::image::Arch::ARM64,
+                _ => oci_spec::image::Arch::Amd64,
+            };
+
+            for m in manifests {
+                if let Some(ref platform) = m.platform
+                    && platform.os == oci_spec::image::Os::Linux
+                    && platform.architecture == target_arch
+                {
+                    return Some(m.digest.clone());
+                }
+            }
+            None
+        })),
+        ..Default::default()
+    };
+    let client = Client::new(config);
+
+    // Pre-fetch the manifest so we can tell the user UP FRONT what they're
+    // about to wait for (layer count + total compressed bytes). The
+    // `client.pull(...)` call below is one blocking network operation
+    // with no per-byte progress hook, so this summary is the first
+    // signal in the log. Knowing "1247 MiB across 5 layers" lets the user gauge how long
+    // the pull will realistically take. Best-effort: if the registry
+    // returns an Image Index (multi-platform manifest) we skip the
+    // summary rather than do the full platform resolution dance — the
+    // pull below handles that path natively.
+    let manifest_summary: String = match client
+        .pull_manifest(&reference, &RegistryAuth::Anonymous)
+        .await
+    {
+        Ok((oci_client::manifest::OciManifest::Image(m), _)) => {
+            let bytes = m
+                .layers
+                .iter()
+                .fold(0i64, |sum, l| sum.saturating_add(l.size));
+            format!(
+                " ({} layer{}, {:.1} MiB)",
+                m.layers.len(),
+                if m.layers.len() == 1 { "" } else { "s" },
+                bytes as f64 / (1024.0 * 1024.0),
+            )
+        }
+        _ => String::new(),
+    };
+
+    eprintln!("  Pulling {}{}...", image, manifest_summary);
+    let _ = manifest_summary; // consumed inside pull_with_progress now
+
+    const MAX_PULL_ATTEMPTS: u32 = 3;
+    let mut image_data = None;
+    let mut image_digests = Vec::new();
+    let mut last_err = None;
+
+    for attempt in 0..MAX_PULL_ATTEMPTS {
+        if attempt > 0 {
+            let delay = std::time::Duration::from_secs(3u64.pow(attempt - 1));
+            eprintln!(
+                "  Retrying in {}s (attempt {}/{})...",
+                delay.as_secs(),
+                attempt + 1,
+                MAX_PULL_ATTEMPTS
+            );
+            tokio::time::sleep(delay).await;
+        }
+
+        // Streaming pull: fetch manifest, then pull each layer via
+        // `pull_blob_stream`, counting bytes into an Arc<AtomicU64>.
+        // A background task reads the counter every 2s and emits a
+        // real progress line:
+        //   "Pulling <image>: 412.6/1247.3 MiB (33%, 41.2 MiB/s, 10s)"
+        // so the adapter's log shows genuine download progress.
+        let pull_result = pull_with_progress(&client, &reference, image, host_arch).await;
+
+        match pull_result {
+            Ok((data, digests)) => {
+                image_data = Some(data);
+                image_digests = digests;
+                break;
+            }
+            Err(e) => {
+                eprintln!("  Pull attempt {} failed: {}", attempt + 1, e);
+                last_err = Some(e);
+            }
+        }
+    }
+
+    let image_data = match image_data {
+        Some(data) => data,
+        None => {
+            let e = last_err.unwrap();
+            let platforms = available_platforms.lock().unwrap();
+            if !platforms.is_empty() {
+                anyhow::bail!(
+                    "Architecture mismatch: no linux/{} manifest found for '{}'. Available platforms: {}",
+                    host_arch,
+                    image,
+                    platforms.join(", ")
+                );
+            }
+            return Err(e).context(format!(
+                "Failed to pull image '{}'. Check image name and network connectivity.",
+                image
+            ));
+        }
+    };
+
+    if let Some(ref digest) = image_data.digest {
+        tracing::debug!(%digest, "image digest");
+    }
+    let total_layer_bytes: usize = image_data.layers.iter().map(|l| l.data.len()).sum();
+    eprintln!(
+        "  linux/{} | {} layers | {:.1} MiB",
+        host_arch,
+        image_data.layers.len(),
+        total_layer_bytes as f64 / (1024.0 * 1024.0)
+    );
+
+    let layer_count = image_data.layers.len();
+
+    // Set up the atomic-extract staging dir AFTER pull succeeds. Doing this
+    // before pull would leak the temp dir on network/auth failure.
+    //
+    // The atomic unit is `dest` itself, NOT its parent. The staging dir
+    // lives as a SIBLING of `dest` so the final rename(temp, dest) touches
+    // only the one dir the caller asked for — it must never clobber the
+    // parent, which houses every other image's entry
+    // (`~/.iii/cache/<slug>/`, plus their `.erofs` and `.lock` siblings).
+    let dest_parent = dest.parent();
+    let dest_basename = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("rootfs");
+
+    let (extract_root, temp_to_promote) = match dest_parent {
+        Some(parent) => {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let tmp_name = format!(".{}.tmp-{}-{}", dest_basename, std::process::id(), nanos);
+            let tmp_dir = parent.join(tmp_name);
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            std::fs::create_dir_all(&tmp_dir).with_context(|| {
+                format!(
+                    "Failed to create temp extract directory: {}",
+                    tmp_dir.display()
+                )
+            })?;
+            (tmp_dir.clone(), Some((tmp_dir, dest.to_path_buf())))
+        }
+        None => {
+            // Degenerate: dest has no parent. Skip atomicity.
+            std::fs::create_dir_all(dest).with_context(|| {
+                format!("Failed to create rootfs directory: {}", dest.display())
+            })?;
+            (dest.to_path_buf(), None)
+        }
+    };
+
+    let mut total_size: u64 = 0;
+    let extract_result: Result<()> = (|| {
+        for (i, layer) in image_data.layers.iter().enumerate() {
+            extract_layer_with_limits(
+                &layer.data,
+                &layer.media_type,
+                &extract_root,
+                i,
+                layer_count,
+                &mut total_size,
+            )?;
+            eprintln!(
+                "  Extracted layer {}/{} ({:.1} MiB total)",
+                i + 1,
+                layer_count,
+                total_size as f64 / (1024.0 * 1024.0),
+            );
+        }
+
+        let config_json = &image_data.config.data;
+        let config_path = extract_root.join(".oci-config.json");
+        // SECURITY: never std::fs::write here — a hostile layer can leave a
+        // symlink at this name and fs::write would follow it, overwriting an
+        // arbitrary host file with publisher-controlled bytes before any VM
+        // exists. Write without following links; fail the pull if we cannot.
+        write_rootfs_file_no_follow(&config_path, config_json, None)
+            .with_context(|| format!("Failed to write image config: {}", config_path.display()))?;
+        Ok(())
+    })();
+
+    // Extraction done. If we were in the atomic path, either promote the
+    // temp dir into place OR clean it up.
+    if let Some((tmp_dir, final_dir)) = temp_to_promote {
+        match extract_result {
+            Ok(()) => {
+                // If `final_dir` already exists (leftover from a prior
+                // interrupted run), remove it so the rename can succeed. We're claiming this
+                // dir atomically — stale contents are replaced wholesale.
+                if final_dir.exists() {
+                    std::fs::remove_dir_all(&final_dir).with_context(|| {
+                        format!(
+                            "Failed to remove stale rootfs before atomic promote: {}",
+                            final_dir.display()
+                        )
+                    })?;
+                }
+                std::fs::rename(&tmp_dir, &final_dir).with_context(|| {
+                    format!(
+                        "Failed to atomically promote rootfs {} -> {}",
+                        tmp_dir.display(),
+                        final_dir.display()
+                    )
+                })?;
+                tracing::info!(path = %dest.display(), "rootfs ready (atomic promote)");
+                eprintln!("  {} Rootfs ready", "\u{2713}".green());
+                Ok(image_digests)
+            }
+            Err(e) => {
+                // Extraction failed mid-way. Clean up the temp dir so the
+                // next pull doesn't see a half-filled sibling. Ignore errors
+                // on cleanup — original extraction error is what matters.
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                Err(e)
+            }
+        }
+    } else {
+        // Degenerate path (no parent): extraction wrote directly to dest.
+        extract_result?;
+        tracing::info!(path = %dest.display(), "rootfs ready");
+        eprintln!("  {} Rootfs ready", "\u{2713}".green());
+        Ok(image_digests)
+    }
+}
+
+/// Read environment variables from the saved OCI image config.
+pub fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
+    let data = match read_oci_config_contents(rootfs) {
+        Some(d) => d,
+        None => return vec![],
+    };
+    let json: serde_json::Value = match serde_json::from_str(&data) {
+        Ok(j) => j,
+        Err(_) => return vec![],
+    };
+    let env_arr = json
+        .get("config")
+        .and_then(|c| c.get("Env"))
+        .and_then(|e| e.as_array());
+
+    match env_arr {
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter_map(|s| {
+                let mut parts = s.splitn(2, '=');
+                Some((
+                    parts.next()?.to_string(),
+                    parts.next().unwrap_or("").to_string(),
+                ))
+            })
+            .collect(),
+        None => vec![],
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Streaming pull with byte-level progress
+//
+// `oci_client::Client::pull` is one blocking call with no per-byte hook.
+// Re-implement the pull at the layer level: fetch the manifest
+// (resolving multi-platform), pull the config blob, then stream each
+// layer via `pull_blob_stream`, counting bytes into a shared
+// `AtomicU64`. A background task reads the counter every 2s and emits
+// a real progress line to stderr.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async fn pull_with_progress(
+    client: &oci_client::Client,
+    reference: &oci_client::Reference,
+    image: &str,
+    host_arch: &str,
+) -> Result<(oci_client::client::ImageData, Vec<String>)> {
+    use futures::StreamExt;
+    use oci_client::client::{Config, ImageData, ImageLayer};
+    use sha2::Digest;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // 1. Manifest (resolving multi-platform if the registry returned an
+    //    ImageIndex). Tracks the manifest digests so we can return them
+    //    to the caller alongside the data.
+    let (image_manifest, manifest_digests) =
+        pull_image_manifest_resolved(client, reference, host_arch).await?;
+    check_declared_blob_sizes(&image_manifest)?;
+
+    let total_bytes: u64 = image_manifest
+        .layers
+        .iter()
+        .map(|l| l.size.max(0) as u64)
+        .sum();
+    let downloaded = Arc::new(AtomicU64::new(0));
+
+    // 2. Heartbeat task using the byte counter. 2-second cadence
+    //    rather than 3 so the percentage feels live without burning
+    //    the file with chatter.
+    let downloaded_for_heartbeat = Arc::clone(&downloaded);
+    let total_for_heartbeat = total_bytes;
+    let image_for_heartbeat = image.to_string();
+    let attempt_started = std::time::Instant::now();
+    // Scope guard: aborts the heartbeat task on Drop. Without this, every
+    // `?` operator between here and the explicit `drop(heartbeat)` at the
+    // end of this function (config-blob fetch, every layer's
+    // `pull_blob_stream`, every chunk read) would early-return and leak
+    // the task — it would keep `eprintln!`-ing progress lines for the
+    // rest of the process lifetime, racing against the retry loop's
+    // next attempt's fresh heartbeat. With this guard the abort fires
+    // unconditionally on any return path.
+    struct AbortOnDrop(tokio::task::JoinHandle<()>);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let heartbeat = AbortOnDrop(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        // Default `Burst` would replay missed ticks back-to-back if
+        // the runtime worker thread was held off (e.g., a blocking
+        // syscall elsewhere). The log would suddenly get N identical
+        // "Pulling X.X/Y.Y MiB" lines in milliseconds, which looks like
+        // a glitch rather than honest progress.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await; // first tick is instant; consume it
+        loop {
+            interval.tick().await;
+            let dl = downloaded_for_heartbeat.load(Ordering::Relaxed);
+            let elapsed = attempt_started.elapsed().as_secs().max(1);
+            let mb = dl as f64 / (1024.0 * 1024.0);
+            if total_for_heartbeat > 0 {
+                let total_mb = total_for_heartbeat as f64 / (1024.0 * 1024.0);
+                let pct = (dl as u128 * 100 / total_for_heartbeat.max(1) as u128).min(100) as u64;
+                let rate = mb / elapsed as f64;
+                eprintln!(
+                    "  Pulling {}: {:.1}/{:.1} MiB ({}%, {:.1} MiB/s, {}s)",
+                    image_for_heartbeat, mb, total_mb, pct, rate, elapsed
+                );
+            } else {
+                // Registry didn't report layer sizes — show what we've
+                // got so the user at least sees activity.
+                eprintln!(
+                    "  Pulling {}: {:.1} MiB ({}s)",
+                    image_for_heartbeat, mb, elapsed
+                );
+            }
+        }
+    }));
+
+    // 3. Pull the config blob. Small (typically <10 KiB), doesn't
+    //    contribute to the layer-progress denominator. Verify the
+    //    descriptor's SHA256 digest while streaming so a corrupted CDN
+    //    response or MITM doesn't slip through — the upstream
+    //    `client.pull(...)` we replaced did this internally; the
+    //    streaming path needs to do it explicitly.
+    // Never sized from the descriptor: a capacity the allocator cannot
+    // satisfy aborts the process instead of returning an error.
+    let mut config_bytes: Vec<u8> = Vec::new();
+    let mut config_hasher = sha2::Sha256::new();
+    let mut config_stream = client
+        .pull_blob_stream(reference, &image_manifest.config)
+        .await
+        .context("failed to pull image config blob")?;
+    while let Some(chunk) = config_stream.next().await {
+        let chunk = chunk.context("config blob stream chunk failed")?;
+        check_blob_len(
+            config_bytes.len() + chunk.len(),
+            &image_manifest.config,
+            "image config",
+        )?;
+        config_hasher.update(&chunk);
+        config_bytes.extend_from_slice(&chunk);
+    }
+    verify_sha256_digest(&image_manifest.config.digest, config_hasher, "image config")?;
+    let config = Config {
+        data: bytes::Bytes::from(config_bytes),
+        media_type: image_manifest.config.media_type.clone(),
+        annotations: None,
+    };
+
+    // 4. Pull each layer with byte-progress counter updates. Sequential
+    //    rather than concurrent: registries throttle per-connection, so
+    //    parallel pulls rarely speed things up and they make the
+    //    progress display incoherent ("layer 1 at 80%, layer 3 at 40%").
+    //    Each layer's bytes are hashed as they stream and verified
+    //    against the manifest descriptor's digest before the layer is
+    //    accepted into `layers` — content integrity match before the
+    //    extract step touches the rootfs.
+    let mut layers: Vec<ImageLayer> = Vec::with_capacity(image_manifest.layers.len());
+    for (idx, layer_desc) in image_manifest.layers.iter().enumerate() {
+        let mut layer_bytes: Vec<u8> = Vec::new();
+        let mut layer_hasher = sha2::Sha256::new();
+        let mut stream = client
+            .pull_blob_stream(reference, layer_desc)
+            .await
+            .with_context(|| format!("failed to pull layer {} blob", idx + 1))?;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.with_context(|| format!("layer {} stream chunk failed", idx + 1))?;
+            check_blob_len(
+                layer_bytes.len() + chunk.len(),
+                layer_desc,
+                &format!("layer {}", idx + 1),
+            )?;
+            layer_hasher.update(&chunk);
+            downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            layer_bytes.extend_from_slice(&chunk);
+        }
+        verify_sha256_digest(
+            &layer_desc.digest,
+            layer_hasher,
+            &format!("layer {}", idx + 1),
+        )?;
+        layers.push(ImageLayer {
+            data: bytes::Bytes::from(layer_bytes),
+            media_type: layer_desc.media_type.clone(),
+            annotations: None,
+        });
+    }
+
+    drop(heartbeat); // explicit: AbortOnDrop fires here
+
+    // Final 100% line so the user sees the pull cleanly conclude
+    // before the extract eprintlns start.
+    let final_mb = downloaded.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0);
+    let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
+    let final_elapsed = attempt_started.elapsed().as_secs().max(1);
+    eprintln!(
+        "  Pulling {}: {:.1}/{:.1} MiB (100%, {:.1}s total)",
+        image, final_mb, total_mb, final_elapsed as f64
+    );
+
+    let image_data = ImageData {
+        layers,
+        digest: manifest_digests.last().cloned(),
+        config,
+        manifest: Some(image_manifest),
+    };
+    Ok((image_data, manifest_digests))
+}
+
+/// Refuse a manifest whose blobs could not fit the extraction limits before
+/// anything is fetched: every blob is held in memory until extraction, and
+/// the sizes come from the registry.
+fn check_declared_blob_sizes(manifest: &oci_client::manifest::OciImageManifest) -> Result<()> {
+    let mut total: u64 = 0;
+    for desc in std::iter::once(&manifest.config).chain(&manifest.layers) {
+        total = u64::try_from(desc.size)
+            .ok()
+            .and_then(|size| total.checked_add(size))
+            .filter(|&total| total <= MAX_TOTAL_SIZE)
+            .with_context(|| {
+                format!(
+                    "image blobs exceed {MAX_TOTAL_SIZE} bytes ({} declares {} bytes)",
+                    desc.digest, desc.size
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Refuse a blob that streams more bytes than its descriptor declares, so
+/// memory stays within what `check_declared_blob_sizes` accepted.
+fn check_blob_len(
+    received: usize,
+    desc: &oci_client::manifest::OciDescriptor,
+    label: &str,
+) -> Result<()> {
+    if received as u64 > desc.size as u64 {
+        anyhow::bail!(
+            "{label} is larger than the {} bytes its descriptor declares",
+            desc.size
+        );
+    }
+    Ok(())
+}
+
+/// Compare the SHA256 digest a streaming hasher produced against the OCI
+/// descriptor's expected digest string ("sha256:<hex>"). Returns Err on
+/// mismatch, unsupported algorithm, or malformed digest string — caller
+/// propagates so the corrupted blob never reaches the extract step or
+/// the rootfs.
+///
+/// This is the only content-integrity check on the streaming pull path.
+/// The original `oci_client::Client::pull(...)` did this internally; we
+/// have to do it explicitly now that we walk blobs ourselves for
+/// byte-level progress reporting.
+fn verify_sha256_digest(expected: &str, hasher: sha2::Sha256, label: &str) -> Result<()> {
+    use sha2::Digest;
+    // Match the algorithm prefix case-insensitively. The OCI spec
+    // mandates lowercase `sha256:` but defensively accepting `Sha256:`
+    // / `SHA256:` keeps a registry-side typo from surfacing as the
+    // wrong error ("unsupported algorithm" when the algorithm is fine
+    // and only the case is wrong).
+    let Some(expected_hex) = expected
+        .split_once(':')
+        .filter(|(alg, _)| alg.eq_ignore_ascii_case("sha256"))
+        .map(|(_, hex)| hex)
+    else {
+        // OCI distribution spec allows other algorithms, but in practice
+        // every registry we target uses SHA256. Fail loudly on anything
+        // else so a future spec drift doesn't silently degrade to
+        // "verified" when nothing was checked.
+        anyhow::bail!(
+            "{} digest uses unsupported algorithm: {} (expected sha256:...)",
+            label,
+            expected
+        );
+    };
+    let computed = hasher.finalize();
+    let computed_hex = computed
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    if !computed_hex.eq_ignore_ascii_case(expected_hex) {
+        anyhow::bail!(
+            "{} digest mismatch: expected sha256:{}, got sha256:{}",
+            label,
+            expected_hex,
+            computed_hex
+        );
+    }
+    Ok(())
+}
+
+/// Fetch the image manifest, resolving multi-platform `ImageIndex` to
+/// the appropriate `linux/<host_arch>` `Image` manifest. Returns the
+/// resolved Image manifest and the digests naming it: the reference's own
+/// (a pin names this one), then the platform manifest's for an index.
+async fn pull_image_manifest_resolved(
+    client: &oci_client::Client,
+    reference: &oci_client::Reference,
+    host_arch: &str,
+) -> Result<(oci_client::manifest::OciImageManifest, Vec<String>)> {
+    use oci_client::secrets::RegistryAuth;
+
+    let target_arch = match host_arch {
+        "arm64" => oci_spec::image::Arch::ARM64,
+        _ => oci_spec::image::Arch::Amd64,
+    };
+
+    let (manifest, digest) = client
+        .pull_manifest(reference, &RegistryAuth::Anonymous)
+        .await
+        .context("failed to pull image manifest")?;
+
+    match manifest {
+        oci_client::manifest::OciManifest::Image(m) => Ok((m, vec![digest])),
+        oci_client::manifest::OciManifest::ImageIndex(idx) => {
+            let chosen = idx.manifests.iter().find(|m| {
+                m.platform.as_ref().is_some_and(|p| {
+                    p.os == oci_spec::image::Os::Linux && p.architecture == target_arch
+                })
+            });
+            let chosen_digest = chosen
+                .ok_or_else(|| {
+                    let available: Vec<String> = idx
+                        .manifests
+                        .iter()
+                        .filter_map(|m| {
+                            m.platform
+                                .as_ref()
+                                .map(|p| format!("{}/{}", p.os, p.architecture))
+                        })
+                        .collect();
+                    anyhow::anyhow!(
+                        "no linux/{} manifest in image index. Available platforms: {}",
+                        host_arch,
+                        available.join(", ")
+                    )
+                })?
+                .digest
+                .clone();
+            let resolved_ref = reference.clone_with_digest(chosen_digest.clone());
+            let (m, d) = client
+                .pull_manifest(&resolved_ref, &RegistryAuth::Anonymous)
+                .await
+                .context("failed to pull resolved platform manifest")?;
+            match m {
+                oci_client::manifest::OciManifest::Image(im) => Ok((im, vec![digest, d])),
+                oci_client::manifest::OciManifest::ImageIndex(_) => {
+                    Err(anyhow::anyhow!("nested ImageIndex not supported"))
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oci_client::manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE;
+
+    /// Regression: the streaming pull's `verify_sha256_digest` must
+    /// accept a hasher whose finalize matches the descriptor's hex
+    /// suffix (case-insensitively).
+    #[test]
+    fn verify_sha256_digest_accepts_matching_hash() {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(b"hello world");
+        // sha256("hello world") = b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+        let expected = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        verify_sha256_digest(expected, h, "test blob").expect("digest must match");
+    }
+
+    /// Regression: a one-byte difference in streamed content must fail
+    /// loudly. Without this check, a MITM-corrupted CDN response would
+    /// silently land in the rootfs.
+    #[test]
+    fn verify_sha256_digest_rejects_mismatched_hash() {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(b"goodbye world");
+        let expected = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        let err = verify_sha256_digest(expected, h, "tampered blob")
+            .expect_err("mismatched digest must fail");
+        assert!(err.to_string().contains("tampered blob"));
+        assert!(err.to_string().contains("digest mismatch"));
+    }
+
+    /// Future spec drift safeguard: an unsupported digest algorithm
+    /// (e.g. "sha512:...") must error instead of silently passing.
+    #[test]
+    fn verify_sha256_digest_rejects_non_sha256_algorithm() {
+        use sha2::Digest;
+        let h = sha2::Sha256::new();
+        let err = verify_sha256_digest("sha512:deadbeef", h, "future blob")
+            .expect_err("non-sha256 algorithm must fail");
+        assert!(err.to_string().contains("unsupported algorithm"));
+    }
+
+    /// `verify_sha256_digest` accepts uppercase hex in the descriptor
+    /// (registries vary). Same content, same digest, just letter case.
+    #[test]
+    fn verify_sha256_digest_is_case_insensitive() {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(b"hello world");
+        let expected = "sha256:B94D27B9934D3E08A52E52D7DA7DABFAC484EFE37A5380EE9088F7ACE2EFCDE9";
+        verify_sha256_digest(expected, h, "uppercase").expect("uppercase hex must match");
+    }
+
+    /// Regression: an out-of-spec `Sha256:` / `SHA256:` prefix from a
+    /// buggy registry must still be recognized as the supported
+    /// algorithm — without this, the operator chases an "unsupported
+    /// algorithm" error when the algorithm is fine and only the case
+    /// is off.
+    #[test]
+    fn verify_sha256_digest_accepts_uppercase_algorithm_prefix() {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(b"hello world");
+        let expected = "Sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        verify_sha256_digest(expected, h, "Sha256-prefix").expect("uppercase prefix must match");
+
+        let mut h2 = sha2::Sha256::new();
+        h2.update(b"hello world");
+        let expected2 = "SHA256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        verify_sha256_digest(expected2, h2, "SHA256-prefix").expect("ALL-CAPS prefix must match");
+    }
+
+    /// Registry-declared sizes are checked before any blob is fetched or any
+    /// buffer is sized from them: negative, overflowing and over-limit totals
+    /// fail with an error instead of reaching the allocator.
+    #[test]
+    fn declared_blob_sizes_are_capped_before_any_fetch() {
+        let manifest = |config: i64, layers: &[i64]| {
+            let desc = |size: i64| serde_json::json!({"mediaType": "x", "digest": "sha256:00", "size": size});
+            let layers: Vec<_> = layers.iter().map(|&s| desc(s)).collect();
+            serde_json::from_value::<oci_client::manifest::OciImageManifest>(
+                serde_json::json!({"schemaVersion": 2, "config": desc(config), "layers": layers}),
+            )
+            .unwrap()
+        };
+        let max = MAX_TOTAL_SIZE as i64;
+
+        check_declared_blob_sizes(&manifest(100, &[1 << 20, max - 100 - (1 << 20)])).unwrap();
+        for (config, layers) in [
+            (i64::MAX, vec![]),
+            (-1, vec![]),
+            (1, vec![i64::MAX, i64::MAX]),
+            (1, vec![max]),
+        ] {
+            let err = check_declared_blob_sizes(&manifest(config, &layers))
+                .expect_err(&format!("config {config}, layers {layers:?}"));
+            assert!(err.to_string().contains("image blobs exceed"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn slug_preserves_dots_and_dashes() {
+        let slug = rootfs_slug_for_image("ghcr.io/my-org/my-worker:latest");
+        assert!(
+            slug.starts_with("ghcr.io-my-org-my-worker-latest-"),
+            "unexpected slug: {slug}"
+        );
+    }
+
+    #[test]
+    fn slug_converts_simple_image_ref() {
+        // `oven/bun:1` is a Docker Hub shorthand; canonicalizer inserts
+        // the default registry, so the slug is keyed on the canonical
+        // form. The hash is still computed from the canonical text.
+        let slug = rootfs_slug_for_image("oven/bun:1");
+        assert!(
+            slug.starts_with("docker.io-oven-bun-1-"),
+            "unexpected slug: {slug}"
+        );
+    }
+
+    #[test]
+    fn slug_lowercases() {
+        // Uppercase paths fail the Docker reference regex, so
+        // `canonicalize_oci_ref` falls back to the raw string and the
+        // sanitizer lowercases it. Behavior unchanged from pre-canon.
+        let slug = rootfs_slug_for_image("GHCR.io/Foo/Bar:1.0");
+        assert!(
+            slug.starts_with("ghcr.io-foo-bar-1.0-"),
+            "unexpected slug: {slug}"
+        );
+    }
+
+    #[test]
+    fn slug_collapses_consecutive_separators() {
+        // Weird but defensive: double colons and leading/trailing junk
+        // shouldn't produce runs of dashes or empty segments. These
+        // inputs fail Reference::try_from and hit the raw-string
+        // fallback, so sanitizer behavior is what's under test.
+        let a = rootfs_slug_for_image("::foo::");
+        assert!(a.starts_with("foo-"), "unexpected slug: {a}");
+        let b = rootfs_slug_for_image("a//b:c");
+        assert!(b.starts_with("a-b-c-"), "unexpected slug: {b}");
+    }
+
+    #[test]
+    fn slug_different_images_produce_different_slugs() {
+        // Guards the "two workers with different base images share a
+        // cache dir" collision — the whole point of slugging the full
+        // image ref instead of just the name.
+        assert_ne!(
+            rootfs_slug_for_image("docker.io/iiidev/node:latest"),
+            rootfs_slug_for_image("oven/bun:1")
+        );
+    }
+
+    /// The sanitizer can still collapse distinct canonical refs into
+    /// the same human-readable base (`ghcr.io/foo/bar:1` and
+    /// `ghcr.io/foo-bar:1` both become `ghcr.io-foo-bar-1`). The hash
+    /// suffix keeps their cache dirs from colliding on disk.
+    #[test]
+    fn slug_hash_prevents_prefix_collision() {
+        let a = rootfs_slug_for_image("ghcr.io/foo/bar:1");
+        let b = rootfs_slug_for_image("ghcr.io/foo-bar:1");
+        // Both share the human prefix after sanitization.
+        assert!(a.starts_with("ghcr.io-foo-bar-1-"), "unexpected slug: {a}");
+        assert!(b.starts_with("ghcr.io-foo-bar-1-"), "unexpected slug: {b}");
+        // But the full slugs differ because the hash is computed over
+        // the canonical ref, which still distinguishes them.
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn slug_falls_back_to_image_prefix_when_sanitization_empties() {
+        // Pure-separator input produces an empty human base; we still
+        // want a stable deterministic directory, so fall back to
+        // "image-<hash>" instead of the empty string that would make
+        // `prepare_rootfs` bail.
+        let slug = rootfs_slug_for_image(":::");
+        assert!(slug.starts_with("image-"), "unexpected slug: {slug}");
+    }
+
+    #[test]
+    fn slug_is_deterministic() {
+        // Hash must be stable across calls on the same input so cache
+        // dirs survive restarts. FNV-1a is deterministic by definition
+        // but this locks in the guarantee for the combined slug too.
+        assert_eq!(
+            rootfs_slug_for_image("oven/bun:1"),
+            rootfs_slug_for_image("oven/bun:1")
+        );
+    }
+
+    /// Regression for the ~/.iii/cache/ duplication bug: sandbox
+    /// presets pass `iiidev/node:latest` (no registry prefix) while
+    /// worker VMs pass `docker.io/iiidev/node:latest`. Without
+    /// canonicalization, both wrote to distinct slug dirs and pulled
+    /// the same image twice.
+    #[test]
+    fn slug_normalizes_docker_hub_default_registry() {
+        assert_eq!(
+            rootfs_slug_for_image("iiidev/node:latest"),
+            rootfs_slug_for_image("docker.io/iiidev/node:latest"),
+        );
+    }
+
+    /// Docker Hub shorthand `node` expands to
+    /// `docker.io/library/node:latest` — the `library/` namespace is
+    /// the canonical location for official images.
+    #[test]
+    fn slug_normalizes_library_shortform() {
+        assert_eq!(
+            rootfs_slug_for_image("node"),
+            rootfs_slug_for_image("docker.io/library/node:latest"),
+        );
+    }
+
+    /// Omitting the tag is equivalent to `:latest`. Both forms must
+    /// land in the same cache dir or the first pull won't satisfy the
+    /// second call.
+    #[test]
+    fn slug_normalizes_missing_tag_to_latest() {
+        assert_eq!(
+            rootfs_slug_for_image("iiidev/node"),
+            rootfs_slug_for_image("iiidev/node:latest"),
+        );
+    }
+
+    #[test]
+    fn test_oci_image_for_kind_defaults_to_node() {
+        assert_eq!(
+            oci_image_for_kind("unknown_kind"),
+            "docker.io/iiidev/node:latest"
+        );
+    }
+
+    #[test]
+    fn test_oci_image_for_typescript() {
+        assert_eq!(
+            oci_image_for_kind("typescript"),
+            "docker.io/iiidev/node:latest"
+        );
+    }
+
+    #[test]
+    fn test_oci_image_for_bun() {
+        assert_eq!(oci_image_for_kind("bun"), "docker.io/oven/bun:latest");
+    }
+
+    #[test]
+    fn test_oci_image_for_python() {
+        assert_eq!(
+            oci_image_for_kind("python"),
+            "docker.io/iiidev/python:latest"
+        );
+    }
+
+    #[test]
+    fn test_oci_image_for_rust() {
+        assert_eq!(
+            oci_image_for_kind("rust"),
+            "docker.io/library/rust:slim-bookworm"
+        );
+    }
+
+    #[test]
+    fn test_oci_image_for_go() {
+        assert_eq!(oci_image_for_kind("go"), "docker.io/iiidev/node:latest");
+    }
+
+    #[test]
+    fn test_read_oci_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = r#"{"config": {"Env": ["PATH=/usr/bin", "HOME=/root"]}}"#;
+        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
+        let env = read_oci_env(dir.path());
+        assert_eq!(
+            env,
+            vec![
+                ("PATH".to_string(), "/usr/bin".to_string()),
+                ("HOME".to_string(), "/root".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_read_oci_env_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = r#"{"config": {}}"#;
+        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
+        let env = read_oci_env(dir.path());
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn test_extract_layer_rejects_path_traversal() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Build tar bytes manually to bypass tar::Builder path validation
+        let mut raw_tar = Vec::new();
+        let data = b"malicious content";
+        let path_bytes = b"../escape.txt";
+
+        // 512-byte GNU tar header
+        let mut header_block = [0u8; 512];
+        header_block[..path_bytes.len()].copy_from_slice(path_bytes);
+        // mode (offset 100, 8 bytes)
+        header_block[100..107].copy_from_slice(b"0000644");
+        // size (offset 124, 12 bytes) — octal
+        let size_str = format!("{:011o}", data.len());
+        header_block[124..135].copy_from_slice(size_str.as_bytes());
+        // typeflag (offset 156) — '0' regular file
+        header_block[156] = b'0';
+        // magic (offset 257, 6 bytes) + version (offset 263, 2 bytes)
+        header_block[257..263].copy_from_slice(b"ustar\0");
+        header_block[263..265].copy_from_slice(b"00");
+        // checksum (offset 148, 8 bytes): fill with spaces, compute, then write
+        header_block[148..156].copy_from_slice(b"        ");
+        let cksum: u32 = header_block.iter().map(|&b| b as u32).sum();
+        let cksum_str = format!("{:06o}\0 ", cksum);
+        header_block[148..156].copy_from_slice(cksum_str.as_bytes());
+
+        raw_tar.extend_from_slice(&header_block);
+        raw_tar.extend_from_slice(data);
+        // Pad to 512-byte boundary
+        let padding = 512 - (data.len() % 512);
+        if padding < 512 {
+            raw_tar.extend(std::iter::repeat_n(0u8, padding));
+        }
+        // Two zero blocks to end the archive
+        raw_tar.extend(std::iter::repeat_n(0u8, 1024));
+
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&raw_tar).unwrap();
+        let gz_data = gz.finish().unwrap();
+
+        let mut total_size = 0u64;
+        let result = extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        );
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("path traversal"), "got: {}", err_msg);
+    }
+
+    #[test]
+    fn test_extract_layer_extracts_valid_tar() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(Vec::new());
+
+        let data = b"hello world";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "test.txt", &data[..])
+            .unwrap();
+        let tar_data = builder.into_inner().unwrap();
+
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut gz, &tar_data).unwrap();
+        let gz_data = gz.finish().unwrap();
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("test.txt")).unwrap();
+        assert_eq!(content, "hello world");
+        assert_eq!(total_size, 11);
+    }
+
+    // Host-side metadata writes and reads must never follow a symlink that an
+    // image layer left inside the rootfs.
+
+    #[test]
+    fn write_rootfs_file_no_follow_replaces_symlink_without_touching_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"original").unwrap();
+        let link = rootfs.join(".oci-config.json");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        write_rootfs_file_no_follow(&link, b"payload", None).unwrap();
+
+        assert_eq!(std::fs::read(&victim).unwrap(), b"original");
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_file());
+        assert_eq!(std::fs::read(&link).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn ensure_rootfs_dir_no_follow_replaces_a_symlinked_component() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let host = dir.path().join("host");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(host.join("iii")).unwrap();
+        std::fs::write(host.join("iii/keep"), b"host").unwrap();
+        std::os::unix::fs::symlink(&host, root.join("opt")).unwrap();
+
+        let made = ensure_rootfs_dir_no_follow(&root, "opt/iii").unwrap();
+
+        assert_eq!(made, root.join("opt/iii"));
+        assert!(
+            std::fs::symlink_metadata(root.join("opt"))
+                .unwrap()
+                .is_dir()
+        );
+        assert!(std::fs::read_dir(&made).unwrap().next().is_none());
+        assert_eq!(std::fs::read(host.join("iii/keep")).unwrap(), b"host");
+        // Idempotent on a real tree.
+        assert_eq!(ensure_rootfs_dir_no_follow(&root, "opt/iii").unwrap(), made);
+    }
+
+    #[test]
+    fn write_rootfs_file_no_follow_does_not_create_dangling_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let target = dir.path().join("does-not-exist");
+        let link = rootfs.join(".oci-config.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_rootfs_file_no_follow(&link, b"payload", None).unwrap();
+
+        assert!(!target.exists());
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn oci_config_readers_refuse_symlinked_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        // A host file that happens to be valid image-config JSON.
+        let host_file = dir.path().join("host.json");
+        std::fs::write(
+            &host_file,
+            r#"{"architecture":"amd64","config":{"Env":["SECRET=1"],"Cmd":["/bin/sh"],"WorkingDir":"/w"}}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&host_file, rootfs.join(".oci-config.json")).unwrap();
+
+        assert!(read_oci_env(&rootfs).is_empty());
+    }
+
+    #[test]
+    fn write_default_hosts_no_follow_does_not_follow_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let etc = dir.path().join("rootfs/etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        let target = dir.path().join("host-file");
+        let hosts = etc.join("hosts");
+        std::os::unix::fs::symlink(&target, &hosts).unwrap();
+
+        write_default_hosts_no_follow(&hosts);
+
+        assert!(
+            !target.exists(),
+            "must not create the symlink target on the host"
+        );
+        let meta = std::fs::symlink_metadata(&hosts).unwrap();
+        assert!(meta.file_type().is_file());
+        assert!(
+            std::fs::read_to_string(&hosts)
+                .unwrap()
+                .contains("localhost")
+        );
+    }
+
+    #[test]
+    fn write_default_hosts_no_follow_keeps_existing_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let etc = dir.path().join("etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        let hosts = etc.join("hosts");
+        std::fs::write(&hosts, "10.0.0.1 custom\n").unwrap();
+
+        write_default_hosts_no_follow(&hosts);
+
+        assert_eq!(
+            std::fs::read_to_string(&hosts).unwrap(),
+            "10.0.0.1 custom\n"
+        );
+    }
+
+    #[test]
+    fn write_default_hosts_no_follow_creates_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let etc = dir.path().join("etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        let hosts = etc.join("hosts");
+
+        write_default_hosts_no_follow(&hosts);
+
+        assert!(
+            std::fs::read_to_string(&hosts)
+                .unwrap()
+                .contains("localhost")
+        );
+    }
+
+    #[test]
+    fn write_default_hosts_no_follow_skips_symlinked_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, rootfs.join("etc")).unwrap();
+
+        write_default_hosts_no_follow(&rootfs.join("etc/hosts"));
+
+        assert!(
+            !outside.join("hosts").exists(),
+            "must not write through a symlinked `etc` directory"
+        );
+    }
+
+    #[test]
+    fn extract_layer_skips_reserved_oci_config_entry() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_entry_type(tar::EntryType::Symlink);
+        builder
+            .append_link(&mut header, ".oci-config.json", &victim)
+            .unwrap();
+        let raw_tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&raw_tar).unwrap();
+        let gz_data = gz.finish().unwrap();
+
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
+    }
+
+    #[test]
+    fn extract_layer_skips_reserved_oci_config_entry_with_dot_slash_prefix() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        // tar::Builder strips a leading `./`, so write the raw name into the
+        // header to mimic layers produced by `tar -C dir .`.
+        let raw_name = b"./.oci-config.json";
+        let mut header = tar::Header::new_gnu();
+        header.as_old_mut().name[..raw_name.len()].copy_from_slice(raw_name);
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_link_name(&victim).unwrap();
+        header.set_cksum();
+        let mut builder = tar::Builder::new(Vec::new());
+        builder.append(&header, std::io::empty()).unwrap();
+        let raw_tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&raw_tar).unwrap();
+        let gz_data = gz.finish().unwrap();
+
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
+    }
+
+    #[test]
+    fn extract_layer_skips_entries_beneath_reserved_oci_config_name() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(1);
+        header.set_mode(0o644);
+        header.set_entry_type(tar::EntryType::Regular);
+        builder
+            .append_data(&mut header, ".oci-config.json/x", &b"x"[..])
+            .unwrap();
+        let raw_tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&raw_tar).unwrap();
+        let gz_data = gz.finish().unwrap();
+
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &gz_data,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        assert!(std::fs::symlink_metadata(rootfs.join(".oci-config.json")).is_err());
+    }
+
+    fn layer_with(build: impl FnOnce(&mut tar::Builder<Vec<u8>>)) -> Vec<u8> {
+        use std::io::Write;
+
+        let mut builder = tar::Builder::new(Vec::new());
+        build(&mut builder);
+        let raw_tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&raw_tar).unwrap();
+        gz.finish().unwrap()
+    }
+
+    fn append_symlink(b: &mut tar::Builder<Vec<u8>>, path: &str, target: &std::path::Path) {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(0);
+        h.set_mode(0o777);
+        h.set_entry_type(tar::EntryType::Symlink);
+        b.append_link(&mut h, path, target).unwrap();
+    }
+
+    fn append_empty_file(b: &mut tar::Builder<Vec<u8>>, path: &str) {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(0);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::Regular);
+        b.append_data(&mut h, path, std::io::empty()).unwrap();
+    }
+
+    /// Uncompressed layers are valid OCI and Docker layers; they used to fail
+    /// with a gzip header error because every layer went through gunzip. A
+    /// gzip layer labelled plain `tar` is still read as gzip.
+    #[test]
+    fn extract_layer_reads_uncompressed_and_docker_gzip_layers() {
+        use oci_client::manifest::{
+            IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE, IMAGE_DOCKER_LAYER_TAR_MEDIA_TYPE,
+            IMAGE_LAYER_MEDIA_TYPE,
+        };
+        let mut builder = tar::Builder::new(Vec::new());
+        append_empty_file(&mut builder, "plain");
+        let raw_tar = builder.into_inner().unwrap();
+        let gzip = layer_with(|b| append_empty_file(b, "plain"));
+
+        for (media_type, data) in [
+            (IMAGE_LAYER_MEDIA_TYPE, &raw_tar),
+            (IMAGE_DOCKER_LAYER_TAR_MEDIA_TYPE, &raw_tar),
+            (IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE, &gzip),
+            (IMAGE_LAYER_MEDIA_TYPE, &gzip),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut total_size = 0u64;
+            extract_layer_with_limits(data, media_type, dir.path(), 0, 1, &mut total_size)
+                .unwrap_or_else(|e| panic!("{media_type}: {e:#}"));
+            assert!(dir.path().join("plain").is_file(), "{media_type}");
+        }
+    }
+
+    #[test]
+    fn extract_layer_rejects_unsupported_media_types_by_name() {
+        let zstd: &[u8] = &[0x28, 0xb5, 0x2f, 0xfd, 0, 0];
+        for (media_type, data) in [
+            ("application/vnd.oci.image.layer.v1.tar+zstd", zstd),
+            ("application/vnd.oci.image.layer.v1.tar", zstd),
+            (
+                "application/vnd.oci.image.layer.v1.tar+gzip+encrypted",
+                &b"ciphertext"[..],
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut total_size = 0u64;
+            let err =
+                extract_layer_with_limits(data, media_type, dir.path(), 0, 1, &mut total_size)
+                    .expect_err(media_type);
+            assert!(err.to_string().contains(media_type), "got: {err}");
+        }
+    }
+
+    /// tar writes FIFO, device and unknown typeflags as regular files, so the
+    /// setuid strip must not depend on the entry type.
+    #[test]
+    fn extract_layer_strips_setid_bits_from_every_entry_type() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let kinds = [
+            ("fifo", tar::EntryType::Fifo),
+            ("chr", tar::EntryType::Char),
+            ("unknown", tar::EntryType::new(b'Z')),
+        ];
+        let layer = layer_with(|b| {
+            for (path, kind) in kinds {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(0);
+                h.set_mode(0o6755);
+                h.set_entry_type(kind);
+                b.append_data(&mut h, path, std::io::empty()).unwrap();
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        for (path, _) in kinds {
+            let meta = std::fs::symlink_metadata(dir.path().join(path)).unwrap();
+            assert!(meta.is_file(), "{path} is written as a regular file");
+            assert_eq!(meta.permissions().mode() & 0o7777, 0o755, "{path}");
+        }
+    }
+
+    #[test]
+    fn whiteout_does_not_follow_symlinked_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(outside.join("victim")).unwrap();
+        std::fs::write(outside.join("victim/keep"), b"keep").unwrap();
+        let layer = layer_with(|b| {
+            append_symlink(b, "a", &outside);
+            append_empty_file(b, "a/.wh.victim");
+        });
+
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        assert!(
+            outside.join("victim/keep").exists(),
+            "whiteout deleted a host path through a symlinked ancestor"
+        );
+    }
+
+    #[test]
+    fn whiteout_rejects_parent_dir_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(cache.join("other")).unwrap();
+        std::fs::write(cache.join("other/keep"), b"keep").unwrap();
+        // `.wh...` names `..`, i.e. the directory that holds the rootfs.
+        let layer = layer_with(|b| append_empty_file(b, ".wh..."));
+
+        let rootfs = cache.join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        assert!(
+            cache.join("other/keep").exists(),
+            "whiteout escaped to the directory above the rootfs"
+        );
+        assert!(rootfs.exists());
+    }
+
+    #[test]
+    fn whiteout_removes_lower_layer_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("a/gone")).unwrap();
+        std::fs::write(rootfs.join("a/gone/file"), b"x").unwrap();
+        std::fs::write(rootfs.join("a/stays"), b"x").unwrap();
+        let layer = layer_with(|b| append_empty_file(b, "a/.wh.gone"));
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        assert!(!rootfs.join("a/gone").exists());
+        assert!(rootfs.join("a/stays").exists());
+    }
+
+    /// `dir/.wh..wh..opq` hides every lower-layer child of `dir` (it used to
+    /// delete a nonexistent `dir/.wh..opq`), keeps this layer's children and
+    /// never clears a directory reached through a symlink.
+    #[test]
+    fn opaque_whiteout_clears_lower_layer_children_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"host").unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("a/sub")).unwrap();
+        std::fs::create_dir_all(rootfs.join("b")).unwrap();
+        std::fs::write(rootfs.join("a/old"), b"lower").unwrap();
+        std::fs::write(rootfs.join("a/sub/x"), b"lower").unwrap();
+        std::fs::write(rootfs.join("b/keep"), b"lower").unwrap();
+        std::os::unix::fs::symlink(&outside, rootfs.join("a/link")).unwrap();
+        std::os::unix::fs::symlink(&outside, rootfs.join("c")).unwrap();
+        let layer = layer_with(|b| {
+            append_empty_file(b, "a/new");
+            append_empty_file(b, "a/.wh..wh..opq");
+            append_empty_file(b, "c/.wh..wh..opq");
+        });
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        let mut children: Vec<_> = std::fs::read_dir(rootfs.join("a"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        children.sort();
+        assert_eq!(children, ["new"], "only this layer's child is left");
+        assert!(rootfs.join("b/keep").exists());
+        assert!(outside.join("keep").exists(), "cleared through a symlink");
+    }
+
+    /// A whiteout hides lower-layer files only, so a same-layer file or
+    /// subtree listed before it must survive.
+    #[test]
+    fn whiteout_keeps_same_layer_entries_listed_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("a/sub")).unwrap();
+        std::fs::write(rootfs.join("a/gone"), b"lower").unwrap();
+        std::fs::write(rootfs.join("a/sub/old"), b"lower").unwrap();
+        let layer = layer_with(|b| {
+            append_empty_file(b, "a/gone");
+            append_empty_file(b, "a/sub/new");
+            append_empty_file(b, "a/.wh.gone");
+            append_empty_file(b, "a/.wh.sub");
+        });
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(rootfs.join("a/gone")).unwrap(), b"");
+        assert!(rootfs.join("a/sub/new").exists());
+        assert!(
+            !rootfs.join("a/sub/old").exists(),
+            "the lower-layer child of a whited-out dir stays hidden"
+        );
+    }
+
+    /// The whiteout pass used to read past every entry before any size
+    /// check, so an oversized entry was inflated in full, and a whiteout's
+    /// own payload was never counted.
+    #[test]
+    fn size_limits_hold_in_the_whiteout_pass_and_for_whiteouts() {
+        use oci_client::manifest::IMAGE_LAYER_MEDIA_TYPE;
+
+        // A header declaring more than MAX_FILE_SIZE, with no payload behind it.
+        let mut h = tar::Header::new_gnu();
+        h.set_path("huge").unwrap();
+        h.set_size(MAX_FILE_SIZE + 1);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::Regular);
+        h.set_cksum();
+        let dir = tempfile::tempdir().unwrap();
+        let mut total_size = 0u64;
+        let err = extract_layer_with_limits(
+            h.as_bytes(),
+            IMAGE_LAYER_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .expect_err("an oversized entry must be refused");
+        assert!(err.to_string().contains("file too large"), "got: {err:#}");
+
+        let layer = layer_with(|b| {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(1);
+            h.set_mode(0o644);
+            h.set_entry_type(tar::EntryType::Regular);
+            b.append_data(&mut h, ".wh.x", &b"x"[..]).unwrap();
+        });
+        let mut total_size = MAX_TOTAL_SIZE;
+        let err = extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            dir.path(),
+            0,
+            1,
+            &mut total_size,
+        )
+        .expect_err("a whiteout's payload counts toward the total");
+        assert!(
+            err.to_string().contains("total extraction size exceeded"),
+            "got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn write_rootfs_file_no_follow_sets_exact_mode_without_following() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"original").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.path().join("init.krun");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        // 0o777 only survives a typical 022 umask because of the fchmod.
+        write_rootfs_file_no_follow(&link, b"init", Some(0o777)).unwrap();
+
+        assert_eq!(std::fs::read(&victim).unwrap(), b"original");
+        let victim_mode = std::fs::metadata(&victim).unwrap().permissions().mode();
+        assert_eq!(victim_mode & 0o777, 0o600);
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_file());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o777);
+        assert_eq!(std::fs::read(&link).unwrap(), b"init");
+    }
+
+    #[test]
+    fn oci_config_readers_do_not_block_on_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        nix::unistd::mkfifo(
+            &rootfs.join(".oci-config.json"),
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+
+        // Without O_NONBLOCK the open would block waiting for a writer.
+        assert!(read_oci_env(&rootfs).is_empty());
+    }
+
+    #[test]
+    fn whiteout_removes_symlink_without_following_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"keep").unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("a")).unwrap();
+        std::os::unix::fs::symlink(&outside, rootfs.join("a/link")).unwrap();
+        let layer = layer_with(|b| append_empty_file(b, "a/.wh.link"));
+
+        let mut total_size = 0u64;
+        extract_layer_with_limits(
+            &layer,
+            IMAGE_LAYER_GZIP_MEDIA_TYPE,
+            &rootfs,
+            0,
+            1,
+            &mut total_size,
+        )
+        .unwrap();
+
+        assert!(std::fs::symlink_metadata(rootfs.join("a/link")).is_err());
+        assert!(
+            outside.join("keep").exists(),
+            "whiteout followed the symlink"
+        );
+    }
+
+    #[test]
+    fn read_rootfs_file_no_follow_reads_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("iii")).unwrap();
+        std::fs::write(rootfs.join("iii/worker.yaml"), b"name: w\n").unwrap();
+
+        let got = read_rootfs_file_no_follow(&rootfs, std::path::Path::new("/iii/worker.yaml"));
+
+        assert_eq!(got.unwrap(), b"name: w\n");
+    }
+
+    #[test]
+    fn read_rootfs_file_no_follow_refuses_symlinks_and_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("worker.yaml"), b"secret: 1\n").unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("etc")).unwrap();
+        // Symlinked ancestor and symlinked final entry.
+        std::os::unix::fs::symlink(&outside, rootfs.join("iii")).unwrap();
+        std::os::unix::fs::symlink(outside.join("worker.yaml"), rootfs.join("etc/worker.yaml"))
+            .unwrap();
+        let read = |rel: &str| read_rootfs_file_no_follow(&rootfs, std::path::Path::new(rel));
+
+        assert!(read("iii/worker.yaml").is_err());
+        assert!(read("etc/worker.yaml").is_err());
+        assert!(read("../outside/worker.yaml").is_err());
+    }
+}

@@ -126,6 +126,12 @@ def test_release_build_validates_rust_targets_and_oci_platforms():
     assert '(.target // .platform // "none") == $target' in text
 
 
+def test_aarch64_gnu_unit_points_capng_at_the_arm64_library():
+    # capng's build.rs reads only LIBCAPNG_LIB_PATH; LIBRARY_PATH alone may not link.
+    text = body("_deploy-build.yml")
+    assert 'echo "LIBCAPNG_LIB_PATH=/usr/lib/aarch64-linux-gnu" >> "$GITHUB_ENV"' in text
+
+
 def test_release_build_falls_back_when_optional_sccache_is_unavailable():
     workflow = yaml.safe_load(body("_deploy-build.yml"))
     steps = workflow["jobs"]["build"]["steps"]
@@ -144,6 +150,9 @@ def test_release_build_falls_back_when_optional_sccache_is_unavailable():
 def test_release_build_restores_frontends_with_a_portable_copy():
     text = body("_deploy-build.yml")
     assert "shutil.copytree('.release-frontend', '.', dirs_exist_ok=True)" in text
+    steps = yaml.safe_load(text)["jobs"]["build"]["steps"]
+    build = next(step for step in steps if step.get("name") == "Build immutable artifact")
+    assert build["env"]["SKIP_UI_BUILD"] == "1"
     # rsync is not guaranteed on the Windows and macOS release runners: it may
     # be named only in comments, never invoked.
     for line in text.splitlines():

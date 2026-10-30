@@ -1,0 +1,393 @@
+//! DNS query interception and resolution.
+//!
+//! The [`DnsInterceptor`] bridges the smoltcp UDP socket (bound to port 53)
+//! and the host DNS resolvers via hickory-resolver. Queries are read from
+//! the socket, forwarded to a background tokio task for resolution, and
+//! responses are sent back through the socket on the next poll iteration.
+
+use std::sync::Arc;
+
+use bytes::Bytes;
+use smoltcp::iface::SocketSet;
+use smoltcp::socket::udp;
+use smoltcp::storage::PacketMetadata;
+use smoltcp::wire::IpListenEndpoint;
+use tokio::sync::mpsc;
+
+use crate::shared::SharedState;
+
+const DNS_PORT: u16 = 53;
+const DNS_MAX_SIZE: usize = 4096;
+const DNS_SOCKET_PACKET_SLOTS: usize = 16;
+const CHANNEL_CAPACITY: usize = 64;
+/// A lookup can take ~10s to time out (2 tries x 5s); this bounds the work
+/// a guest flooding unresolvable names can park on the runtime.
+const MAX_INFLIGHT_QUERIES: usize = 64;
+
+/// DNS query/response interceptor.
+///
+/// Owns the smoltcp UDP socket handle and channels to the async resolver
+/// task. The poll loop calls [`process()`] each iteration to shuttle
+/// queries and responses between smoltcp and hickory-resolver.
+///
+/// [`process()`]: DnsInterceptor::process
+pub struct DnsInterceptor {
+    socket_handle: smoltcp::iface::SocketHandle,
+    query_tx: mpsc::Sender<DnsQuery>,
+    response_rx: mpsc::Receiver<DnsResponse>,
+}
+
+struct DnsQuery {
+    data: Bytes,
+    /// Guest endpoint plus the address it queried (`local_address`): the
+    /// reply must come from there, or connected resolvers discard it.
+    source: udp::UdpMetadata,
+}
+
+struct DnsResponse {
+    data: Bytes,
+    dest: udp::UdpMetadata,
+}
+
+impl DnsInterceptor {
+    /// Create the DNS interceptor.
+    ///
+    /// Binds a smoltcp UDP socket to port 53, creates the channel pair, and
+    /// spawns the background resolver task.
+    pub fn new(
+        sockets: &mut SocketSet<'_>,
+        shared: Arc<SharedState>,
+        tokio_handle: &tokio::runtime::Handle,
+    ) -> Self {
+        let rx_meta = vec![PacketMetadata::EMPTY; DNS_SOCKET_PACKET_SLOTS];
+        let rx_payload = vec![0u8; DNS_MAX_SIZE * DNS_SOCKET_PACKET_SLOTS];
+        let tx_meta = vec![PacketMetadata::EMPTY; DNS_SOCKET_PACKET_SLOTS];
+        let tx_payload = vec![0u8; DNS_MAX_SIZE * DNS_SOCKET_PACKET_SLOTS];
+
+        let mut socket = udp::Socket::new(
+            udp::PacketBuffer::new(rx_meta, rx_payload),
+            udp::PacketBuffer::new(tx_meta, tx_payload),
+        );
+        socket
+            .bind(IpListenEndpoint {
+                addr: None,
+                port: DNS_PORT,
+            })
+            .expect("failed to bind DNS socket to port 53");
+
+        let socket_handle = sockets.add(socket);
+
+        let (query_tx, query_rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let (response_tx, response_rx) = mpsc::channel(CHANNEL_CAPACITY);
+
+        tokio_handle.spawn(dns_resolver_task(query_rx, response_tx, shared));
+
+        Self {
+            socket_handle,
+            query_tx,
+            response_rx,
+        }
+    }
+
+    /// Process DNS queries and responses.
+    ///
+    /// Called by the poll loop each iteration:
+    /// 1. Reads queries from the smoltcp socket and sends to resolver task.
+    /// 2. Reads responses from the resolver and writes to smoltcp socket.
+    pub fn process(&mut self, sockets: &mut SocketSet<'_>) {
+        let socket = sockets.get_mut::<udp::Socket>(self.socket_handle);
+
+        let mut buf = [0u8; DNS_MAX_SIZE];
+        while socket.can_recv() {
+            match socket.recv_slice(&mut buf) {
+                Ok((n, meta)) => {
+                    let query = DnsQuery {
+                        data: Bytes::copy_from_slice(&buf[..n]),
+                        source: meta,
+                    };
+                    if self.query_tx.try_send(query).is_err() {
+                        tracing::debug!("DNS query channel full, dropping query");
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        while socket.can_send() {
+            match self.response_rx.try_recv() {
+                Ok(response) => {
+                    let _ = socket.send_slice(&response.data, response.dest);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+async fn dns_resolver_task(
+    query_rx: mpsc::Receiver<DnsQuery>,
+    response_tx: mpsc::Sender<DnsResponse>,
+    shared: Arc<SharedState>,
+) {
+    let resolver = match hickory_resolver::Resolver::builder_tokio().and_then(|b| b.build()) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to create DNS resolver");
+            return;
+        }
+    };
+    serve_queries(query_rx, response_tx, shared, resolver).await;
+}
+
+async fn serve_queries(
+    mut query_rx: mpsc::Receiver<DnsQuery>,
+    response_tx: mpsc::Sender<DnsResponse>,
+    shared: Arc<SharedState>,
+    resolver: hickory_resolver::TokioResolver,
+) {
+    let inflight = Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_QUERIES));
+    while let Some(query) = query_rx.recv().await {
+        // A DNS query is guest activity whether or not it resolves —
+        // refresh the idle-reaper beacon at arrival, not at response.
+        shared.note_activity();
+        let Ok(permit) = inflight.clone().try_acquire_owned() else {
+            tracing::debug!("too many DNS lookups in flight, dropping query");
+            continue;
+        };
+        let response_tx = response_tx.clone();
+        let shared = shared.clone();
+        let resolver = resolver.clone();
+
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Some(response_data) = resolve_query(&query.data, &resolver).await {
+                let response = DnsResponse {
+                    data: response_data,
+                    dest: query.source,
+                };
+                if response_tx.send(response).await.is_ok() {
+                    shared.proxy_wake.wake();
+                }
+            }
+        });
+    }
+}
+
+async fn resolve_query(
+    raw_query: &[u8],
+    resolver: &hickory_resolver::TokioResolver,
+) -> Option<Bytes> {
+    use hickory_proto::op::{Message, ResponseCode};
+    use hickory_proto::serialize::binary::BinDecodable;
+    use hickory_resolver::net::{DnsError, NetError};
+
+    let query_msg = Message::from_bytes(raw_query).ok()?;
+    let query_id = query_msg.id;
+
+    let question = query_msg.queries.first()?;
+    let record_type = question.query_type();
+
+    let mut response_msg = Message::response(query_id, query_msg.op_code);
+    response_msg.metadata.recursion_desired = query_msg.recursion_desired;
+    response_msg.metadata.recursion_available = true;
+    response_msg.add_query(question.clone());
+
+    // Every outcome gets an answer: a dropped query leaves the guest's stub
+    // resolver waiting out its full timeout before it moves on.
+    response_msg.metadata.response_code =
+        match resolver.lookup(question.name().clone(), record_type).await {
+            Ok(lookup) => {
+                response_msg.insert_answers(lookup.answers().to_vec());
+                ResponseCode::NoError
+            }
+            // NXDOMAIN, or NODATA (NoError, empty answer section).
+            Err(NetError::Dns(DnsError::NoRecordsFound(no_records))) => {
+                if let Some(soa) = no_records.soa {
+                    response_msg.add_authority(soa.into_record_of_rdata());
+                }
+                no_records.response_code
+            }
+            Err(e) => {
+                tracing::debug!(name = %question.name(), error = %e, "DNS lookup failed");
+                ResponseCode::ServFail
+            }
+        };
+
+    use hickory_proto::serialize::binary::BinEncodable;
+    let response_bytes = response_msg.to_bytes().ok()?;
+
+    Some(Bytes::from(response_bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smoltcp::wire::IpEndpoint;
+
+    #[test]
+    fn dns_port_is_53() {
+        assert_eq!(DNS_PORT, 53);
+    }
+
+    #[test]
+    fn dns_max_size_is_4096() {
+        assert_eq!(DNS_MAX_SIZE, 4096);
+    }
+
+    #[test]
+    fn dns_query_struct_holds_data() {
+        let query = DnsQuery {
+            data: Bytes::from_static(b"\x00\x01\x02"),
+            source: IpEndpoint::new(smoltcp::wire::IpAddress::v4(10, 0, 2, 100), 12345).into(),
+        };
+        assert_eq!(query.data.len(), 3);
+        assert_eq!(query.source.endpoint.port, 12345);
+    }
+
+    #[test]
+    fn dns_response_struct_holds_data() {
+        let response = DnsResponse {
+            data: Bytes::from_static(b"\x00\x01"),
+            dest: IpEndpoint::new(smoltcp::wire::IpAddress::v4(10, 0, 2, 100), 12345).into(),
+        };
+        assert_eq!(response.data.len(), 2);
+        assert_eq!(response.dest.endpoint.port, 12345);
+    }
+
+    /// Lookups that hang (upstream never answers) must not pile up without
+    /// bound: past the cap, queries are dropped instead of spawning work.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inflight_lookups_are_capped() {
+        use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+        use hickory_resolver::net::runtime::TokioRuntimeProvider;
+        use std::time::Duration;
+
+        // Receives queries and never answers.
+        let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut server = NameServerConfig::udp(std::net::Ipv4Addr::LOCALHOST.into());
+        server.connections[0].port = blackhole.local_addr().unwrap().port();
+        let mut builder = hickory_resolver::Resolver::builder_with_config(
+            ResolverConfig::from_name_servers(vec![server]),
+            TokioRuntimeProvider::default(),
+        );
+        builder.options_mut().timeout = Duration::from_millis(500);
+        builder.options_mut().attempts = 1;
+        let resolver = builder.build().unwrap();
+
+        let total = MAX_INFLIGHT_QUERIES + 16;
+        let (query_tx, query_rx) = mpsc::channel(total);
+        let (response_tx, mut response_rx) = mpsc::channel(total);
+        tokio::spawn(serve_queries(
+            query_rx,
+            response_tx,
+            Arc::new(SharedState::new(64)),
+            resolver,
+        ));
+        for i in 0..total {
+            let name = format!("q{i}.example.");
+            query_tx
+                .send(DnsQuery {
+                    data: query_bytes(&name, hickory_proto::rr::RecordType::A).into(),
+                    source: IpEndpoint::new(smoltcp::wire::IpAddress::v4(10, 0, 2, 2), 5353).into(),
+                })
+                .await
+                .unwrap();
+        }
+
+        // Every admitted lookup times out into a SERVFAIL, all at about the
+        // same moment; count them until the channel goes quiet.
+        let mut answered = 0;
+        let mut wait = Duration::from_secs(10);
+        while let Ok(Some(_)) = tokio::time::timeout(wait, response_rx.recv()).await {
+            answered += 1;
+            wait = Duration::from_secs(1);
+        }
+        assert_eq!(answered, MAX_INFLIGHT_QUERIES);
+    }
+
+    fn query_bytes(name: &str, record_type: hickory_proto::rr::RecordType) -> Vec<u8> {
+        use hickory_proto::op::{Message, Query};
+        use hickory_proto::rr::Name;
+        use hickory_proto::serialize::binary::BinEncodable;
+        let mut msg = Message::query();
+        msg.metadata.id = 0x4242;
+        msg.metadata.recursion_desired = true;
+        msg.add_query(Query::query(Name::from_ascii(name).unwrap(), record_type));
+        msg.to_bytes().unwrap()
+    }
+
+    async fn answer_for(
+        name: &str,
+        record_type: hickory_proto::rr::RecordType,
+        resolver: &hickory_resolver::TokioResolver,
+    ) -> hickory_proto::op::Message {
+        use hickory_proto::serialize::binary::BinDecodable;
+        let response = resolve_query(&query_bytes(name, record_type), resolver)
+            .await
+            .expect("every well-formed query must get an answer");
+        let msg = hickory_proto::op::Message::from_bytes(&response).unwrap();
+        assert_eq!(msg.id, 0x4242);
+        assert_eq!(msg.queries.len(), 1, "the question must be echoed");
+        assert!(msg.answers.is_empty());
+        msg
+    }
+
+    /// Negative answers must reach the guest: dropping them leaves its stub
+    /// resolver waiting out its whole timeout (about 5s per try on glibc).
+    #[tokio::test]
+    async fn resolve_query_answers_nxdomain_and_nodata() {
+        use hickory_proto::op::ResponseCode;
+        use hickory_proto::rr::RecordType;
+        let resolver = hickory_resolver::Resolver::builder_tokio()
+            .and_then(|b| b.build())
+            .unwrap();
+
+        // Both are answered inside hickory (RFC 6761), with no network.
+        let nx = answer_for("nothing.invalid.", RecordType::A, &resolver).await;
+        assert_eq!(nx.response_code, ResponseCode::NXDomain);
+        let nodata = answer_for("localhost.", RecordType::MX, &resolver).await;
+        assert_eq!(nodata.response_code, ResponseCode::NoError);
+    }
+
+    /// Any other resolver failure is SERVFAIL, so the guest moves on now.
+    #[tokio::test]
+    async fn resolve_query_answers_servfail_on_resolver_error() {
+        use hickory_resolver::config::ResolverConfig;
+        use hickory_resolver::net::runtime::TokioRuntimeProvider;
+        let resolver = hickory_resolver::Resolver::builder_with_config(
+            ResolverConfig::from_name_servers(vec![]),
+            TokioRuntimeProvider::default(),
+        )
+        .build()
+        .unwrap();
+
+        let msg = answer_for("example.com.", hickory_proto::rr::RecordType::A, &resolver).await;
+        assert_eq!(msg.response_code, hickory_proto::op::ResponseCode::ServFail);
+    }
+
+    #[test]
+    fn resolve_query_rejects_garbage_input() {
+        // resolve_query calls Message::from_bytes which should fail on invalid data.
+        // We need a tokio runtime to call the async fn.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let resolver = hickory_resolver::Resolver::builder_tokio()
+                .and_then(|b| b.build())
+                .unwrap();
+            let result = resolve_query(b"not a valid dns message", &resolver).await;
+            assert!(result.is_none());
+        });
+    }
+
+    #[test]
+    fn resolve_query_rejects_empty_input() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let resolver = hickory_resolver::Resolver::builder_tokio()
+                .and_then(|b| b.build())
+                .unwrap();
+            let result = resolve_query(b"", &resolver).await;
+            assert!(result.is_none());
+        });
+    }
+}

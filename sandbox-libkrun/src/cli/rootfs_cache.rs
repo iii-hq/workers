@@ -1,0 +1,336 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
+// See LICENSE and PATENTS files for details.
+
+//! Rootfs cache.
+//!
+//! One content-addressable cache at `~/.iii/cache/<slug>/`, keyed on the
+//! OCI reference itself. Worker VMs and sandboxes both go through
+//! `ensure_rootfs`, so an image pulled for one satisfies the other without
+//! re-pulling.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+
+use crate::cli::oci_ref::{canonical_cache_key, pinned_digest};
+use crate::cli::worker_manager::oci::{pull_and_extract_rootfs, rootfs_slug_for_image};
+
+/// Canonical cache root. All new pulls land under here, keyed by
+/// `rootfs_slug_for_image(oci_ref)`.
+fn cache_root() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".iii")
+        .join("cache")
+}
+
+/// Canonical on-disk location for `oci_ref`'s rootfs. Two different
+/// flows referencing the same image resolve to the same directory.
+/// Digest-pinned refs (`foo:tag@sha256:...`) collapse to the unpinned
+/// form's dir via `canonical_cache_key` while that dir's digest sidecar
+/// lists the pin, so engine-resolved pins never trigger a re-pull of an
+/// image the user already added. While that dir is empty a pin pulls into
+/// it, so a later unpinned use reuses that pull. Any other pin gets a dir
+/// of its own: a changed pin must miss, not be served another digest's
+/// rootfs. A digest-only pin (`foo@sha256:...`) names no tag, so it never
+/// shares or fills `foo:latest`'s dir.
+// shortcut: per-digest dirs are never evicted, add a cache GC if pin churn grows ~/.iii/cache.
+pub fn canonical_path(oci_ref: &str) -> PathBuf {
+    let shared = shared_path(oci_ref);
+    match pinned_digest(oci_ref) {
+        Some(pin) if is_populated(&shared) && !pulled_from(&shared, pin) => {
+            cache_root().join(rootfs_slug_for_image(oci_ref))
+        }
+        _ => shared,
+    }
+}
+
+/// The dir every variant of `oci_ref`, pinned or not, may share.
+fn shared_path(oci_ref: &str) -> PathBuf {
+    cache_root().join(rootfs_slug_for_image(canonical_cache_key(oci_ref)))
+}
+
+/// `<rootfs>.digest`, beside the rootfs: the manifest digests it was
+/// pulled from, one per line.
+fn digest_path(rootfs: &Path) -> PathBuf {
+    let mut name = rootfs.file_name().unwrap_or_default().to_os_string();
+    name.push(".digest");
+    rootfs.with_file_name(name)
+}
+
+/// True if the rootfs at `rootfs` was pulled from manifest `digest`.
+fn pulled_from(rootfs: &Path, digest: &str) -> bool {
+    std::fs::read_to_string(digest_path(rootfs))
+        .is_ok_and(|digests| digests.lines().any(|d| d.eq_ignore_ascii_case(digest)))
+}
+
+/// True if `path` looks like a populated OCI rootfs. The `bin/` check
+/// catches stub directories left behind by a failed pull — every sane
+/// Linux image ships `/bin/sh`, so a rootfs with no `bin/` is either
+/// mid-extract or arch-mismatched.
+pub fn is_populated(path: &Path) -> bool {
+    path.exists() && path.join("bin").exists()
+}
+
+/// The populated cache path for `oci_ref`, or `None` on a miss.
+pub fn resolve_cached(oci_ref: &str) -> Option<PathBuf> {
+    let canonical = canonical_path(oci_ref);
+    is_populated(&canonical).then_some(canonical)
+}
+
+/// Lock file guarding one image's pull. Lives beside the rootfs
+/// directories rather than inside one, because the pull begins by
+/// deleting that directory. Pinned and unpinned variants share it, so
+/// which dir `canonical_path` picks cannot change while it is held.
+fn lock_path_for_image(oci_ref: &str) -> PathBuf {
+    let mut path = shared_path(oci_ref);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "rootfs".to_string());
+    path.set_file_name(format!("{name}.lock"));
+    path
+}
+
+/// Take the per-image pull lock, waiting for any other holder to finish.
+///
+/// Acquired on a blocking thread, like the bundle installer's staging
+/// lock: `fslock` blocks on a syscall and the async runtime must not.
+/// The lock is released when the guard drops, and by the kernel if the
+/// process dies, so a crashed pull does not wedge the next one.
+async fn lock_for_image(oci_ref: &str) -> Result<fslock::LockFile> {
+    let lock_path = lock_path_for_image(oci_ref);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "could not create the rootfs cache directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    tokio::task::spawn_blocking(move || -> Result<fslock::LockFile> {
+        let mut lock = fslock::LockFile::open(&lock_path)
+            .with_context(|| format!("could not open {}", lock_path.display()))?;
+        lock.lock_with_pid()
+            .with_context(|| format!("could not lock {}", lock_path.display()))?;
+        Ok(lock)
+    })
+    .await
+    .context("the rootfs pull lock task panicked")?
+}
+
+/// Ensure a populated rootfs exists for `oci_ref`; return its on-disk
+/// path. `on_pull_start` fires exactly once, only on a cache miss, right
+/// before the network pull begins — use it to log "Pulling..." or
+/// surface a progress event to the user.
+pub async fn ensure_rootfs(oci_ref: &str, on_pull_start: impl FnOnce()) -> Result<PathBuf> {
+    if let Some(cached) = resolve_cached(oci_ref) {
+        return Ok(cached);
+    }
+    // Past this point we are going to delete and re-extract `dest`, so no
+    // second caller may be inside the same image's miss path. Two of them
+    // (a prefetch and the spawn it was meant to warm, or simply two `iii`
+    // processes) would each `remove_dir_all` a directory the other was
+    // extracting into, and the survivor would keep a rootfs with another
+    // pull's files spliced through it.
+    let _lock = lock_for_image(oci_ref).await?;
+    // Re-check under the lock: whoever held it before us has very likely
+    // just finished this exact pull, and re-pulling would throw away a
+    // rootfs that is already complete.
+    if let Some(cached) = resolve_cached(oci_ref) {
+        return Ok(cached);
+    }
+    on_pull_start();
+    let dest = canonical_path(oci_ref);
+    // Clean any partial-state stub from a prior failed attempt: a
+    // dir-exists-but-empty rootfs can confound tar's overwrite logic
+    // and fool `is_populated` on the next call.
+    if dest.exists() {
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+    // Drop any stale sibling `<slug>.erofs` so the freshly extracted rootfs is
+    // never paired with an overlay lower built from the previous contents.
+    // (ensure_base_erofs also rebuilds on stale mtime; this is the
+    // belt-and-suspenders explicit GC at the re-extract boundary.)
+    crate::cli::erofs::remove_base_erofs(&dest);
+    // A stale sidecar must never vouch for whatever this pull leaves.
+    let digest_file = digest_path(&dest);
+    let _ = std::fs::remove_file(&digest_file);
+    let digests = pull_and_extract_rootfs(oci_ref, &dest).await?;
+    // Without the sidecar a pinned ref only misses this dir and pulls its own.
+    if let Err(e) = std::fs::write(&digest_file, digests.join("\n")) {
+        tracing::warn!(path = %digest_file.display(), error = %e, "failed to record the rootfs digest");
+    }
+    Ok(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn populate(dir: &Path) {
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+    }
+
+    #[test]
+    fn canonical_path_is_slug_based_and_stable() {
+        let _g = crate::cli::test_support::lock_home();
+        let a = canonical_path("docker.io/library/python:3.13");
+        let b = canonical_path("docker.io/library/python:3.13");
+        assert_eq!(a, b);
+        assert_ne!(a, canonical_path("docker.io/library/python:3.12"));
+    }
+
+    /// A pin shares the tag's dir only while that dir was pulled from the
+    /// pinned digest; changing the pin used to keep serving the old rootfs.
+    #[test]
+    fn a_pin_shares_the_tag_dir_only_while_its_digest_matches() {
+        let _g = crate::cli::test_support::lock_home();
+        let home = tempdir().unwrap();
+        let prior = std::env::var_os("HOME");
+        // SAFETY: the caller holds TEST_HOME_LOCK, which serializes all env mutation.
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let tag = "docker.io/iiidev/node:latest";
+        let (index, platform, other) = (
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+            format!("sha256:{}", "c".repeat(64)),
+        );
+        let shared = canonical_path(tag);
+        let pinned_before_pull = canonical_path(&format!("{tag}@{index}"));
+        populate(&shared);
+        std::fs::write(digest_path(&shared), format!("{index}\n{platform}")).unwrap();
+        let hit_index = resolve_cached(&format!("{tag}@{index}"));
+        let hit_platform = resolve_cached(&format!("{tag}@{platform}"));
+        let hit_other = resolve_cached(&format!("{tag}@{other}"));
+        let other_path = canonical_path(&format!("{tag}@{other}"));
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(hit_index.as_ref(), Some(&shared));
+        assert_eq!(hit_platform.as_ref(), Some(&shared));
+        assert_eq!(
+            hit_other, None,
+            "a changed pin was served another digest's rootfs"
+        );
+        assert_ne!(other_path, shared);
+        assert_eq!(
+            pinned_before_pull, shared,
+            "a pin's first pull fills the tag's empty dir"
+        );
+        assert_eq!(
+            lock_path_for_image(tag),
+            lock_path_for_image(&format!("{tag}@{other}"))
+        );
+    }
+
+    /// A digest-only pin pulled first used to fill `repo:latest`'s empty dir,
+    /// so the tag was then served that digest whatever `latest` pointed to.
+    #[test]
+    fn a_digest_only_pin_never_fills_the_latest_dir() {
+        let _g = crate::cli::test_support::lock_home();
+        let home = tempdir().unwrap();
+        let prior = std::env::var_os("HOME");
+        // SAFETY: the caller holds TEST_HOME_LOCK, which serializes all env mutation.
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let digest = format!("sha256:{}", "d".repeat(64));
+        let pinned = format!("docker.io/iiidev/node@{digest}");
+        let pin_dir = canonical_path(&pinned);
+        populate(&pin_dir);
+        std::fs::write(digest_path(&pin_dir), &digest).unwrap();
+        let pin_hit = resolve_cached(&pinned);
+        let latest_hit = resolve_cached("docker.io/iiidev/node:latest");
+        let bare_hit = resolve_cached("docker.io/iiidev/node");
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert_eq!(pin_hit, Some(pin_dir));
+        assert_eq!(
+            latest_hit, None,
+            "the tag was served a digest-only pin's rootfs"
+        );
+        assert_eq!(bare_hit, None);
+    }
+
+    #[test]
+    fn is_populated_requires_bin_subdir() {
+        let td = tempdir().unwrap();
+        assert!(!is_populated(td.path()));
+        populate(td.path());
+        assert!(is_populated(td.path()));
+    }
+
+    #[test]
+    fn resolve_cached_returns_none_on_total_miss() {
+        let _g = crate::cli::test_support::lock_home();
+        // Use a slug nothing on disk will have. Canonical_path respects
+        // $HOME, so we don't need to redirect that — just pick an image
+        // reference that will hash to a unique slug per test run.
+        let uniq = format!(
+            "nonexistent-{}:{}",
+            std::process::id(),
+            std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+        );
+        assert!(resolve_cached(&uniq).is_none());
+    }
+
+    /// The lock is what stops a prefetch and the spawn it was warming from
+    /// deleting each other's half-extracted rootfs. Two holders of the same
+    /// image's lock must not overlap; two different images must not block.
+    #[tokio::test]
+    async fn the_pull_lock_excludes_one_image_and_not_another() {
+        let tmp = tempdir().unwrap();
+        let lock_a = tmp.path().join("a.lock");
+        let lock_b = tmp.path().join("b.lock");
+
+        let mut first = fslock::LockFile::open(&lock_a).unwrap();
+        first.lock_with_pid().unwrap();
+
+        // A second holder of the SAME lock waits. `try_lock` is the
+        // non-blocking form of what `lock_for_image` does, so a refusal here
+        // is exactly the wait a real second caller would take.
+        let mut same = fslock::LockFile::open(&lock_a).unwrap();
+        assert!(
+            !same.try_lock_with_pid().unwrap(),
+            "a second caller took the same image's lock while it was held"
+        );
+
+        // A different image is unrelated and must not be serialized behind it.
+        let mut other = fslock::LockFile::open(&lock_b).unwrap();
+        assert!(
+            other.try_lock_with_pid().unwrap(),
+            "a different image's pull was blocked by an unrelated lock"
+        );
+
+        drop(first);
+        let mut after = fslock::LockFile::open(&lock_a).unwrap();
+        assert!(
+            after.try_lock_with_pid().unwrap(),
+            "the lock was not released when its holder dropped"
+        );
+    }
+
+    #[test]
+    fn the_lock_file_sits_beside_the_rootfs_it_guards() {
+        let _g = crate::cli::test_support::lock_home();
+        let dest = canonical_path("docker.io/iiidev/node:latest");
+        let lock = lock_path_for_image("docker.io/iiidev/node:latest");
+        // Beside, never inside: the pull begins by deleting `dest`.
+        assert_eq!(lock.parent(), dest.parent());
+        assert_ne!(lock, dest);
+        assert!(!lock.starts_with(&dest));
+        // Two references to the same image share one lock; two images do not.
+        assert_eq!(lock, lock_path_for_image("iiidev/node:latest"));
+        assert_ne!(lock, lock_path_for_image("docker.io/iiidev/python:latest"));
+    }
+}

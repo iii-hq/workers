@@ -509,13 +509,28 @@ def build(args: argparse.Namespace) -> int:
                 )
             else:
                 manifest = source_dir / str(source["package_manifest"])
+                prebuild = artifact.get("prebuild")
+                if prebuild:
+                    run(*(str(part) for part in prebuild), cwd=source_dir, env={**os.environ, "BUILD_TARGET": target})
                 command = ["cargo", "build", "--release", "--target", target, "--manifest-path", str(manifest)]
                 if (source_dir / "Cargo.lock").is_file():
                     command.append("--locked")
+                if artifact.get("features"):
+                    command += ["--features", ",".join(str(feature) for feature in artifact["features"])]
                 run(*command)
                 binary_path = source_dir / "target" / target / "release" / binary_filename
             if not binary_path.is_file():
                 raise SystemExit(f"built binary not found at {binary_path}")
+            entitlements = artifact.get("macos_entitlements")
+            if entitlements and target.endswith("-apple-darwin"):
+                # Sign at build time, so the runtime self-sign finds the entitlements and never re-signs the cached binary.
+                run("codesign", "--sign", "-", "--entitlements", str(source_dir / str(entitlements)),
+                    "--force", str(binary_path))
+                signed = subprocess.check_output(
+                    ["codesign", "-d", "--entitlements", "-", str(binary_path)], stderr=subprocess.STDOUT, text=True,
+                )
+                if "com.apple.security.hypervisor" not in signed:
+                    raise SystemExit(f"{binary_path} was signed without com.apple.security.hypervisor")
             # Runtime-loaded companions ship beside the executable.
             entries = [(binary_path, binary_filename)]
             for pattern in artifact.get("companions") or []:

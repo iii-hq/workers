@@ -139,6 +139,9 @@
         "targets": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
         "windows_exception": {"type": "string", "minLength": 1},
         "companions": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$", "not": {"pattern": "\\.\\."}}},
+        "features": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[a-z0-9_-]+$"}},
+        "prebuild": {"$ref": "#/$defs/argv"},
+        "macos_entitlements": {"type": "string", "minLength": 1},
         "frontends": {"type": "array", "items": {"$ref": "#/$defs/frontend"}}
       }
     },
