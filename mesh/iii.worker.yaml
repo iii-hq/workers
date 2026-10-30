@@ -1,0 +1,13 @@
+iii: v1
+name: mesh
+language: go
+deploy: binary
+manifest: package.json
+bin: mesh
+license: MIT
+description: Mesh hub and node connectivity for iii workers.
+tags: [mesh, networking, hub, go]
+dependencies:
+  configuration: latest
+  rbac-proxy: latest
+config: {}
