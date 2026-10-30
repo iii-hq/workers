@@ -417,6 +417,7 @@ fields where the name does not say them), and the consumers in this repo
 | 95 | voice | `voice::speech-ended` | removed: it has no emitter and no consumer | | | | |
 | 96 | whatsapp | `whatsapp::events` | `whatsapp::on-events` | none; filters `input.session_id`, `input.kind` | default; the event loop calls only when `IsObserved` and the event is current | `Event { session_id, sequence, kind, timestamp_ms, data }` | whatsapp:ui/src/page.tsx |
 | 97 | whatsapp | `whatsapp::cloud::events` | `whatsapp::cloud::on-events` | none; filters `input.kind`, `input.chat_id`, `input.sender_id`, `input.message_type`, `input.status`, `input.business_account_id`, `input.phone_number_id`, `input.group_id`, `input.participant_id`, `input.field`, `input.event` | default | `CloudEvent` | none in repo |
+| 124 | workflow | `workflow::run-completed` | `workflow::on-run-completed` | none; filters `input.run_id`, `input.status` | default; finalize calls it once per terminal run, before the terminal status is stored (a crash in between calls it again) | `RunCompletedEvent { run_id, status: completed \| failed \| cancelled, result, result_error }` | none in repo |
 | 98 | worktree | `worktree::created` | `worktree::on-created` | none; filters `input.repo_path`, `input.worktree_id`, `input.session_id` | default | `CreatedEvent` | worktree:ui/src/page/index.tsx |
 | 99 | worktree | `worktree::claimed` | `worktree::on-claimed` | none; filters as row 98 | default | `ClaimedEvent` | worktree:ui/src/page/index.tsx |
 | 100 | worktree | `worktree::released` | `worktree::on-released` | none; filters as row 98 | default | `ReleasedEvent` | worktree:ui/src/page/index.tsx |
@@ -470,8 +471,8 @@ Decisions 29 and 32. Every function is private.
 | 122 | ade | `console::workspace::changed` | `console::workspace::on-changed` | none | default; added: after `obs.accepted()`, call through the observer with `{}`; store writes call the function, throttled by `RING_GAP` | `WorkspaceChangedEvent {}` | ade:web/src/hooks/use-workspace-tabs.ts, onboarding:ui/src/use-tour.ts, onboarding:ui/src/spotlight.ts |
 | 123 | ade | `console::compose::changed` | `console::compose::on-changed` | none; filters `input.kind`, `input.file`, `input.namespace` | default; added: start the state watcher with the first observer; removed: close it with the last | `ComposeChangedEvent { kind, file, namespace, state_dir, path, captured_at }` | ade:web/src/pages/Workers/index.tsx |
 
-Rows: 103 from the worker map (§2.1, §2.2), 14 harness (§2.3) and 6 ADE
-(§2.4): **123**.
+Rows: 104 from the worker map (§2.1, §2.2; row 124 follows the worker order,
+its number follows the ADE rows), 14 harness (§2.3) and 6 ADE (§2.4): **124**.
 
 ## 3. Engine and Compose sources workers observe
 
@@ -485,7 +486,7 @@ takes args.
 | `configuration` waiting for an entry to exist | `configuration::on-updated` | `{ 'input.id': { $eq: id }, 'input.event_type': { $eq: 'configuration:registered' } }` | as above | ade onboarding waits (web/src/lib/onboarding/event-wait.ts) |
 | `engine::functions-available` | `engine::on-functions-changed` | none | `{ event: 'functions_changed', functions }` | queue:src/trigger.rs, iii-directory:src/functions/search.rs, llm-router:src/register.rs, harness:src/discovery.rs, rbac-proxy:src/configuration.rs, judge:ui/src/session/index.tsx, ade:ui/src/catalog/engine.ts |
 | `engine::workers-available` | `engine::on-workers-changed` | none, or `input.event` | `{ event: worker_connected \| worker_disconnected \| worker_metadata_updated, worker_id }` | queue:src/trigger.rs, harness:src/engine_events.rs, ade (useWorkerPresence) |
-| `worker` `{ operations, stages }` (no provider exists in the engine, iii-compose or this repo) | `engine::on-workers-changed` | `{ 'input.event': { $in: ['worker_connected', 'worker_disconnected'] } }` (`add` → connected, `remove` → disconnected); the target re-reads what it needs | as above | telegram-bot:src/approval_gate.rs, iii-directory:src/main.rs, ade (useWorkerLifecycle) |
+| `worker` `{ operations, stages }` (no provider exists in the engine, iii-compose or this repo) | `engine::on-workers-changed` | `{ 'input.event': { $in: ['worker_connected', 'worker_disconnected'] } }` (`add` → connected, `remove` → disconnected); the target re-reads what it needs. A target that looks a worker up by name also selects `worker_metadata_updated`: the engine emits `worker_connected` before the worker announces its name with `engine::workers::register` (telegram-bot) | as above | telegram-bot:src/approval_gate.rs, iii-directory:src/main.rs, ade (useWorkerLifecycle) |
 | `log` `{ level: 'error' }` | `observability::on-log` | `{ 'input.severity_number': { $gte: 17 } }` | `LogEvent { timestamp_unix_nano, severity_number, severity_text, body, attributes, trace_id, span_id, resource, service_name, ... }` | sentinel:src/triggers.rs |
 | `trace` `{ status: 'error' }` | `observability::on-span` | none: the event carries only trace ids, so the target reads the spans and checks their status | `SpanEvent { trace_ids }` | sentinel:src/triggers.rs, ade:ui/src/catalog/span-feed.ts, ade:web/src/lib/traces-activity.ts |
 | `stream` | `stream::on-changed` | `input.stream_name`, `input.group_id` | `StreamChangedEvent { event_type, timestamp, stream_name, group_id, id?, event }` | a2ui:ui/src/live.ts (stored `stream` bindings) |

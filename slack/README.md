@@ -107,12 +107,15 @@ until that worker registers the function.
 | `session::on-message-added` | filters `{ "input.message.role": { "$in": ["assistant"] } }` | `slack::on-message-added` | `MessageAddedEvent` (`deliver: output`) |
 | `session::on-message-updated` | filters as above | `slack::on-message-updated` | `MessageUpdatedEvent` (`deliver: output`) |
 | `harness::on-turn-completed` | none | `slack::on-turn-completed` | `TurnCompletedEvent` (`deliver: output`) |
-| `approval::on-pending-created` | none; only when approval-gate is connected at boot | `slack::on-pending-created` | `PendingApprovalRecord` (`deliver: output`) |
-| `approval::on-pending-resolved` | none; as above | `slack::on-pending-resolved` | `PendingResolvedEvent` (`deliver: output`) |
+| `approval::on-pending-created` | none | `slack::on-pending-created` | `PendingApprovalRecord` (`deliver: output`) |
+| `approval::on-pending-resolved` | none | `slack::on-pending-resolved` | `PendingResolvedEvent` (`deliver: output`) |
 | `configuration::on-updated` | filters `{ "input.id": { "$eq": "<config id>" }, "input.event_type": { "$eq": "configuration:updated" } }` | `slack::on-config-change` | the configuration event (`deliver: output`) |
 
-The two route observers exist while the HTTP bridge is enabled; a config
-reload that disables it disposes them. The route observer is, in code:
+The session, harness and approval observers exist from boot, so an
+approval-gate that connects later is observed with no extra step; each
+`approval::on-pending-created` event posts an inline approval into the
+session's thread. The two route observers exist while the HTTP bridge is
+enabled; a config reload that disables it disposes them. The route observer is, in code:
 
 ```rust
 iii.observe(

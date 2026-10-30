@@ -93,7 +93,9 @@ struct WorkerLifecycleAck {
 }
 
 /// The worker changes that can add or remove a worker name: a connection, its
-/// metadata (which carries the name) and a disconnection.
+/// metadata and a disconnection. The engine emits `worker_connected` before
+/// the worker announces its name with `engine::workers::register`, so the
+/// re-read that finds approval-gate by name follows `worker_metadata_updated`.
 fn lifecycle_filters() -> Value {
     json!({
         "input.event": {

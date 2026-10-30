@@ -111,13 +111,16 @@ the child session id (`wf_<run_id>_<node_uid>@r<attempt>`) and the
 `workflow_node_result/<run_id>/<node_uid>` key are stable, so a re-delivered
 tick that re-fires an already-running node is a no-op at the harness layer.
 
-### Horizontal scaling (run sharding)
+### One instance per namespace
 
-To run more than one workflow-worker instance safely, shard `workflow::tick`
-events by `run_id` so that all writes for a given run land on one owning
-instance.  Concretely: consistent-hash the queue partition on `run_id`, or run
-a single orchestrator instance.  No new code is needed — this is a deployment
-topology choice.
+A function id has one host per namespace: the engine rejects a second
+registration of the same id with `FUNCTION_NAMESPACE_CONFLICT`. The worker
+registers every `workflow::*` function, `workflow::on-run-completed` included,
+without `standby`, so the first instance in a namespace hosts them all and the
+per-run `WorkflowLocks` live in that one process. A second instance in the same
+namespace gets every registration rejected while its observers (the sweep and
+the harness hooks) still deliver to the first instance's functions, so each
+sweep and hook runs twice. Run one workflow worker per namespace.
 
 ### No record-level CAS available
 
@@ -134,7 +137,7 @@ enforces optimistic concurrency would be misleading.
 Whole-record optimistic concurrency (allowing two instances to safely race on
 the same run) requires an upstream iii engine operation: a `state::set` with an
 `expected`/`if_match` argument, or a dedicated `state::cas` call.  Until that
-engine op exists, the correct stance is run sharding (above).
+engine op exists, every run has one writer: the single instance (above).
 
 **Action:** file an engine feature request for `state::set` with `if_match` /
 `state::cas`.  Do not build a fake CAS on top of the current unconditional set.

@@ -1,4 +1,3 @@
-pub mod approval_gate;
 pub mod clients;
 pub mod config;
 pub mod configuration;

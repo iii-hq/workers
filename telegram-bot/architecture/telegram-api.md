@@ -147,7 +147,7 @@ resolved per session (`EffectiveTransport`):
 
 - **Draft** (preferred, Bot API 9.3+): `sendMessageDraft` pushes an ephemeral
   "the bot is composing" preview that updates in place; model thinking streams
-  via `sendRichMessageDraft` as a `<tg-thinking>` block. On `turn-completed` the
+  via `sendRichMessageDraft` as a `<tg-thinking>` block. On `harness::on-turn-completed` the
   draft is **finalized** into a persistent `sendMessage`/`sendRichMessage` and the
   ephemeral draft is cleared.
 - **Edit** (fallback): the first chunk is posted with `sendMessage`, then refined
@@ -175,7 +175,7 @@ freshness, finalize reconciliation, per-chat message ordering).
 - **Typing indicator** — only used with the **edit** transport (drafts already
   show progress). `sendChatAction(typing)` is deferred ~400 ms and re-pinged
   every ~4 s by a cancellable loop guarded by a generation counter; it is
-  **suppressed** on first visible output and at `turn-completed` (Telegram has no
+  **suppressed** on first visible output and at `harness::on-turn-completed` (Telegram has no
   "stop typing" call — each action lasts ~5 s on clients unless a bot message
   arrives).
 

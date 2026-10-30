@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+use iii_sdk::{CallAction, CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -42,25 +44,46 @@ fn completed_payload(record: &crate::types::WorkflowRunRecord) -> serde_json::Va
     serde_json::to_value(RunCompletedEvent::from(record)).unwrap_or(serde_json::Value::Null)
 }
 
+/// How the worker's event reaches iii: the bus in production, a recorder in
+/// tests.
+#[async_trait]
+pub trait EventDeliverer: Send + Sync {
+    /// Whether anything observes `function_id` (one atomic load).
+    fn observed(&self, function_id: &str) -> bool;
+
+    /// Send `request`, best-effort: a failure is dropped.
+    async fn deliver(&self, request: CallRequest);
+}
+
+#[async_trait]
+impl EventDeliverer for IIIClient {
+    fn observed(&self, function_id: &str) -> bool {
+        self.is_observed(function_id)
+    }
+
+    async fn deliver(&self, request: CallRequest) {
+        let _ = self.call(request).await;
+    }
+}
+
 /// Call `workflow::on-run-completed` when any run reaches a terminal state,
-/// fire-and-forget and only while something observes it. For a per-run
-/// "notify me" callback, see `emit_notify` + `NotifySpec`.
+/// fire-and-forget (`CallAction::Void`) and only while something observes
+/// it. For a per-run "notify me" callback, see `emit_notify` + `NotifySpec`.
 pub async fn emit_run_completed(
-    deps: &crate::functions::Deps,
+    events: &dyn EventDeliverer,
     record: &crate::types::WorkflowRunRecord,
 ) {
-    if !deps.iii.is_observed(ON_RUN_COMPLETED_FN) {
+    if !events.observed(ON_RUN_COMPLETED_FN) {
         return;
     }
-    let _ = deps
-        .iii
-        .call(iii_sdk::CallRequest {
+    events
+        .deliver(CallRequest {
             function_id: ON_RUN_COMPLETED_FN.into(),
             payload: completed_payload(record),
-            action: Some(iii_sdk::CallAction::Void),
+            action: Some(CallAction::Void),
             timeout_ms: None,
         })
-        .await; // best-effort fire-and-forget
+        .await;
 }
 
 /// Fire the caller-supplied completion callback, if the run carries one. The
@@ -180,9 +203,80 @@ pub async fn emit_reply(deps: &crate::functions::Deps, record: &crate::types::Wo
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// Records every delivered call. Reports every function as observed
+    /// unless `observed` is false.
+    pub struct RecordingDeliverer {
+        pub observed: bool,
+        pub calls: Mutex<Vec<CallRequest>>,
+    }
+
+    impl RecordingDeliverer {
+        pub fn new(observed: bool) -> Self {
+            Self {
+                observed,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn calls(&self) -> Vec<CallRequest> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl EventDeliverer for RecordingDeliverer {
+        fn observed(&self, _function_id: &str) -> bool {
+            self.observed
+        }
+
+        async fn deliver(&self, request: CallRequest) {
+            self.calls.lock().unwrap().push(request);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::test_support::RecordingDeliverer;
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn emit_skips_an_unobserved_function() {
+        let events = RecordingDeliverer::new(false);
+        emit_run_completed(&events, &record_with("completed", json!({"ok": true}))).await;
+        assert!(events.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn emit_calls_the_event_function_with_void() {
+        let events = RecordingDeliverer::new(true);
+        let mut rec = record_with("failed", json!(null));
+        rec.result_error = Some("node 'a': boom".into());
+        emit_run_completed(&events, &rec).await;
+
+        let calls = events.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function_id, ON_RUN_COMPLETED_FN);
+        assert!(matches!(calls[0].action, Some(CallAction::Void)));
+        assert_eq!(calls[0].timeout_ms, None);
+        let event: RunCompletedEvent =
+            serde_json::from_value(calls[0].payload.clone()).expect("event shape");
+        assert_eq!(
+            event,
+            RunCompletedEvent {
+                run_id: "r1".into(),
+                status: RunStatus::Failed,
+                result: None,
+                result_error: Some("node 'a': boom".into()),
+            }
+        );
+    }
 
     fn record_with(status: &str, result: serde_json::Value) -> crate::types::WorkflowRunRecord {
         serde_json::from_value(json!({
