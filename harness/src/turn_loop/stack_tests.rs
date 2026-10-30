@@ -235,8 +235,11 @@ async fn complete_child(parent_prompt_present: bool) {
 /// call gets `interrupted_result` and its handler is not invoked again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_redelivered_step_with_a_triggered_call_closes_it_instead_of_regenerating() {
-    let (result, calls, turn) =
-        redeliver(json!({"call_hold": {"state": "triggered", "function_id": "test::hold"}})).await;
+    let (result, calls, turn) = redeliver(
+        json!({"call_hold": {"state": "triggered", "function_id": "test::hold"}}),
+        json!([hold_reply()]),
+    )
+    .await;
     let names: Vec<&str> = calls.iter().map(|(f, _)| f.as_str()).collect();
     assert!(
         !names
@@ -265,7 +268,7 @@ async fn a_redelivered_step_without_a_triggered_call_regenerates() {
         json!({}),
         json!({"call_hold": {"state": "done", "function_id": "test::hold"}}),
     ] {
-        let (_, observed, _) = redeliver(calls).await;
+        let (_, observed, _) = redeliver(calls, json!([hold_reply()])).await;
         assert!(
             observed.iter().any(|(f, _)| f == "context::assemble"),
             "{observed:?}"
@@ -273,12 +276,67 @@ async fn a_redelivered_step_without_a_triggered_call_regenerates() {
     }
 }
 
+/// A redelivered text-only step regenerates over its billed reply, and keeps
+/// that generation's usage first: metrics then count both generations, as
+/// the running session cost does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_redelivered_text_only_step_keeps_the_billed_generation_it_regenerates_over() {
+    let (_, calls, _) = redeliver(json!({}), json!([text_reply(0.25)])).await;
+    let appends: Vec<&Value> = calls
+        .iter()
+        .filter(|(f, _)| f == "session::append")
+        .map(|(_, data)| data)
+        .collect();
+    let kept = appends
+        .iter()
+        .position(|data| data["custom"]["custom_type"] == crate::turn_loop::SUPERSEDED_GENERATION)
+        .unwrap_or_else(|| panic!("the billed generation is not kept: {appends:?}"));
+    let placeholder = appends
+        .iter()
+        .position(|data| data["entry_id"] == "e_t1_1_assistant")
+        .expect("the step regenerates");
+    assert!(kept < placeholder, "kept after the reply was overwritten");
+    let data = &appends[kept]["custom"]["data"];
+    assert_eq!(data["usage"]["cost_usd"], 0.25);
+
+    // The regenerated reply overwrites the stored one; metrics read both.
+    let entries: Vec<crate::clients::LoadedEntry> = serde_json::from_value(json!([
+        {"entry_id": appends[kept]["entry_id"], "custom": {
+            "custom_type": crate::turn_loop::SUPERSEDED_GENERATION, "data": data}},
+        text_reply(0.5)
+    ]))
+    .unwrap();
+    let totals = crate::functions::metrics::fold_totals(entries);
+    assert_eq!(totals.cost_usd, Some(0.75), "the running cost billed both");
+    assert_eq!(totals.turns, 1);
+}
+
+fn hold_reply() -> Value {
+    json!({"entry_id": "e_t1_1_assistant", "message": {
+        "role": "assistant", "stop_reason": "function_call",
+        "model": "fake", "provider": "fake", "timestamp": 2,
+        "usage": {"input": 10, "output": 2, "cost_usd": 0.1},
+        "content": [{"type": "function_call", "id": "call_hold",
+            "function_id": "agent_trigger",
+            "arguments": {"function": "test::hold", "payload": {}}}]}})
+}
+
+fn text_reply(cost: f64) -> Value {
+    json!({"entry_id": "e_t1_1_assistant", "message": {
+        "role": "assistant", "stop_reason": "end",
+        "model": "fake", "provider": "fake", "timestamp": 2,
+        "usage": {"input": 10, "output": 2, "cost_usd": cost},
+        "content": [{"type": "text", "text": "done"}]}})
+}
+
 /// Run step 1 of turn `t1` again on a fake engine, as the queue redelivers it
 /// after the worker died: the record as the first delivery persisted it (the
-/// generation counted, `calls` checkpointed) and that step's stored reply
-/// calling `test::hold`. Returns the outcome, every RPC, and the last record.
+/// generation counted, `calls` checkpointed) and the entries that step left
+/// after the user message (`stored`). Returns the outcome, every RPC, and the
+/// last record.
 async fn redeliver(
     checkpoints: Value,
+    stored: Value,
 ) -> (
     Result<TurnStepResult, HarnessError>,
     Vec<(String, Value)>,
@@ -327,17 +385,18 @@ async fn redeliver(
                 "state::list" | "harness::state::list" => json!([]),
                 "state::list_keys" => json!({"keys": []}),
                 "session::get" => json!({"meta": {"session_id": "s", "metadata": {}}}),
-                "session::messages" => json!({"messages": [
-                    {"entry_id": "e_user", "message": {"role": "user",
-                        "content": [{"type": "text", "text": "hold"}], "timestamp": 1}},
-                    {"entry_id": "e_t1_1_assistant", "message": {
-                        "role": "assistant", "stop_reason": "function_call",
-                        "model": "fake", "provider": "fake", "timestamp": 2,
-                        "usage": {"input": 10, "output": 2, "cost_usd": 0.1},
-                        "content": [{"type": "function_call", "id": "call_hold",
-                            "function_id": "agent_trigger",
-                            "arguments": {"function": "test::hold", "payload": {}}}]}}
-                ]}),
+                "session::messages" => {
+                    let mut messages = vec![json!({"entry_id": "e_user", "message": {
+                        "role": "user", "timestamp": 1,
+                        "content": [{"type": "text", "text": "hold"}]}})];
+                    messages.extend(stored.as_array().unwrap().iter().cloned());
+                    json!({ "messages": messages })
+                }
+                "context::assemble" => json!({
+                    "messages": [{"role": "user", "timestamp": 1,
+                        "content": [{"type": "text", "text": "hold"}]}],
+                    "token_count": 10, "usable": 1000, "effective_max_output_tokens": 100
+                }),
                 "session::set-status" => json!({"ok": true}),
                 "session::append" => json!({"entry_id": data["entry_id"]}),
                 "state::set" => json!({}),

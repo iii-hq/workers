@@ -454,6 +454,14 @@ fn fold_entries(
     (usage, last_entry_id)
 }
 
+/// One session's totals from its entries, as `harness::metrics` reads them.
+#[cfg(test)]
+pub(crate) fn fold_totals(entries: Vec<LoadedEntry>) -> SessionUsageTotalsV1 {
+    fold_entries(UsageAccumulator::default(), None, entries)
+        .0
+        .finish_totals(1)
+}
+
 /// One session's usage and lifecycle; `None` when the session is gone.
 ///
 /// Boxed and fed owned values: run concurrently from a stream, the unboxed
