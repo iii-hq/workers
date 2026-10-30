@@ -346,7 +346,7 @@ they persist relocation identities in the configured SQLite database. They pair 
 (navigate, read the page, then parse it), but they don't need one.
 
 ```bash
-iii call browser::css --payload '{
+iii call browser::css --json '{
   "html": "<ul><li><a class=\"product\" href=\"/sku/1\">Widget</a></li><li><a class=\"product\" href=\"/sku/2\">Gadget</a></li></ul>",
   "query": "a.product",
   "attr": "href",
@@ -359,7 +359,7 @@ iii call browser::css --payload '{
 instead of just the first.
 
 ```bash
-iii call browser::extract --payload '{
+iii call browser::extract --json '{
   "html": "<div class=\"card\"><h3>Widget</h3><span class=\"price\">$19.99</span><a href=\"/sku/1\">buy</a></div>",
   "selectors": [
     { "name": "title", "css": "h3" },

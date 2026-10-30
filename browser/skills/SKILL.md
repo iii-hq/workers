@@ -331,9 +331,12 @@ is paused waiting for a human; the console surfaces it beside the live
 viewport), `browser::on-handoff-resolved` and
 `browser::on-download-changed`. These take no args: narrow to one tab with a
 filter on `input.session_id`, or leave filters out to hear every tab.
-`browser::on-crawl-item` is the one non-session function: one call per
-crawled page of a `browser::crawl`, with args `{ crawl_id }` instead of a
-filter.
+Two functions are not tied to a tab. `browser::on-crawl-item` is called once
+per crawled page of a `browser::crawl` and once when it ends, with args
+`{ crawl_id? }`: with a `crawl_id` the observer receives that crawl, without
+one every crawl. `browser::on-chromium-install-progress` reports a
+`browser::chromium::install` job and takes no args: filter on `input.job_id`
+or `input.phase`.
 
 If you just ran `browser::navigate` yourself, its return value already tells
 you the outcome; observe when you need to follow sessions you do not drive.
