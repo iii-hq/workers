@@ -1132,16 +1132,33 @@ async fn generate_step(
     let assistant_id = ids::assistant_entry_id(&record.turn_id, payload.step);
     let provider = record.options.provider.clone().unwrap_or_default();
     let empty = empty_assistant(&provider, &record.options.model);
-    if let Err(error) = session
-        .append(
-            &record.session_id,
-            &AgentMessage::Assistant(empty),
-            Some(&assistant_id),
-            None,
-            Some(&assistant_origin),
-        )
-        .await
-    {
+    // A redelivered step regenerating over a reply that was already billed
+    // keeps that generation's usage first, so metrics still see the spend.
+    let superseded = superseded_generation(&entries, &record.turn_id, payload.step);
+    let appended = async {
+        if let Some((entry_id, data)) = superseded {
+            session
+                .append_custom(
+                    &record.session_id,
+                    SUPERSEDED_GENERATION,
+                    data,
+                    &entry_id,
+                    Some(&origin(&record.turn_id)),
+                )
+                .await?;
+        }
+        session
+            .append(
+                &record.session_id,
+                &AgentMessage::Assistant(empty),
+                Some(&assistant_id),
+                None,
+                Some(&assistant_origin),
+            )
+            .await
+    }
+    .await;
+    if let Err(error) = appended {
         if let Some(reservation) = budget_reservation.as_ref() {
             crate::budget::release(deps, reservation).await?;
         }
@@ -1468,6 +1485,48 @@ async fn generate_step(
         guard: _guard,
         replayed: false,
     })))
+}
+
+/// Custom entry keeping the usage of a generation a regenerated step
+/// overwrote; `harness::metrics` adds it to tokens and cost, not to steps.
+pub(crate) const SUPERSEDED_GENERATION: &str = "superseded_generation";
+
+/// The entry keeping this step's billed reply when a redelivered step is
+/// about to regenerate over it: `update_message` overwrites the reply's
+/// usage, while the running `session_cost_usd` already counted it. Numbered
+/// after the ones already kept; `None` when the stored reply has no usage or
+/// the newest kept one already holds it (a delivery that died between keeping
+/// it and overwriting the reply).
+fn superseded_generation(
+    entries: &[LoadedEntry],
+    turn_id: &str,
+    step: u64,
+) -> Option<(String, Value)> {
+    let own = ids::assistant_entry_id(turn_id, step);
+    let Some(AgentMessage::Assistant(reply)) =
+        entries.iter().find(|e| e.entry_id == own)?.message.as_ref()
+    else {
+        return None;
+    };
+    let data = json!({
+        "usage": reply.usage.as_ref()?,
+        "model": reply.model,
+        "provider": reply.provider,
+    });
+    let prefix = ids::superseded_generation_entry_prefix(turn_id, step);
+    let kept: Vec<&LoadedEntry> = entries
+        .iter()
+        .filter(|e| e.entry_id.starts_with(&prefix))
+        .collect();
+    // shortcut: two generations with identical usage read as one; a per-generation id is the upgrade if that ever matters.
+    if kept
+        .last()
+        .and_then(|e| e.custom.as_ref())
+        .is_some_and(|c| c.data == data)
+    {
+        return None;
+    }
+    Some((format!("{prefix}{}", kept.len()), data))
 }
 
 /// This step's stored reply when one of its calls was dispatched and never
@@ -4399,6 +4458,53 @@ mod stack_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_regenerated_step_keeps_the_billed_generation_it_overwrites() {
+        let entries = |values: serde_json::Value| -> Vec<crate::clients::LoadedEntry> {
+            serde_json::from_value(values).unwrap()
+        };
+        let reply = serde_json::json!({"entry_id": "e_t1_2_assistant", "message": {
+            "role": "assistant", "stop_reason": "end", "model": "m", "provider": "p",
+            "timestamp": 1, "content": [{"type": "text", "text": "hi"}],
+            "usage": {"input": 10, "output": 4, "cost_usd": 0.25}}});
+        let kept = serde_json::json!({
+            "usage": {"input": 10, "output": 4, "cost_usd": 0.25}, "model": "m", "provider": "p"
+        });
+
+        // First regeneration over a billed reply: kept under the first id.
+        let (id, data) =
+            super::superseded_generation(&entries(serde_json::json!([reply])), "t1", 2)
+                .expect("the billed reply is kept");
+        assert_eq!(id, "e_t1_2_superseded_0");
+        assert_eq!(data, kept);
+
+        // A delivery that died after keeping it, before overwriting the reply,
+        // must not keep the same generation twice.
+        let logged = serde_json::json!({"entry_id": "e_t1_2_superseded_0",
+            "custom": {"custom_type": super::SUPERSEDED_GENERATION, "data": kept}});
+        assert_eq!(
+            super::superseded_generation(&entries(serde_json::json!([logged, reply])), "t1", 2),
+            None
+        );
+
+        // A later generation overwritten in turn is numbered after it.
+        let mut newer = reply.clone();
+        newer["message"]["usage"] = serde_json::json!({"input": 10, "output": 7, "cost_usd": 0.3});
+        let (id, _) =
+            super::superseded_generation(&entries(serde_json::json!([logged, newer])), "t1", 2)
+                .unwrap();
+        assert_eq!(id, "e_t1_2_superseded_1");
+
+        // Nothing billed to keep: a first delivery, or a reply cut before usage.
+        let mut unbilled = reply.clone();
+        unbilled["message"]["usage"] = serde_json::Value::Null;
+        assert_eq!(
+            super::superseded_generation(&entries(serde_json::json!([unbilled])), "t1", 2),
+            None
+        );
+        assert_eq!(super::superseded_generation(&[], "t1", 2), None);
+    }
+
     #[test]
     fn an_assistant_step_carries_its_build_and_a_fingerprint_of_the_request() {
         let tools = vec![super::AgentFunction {

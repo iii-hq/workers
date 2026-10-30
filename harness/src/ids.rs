@@ -76,6 +76,12 @@ pub fn notice_entry_prefix(turn_id: &str, step: u64) -> String {
     format!("e_{turn_id}_{step}_notice_")
 }
 
+/// The id prefix of the generations a regenerated step overwrote:
+/// `e_<turn_id>_<step>_superseded_<index>`.
+pub fn superseded_generation_entry_prefix(turn_id: &str, step: u64) -> String {
+    format!("e_{turn_id}_{step}_superseded_")
+}
+
 /// A message-order decision: `e_<turn_id>_<step>_order`.
 pub fn order_entry_id(turn_id: &str, step: u64) -> String {
     format!("e_{turn_id}_{step}_order")
