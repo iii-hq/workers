@@ -51,6 +51,9 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "approval::on-config-change";
+const CONFIG_FN_DESC: &str = "Internal: hot-reload approval-gate from the authoritative \
+     configuration when it changes — swaps the per-call snapshot (default_mode, rules, \
+     grant_reask_limit).";
 /// The configuration worker's change event, observed by
 /// [`observe_config_changes`].
 const CONFIG_ON_UPDATED_FN: &str = "configuration::on-updated";
@@ -267,10 +270,7 @@ pub fn observe_config_changes(iii: &IIIClient, cell: ConfigCell) -> ObserverHand
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
-        .description(
-            "Internal: hot-reload approval-gate from the authoritative configuration when it \
-             changes — swaps the per-call snapshot (timeouts + approval defaults).",
-        )
+        .description(CONFIG_FN_DESC)
         .metadata(json!({ "internal": true })),
     );
 
@@ -453,6 +453,23 @@ mod tests {
                 "input.event_type": { "$eq": "configuration:updated" },
             })
         );
+    }
+
+    /// The hot-reload description names every field the snapshot swap
+    /// replaces: each top-level property of the configuration schema.
+    #[test]
+    fn config_change_description_names_every_config_field() {
+        let schema = WorkerConfig::json_schema();
+        let fields = schema["properties"]
+            .as_object()
+            .expect("schema has a properties object");
+        assert!(!fields.is_empty());
+        for field in fields.keys() {
+            assert!(
+                CONFIG_FN_DESC.contains(field.as_str()),
+                "approval::on-config-change's description does not name `{field}`"
+            );
+        }
     }
 
     #[tokio::test]

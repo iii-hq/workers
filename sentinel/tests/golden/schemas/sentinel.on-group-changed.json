@@ -5,7 +5,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "GroupChangeReasonV1": {
-        "description": "Why a group changed, for the event siblings subscribe to.",
+        "description": "Why a group changed, as `sentinel::on-group-changed` tells its observers.",
         "enum": [
           "regression",
           "ignore_expired",
@@ -114,7 +114,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "GroupChangeReasonV1": {
-        "description": "Why a group changed, for the event siblings subscribe to.",
+        "description": "Why a group changed, as `sentinel::on-group-changed` tells its observers.",
         "enum": [
           "regression",
           "ignore_expired",

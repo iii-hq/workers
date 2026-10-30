@@ -106,7 +106,7 @@ pub struct IgnoreBaselineV1 {
     pub worker_version: Option<String>,
 }
 
-/// Why a group changed, for the event siblings subscribe to.
+/// Why a group changed, as `sentinel::on-group-changed` tells its observers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupChangeReasonV1 {
