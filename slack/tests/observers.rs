@@ -122,7 +122,10 @@ async fn spawn_engine() -> Result<Engine, String> {
 
     let probe = register_worker(&engine.url, InitOptions::default());
     let deadline = Instant::now() + Duration::from_secs(30);
-    while call(&probe, "engine::workers::list", json!({})).await.is_err() {
+    while call(&probe, "engine::workers::list", json!({}))
+        .await
+        .is_err()
+    {
         if Instant::now() > deadline {
             probe.shutdown_async().await;
             return Err(format!("engine {bin:?} did not come up on {}", engine.url));

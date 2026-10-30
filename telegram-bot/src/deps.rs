@@ -129,7 +129,7 @@ pub struct RuntimeState {
     /// `ObserverHandle` does not dispose the observer, so it must be
     /// explicitly `take()`n and disposed).
     pub webhook_route: Mutex<Option<ObserverHandle>>,
-    /// Latest harness turn_id per session (for trace baggage on binding handlers).
+    /// Latest harness turn_id per session (for trace baggage on observer handlers).
     pub active_turns: DashMap<String, String>,
 }
 

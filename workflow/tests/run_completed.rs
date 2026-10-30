@@ -110,7 +110,10 @@ async fn spawn_engine() -> Result<Engine, String> {
 
     let probe = register_worker(&engine.url, InitOptions::default());
     let deadline = Instant::now() + Duration::from_secs(30);
-    while call(&probe, "engine::workers::list", json!({})).await.is_err() {
+    while call(&probe, "engine::workers::list", json!({}))
+        .await
+        .is_err()
+    {
         if Instant::now() > deadline {
             probe.shutdown_async().await;
             return Err(format!("engine {bin:?} did not come up on {}", engine.url));
@@ -197,7 +200,10 @@ async fn run_completed_is_private_returns_the_event_and_reaches_matching_observe
         {
             Ok(info) => break info,
             Err(e) => {
-                assert!(Instant::now() < deadline, "{ON_RUN_COMPLETED_FN} never registered: {e}");
+                assert!(
+                    Instant::now() < deadline,
+                    "{ON_RUN_COMPLETED_FN} never registered: {e}"
+                );
                 sleep(Duration::from_millis(100)).await;
             }
         }
