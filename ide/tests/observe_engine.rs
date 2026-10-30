@@ -185,11 +185,27 @@ fn job_ids(events: &[Value]) -> Vec<String> {
     ids
 }
 
+/// The keys of an `Observed` envelope that every delivery carries, whatever
+/// call it came from.
+fn envelope_keys(payload: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = payload
+        .as_object()
+        .unwrap_or_else(|| panic!("not an object: {payload}"))
+        .keys()
+        .filter(|key| !matches!(key.as_str(), "metadata" | "caller"))
+        .cloned()
+        .collect();
+    keys.sort();
+    keys
+}
+
 /// A job's completion reaches each observer of it once, whether the
 /// observer was added before the job ended (the live call) or after (the
-/// replay), in the shape its `deliver` asks for and only when its filters
-/// match. An observer without a `job_id` receives live completions only,
-/// and a disposed observer nothing.
+/// replay: a call with metadata `{ for_observer }`), in the shape its
+/// `deliver` asks for and only when its filters match. A replay is
+/// delivered like the live call and reaches its observer alone: neither an
+/// observer of the job that took the live call nor an observer without a
+/// `job_id` receives it. A disposed observer receives nothing.
 #[tokio::test]
 async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() {
     let Some(owner) = connect("ide-e2e-jobs-owner").await else {
@@ -206,12 +222,15 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
     let dropped = id("dropped");
 
     let every = recorder(&consumer, "e2e::jobs::every");
+    let every_envelope = recorder(&consumer, "e2e::jobs::every-envelope");
     let live_envelope = recorder(&consumer, "e2e::jobs::live-envelope");
     let live_output = recorder(&consumer, "e2e::jobs::live-output");
     let live_failures = recorder(&consumer, "e2e::jobs::live-failures");
     let late_envelope = recorder(&consumer, "e2e::jobs::late-envelope");
     let late_output = recorder(&consumer, "e2e::jobs::late-output");
     let late_failures = recorder(&consumer, "e2e::jobs::late-failures");
+    let early_envelope = recorder(&consumer, "e2e::jobs::early-envelope");
+    let early_output = recorder(&consumer, "e2e::jobs::early-output");
     let dropped_output = recorder(&consumer, "e2e::jobs::dropped");
 
     // Observed before the jobs start: the live call.
@@ -219,6 +238,12 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
         &consumer,
         Source::function("shell::on-job-finished").deliver(Deliver::Output),
         "e2e::jobs::every",
+    )
+    .await;
+    let every_envelope_handle = observe(
+        &consumer,
+        Source::function("shell::on-job-finished"),
+        "e2e::jobs::every-envelope",
     )
     .await;
     observe(&consumer, job(&live), "e2e::jobs::live-envelope").await;
@@ -246,6 +271,15 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
         "e2e::jobs::dropped",
     )
     .await;
+    // Observers of `late` that take its live call, before the replays
+    // made for the observers added after it ended.
+    observe(&consumer, job(&late), "e2e::jobs::early-envelope").await;
+    observe(
+        &consumer,
+        job(&late).deliver(Deliver::Output),
+        "e2e::jobs::early-output",
+    )
+    .await;
     run_job(&owner, &live, "true").await;
     run_job(&owner, &live_failed, "false").await;
 
@@ -255,8 +289,11 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
     every
         .wait_until("every live completion", |all| all.len() >= 4)
         .await;
-    observe(&consumer, job(&late), "e2e::jobs::late-envelope").await;
-    observe(
+    every_envelope
+        .wait_until("every live completion, enveloped", |all| all.len() >= 4)
+        .await;
+    let late_envelope_handle = observe(&consumer, job(&late), "e2e::jobs::late-envelope").await;
+    let late_output_handle = observe(
         &consumer,
         job(&late).deliver(Deliver::Output),
         "e2e::jobs::late-output",
@@ -279,6 +316,8 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
         ("live envelope", &live_envelope),
         ("live output", &live_output),
         ("live failures", &live_failures),
+        ("early envelope", &early_envelope),
+        ("early output", &early_output),
         ("replayed envelope", &late_envelope),
         ("replayed output", &late_output),
         ("replayed failures", &late_failures),
@@ -289,6 +328,7 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
     // Disposed before its job runs: nothing.
     dropped_handle.dispose().await.unwrap();
     every_handle.dispose().await.unwrap();
+    every_envelope_handle.dispose().await.unwrap();
     run_job(&owner, &dropped, "true").await;
     tokio::time::sleep(QUIET).await;
 
@@ -300,16 +340,37 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
     assert_eq!(event["exit_code"], 0);
     assert_eq!(live_output.all(), [event], "live output is the event");
 
+    let live_delivery = envelope[0].clone();
     let envelope = late_envelope.all();
     assert_eq!(envelope.len(), 1, "replayed envelope: {envelope:?}");
-    let event = envelope_output(&envelope[0]);
+    let replayed = &envelope[0];
+    let event = envelope_output(replayed);
     assert_eq!(event["job_id"], late.as_str());
     assert_eq!(event["status"], "finished");
     assert!(
         event.get("_caller_worker_id").is_none(),
         "the replay is delivered as iii delivers: {event}"
     );
-    assert_eq!(late_output.all(), [event], "replayed output is the event");
+    // The replay is an envelope like the live call's, of the same function,
+    // for the observer it was made for.
+    assert_eq!(envelope_keys(replayed), envelope_keys(&live_delivery));
+    assert_eq!(replayed["function_id"], "shell::on-job-finished");
+    assert_eq!(replayed["observer_id"], late_envelope_handle.id());
+    assert_eq!(replayed["input"], event, "the call's input is the event");
+    assert_eq!(
+        late_output.all(),
+        std::slice::from_ref(&event),
+        "replayed output is the event"
+    );
+    assert_ne!(late_envelope_handle.id(), late_output_handle.id());
+
+    // The observers of `late` that took its live call received it once,
+    // in their own shape, and neither replay.
+    let envelope = early_envelope.all();
+    assert_eq!(envelope.len(), 1, "early envelope: {envelope:?}");
+    assert_eq!(envelope_output(&envelope[0]), event);
+    assert_eq!(envelope_keys(&envelope[0]), envelope_keys(&live_delivery));
+    assert_eq!(early_output.all(), [event], "early output is the event");
 
     // The filters select the failed job of each pair, live and replayed.
     let failures = live_failures.all();
@@ -324,6 +385,8 @@ async fn on_job_finished_reaches_each_observer_of_a_job_once_live_or_replayed() 
     let mut expected = vec![live, live_failed, late, late_failed];
     expected.sort();
     assert_eq!(job_ids(&every.all()), expected);
+    let enveloped: Vec<Value> = every_envelope.all().iter().map(envelope_output).collect();
+    assert_eq!(job_ids(&enveloped), expected);
     assert!(
         dropped_output.all().is_empty(),
         "{:?}",

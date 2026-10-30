@@ -15,11 +15,11 @@
 //! that job, and iii delivers it. An observer of one job added after that
 //! job finished, while the worker still retains its record, receives the
 //! completion from a second call of the function once it is accepted. That
-//! call names the observer in its metadata (`replay`), so it reaches that
-//! observer alone, and iii delivers it as it delivers the first: with the
-//! observer's `deliver`, filters and `on`. The match hook claims a
-//! completion for an observer of its job under one lock, whichever call
-//! comes first, so the observer receives it once.
+//! call carries metadata `{ "for_observer": <observer id> }`, which the
+//! match hook gives to that observer alone, and iii delivers it as it
+//! delivers the first: with the observer's `deliver`, filters and `on`. The
+//! match hook claims a completion for an observer of its job under one
+//! lock, whichever call comes first, so the observer receives it once.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -39,9 +39,8 @@ use crate::jobs::{JobRecord, JobStatus};
 /// The function a consumer observes to be woken when a job ends.
 pub const ON_JOB_FINISHED_FN: &str = "shell::on-job-finished";
 
-/// The call metadata field naming the one observer a replayed completion
-/// is for.
-const REPLAY_META: &str = "replay";
+/// The call metadata field naming the one observer a call is for.
+const FOR_OBSERVER: &str = "for_observer";
 
 /// An observer's args: one background job, or every future completion.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -157,27 +156,26 @@ fn has_claimed(id: &str, completion: &Completion) -> bool {
     claimed().get(id) == Some(completion)
 }
 
-/// The observer a replayed call is for, from the call's metadata.
-fn replay_target(call: &Call) -> Option<&str> {
-    call.metadata.as_ref()?.get(REPLAY_META)?.as_str()
+/// The observer a call is for, from its metadata `for_observer`; `None`
+/// for a call of every observer it matches.
+fn for_observer(call: &Call) -> Option<&str> {
+    call.metadata.as_ref()?.get(FOR_OBSERVER)?.as_str()
 }
 
 /// The function's match hook: whether observer `id`, with `args`, takes
-/// `call`. A job's completion reaches every observer without a `job_id`,
-/// and each observer of that job that has not taken it; a replay reaches
-/// the one observer it names, unless that observer has taken it.
+/// `call`. A call for one observer reaches that observer alone. A job's
+/// completion reaches every observer without a `job_id`, and each observer
+/// of that job that has not taken it.
 fn wants(id: &str, args: &Value, call: &Call) -> bool {
+    if for_observer(call).is_some_and(|target| target != id) {
+        return false;
+    }
     let Some(completion) = Completion::of(&call.input) else {
         return false;
     };
-    let job_id = args.get("job_id").and_then(Value::as_str);
-    match (replay_target(call), job_id) {
-        (None, None) => true,
-        (Some(_), None) => false,
-        (None, Some(job_id)) => job_id == completion.job_id && claim(id, &completion),
-        (Some(target), Some(job_id)) => {
-            target == id && job_id == completion.job_id && claim(id, &completion)
-        }
+    match args.get("job_id").and_then(Value::as_str) {
+        None => true,
+        Some(job_id) => job_id == completion.job_id && claim(id, &completion),
     }
 }
 
@@ -202,8 +200,8 @@ pub async fn fire(record: &JobRecord) {
 }
 
 /// Calls the function with `event`, for every observer it reaches or, with
-/// `replay`, for that one observer.
-async fn call(event: &JobFinishedEvent, replay: Option<&str>) {
+/// `for_observer`, for that one observer.
+async fn call(event: &JobFinishedEvent, for_observer: Option<&str>) {
     let Some(iii) = CLIENT.get() else {
         return;
     };
@@ -216,18 +214,20 @@ async fn call(event: &JobFinishedEvent, replay: Option<&str>) {
         action: Some(CallAction::Void),
         timeout_ms: None,
     };
-    let result = match replay {
+    let result = match for_observer {
         None => iii.call(request).await,
         Some(observer_id) => {
-            iii.call(request.metadata(json!({ REPLAY_META: observer_id })))
+            iii.call(request.metadata(json!({ FOR_OBSERVER: observer_id })))
                 .await
         }
     };
     match result {
         Err(e) => {
-            tracing::warn!(job_id = %event.job_id, replay, error = %e, "{ON_JOB_FINISHED_FN} call failed")
+            tracing::warn!(job_id = %event.job_id, for_observer, error = %e, "{ON_JOB_FINISHED_FN} call failed")
         }
-        Ok(_) => tracing::info!(job_id = %event.job_id, replay, "{ON_JOB_FINISHED_FN} called"),
+        Ok(_) => {
+            tracing::info!(job_id = %event.job_id, for_observer, "{ON_JOB_FINISHED_FN} called")
+        }
     }
 }
 
@@ -245,7 +245,7 @@ async fn retained_event(job_id: &str) -> Option<JobFinishedEvent> {
 }
 
 /// Replays job `job_id`'s completion to observer `observer_id`, an accepted
-/// observer of that job: a call only that observer takes, when the job has
+/// observer of that job: a call for that observer alone, when the job has
 /// finished and the observer has not taken its completion. A job that ends
 /// later reaches the observer through its first call.
 async fn replay(observer_id: &str, job_id: &str) {
@@ -279,7 +279,8 @@ impl AddedHook for JobFinishedSource {
             return Ok(());
         };
         // A call made before the observer is active does not reach it:
-        // replay once the SDK has accepted it.
+        // replay once the SDK has accepted it. A rejected observer gets
+        // nothing.
         tokio::spawn(async move {
             if obs.accepted().await.is_ok() {
                 replay(obs.id(), &job_id).await;
@@ -316,9 +317,9 @@ pub fn register_job_finished(iii: &IIIClient) {
                  exit_code, started_at_ms, finished_at_ms, duration_ms }. Observe with args \
                  { job_id } to wake on one job, or without args for every future completion. \
                  An observer of one job added after the job finished receives its completion \
-                 while the job is retained, from a call only that observer receives \
-                 (metadata { replay: <observer id> }). Each observer of a job receives its \
-                 completion once. Call shell::status for the job's output.",
+                 while the job is retained, from a call for that observer alone (metadata \
+                 { for_observer: <observer id> }), delivered like every call. Each observer of \
+                 a job receives its completion once. Call shell::status for the job's output.",
             )
             .args_format::<JobFinishedArgs>()
             .private(),
@@ -371,7 +372,7 @@ mod tests {
     /// The call that replays `event` to observer `observer_id`.
     fn replay_call(event: &JobFinishedEvent, observer_id: &str) -> Call {
         Call {
-            metadata: Some(json!({ REPLAY_META: observer_id })),
+            metadata: Some(json!({ "for_observer": observer_id })),
             ..live_call(event)
         }
     }
@@ -724,6 +725,33 @@ mod tests {
             "no job, no match"
         );
         claimed().remove(&mine);
+    }
+
+    // A call with metadata `for_observer` reaches the observer it names and
+    // no other: not another observer of the job, not a catch-all.
+    #[test]
+    fn a_call_for_one_observer_reaches_that_observer_alone() {
+        let mut event = JobFinishedEvent::from_record(&record(JobStatus::Finished, Some(2_000)))
+            .expect("terminal record");
+        event.job_id = format!("job-{}", uuid::Uuid::new_v4());
+        let args = json!({ "job_id": event.job_id });
+        let (named, sibling, any) = (observer_id(), observer_id(), observer_id());
+        let call = replay_call(&event, &named);
+        assert_eq!(call.metadata, Some(json!({ "for_observer": named })));
+        assert!(!wants(&sibling, &args, &call));
+        assert!(!wants(&any, &json!({}), &call));
+        assert!(!claimed().contains_key(&sibling), "nothing claimed for it");
+        assert!(wants(&named, &args, &call));
+        // The sibling still takes the live call.
+        assert!(wants(&sibling, &args, &live_call(&event)));
+        // Metadata without for_observer is a call of every observer.
+        let tagged = Call {
+            metadata: Some(json!({ "source": "test" })),
+            ..live_call(&event)
+        };
+        assert!(wants(&any, &json!({}), &tagged));
+        claimed().remove(&named);
+        claimed().remove(&sibling);
     }
 
     // An observer added while its job ends sees two calls, the live one and

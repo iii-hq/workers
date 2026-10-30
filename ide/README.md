@@ -464,13 +464,13 @@ The function's args accept one field:
 An observer with a `job_id` also receives the result if its job has already
 completed, including a job that finished before `shell::exec_bg` returned.
 Once iii accepts the observer, the worker calls the function again with the
-retained event and `{ "replay": "<observer id>" }` as the call's metadata,
-and only that observer receives the call. iii delivers it as it delivers a
-live completion: in the shape the observer's `deliver` asks for (the
-`Observed` envelope by default), through its filters and `on`. Each observer
-of a job receives its completion once, from the live call or from the
-replay. An observer without a `job_id` receives future completions only; it
-does not replay existing records.
+retained event and `{ "for_observer": "<observer id>" }` as the call's
+metadata, and the function's match hook gives that call to that observer
+alone. iii delivers it as it delivers a live completion: in the shape the
+observer's `deliver` asks for (the `Observed` envelope by default), through
+its filters and `on`. Each observer of a job receives its completion once,
+from the live call or from the replay. An observer without a `job_id`
+receives future completions only; it does not replay existing records.
 
 For a harness agent, generate a new ID, such as `job-` followed by a UUID.
 Call `harness::observe` with that ID and wait for it to return before starting
