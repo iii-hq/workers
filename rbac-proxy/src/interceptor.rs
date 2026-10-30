@@ -413,23 +413,6 @@ impl Interceptor {
         Some(caller)
     }
 
-    /// The `caller` of a report item for `invocation_id`, when that is a call
-    /// the engine routed to this connection: the caller the engine forwarded
-    /// it with, less the worker fields the engine sets on the item itself.
-    /// `None` when it is not such a call; `Some(None)` when it came without a
-    /// caller.
-    async fn routed_caller(&self, invocation_id: &str) -> Option<Option<Value>> {
-        let inbound = self.inbound.lock().await;
-        let call = inbound.get(invocation_id)?;
-        Some(call.caller.clone().map(|mut caller| {
-            if let Some(obj) = caller.as_object_mut() {
-                obj.remove("worker_id");
-                obj.remove("worker_name");
-            }
-            caller
-        }))
-    }
-
     async fn warn_removed_frame(&self, frame: &'static str, replacement: &'static str) {
         if self.warned_removed.lock().await.insert(frame) {
             tracing::warn!(
@@ -707,11 +690,12 @@ impl Interceptor {
         DownstreamAction::Forward(v.to_string())
     }
 
-    /// `invocationsobserved`: the host's reports of the calls of its functions
-    /// and the observers they matched. Each item is kept only for a function
-    /// this connection registered, under its engine id, with a `caller` the
-    /// proxy vouches for: for a call the engine routed here, the caller it
-    /// arrived with; for a local call, the context it was made in.
+    /// `invocationsobserved`: the host's reports of its local calls and the
+    /// observers they matched. Each item is kept only for a function this
+    /// connection registered, under its engine id, with a `caller` the proxy
+    /// vouches for: the context the call was made in. A routed call's matches
+    /// travel on its answer (`invocationresult.observed`), and the engine
+    /// drops an item for a call it routed to the connection.
     async fn on_invocations_observed(&self, mut v: Value) -> DownstreamAction {
         let Some(items) = v
             .get_mut("items")
@@ -737,14 +721,7 @@ impl Interceptor {
                 continue;
             };
             item["function_id"] = Value::String(engine_id);
-            let routed = match item.get("invocation_id").and_then(Value::as_str) {
-                Some(invocation_id) => self.routed_caller(invocation_id).await,
-                None => None,
-            };
-            let caller = match routed {
-                Some(caller) => caller,
-                None => self.vouched_caller(item.get("caller")).await,
-            };
+            let caller = self.vouched_caller(item.get("caller")).await;
             set_caller(&mut item, caller);
             kept.push(item);
         }
@@ -2629,17 +2606,23 @@ mod tests {
         let batch = json!({
             "type": "invocationsobserved",
             "items": [
-                // The routed call itself: the caller it arrived with.
-                report_item(
-                    "orders::submit",
-                    "b414a098-c011-4e9e-8e65-e45bbe4e645a",
-                    Some(json!({ "function_id": "forged::fn", "invocation_id": "77e1c3a5-b7d9-4f1b-9d3f-5b7d9f1b3d5f" }))
-                ),
-                // A local call made inside it.
+                // A local call made inside the routed call: its caller is
+                // written from that call.
                 report_item(
                     "orders::archive",
                     "8a0c2e4f-6b8d-4f1a-9c3e-5a7c9e1b3d46",
-                    Some(json!({ "function_id": "orders::submit", "invocation_id": "b414a098-c011-4e9e-8e65-e45bbe4e645a" }))
+                    Some(json!({
+                        "function_id": "orders::submit",
+                        "invocation_id": "b414a098-c011-4e9e-8e65-e45bbe4e645a",
+                        "parent": { "worker_name": "billing", "function_id": "forged::fn" }
+                    }))
+                ),
+                // A local call naming a call that was not routed here: its
+                // caller is removed.
+                report_item(
+                    "orders::submit",
+                    "2f4a6c8e-0b1d-4f3a-8c5e-7a9c1e3b5d70",
+                    Some(json!({ "function_id": "forged::fn", "invocation_id": "77e1c3a5-b7d9-4f1b-9d3f-5b7d9f1b3d5f" }))
                 ),
                 // A local call outside any handler.
                 report_item("orders::archive", "4b6d8f0a-2c4e-4a6c-8e0a-2c4e6a8c0e1f", None),
@@ -2650,19 +2633,24 @@ mod tests {
         let o = forwarded(i.handle_downstream(&batch.to_string()).await);
         let items = o["items"].as_array().unwrap();
         assert_eq!(items.len(), 3);
-        assert_eq!(items[0]["function_id"], "tenant1::orders::submit");
+        assert_eq!(items[0]["function_id"], "tenant1::orders::archive");
         assert_eq!(
             items[0]["caller"],
             json!({
-                "function_id": "checkout::confirm",
-                "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20",
-                "parent": { "worker_name": "web", "function_id": "http::on-request", "invocation_id": "9b1d3f5a-7c9e-4b1d-8f3a-5c7e9b1d3f5a" }
+                "function_id": "tenant1::orders::submit",
+                "invocation_id": "b414a098-c011-4e9e-8e65-e45bbe4e645a",
+                "parent": {
+                    "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
+                    "worker_name": "checkout",
+                    "function_id": "checkout::confirm",
+                    "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
+                }
             })
         );
         assert_eq!(items[0]["output_is_input"], true);
-        assert_eq!(items[1]["function_id"], "tenant1::orders::archive");
-        assert_eq!(items[1]["caller"]["function_id"], "tenant1::orders::submit");
-        assert_eq!(items[1]["caller"]["parent"]["worker_name"], "checkout");
+        assert_eq!(items[1]["function_id"], "tenant1::orders::submit");
+        assert!(items[1].get("caller").is_none());
+        assert_eq!(items[2]["function_id"], "tenant1::orders::archive");
         assert!(items[2].get("caller").is_none());
 
         // A batch of nothing but foreign items is dropped.

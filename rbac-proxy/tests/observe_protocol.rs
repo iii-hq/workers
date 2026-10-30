@@ -61,8 +61,7 @@ fn registered_through_proxy(v: &mut Value) {
     v["data"]["name"] = json!(format!("rbac-proxy:{name}"));
 }
 
-/// A call routed to this connection: what a `caller` or a report item for
-/// it is checked against.
+/// A call routed to this connection: what a `caller` is checked against.
 fn routed(invocation_id: &str, function_id: &str, caller: Value) -> Setup {
     let mut frame = json!({
         "type": "invokefunction",
@@ -126,7 +125,6 @@ fn case(file: &str) -> Case {
         "localinvocationstats.json" => forward_down(vec![Setup::Register(&[
             "database::on-row-changed",
             "database::query",
-            "database::execute",
         ])]),
         // Local calls made inside `checkout::confirm`, which the engine
         // routed here: their `caller` names that call.
@@ -150,38 +148,11 @@ fn case(file: &str) -> Case {
             Setup::Register(&["database::execute", "database::on-row-changed"]),
             Setup::UpstreamFixture("invokefunction-caller.json"),
         ]),
-        // Items of a routed call carry the caller it arrived with.
-        "invocationsobserved-routed.json" => forward_down(vec![
-            Setup::Register(&["orders::submit"]),
-            routed(
-                "b414a098-c011-4e9e-8e65-e45bbe4e645a",
-                "orders::submit",
-                json!({
-                    "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
-                    "worker_name": "checkout",
-                    "function_id": "checkout::confirm",
-                    "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
-                }),
-            ),
-        ]),
-        "invocationsobserved-routed-items.json" => forward_down(vec![
-            Setup::Register(&["orders::import"]),
-            routed(
-                "0a4f684f-0f73-4589-9e85-6575360e113e",
-                "orders::import",
-                json!({
-                    "worker_id": "4c6e8a0b-2d4f-4a6c-8e0b-2d4f6a8c0e2b",
-                    "worker_name": "erp",
-                    "function_id": "erp::sync",
-                    "invocation_id": "dba2523f-7f0f-4883-a840-64dc90d532ea"
-                }),
-            ),
-        ]),
         // The host's answers to routed calls: `observed` passes through, the
         // engine checks every id.
-        "invocationresult-observed.json"
-        | "invocationresult-observed-error.json"
-        | "invocationresult-hook-result.json" => forward_down(vec![]),
+        "invocationresult-observed.json" | "invocationresult-observed-error.json" => {
+            forward_down(vec![])
+        }
         "registerfunction.json"
         | "registerfunction-private.json"
         | "registerfunction-not-observable.json"
@@ -339,7 +310,7 @@ async fn run_setup(i: &Interceptor, file: &str, setup: Vec<Setup>) {
 #[tokio::test]
 async fn every_observe_fixture_is_gated() {
     let fixtures = fixtures();
-    assert!(fixtures.len() >= 43, "fixtures missing: {}", fixtures.len());
+    assert!(fixtures.len() >= 40, "fixtures missing: {}", fixtures.len());
 
     for (file, fixture_value) in fixtures {
         let text = fixture_value.to_string();
@@ -399,7 +370,6 @@ async fn host_frames_without_their_context_are_dropped() {
         "observerack-error.json",
         "invocationsobserved.json",
         "invocationsobserved-event-source.json",
-        "invocationsobserved-routed.json",
         "localinvocationstats.json",
         "invokefunction-observer-call-void.json",
     ] {
