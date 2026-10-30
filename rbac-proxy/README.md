@@ -104,8 +104,8 @@ The registration hooks are the engine's, with the engine's input and answer:
 A hook that throws or answers anything but an object denies: a denied
 function registration is dropped, as the engine drops it, and a denied
 observer is refused with `FORBIDDEN`. Hooks see bare ids (before the session
-prefix). `rbac` keys an earlier proxy read are ignored with one `warn` each,
-naming what replaces them, so a stored entry that sets one still loads.
+prefix). `rbac` keys of entries stored before 0.26 are ignored with one
+`warn` each, naming the setting to use, so such an entry loads.
 
 A call through the middleware waits up to 610 s for it (a middleware that
 forwards with its own timeout should use 600 s or less), and a connection that
@@ -137,7 +137,10 @@ connection with no RBAC session, so the proxy gates every observe frame:
   carve-out, the discovery functions, `engine::observers::*` and the engine
   events whose calls list functions, workers or observers
   (`engine::on-functions-changed`, `engine::on-workers-changed`,
-  `engine::on-observers-changed`).
+  `engine::on-observers-changed`). The `Observed` envelope iii delivers for
+  an observer the connection created names the observed function without the
+  prefix; a call through that observer reaches the target with the payload
+  as the host sent it.
 - **Hosting.** `functionregistered`, `observeradded`, `observerremoved`,
   `observerack`, `invocationsobserved` and `localinvocationstats` pass for the
   functions the connection registered, with the session prefix removed toward

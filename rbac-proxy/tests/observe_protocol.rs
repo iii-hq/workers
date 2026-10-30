@@ -61,8 +61,7 @@ fn registered_through_proxy(v: &mut Value) {
     v["data"]["name"] = json!(format!("rbac-proxy:{name}"));
 }
 
-/// A call routed to this connection: what a `caller` or a report item for
-/// it is checked against.
+/// A call routed to this connection: what a `caller` is checked against.
 fn routed(invocation_id: &str, function_id: &str, caller: Value) -> Setup {
     let mut frame = json!({
         "type": "invokefunction",
@@ -126,7 +125,6 @@ fn case(file: &str) -> Case {
         "localinvocationstats.json" => forward_down(vec![Setup::Register(&[
             "database::on-row-changed",
             "database::query",
-            "database::execute",
         ])]),
         // Local calls made inside `checkout::confirm`, which the engine
         // routed here: their `caller` names that call.
@@ -150,38 +148,11 @@ fn case(file: &str) -> Case {
             Setup::Register(&["database::execute", "database::on-row-changed"]),
             Setup::UpstreamFixture("invokefunction-caller.json"),
         ]),
-        // Items of a routed call carry the caller it arrived with.
-        "invocationsobserved-routed.json" => forward_down(vec![
-            Setup::Register(&["orders::submit"]),
-            routed(
-                "b414a098-c011-4e9e-8e65-e45bbe4e645a",
-                "orders::submit",
-                json!({
-                    "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
-                    "worker_name": "checkout",
-                    "function_id": "checkout::confirm",
-                    "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
-                }),
-            ),
-        ]),
-        "invocationsobserved-routed-items.json" => forward_down(vec![
-            Setup::Register(&["orders::import"]),
-            routed(
-                "0a4f684f-0f73-4589-9e85-6575360e113e",
-                "orders::import",
-                json!({
-                    "worker_id": "4c6e8a0b-2d4f-4a6c-8e0b-2d4f6a8c0e2b",
-                    "worker_name": "erp",
-                    "function_id": "erp::sync",
-                    "invocation_id": "dba2523f-7f0f-4883-a840-64dc90d532ea"
-                }),
-            ),
-        ]),
         // The host's answers to routed calls: `observed` passes through, the
         // engine checks every id.
-        "invocationresult-observed.json"
-        | "invocationresult-observed-error.json"
-        | "invocationresult-hook-result.json" => forward_down(vec![]),
+        "invocationresult-observed.json" | "invocationresult-observed-error.json" => {
+            forward_down(vec![])
+        }
         "registerfunction.json"
         | "registerfunction-private.json"
         | "registerfunction-not-observable.json"
@@ -276,6 +247,11 @@ fn fixture(name: &str) -> Value {
 /// A connection that may call anything, in any namespace the fixtures use,
 /// so what the proxy does to a frame is down to observe alone.
 fn interceptor() -> Interceptor {
+    interceptor_with_prefix(None)
+}
+
+/// [`interceptor`], with the session's own registrations under `prefix`.
+fn interceptor_with_prefix(prefix: Option<&str>) -> Interceptor {
     let iii = Arc::new(iii_sdk::register_worker(
         "ws://127.0.0.1:1",
         iii_sdk::InitOptions::default(),
@@ -292,6 +268,7 @@ fn interceptor() -> Interceptor {
             .into_iter()
             .map(|ns| (ns.to_string(), vec!["*".to_string()]))
             .collect(),
+        function_registration_prefix: prefix.map(str::to_string),
         ..ProxySession::permissive("127.0.0.1".to_string())
     });
     let (tx, rx) = mpsc::channel::<String>(16);
@@ -339,7 +316,7 @@ async fn run_setup(i: &Interceptor, file: &str, setup: Vec<Setup>) {
 #[tokio::test]
 async fn every_observe_fixture_is_gated() {
     let fixtures = fixtures();
-    assert!(fixtures.len() >= 43, "fixtures missing: {}", fixtures.len());
+    assert!(fixtures.len() >= 40, "fixtures missing: {}", fixtures.len());
 
     for (file, fixture_value) in fixtures {
         let text = fixture_value.to_string();
@@ -399,7 +376,6 @@ async fn host_frames_without_their_context_are_dropped() {
         "observerack-error.json",
         "invocationsobserved.json",
         "invocationsobserved-event-source.json",
-        "invocationsobserved-routed.json",
         "localinvocationstats.json",
         "invokefunction-observer-call-void.json",
     ] {
@@ -453,4 +429,104 @@ async fn caller_fields_from_a_worker_are_removed() {
     let out: Value = serde_json::from_str(&out).unwrap();
     assert!(out.get("caller").is_none());
     assert_eq!(out["data"], fixture["data"]);
+}
+
+/// A `tenant1` connection that registered `own` and created the observer
+/// `observer_id` of `source` with target `target` (observe.json, delivering
+/// the `Observed` envelope), which the engine accepted (observeresult.json).
+async fn with_created_observer(
+    own: &'static [&'static str],
+    observer_id: &str,
+    source: &str,
+    target: &str,
+) -> Interceptor {
+    let i = interceptor_with_prefix(Some("tenant1"));
+    run_setup(&i, "observe.json", vec![Setup::Register(own)]).await;
+    let mut observe = fixture("observe.json");
+    observe["id"] = json!(observer_id);
+    observe["source"]["function_id"] = json!(source);
+    observe["target"]["function_id"] = json!(target);
+    let DownstreamAction::Forward(out) = i.handle_downstream(&observe.to_string()).await else {
+        panic!("observe {source} -> {target} was not forwarded");
+    };
+    let out: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(out["source"]["deliver"], "envelope");
+    let mut accepted = fixture("observeresult.json");
+    accepted["id"] = json!(observer_id);
+    run_setup(&i, "observeresult.json", vec![Setup::Upstream(accepted)]).await;
+    i
+}
+
+/// iii's delivery to an observer the connection created: the envelope names
+/// the observed function, one of the connection's own, by its bare id.
+#[tokio::test]
+async fn the_envelope_of_a_created_observer_names_the_bare_function() {
+    let mut activation = fixture("invokefunction-activation.json");
+    let observer_id = activation["activation"]["observer_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let i = with_created_observer(
+        &["payments::charge", "alerts::payment-failed"],
+        &observer_id,
+        "payments::charge",
+        "alerts::payment-failed",
+    )
+    .await;
+    activation["function_id"] = json!("tenant1::alerts::payment-failed");
+    activation["data"]["function_id"] = json!("tenant1::payments::charge");
+
+    let UpstreamAction::Forward(out) = i.handle_upstream(&activation.to_string()).await else {
+        panic!("activation was not forwarded");
+    };
+    let mut expected = activation.clone();
+    expected["function_id"] = json!("alerts::payment-failed");
+    expected["data"]["function_id"] = json!("payments::charge");
+    assert_eq!(serde_json::from_str::<Value>(&out).unwrap(), expected);
+}
+
+/// A call through an observer the connection created (another worker's
+/// `onObserverDeliver` calling through it) carries the host's payload, which
+/// reaches the target as the host sent it, whatever fields it shares with an
+/// envelope.
+#[tokio::test]
+async fn a_call_through_a_created_observer_keeps_the_hosts_payload() {
+    let forwarded = fixture("invokefunction-observer-call-forwarded.json");
+    let observer_id = forwarded["activation"]["observer_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let i = with_created_observer(
+        &["users::get"],
+        &observer_id,
+        "http::on-request",
+        "users::get",
+    )
+    .await;
+
+    for extra in [
+        json!({ "function_id": "tenant1::x" }),
+        json!({ "function_id": "tenant1::x", "observer_id": observer_id }),
+        json!({
+            "function_id": "tenant1::x",
+            "observer_id": observer_id,
+            "activation_id": "0b8f3d1e-6a4c-4e2b-9d7f-5c3a1e9b7d5f"
+        }),
+    ] {
+        let mut call = forwarded.clone();
+        call["function_id"] = json!("tenant1::users::get");
+        for (key, value) in extra.as_object().unwrap() {
+            call["data"][key] = value.clone();
+        }
+        let UpstreamAction::Forward(out) = i.handle_upstream(&call.to_string()).await else {
+            panic!("call through {observer_id} was not forwarded");
+        };
+        let mut expected = call.clone();
+        expected["function_id"] = json!("users::get");
+        assert_eq!(
+            serde_json::from_str::<Value>(&out).unwrap(),
+            expected,
+            "{extra}"
+        );
+    }
 }

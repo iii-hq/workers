@@ -130,9 +130,10 @@ On every call and report, `caller` (the SDK's claim about the call chain,
 which observers read and filter on) is kept only when it names a call the
 engine routed to this connection that it has not answered yet, and the proxy
 then writes it from that call: its `function_id` and `invocation_id`, and that
-call's own caller as `parent`. Report items of a routed call carry the caller
-the call arrived with. Anything else loses its `caller`. `observe_depth`
-passes as sent.
+call's own caller as `parent`. Anything else loses its `caller`.
+`observe_depth` passes as sent. Report items are local calls of the reporting
+connection: a routed call's matches travel on its answer's `observed`, and the
+engine drops an item for a call it routed to the connection.
 
 ### Engine → downstream (frames the engine sends)
 
