@@ -11,6 +11,15 @@ import { fakeIii } from './_helpers/fake-iii.js';
 
 const FEEDS = [ON_AGENT_EVENT_FN, ON_RAW_EVENT_FN] as const;
 
+/** What the SDK does to a private function's payload under NODE_ENV=development. */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const member of Object.values(value)) deepFreeze(member);
+  }
+  return value;
+}
+
 function setup() {
   const fake = fakeIii();
   const feeds = registerAgentFeeds(fake.iii);
@@ -184,6 +193,73 @@ describe('agent feeds', () => {
     await fake.observeFeed(ON_AGENT_EVENT_FN, 's1');
     await feeds.agent.emit('s1', { n: 1 }, 'stable-1');
     expect(fake.feedFrames(ON_AGENT_EVENT_FN)[0]).toMatchObject({ event_id: 'stable-1', seq: 0 });
+  });
+
+  it.each(
+    FEEDS,
+  )('%s: sends a copy of the event, so the caller keeps mutating its own objects', async (functionId) => {
+    const { fake, feedOf } = setup();
+    await fake.observeFeed(functionId, 's1');
+    // The SDK hands a private function's payload to its handler by reference
+    // and, under NODE_ENV=development, deep-freezes it.
+    const real = fake.iii.call.bind(fake.iii);
+    (fake.iii as { call: unknown }).call = async (req: { payload: unknown }) =>
+      real({ ...req, payload: deepFreeze(req.payload) } as never);
+
+    // pi-agent-core's message_update: the provider's live partial, and a
+    // shallow copy of it that shares its content array.
+    const output = { role: 'assistant', content: [{ type: 'text', text: 'a' }] };
+    const event = {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', partial: output },
+      message: { ...output },
+    };
+    await expect(feedOf(functionId).emit('s1', event)).resolves.toBe(true);
+
+    // pi-ai's next deltas mutate the same objects.
+    expect(Object.isFrozen(output)).toBe(false);
+    expect(Object.isFrozen(output.content)).toBe(false);
+    output.content[0].text += 'b';
+    output.content.push({ type: 'text', text: 'c' });
+    expect(event.message.content).toEqual([
+      { type: 'text', text: 'ab' },
+      { type: 'text', text: 'c' },
+    ]);
+
+    // The frame is the event as it was when emitted.
+    expect(fake.feedFrames(functionId).map((f) => f.event)).toEqual([
+      {
+        type: 'message_update',
+        assistantMessageEvent: {
+          type: 'text_delta',
+          partial: { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+        },
+        message: { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+      },
+    ]);
+  });
+
+  it('sends an event structuredClone refuses as its JSON form', async () => {
+    const { fake, feeds } = setup();
+    await fake.observeFeed(ON_RAW_EVENT_FN, 's1');
+    const event = { type: 'tool_execution_start', args: { path: 'a' }, abort: () => {} };
+    await expect(feeds.raw.emit('s1', event)).resolves.toBe(true);
+    expect(fake.feedFrames(ON_RAW_EVENT_FN)[0].event).toEqual({
+      type: 'tool_execution_start',
+      args: { path: 'a' },
+    });
+  });
+
+  it('logs an event it cannot copy and resolves false without throwing', async () => {
+    const { fake, feeds } = setup();
+    await fake.observeFeed(ON_RAW_EVENT_FN, 's1');
+    const event: Record<string, unknown> = { type: 'cyclic', abort: () => {} };
+    event.self = event;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(feeds.raw.emit('s1', event)).resolves.toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(ON_RAW_EVENT_FN));
+    expect(fake.calls).toEqual([]);
+    warn.mockRestore();
   });
 
   it('logs a refused call and resolves false without throwing', async () => {
