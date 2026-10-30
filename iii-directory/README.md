@@ -1133,6 +1133,7 @@ cargo test
 
 # One feature group at a time. Available tags:
 #   @engine  @read  @download  @download_repo  @download_registry
+#   @registry  @registry_worker_list  @registry_worker_info  @on_change
 cargo test --test bdd -- --tags @download
 ```
 
