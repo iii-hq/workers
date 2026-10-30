@@ -59,11 +59,14 @@ drives: {}                          # drive controllers are not available yet
 ```
 
 Set `public_url` to a reachable front door before joining a machine. Put the
-HTTP listener behind that front door; keep the engine and proxy listeners
-private. Proxy ownership requires a direct `ws` numeric loopback address with
-an explicit port. Mesh refuses foreign proxy ownership and verifies the
-running proxy has applied the mesh hooks and matching listener before opening
-the gateway. Failed application revokes sessions and is retried automatically.
+HTTP listener behind that front door. Configure the engine's worker listener
+to bind to `127.0.0.1`: it defaults to `0.0.0.0`, and mesh does not change that
+binding. Setting mesh's `III_URL` or `--url` only selects its connection
+destination. Keep the proxy listener on loopback too. Proxy ownership requires
+a direct `ws` numeric loopback address with an explicit port. Mesh refuses
+foreign proxy ownership and verifies that the running proxy has applied the
+mesh hooks and matching listener before opening the gateway. Failed application
+revokes sessions and is retried automatically.
 If an existing mesh-owned proxy entry disagrees with a changed engine URL or
 proxy endpoint, update that entry to match; mesh does not overwrite it.
 
