@@ -16,7 +16,7 @@ use std::time::Duration;
 use common::engine;
 use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
-use iii_state::config::StateConfig;
+use iii_state::config::{EARLIER_EVENTS_KEY, StateConfig};
 use iii_state::configuration;
 use iii_state::functions::ConfigCell;
 use iii_state::on_changed::ON_CHANGED_FN;
@@ -431,7 +431,9 @@ async fn observers_receive_each_change_event() {
     assert_eq!(deleted["new_value"], Value::Null);
 
     // `state::on-changed` is private: another worker cannot forge a change.
-    if let Some(other) = engine::connect_fresh().await {
+    // The other worker has its own name: the engine refuses a second live
+    // worker under this process's default name.
+    if let Some(other) = engine::connect_fresh_named(&unique("e2e-forger")).await {
         let err = call(
             &other,
             ON_CHANGED_FN,
@@ -493,9 +495,13 @@ async fn filters_select_events_by_key_and_event_type() {
     )
     .await
     .expect("set other");
-    call(&iii, "state::delete", json!({"scope": scope, "key": "other"}))
-        .await
-        .expect("delete other");
+    call(
+        &iii,
+        "state::delete",
+        json!({"scope": scope, "key": "other"}),
+    )
+    .await
+    .expect("delete other");
 
     let status = tokio::time::timeout(Duration::from_secs(3), status_rx.recv())
         .await
@@ -641,6 +647,195 @@ async fn max_value_bytes_rejects_oversized_set() {
         .expect("dispose configuration observer");
     boot.shutdown().await;
     iii.shutdown_async().await;
+}
+
+/// An entry an earlier release left in the configuration worker: its own
+/// schema, and the events knob under [`EARLIER_EVENTS_KEY`].
+async fn store_earlier_release_entry(iii: &IIIClient, id: &str, value: Value) {
+    call(
+        iii,
+        "configuration::ensure",
+        json!({
+            "id": id,
+            "name": "State",
+            "description": "the entry as an earlier state release registered it",
+            "schema": {"type": "object"},
+            "initial_value": value,
+        }),
+    )
+    .await
+    .expect("configuration::ensure the earlier entry");
+}
+
+#[tokio::test]
+#[serial]
+async fn an_entry_stored_by_an_earlier_release_loads_through_the_configuration_worker() {
+    let Some(iii) = engine::connect_fresh().await else {
+        return;
+    };
+
+    // The knob under its earlier name only: it becomes `events_enabled`.
+    let id = unique("state-upgrade");
+    store_earlier_release_entry(
+        &iii,
+        &id,
+        json!({ EARLIER_EVENTS_KEY: false, "max_value_bytes": 64 }),
+    )
+    .await;
+    configuration::register_config_as(&iii, &id, None)
+        .await
+        .expect("registering over the earlier entry");
+    let loaded = configuration::fetch_config_from(&iii, &id)
+        .await
+        .expect("the earlier entry loads through configuration::get");
+    assert_eq!(loaded.events_enabled, Some(false));
+    assert_eq!(loaded.max_value_bytes, Some(64));
+    let stored = call(&iii, "configuration::get", json!({"id": id, "raw": true}))
+        .await
+        .expect("raw configuration::get");
+    assert_eq!(
+        stored["value"],
+        json!({"events_enabled": false, "max_value_bytes": 64}),
+        "the stored entry is rewritten to the published schema"
+    );
+    let schema = call(&iii, "configuration::schema", json!({"id": id}))
+        .await
+        .expect("configuration::schema");
+    assert_eq!(
+        schema["schema"]["additionalProperties"],
+        json!(false),
+        "the published schema stays closed: {schema}"
+    );
+
+    // Both names: `events_enabled` wins and the earlier key goes.
+    let both = unique("state-upgrade-both");
+    store_earlier_release_entry(
+        &iii,
+        &both,
+        json!({ EARLIER_EVENTS_KEY: true, "events_enabled": false }),
+    )
+    .await;
+    configuration::register_config_as(&iii, &both, None)
+        .await
+        .expect("registering over an entry naming both knobs");
+    let loaded = configuration::fetch_config_from(&iii, &both)
+        .await
+        .expect("an entry naming both knobs loads");
+    assert_eq!(loaded.events_enabled, Some(false));
+
+    // A current entry stays as stored.
+    let current = unique("state-current");
+    store_earlier_release_entry(&iii, &current, json!({"events_enabled": false})).await;
+    configuration::register_config_as(&iii, &current, None)
+        .await
+        .expect("registering over a current entry");
+    let stored = call(
+        &iii,
+        "configuration::get",
+        json!({"id": current, "raw": true}),
+    )
+    .await
+    .expect("raw configuration::get");
+    assert_eq!(stored["value"], json!({"events_enabled": false}));
+
+    iii.shutdown_async().await;
+}
+
+/// The `## Functions` section of the worker's README.
+fn readme_functions_section() -> &'static str {
+    const README: &str = include_str!("../README.md");
+    let start = README
+        .find("\n## Functions\n")
+        .expect("the README has a Functions section");
+    let rest = &README[start + 1..];
+    let end = rest[3..].find("\n## ").map_or(rest.len(), |at| at + 3);
+    &rest[..end]
+}
+
+#[tokio::test]
+#[serial]
+async fn the_readme_lists_every_function_the_worker_registers() {
+    // A named connection: the engine lists each function with the name of
+    // the worker hosting it, and a claim is granted to that name only.
+    let name = unique("e2e-readme");
+    let Some(iii) = engine::connect_fresh_named(&name).await else {
+        return;
+    };
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
+        .await
+        .expect("state worker should boot");
+    let config_observer =
+        configuration::observe_config_changes(&iii, boot.ctx.clone(), boot.apply_lock.clone());
+    // A claim registers the namespace's accessors.
+    call(
+        &iii,
+        "state::claim-namespace",
+        json!({"functions_prefix": name, "scopes": [unique("readme-private")]}),
+    )
+    .await
+    .expect("claim a namespace");
+
+    let section = readme_functions_section();
+    let accessor_prefix = format!("{name}::");
+    let mut registered = Vec::new();
+    for _ in 0..40 {
+        // Internal functions (`metadata.internal`) are listed on request.
+        let listed = call(
+            &iii,
+            "engine::functions::list",
+            json!({"worker": name, "include_internal": true}),
+        )
+        .await
+        .expect("engine::functions::list");
+        registered = listed["functions"]
+            .as_array()
+            .expect("functions array")
+            .iter()
+            .filter(|function| function["worker_name"] == json!(name))
+            .filter_map(|function| function["function_id"].as_str())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if registered.iter().any(|id| id.starts_with(&accessor_prefix)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Shut down before asserting: a failed assertion would leave this
+    // connection hosting state::* for every later test.
+    config_observer
+        .dispose()
+        .await
+        .expect("dispose configuration observer");
+    boot.shutdown().await;
+    iii.shutdown_async().await;
+
+    for expected in [
+        "state::set",
+        "state::ui-content",
+        "state::compare-and-set",
+        "state::barrier",
+        "state::claim-namespace",
+        "state::on-config-change",
+    ] {
+        assert!(
+            registered.iter().any(|id| id == expected),
+            "{expected} is registered: {registered:?}"
+        );
+    }
+    // Boot also restores the accessors of namespaces claimed earlier in this
+    // process: every `<prefix>::state::*` is one README row.
+    let missing: Vec<String> = registered
+        .iter()
+        .map(|id| match id.split_once("::state::") {
+            Some((_, accessor)) => format!("`<prefix>::state::{accessor}`"),
+            None => format!("`{id}`"),
+        })
+        .filter(|listed| !section.contains(listed.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the README Functions table leaves out {missing:?}"
+    );
 }
 
 /// Assert a public `state::*` call is locked out of a reserved scope.

@@ -100,9 +100,10 @@ async fn publish_reaches_the_observers_of_its_topic() {
 #[tokio::test]
 #[serial]
 async fn publish_with_empty_topic_fails_with_topic_not_set() {
-    // Own client (connect_fresh) so booting the worker here doesn't collide
-    // with the first test's `publish` registration on the shared client.
-    let Some(iii) = engine::connect_fresh().await else {
+    // Own client so booting the worker here doesn't collide with the first
+    // test's `publish` registration on the shared client, under its own
+    // worker name: the shared client still holds this process's default name.
+    let Some(iii) = engine::connect_fresh_named(&engine::unique_name("pubsub-e2e")).await else {
         return; // skip: engine absent
     };
 

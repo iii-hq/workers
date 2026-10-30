@@ -14,20 +14,15 @@ export function withPersistenceMode(config: JsonObject, mode: PersistenceMode): 
 }
 
 /**
- * Entries stored by earlier releases name the `events_enabled` knob
- * `triggers_enabled`; the worker reads either.
+ * Whether `state::on-changed` is emitted (default `true`). The worker migrates
+ * an entry stored by an earlier release to `events_enabled` when it boots,
+ * before it serves this form.
  */
-const EARLIER_EVENTS_KEY = 'triggers_enabled'
-
-/** Whether `state::on-changed` is emitted (default `true`). */
 export function eventsEnabledFor(value: JsonObject): boolean {
-  const enabled = 'events_enabled' in value ? value.events_enabled : value[EARLIER_EVENTS_KEY]
-  return enabled !== false
+  return value.events_enabled !== false
 }
 
-/** Set `events_enabled`, writing the knob under its schema name only. */
+/** Set `events_enabled`. */
 export function withEventsEnabled(value: JsonObject, enabled: boolean): JsonObject {
-  const next: JsonObject = { ...value, events_enabled: enabled }
-  delete next[EARLIER_EVENTS_KEY]
-  return next
+  return { ...value, events_enabled: enabled }
 }

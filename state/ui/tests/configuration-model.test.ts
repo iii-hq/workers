@@ -32,11 +32,11 @@ describe('state persistence configuration', () => {
     })
   })
 
-  it('reads the events knob under either stored name and writes the schema name', () => {
+  it('reads and writes the events knob, enabled unless set to false', () => {
     assert.equal(eventsEnabledFor({}), true)
+    assert.equal(eventsEnabledFor({ events_enabled: true }), true)
     assert.equal(eventsEnabledFor({ events_enabled: false }), false)
-    assert.equal(eventsEnabledFor({ triggers_enabled: false }), false)
-    assert.deepEqual(withEventsEnabled({ triggers_enabled: false, max_value_bytes: 10 }, true), {
+    assert.deepEqual(withEventsEnabled({ events_enabled: false, max_value_bytes: 10 }, true), {
       max_value_bytes: 10,
       events_enabled: true,
     })

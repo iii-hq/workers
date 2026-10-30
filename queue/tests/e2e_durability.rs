@@ -239,9 +239,16 @@ async fn delivery_dlq_and_redrive_connect_or_skip() {
         .expect("observer ready in time")
         .expect("observer active");
     wait_for_subscription(&boot.adapter, &queue_name).await;
+    // The engine observes `queue::on-message` in every namespace the queue
+    // worker runs in (its telemetry topics), so the worker has subscribers of
+    // other topics; this topic has one, this observer.
     let registrations = boot.subscribers.registrations().await;
-    assert_eq!(registrations.len(), 1);
-    assert_eq!(registrations[0].spec.queue, queue_name);
+    let on_queue: Vec<_> = registrations
+        .iter()
+        .filter(|registration| registration.spec.queue == queue_name)
+        .collect();
+    assert_eq!(on_queue.len(), 1);
+    assert_eq!(on_queue[0].id, observer.id());
 
     call(
         &iii,

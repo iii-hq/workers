@@ -80,15 +80,24 @@ async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     assert!(done(), "timed out waiting for {what}");
 }
 
-async fn wait_for_subscribers(subscribers: &Subscribers, expected: usize) {
+/// Wait until `topic` has `expected` subscribers. The engine observes
+/// `queue::on-message` too (its telemetry topics, in every namespace the
+/// queue worker runs in), so only the subscribers of `topic` count.
+async fn wait_for_subscribers(subscribers: &Subscribers, topic: &str, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if subscribers.registrations().await.len() == expected {
+        let on_topic = subscribers
+            .registrations()
+            .await
+            .iter()
+            .filter(|registration| registration.spec.queue == topic)
+            .count();
+        if on_topic == expected {
             return;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    panic!("expected {expected} subscribers");
+    panic!("expected {expected} subscribers of {topic}");
 }
 
 fn count(deliveries: &Deliveries) -> usize {
@@ -160,7 +169,7 @@ async fn each_observer_of_a_topic_gets_every_message_its_filters_admit_connect_o
             .expect("observer ready in time")
             .expect("observer active");
     }
-    wait_for_subscribers(&boot.subscribers, 3).await;
+    wait_for_subscribers(&boot.subscribers, &topic, 3).await;
 
     for n in 0..3 {
         call(
@@ -208,7 +217,7 @@ async fn each_observer_of_a_topic_gets_every_message_its_filters_admit_connect_o
 
     // Disposing an observer stops its consumer; the others keep going.
     first.dispose().await.expect("dispose");
-    wait_for_subscribers(&boot.subscribers, 2).await;
+    wait_for_subscribers(&boot.subscribers, &topic, 2).await;
     call(
         &consumer,
         PUBLISH_FN_ID,

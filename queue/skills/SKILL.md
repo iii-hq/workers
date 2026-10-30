@@ -92,7 +92,11 @@ Args:
   group handles each message once.
 
 The target receives the published data. Returning acks the message; throwing
-retries it with backoff and then moves it to the DLQ. Filters read the message
+retries it with backoff and then moves it to the DLQ. The worker calls the
+target through its observer, so the engine's `observers.activation_timeout_ms`
+(30 s by default) bounds each delivery: a target that has not answered by then
+fails it with `TIMEOUT`, and the message is retried while that call still runs.
+Raise the setting in the engine's `config.yaml` for targets that run longer. Filters read the message
 as `input`, and a message an observer's filters reject is acked without
 calling its target. Every subscriber of a topic receives every message, except
 that a group shares one. Args without a topic, or with an unknown field, are

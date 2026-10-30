@@ -9,6 +9,12 @@ use serde_json::Value;
 
 pub const DEFAULT_ADAPTER: &str = "kv";
 
+/// The name entries stored by releases before 0.26 give the `events_enabled`
+/// knob. [`StateConfig::migrate_stored`] renames it; the published schema
+/// accepts only `events_enabled`.
+pub const EARLIER_EVENTS_KEY: &str = "triggers_enabled";
+const EVENTS_KEY: &str = "events_enabled";
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AdapterEntry {
@@ -29,12 +35,7 @@ pub struct StateConfig {
 
     /// Emit `state::on-changed` after every committed change. Applied live.
     /// Defaults to `true`.
-    // Entries stored by earlier releases name the knob `triggers_enabled`.
-    #[serde(
-        default,
-        alias = "triggers_enabled",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_enabled: Option<bool>,
 
     /// Reject `state::set` writes whose JSON-serialized value exceeds this many
@@ -106,6 +107,22 @@ impl StateConfig {
         serde_json::from_value::<Self>(value.clone())
             .map(Self::normalized)
             .map_err(|e| format!("invalid state configuration: {e}"))
+    }
+
+    /// Bring a stored entry or seed written by an earlier release to the
+    /// current schema, in place: its [`EARLIER_EVENTS_KEY`] knob becomes
+    /// `events_enabled`, and an entry that names both keeps `events_enabled`.
+    /// Every other field, `${VAR}` placeholders included, stays as it is.
+    /// Returns whether `value` changed.
+    pub fn migrate_stored(value: &mut Value) -> bool {
+        let Some(object) = value.as_object_mut() else {
+            return false;
+        };
+        let Some(earlier) = object.remove(EARLIER_EVENTS_KEY) else {
+            return false;
+        };
+        object.entry(EVENTS_KEY).or_insert(earlier);
+        true
     }
 }
 
@@ -231,10 +248,43 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_entry_with_the_earlier_knob_name_loads() {
-        let c = StateConfig::from_json(&json!({"triggers_enabled": false})).unwrap();
+    fn an_entry_with_the_earlier_knob_name_migrates_to_events_enabled() {
+        let mut stored = json!({ EARLIER_EVENTS_KEY: false, "max_value_bytes": "${LIMIT:64}" });
+        assert!(StateConfig::migrate_stored(&mut stored));
+        assert_eq!(
+            stored,
+            json!({"events_enabled": false, "max_value_bytes": "${LIMIT:64}"})
+        );
+        let c = StateConfig::from_json(&json!({"events_enabled": false})).unwrap();
         assert_eq!(c.events_enabled, Some(false));
-        assert_eq!(c.to_json(), json!({"events_enabled": false}));
+    }
+
+    #[test]
+    fn an_entry_naming_both_knobs_keeps_events_enabled() {
+        let mut stored = json!({ EARLIER_EVENTS_KEY: true, "events_enabled": false });
+        assert!(StateConfig::migrate_stored(&mut stored));
+        assert_eq!(stored, json!({"events_enabled": false}));
+    }
+
+    #[test]
+    fn a_current_entry_is_left_alone() {
+        for current in [json!({"events_enabled": true}), json!({}), Value::Null] {
+            let mut stored = current.clone();
+            assert!(!StateConfig::migrate_stored(&mut stored));
+            assert_eq!(stored, current);
+        }
+    }
+
+    #[test]
+    fn the_schema_accepts_only_the_current_knob_name() {
+        let schema = StateConfig::json_schema();
+        assert!(schema["properties"].get("events_enabled").is_some());
+        assert!(schema["properties"].get(EARLIER_EVENTS_KEY).is_none());
+        let r: Result<StateConfig, _> = serde_json::from_value(json!({ EARLIER_EVENTS_KEY: true }));
+        assert!(
+            r.is_err(),
+            "an unmigrated entry is refused like any unknown field"
+        );
     }
 
     #[test]

@@ -1294,7 +1294,10 @@ mod private_namespace_tests {
         assert_eq!(adapter.flush_calls.load(Ordering::SeqCst), 2);
     }
 
-    fn ctx_with(adapter: Arc<dyn StateAdapter>, on_changed: Arc<RecordingEmitter>) -> Arc<StateCtx> {
+    fn ctx_with(
+        adapter: Arc<dyn StateAdapter>,
+        on_changed: Arc<RecordingEmitter>,
+    ) -> Arc<StateCtx> {
         Arc::new(StateCtx {
             adapter,
             config: Arc::new(RwLock::new(Arc::new(StateConfig::default()))),

@@ -28,7 +28,7 @@ DLQ.
 | Delivery | custom: each message goes to the one subscriber it was queued for |
 | Event (`input` and `output`) | `QueueMessage`: the data published to the topic, as published (any JSON value) |
 | Target receives | the published data |
-| The queue gets back | the target's result: a result acks the message, an error retries it and then dead-letters it |
+| The queue gets back | the target's result: a result acks the message, an error retries it and then dead-letters it; a target that has not answered within the engine's `observers.activation_timeout_ms` fails the delivery with `TIMEOUT` (see **Timeouts** below) |
 | Filters | read the message as `input`; a message an observer's filters reject is acked without calling its target |
 | Rejections | `INVALID_ARGS` (no topic, a blank topic, an unknown field), `OBSERVER_ID_CONFLICT` (an observer id already subscribed) |
 
@@ -97,8 +97,20 @@ iii.observe_with(
   worker briefly disconnected, or its target unregistered), the call through
   it fails with `OBSERVER_NOT_ACTIVE`: the message stays queued and is
   retried.
-- **Timeouts.** The worker waits up to 30 minutes for a target's result
-  before the delivery fails and is retried.
+- **Timeouts.** The worker calls each target through its observer, and the
+  engine bounds every call through an observer by
+  `observers.activation_timeout_ms` (30 s by default). A target that has not
+  answered by then fails the delivery with `TIMEOUT`: the message is retried
+  after its backoff while that first call keeps running, and moves to the DLQ
+  once `max_retries` deliveries have failed, even if the target finishes
+  later. For targets that run longer, raise the setting in the engine's
+  `config.yaml` (it applies to every observer on the engine; the worker's own
+  bound is 30 minutes):
+
+  ```yaml
+  observers:
+    activation_timeout_ms: 600000   # 10 minutes
+  ```
 - **Private.** Another worker's call of `queue::on-message` is refused
   (`FORBIDDEN`): messages come from publishes only.
 
@@ -155,8 +167,9 @@ queue_configs:
 
 For FIFO named queues, messages with the same group-field value run in order;
 different groups run concurrently up to `concurrency`.
-Each target invocation has a configurable `timeout_ms`; when omitted, it
-defaults to 1,800,000 milliseconds (30 minutes).
+Each job of a named queue calls its function directly, with the queue's
+`timeout_ms`; when omitted, it defaults to 1,800,000 milliseconds (30
+minutes).
 After a restart, a delivery waits until its target function is registered and
 does not consume retry budget while the target worker is still booting. The
 wait is event-driven: the worker observes the engine's
