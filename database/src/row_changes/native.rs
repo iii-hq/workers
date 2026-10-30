@@ -482,6 +482,17 @@ where
 mod tests {
     use super::*;
 
+    /// [`install_sql`] for `table` in one transaction that takes
+    /// [`INSTALL_LOCK_SQL`] first, as the worker's install does. Every
+    /// install in these tests goes through it, so it waits its turn behind
+    /// the worker's installs and the other tests' on the same database.
+    fn locked_install_sql(table: &str) -> String {
+        format!(
+            "BEGIN; {INSTALL_LOCK_SQL}; {} COMMIT;",
+            install_sql(table).unwrap()
+        )
+    }
+
     #[test]
     fn install_sql_quotes_identifiers_and_rejects_garbage() {
         let sql = install_sql("orders").unwrap();
@@ -677,10 +688,7 @@ mod tests {
                 .await
                 .unwrap();
             listener
-                .batch_execute(&format!(
-                    "BEGIN; {INSTALL_LOCK_SQL}; {} COMMIT;",
-                    install_sql(&table).unwrap()
-                ))
+                .batch_execute(&locked_install_sql(&table))
                 .await
                 .unwrap();
             listener
@@ -749,11 +757,11 @@ mod tests {
                 .await
                 .unwrap();
             listener
-                .batch_execute(&install_sql(&keyed).unwrap())
+                .batch_execute(&locked_install_sql(&keyed))
                 .await
                 .unwrap();
             listener
-                .batch_execute(&install_sql(&wide).unwrap())
+                .batch_execute(&locked_install_sql(&wide))
                 .await
                 .unwrap();
         })
@@ -835,5 +843,80 @@ mod tests {
             listener.batch_execute(&format!("DROP TABLE {table}")),
         )
         .await;
+    }
+
+    /// Installs on different tables, from separate connections at once, all
+    /// land: each replaces the one shared notify function, and
+    /// [`INSTALL_LOCK_SQL`] makes them take turns. Requires TEST_POSTGRES_URL.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_installs_take_turns_on_the_shared_function() {
+        let Some(url) = std::env::var("TEST_POSTGRES_URL").ok() else {
+            eprintln!("skipping: TEST_POSTGRES_URL not set");
+            return;
+        };
+        const CONNECTIONS: usize = 8;
+        const ROUNDS: usize = 5;
+        let tables: Vec<String> = (0..CONNECTIONS)
+            .map(|i| format!("iii_install_turns_{}_{i}", std::process::id()))
+            .collect();
+        let mut clients = Vec::new();
+        for table in &tables {
+            let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            client
+                .batch_execute(&format!(
+                    "DROP TABLE IF EXISTS {table}; CREATE TABLE {table} (id int PRIMARY KEY);"
+                ))
+                .await
+                .unwrap();
+            clients.push(Arc::new(client));
+        }
+
+        let start = Arc::new(tokio::sync::Barrier::new(CONNECTIONS));
+        let installs = clients.iter().zip(&tables).map(|(client, table)| {
+            let (client, table, start) = (client.clone(), table.clone(), start.clone());
+            tokio::spawn(async move {
+                let mut failures = Vec::new();
+                for _ in 0..ROUNDS {
+                    start.wait().await;
+                    if let Err(error) = client.batch_execute(&locked_install_sql(&table)).await {
+                        let _ = client.batch_execute("ROLLBACK").await;
+                        failures.push(
+                            error
+                                .as_db_error()
+                                .map(|e| e.message().to_string())
+                                .unwrap_or_else(|| error.to_string()),
+                        );
+                    }
+                }
+                failures
+            })
+        });
+        let mut failures = Vec::new();
+        for install in installs.collect::<Vec<_>>() {
+            failures.extend(install.await.unwrap());
+        }
+
+        let mut triggers = Vec::new();
+        for (client, table) in clients.iter().zip(&tables) {
+            let count: i64 = client
+                .query_one(
+                    "SELECT count(*) FROM pg_trigger WHERE tgrelid = $1::text::regclass \
+                     AND tgname LIKE 'iii_row_changed_%'",
+                    &[table],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            triggers.push(count);
+            client
+                .batch_execute(&format!("DROP TABLE {table}"))
+                .await
+                .unwrap();
+        }
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(triggers, vec![3; CONNECTIONS], "triggers per table");
     }
 }
