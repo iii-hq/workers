@@ -1,3 +1,19 @@
 version: 1
 rules:
   - mesh::status
+  - mesh::nodes::list
+  - mesh::nodes::get
+  - '!mesh-node::*'
+  - '!*::mesh-node::*'
+  - '!mesh::auth'
+  - '!mesh::middleware'
+  - '!mesh::on-trigger-registration'
+  - '!mesh::on-config-change'
+  - '!mesh::ui-content'
+  - '!mesh::configuration-id'
+  - '!*::shell::pty::*'
+  - '!*::shell::scm::*'
+  - '!*::shell::ui-state::*'
+  - '!*::shell::config-status'
+  - '!*::shell::kill-session-jobs'
+  - '!*::shell::on-config-change'

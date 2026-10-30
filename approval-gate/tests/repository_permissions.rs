@@ -9,11 +9,151 @@ struct RepositoryPermissions {
 }
 
 fn repository_permissions() -> Permissions {
+    permissions_from_yaml(include_str!("../../iii-permissions.yaml"))
+}
+
+fn permissions_from_yaml(source: &str) -> Permissions {
     let config: RepositoryPermissions =
-        serde_yaml::from_str(include_str!("../../iii-permissions.yaml"))
-            .expect("repository permissions should be valid YAML");
+        serde_yaml::from_str(source).expect("repository permissions should be valid YAML");
     let specs = parse_rules_from_config(&Value::Array(config.rules));
     Permissions::compile(&specs).expect("repository permission rules should compile")
+}
+
+#[test]
+fn mesh_reads_are_allowed_in_root_and_worker_permissions() {
+    for permissions in [
+        repository_permissions(),
+        permissions_from_yaml(include_str!("../../mesh/iii-permissions.yaml")),
+    ] {
+        for id in ["mesh::status", "mesh::nodes::list", "mesh::nodes::get"] {
+            assert!(
+                matches!(
+                    permissions.check(id, &json!({}), PermissionMode::Manual),
+                    Decision::Allow { .. }
+                ),
+                "{id} should be allowed"
+            );
+        }
+    }
+}
+
+#[test]
+fn mesh_internal_handlers_are_denied_in_root_and_worker_permissions() {
+    for permissions in [
+        repository_permissions(),
+        permissions_from_yaml(include_str!("../../mesh/iii-permissions.yaml")),
+    ] {
+        for id in [
+            "mesh::auth",
+            "mesh::middleware",
+            "mesh::on-trigger-registration",
+            "mesh::on-config-change",
+            "mesh::ui-content",
+            "mesh::configuration-id",
+            "mesh-node::status",
+            "mesh-node::update",
+            "mesh-node::workers::apply",
+            "mesh-node::drives::apply",
+            "laptop::mesh-node::status",
+            "laptop::mesh-node::update",
+            "laptop::mesh-node::workers::apply",
+            "laptop::mesh-node::drives::apply",
+            "tenant::laptop::mesh-node::update",
+        ] {
+            assert!(
+                matches!(
+                    permissions.check(id, &json!({}), PermissionMode::Manual),
+                    Decision::Deny { .. }
+                ),
+                "{id} should be denied"
+            );
+        }
+    }
+}
+
+#[test]
+fn remote_shell_internals_are_denied_in_root_and_worker_permissions() {
+    for permissions in [
+        repository_permissions(),
+        permissions_from_yaml(include_str!("../../mesh/iii-permissions.yaml")),
+    ] {
+        for id in [
+            "laptop::shell::pty::sessions",
+            "laptop::shell::pty::open",
+            "laptop::shell::scm::commit-message",
+            "laptop::shell::ui-state::get",
+            "laptop::shell::config-status",
+            "laptop::shell::kill-session-jobs",
+            "laptop::shell::on-config-change",
+            "tenant::laptop::shell::pty::open",
+        ] {
+            assert!(
+                matches!(
+                    permissions.check(id, &json!({}), PermissionMode::Manual),
+                    Decision::Deny { .. }
+                ),
+                "{id} should be denied"
+            );
+        }
+    }
+}
+
+#[test]
+fn remote_tools_and_mesh_management_need_approval() {
+    for permissions in [
+        repository_permissions(),
+        permissions_from_yaml(include_str!("../../mesh/iii-permissions.yaml")),
+    ] {
+        for id in [
+            "laptop::shell::exec",
+            "laptop::coder::read-file",
+            "tenant::coder::read-file",
+            "mesh::nodes::remove",
+            "mesh::join::code",
+            "mesh::join::cycle",
+            "mesh::join::token",
+            "mesh::join::revoke",
+        ] {
+            assert!(
+                matches!(
+                    permissions.check(id, &json!({}), PermissionMode::Manual),
+                    Decision::NeedsApproval
+                ),
+                "{id} should need approval"
+            );
+        }
+    }
+}
+
+#[test]
+fn mesh_rules_preserve_local_shell_and_coder_decisions() {
+    let permissions = repository_permissions();
+    for id in [
+        "shell::config-status",
+        "shell::pty::open",
+        "shell::scm::commit-message",
+    ] {
+        assert!(
+            matches!(
+                permissions.check(id, &json!({}), PermissionMode::Manual),
+                Decision::Deny { .. }
+            ),
+            "{id} should remain denied"
+        );
+    }
+    for id in ["shell::pty::sessions", "coder::read-file"] {
+        assert!(
+            matches!(
+                permissions.check(id, &json!({}), PermissionMode::Manual),
+                Decision::Allow { .. }
+            ),
+            "{id} should remain allowed"
+        );
+    }
+    assert!(matches!(
+        permissions.check("shell::exec", &json!({}), PermissionMode::Manual),
+        Decision::NeedsApproval
+    ));
 }
 
 #[test]
