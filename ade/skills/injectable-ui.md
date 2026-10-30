@@ -428,7 +428,7 @@ Export `ui` from the worker library and call `ui::register(&iii)` after its
 normal functions; adapt `state/build.rs` so missing or stale UI sources build
 before `include_str!`. Node workers register one function
 mapping `{path}` to `{content, content_type?}`, then observe
-`console::ui::asset` once per asset, modules first:
+`console::ui::asset` once per asset:
 
 ```ts
 iii.observe(
@@ -436,6 +436,12 @@ iii.observe(
   'mywork::ui-content',
 )
 ```
+
+Observe modules first, in every SDK. The console commits assets in the order
+their observers reach it, and every SDK sends a worker's observers to the
+engine in the order the worker created them, on the first connection and on
+every reconnect, so the console serves the modules a script imports before
+the script reaches a tab.
 
 Observe over the worker's own connection: its observers leave with the
 worker on disconnect (the console drops the assets) and are observed again on
