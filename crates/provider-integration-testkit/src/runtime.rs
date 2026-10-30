@@ -123,7 +123,6 @@ impl Engine {
                 )),
             )),
             callers: secrets::access::CallerDirectory::new(iii.clone()),
-            subscribers: secrets::events::Subscribers::default(),
             detector: secrets::detect::Detector {
                 process_env: false,
                 dotenv: None,
