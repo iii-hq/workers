@@ -352,6 +352,17 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
         ],
       },
       {
+        title: 'Subscribers',
+        fields: [
+          number(
+            'subscriber_retention_ms',
+            'Subscriber retention (ms)',
+            "How long a removed subscriber's queue keeps receiving its topic, so a consumer back under the same observer id gets what was published while it was away. Zero stops it at once. Applies to the built-in transport.",
+            { min: 0, optional: true, placeholder: '30000' },
+          ),
+        ],
+      },
+      {
         title: 'Function queues',
         fields: [
           objectMap(
@@ -394,6 +405,7 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
       'adapter.config.prefetch_count',
       'adapter.config.queue_mode',
       'adapter.config.priority_field',
+      'subscriber_retention_ms',
       'queue_configs.*.max_retries',
       'queue_configs.*.concurrency',
       'queue_configs.*.timeout_ms',
