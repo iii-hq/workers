@@ -1,0 +1,72 @@
+name: Mesh E2E
+
+on:
+  pull_request:
+    paths:
+      - 'mesh/**'
+      - 'rbac-proxy/**'
+      - 'ide/**'
+      - 'harness/**'
+      - 'fp/**'
+      - 'state/**'
+      - 'queue/**'
+      - 'session-manager/**'
+      - '.github/workflows/mesh-e2e.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mesh-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Real engine, mesh nodes, IDE and adversarial boundaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
+      GOTOOLCHAIN: local
+      TS_NO_LOGS_NO_SUPPORT: 'true'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: mesh/go.sum
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            ide
+            rbac-proxy
+            harness
+            fp
+            state
+            queue
+            session-manager
+      - name: Install current iii engine
+        run: |
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 https://install.iii.dev/iii/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build real workers sequentially
+        run: |
+          for worker in ide rbac-proxy harness fp state queue session-manager; do
+            cargo build --locked --manifest-path "$worker/Cargo.toml" --bin "$worker"
+          done
+      - name: Run real mesh suite without privileged networking
+        run: |
+          iii --version
+          mkdir -p mesh/tests/e2e/reports
+          III_BIN=$(command -v iii) mesh/tests/e2e/run-tests.sh 2>&1 | tee mesh/tests/e2e/reports/results.log
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: mesh-e2e-report
+          path: mesh/tests/e2e/reports/
+          retention-days: 7

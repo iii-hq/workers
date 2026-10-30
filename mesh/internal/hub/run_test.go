@@ -97,6 +97,9 @@ func TestRunRegistersInterfaceAndCentralConfiguration(t *testing.T) {
 						value = map[string]any{"ok": true, "applied_config": applied, "bound_host": applied["host"], "bound_port": applied["port"]}
 						proxyMu.Unlock()
 					case `"engine::functions::list"`:
+						if string(frame["namespace"]) != `"default"` {
+							t.Errorf("engine catalog must be called in default: %s", frame["namespace"])
+						}
 						value = map[string]any{"functions": []any{map[string]string{"function_id": "analytics::report"}}}
 					}
 					b, _ = json.Marshal(map[string]any{"type": "invocationresult", "invocation_id": frame["invocation_id"], "function_id": frame["function_id"], "result": value})

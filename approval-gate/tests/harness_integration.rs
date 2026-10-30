@@ -5,8 +5,7 @@
 use std::collections::BTreeMap;
 
 use approval_gate::testkit::{
-    boot, call, hook_input, log_push, log_snapshot, require_engine, stack_unavailable, state_get,
-    state_set, BootOpts, CallLog,
+    call, hook_input, log_push, log_snapshot, state_get, state_set, with_stack, BootOpts, CallLog,
 };
 use harness::types::TurnRecord;
 use iii_sdk::RegisterFunction;
@@ -17,19 +16,7 @@ where
     F: FnOnce(approval_gate::testkit::TestStack) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    if let Some(reason) = stack_unavailable() {
-        eprintln!("skipping: {reason}");
-        return;
-    }
-    if std::env::var("CARGO_BIN_EXE_harness").is_err() {
-        eprintln!("skipping: harness binary not built for integration tests");
-        return;
-    }
-    let Some(engine) = require_engine().await else {
-        return;
-    };
-    let stack = boot(&engine, opts).await;
-    f(stack).await;
+    with_stack(opts, f).await;
 }
 
 /// A `harness_turn` record as the harness stores it, checked against the
@@ -65,6 +52,13 @@ async fn seed_held_turn(
     session_id: &str,
     call_id: &str,
 ) {
+    call(
+        &stack.iii,
+        "session::ensure",
+        json!({"session_id":session_id}),
+    )
+    .await
+    .expect("ensure session");
     let mut calls = BTreeMap::new();
     calls.insert(
         call_id.to_string(),
@@ -103,6 +97,9 @@ async fn harness_held_call_survives_sweep_pending() {
 async fn harness_pre_call_hold_then_resolve_allow() {
     with_harness_stack(BootOpts::needs_approval_with_harness(), |stack| async move {
         let iii = &stack.iii;
+        call(iii, "session::ensure", json!({"session_id":"s_1"}))
+            .await
+            .expect("ensure session");
 
         iii.register_function(
             "shell::run",

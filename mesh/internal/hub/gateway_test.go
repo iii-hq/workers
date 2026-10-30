@@ -58,7 +58,7 @@ func TestLiveGatewayOwnershipLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer shim.Close()
-	node := &tsnet.Server{Dir: t.TempDir(), Hostname: "laptop", ControlURL: shim.URL(), AuthKey: join.Secret(h.Coordinator.Identity(), h.Coordinator.Code()), Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
+	node := &tsnet.Server{Dir: t.TempDir(), Hostname: "laptop", ControlURL: shim.URL(), AuthKey: join.Secret(h.Coordinator.Identity(), h.Coordinator.Code()), Logf: t.Logf, UserLogf: t.Logf}
 	defer node.Close()
 	if _, err := node.Up(ctx); err != nil {
 		t.Fatal(err)
@@ -69,9 +69,17 @@ func TestLiveGatewayOwnershipLifecycle(t *testing.T) {
 	if h.Status().Gateway == "ok" {
 		t.Fatal("unowned gateway healthy")
 	}
+	dialStart := time.Now()
 	if c, res, err := websocket.Dial(ctx, endpoint(), &websocket.DialOptions{HTTPClient: client}); err == nil || res == nil || res.StatusCode != 503 {
 		if c != nil {
 			c.CloseNow()
+		}
+		if lc, statusErr := node.LocalClient(); statusErr == nil {
+			if status, statusErr := lc.Status(ctx); statusErr == nil {
+				for _, peer := range status.Peer {
+					t.Logf("after initial dial %s: peer=%s online=%t active=%t rx=%d tx=%d handshake=%v", time.Since(dialStart), peer.DNSName, peer.Online, peer.Active, peer.RxBytes, peer.TxBytes, peer.LastHandshake)
+				}
+			}
 		}
 		t.Fatalf("unowned connection: %v %v", res, err)
 	}

@@ -212,7 +212,7 @@ func (h *Hub) GetNode(ctx context.Context, r NodeRequest) (NodeDetails, error) {
 	return NodeDetails{}, fmt.Errorf("unknown node %q", r.Name)
 }
 func (h *Hub) refreshNames(ctx context.Context) error {
-	raw, err := h.Client.Trigger(ctx, iii.TriggerRequest{FunctionID: "engine::functions::list", Namespace: h.Namespace, Data: json.RawMessage(`{"include_internal":true}`), Timeout: 15 * time.Second})
+	raw, err := h.Client.Trigger(ctx, iii.TriggerRequest{FunctionID: "engine::functions::list", Namespace: "default", Data: json.RawMessage(`{"include_internal":true}`), Timeout: 15 * time.Second})
 	if err != nil {
 		return fmt.Errorf("list engine function prefixes: %w", err)
 	}
