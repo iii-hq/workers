@@ -273,6 +273,31 @@ impl Fixture {
         )
         .await
     }
+    /// The tunnel is ready at `url`: quick-tunnel::on-changed is called with
+    /// the snapshot and iii delivers it (contract: default delivery). Waits
+    /// until github::webhooks::tunnel-changed accepted it: its observer
+    /// (`deliver: output`) hands it the snapshot itself.
+    async fn tunnel_ready(&self, url: &str, generation: &str) {
+        const TARGET: &str = "github::webhooks::tunnel-changed";
+        let before = self.engine.activations().len();
+        let snapshot = self.tunnel.ready(&self.iii, url, generation).await;
+        let delivered = || {
+            self.engine.activations()[before..]
+                .iter()
+                .find(|a| a["target"] == TARGET && a["answered"] == true)
+                .cloned()
+        };
+        wait(|| delivered().is_some()).await;
+        let delivered = delivered().unwrap();
+        assert_eq!(
+            delivered["data"], snapshot,
+            "{TARGET} receives: {delivered}"
+        );
+        assert!(
+            delivered["error"].is_null(),
+            "{TARGET} answered: {delivered}"
+        );
+    }
     async fn flush(&self) {
         call(&self.iii, "github::webhooks::maintain", json!({})).await;
         self.queue.drain(&self.iii).await.unwrap();
@@ -297,8 +322,7 @@ impl Fixture {
             "starting tunnel cannot create a hook"
         );
         self.queue.drain(&self.iii).await.unwrap();
-        self.tunnel
-            .ready(&self.iii, "https://one.trycloudflare.com", "generation-one")
+        self.tunnel_ready("https://one.trycloudflare.com", "generation-one")
             .await;
         self.flush().await;
         for number in [1, 2] {
@@ -461,12 +485,7 @@ async fn recovery_follows_delivery_cursors_and_stops_after_five_pages() {
         // A real URL change still configures the hook once, drains the lifecycle
         // job, and leaves all watches active despite the bounded-history warning.
         fixture
-            .tunnel
-            .ready(
-                &fixture.iii,
-                "https://two.trycloudflare.com",
-                "generation-two",
-            )
+            .tunnel_ready("https://two.trycloudflare.com", "generation-two")
             .await;
         fixture.flush().await;
         assert_eq!(fixture.calls("PATCH").len(), 1);
@@ -568,7 +587,7 @@ async fn local_raw_webhooks_preserve_events_isolate_routes_and_cleanup_shared_ho
         assert_eq!(event["snapshot"]["ci"]["check_run:77"]["conclusion"], "success");
         assert!(fixture.status(2).await["snapshot"]["ci"].as_object().unwrap().is_empty());
         let old_hook = fixture.gh()["hook"].clone();
-        fixture.tunnel.ready(&fixture.iii, "https://two.trycloudflare.com", "generation-two").await;
+        fixture.tunnel_ready("https://two.trycloudflare.com", "generation-two").await;
         fixture.flush().await;
         let new_hook = fixture.gh()["hook"].clone();
         assert_eq!(fixture.calls("POST").len(), 1, "rotation must PATCH, not create/adopt");

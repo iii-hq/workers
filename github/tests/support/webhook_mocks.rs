@@ -2,8 +2,11 @@
 //! Queue ACK means accepted; dispatch is explicit so assertions can inspect the
 //! real SQLite inbox before the real registered process handler consumes it.
 //! Each mock source is a private function whose hooks keep its observers. A
-//! mock delivers by calling its own function, whose deliver hook calls
-//! through the observers the call is for, as the real queue worker does.
+//! mock delivers by calling its own function. The queue mock's deliver hook
+//! calls through the observer the call is for, as the queue worker does; the
+//! tunnel mock has no deliver hook, so iii delivers each call to every
+//! observer whose filters match, with that observer's `deliver`, as for the
+//! quick-tunnel worker.
 //! Like the queue worker, the queue keeps one durable subscription per
 //! observer outside a group (`observer:<id>`) and one per group (`@<group>`);
 //! a subscription and its backlog outlive the observers that consumed it.
@@ -267,20 +270,9 @@ impl Default for Tunnel {
 }
 impl Tunnel {
     pub fn register(&self, iii: &IIIClient) {
-        // Each call is one tunnel snapshot; the deliver hook hands it to the
-        // target of every observer whose filters match, and returns once
-        // they answered.
-        let engine = iii.clone();
-        iii.on_observer_deliver_for(ON_CHANGED, move |call: Call, observers: Vec<Observer>| {
-            let engine = engine.clone();
-            async move {
-                for obs in observers.iter().filter(|obs| obs.matches(&call)) {
-                    engine.call(through(obs, call.input.clone())).await?;
-                }
-                Ok::<Value, Error>(call.output.unwrap_or(Value::Null))
-            }
-        });
-        // quick-tunnel::on-changed takes no args: observers filter on input.tunnel_id.
+        // Each call is one tunnel snapshot, delivered by iii (default
+        // delivery). quick-tunnel::on-changed takes no args: observers filter
+        // on input.tunnel_id.
         self.observers
             .host(iii, ON_CHANGED, "Local controlled tunnel lifecycle", None);
         self.cron.host(
@@ -339,7 +331,10 @@ impl Tunnel {
     pub fn lease_count(&self) -> usize {
         self.leases.lock().unwrap().len()
     }
-    pub async fn ready(&self, iii: &IIIClient, url: &str, generation: &str) {
+    /// The tunnel is ready: calls quick-tunnel::on-changed with the snapshot,
+    /// which iii delivers to the observers, and returns the snapshot. The
+    /// call returns before the observers' targets answer.
+    pub async fn ready(&self, iii: &IIIClient, url: &str, generation: &str) -> Value {
         let value = json!({"tunnel_id":"webhooks","status":"ready","public_url":url,"generation":generation,"error":null});
         // A ready event and the status read expose the SAME authoritative generation.
         *self.snapshot.lock().unwrap() = value.clone();
@@ -355,7 +350,8 @@ impl Tunnel {
             assert!(!obs.matches(&event_call(other.clone())));
             assert!(obs.matches(&event_call(value.clone())));
         }
-        call(iii, ON_CHANGED, value).await;
+        call(iii, ON_CHANGED, value.clone()).await;
+        value
     }
 }
 /// A call of a source whose handler returned `event`.
