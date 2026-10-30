@@ -56,6 +56,12 @@ export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'default'
  */
 export const THINKING_LOWEST: ThinkingLevel = 'lowest'
 
+/**
+ * A chat message's role. Roles live only in memory: transcripts are
+ * session-manager entries, and lib/sessions/entry-mapper.ts derives each
+ * message's role from its entry as it reads them (a tool call reads as
+ * `function-call`), so no stored conversation carries a chat role.
+ */
 export type Role = 'user' | 'assistant' | 'thought' | 'function-call'
 
 /**
