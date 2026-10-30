@@ -522,6 +522,54 @@ async fn removing_an_observer_removes_its_route() {
     engine.shutdown().await;
 }
 
+/// The engine withdraws an observer while its worker is away and announces
+/// it again when the worker reattaches, or announces the observer a restarted
+/// worker creates under the same id: the route comes back under that id.
+#[tokio::test]
+async fn an_observer_announced_again_under_its_id_gets_its_route_back() {
+    let (engine, boot) = start().await;
+    let before = register_echo(&engine, "test::stable");
+    let route = json!({"method": "GET", "path": "/new/stable/{id}"});
+    assert!(observe(
+        &engine,
+        "obs-stable",
+        "test::stable",
+        route.clone(),
+        json!({})
+    )
+    .await
+    .is_none());
+    let url = format!("http://{}/new/stable/7", boot.local_addr);
+    assert_eq!(client().get(&url).send().await.unwrap().status(), 201);
+
+    engine.remove_observer(ON_REQUEST_FN, "obs-stable");
+    common::wait_for_no_route(&boot.routes, "GET", "/new/stable/:id").await;
+    assert_eq!(client().get(&url).send().await.unwrap().status(), 404);
+
+    let after = register_echo(&engine, "test::stable-again");
+    assert_eq!(
+        observe(
+            &engine,
+            "obs-stable",
+            "test::stable-again",
+            route,
+            json!({})
+        )
+        .await,
+        None,
+        "the same id gets the route back without HTTP_ROUTE_CONFLICT"
+    );
+    let resp = client().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["path_params"]["id"], "7");
+    assert_eq!(before.load(Ordering::SeqCst), 1);
+    assert_eq!(after.load(Ordering::SeqCst), 1, "the new target serves");
+
+    boot.shutdown().await;
+    engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn the_restricted_listener_serves_only_public_webhook_observers() {
     let (engine, boot) = start().await;
