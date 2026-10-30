@@ -74,6 +74,8 @@ The worker also observes `session::on-deleted` (drops the session's extraction c
 
 Every observer is created once at startup. Observed before its owning sibling (harness, session-manager, queue) is up, it stays `pending` and becomes active when the sibling registers the function.
 
+The extraction consumer observes under a stable id: the worker name (`memory`, or the `III_WORKER_NAME` its supervisor sets), then `:queue:` and the topic, preceded by `<namespace>/` when the worker has a namespace (`memory:queue:memory-extraction` by default; an id over 128 bytes keeps a 64-bit FNV-1a digest of it). The queue worker files a subscriber's durable queue under its observer id. When the worker stops, killed or not, the engine keeps its observers suspended for its grace period (`observers.observer_grace_ms`, 30 s by default) and withdraws them from their functions' workers. A restarted worker, under the same name and namespace, observes the topic under the same id: the engine replaces the suspended observer with the new one, and the queue worker hands the new process every job the previous one left unacked, once. While another observer holds the id (`OBSERVER_ID_CONFLICT`: the engine has not seen the previous process's connection close yet, or another worker holds it until its grace period ends), the worker logs the refusal and observes again after 1 s, then twice as long each time up to 30 s.
+
 ## Functions
 
 | Function | Purpose |
@@ -169,6 +171,12 @@ III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns> EXTRACTION_MODEL=<id> cargo tes
 
 ```bash
 III_ENGINE_WS_URL=ws://127.0.0.1:<port> cargo test --test engine
+```
+
+`tests/queue_restart.rs` runs the `memory` binary against the same engine, with a contract mock of the queue worker's `queue::on-message`: a killed worker, started again, gets the extraction jobs it left unacked, once each, under the same observer id; and while another worker holds the id, the worker observes again until it is free. It skips and fails like `tests/engine.rs`.
+
+```bash
+III_ENGINE_WS_URL=ws://127.0.0.1:<port> cargo test --test queue_restart
 ```
 
 ## Permissions

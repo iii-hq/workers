@@ -56,6 +56,60 @@ pub const SESSION_DELETED_DESC: &str =
 /// pass when this worker restarts mid-extraction.
 pub const EXTRACTION_QUEUE: &str = "memory-extraction";
 
+/// The name the memory binary registers under, unless its supervisor names it.
+pub const WORKER_NAME: &str = "memory";
+
+/// The name this worker registers under: a non-empty `III_WORKER_NAME` (the
+/// name a supervisor gives it, which the SDK applies), else [`WORKER_NAME`].
+pub fn worker_name() -> String {
+    std::env::var("III_WORKER_NAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| WORKER_NAME.to_string())
+}
+
+/// The engine's longest observer id, in bytes.
+const MAX_OBSERVER_ID_LEN: usize = 128;
+
+/// The id of the observer that consumes the extraction topic `topic`
+/// (`queue::on-message`): `<worker name>:queue:<topic>`, preceded by
+/// `<namespace>/` when the worker has a namespace
+/// (`memory:queue:memory-extraction` by default).
+///
+/// Every process of the worker observes under it, so after a restart the
+/// new process's `observe` replaces the observer the previous process left
+/// suspended (the engine disposes that one and announces the new one to the
+/// queue worker), and the queue worker hands the new process the jobs the
+/// previous one left unacked. An id longer than the engine's 128 bytes
+/// becomes `<worker name>:queue:fnv1a64:<digest of the whole id>`, cut to
+/// 128 bytes.
+pub fn extraction_observer_id(namespace: Option<&str>, worker_name: &str, topic: &str) -> String {
+    let id = match namespace {
+        Some(namespace) => format!("{namespace}/{worker_name}:queue:{topic}"),
+        None => format!("{worker_name}:queue:{topic}"),
+    };
+    if id.len() <= MAX_OBSERVER_ID_LEN {
+        return id;
+    }
+    let mut short = format!(
+        "{worker_name}:queue:fnv1a64:{:016x}",
+        fnv1a64(id.as_bytes())
+    );
+    let mut end = short.len().min(MAX_OBSERVER_ID_LEN);
+    while !short.is_char_boundary(end) {
+        end -= 1;
+    }
+    short.truncate(end);
+    short
+}
+
+/// 64-bit FNV-1a: the same digest in every process and every build.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 /// Envelope the harness posts to `pre-generate` hooks. Only the fields
 /// this worker reads are typed; everything else is ignored.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -1400,6 +1454,40 @@ fn last_user_text(messages: Option<&Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_extraction_observer_id_is_the_worker_and_its_topic() {
+        assert_eq!(
+            extraction_observer_id(None, WORKER_NAME, EXTRACTION_QUEUE),
+            "memory:queue:memory-extraction"
+        );
+        assert_eq!(
+            extraction_observer_id(Some("ops"), "memory-2", EXTRACTION_QUEUE),
+            "ops/memory-2:queue:memory-extraction"
+        );
+        // Over the engine's 128 bytes: the worker name and a digest of the
+        // whole id, the same on every call, distinct per namespace.
+        let namespace = "n".repeat(120);
+        let long = extraction_observer_id(Some(&namespace), WORKER_NAME, EXTRACTION_QUEUE);
+        assert!(long.len() <= MAX_OBSERVER_ID_LEN, "{long}");
+        assert!(long.starts_with("memory:queue:fnv1a64:"), "{long}");
+        assert_eq!(
+            long,
+            extraction_observer_id(Some(&namespace), WORKER_NAME, EXTRACTION_QUEUE)
+        );
+        let other = "m".repeat(120);
+        assert_ne!(
+            long,
+            extraction_observer_id(Some(&other), WORKER_NAME, EXTRACTION_QUEUE)
+        );
+        // A worker name near the limit is cut on a char boundary.
+        let name = "é".repeat(70);
+        let cut = extraction_observer_id(None, &name, EXTRACTION_QUEUE);
+        assert!(cut.len() <= MAX_OBSERVER_ID_LEN, "{cut}");
+        // The published FNV-1a 64 test vectors.
+        assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
 
     #[test]
     fn last_user_text_takes_newest_and_skips_injected() {
