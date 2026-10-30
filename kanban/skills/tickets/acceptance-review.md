@@ -125,7 +125,7 @@ A wake is delivered at most once, fire-and-forget: a dropped delivery, an observ
 ```json
 harness::observe {
   "function_id": "cron::on-tick",
-  "args": { "expression": "0 * * * *" },
+  "args": { "expression": "0 0 * * * *" },
   "once": false,
   "label": "in-review-sweep"
 }

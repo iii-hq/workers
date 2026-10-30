@@ -130,7 +130,7 @@ indistinguishable from "no news". So never let the wake be your only way back.
 ```json
 harness::observe {
   "function_id": "cron::on-tick",
-  "args": { "expression": "0 * * * *" },
+  "args": { "expression": "0 0 * * * *" },
   "once": false,
   "label": "KAN-8-check-in"
 }
