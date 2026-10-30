@@ -2,7 +2,8 @@ param(
     [Parameter(Position=0)][string]$Version,
     [Parameter(Position=1)][string]$PublicURL,
     [Parameter(Position=2)][string]$Code,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$Token
 )
 $ErrorActionPreference = 'Stop'
 
@@ -71,15 +72,37 @@ function Select-MeshArtifact($Response, [string]$Version, [string]$Target) {
 function Get-MeshArtifact([string]$Url, [string]$Path) {
     [IO.File]::WriteAllBytes($Path, (Invoke-HTTPS $Url))
 }
-function Invoke-MeshJoin([string]$Path, [string]$PublicURL, [string]$Code) {
-    & $Path join $PublicURL $Code
+function Invoke-MeshJoin([string]$Path, [string]$PublicURL, [string]$Code, [string]$Token) {
+    if ($Token) { & $Path join --token $Token }
+    else { & $Path join $PublicURL $Code }
     if ($LASTEXITCODE -ne 0) { throw "mesh join exited with $LASTEXITCODE" }
 }
-function Install-Mesh([string]$Version, [string]$PublicURL, [string]$Code, [switch]$DryRun) {
+function Assert-Token([string]$Token) {
+    try {
+        if ($Token.Length -gt 8192 -or $Token -cnotmatch '^iiimj_[A-Za-z0-9_-]+$') { throw 'format' }
+        $encoded = $Token.Substring(6).Replace('-', '+').Replace('_', '/')
+        $encoded += '=' * ((4 - $encoded.Length % 4) % 4)
+        $envelope = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)) | ConvertFrom-Json
+        $keys = @($envelope.PSObject.Properties.Name | Sort-Object)
+        if (($keys -join ',') -ne 'identity,public_url,secret') { throw 'fields' }
+        $hub = [Uri]$envelope.public_url
+        if (!$hub.IsAbsoluteUri -or $hub.Scheme -notin @('http','https') -or !$hub.Host -or $hub.UserInfo -or $envelope.public_url.Contains('?') -or $envelope.public_url.Contains('#')) { throw 'URL' }
+        if ($envelope.identity -cnotmatch '^[A-Za-z0-9+/]{43}=$' -or $envelope.secret -cnotmatch '^iiimjs_[A-Za-z0-9_-]{43}$') { throw 'credential' }
+    } catch { throw 'Invalid join token' }
+}
+function Install-Mesh {
+    [CmdletBinding()]
+    param([string]$Version, [string]$PublicURL, [string]$Code, [switch]$DryRun, [string]$Token)
     if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.+-]+)?$') { throw 'Invalid mesh version' }
-    $hub = [Uri]$PublicURL
-    if (!$hub.IsAbsoluteUri -or $hub.Scheme -notin @('http','https') -or !$hub.Host -or $hub.UserInfo) { throw 'Invalid hub URL' }
-    if ($Code -notmatch '^[0-9A-Za-z]{4}-?[0-9A-Za-z]{4}$') { throw 'Invalid device code' }
+    if ($PSBoundParameters.ContainsKey('Token') -and !$Token) { throw 'Invalid join token' }
+    if ($Token) {
+        if ($PublicURL -or $Code) { throw 'Invalid or ambiguous token options' }
+        Assert-Token $Token
+    } else {
+        $hub = [Uri]$PublicURL
+        if (!$hub.IsAbsoluteUri -or $hub.Scheme -notin @('http','https') -or !$hub.Host -or $hub.UserInfo) { throw 'Invalid hub URL' }
+        if ($Code -notmatch '^[0-9A-Za-z]{4}-?[0-9A-Za-z]{4}$') { throw 'Invalid device code' }
+    }
     $target = Get-MeshTarget
     $artifact = Select-MeshArtifact (Get-MeshResponse $Version $target) $Version $target
     if ($DryRun) { Write-Output $artifact.url; return }
@@ -91,10 +114,10 @@ function Install-Mesh([string]$Version, [string]$PublicURL, [string]$Code, [swit
         $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $binary).Hash
         if ($actual -ne $artifact.sha256) { throw 'mesh SHA256 mismatch; refusing installation' }
         # mesh authenticates this caller's SID across its own UAC prompt.
-        Invoke-MeshJoin $binary $PublicURL $Code
+        Invoke-MeshJoin $binary $PublicURL $Code $Token
         Write-Output 'Installed. Use the mesh.exe in Program Files\iii-mesh for status and leave.'
     } finally { Remove-Item -LiteralPath $directory -Recurse -Force }
 }
 if ($MyInvocation.InvocationName -ne '.') {
-    Install-Mesh -Version $Version -PublicURL $PublicURL -Code $Code -DryRun:$DryRun
+    Install-Mesh @PSBoundParameters
 }

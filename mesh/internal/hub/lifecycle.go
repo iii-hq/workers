@@ -91,7 +91,11 @@ func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *H
 		if h.Config().PublicURL == "" {
 			return "", errors.New("public_url is not set")
 		}
-		if subtle.ConstantTimeCompare([]byte(secret), []byte(join.Secret(h.Coordinator.Identity(), h.Coordinator.Code()))) != 1 {
+		if join.IsTokenSecret(secret) {
+			if _, err := h.Coordinator.RedeemToken(secret); err != nil {
+				return "", err
+			}
+		} else if subtle.ConstantTimeCompare([]byte(secret), []byte(join.Secret(h.Coordinator.Identity(), h.Coordinator.Code()))) != 1 {
 			return "", join.ErrCode
 		}
 		if h.Client != nil {
@@ -104,11 +108,12 @@ func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *H
 	if err != nil {
 		return h, err
 	}
+	h.Coordinator.SetJoinLimit(h.limit)
 	h.Sessions = &Sessions{}
 	h.Tickets = gateway.NewTickets(10*time.Second, time.Now)
 	h.MeshGateway = gateway.New(h.Coordinator.Node, cfg.ProxyURL, h.Tickets)
 	h.SetHooks(Hooks{})
-	h.Coordinator.Gone = h.revoke
+	h.Coordinator.SetGone(h.revoke)
 	if client != nil {
 		if err = h.refreshNames(ctx); err != nil {
 			return h, err

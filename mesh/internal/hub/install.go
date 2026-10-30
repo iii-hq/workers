@@ -25,3 +25,9 @@ func InstallLines(version, publicURL, code string) (unix, windows string) {
 	return fmt.Sprintf("curl -fsSL %s | sh -s -- %s %s %s", shellArgument(base+"sh"), shellArgument(version), shellArgument(publicURL), shellArgument(code)),
 		fmt.Sprintf("& ([scriptblock]::Create((irm %s))) %s %s %s", powershellArgument(base+"ps1"), powershellArgument(version), powershellArgument(publicURL), powershellArgument(code))
 }
+
+func TokenInstallLines(version, token string) (unix, windows string) {
+	base := "https://raw.githubusercontent.com/iii-hq/workers/mesh/v" + version + "/mesh/install/install."
+	return fmt.Sprintf("curl -fsSL %s | sh -s -- %s --token %s", shellArgument(base+"sh"), shellArgument(version), shellArgument(token)),
+		fmt.Sprintf("& ([scriptblock]::Create((irm %s))) -Version %s -Token %s", powershellArgument(base+"ps1"), powershellArgument(version), powershellArgument(token))
+}

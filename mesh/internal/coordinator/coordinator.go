@@ -48,6 +48,7 @@ import (
 	"golang.org/x/net/http2"
 	"tailscale.com/control/controlhttp/controlhttpserver"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tstime"
 	"tailscale.com/types/key"
 	"tailscale.com/util/zstdframe"
 )
@@ -64,6 +65,8 @@ const (
 )
 
 type node struct {
+	TokenID string    `json:"token_id,omitempty"`
+	LastMap time.Time `json:"last_map,omitempty"`
 	RuntimeMetadata
 	ID        tailcfg.NodeID    `json:"id"`
 	Name      string            `json:"name"`
@@ -80,9 +83,8 @@ type node struct {
 	Hostinfo  *tailcfg.Hostinfo `json:"hostinfo"`
 	capVer    tailcfg.CapabilityVersion
 	streams   int
-	quiet     time.Time
 	ver       uint64
-	timer     *time.Timer
+	timer     tstime.TimerController
 }
 
 type NodeInfo struct {
@@ -97,11 +99,13 @@ type NodeInfo struct {
 }
 
 type Coordinator struct {
+	clock       tstime.Clock
+	limit       *join.Limit
 	key         key.MachinePrivate
 	file        string
 	join        func(secret, addr string) (string, error)
 	self        string
-	Gone        func(name string)
+	gone        func(name string)
 	mu          sync.Mutex
 	st          state
 	host        string
@@ -138,6 +142,12 @@ func (c *Coordinator) Relay(u string) {
 	defer c.mu.Unlock()
 	c.host, c.relayPort = parsed.Hostname(), port
 	c.wake()
+}
+
+func (c *Coordinator) SetGone(gone func(string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gone = gone
 }
 
 func (c *Coordinator) SetNameTaken(taken func(string) bool) {
@@ -219,6 +229,7 @@ func (c *Coordinator) Remove(name string) error {
 	_, _ = crand.Read(c.st.CodeSeed)
 	c.st.RefusedNodes = append(slices.Clone(c.st.RefusedNodes), n.Keys...)
 	c.st.RefusedMachines = append(slices.Clone(c.st.RefusedMachines), n.Machine)
+	c.revokeToken(n.TokenID)
 	n.Removed = true
 	if err := c.save(); err != nil {
 		c.st = before
@@ -226,8 +237,8 @@ func (c *Coordinator) Remove(name string) error {
 		return err
 	}
 	c.changed(n)
-	if c.Gone != nil {
-		go c.Gone(n.Name)
+	if c.gone != nil {
+		go c.gone(n.Name)
 	}
 	return nil
 }
@@ -250,17 +261,32 @@ func (c *Coordinator) Close() error {
 }
 
 func (c *Coordinator) expire(n *node) {
-	n.quiet = time.Now()
 	if !n.Ephemeral || n.Removed || c.ctx.Err() != nil {
 		return
 	}
 	if n.timer != nil {
 		n.timer.Stop()
 	}
-	n.timer = time.AfterFunc(idle, func() {
+	last := n.LastMap
+	if last.IsZero() {
+		last = n.JoinedAt
+	}
+	delay := max(time.Duration(0), idle-c.clock.Since(last))
+	c.scheduleExpiry(n, delay)
+}
+func (c *Coordinator) scheduleExpiry(n *node, delay time.Duration) {
+	n.timer = c.clock.AfterFunc(delay, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.ctx.Err() != nil || n.Removed || n.streams > 0 || time.Since(n.quiet) < idle || !slices.Contains(c.st.Nodes, n) {
+		if c.ctx.Err() != nil || n.Removed || n.streams > 0 || !slices.Contains(c.st.Nodes, n) {
+			return
+		}
+		last := n.LastMap
+		if last.IsZero() {
+			last = n.JoinedAt
+		}
+		if c.clock.Since(last) < idle {
+			c.expire(n)
 			return
 		}
 		before := c.st.Nodes
@@ -268,12 +294,12 @@ func (c *Coordinator) expire(n *node) {
 		if err := c.save(); err != nil {
 			c.st.Nodes = before
 			log.Printf("coordinator: expire: %v", err)
-			c.expire(n)
+			c.scheduleExpiry(n, time.Second)
 			return
 		}
 		c.wake()
-		if c.Gone != nil {
-			go c.Gone(n.Name)
+		if c.gone != nil {
+			go c.gone(n.Name)
 		}
 	})
 }
@@ -361,7 +387,7 @@ func (c *Coordinator) upgrade(w http.ResponseWriter, r *http.Request) {
 	(&http2.Server{ReadIdleTimeout: pingIdle}).ServeConn(conn, &http2.ServeConnOpts{Context: ctx, BaseConfig: &http.Server{Handler: http.MaxBytesHandler(mux, bodyLimit)}})
 }
 
-func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailcfg.RegisterRequest) tailcfg.RegisterResponse {
+func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailcfg.RegisterRequest) (result tailcfg.RegisterResponse) {
 	if machine.IsZero() || req.NodeKey.IsZero() {
 		return tailcfg.RegisterResponse{Error: "missing machine or node key"}
 	}
@@ -374,12 +400,24 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 	n := c.byKey(req.NodeKey)
 	seed := c.st.CodeSeed
 	needsJoin := n == nil
+	limit := c.limit
 	c.mu.Unlock()
 	reserved := ""
+	secret := ""
+	if req.Auth != nil {
+		secret = req.Auth.AuthKey
+	}
+	tokenAuth := join.IsTokenSecret(secret)
 	if needsJoin {
-		secret := ""
-		if req.Auth != nil {
-			secret = req.Auth.AuthKey
+		if limit != nil && secret != c.self {
+			if err := limit.Allow(addr); err != nil {
+				return tailcfg.RegisterResponse{Error: err.Error()}
+			}
+			defer func() {
+				if result.Error != "" {
+					limit.Refused(addr)
+				}
+			}()
 		}
 		if subtle.ConstantTimeCompare([]byte(secret), []byte(c.self)) == 1 {
 			reserved = "hub"
@@ -402,7 +440,7 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 	if c.ctx.Err() != nil {
 		return tailcfg.RegisterResponse{Error: "coordinator closed"}
 	}
-	if needsJoin && !slices.Equal(seed, c.st.CodeSeed) {
+	if needsJoin && !tokenAuth && !slices.Equal(seed, c.st.CodeSeed) {
 		return tailcfg.RegisterResponse{Error: "join code changed during registration"}
 	}
 	if slices.Contains(c.st.RefusedNodes, req.NodeKey) || slices.Contains(c.st.RefusedMachines, machine) {
@@ -432,8 +470,8 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 				n.timer.Stop()
 			}
 			c.wake()
-			if c.Gone != nil {
-				go c.Gone(n.Name)
+			if c.gone != nil {
+				go c.gone(n.Name)
 			}
 		}
 		return tailcfg.RegisterResponse{NodeKeyExpired: true}
@@ -449,6 +487,14 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 				return tailcfg.RegisterResponse{Error: "node keys refused"}
 			}
 		} else {
+			tokenIndex := -1
+			if tokenAuth {
+				var err error
+				tokenIndex, err = c.token(secret)
+				if err != nil {
+					return tailcfg.RegisterResponse{Error: err.Error()}
+				}
+			}
 			name := reserved
 			if name == "" {
 				host := ""
@@ -461,12 +507,20 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 				return tailcfg.RegisterResponse{Error: "reserved name is taken"}
 			}
 			n = &node{ID: c.st.Next, Name: name, Machine: machine, Ephemeral: req.Ephemeral}
+
+			if tokenIndex >= 0 {
+				token := c.st.Tokens[tokenIndex]
+				n.TokenID, n.Ephemeral = token.ID, token.Ephemeral
+				token.Nodes = append(slices.Clone(token.Nodes), name)
+				c.st.Tokens = slices.Clone(c.st.Tokens)
+				c.st.Tokens[tokenIndex] = token
+			}
 			c.st.Next++
 			c.st.Nodes = append(slices.Clone(c.st.Nodes), n)
 		}
 		n.Key, n.Hostinfo = req.NodeKey, req.Hostinfo.Clone()
 		n.Keys = append(slices.Clone(n.Keys), req.NodeKey)
-		n.recordActivity()
+		n.recordActivity(c.clock.Now())
 		if err := c.save(); err != nil {
 			c.st = before
 			if existed {
@@ -478,7 +532,7 @@ func (c *Coordinator) register(machine key.MachinePublic, addr string, req tailc
 		c.expire(n)
 	} else {
 		before := *n
-		n.recordActivity()
+		n.recordActivity(c.clock.Now())
 		if err := c.save(); err != nil {
 			*n = before
 			return tailcfg.RegisterResponse{Error: err.Error()}
@@ -542,7 +596,7 @@ func (c *Coordinator) serveMap(w http.ResponseWriter, r *http.Request, machine k
 
 	sent, host := map[tailcfg.NodeID]uint64{}, ""
 	ka := keepAlive + rand.N(jitter)
-	tick := time.NewTicker(ka)
+	tick, tickC := c.clock.NewTicker(ka)
 	defer tick.Stop()
 	relay, _ := r.Context().Value(relayContextKey{}).(*tailcfg.DERPNode)
 	for full := true; ; full = false {
@@ -556,6 +610,9 @@ func (c *Coordinator) serveMap(w http.ResponseWriter, r *http.Request, machine k
 			if err := write(w, req.Compress, resp); err != nil {
 				return
 			}
+			if !c.mapProgress(n) {
+				return
+			}
 			tick.Reset(ka)
 			if resp.Node != nil && !resp.Node.MachineAuthorized {
 				return
@@ -567,12 +624,34 @@ func (c *Coordinator) serveMap(w http.ResponseWriter, r *http.Request, machine k
 		case <-r.Context().Done():
 			return
 		case <-wake:
-		case <-tick.C:
+		case <-tickC:
 			if err := write(w, req.Compress, &tailcfg.MapResponse{KeepAlive: true}); err != nil {
+				return
+			}
+			if !c.mapProgress(n) {
 				return
 			}
 		}
 	}
+}
+
+// A live poll must survive restart without extending an offline node's lease.
+func (c *Coordinator) mapProgress(n *node) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.authorized(n) {
+		return false
+	}
+	before := *n
+	n.LastMap = c.clock.Now().UTC()
+	n.recordActivity(n.LastMap)
+	if err := c.save(); err != nil {
+		*n = before
+		log.Printf("coordinator: map activity: %v", err)
+		return false
+	}
+	c.expire(n)
+	return true
 }
 
 // update takes what a map request says about n. Peers see a new disco key,
@@ -595,19 +674,21 @@ func (c *Coordinator) update(n *node, req tailcfg.MapRequest) error {
 		n.Hostinfo = hi
 	}
 	n.capVer = req.Version
-	n.recordActivity()
+	n.LastMap = c.clock.Now().UTC()
+	n.recordActivity(c.clock.Now())
 	if err := c.save(); err != nil {
 		*n = before
 		return err
 	}
+	c.expire(n)
 	if moved {
 		c.changed(n)
 	}
 	return nil
 }
 
-func (n *node) recordActivity() {
-	now := time.Now().UTC()
+func (n *node) recordActivity(now time.Time) {
+	now = now.UTC()
 	if n.JoinedAt.IsZero() {
 		n.JoinedAt = now
 	}

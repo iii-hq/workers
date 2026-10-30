@@ -124,3 +124,69 @@ func TestJoinRefusesChangedIdentityBeforeInstallation(t *testing.T) {
 		t.Fatal("persisted unpinned identity")
 	}
 }
+
+func TestTokenJoinArgs(t *testing.T) {
+	s := testState(t)
+	_, raw, err := join.NewToken("https://hub.example/prefix", s.Identity.Identity, join.TokenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"--token", raw}, {"--port=0", "--token=" + raw}} {
+		parsed, err := ParseJoin(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if parsed.Token != raw || parsed.PublicURL != "https://hub.example/prefix" || parsed.Code != "" {
+			t.Fatal("lost token enrollment arguments")
+		}
+	}
+	for _, args := range [][]string{{"--token"}, {"--token", "invalid"}, {"--token", raw, "https://h", "ABCD-EFGH"}, {"--token", raw, "--token", raw}, {"--token", raw, "--port=1", "--port=2"}, {"--port=1", "--port=2", "https://h", "ABCD-EFGH"}} {
+		if _, err := ParseJoin(args); err == nil {
+			t.Fatal("accepted ambiguous/malformed join arguments")
+		}
+	}
+}
+
+func TestTokenJoinPinsIdentityAndOperator(t *testing.T) {
+	a, _, _ := testApp(t)
+	os.RemoveAll(a.paths.State)
+	s := testState(t)
+	_, raw, _ := join.NewToken("https://hub.example", s.Identity.Identity, join.TokenOptions{})
+	a.operator = func() (string, error) { return "alice", nil }
+	a.checkOperator = func(string) error { return nil }
+	a.resolveOperator = func(string) (string, string, error) { return "DOMAIN\\alice", "canonical-operator-id", nil }
+	a.hostname = func() (string, error) { return "Laptop", nil }
+	a.identity = func(context.Context, string) (join.Identity, error) { return s.Identity, nil }
+	a.redeem = func(context.Context, string, string) (string, ed25519.PublicKey, error) {
+		t.Fatal("token invoked device-code exchange")
+		return "", nil, nil
+	}
+	a.executable = func() (string, error) { return "/download", nil }
+	a.install = func(bin, op string) error {
+		saved, err := loadState(a.paths.State)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if op != "canonical-operator-id" || saved.Operator != "DOMAIN\\alice" || saved.OperatorID != op || saved.RequestedName != "laptop" || saved.Port != 0 {
+			t.Fatal("lost canonical ownership")
+		}
+		if saved.Secret == raw || !join.IsTokenSecret(saved.Secret) {
+			t.Fatal("stored raw envelope or lost auth credential")
+		}
+		return nil
+	}
+	args, _ := ParseJoin([]string{"--token", raw, "--port=0"})
+	if err := a.enroll(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+	os.RemoveAll(a.paths.State)
+	other := testState(t)
+	a.identity = func(context.Context, string) (join.Identity, error) { return other.Identity, nil }
+	a.install = func(string, string) error { t.Fatal("installed unpinned hub"); return nil }
+	if err := a.enroll(context.Background(), args); err == nil {
+		t.Fatal("accepted swapped token identity")
+	}
+	if exists(filepath.Join(a.paths.State, "join.json")) {
+		t.Fatal("saved unpinned enrollment")
+	}
+}

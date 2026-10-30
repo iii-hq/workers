@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/url"
@@ -14,36 +15,57 @@ import (
 )
 
 type JoinArgs struct {
-	PublicURL, Code string
-	Port            int
+	PublicURL, Code, Token string
+	Port                   int
 }
 
 func ParseJoin(args []string) (JoinArgs, error) {
 	a := JoinArgs{Port: 41643}
 	var positional []string
+	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--port" {
-			i++
-			if i >= len(args) {
-				return a, errors.New("--port requires a value")
+		option, value, hasValue := strings.Cut(arg, "=")
+		if option == "--port" || option == "--token" {
+			if seen[option] {
+				return a, fmt.Errorf("duplicate %s", option)
 			}
-			arg = "--port=" + args[i]
-		}
-		if value, ok := strings.CutPrefix(arg, "--port="); ok {
+			seen[option] = true
+			if !hasValue {
+				i++
+				if i >= len(args) {
+					return a, fmt.Errorf("%s requires a value", option)
+				}
+				value = args[i]
+			}
+			if option == "--token" {
+				a.Token = value
+				continue
+			}
 			p, err := strconv.Atoi(value)
 			if err != nil || p < 0 || p > 65535 {
 				return a, errors.New("port must be between 0 and 65535")
 			}
 			a.Port = p
 		} else if strings.HasPrefix(arg, "-") {
-			return a, fmt.Errorf("unknown join option %s", arg)
+			return a, errors.New("unknown join option")
 		} else {
 			positional = append(positional, arg)
 		}
 	}
+	if seen["--token"] {
+		if len(positional) != 0 {
+			return a, errors.New("--token cannot be combined with URL and code")
+		}
+		envelope, err := join.DecodeToken(a.Token)
+		if err != nil {
+			return a, err
+		}
+		a.PublicURL = envelope.PublicURL
+		return a, nil
+	}
 	if len(positional) != 2 {
-		return a, errors.New("usage: mesh join [--port 41643] <url> <code>")
+		return a, errors.New("usage: mesh join [--port 41643] <url> <code> | --token <token>")
 	}
 	a.PublicURL, a.Code = positional[0], positional[1]
 	if err := validateURL(a.PublicURL); err != nil {
@@ -69,9 +91,13 @@ func Join(ctx context.Context, publicURL, code string, port int) error {
 	return defaults("").join(ctx, publicURL, code, port)
 }
 func (a *app) join(ctx context.Context, publicURL, code string, port int) error {
-	if _, err := ParseJoin([]string{publicURL, code, "--port=" + strconv.Itoa(port)}); err != nil {
+	args, err := ParseJoin([]string{publicURL, code, "--port=" + strconv.Itoa(port)})
+	if err != nil {
 		return err
 	}
+	return a.enroll(ctx, args)
+}
+func (a *app) enroll(ctx context.Context, args JoinArgs) error {
 	if exists(filepath.Join(a.paths.State, "join.json")) || exists(filepath.Join(a.paths.State, "removed")) {
 		return errors.New("this machine is already installed; run mesh leave before joining again")
 	}
@@ -86,18 +112,28 @@ func (a *app) join(ctx context.Context, publicURL, code string, port int) error 
 	if err != nil {
 		return err
 	}
-	secret, pin, err := a.redeem(ctx, publicURL, code)
-	if err != nil {
-		return err
+	var secret string
+	var pin ed25519.PublicKey
+	if args.Token != "" {
+		envelope, e := join.DecodeToken(args.Token)
+		if e != nil {
+			return e
+		}
+		secret, pin = envelope.Secret, envelope.Identity
+	} else {
+		secret, pin, err = a.redeem(ctx, args.PublicURL, args.Code)
+		if err != nil {
+			return err
+		}
 	}
-	identity, err := a.identity(ctx, publicURL)
+	identity, err := a.identity(ctx, args.PublicURL)
 	if err != nil {
 		return err
 	}
 	if err = identity.Verify(pin); err != nil {
 		return err
 	}
-	s := State{PublicURL: publicURL, Secret: secret, Identity: identity, Operator: operator, RequestedName: requestedName(hostname), Port: port}
+	s := State{PublicURL: args.PublicURL, Secret: secret, Identity: identity, Operator: operator, RequestedName: requestedName(hostname), Port: args.Port}
 	if a.resolveOperator != nil {
 		s.Operator, s.OperatorID, err = a.resolveOperator(operator)
 		if err != nil {

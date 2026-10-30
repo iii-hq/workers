@@ -4,15 +4,35 @@ set -eu
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 dry_run=no
 if [ "${1-}" = --dry-run ]; then dry_run=yes; shift; fi
-[ "$#" -eq 3 ] || fail 'usage: install.sh [--dry-run] <version> <public_url> <code>'
+[ "$#" -eq 3 ] || fail 'usage: install.sh [--dry-run] <version> <public_url> <code> | <version> --token <token>'
 version=$1
-public_url=$2
-code=$3
+mode=code
+if [ "$2" = --token ]; then
+    mode=token
+    token=$3
+    case "$token" in iiimj_?*) ;; *) fail 'invalid join token' ;; esac
+    case "${token#iiimj_}" in *[!A-Za-z0-9_-]*) fail 'invalid join token' ;; esac
+else
+    public_url=$2
+    code=$3
+    case "$public_url" in http://?*|https://?*) ;; *) fail 'hub URL must use HTTP or HTTPS' ;; esac
+    case "$code" in *[!A-Za-z0-9-]*) fail 'invalid device code' ;; esac
+    [ "${#code}" -eq 8 ] || [ "${#code}" -eq 9 ] || fail 'invalid device code'
+fi
 for dependency in curl jq; do
     command -v "$dependency" >/dev/null 2>&1 || fail "install requires $dependency; install it and retry"
 done
 printf '%s' "$version" | jq -Re 'test("^[0-9]+\\.[0-9]+\\.[0-9]+([+-][A-Za-z0-9.+-]+)?$")' >/dev/null || fail 'invalid mesh version'
-case "$public_url" in http://?*|https://?*) ;; *) fail 'hub URL must use HTTP or HTTPS' ;; esac
+if [ "$mode" = token ]; then
+    [ "${#token}" -le 8192 ] || fail 'invalid join token'
+    printf '%s' "${token#iiimj_}" | jq -Re '
+        try (gsub("-"; "+") | gsub("_"; "/") | @base64d | fromjson |
+        (keys == ["identity", "public_url", "secret"]) and
+        (.public_url | test("^https?://[^/?#@[:space:]]+(/[^?#]*)?$")) and
+        (.identity | test("^[A-Za-z0-9+/]{43}=$")) and
+        (.secret | test("^iiimjs_[A-Za-z0-9_-]{43}$"))) catch false
+    ' >/dev/null || fail 'invalid join token'
+fi
 case "$(uname -m)" in
     x86_64|amd64) arch=x86_64 ;;
     arm64|aarch64) arch=aarch64 ;;
@@ -58,4 +78,5 @@ else actual=$(shasum -a 256 "$work/mesh"); fi
 actual=${actual%% *}
 [ "$actual" = "$expected" ] || fail 'mesh SHA256 mismatch; refusing installation'
 chmod 755 "$work/mesh"
-sudo -- "$work/mesh" join "$public_url" "$code"
+if [ "$mode" = token ]; then sudo -- "$work/mesh" join --token "$token"
+else sudo -- "$work/mesh" join "$public_url" "$code"; fi

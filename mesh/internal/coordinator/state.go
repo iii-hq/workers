@@ -27,6 +27,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,12 +36,15 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/iii-hq/workers/mesh/internal/join"
 	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tstime"
 	"tailscale.com/types/key"
 )
 
 type state struct {
+	Tokens          []join.Token            `json:"tokens,omitempty"`
 	Identity        ed25519.PrivateKey      `json:"identity"`
 	Control         key.MachinePrivate      `json:"control"`
 	Relay           key.NodePrivate         `json:"relay"`
@@ -54,10 +58,14 @@ type state struct {
 }
 
 func New(dir string, join func(secret, addr string) (string, error)) (*Coordinator, error) {
+	return newWithClock(dir, join, tstime.StdClock{})
+}
+
+func newWithClock(dir string, join func(secret, addr string) (string, error), clock tstime.Clock) (*Coordinator, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	c := &Coordinator{file: filepath.Join(dir, "state.json"), join: join, self: rand.Text(), wakes: map[chan struct{}]bool{}}
+	c := &Coordinator{clock: clock, file: filepath.Join(dir, "state.json"), join: join, self: rand.Text(), wakes: map[chan struct{}]bool{}}
 	b, err := os.ReadFile(c.file)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -89,9 +97,11 @@ func New(dir string, join func(secret, addr string) (string, error)) (*Coordinat
 	}
 	c.key = c.st.Control
 	c.ctx, c.cancel = context.WithCancel(context.Background())
+	c.mu.Lock()
 	for _, n := range c.st.Nodes {
 		c.expire(n)
 	}
+	c.mu.Unlock()
 	return c, nil
 }
 
@@ -100,10 +110,31 @@ func (c *Coordinator) validate() error {
 	if len(st.Identity) != ed25519.PrivateKeySize || !slices.Equal(ed25519.NewKeyFromSeed(st.Identity[:ed25519.SeedSize]), st.Identity) || st.Control.IsZero() || st.Relay.IsZero() || len(st.CodeSeed) != 32 || !st.Prefix.IsValid() || !st.Prefix.Addr().Is6() || st.Prefix.Bits() != 48 || st.Prefix.Addr().As16()[0] != 0xfd || st.Prefix.Masked() != st.Prefix || st.Next < 1 {
 		return errors.New("invalid hub state")
 	}
+	tokens := map[string]join.Token{}
+	hashes := map[string]bool{}
+	for _, token := range st.Tokens {
+		hash, err := hex.DecodeString(token.Hash)
+		if token.ID == "" || tokens[token.ID].ID != "" || err != nil || len(hash) != 32 || token.Hash != hex.EncodeToString(hash) || hashes[token.Hash] || token.Reusable && !token.Ephemeral || !token.Reusable && len(token.Nodes) > 1 {
+			return errors.New("invalid token registry")
+		}
+		for _, name := range token.Nodes {
+			if SanitizeName(name) != name || isReserved(name) {
+				return errors.New("invalid token node history")
+			}
+		}
+		tokens[token.ID] = token
+		hashes[token.Hash] = true
+	}
 	ids, names, machines, keys := map[tailcfg.NodeID]bool{}, map[string]bool{}, map[key.MachinePublic]bool{}, map[key.NodePublic]bool{}
 	for _, n := range st.Nodes {
 		if n == nil || n.ID < 1 || n.ID >= st.Next || ids[n.ID] || SanitizeName(n.Name) != n.Name || n.Key.IsZero() || n.Machine.IsZero() || keys[n.Key] || machines[n.Machine] || !n.Removed && names[n.Name] || !slices.Contains(n.Keys, n.Key) {
 			return errors.New("invalid node registry")
+		}
+		if n.TokenID != "" {
+			token, ok := tokens[n.TokenID]
+			if !ok || !slices.Contains(token.Nodes, n.Name) || token.Ephemeral != n.Ephemeral || n.Removed && !token.Revoked {
+				return errors.New("invalid creating token")
+			}
 		}
 		ids[n.ID], keys[n.Key], machines[n.Machine] = true, true, true
 		if !n.Removed {

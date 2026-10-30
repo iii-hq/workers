@@ -98,7 +98,10 @@ func Execute(ctx context.Context, args []string, version string, w io.Writer) er
 			return err
 		}
 		elevate.Root(args...)
-		return Join(ctx, a.PublicURL, a.Code, a.Port)
+		if !elevate.Is() {
+			return errors.New("mesh join requires elevation")
+		}
+		return defaults("").enroll(ctx, a)
 	case "status":
 		if len(args) != 1 {
 			return errors.New("usage: mesh status")

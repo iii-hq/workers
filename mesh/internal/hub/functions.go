@@ -10,6 +10,7 @@ import (
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+	"github.com/iii-hq/workers/mesh/internal/join"
 )
 
 type Install struct {
@@ -19,6 +20,43 @@ type Install struct {
 type JoinResult struct {
 	Code    string  `json:"code"`
 	Install Install `json:"install"`
+}
+
+type TokenResult struct {
+	TokenID string  `json:"token_id"`
+	Token   string  `json:"token"`
+	Install Install `json:"install"`
+}
+type RevokeTokenRequest struct {
+	TokenID string `json:"token_id"`
+}
+type RevokeTokenResult struct {
+	Revoked bool `json:"revoked"`
+}
+
+func (h *Hub) JoinToken(ctx context.Context, opts join.TokenOptions) (TokenResult, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if _, err := h.joinCode(); err != nil {
+		return TokenResult{}, err
+	}
+	id, token, err := h.Coordinator.IssueToken(h.config.PublicURL, opts)
+	if err != nil {
+		return TokenResult{}, err
+	}
+	unix, windows := TokenInstallLines(h.Version, token)
+	return TokenResult{TokenID: id, Token: token, Install: Install{Unix: unix, Windows: windows}}, nil
+}
+func (h *Hub) RevokeToken(ctx context.Context, req RevokeTokenRequest) (RevokeTokenResult, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.Coordinator == nil {
+		return RevokeTokenResult{}, errors.New("hub is not running")
+	}
+	if err := h.Coordinator.RevokeToken(req.TokenID); err != nil {
+		return RevokeTokenResult{}, err
+	}
+	return RevokeTokenResult{Revoked: true}, nil
 }
 
 func functionPrefixes(raw json.RawMessage) (map[string]bool, error) {
@@ -237,6 +275,12 @@ func (h *Hub) registerFunctions(client *iii.Client) error {
 		return err
 	}
 	if err := iii.RegisterFunctionTyped(client, "mesh::join::code", h.JoinCode); err != nil {
+		return err
+	}
+	if err := iii.RegisterFunctionTyped(client, "mesh::join::token", h.JoinToken); err != nil {
+		return err
+	}
+	if err := iii.RegisterFunctionTyped(client, "mesh::join::revoke", h.RevokeToken); err != nil {
 		return err
 	}
 	return iii.RegisterFunctionTyped(client, "mesh::join::cycle", h.CycleCode)

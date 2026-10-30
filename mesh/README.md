@@ -144,13 +144,54 @@ implemented boundaries.
 | --- | --- |
 | `mesh join <url> <code>` | Elevate, enroll, install and start the node service |
 | `mesh join --port 41643 <url> <code>` | Choose the node UDP port (default 41643) |
+| `mesh join --token <token>` | Enroll unattended with the token’s hub URL and identity pin |
 | `mesh status` | Read local node and peer status without elevation |
 | `mesh leave` | Elevate, request hub logout, stop/unregister the service and clean up after confirmation |
 | `sudo mesh node` | Run the privileged service entrypoint, including a pending logout retry |
 
-Token enrollment is not available yet. Workers run as the saved operator,
+Workers run as the saved operator,
 using `ws://hub.iii.internal:49135` and the hub namespace; their configuration
 entry is `<node>__<worker>`. Self-updates restart through the service manager.
+
+## Unattended enrollment
+
+Issue a single-use token with an optional lifetime in seconds:
+
+```bash
+iii trigger mesh::join::token expires_in_secs=3600
+mesh join --token <returned-token>
+```
+
+The response contains `token_id`, `token`, and executable Unix/Windows
+`install` commands. Both installers accept tokens and check the downloaded
+binary's SHA256 before elevation or join. The `iiimj_` token contains the exact
+hub URL, its identity pin and a random credential. Keep it private. The hub
+stores only the credential hash; the node saves its credential and pinned
+identity in private enrollment state alongside its canonical operator account.
+
+The first successful durable registration consumes a single-use token. A failed
+hub state save leaves it usable. Omitted or zero `expires_in_secs` means no
+expiry; negative values are refused. To revoke future enrollment:
+
+```bash
+iii trigger mesh::join::revoke token_id=<returned-id>
+```
+
+Revocation and expiry leave the device code and already accepted nodes intact.
+Removing a node also revokes its creating token, including reusable tokens,
+and cycles the device code. Reusable tokens require ephemeral nodes:
+
+```bash
+iii trigger mesh::join::token ephemeral=true reusable=true expires_in_secs=3600
+```
+
+An ephemeral node disappears after three minutes without map activity. Healthy
+open map streams remain active; their progress is persisted so a hub restart
+preserves the remaining idle interval. Ephemeral nodes are excluded from drive
+`"*"` membership and must be named explicitly. Expiry updates peer maps, drive
+membership and node revocation hooks. Local tests cover issuance, real Mesh
+enrollment, restart, removal and both installer boundaries; native elevated
+installation and published artifacts remain unverified.
 
 ## Local state and removal
 
