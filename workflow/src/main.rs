@@ -112,6 +112,7 @@ async fn main() -> Result<()> {
         iii: iii.clone(),
         cfg: cell.clone(),
         locks: WorkflowLocks::default(),
+        events: iii.clone(),
     };
 
     functions::register_all(&iii, &deps);

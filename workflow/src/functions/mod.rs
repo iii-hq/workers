@@ -24,6 +24,8 @@ pub struct Deps {
     pub iii: Arc<IIIClient>,
     pub cfg: ConfigCell,
     pub locks: WorkflowLocks,
+    /// Where `workflow::on-run-completed` goes: the client in production.
+    pub events: Arc<dyn crate::events::EventDeliverer>,
 }
 
 impl Deps {

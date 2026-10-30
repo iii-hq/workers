@@ -408,6 +408,7 @@ fields where the name does not say them), and the consumers in this repo
 | 95 | voice | `voice::speech-ended` | removed: it has no emitter and no consumer | | | | |
 | 96 | whatsapp | `whatsapp::events` | `whatsapp::on-events` | none; filters `input.session_id`, `input.kind` | default; the event loop calls only when `IsObserved` and the event is current | `Event { session_id, sequence, kind, timestamp_ms, data }` | whatsapp:ui/src/page.tsx |
 | 97 | whatsapp | `whatsapp::cloud::events` | `whatsapp::cloud::on-events` | none; filters `input.kind`, `input.chat_id`, `input.sender_id`, `input.message_type`, `input.status`, `input.business_account_id`, `input.phone_number_id`, `input.group_id`, `input.participant_id`, `input.field`, `input.event` | default | `CloudEvent` | none in repo |
+| 124 | workflow | `workflow::run-completed` | `workflow::on-run-completed` | none; filters `input.run_id`, `input.status` | default; finalize calls it once per terminal run, before the terminal status is stored (a crash in between calls it again) | `RunCompletedEvent { run_id, status: completed \| failed \| cancelled, result, result_error }` | none in repo |
 | 98 | worktree | `worktree::created` | `worktree::on-created` | none; filters `input.repo_path`, `input.worktree_id`, `input.session_id` | default | `CreatedEvent` | worktree:ui/src/page/index.tsx |
 | 99 | worktree | `worktree::claimed` | `worktree::on-claimed` | none; filters as row 98 | default | `ClaimedEvent` | worktree:ui/src/page/index.tsx |
 | 100 | worktree | `worktree::released` | `worktree::on-released` | none; filters as row 98 | default | `ReleasedEvent` | worktree:ui/src/page/index.tsx |
@@ -461,8 +462,8 @@ Decisions 29 and 32. Every function is private.
 | 122 | ade | `console::workspace::changed` | `console::workspace::on-changed` | none | default; added: after `obs.accepted()`, call through the observer with `{}`; store writes call the function, throttled by `RING_GAP` | `WorkspaceChangedEvent {}` | ade:web/src/hooks/use-workspace-tabs.ts, onboarding:ui/src/use-tour.ts, onboarding:ui/src/spotlight.ts |
 | 123 | ade | `console::compose::changed` | `console::compose::on-changed` | none; filters `input.kind`, `input.file`, `input.namespace` | default; added: start the state watcher with the first observer; removed: close it with the last | `ComposeChangedEvent { kind, file, namespace, state_dir, path, captured_at }` | ade:web/src/pages/Workers/index.tsx |
 
-Rows: 103 from the worker map (§2.1, §2.2), 14 harness (§2.3) and 6 ADE
-(§2.4): **123**.
+Rows: 104 from the worker map (§2.1, §2.2; row 124 follows the worker order,
+its number follows the ADE rows), 14 harness (§2.3) and 6 ADE (§2.4): **124**.
 
 ## 3. Engine and Compose sources workers observe
 
