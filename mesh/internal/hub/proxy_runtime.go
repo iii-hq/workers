@@ -1,0 +1,165 @@
+package hub
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
+	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+)
+
+func (h *Hub) proxyHealth() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.proxyStatus == "" {
+		return "proxy ownership is not configured"
+	}
+	return h.proxyStatus
+}
+func (h *Hub) setProxyHealth(status string, active bool) {
+	h.mu.Lock()
+	h.proxyStatus = status
+	h.mu.Unlock()
+	if h.MeshGateway != nil {
+		h.MeshGateway.SetActive(active)
+	}
+	if !active {
+		h.Sessions.closeAll()
+	}
+}
+func fetchProxyConfig(ctx context.Context, client rpc) (map[string]any, error) {
+	raw, err := configCall(ctx, client, "configuration::get", map[string]any{"id": "rbac-proxy", "raw": true})
+	if remoteCode(err, "NOT_FOUND") {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var entry map[string]json.RawMessage
+	if json.Unmarshal(raw, &entry) != nil || len(entry["value"]) == 0 {
+		return nil, errors.New("malformed proxy configuration response")
+	}
+	var cfg map[string]any
+	if err = json.Unmarshal(entry["value"], &cfg); err != nil {
+		return nil, fmt.Errorf("invalid proxy configuration: %w", err)
+	}
+	return cfg, nil
+}
+func validProxyHooks(cfg map[string]any) bool {
+	rbac, ok := cfg["rbac"].(map[string]any)
+	if !ok || cfg["middleware_function_id"] != "mesh::middleware" || rbac["on_trigger_registration_function_id"] != "mesh::on-trigger-registration" {
+		return false
+	}
+	if exposed, ok := rbac["expose_functions"]; ok && exposed != nil {
+		list, ok := exposed.([]any)
+		if !ok || len(list) != 0 {
+			return false
+		}
+	}
+	for _, key := range []string{"on_function_registration_function_id", "on_trigger_type_registration_function_id", "on_observer_registration_function_id"} {
+		if value := rbac[key]; value != nil && value != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// The caller holds reload so ownership, auth and grant changes are serialized.
+func (h *Hub) reconcileProxy(ctx context.Context) (err error) {
+	defer func() {
+		if err != nil {
+			h.setProxyHealth(err.Error(), false)
+		}
+	}()
+	if !h.proxyReady || h.proxyClient == nil {
+		return errors.New("proxy functions are not registered")
+	}
+	h.mu.RLock()
+	closed := h.closed
+	h.mu.RUnlock()
+	if closed {
+		return errors.New("hub is closed")
+	}
+	current, err := fetchProxyConfig(ctx, h.proxyClient)
+	if err != nil {
+		return fmt.Errorf("read proxy configuration: %w", err)
+	}
+	next, write, status := EnsureProxyConfig(current)
+	if status != "ok" {
+		return errors.New(status)
+	}
+	if write {
+		if current == nil {
+			_, err = configCall(ctx, h.proxyClient, "configuration::ensure", map[string]any{"id": "rbac-proxy", "name": "RBAC Proxy", "description": "Mesh gateway proxy", "schema": map[string]any{}, "initial_value": next})
+		} else {
+			_, err = configCall(ctx, h.proxyClient, "configuration::set", map[string]any{"id": "rbac-proxy", "value": next})
+		}
+		if err != nil {
+			return err
+		}
+		// Ensure may preserve a concurrent owner; only the authoritative result activates.
+		next, err = fetchProxyConfig(ctx, h.proxyClient)
+		if err != nil {
+			return err
+		}
+		_, needsWrite, status := EnsureProxyConfig(next)
+		if status != "ok" {
+			return errors.New(status)
+		}
+		if needsWrite {
+			return errors.New("proxy configuration was not retained")
+		}
+	}
+	if !validProxyHooks(next) {
+		return errors.New("proxy mesh hooks or grants are invalid")
+	}
+	h.setProxyHealth("ok", true)
+	return nil
+}
+func (h *Hub) registerProxyFunctions(ctx context.Context, url string) error {
+	h.reload.Lock()
+	defer h.reload.Unlock()
+	if h.closed {
+		return errors.New("hub is closed")
+	}
+	internal := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
+	if err := iii.RegisterFunctionTyped(h.Client, "mesh::auth", h.Auth, internal); err != nil {
+		return err
+	}
+	register := func(client *iii.Client) error {
+		if err := iii.RegisterFunctionTyped(client, "mesh::middleware", func(ctx context.Context, r MiddlewareRequest) (json.RawMessage, error) {
+			return h.middleware(ctx, client, r)
+		}, internal); err != nil {
+			return err
+		}
+		return iii.RegisterFunctionTyped(client, "mesh::on-trigger-registration", h.TriggerHook, internal)
+	}
+	if err := register(h.Client); err != nil {
+		return err
+	}
+	if h.Namespace != "default" {
+		h.DefaultClient = iii.New(url, iii.WithName("mesh-default"), iii.WithNamespace("default"))
+		connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := h.DefaultClient.Connect(connectCtx)
+		cancel()
+		if err != nil {
+			return err
+		}
+		if err = register(h.DefaultClient); err != nil {
+			return err
+		}
+	}
+	h.proxyClient = h.Client
+	h.proxyReady = true
+	return nil
+}
+func (h *Hub) refreshProxy(ctx context.Context) {
+	h.reload.Lock()
+	defer h.reload.Unlock()
+	if err := h.reconcileProxy(ctx); err != nil {
+		log.Printf("mesh proxy: %v", err)
+	}
+}

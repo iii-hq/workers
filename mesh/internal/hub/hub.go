@@ -56,7 +56,7 @@ func Run(ctx context.Context, o Options) (err error) {
 		return fmt.Errorf("connect to iii engine: %w", err)
 	}
 
-	h := &Hub{Version: o.Version, Namespace: namespace, ConfigID: configID(), Client: client, config: DefaultConfig()}
+	h := &Hub{Version: o.Version, Namespace: namespace, ConfigID: configID(), Client: client, config: DefaultConfig(), Sessions: &Sessions{}}
 	local := o.LocalConfig || o.CollectInterface
 	if !local {
 		cfg, err := ensureConfig(ctx, client, h.ConfigID)
@@ -67,17 +67,32 @@ func Run(ctx context.Context, o Options) (err error) {
 		if err != nil {
 			return err
 		}
-		defer h.Close()
 	}
+	defer h.Close()
 	if err := h.registerFunctions(client); err != nil {
 		return fmt.Errorf("register mesh functions: %w", err)
+	}
+	if err := h.registerProxyFunctions(ctx, o.URL); err != nil {
+		return fmt.Errorf("register proxy functions: %w", err)
 	}
 	if err := h.registerConfiguration(ctx, client, local); err != nil {
 		return fmt.Errorf("register configuration: %w", err)
 	}
 
-	<-ctx.Done()
-	return nil
+	if local {
+		<-ctx.Done()
+		return nil
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			h.refreshProxy(ctx)
+		}
+	}
 }
 
 func namespace() string {

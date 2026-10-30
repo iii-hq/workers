@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -38,6 +39,11 @@ type Hub struct {
 	Coordinator     *coordinator.Coordinator
 	MeshGateway     *gateway.Gateway
 	Tickets         *gateway.Tickets
+	Sessions        *Sessions
+	defaults        GrantDefaults
+	proxyClient     rpc
+	proxyReady      bool
+	proxyStatus     string
 	Client          *iii.Client
 	DefaultClient   *iii.Client
 	Version         string
@@ -93,6 +99,7 @@ func Start(ctx context.Context, o Options, cfg Config, client *iii.Client) (h *H
 	if err != nil {
 		return h, err
 	}
+	h.Sessions = &Sessions{}
 	h.Tickets = gateway.NewTickets(10*time.Second, time.Now)
 	h.MeshGateway = gateway.New(h.Coordinator.Node, cfg.ProxyURL, h.Tickets)
 	h.SetHooks(Hooks{})
@@ -201,6 +208,7 @@ func (h *Hub) SetHooks(hooks Hooks) {
 		revoke, changed, closeHook := hooks.RevokeNode, hooks.ConfigChanged, hooks.Close
 		hooks.RevokeNode = func(name string) {
 			g.CloseNode(name)
+			h.Sessions.CloseNode(name)
 			if revoke != nil {
 				revoke(name)
 			}
@@ -211,6 +219,11 @@ func (h *Hub) SetHooks(hooks Hooks) {
 			}
 			if old.ProxyURL != next.ProxyURL {
 				g.SetProxyURL(next.ProxyURL)
+				if h.proxyClient != nil {
+					if err := h.reconcileProxy(ctx); err != nil {
+						log.Printf("mesh proxy: %v", err)
+					}
+				}
 			}
 			if changed != nil {
 				changed(ctx, old, next)
@@ -218,11 +231,15 @@ func (h *Hub) SetHooks(hooks Hooks) {
 		}
 		hooks.Close = func() error {
 			err := g.Close()
+			h.Sessions.closeAll()
 			if closeHook != nil {
 				err = errors.Join(err, closeHook())
 			}
 			return err
 		}
+	}
+	if hooks.ProxyStatus == nil {
+		hooks.ProxyStatus = h.proxyHealth
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -359,6 +376,10 @@ func (h *Hub) Close() error {
 	var err error
 	if hooks.Close != nil {
 		err = hooks.Close()
+	}
+	h.Sessions.closeAll()
+	if h.DefaultClient != nil {
+		h.DefaultClient.Close()
 	}
 	if h.gateway != nil {
 		h.gateway.Close()

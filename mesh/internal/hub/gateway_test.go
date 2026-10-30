@@ -96,8 +96,17 @@ func TestLiveGatewayOwnershipLifecycle(t *testing.T) {
 		if !ok || name != nodeName {
 			t.Fatalf("live identity %q %v", name, ok)
 		}
+		key, live := h.Sessions.openOwned(name, owner)
+		if !live {
+			t.Fatal("live auth owner refused")
+		}
 		done := make(chan struct{})
-		owner.OnClose(func() { close(done) })
+		owner.OnClose(func() {
+			if _, ok := h.Sessions.Valid(key); ok {
+				t.Error("closed gateway retained auth session")
+			}
+			close(done)
+		})
 		if err := c.Write(ctx, websocket.MessageText, []byte("mesh")); err != nil {
 			t.Fatal(err)
 		}
@@ -157,6 +166,9 @@ func TestLiveGatewayOwnershipLifecycle(t *testing.T) {
 	if err := h.ApplyConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
+	waitClosed(done)
+	_, done = connect(client, "laptop")
+	h.SetGrantDefaults(GrantDefaults{Allow: []string{"shell::exec"}})
 	waitClosed(done)
 	_, done = connect(client, "laptop")
 	cfg = h.Config()

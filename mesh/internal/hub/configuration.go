@@ -98,11 +98,15 @@ type ConfigurationIdentity struct {
 }
 
 func (h *Hub) onConfigChange(ctx context.Context, client rpc, event ConfigChangeEvent) (ConfigChangeResult, error) {
-	if event.ID != "" && event.ID != h.ConfigID {
+	if event.ID != "" && event.ID != h.ConfigID && event.ID != "rbac-proxy" {
 		return ConfigChangeResult{OK: true}, nil
 	}
 	h.reload.Lock()
 	defer h.reload.Unlock()
+	if event.ID == "rbac-proxy" {
+		err := h.reconcileProxy(ctx)
+		return ConfigChangeResult{OK: err == nil}, err
+	}
 	cfg, err := fetchConfig(ctx, client, h.ConfigID)
 	if err != nil {
 		return ConfigChangeResult{}, err
@@ -133,6 +137,13 @@ func (h *Hub) registerConfiguration(ctx context.Context, client *iii.Client, loc
 	binding, _ := json.Marshal(map[string]any{"configuration_id": h.ConfigID, "event_types": []string{"configuration:registered", "configuration:updated", "configuration:deleted"}})
 	if err := client.RegisterTriggerNamespaced("mesh-config-"+h.ConfigID, "configuration", "mesh::on-config-change", h.Namespace, binding); err != nil {
 		return err
+	}
+	if h.proxyReady {
+		proxyBinding, _ := json.Marshal(map[string]any{"configuration_id": "rbac-proxy", "event_types": []string{"configuration:registered", "configuration:updated", "configuration:deleted"}})
+		if err := client.RegisterTriggerNamespaced("mesh-proxy-config", "configuration", "mesh::on-config-change", h.Namespace, proxyBinding); err != nil {
+			return err
+		}
+		h.refreshProxy(ctx)
 	}
 	_, err := h.onConfigChange(ctx, client, ConfigChangeEvent{ID: h.ConfigID})
 	return err
