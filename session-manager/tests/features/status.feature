@@ -17,7 +17,7 @@ Feature: session::set-status — the coarse lifecycle status
 
   # Prevents: status changes that don't notify (spinners would hang) or
   # that report the wrong previous_status (transition animations break).
-  Scenario: a status change fires status_changed with the previous status
+  Scenario: a status change calls session::on-status-changed with the previous status
     Given an observer "b1" of "session::on-status-changed" delivering to "ui::status"
     When I call "session::set-status" with:
       """

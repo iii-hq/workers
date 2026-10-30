@@ -14,8 +14,8 @@ Feature: session::set-meta — update title, description and metadata
       """
 
   # Prevents: meta updates that don't notify — consumers render titles
-  # live off meta_updated, never by polling get.
-  Scenario: updating title and description fires meta_updated
+  # live off session::on-meta-updated, never by polling get.
+  Scenario: updating title and description calls session::on-meta-updated
     Given an observer "b1" of "session::on-meta-updated" delivering to "ui::meta"
     Given the clock advances by 250 ms
     When I call "session::set-meta" with:
@@ -52,7 +52,7 @@ Feature: session::set-meta — update title, description and metadata
     And the response field "meta.metadata.owner" is "u_1"
     And the response field "meta.description" is ""
 
-  # Prevents: a no-op set_meta spamming meta_updated events.
+  # Prevents: a no-op set_meta spamming session::on-meta-updated events.
   Scenario: a set_meta with no fields is a silent no-op
     Given an observer "b1" of "session::on-meta-updated" delivering to "ui::meta"
     When I call "session::set-meta" with:
@@ -77,7 +77,7 @@ Feature: session::set-meta — update title, description and metadata
     Then the response field "meta.status" is "working"
     And the response field "meta.message_count" is 1
 
-  # Prevents: meta_updated filters evaluating against the PRE-update
+  # Prevents: session::on-meta-updated filters evaluating against the PRE-update
   # metadata — a consumer observing the new owner must see the
   # event that handed the session over.
   Scenario: metadata filters see the post-update metadata
