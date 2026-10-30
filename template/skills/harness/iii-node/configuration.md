@@ -68,4 +68,4 @@ iii.observe(
 
 Mutations that call it: `configuration::register` (`:registered` on first call, `:updated` on re-registration), `configuration::set` (`:updated`), and external `fs` create/edit/delete events. Reads do **not** call it.
 
-For the event shape, call `engine::functions::info { function_id: "configuration::on-updated" }`: its `response_format` is the event.
+For the event shape, call `engine::functions::info { function_id: "configuration::on-updated" }`: its `response_schema` (the `response_format` the configuration worker registered) is the event.
