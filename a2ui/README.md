@@ -53,7 +53,7 @@ The runnable provider in `examples/counter_provider/` (`cargo run --example coun
 
 | Function | Args | Delivery | Event |
 |---|---|---|---|
-| `demo::on-counter-changed` | `{ counter }`, 1-64 bytes (`INVALID_ARGS` otherwise) | observers whose `args.counter` is the event's `counter`; at most 64 observers: each takes a slot when it is added and gives it back when it is removed, and an observer added while all 64 are taken is rejected with `OBSERVER_LIMIT` | `{ counter, revision }`, called after each committed `demo::counter::bump` |
+| `demo::on-counter-changed` | `{ counter }`, 1-64 bytes (`INVALID_ARGS` otherwise) | observers whose `args.counter` is the event's `counter`; at most 64 observers: an observer added while 64 are active is rejected with `OBSERVER_LIMIT` | `{ counter, revision }`, called after each committed `demo::counter::bump` |
 
 An observer of it, from any worker:
 

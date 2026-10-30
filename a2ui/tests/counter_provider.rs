@@ -1,7 +1,8 @@
 //! The `counter_provider` example's `demo::on-counter-changed` rules against
 //! a real engine: `onObserverAdded` rejects a counter outside 1-64 bytes with
-//! `INVALID_ARGS`, takes one slot per observer id and rejects observers past
-//! 64 with `OBSERVER_LIMIT`, and `onObserverRemoved` gives the slot back.
+//! `INVALID_ARGS` and an observer added while 64 are active with
+//! `OBSERVER_LIMIT`, in a burst of adds too, and a removed observer frees its
+//! place for the next one.
 //!
 //! The test spawns `III_ENGINE_BIN` (or `iii` on PATH) on an ephemeral port
 //! and hosts the provider in process. Without an engine binary it skips;
@@ -126,24 +127,21 @@ fn connect(url: &str, name: &str) -> Arc<IIIClient> {
     ))
 }
 
-/// `{ count, reserved }` from the provider: active observers, slots held.
-async fn observer_count(iii: &IIIClient) -> (u64, u64) {
-    let counts = iii
-        .call(CallRequest {
-            timeout_ms: Some(5_000),
-            ..CallRequest::new("demo::observers::count", json!({}))
-        })
-        .await
-        .unwrap();
-    (
-        counts["count"].as_u64().unwrap(),
-        counts["reserved"].as_u64().unwrap(),
-    )
+/// The provider's count of active observers.
+async fn observer_count(iii: &IIIClient) -> u64 {
+    iii.call(CallRequest {
+        timeout_ms: Some(5_000),
+        ..CallRequest::new("demo::observers::count", json!({}))
+    })
+    .await
+    .unwrap()["count"]
+        .as_u64()
+        .unwrap()
 }
 
 async fn wait_for_count(iii: &IIIClient, expected: usize) {
-    let expected = (expected as u64, expected as u64);
-    let mut last = (0, 0);
+    let expected = expected as u64;
+    let mut last = 0;
     for _ in 0..100 {
         last = observer_count(iii).await;
         if last == expected {
@@ -151,7 +149,7 @@ async fn wait_for_count(iii: &IIIClient, expected: usize) {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("provider (count, reserved) stayed {last:?}, expected {expected:?}");
+    panic!("provider observer count stayed {last}, expected {expected}");
 }
 
 fn observe(iii: &IIIClient, counter: &str) -> ObserverHandle {
@@ -177,7 +175,7 @@ async fn settle(handle: &ObserverHandle) -> Result<(), (String, String)> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn counter_observers_are_validated_and_capped_per_observer_id() {
+async fn counter_observers_are_validated_and_capped() {
     let Some(engine) = spawn_engine().await else {
         eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
         return;
@@ -205,7 +203,7 @@ async fn counter_observers_are_validated_and_capped_per_observer_id() {
     wait_for_count(&iii, 0).await;
 
     // INVALID_ARGS: the provider's own check, past the args_format. A
-    // rejected observer takes no slot.
+    // rejected observer is not counted.
     for counter in [String::new(), "x".repeat(65)] {
         let handle = observe(&iii, &counter);
         let (code, message) = settle(&handle).await.unwrap_err();
@@ -219,8 +217,9 @@ async fn counter_observers_are_validated_and_capped_per_observer_id() {
     longest.dispose().await.unwrap();
     wait_for_count(&iii, 0).await;
 
-    // Observers added at the same time: exactly 64 take a slot, the rest are
-    // rejected with OBSERVER_LIMIT.
+    // 80 observers added in one burst: the SDK runs their added hooks one at
+    // a time, so exactly 64 are accepted and the rest are rejected with
+    // OBSERVER_LIMIT.
     let extra = 16;
     let handles: Vec<ObserverHandle> = (0..MAX_OBSERVERS + extra)
         .map(|index| observe(&iii, &format!("c{index}")))
@@ -244,7 +243,7 @@ async fn counter_observers_are_validated_and_capped_per_observer_id() {
         let _ = handle.dispose().await;
     }
 
-    // A removed observer gives its slot back, and the slot is taken once.
+    // A removed observer frees one place, which the next observer takes.
     accepted.pop().unwrap().dispose().await.unwrap();
     wait_for_count(&iii, MAX_OBSERVERS - 1).await;
     let again = observe(&iii, "again");

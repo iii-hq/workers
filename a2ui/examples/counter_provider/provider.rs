@@ -2,7 +2,7 @@
 //! hooks, and the `demo::counter::*` functions around it. `main.rs` runs it
 //! as a worker; `tests/counter_provider.rs` hosts it in process.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use iii_sdk::{
@@ -48,9 +48,6 @@ struct Empty {}
 struct Provider {
     /// counter -> (value, revision); the source of truth the query reads.
     counters: Mutex<HashMap<String, (u64, u64)>>,
-    /// Ids of the observers holding one of the `MAX_OBSERVERS` slots: taken
-    /// in `onObserverAdded`, given back in `onObserverRemoved`.
-    slots: Mutex<HashSet<String>>,
 }
 
 impl Provider {
@@ -64,33 +61,6 @@ impl Provider {
             .unwrap_or_default();
         json!({ "counter": counter, "value": value, "revision": revision })
     }
-
-    /// Number of slots held, by active observers and by observers whose
-    /// `onObserverAdded` resolved and that are not active yet.
-    fn reserved(&self) -> usize {
-        self.slots.lock().unwrap().len()
-    }
-
-    /// Take a slot for `id`. An id that holds one keeps it (the engine
-    /// announces an observer again after its worker reattaches).
-    fn reserve(&self, id: &str) -> Result<(), ObserveRejection> {
-        let mut slots = self.slots.lock().unwrap();
-        if slots.contains(id) {
-            return Ok(());
-        }
-        if slots.len() >= MAX_OBSERVERS {
-            return Err(ObserveRejection::new(
-                "OBSERVER_LIMIT",
-                format!("{ON_COUNTER_CHANGED_FN} takes at most {MAX_OBSERVERS} observers"),
-            ));
-        }
-        slots.insert(id.to_owned());
-        Ok(())
-    }
-
-    fn release(&self, id: &str) {
-        self.slots.lock().unwrap().remove(id);
-    }
 }
 
 /// Observers of `counter` among the active ones.
@@ -101,10 +71,11 @@ fn observers_of(iii: &IIIClient, counter: &str) -> usize {
         .count()
 }
 
-/// Validate an observer's args and take one of its function's slots. A slot
-/// is held by observer id from here to `onObserverRemoved`, so the cap holds
-/// whenever the observers it admits become active.
-fn accept(provider: &Provider, obs: &Observer) -> Result<(), ObserveRejection> {
+/// Validate an observer's args and cap the number of observers. The SDK runs
+/// a function's observer hooks one at a time and activates an accepted
+/// observer before the next hook runs, so the active observers are every
+/// observer accepted before this one and not removed since.
+fn accept(iii: &IIIClient, obs: &Observer) -> Result<(), ObserveRejection> {
     let args: CounterArgs = obs.args()?;
     if args.counter.trim().is_empty() || args.counter.len() > 64 {
         return Err(ObserveRejection::new(
@@ -112,7 +83,13 @@ fn accept(provider: &Provider, obs: &Observer) -> Result<(), ObserveRejection> {
             "counter must be 1-64 bytes",
         ));
     }
-    provider.reserve(obs.id())
+    if iii.observers(ON_COUNTER_CHANGED_FN).len() >= MAX_OBSERVERS {
+        return Err(ObserveRejection::new(
+            "OBSERVER_LIMIT",
+            format!("{ON_COUNTER_CHANGED_FN} takes at most {MAX_OBSERVERS} observers"),
+        ));
+    }
+    Ok(())
 }
 
 /// Register the provider's hooks and functions on `iii`.
@@ -120,15 +97,10 @@ pub fn register(iii: &Arc<IIIClient>) {
     let provider = Arc::new(Provider::default());
 
     // Hooks by id before registering, so they see every observer.
-    let added = provider.clone();
+    let hook_iii = iii.clone();
     iii.on_observer_added_for(ON_COUNTER_CHANGED_FN, move |obs: Observer| {
-        let result = accept(&added, &obs);
+        let result = accept(&hook_iii, &obs);
         async move { result }
-    });
-    let removed = provider.clone();
-    iii.on_observer_removed_for(ON_COUNTER_CHANGED_FN, move |obs: Observer| {
-        removed.release(obs.id());
-        async {}
     });
     // Each bump reaches the observers whose args name its counter.
     iii.on_observer_match_for(
@@ -200,23 +172,16 @@ pub fn register(iii: &Arc<IIIClient>) {
         ),
     );
 
-    let count = provider.clone();
     let count_iii = iii.clone();
     iii.register_function(
         "demo::observers::count",
         RegisterFunction::new_async(move |_: Empty| {
-            let provider = count.clone();
             let iii = count_iii.clone();
             async move {
-                Ok::<Value, Error>(json!({
-                    "count": iii.observers(ON_COUNTER_CHANGED_FN).len(),
-                    "reserved": provider.reserved(),
-                }))
+                Ok::<Value, Error>(json!({ "count": iii.observers(ON_COUNTER_CHANGED_FN).len() }))
             }
         })
-        .description(
-            "demo::on-counter-changed observers: { count } active, { reserved } slots held.",
-        )
+        .description("Number of active demo::on-counter-changed observers.")
         .metadata(json!({ "read_only": true })),
     );
 }
