@@ -293,6 +293,15 @@ export class DictationController {
       }
       return this.stopPromise
     }
+    // Nothing is open (idle, or a terminal event already closed the session):
+    // settle the state without passing through `stopping`, which would take
+    // the screen lease again.
+    if (!this.sessionId && !this.capture && !this.opening && !this.starting) {
+      const text = discard ? '' : this.state.committed.join(' ')
+      this.set(discard ? { ...initialDictationReduceState }
+        : { ...this.state, status: this.state.error ? 'error' : 'idle', partial: '' })
+      return Promise.resolve(text)
+    }
     const mode = { discard, opening: this.opening }
     this.stopMode = mode
     this.stopping = true
