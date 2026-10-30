@@ -1,12 +1,15 @@
 //! Contract mocks, not the production queue adapter/cloudflared process.
 //! Queue ACK means accepted; dispatch is explicit so assertions can inspect the
 //! real SQLite inbox before the real registered process handler consumes it.
-//! Each mock source is a private function whose hooks keep its observers; the
-//! mock delivers by calling through them, as the real queue worker does.
+//! Each mock source is a private function whose hooks keep its observers. A
+//! mock delivers by calling its own function, whose deliver hook calls
+//! through the observers the call is for, as the real queue worker does.
 //! Like the queue worker, the queue keeps one durable subscription per
 //! observer outside a group (`observer:<id>`) and one per group (`@<group>`);
 //! a subscription and its backlog outlive the observers that consumed it.
-use iii_sdk::{Call, CallRequest, Error, IIIClient, ObserveRejection, Observer, RegisterFunction};
+use iii_sdk::{
+    Call, CallRequest, Error, IIIClient, Match, ObserveRejection, Observer, RegisterFunction,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -19,6 +22,8 @@ use std::{
 };
 
 pub const PROVIDER: &str = "integration-provider";
+const ON_MESSAGE: &str = "queue::on-message";
+const ON_CHANGED: &str = "quick-tunnel::on-changed";
 pub const CONSUMER: &str = "integration-consumer";
 
 /// The observers of one mock source, kept by its added and removed hooks.
@@ -100,9 +105,41 @@ pub struct Queue {
 }
 impl Queue {
     pub fn register(&self, iii: &IIIClient) {
+        // As the queue worker: each call carries the subscriber it is for in
+        // metadata.subscriber, matched by key; the deliver hook hands it to
+        // that observer's target, whose result acks it and whose error leaves
+        // it queued. A subscriber whose filters reject it acks it with null.
+        iii.on_observer_match_for(
+            ON_MESSAGE,
+            Match::keys(
+                |obs| obs.id().into(),
+                |call| {
+                    call.metadata
+                        .as_ref()
+                        .and_then(|m| m["subscriber"].as_str())
+                        .into()
+                },
+            ),
+        );
+        let engine = iii.clone();
+        iii.on_observer_deliver_for(ON_MESSAGE, move |call: Call, observers: Vec<Observer>| {
+            let engine = engine.clone();
+            async move {
+                let Some(obs) = observers.first() else {
+                    return Err(Error::from(ObserveRejection::new(
+                        "OBSERVER_NOT_ACTIVE",
+                        "the subscriber is not active",
+                    )));
+                };
+                if !obs.matches(&call) {
+                    return Ok(Value::Null);
+                }
+                engine.call(through(obs, call.input)).await
+            }
+        });
         self.observers.host(
             iii,
-            "queue::on-message",
+            ON_MESSAGE,
             "Deterministic local queue",
             Some(json!({"type":"object"})),
         );
@@ -166,7 +203,8 @@ impl Queue {
             .sum()
     }
     /// Delivers the backlog of every subscription that has an observer, one
-    /// message at a time; a subscription nobody consumes keeps its backlog.
+    /// message at a time, as a call of `queue::on-message` for that
+    /// observer; a subscription nobody consumes keeps its backlog.
     pub async fn drain(&self, iii: &IIIClient) -> Result<(), Error> {
         for _ in 0..100 {
             let next = {
@@ -191,7 +229,10 @@ impl Queue {
                 spec.group.as_deref(),
                 Some(github::webhooks::WEBHOOK_CONSUMER_GROUP)
             );
-            if let Err(error) = iii.call(through(&obs, payload.clone())).await {
+            let message = CallRequest::new(ON_MESSAGE, payload.clone())
+                .metadata(json!({ "subscriber": obs.id() }))
+                .timeout(Duration::from_secs(10));
+            if let Err(error) = iii.call(message).await {
                 // A failed real handler is NOT ACKed. Explicit next drain retries it.
                 if let Some(subscription) = self.subscriptions.lock().unwrap().get_mut(&key) {
                     subscription.backlog.push_front(payload);
@@ -226,13 +267,22 @@ impl Default for Tunnel {
 }
 impl Tunnel {
     pub fn register(&self, iii: &IIIClient) {
+        // Each call is one tunnel snapshot; the deliver hook hands it to the
+        // target of every observer whose filters match, and returns once
+        // they answered.
+        let engine = iii.clone();
+        iii.on_observer_deliver_for(ON_CHANGED, move |call: Call, observers: Vec<Observer>| {
+            let engine = engine.clone();
+            async move {
+                for obs in observers.iter().filter(|obs| obs.matches(&call)) {
+                    engine.call(through(obs, call.input.clone())).await?;
+                }
+                Ok::<Value, Error>(call.output.unwrap_or(Value::Null))
+            }
+        });
         // quick-tunnel::on-changed takes no args: observers filter on input.tunnel_id.
-        self.observers.host(
-            iii,
-            "quick-tunnel::on-changed",
-            "Local controlled tunnel lifecycle",
-            None,
-        );
+        self.observers
+            .host(iii, ON_CHANGED, "Local controlled tunnel lifecycle", None);
         self.cron.host(
             iii,
             "cron::on-tick",
@@ -304,8 +354,8 @@ impl Tunnel {
                 .is_none_or(|args| args.is_empty()));
             assert!(!obs.matches(&event_call(other.clone())));
             assert!(obs.matches(&event_call(value.clone())));
-            iii.call(through(&obs, value.clone())).await.unwrap();
         }
+        call(iii, ON_CHANGED, value).await;
     }
 }
 /// A call of a source whose handler returned `event`.
@@ -316,7 +366,8 @@ fn event_call(event: Value) -> Call {
         ..Call::default()
     }
 }
-/// A call through `obs`: its target receives `payload`.
+/// A call through `obs`, made only in a deliver hook: its target receives
+/// `payload`.
 fn through(obs: &Observer, payload: Value) -> iii_sdk::CallRequestWithMetadata {
     CallRequest::observer(obs, payload).timeout(Duration::from_secs(10))
 }
