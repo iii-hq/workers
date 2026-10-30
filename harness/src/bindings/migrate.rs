@@ -283,9 +283,17 @@ pub fn translate(trigger_type: &str, config: &Value, created_at: i64) -> Option<
             Some(worker_events(config)),
         ),
         "console:assets" => source("console::ui::on-assets-changed", None, None),
-        // A console asset is content its worker serves through its own
-        // observer; a binding's target cannot serve it.
-        "console:script" | "console:style" | "console:module" => return None,
+        // One asset of the console UI, named by its `path` (contract rows
+        // 118-120): `console::ui::asset` with args `{ kind, path }`.
+        "console:script" | "console:style" | "console:module" => {
+            let kind = trigger_type.trim_start_matches("console:");
+            let path = config.get("path")?.as_str()?;
+            source(
+                "console::ui::asset",
+                Some(json!({ "kind": kind, "path": path })),
+                None,
+            )
+        }
         other if other.starts_with("harness::") => return None,
         other => {
             let function_id = on_function(other)?;
@@ -386,8 +394,8 @@ fn retirement_reason(trigger_type: Option<&str>) -> &'static str {
              harness::observe."
         }
         Some("console:script" | "console:style" | "console:module") => {
-            "a console asset is content its worker serves through its own observer, and a \
-             binding cannot serve it. Watch asset changes with console::ui::on-assets-changed."
+            "its stored config names no asset `path`. To be told when console UI assets \
+             change, observe console::ui::on-assets-changed through harness::observe."
         }
         Some(other) if other.starts_with("harness::") => {
             "an agent observes no harness function except harness::on-timer. Watch the work \
@@ -667,8 +675,24 @@ mod tests {
             tr("console:assets", &json!({})),
             Some(spec("console::ui::on-assets-changed", None, None))
         );
-        for asset in ["console:script", "console:style", "console:module"] {
-            assert_eq!(tr(asset, &json!({ "path": "/ui.js" })), None, "{asset}");
+        for (asset, kind) in [
+            ("console:script", "script"),
+            ("console:style", "style"),
+            ("console:module", "module"),
+        ] {
+            assert_eq!(
+                tr(
+                    asset,
+                    &json!({ "path": "demo/page.js", "metadata": { "x": 1 } })
+                ),
+                Some(spec(
+                    "console::ui::asset",
+                    Some(json!({ "kind": kind, "path": "demo/page.js" })),
+                    None
+                )),
+                "{asset}"
+            );
+            assert_eq!(tr(asset, &json!({})), None, "{asset} without a path");
         }
     }
 
@@ -849,6 +873,28 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_console_asset_binding_observes_its_asset() {
+        let raw = stored(json!({
+            "trigger_type": "console:module",
+            "config": { "path": "demo/chart.js" },
+        }));
+        let Upgrade::Rewrite { next } = upgrade(&raw) else {
+            panic!("a console asset with a path translates");
+        };
+        let source = next.source.as_ref().unwrap();
+        assert_eq!(source.function_id, "console::ui::asset");
+        assert_eq!(
+            source.args,
+            Some(json!({ "kind": "module", "path": "demo/chart.js" }))
+        );
+        assert_eq!(source.filters, None);
+        assert_eq!(
+            next.dedup_key.as_ref().unwrap()["function_id"],
+            json!("console::ui::asset")
+        );
+    }
+
+    #[test]
     fn a_timer_without_a_deadline_is_retired_with_a_timer_notice() {
         let raw = stored(json!({ "trigger_type": "timer", "config": {} }));
         let Upgrade::Retire {
@@ -879,6 +925,13 @@ mod tests {
             panic!("a bare unknown type has nothing to observe");
         };
         assert!(why.contains("engine::functions::list"));
+        let Upgrade::Retire { why, .. } = upgrade(&stored(
+            json!({ "trigger_type": "console:style", "config": {} }),
+        )) else {
+            panic!("a console asset without a path names no asset");
+        };
+        assert!(why.contains("`path`"), "{why}");
+        assert!(why.contains("console::ui::on-assets-changed"), "{why}");
         let keyless = stored(Value::Null);
         assert!(matches!(upgrade(&keyless), Upgrade::Retire { .. }));
         assert!(matches!(
