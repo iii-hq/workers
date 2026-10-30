@@ -457,7 +457,10 @@ canonical. Filter paths are checked against this shape (`input.tabel` is
 the worker files each observer under its `db`, its `table` (or every table)
 and each of its `ops` (or every operation), and looks each event up under its
 db, its table and every table, its op and every op. The observer's filters
-then apply as usual.
+then apply as usual. The worker calls the function from the task that
+announces the write and waits for the call, so one transaction's statements,
+and one native database's changes, reach iii's delivery in commit order;
+the call does not wait for the observers' targets.
 
 **Only the database worker calls it.** The function is private: the engine
 refuses a call from any other connection (`FORBIDDEN`) and refuses it as an

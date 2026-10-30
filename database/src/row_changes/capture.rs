@@ -240,11 +240,13 @@ impl NativeCapture {
     /// one hash lookup per key when its observers watch other tables, and
     /// the event serialized only when one of them watches this one.
     ///
-    /// Called without an action and awaited, so a transaction's statements
-    /// reach observers in commit order. The call runs in-process (the
-    /// handler returns the event) and iii's delivery does not wait for the
-    /// observers' targets; `call_timeout_ms` bounds the round trip when the
-    /// engine has not yet confirmed in-process calls.
+    /// Called without an action and awaited, from the task that announces
+    /// the write: a transaction's statements reach iii's delivery in commit
+    /// order, and the call's caller is the invocation that made the write.
+    /// The call runs in-process (the handler returns the event) and iii's
+    /// delivery does not wait for the observers' targets; `call_timeout_ms`
+    /// bounds the round trip when the engine has not yet confirmed
+    /// in-process calls.
     pub async fn call(&self, event: &RowChangedEvent) {
         let Some(function) = self.function.get() else {
             return;
