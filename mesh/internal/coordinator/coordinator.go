@@ -85,33 +85,36 @@ type node struct {
 }
 
 type NodeInfo struct {
-	Name     string     `json:"name"`
-	Addr     netip.Addr `json:"addr"`
-	Online   bool       `json:"online"`
-	Operator string     `json:"operator"`
-	JoinedAt time.Time  `json:"joined_at"`
-	LastSeen time.Time  `json:"last_seen"`
+	Ephemeral bool       `json:"ephemeral"`
+	Name      string     `json:"name"`
+	Addr      netip.Addr `json:"addr"`
+	Online    bool       `json:"online"`
+	Operator  string     `json:"operator"`
+	JoinedAt  time.Time  `json:"joined_at"`
+	LastSeen  time.Time  `json:"last_seen"`
 }
 
 type Coordinator struct {
-	key       key.MachinePrivate
-	file      string
-	join      func(secret, addr string) (string, error)
-	self      string
-	Gone      func(name string)
-	mu        sync.Mutex
-	st        state
-	host      string
-	relayPort int
-	links     map[[2]string]bool
-	ver       uint64
-	wakes     map[chan struct{}]bool
-	taken     func(string) bool
-	trusted   []netip.Prefix
-	ctx       context.Context
-	cancel    context.CancelFunc
-	life      sync.Mutex
-	backend   *userspace
+	key         key.MachinePrivate
+	file        string
+	join        func(secret, addr string) (string, error)
+	self        string
+	Gone        func(name string)
+	mu          sync.Mutex
+	st          state
+	host        string
+	relayPort   int
+	stunPort    int
+	gatewayPort int
+	links       map[[2]string]bool
+	ver         uint64
+	wakes       map[chan struct{}]bool
+	taken       func(string) bool
+	trusted     []netip.Prefix
+	ctx         context.Context
+	cancel      context.CancelFunc
+	life        sync.Mutex
+	backend     *userspace
 }
 
 func (c *Coordinator) Public() key.MachinePublic { return c.key.Public() }
@@ -166,7 +169,7 @@ func (c *Coordinator) Nodes() []NodeInfo {
 	nodes := make([]NodeInfo, 0, len(c.st.Nodes))
 	for _, n := range c.st.Nodes {
 		if c.authorized(n) {
-			nodes = append(nodes, NodeInfo{Name: n.Name, Addr: c.address(n.ID), Online: n.streams > 0, Operator: n.Operator, JoinedAt: n.JoinedAt, LastSeen: n.LastSeen})
+			nodes = append(nodes, NodeInfo{Ephemeral: n.Ephemeral, Name: n.Name, Addr: c.address(n.ID), Online: n.streams > 0, Operator: n.Operator, JoinedAt: n.JoinedAt, LastSeen: n.LastSeen})
 		}
 	}
 	return nodes
@@ -636,15 +639,18 @@ func (c *Coordinator) delta(n *node, sent map[tailcfg.NodeID]uint64, host *strin
 		r.PacketFilter = tailcfg.FilterAllowAll
 		r.UserProfiles = []tailcfg.UserProfile{{ID: user, LoginName: "iii mesh", DisplayName: "iii mesh"}}
 	}
-	currentRelay := fmt.Sprintf("%s:%d", c.host, c.relayPort)
+	currentRelay := fmt.Sprintf("%s:%d:%d", c.host, c.relayPort, c.stunPort)
 	if relay != nil {
-		currentRelay = fmt.Sprintf("%s:%d:%s", relay.HostName, relay.DERPPort, relay.CertName)
+		currentRelay += fmt.Sprintf(":%s:%d:%s", relay.HostName, relay.DERPPort, relay.CertName)
 	}
 	if full || currentRelay != *host {
 		*host = currentRelay
 		r.DERPMap = c.relayMap()
 		if relay != nil {
 			r.DERPMap.Regions[region].Nodes = []*tailcfg.DERPNode{relay}
+			if c.stunPort > 0 && c.host != "" {
+				r.DERPMap.Regions[region].Nodes = append(r.DERPMap.Regions[region].Nodes, &tailcfg.DERPNode{Name: "hub-stun", RegionID: region, HostName: c.host, STUNOnly: true, STUNPort: c.stunPort})
+			}
 		}
 	}
 	for _, p := range c.st.Nodes {
@@ -703,12 +709,17 @@ func (c *Coordinator) Link(pairs [][2]string) {
 
 func pair(a, b string) [2]string { return [2]string{min(a, b), max(a, b)} }
 
-// tail is headscale's TailNode, trimmed: one address, no routes, no caps. A
+// tail is headscale's TailNode, trimmed to one address and hub services. A
 // removed node is no longer authorized.
 func (c *Coordinator) tail(n *node) *tailcfg.Node {
 	a := netip.PrefixFrom(c.address(n.ID), 128)
 	online := n.streams > 0
+	var caps tailcfg.NodeCapMap
+	if n.Name == "hub" && c.gatewayPort > 0 {
+		caps = tailcfg.NodeCapMap{GatewayCapability: {tailcfg.RawMessage(fmt.Sprintf(`{"gateway_port":%d}`, c.gatewayPort))}}
+	}
 	return &tailcfg.Node{
+		CapMap:            caps,
 		ID:                n.ID,
 		StableID:          tailcfg.StableNodeID(strconv.FormatInt(int64(n.ID), 10)),
 		Name:              n.Name,
@@ -730,7 +741,7 @@ func (c *Coordinator) tail(n *node) *tailcfg.Node {
 func (c *Coordinator) relayMap() *tailcfg.DERPMap {
 	var nodes []*tailcfg.DERPNode
 	if c.host != "" {
-		nodes = append(nodes, &tailcfg.DERPNode{Name: "hub", RegionID: region, HostName: c.host, DERPPort: c.relayPort, STUNPort: -1})
+		nodes = append(nodes, &tailcfg.DERPNode{Name: "hub", RegionID: region, HostName: c.host, DERPPort: c.relayPort, STUNPort: c.stun()})
 	}
 	return &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{region: {RegionID: region, RegionCode: "hub", RegionName: "hub", Nodes: nodes}}}
 }

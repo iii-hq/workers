@@ -65,24 +65,26 @@ const DefaultPort uint16 = 41643
 const Removed = "removed"
 
 type Mesh struct {
-	lb        *ipnlocal.LocalBackend
-	sys       *tsd.System
-	engine    wgengine.Engine
-	monitor   *netmon.Monitor
-	dialer    *tsdial.Dialer
-	health    *health.Tracker
-	shim      *Shim
-	pinned    key.MachinePublic
-	unwatch   context.CancelFunc
-	watched   chan struct{}
-	removed   chan struct{}
-	left      sync.Once
-	resources sync.Once
-	err       error
-	sock      net.Listener
-	router    *osRouter
-	hostsFile string
-	report    atomic.Pointer[func() string]
+	lb             *ipnlocal.LocalBackend
+	sys            *tsd.System
+	engine         wgengine.Engine
+	monitor        *netmon.Monitor
+	dialer         *tsdial.Dialer
+	health         *health.Tracker
+	shim           *Shim
+	pinned         key.MachinePublic
+	unwatch        context.CancelFunc
+	watched        chan struct{}
+	removed        chan struct{}
+	left           sync.Once
+	resources      sync.Once
+	err            error
+	sock           net.Listener
+	router         *osRouter
+	hostsFile      string
+	report         atomic.Pointer[func() string]
+	gateway        atomic.Uint32
+	gatewayChanges chan struct{}
 }
 
 func Up(dir, publicURL, secret, name string, pinned key.MachinePublic) (*Mesh, error) {
@@ -123,7 +125,7 @@ func UpWithPort(dir, publicURL, secret, name string, pinned key.MachinePublic, u
 // Passing a device and router transfers their ownership to the backend. A nil
 // device selects upstream's userspace TUN, so local checks need no host changes.
 func startMesh(dir string, shim *Shim, secret, name string, udpPort uint16, dev tun.Device, rt router.Router, hostsFile string) (_ *Mesh, err error) {
-	m := &Mesh{sys: tsd.NewSystem(), shim: shim, pinned: shim.pinned, watched: make(chan struct{}), removed: make(chan struct{}), hostsFile: hostsFile}
+	m := &Mesh{gatewayChanges: make(chan struct{}, 1), sys: tsd.NewSystem(), shim: shim, pinned: shim.pinned, watched: make(chan struct{}), removed: make(chan struct{}), hostsFile: hostsFile}
 	watcherStarted := false
 	defer func() {
 		if err != nil {
@@ -200,6 +202,7 @@ func startMesh(dir string, shim *Shim, secret, name string, udpPort uint16, dev 
 			if removed = n.State != nil && *n.State == ipn.NeedsMachineAuth; removed {
 				return false
 			}
+			m.updateGateway()
 			if err := WriteHostsBlock(m.hostsFile, names(m.lb.NetMapWithPeers())); err != nil {
 				log.Printf("mesh: hosts: %v", err)
 			}
@@ -271,6 +274,8 @@ func (m *Mesh) leave() error {
 }
 func (m *Mesh) release() {
 	m.resources.Do(func() {
+		m.gateway.Store(0)
+		close(m.gatewayChanges)
 		if m.lb != nil {
 			m.lb.Shutdown()
 		} else if m.engine != nil {

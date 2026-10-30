@@ -66,6 +66,7 @@ func TestNodeBackendPersistsIdentityUsesPortAndHandlesRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.SetGatewayPort(50221)
 	port := uint16(portProbe.LocalAddr().(*net.UDPAddr).Port)
 	portProbe.Close()
 	var first netip.Addr
@@ -92,6 +93,18 @@ func TestNodeBackendPersistsIdentityUsesPortAndHandlesRemoval(t *testing.T) {
 			t.Fatal("node must not configure host DNS")
 		}
 		waitFor(t, "hub peer", func() bool { _, ok := m.Peer("hub"); return ok })
+		waitFor(t, "authenticated gateway port", func() bool { p, ok := m.GatewayPort(); return ok && p == 50221 })
+		for len(m.GatewayChanges()) > 0 {
+			<-m.GatewayChanges()
+		}
+		c.SetGatewayPort(50222)
+		select {
+		case <-m.GatewayChanges():
+		case <-ctx.Done():
+			t.Fatal("gateway update missing")
+		}
+		waitFor(t, "updated gateway port", func() bool { p, ok := m.GatewayPort(); return ok && p == 50222 })
+		c.SetGatewayPort(50221)
 		if _, ok := m.Peer("absent"); ok {
 			t.Fatal("unknown peer found")
 		}
@@ -113,6 +126,9 @@ func TestNodeBackendPersistsIdentityUsesPortAndHandlesRemoval(t *testing.T) {
 		}
 		if err := m.Close(); err != nil {
 			t.Fatal(err)
+		}
+		if _, ok := m.GatewayPort(); ok {
+			t.Fatal("closed node still advertises gateway")
 		}
 	}
 	b, err := os.ReadFile(hosts)

@@ -1,0 +1,229 @@
+package hub
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+)
+
+type Install struct {
+	Unix    string `json:"unix"`
+	Windows string `json:"windows"`
+}
+type JoinResult struct {
+	Code    string  `json:"code"`
+	Install Install `json:"install"`
+}
+
+func functionPrefixes(raw json.RawMessage) (map[string]bool, error) {
+	var list struct {
+		Functions []struct {
+			FunctionID string `json:"function_id"`
+		} `json:"functions"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, err
+	}
+	if list.Functions == nil {
+		return nil, errors.New("missing engine functions listing")
+	}
+	taken := map[string]bool{}
+	for _, f := range list.Functions {
+		if f.FunctionID == "" {
+			return nil, errors.New("missing engine function ID")
+		}
+		prefix, _, _ := strings.Cut(f.FunctionID, "::")
+		if prefix != "" {
+			taken[prefix] = true
+		}
+	}
+	return taken, nil
+}
+
+type NodeRequest struct {
+	Name string `json:"name"`
+}
+type ComponentState struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+type NodeEntry struct {
+	Name      string           `json:"name"`
+	Address   string           `json:"address"`
+	OS        string           `json:"os"`
+	Arch      string           `json:"arch"`
+	Version   string           `json:"version"`
+	Online    bool             `json:"online"`
+	LastSeen  time.Time        `json:"last_seen"`
+	Ephemeral bool             `json:"ephemeral"`
+	Path      string           `json:"path"`
+	Workers   []ComponentState `json:"workers"`
+	Drives    []ComponentState `json:"drives"`
+}
+type NodeDetails struct {
+	NodeEntry
+	Status      json.RawMessage `json:"status"`
+	StatusError string          `json:"status_error,omitempty"`
+}
+type RemoveResult struct {
+	Removed bool `json:"removed"`
+	JoinResult
+}
+
+func (h *Hub) Status() StatusResult {
+	h.mu.RLock()
+	cfg, closed, hooks := h.config, h.closed, h.hooks
+	front, gateway := h.front, h.gateway
+	h.mu.RUnlock()
+	s := StatusResult{Version: h.Version, PublicURL: cfg.PublicURL, FrontDoor: "not running", Gateway: "gateway is not configured", Proxy: "proxy ownership is not configured"}
+	if h.Coordinator == nil {
+		return s
+	}
+	s.Prefix = h.Coordinator.Prefix().String()
+	for _, n := range h.Coordinator.Nodes() {
+		if n.Name == "hub" {
+			s.HubAddress = n.Addr.String()
+			continue
+		}
+		s.Nodes.Total++
+		if n.Online {
+			s.Nodes.Online++
+		}
+	}
+	if !closed && front != nil {
+		s.FrontDoor = "ok"
+	}
+	if hooks.ProxyStatus != nil {
+		s.Proxy = hooks.ProxyStatus()
+	}
+	if !closed && hooks.Gateway != nil && gateway != nil {
+		s.Gateway = "ok"
+	}
+	if closed {
+		s.Gateway = "not running"
+		s.Proxy = "not running"
+	}
+	return s
+}
+func (h *Hub) JoinCode(ctx context.Context, _ struct{}) (JoinResult, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.joinCode()
+}
+func (h *Hub) joinCode() (JoinResult, error) {
+	if h.config.PublicURL == "" {
+		return JoinResult{}, errors.New("public_url is not set")
+	}
+	if h.Coordinator == nil {
+		return JoinResult{}, errors.New("hub is not running")
+	}
+	code := h.Coordinator.Code()
+	unix, windows := InstallLines(h.Version, h.config.PublicURL, code)
+	return JoinResult{Code: code, Install: Install{Unix: unix, Windows: windows}}, nil
+}
+func (h *Hub) CycleCode(ctx context.Context, _ struct{}) (JoinResult, error) {
+	h.reload.Lock()
+	defer h.reload.Unlock()
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if _, err := h.joinCode(); err != nil {
+		return JoinResult{}, err
+	}
+	if err := h.Coordinator.CycleCode(); err != nil {
+		return JoinResult{}, err
+	}
+	return h.joinCode()
+}
+func (h *Hub) RemoveNode(ctx context.Context, r NodeRequest) (RemoveResult, error) {
+	h.reload.Lock()
+	defer h.reload.Unlock()
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if _, err := h.joinCode(); err != nil {
+		return RemoveResult{}, err
+	}
+	if err := h.Coordinator.Remove(r.Name); err != nil {
+		return RemoveResult{}, err
+	}
+	result, err := h.joinCode()
+	return RemoveResult{Removed: true, JoinResult: result}, err
+}
+func (h *Hub) ListNodes(ctx context.Context, _ struct{}) ([]NodeEntry, error) {
+	nodes := []NodeEntry{}
+	if h.Coordinator == nil {
+		return nodes, nil
+	}
+	for _, n := range h.Coordinator.Nodes() {
+		if n.Name == "hub" {
+			continue
+		}
+		nodes = append(nodes, NodeEntry{Name: n.Name, Address: n.Addr.String(), Online: n.Online, LastSeen: n.LastSeen, Ephemeral: n.Ephemeral, Workers: []ComponentState{}, Drives: []ComponentState{}})
+	}
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
+	return nodes, nil
+}
+func (h *Hub) GetNode(ctx context.Context, r NodeRequest) (NodeDetails, error) {
+	list, _ := h.ListNodes(ctx, struct{}{})
+	for _, n := range list {
+		if n.Name != r.Name {
+			continue
+		}
+		h.mu.RLock()
+		fetch := h.hooks.NodeStatus
+		h.mu.RUnlock()
+		result := NodeDetails{NodeEntry: n, StatusError: "signed node status is not configured"}
+		if fetch != nil {
+			remote, err := fetch(ctx, r.Name)
+			if err != nil {
+				result.StatusError = err.Error()
+			} else {
+				result.StatusError = ""
+				result.Status = remote.Status
+				result.OS = remote.OS
+				result.Arch = remote.Arch
+				result.Version = remote.Version
+				result.Path = remote.Path
+				result.Workers = remote.Workers
+				result.Drives = remote.Drives
+			}
+		}
+		return result, nil
+	}
+	return NodeDetails{}, fmt.Errorf("unknown node %q", r.Name)
+}
+func (h *Hub) refreshNames(ctx context.Context) error {
+	raw, err := h.Client.Trigger(ctx, iii.TriggerRequest{FunctionID: "engine::functions::list", Namespace: h.Namespace, Data: json.RawMessage(`{"include_internal":true}`), Timeout: 15 * time.Second})
+	if err != nil {
+		return fmt.Errorf("list engine function prefixes: %w", err)
+	}
+	taken, err := functionPrefixes(raw)
+	if err != nil {
+		return err
+	}
+	h.Coordinator.SetNameTaken(func(name string) bool { return taken[name] })
+	return nil
+}
+func (h *Hub) registerFunctions(client *iii.Client) error {
+	if err := iii.RegisterFunctionTyped(client, "mesh::status", func(context.Context, struct{}) (StatusResult, error) { return h.Status(), nil }); err != nil {
+		return err
+	}
+	if err := iii.RegisterFunctionTyped(client, "mesh::nodes::list", h.ListNodes); err != nil {
+		return err
+	}
+	if err := iii.RegisterFunctionTyped(client, "mesh::nodes::get", h.GetNode); err != nil {
+		return err
+	}
+	if err := iii.RegisterFunctionTyped(client, "mesh::nodes::remove", h.RemoveNode); err != nil {
+		return err
+	}
+	if err := iii.RegisterFunctionTyped(client, "mesh::join::code", h.JoinCode); err != nil {
+		return err
+	}
+	return iii.RegisterFunctionTyped(client, "mesh::join::cycle", h.CycleCode)
+}

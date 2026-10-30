@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -11,8 +12,11 @@ import (
 )
 
 type Options struct {
-	URL     string
-	Version string
+	URL              string
+	Version          string
+	DataDir          string
+	LocalConfig      bool
+	CollectInterface bool
 }
 
 type StatusResult struct {
@@ -32,11 +36,12 @@ type NodeCounts struct {
 	Outdated int `json:"outdated"`
 }
 
-func Status(version string) StatusResult {
-	return StatusResult{Version: version}
-}
-
-func Run(ctx context.Context, o Options) error {
+func Run(ctx context.Context, o Options) (err error) {
+	defer func() {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			err = nil
+		}
+	}()
 	namespace := strings.TrimSpace(os.Getenv("III_NAMESPACE"))
 	if namespace == "" {
 		namespace = "default"
@@ -45,16 +50,45 @@ func Run(ctx context.Context, o Options) error {
 	defer client.Close()
 
 	connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	err := client.Connect(connectCtx)
+	err = client.Connect(connectCtx)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("connect to iii engine: %w", err)
 	}
-	if err := iii.RegisterFunctionTyped(client, "mesh::status", func(context.Context, struct{}) (StatusResult, error) {
-		return Status(o.Version), nil
-	}); err != nil {
-		return fmt.Errorf("register mesh::status: %w", err)
+
+	h := &Hub{Version: o.Version, Namespace: namespace, ConfigID: configID(), Client: client, config: DefaultConfig()}
+	local := o.LocalConfig || o.CollectInterface
+	if !local {
+		cfg, err := ensureConfig(ctx, client, h.ConfigID)
+		if err != nil {
+			return err
+		}
+		h, err = Start(ctx, o, cfg, client)
+		if err != nil {
+			return err
+		}
+		defer h.Close()
 	}
+	if err := h.registerFunctions(client); err != nil {
+		return fmt.Errorf("register mesh functions: %w", err)
+	}
+	if err := h.registerConfiguration(ctx, client, local); err != nil {
+		return fmt.Errorf("register configuration: %w", err)
+	}
+
 	<-ctx.Done()
 	return nil
+}
+
+func namespace() string {
+	if s := strings.TrimSpace(os.Getenv("III_NAMESPACE")); s != "" {
+		return s
+	}
+	return "default"
+}
+func configID() string {
+	if s := strings.TrimSpace(os.Getenv("III_CONFIG_NAME")); s != "" {
+		return s
+	}
+	return "mesh"
 }

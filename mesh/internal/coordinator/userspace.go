@@ -29,6 +29,9 @@ import (
 
 type userspace struct {
 	once      sync.Once
+	mu        sync.Mutex
+	closed    bool
+	address   netip.Addr
 	sys       *tsd.System
 	engine    wgengine.Engine
 	backend   *ipnlocal.LocalBackend
@@ -40,6 +43,9 @@ type userspace struct {
 
 func (u *userspace) close() {
 	u.once.Do(func() {
+		u.mu.Lock()
+		defer u.mu.Unlock()
+		u.closed = true
 		for _, l := range u.listeners {
 			_ = l.Close()
 		}
@@ -174,7 +180,33 @@ func (c *Coordinator) Listen(ctx context.Context, control string, ports ...int) 
 		}
 		u.listeners = append(u.listeners, l)
 	}
+	u.address = address
 	c.backend = u
 	go func() { <-ctx.Done(); u.close(); stop(); cancel() }()
 	return append([]net.Listener(nil), u.listeners...), nil
+}
+
+// ListenTCP binds another port on the existing hub backend. The caller owns
+// closing the returned listener; Close also releases it during shutdown.
+func (c *Coordinator) ListenTCP(port int) (net.Listener, error) {
+	c.life.Lock()
+	defer c.life.Unlock()
+	if c.backend == nil || c.ctx.Err() != nil {
+		return nil, errors.New("hub backend is not running")
+	}
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("invalid TCP port %d", port)
+	}
+	u := c.backend
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.closed {
+		return nil, errors.New("hub backend is closed")
+	}
+	l, err := u.stack.ListenTCP("tcp6", netip.AddrPortFrom(u.address, uint16(port)).String())
+	if err != nil {
+		return nil, err
+	}
+	u.listeners = append(u.listeners, l)
+	return l, nil
 }

@@ -19,16 +19,15 @@ func main() {
 		defaultURL = "ws://127.0.0.1:49134"
 	}
 	url := flag.String("url", defaultURL, "iii engine WebSocket URL")
-	// Startup only registers the interface until hub backends are implemented.
-	flag.Bool("local-config", false, "Use local configuration only")
-	flag.Bool("collect-interface", false, "Register interface metadata without backend initialization")
+	local := flag.Bool("local-config", false, "Register the interface using defaults without backend initialization")
+	collect := flag.Bool("collect-interface", false, "Register interface metadata without backend initialization")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		log.Fatal("unexpected positional arguments")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	if err := hub.Run(ctx, hub.Options{URL: *url, Version: version}); err != nil {
+	if err := hub.Run(ctx, hub.Options{URL: *url, Version: version, LocalConfig: *local, CollectInterface: *collect}); err != nil {
 		log.Fatal(err)
 	}
 }

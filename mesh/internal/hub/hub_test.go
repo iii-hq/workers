@@ -8,7 +8,7 @@ import (
 )
 
 func TestStatusReportsVersion(t *testing.T) {
-	if got := Status("0.1.0").Version; got != "0.1.0" {
+	if got := (&Hub{Version: "0.1.0"}).Status().Version; got != "0.1.0" {
 		t.Fatalf("Status version = %q, want %q", got, "0.1.0")
 	}
 }
