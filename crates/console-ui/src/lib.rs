@@ -6,7 +6,9 @@
 //! cannot get it subtly wrong:
 //!
 //! - the *content function* (`<worker>::ui-content` by default) the console
-//!   calls through each asset's observer with `{path}` to fetch its source,
+//!   calls through each asset's observer with `{path}` to fetch its source.
+//!   It registers as a standby: a second instance of the worker waits while
+//!   the first hosts it and takes it over when the first leaves,
 //! - one observer of `console::ui::asset` per asset, with args
 //!   `{ kind: "script" | "style" | "module", path }` and the content function
 //!   as its target (the SDK replays it by id after a reconnect, and the
@@ -66,6 +68,10 @@ struct ConfigurationIdentityResponse {
 /// not a global form-family search or a reimplementation of Compose's hash.
 /// The function inherits the worker's namespace; configuration RPCs still go
 /// to `default`. `id` must be the same process-stable ID used at registration.
+///
+/// It registers as a standby: while another instance of the worker hosts
+/// `<worker>::configuration-id`, this one registers it again every second and
+/// answers once the other instance leaves.
 pub fn register_configuration_identity(iii: &IIIClient, worker: &str, id: &'static str) {
     iii.register_function(
         format!("{worker}::configuration-id"),
@@ -75,7 +81,8 @@ pub fn register_configuration_identity(iii: &IIIClient, worker: &str, id: &'stat
         .description(
             "Returns this worker instance's effective configuration entry ID, without its value.",
         )
-        .metadata(serde_json::json!({ "internal": true })),
+        .metadata(serde_json::json!({ "internal": true }))
+        .standby(),
     );
 }
 
@@ -267,6 +274,10 @@ impl ConsoleUi {
     /// function, and the SDK replays it on reconnect. A rejection (an asset
     /// the console refuses, a failed content fetch) is warn-logged, not
     /// fatal — injected UI is an accessory.
+    ///
+    /// The content function registers as a standby: while another instance
+    /// of the worker hosts it, this one registers it again every second, and
+    /// serves its own assets once the other instance leaves.
     pub fn register(self, iii: &Arc<IIIClient>) {
         let Self {
             worker,
@@ -311,7 +322,10 @@ impl ConsoleUi {
                      asset's observer with {{path}})."
                 ))
                 // Console plumbing, not an API for agents/workers to discover.
-                .metadata(serde_json::json!({ "internal": true })),
+                .metadata(serde_json::json!({ "internal": true }))
+                // A second instance of the worker takes it over when the
+                // first one leaves.
+                .standby(),
             );
         }
 
