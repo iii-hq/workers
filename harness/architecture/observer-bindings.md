@@ -27,7 +27,8 @@ observer carries only a pointer to it.
 
 ```
 a call of the observed function
-      │  (iii delivers the Observed envelope; sidecar { "__binding": id })
+      │  (iii delivers the Observed envelope, or the source's deliver hook
+      │   calls through the observer with its payload; sidecar { "__binding": id })
       ▼
 harness::observer::deliver         ← the ONE target of every agent observer
       │
@@ -48,8 +49,14 @@ There is no spawn shape: an observer never starts an agent.
 
 The delivery hop is an ordinary, catalog-hidden function (`metadata.internal`).
 It is not private, because a private function cannot be an observer's target.
-It reads the event from the envelope's `output` — for an event source, the
-event itself — and falls back to `input` when the output was not captured.
+It takes a call in two shapes. From iii's delivery it gets the `Observed`
+envelope and reads the event from its `output` (for an event source, the
+event itself), falling back to `input` when the output was not captured. A
+source that delivers itself (an `onObserverDeliver` hook: `kanban::on-change`,
+`stories::on-changed`) calls through the observer, and the payload it sends is
+the event, without the engine's `_caller_worker_id` stamp. Both calls carry the
+observer's metadata sidecar, whose `__binding` names the binding; an envelope
+also names it as its `observer_id`.
 
 ## The binding record
 
@@ -227,14 +234,17 @@ boot (`bindings/gc.rs`):
 1. **Migrate** — records written before 0.26 name a trigger type and config.
    Each is rewritten through the spec's table (`W::X` becomes `W::on-X`; config
    becomes args for a function that takes args, `$eq` filters on
-   `input.<field>` otherwise). One that does not translate — a harness event,
-   an unknown shape — is retired and its owner told what to observe instead.
+   `input.<field>` otherwise). One that does not translate (a harness event;
+   a console UI asset, whose observer serves the asset's content; an unknown
+   shape) is retired and its owner told what to observe instead.
 2. **Sweep** — owner-gone bindings are deleted, stale spawn-target records are
    retired loudly, and delivery observers without a record are disposed.
 3. **Replay** — every surviving binding's observer is re-created with the same
-   id. When the previous connection still holds the id
-   (`OBSERVER_ID_CONFLICT`, within the engine's suspension grace), the harness
-   disposes the old one through `engine::observers::dispose` and observes
+   id. Within the engine's suspension grace the previous connection's observer
+   is still there, suspended; the engine replaces it with the new one, since
+   both connections declare the worker name `harness` in the same namespace.
+   When the id is held some other way (`OBSERVER_ID_CONFLICT`), the harness
+   disposes that observer through `engine::observers::dispose` and observes
    again.
 4. **Catch up** — a one-shot `state::on-changed` wake that never delivered reads
    its watched key and delivers the value it missed.

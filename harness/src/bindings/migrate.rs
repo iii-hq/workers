@@ -283,8 +283,11 @@ pub fn translate(trigger_type: &str, config: &Value, created_at: i64) -> Option<
             Some(worker_events(config)),
         ),
         "console:assets" => source("console::ui::on-assets-changed", None, None),
-        // A console asset is content its worker serves through its own
-        // observer; a binding's target cannot serve it.
+        // An observer of `console::ui::asset` is its asset's content source
+        // (contract rows 118-120): the ADE calls its target with `{ path }`
+        // and stores the `content` of the answer. A binding's target is the
+        // delivery hop, whose answer carries no content, so the record is
+        // retired.
         "console:script" | "console:style" | "console:module" => return None,
         other if other.starts_with("harness::") => return None,
         other => {
@@ -386,8 +389,9 @@ fn retirement_reason(trigger_type: Option<&str>) -> &'static str {
              harness::observe."
         }
         Some("console:script" | "console:style" | "console:module") => {
-            "a console asset is content its worker serves through its own observer, and a \
-             binding cannot serve it. Watch asset changes with console::ui::on-assets-changed."
+            "an observer of console::ui::asset serves its asset's content to the console, \
+             and a binding's target answers with no content. To be told when console UI \
+             assets change, observe console::ui::on-assets-changed through harness::observe."
         }
         Some(other) if other.starts_with("harness::") => {
             "an agent observes no harness function except harness::on-timer. Watch the work \
@@ -668,7 +672,15 @@ mod tests {
             Some(spec("console::ui::on-assets-changed", None, None))
         );
         for asset in ["console:script", "console:style", "console:module"] {
-            assert_eq!(tr(asset, &json!({ "path": "/ui.js" })), None, "{asset}");
+            assert_eq!(
+                tr(
+                    asset,
+                    &json!({ "path": "demo/page.js", "metadata": { "x": 1 } })
+                ),
+                None,
+                "{asset}"
+            );
+            assert_eq!(tr(asset, &json!({})), None, "{asset} without a path");
         }
     }
 
@@ -848,6 +860,42 @@ mod tests {
         );
     }
 
+    /// A stored console asset binding (here a wake) becomes no observer: the
+    /// ADE would call its target for the asset's content on every boot,
+    /// firing the binding each time. The owner is told what to observe for
+    /// asset changes.
+    #[test]
+    fn a_stored_console_asset_binding_is_retired_with_an_asset_notice() {
+        for (asset, path) in [
+            ("console:script", "demo/page.js"),
+            ("console:style", "demo/page.css"),
+            ("console:module", "demo/chart.js"),
+        ] {
+            let raw = stored(json!({
+                "trigger_type": asset,
+                "config": { "path": path },
+            }));
+            let Upgrade::Retire {
+                binding,
+                watched,
+                why,
+            } = upgrade(&raw)
+            else {
+                panic!("{asset}: a console asset binding is retired");
+            };
+            assert!(watched.contains(asset), "{watched}");
+            assert!(watched.contains(path), "{watched}");
+            let notice = retirement_notice(&binding, &watched, why);
+            assert!(notice.contains("RETIRED"), "{notice}");
+            assert!(notice.contains("console::ui::asset"), "{notice}");
+            assert!(
+                notice.contains("console::ui::on-assets-changed"),
+                "{notice}"
+            );
+            assert!(!notice.contains("engine::functions::list"), "{notice}");
+        }
+    }
+
     #[test]
     fn a_timer_without_a_deadline_is_retired_with_a_timer_notice() {
         let raw = stored(json!({ "trigger_type": "timer", "config": {} }));
@@ -879,6 +927,12 @@ mod tests {
             panic!("a bare unknown type has nothing to observe");
         };
         assert!(why.contains("engine::functions::list"));
+        let Upgrade::Retire { why, .. } = upgrade(&stored(
+            json!({ "trigger_type": "console:style", "config": {} }),
+        )) else {
+            panic!("a console asset without a path is retired too");
+        };
+        assert!(why.contains("console::ui::on-assets-changed"), "{why}");
         let keyless = stored(Value::Null);
         assert!(matches!(upgrade(&keyless), Upgrade::Retire { .. }));
         assert!(matches!(

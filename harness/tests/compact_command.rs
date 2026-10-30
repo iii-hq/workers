@@ -1,6 +1,6 @@
 //! `/compact` through `harness::send` and `harness::compact`, end to end over
 //! an isolated engine with stub session-manager / state / context-manager
-//! workers and a `harness::compaction` subscriber standing in for a second
+//! workers and a `harness::on-compaction` subscriber standing in for a second
 //! device. No model runs. Skips when no `iii` engine binary is available.
 
 use std::collections::BTreeMap;
@@ -134,7 +134,7 @@ struct World {
     state: BTreeMap<String, Value>,
     compact_requests: Vec<Value>,
     compact_reply: Value,
-    /// `harness::compaction` events the subscriber received.
+    /// `harness::on-compaction` events the subscriber received.
     events: Vec<Value>,
 }
 

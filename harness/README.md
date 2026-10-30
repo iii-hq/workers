@@ -638,7 +638,7 @@ observes only `harness::on-timer` and its own post-turn validator.
 
 | Function | Args | Filter on | Event |
 |---|---|---|---|
-| `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active. |
+| `harness::on-ready` | none | — | `{ status: 'ready', timestamp }`. An observer added after boot receives the current ready event once it is active, as a call of the function for that observer alone (metadata `{ for_observer: <observer id> }`), in the same shape as the boot event. |
 | `harness::on-turn-started` | none | `input.session_id`, `input.parent_session_id`, `input.parent.session_id` | `{ session_id, turn_id, timestamp, depth, message_preview?, parent?, parent_session_id? }`: a turn began executing (first loop step); `depth` is 0 at the top level. |
 | `harness::on-turn-completed` | none | as `harness::on-turn-started` | `{ session_id, turn_id, status, terminal, timestamp, result?, result_error?, reason?, parent?, parent_session_id?, context? }`: a turn reached `completed` / `cancelled` / `failed`. `terminal` is `false` while the session still owns an armed wake, so consumers finalize an exchange on `terminal: true`. |
 | `harness::on-message-queued` | none | `input.session_id` | `{ session_id, entry_id, queued_at, timestamp }`: a message parked in the session's queue while its turn streams. |
@@ -719,7 +719,10 @@ creates the observer itself, for the calling session:
 
 Each observer is a durable binding in the harness's state; its engine
 observer targets `harness::observer::deliver` with the binding id as observer
-id and receives the `Observed` envelope. The harness counts delivered fires
+id. The delivery hop takes the `Observed` envelope of iii's delivery (the event
+is the call's `output`) and the payload a source's deliver hook sends through
+the observer (`kanban::on-change`, `stories::on-changed`: the event is the
+payload as sent). The harness counts delivered fires
 itself (`once`, `max_fires`) and runs the conditions before a delivery; the
 lifecycle deadline is also the observer's `expires_in_ms`. The harness waits
 briefly for the observer to become active, so `INVALID_ARGS`, `FORBIDDEN`,

@@ -240,7 +240,7 @@ pub struct SendResponse {
     /// Set when the message was the `/compact` command: nothing was appended
     /// and no turn ran. The compaction runs in the background; its start and
     /// outcome reach every client through the transcript and
-    /// `harness::compaction`.
+    /// `harness::on-compaction`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<CompactionStarted>,
 }
@@ -899,7 +899,7 @@ pub struct EditQueuedResponse {
 /// while keeping the same internal id, `entry_id`, `queued_at`, and `origin`,
 /// so re-writing the same state key leaves the message where it was in the
 /// queue order (unlike remove + re-queue, which moves it to the tail). Emits
-/// `harness::message-queued` so other clients refetch the new content.
+/// `harness::on-message-queued` so other clients refetch the new content.
 pub async fn edit_queued(
     deps: &Deps,
     req: EditQueuedRequest,

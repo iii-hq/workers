@@ -470,19 +470,56 @@ async fn static_injections_follow_session_globs_and_filters() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_on_ready_observer_added_after_boot_receives_the_ready_event() {
     let engine = Engine::start().await;
+    let ready = harness::events::ON_READY_FN;
+    engine.push(host::observer_added(
+        "ready-early",
+        ready,
+        "test::on-ready",
+        json!({}),
+        json!({}),
+    ));
+    engine.ack("ready-early").await;
     engine.deps.events.emit_ready().await;
+    engine
+        .frame("the boot ready event", |frame| {
+            frame["type"] == "invocationsobserved"
+        })
+        .await;
     engine.push(host::observer_added(
         "ready-late",
-        harness::events::ON_READY_FN,
+        ready,
         "test::on-ready",
         json!({}),
         json!({}),
     ));
     engine.ack("ready-late").await;
-    let call = engine
-        .frame("the ready event through the observer", |frame| {
-            frame["type"] == "invokefunction" && frame["function_id"] == "test::on-ready"
+    // The late observer's ready event is a call of harness::on-ready for it
+    // alone, reported like the boot call: never a call through the observer.
+    engine
+        .frame("the ready event for the late observer", |frame| {
+            frame["type"] == "invocationsobserved"
+                && frame["items"].as_array().is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item["matched"] == json!(["ready-late"]))
+                })
         })
         .await;
-    assert_eq!(call["data"]["status"], json!("ready"), "{call}");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let calls = engine.observed_calls(ready);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(matched(&calls[0]), vec!["ready-early"], "{calls:?}");
+    assert_eq!(matched(&calls[1]), vec!["ready-late"], "{calls:?}");
+    for call in &calls {
+        let event = match call.get("output") {
+            Some(output) if !output.is_null() => output,
+            _ => &call["input"],
+        };
+        assert_eq!(event["status"], json!("ready"), "{call}");
+    }
+    let targets = engine.called_targets();
+    assert!(
+        !targets.iter().any(|target| target == "test::on-ready"),
+        "no call through an observer: {targets:?}"
+    );
 }

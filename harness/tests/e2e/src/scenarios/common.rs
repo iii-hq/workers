@@ -180,7 +180,7 @@ pub fn transcript_contains(transcript: &Value, needle: &str) -> bool {
 }
 
 /// Validation nudges the harness appended to this transcript — the
-/// re-prompts a `harness::hook::post-turn` validator (or the output
+/// re-prompts a `harness::hook::on-post-turn` validator (or the output
 /// contract) produced. Recognized by the durable entry id
 /// (`e_<turn>_nudge_<n>`) or the `validation` origin flag.
 pub fn validation_nudges(transcript: &Value) -> usize {

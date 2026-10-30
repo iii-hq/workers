@@ -1,5 +1,5 @@
 //! `subagent_validation` — the parent agent wires a validated sub-agent
-//! entirely by itself: it registers a `harness::hook::post-turn` validator
+//! entirely by itself: it registers a `harness::hook::on-post-turn` validator
 //! scoped to its future child (allowed because the child is named under the
 //! parent's own session prefix), arms a once-wake on the verdict key, spawns
 //! the child, and ends its turn. The child then iterates under the gate —

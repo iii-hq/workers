@@ -124,7 +124,7 @@ impl ScenarioRunner<'_> {
             Err(error) => {
                 return Err(RunError::runner(
                     phase,
-                    "wait for harness::turn-completed signal(s)",
+                    "wait for harness::on-turn-completed signal(s)",
                     error,
                 ));
             }
