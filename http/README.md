@@ -100,6 +100,22 @@ Unknown args are refused with `INVALID_ARGS`. Two observers cannot claim the
 same method and path shape (`/a/:x` and `/a/:y` are one shape): the later one
 is rejected with `HTTP_ROUTE_CONFLICT`.
 
+A route lasts while its observer's worker is connected. When that worker's
+connection goes away, the engine withdraws its observers from the http worker:
+their routes answer `404`, and another observer can claim the shape. A worker
+that restarts under the same worker name and observes again under the same
+observer id within the engine's `observers.observer_grace_ms` (30 s by
+default) replaces its earlier observer and gets the route back; for any other
+worker that id is taken (`OBSERVER_ID_CONFLICT`) until the grace period ends:
+
+```typescript
+const route = iii.observe(
+  { function_id: 'http::on-request', args: { method: 'GET', path: '/orders/:id' } },
+  'orders::get',
+  { id: 'orders-get-route' },   // stable across restarts of this worker
+)
+```
+
 The server calls `http::on-request` once for every request it receives (its
 CORS layer answers `OPTIONS` requests). The call's input is the request as the
 server received it:

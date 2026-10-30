@@ -49,6 +49,10 @@ channel yields a chunked streaming response.
 - Route shapes with the same method and equivalent path structure conflict:
   `/orders/:id` and `/orders/:order_id` are the same shape. The later observer
   is rejected with `HTTP_ROUTE_CONFLICT`.
+- A route lasts while its observer's worker is connected. A worker that
+  restarts under the same worker name and observes again under the same
+  observer `id` within the engine's `observers.observer_grace_ms` gets its
+  route back; pass a stable `id` in the observe options for that.
 - `http::on-request` has one host per namespace: run one http worker per
   namespace.
 
