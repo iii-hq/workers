@@ -311,11 +311,7 @@ describe('OpenAiConfigForm', () => {
 describe('OpenAiConfigForm catalog', () => {
   it('lists the catalog the worker answers, keeps the stored model selectable, and reports the key as accepted', async () => {
     const { container, iii } = await mount({ model: 'gpt-6-luna-2026-10-01' })
-    expect(iii.call).toHaveBeenCalledWith(
-      'judge-openai::models::list',
-      { timeout_ms: 15_000 },
-      { timeoutMs: 20_000 },
-    )
+    expect(iii.call).toHaveBeenCalledWith('judge-openai::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
     const select = container.querySelector<HTMLSelectElement>('select[name="model"]')!
     expect([...select.options].map((option) => option.value)).toEqual(['', 'gpt-6-luna', 'gpt-6-luna-2026-10-01'])
     expect(select.options[1].dataset.description).toBe('OpenAI Decisions (beta) · 2026-09-14')

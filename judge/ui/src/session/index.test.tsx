@@ -303,11 +303,7 @@ describe('per-session judge provider', () => {
     expect(option('default')?.textContent).toContain('typesafe · jev-latest')
     expect(option('typesafe')?.getAttribute('aria-pressed')).toBe('true')
     // A judge's model comes from its settings, read raw: no `${VAR}` expands into the page.
-    expect(iii.call).toHaveBeenCalledWith(
-      'configuration::get',
-      { id: 'judge-semif', raw: true },
-      { timeoutMs: 5_000 },
-    )
+    expect(iii.call).toHaveBeenCalledWith('configuration::get', { id: 'judge-semif', raw: true }, { timeoutMs: 5_000 })
     expect(iii.call.mock.calls.some(([id]) => id === 'judge::models::list')).toBe(false)
     await act(async () => option('semif')!.click())
     expect(setMetadata).toHaveBeenLastCalledWith({ [SESSION_PROVIDER_KEY]: 'semif' })
