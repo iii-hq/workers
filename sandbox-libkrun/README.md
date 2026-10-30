@@ -18,10 +18,11 @@ iii call compose::add worker=iii-sandbox
 ```
 
 Older Compose has no such alias, so pin the range yourself (0.2.x implements
-sandbox contract 1):
+sandbox contract 1). On iii 0.25 and earlier the command is `iii trigger`
+(iii 0.26 accepts it as an alias of `iii call`):
 
 ```bash
-iii call compose::add worker=sandbox-libkrun@^0.2
+iii trigger compose::add worker=sandbox-libkrun@^0.2
 ```
 
 Calling `sandbox::*` through the router needs iii 0.26 or later; the
