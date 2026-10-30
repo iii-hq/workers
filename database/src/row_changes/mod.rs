@@ -1,9 +1,9 @@
 //! `database::on-row-changed` — the worker announcing its own writes.
 //!
 //! The database is often the state machine of a run: workers write rows and
-//! something else needs to know. Until now nothing emitted database change
-//! events, so a coordinator had to be told out-of-band (a state key written
-//! alongside the row) or poll.
+//! something else needs to know. An observer of this function hears each
+//! committed write, so a coordinator needs no out-of-band signal (a state key
+//! written alongside the row) and no polling.
 //!
 //! Two capture modes, chosen per database in the worker config:
 //!

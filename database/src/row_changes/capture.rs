@@ -389,10 +389,10 @@ impl NativeCapture {
         tracing::info!(observer = %obs.id(), "row-changed observer removed");
     }
 
-    /// After a config reload: late-rejects every observer the new config no
-    /// longer supports (its database was removed, or became native while the
-    /// observer names no table). The rejection removes it, which runs the
-    /// removed hook.
+    /// After a config reload: late-rejects every observer the reloaded config
+    /// cannot serve (its database is gone, or is native while the observer
+    /// names no table). The rejection removes it, which runs the removed
+    /// hook.
     pub async fn revalidate(&self) {
         let Some(function) = self.function.get() else {
             return;
@@ -411,7 +411,7 @@ impl NativeCapture {
                     .reject(
                         codes::NATIVE_CAPTURE_REQUIRES_TABLE,
                         format!(
-                            "db `{}` now uses `capture: native`; pass args.table",
+                            "db `{}` uses `capture: native`, which requires args.table",
                             args.db
                         ),
                     ),
