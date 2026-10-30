@@ -400,14 +400,20 @@ async fn a_killed_consumer_group_member_leaves_every_later_message_to_the_live_m
         .await
         .expect("queue worker should boot");
 
-    let topic = format!("billing-{}", Uuid::new_v4().simple());
+    // The engine keys observer ids across every namespace, so each run's
+    // stable ids carry the run's suffix: the same within a run, distinct
+    // from any other run on the same engine.
+    let run = Uuid::new_v4().simple().to_string();
+    let topic = format!("billing-{run}");
+    let id_a = format!("billing-member-a-{run}");
+    let id_b = format!("billing-member-b-{run}");
     let via_a = register_target(&member_a, "e2e::billing::a", false);
     let via_b = register_target(&member_b, "e2e::billing::b", false);
     // Member A joins first, so the group's one subscription delivers into it.
-    let a = join_group(&member_a, &topic, "billing-member-a", "e2e::billing::a");
+    let a = join_group(&member_a, &topic, &id_a, "e2e::billing::a");
     active(&a).await;
     wait_for_subscribers(&boot.subscribers, &topic, 1).await;
-    let b = join_group(&member_b, &topic, "billing-member-b", "e2e::billing::b");
+    let b = join_group(&member_b, &topic, &id_b, "e2e::billing::b");
     active(&b).await;
     wait_for_subscribers(&boot.subscribers, &topic, 2).await;
 
@@ -429,7 +435,7 @@ async fn a_killed_consumer_group_member_leaves_every_later_message_to_the_live_m
     assert_eq!(dead_letters(&member_b, &topic, &namespace).await, 0);
 
     // Its id stays taken for any other worker until the grace period ends.
-    let squatter = join_group(&member_b, &topic, "billing-member-a", "e2e::billing::b");
+    let squatter = join_group(&member_b, &topic, &id_a, "e2e::billing::b");
     let conflict = tokio::time::timeout(Duration::from_secs(5), squatter.ready())
         .await
         .expect("answered in time")
@@ -446,7 +452,7 @@ async fn a_killed_consumer_group_member_leaves_every_later_message_to_the_live_m
         .await
         .expect("member A reconnects");
     let via_a_again = register_target(&member_a, "e2e::billing::a", false);
-    let a_again = join_group(&member_a, &topic, "billing-member-a", "e2e::billing::a");
+    let a_again = join_group(&member_a, &topic, &id_a, "e2e::billing::a");
     active(&a_again).await;
     wait_for_subscribers(&boot.subscribers, &topic, 2).await;
 
@@ -505,7 +511,12 @@ async fn a_restarted_consumer_observing_under_its_stable_id_receives_its_backlog
         .await
         .expect("queue worker should boot");
 
-    let topic = format!("orders-{}", Uuid::new_v4().simple());
+    // The stable id carries the run's suffix: the same across the restart,
+    // distinct from any other run on the same engine (observer ids are
+    // engine-wide).
+    let run = Uuid::new_v4().simple().to_string();
+    let topic = format!("orders-{run}");
+    let stable_id = format!("orders-stable-{run}");
     let subscribe = |iii: &IIIClient| {
         iii.observe_with(
             Source::function(ON_MESSAGE_FN).args(json!({
@@ -514,7 +525,7 @@ async fn a_restarted_consumer_observing_under_its_stable_id_receives_its_backlog
                 "backoff_ms": 1_500,
             })),
             "e2e::orders::stable",
-            ObserverOptions::default().id("orders-stable"),
+            ObserverOptions::default().id(&stable_id),
         )
     };
     let failed = register_target(&consumer, "e2e::orders::stable", true);
