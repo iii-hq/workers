@@ -1,5 +1,7 @@
 //! `kanban::on-change` and `kanban::on-comment` against a live engine: the
-//! added hook's rejection and what the deliver hook hands each observer.
+//! added hook's rejection, what the deliver hook hands each observer (the
+//! event itself, with the observer's metadata as the sidecar), and what a
+//! caller gets back.
 //!
 //! Each test boots the worker's event functions and catalog in-process on one
 //! connection (the owner, with its board in a temp folder) and observes them
@@ -17,7 +19,8 @@ use iii_kanban::store::BoardStore;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    CallRequest, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source, register_worker,
+    CallRequest, IIIClient, InitOptions, ObserverHandle, ObserverOptions, RegisterFunction, Source,
+    register_worker,
 };
 use serde_json::{Value, json};
 
@@ -123,7 +126,25 @@ fn recorder(iii: &IIIClient, id: &str) -> Arc<Mutex<Vec<Value>>> {
     received
 }
 
-fn taken(received: &Mutex<Vec<Value>>) -> Vec<Value> {
+/// One delivery: the payload and the metadata sidecar it came with.
+type Delivery = (Value, Option<Value>);
+
+/// Registers `id` on `iii`; every payload it receives lands in the result
+/// with its metadata sidecar.
+fn sidecar_recorder(iii: &IIIClient, id: &str) -> Arc<Mutex<Vec<Delivery>>> {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let sink = received.clone();
+    iii.register_function(
+        id,
+        RegisterFunction::new(move |payload: Value, metadata: Option<Value>| {
+            sink.lock().unwrap().push((payload, metadata));
+            Ok::<_, Error>(json!({ "ok": true }))
+        }),
+    );
+    received
+}
+
+fn taken<T: Clone>(received: &Mutex<Vec<T>>) -> Vec<T> {
     received.lock().unwrap().clone()
 }
 
@@ -134,7 +155,7 @@ async fn settled(handle: &ObserverHandle) -> Result<(), Error> {
 }
 
 /// Waits until every recorder in `wanted` holds one payload.
-async fn arrived(wanted: &[(&str, &Arc<Mutex<Vec<Value>>>)]) {
+async fn arrived<T>(wanted: &[(&str, &Arc<Mutex<Vec<T>>>)]) {
     for _ in 0..100 {
         if wanted
             .iter()
@@ -383,6 +404,151 @@ async fn on_change_delivers_the_summary_or_the_whole_ticket_and_skips_filter_mis
         "another ticket's observer got {:?}",
         taken(&elsewhere)
     );
+
+    for handle in &handles {
+        let _ = handle.dispose().await;
+    }
+    consumer.shutdown_async().await;
+    owner.shutdown_async().await;
+}
+
+/// The raw event a target receives: no `Observed` envelope around it.
+fn assert_raw_event(payload: &Value, event: &str) {
+    assert_eq!(payload["event"], event, "{payload}");
+    for envelope_field in ["observer_id", "activation_id", "function_id"] {
+        assert!(
+            payload.get(envelope_field).is_none(),
+            "an envelope field {envelope_field} reached the target: {payload}"
+        );
+    }
+}
+
+/// The harness binds an agent to an event function with an observer whose
+/// metadata is `{ __binding: <id> }` and reads that pointer from the
+/// delivery's sidecar. The deliver hooks call targets through the observer,
+/// so a target gets the event itself (summary-cut when its args ask) with the
+/// observer's metadata as the sidecar; and a caller of either function gets
+/// the event back.
+#[tokio::test]
+async fn targets_get_the_event_with_the_observer_metadata_and_callers_get_the_event() {
+    let _slot = ENGINE_SLOT.lock().await;
+    let Some(owner) = connect("kanban-e2e-binding-owner").await else {
+        return;
+    };
+    let folder = tempfile::tempdir().unwrap();
+    boot_owner(&owner, folder.path());
+    let Some(consumer) = connect("kanban-e2e-binding-consumer").await else {
+        owner.shutdown_async().await;
+        return;
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let key = create_ticket(&consumer, "bound").await;
+
+    let change = sidecar_recorder(&consumer, "e2e::binding-change");
+    let summary = sidecar_recorder(&consumer, "e2e::binding-summary");
+    let comment = sidecar_recorder(&consumer, "e2e::binding-comment");
+    let config = sidecar_recorder(&consumer, "e2e::binding-config");
+    let bound =
+        |binding: &str| ObserverOptions::default().metadata(json!({ "__binding": binding }));
+    let handles = [
+        consumer.observe_with(
+            Source::function(ON_CHANGE_FN)
+                .args(json!({ "ticket_id": key, "events": ["ticket.moved"] })),
+            "e2e::binding-change",
+            bound("binding-change"),
+        ),
+        consumer.observe_with(
+            Source::function(ON_CHANGE_FN).args(json!({
+                "ticket_id": key,
+                "ticket": "summary",
+                "events": ["ticket.moved"],
+            })),
+            "e2e::binding-summary",
+            bound("binding-summary"),
+        ),
+        consumer.observe_with(
+            Source::function(ON_COMMENT_FN).args(json!({ "ticket_id": key })),
+            "e2e::binding-comment",
+            bound("binding-comment"),
+        ),
+        consumer.observe_with(
+            Source::function(ON_CHANGE_FN).args(json!({ "events": ["config.updated"] })),
+            "e2e::binding-config",
+            bound("binding-config"),
+        ),
+    ];
+    for handle in &handles {
+        settled(handle).await.expect("a bound observer");
+    }
+
+    call(
+        &consumer,
+        "kanban::ticket::move",
+        json!({ "id": key, "status": "in_progress" }),
+    )
+    .await;
+    call(
+        &consumer,
+        "kanban::comment::create",
+        json!({ "ticket_id": key, "body": "on it", "author": "agent" }),
+    )
+    .await;
+    arrived(&[
+        ("change", &change),
+        ("summary", &summary),
+        ("comment", &comment),
+    ])
+    .await;
+
+    // The host calls its private event function itself; the deliver hook
+    // hands the caller the event it was called with.
+    let event = json!({ "event": "config.updated", "at": "2026-10-30T00:00:00Z" });
+    let answer = owner
+        .call(CallRequest {
+            function_id: ON_CHANGE_FN.to_string(),
+            payload: event.clone(),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("the host calls kanban::on-change");
+    assert_eq!(answer, event);
+    arrived(&[("config", &config)]).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let change = taken(&change);
+    assert_eq!(change.len(), 1, "{change:?}");
+    let (payload, metadata) = &change[0];
+    assert_raw_event(payload, "ticket.moved");
+    assert_full(&payload["ticket"]);
+    assert_eq!(metadata, &Some(json!({ "__binding": "binding-change" })));
+
+    let summary = taken(&summary);
+    assert_eq!(summary.len(), 1, "{summary:?}");
+    let (payload, metadata) = &summary[0];
+    assert_raw_event(payload, "ticket.moved");
+    assert_summary(&payload["ticket"]);
+    assert_eq!(metadata, &Some(json!({ "__binding": "binding-summary" })));
+
+    let comment = taken(&comment);
+    assert_eq!(comment.len(), 1, "{comment:?}");
+    let (payload, metadata) = &comment[0];
+    assert_raw_event(payload, "comment.created");
+    assert_eq!(payload["comment"]["body"], "on it");
+    assert_eq!(metadata, &Some(json!({ "__binding": "binding-comment" })));
+
+    let config = taken(&config);
+    assert_eq!(config.len(), 1, "{config:?}");
+    let (payload, metadata) = &config[0];
+    // The event as called, with the engine's caller stamp of every call a
+    // worker makes.
+    let mut delivered = payload.clone();
+    delivered
+        .as_object_mut()
+        .expect("an event object")
+        .remove("_caller_worker_id");
+    assert_eq!(delivered, event);
+    assert_eq!(metadata, &Some(json!({ "__binding": "binding-config" })));
 
     for handle in &handles {
         let _ = handle.dispose().await;

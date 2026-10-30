@@ -188,8 +188,8 @@ pub async fn apply_config(state: &SharedState, cfg: SkillsConfig) {
         .store(cfg.registry_cache_ttl_ms, Ordering::Relaxed);
     state.config.store(Arc::new(cfg));
     if activate_semantic {
-        // A mode change may leave the catalog fingerprint unchanged. Rebuild
-        // explicitly instead of waiting for a functions-available event.
+        // A mode change may leave the catalog fingerprint unchanged and
+        // brings no engine::on-functions-changed call, so rebuild here.
         // Hold the catalog lock until rebuild records its desired fingerprint,
         // so a newer refresh cannot be superseded by this snapshot.
         let tools = state.search.catalog.read().await;

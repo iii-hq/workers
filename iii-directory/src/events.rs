@@ -6,15 +6,18 @@
 //!
 //! - `directory::skills::on-change`: after every successful
 //!   `directory::skills::download` that wrote at least one skill markdown
-//!   file, or a `directory::skills::update`, `create`, or `delete`. External
-//!   edits under the read-only `agents_skills_folder` call it too, through
-//!   the fs watcher (doorbell only: the worker never writes there).
+//!   file, a `directory::skills::update`, `create`, or `delete`, and a kit
+//!   apply that wrote skills (`kit`) or downloaded the bundles of the
+//!   workers it added or updated (`download`). External edits under the
+//!   read-only `agents_skills_folder` call it too, through the fs watcher
+//!   (doorbell only: the worker never writes there).
 //! - `directory::system-prompts::on-change`: after every successful
 //!   `directory::skills::download` that wrote at least one system prompt, a
 //!   `directory::system-prompts::update`, or a
 //!   `directory::system-prompts::create` / `delete`.
-//! - `directory::agents::on-change`: after every successful download or
-//!   direct create, update, delete, or external edit of an agent profile.
+//! - `directory::agents::on-change`: after every successful download
+//!   (a kit apply's worker bundles included), kit apply that wrote profiles,
+//!   or direct create, update, delete, or external edit of an agent profile.
 //! - `directory::kits::on-change`: when a kit plan is created or discarded,
 //!   while an apply runs (step progress) and when it lands, and when an
 //!   update check changes the set of available kit updates.
@@ -61,10 +64,14 @@ pub struct ChangeEvent {
     /// `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// The namespace written (skill edits, `download`).
+    /// The namespace written: skill edits, and a `download` by
+    /// `directory::skills::download`. A kit apply downloads the bundles of
+    /// the workers it added or updated, one namespace each, and its
+    /// `download` carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
-    /// `download`: `repo` or `registry`.
+    /// `download`: `repo` or `registry` (`registry` for a kit apply's
+    /// worker bundles).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// `kit`: the kit applied.
@@ -248,6 +255,8 @@ mod tests {
             json!({ "op": "create", "name": "reviewer" }),
             json!({ "op": "update", "namespace": "iii", "id": "orders/create" }),
             json!({ "op": "download", "namespace": "iii", "source": "registry" }),
+            // A kit apply's worker bundles download: no single namespace.
+            json!({ "op": "download", "source": "registry" }),
             json!({ "op": "kit", "kit": "deepwork", "plan_id": "p-1" }),
             json!({ "op": "external" }),
         ] {
