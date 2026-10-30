@@ -70,11 +70,11 @@ Hold → decide → release, from any client:
 
 ```bash
 # A held call shows up in the inbox…
-iii call approval::list-pending '{}'
+iii call approval::list-pending
 # …a human allows it (the harness runs the released call)…
-iii call approval::resolve '{"session_id": "s_1", "function_call_id": "c_1", "decision": "allow"}'
+iii call approval::resolve session_id=s_1 function_call_id=c_1 decision=allow
 # …or denies it with a reason the model can adapt to.
-iii call approval::resolve '{"session_id": "s_1", "function_call_id": "c_1", "decision": "deny", "reason": "not on prod"}'
+iii call approval::resolve session_id=s_1 function_call_id=c_1 decision=deny reason="not on prod"
 ```
 
 ## Permission model
@@ -98,10 +98,11 @@ worker seeds/backfills the stored entry so `rules` are editable in the console.
 
 Both are private functions: only this worker calls them, anyone may observe
 them, and each handler returns the event it is called with. Neither takes
-args; observers select events with filters on the event's fields. iii
-delivers every call to each observer whose filters match, fire-and-forget,
-at-least-once and unordered. After a restart, reconcile with one
-`approval::list-pending` call.
+args; observers select events with filters on the event's fields. The worker
+calls each function only while something observes it. iii delivers each call
+to every observer whose filters match: fire-and-forget, at-most-once (drops
+are counted per function and reason) and unordered. Reconcile with one
+`approval::list-pending` call after a restart or a gap.
 
 | Function | Args | Called when | Event (`input` and `output`) |
 |---|---|---|---|

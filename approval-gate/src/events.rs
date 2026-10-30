@@ -1,9 +1,9 @@
 //! The two event functions this worker calls —
 //! `approval::on-pending-created` / `approval::on-pending-resolved` — and
 //! the [`Emitter`] behind them (the session-manager reactivity model:
-//! consumers observe the function, delivery is fire-and-forget,
-//! at-least-once and unordered, and `list_pending` is the reconciliation
-//! read).
+//! consumers observe the function, the emitter calls it only while it is
+//! observed, iii's delivery is fire-and-forget, at-most-once and unordered,
+//! and `list_pending` is the reconciliation read).
 //!
 //! Both are private functions whose handlers return the event they are
 //! called with: only this worker calls them, anyone may observe them, and

@@ -36,9 +36,10 @@ returns `{ resolved: false }` (duplicate decisions race benignly).
 private functions: only this worker calls them, and anyone may observe them.
 Each handler returns the event it is called with, so an observer's `input`
 and `output` are both the event. Neither takes args; select events with
-filters. Delivery is fire-and-forget, at-least-once, **unordered** —
-reconcile with one `approval::list-pending` call after a restart. The worker
-calls each function only while something observes it.
+filters. The worker calls each function only while something observes it.
+iii's delivery is fire-and-forget, at-most-once (drops are counted per
+function and reason) and **unordered** — reconcile with one
+`approval::list-pending` call after a restart or a gap.
 
 ### `approval::on-pending-created`
 
