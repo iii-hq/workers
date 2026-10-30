@@ -693,7 +693,8 @@ The endpoint uses path-style addressing. The test creates a unique
 incorrect checksums, ETags, abort, metadata and ranged reads, and attempts to
 remove only its own uploads and objects. A missing required variable fails the
 explicit run. The conditional-completion probe reports whether an existing
-object was rejected with HTTP 412; other outcomes require investigation.
+object was rejected with `PreconditionFailed`, explicitly reports `NotImplemented`,
+or reports that the precondition was ignored. Other errors fail the test.
 A successful SDK test does not establish browser CORS, exposed ETag, signed
 Content-Length enforcement, lifecycle cleanup, or provider/version compatibility:
 verify those separately against the actual product before enabling uploads.

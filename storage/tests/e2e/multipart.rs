@@ -1,6 +1,7 @@
 //! Explicit, isolated contract check for an S3-compatible test bucket.
 
 use aws_credential_types::Credentials;
+use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::{
     primitives::ByteStream,
     types::{
@@ -13,6 +14,14 @@ use futures_util::FutureExt;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::panic::AssertUnwindSafe;
+
+fn conditional_error(code: Option<&str>) -> Option<&'static str> {
+    match code {
+        Some("PreconditionFailed") => Some("existing object rejected"),
+        Some("NotImplemented") => Some("conditional completion unsupported"),
+        _ => None,
+    }
+}
 
 fn checksum(bytes: &[u8]) -> String {
     STANDARD.encode(Sha256::digest(bytes))
@@ -113,7 +122,7 @@ async fn multipart_contract() {
                 let swapped = vec![CompletedPart::builder().part_number(1).e_tag(parts[1].e_tag().unwrap()).checksum_sha256(parts[0].checksum_sha256().unwrap()).build(), parts[1].clone()];
                 let error = client.complete_multipart_upload().bucket(&bucket).key(key).upload_id(&id)
                     .multipart_upload(CompletedMultipartUpload::builder().set_parts(Some(swapped)).build()).send().await.expect_err("provider accepted a swapped ETag");
-                assert_eq!(error.raw_response().map(|response| response.status().as_u16()), Some(400));
+                assert_eq!(error.as_service_error().and_then(|error| error.code()), Some("InvalidPart"));
             }
             client.complete_multipart_upload().bucket(&bucket).key(key).upload_id(&id)
                 .multipart_upload(CompletedMultipartUpload::builder().set_parts(Some(parts)).build()).send().await.expect("complete multipart");
@@ -149,9 +158,10 @@ async fn multipart_contract() {
                 uploads.retain(|(_, active_id)| active_id != &id);
                 eprintln!("conditional completion: existing object was overwritten; precondition not enforced");
             },
-            Err(error) => match error.raw_response().map(|response| response.status().as_u16()) {
-                Some(412) => eprintln!("conditional completion: existing object rejected with 412"),
-                status => eprintln!("conditional completion: inconclusive or unsupported (HTTP {status:?})"),
+            Err(error) => {
+                let code = error.as_service_error().and_then(|error| error.code());
+                let outcome = conditional_error(code).unwrap_or_else(|| panic!("unexpected conditional completion error: code {code:?}"));
+                eprintln!("conditional completion: {outcome}");
             },
         }
     }).catch_unwind().await;
@@ -196,4 +206,19 @@ fn part_checksum_is_sha256_base64() {
         checksum(b"abc"),
         "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="
     );
+}
+
+#[test]
+fn conditional_errors_only_accept_known_outcomes() {
+    assert_eq!(
+        conditional_error(Some("PreconditionFailed")),
+        Some("existing object rejected")
+    );
+    assert_eq!(
+        conditional_error(Some("NotImplemented")),
+        Some("conditional completion unsupported")
+    );
+    assert_eq!(conditional_error(Some("AccessDenied")), None);
+    assert_eq!(conditional_error(Some("InternalError")), None);
+    assert_eq!(conditional_error(None), None);
 }
