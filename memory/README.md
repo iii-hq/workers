@@ -163,6 +163,14 @@ Run it before and after a prompt change; it needs an engine with a router and a 
 III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns> EXTRACTION_MODEL=<id> cargo test -p memory --lib extract::eval -- --ignored --nocapture
 ```
 
+## Engine test
+
+`tests/engine.rs` registers the worker's functions against an engine and checks that `memory::on-item-changed` and `memory::on-bank-changed` register private, with no args and the event as request and response, that a save reaches the observers filtered on its bank (and no others), and that `memory::rest` answers the http worker's request shape. It skips when no engine answers; `III_E2E_REQUIRE=1` makes that a failure.
+
+```bash
+III_ENGINE_WS_URL=ws://127.0.0.1:<port> cargo test --test engine
+```
+
 ## Permissions
 
 Suggested defaults ship in [`iii-permissions.yaml`](iii-permissions.yaml): agents get `memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`; the hook/pipeline internals and the REST adapter `memory::rest` are denied, and bank/rule writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default.
