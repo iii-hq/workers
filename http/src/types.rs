@@ -13,8 +13,24 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// One HTTP request: the input of `http::on-request`, what its observers
-/// observe, and what the matched route's target receives.
+/// One HTTP request as the server received it: the input of
+/// `http::on-request` and its output (the handler returns its input). An
+/// observer's filters read it as `input`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct InboundRequest {
+    pub method: String,
+    /// The request's path, e.g. `/orders/42`.
+    pub path: String,
+    pub query_params: HashMap<String, String>,
+    pub headers: HashMap<String, String>,
+    /// The body parsed as JSON; `null` when it is empty, not JSON, or over
+    /// the server's body limit.
+    pub body: Value,
+}
+
+/// What the target of the matched route's observer receives: the request,
+/// with the route's template as `path`, the values of its `:param` segments,
+/// and the request-body and response channels.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpRequest {
     pub query_params: HashMap<String, String>,
@@ -237,6 +253,17 @@ mod tests {
                 "request_body",
                 "response"
             ]
+        );
+    }
+
+    #[test]
+    fn inbound_request_schema_lists_what_the_server_received() {
+        let schema = serde_json::to_value(schemars::schema_for!(InboundRequest)).unwrap();
+        let mut fields: Vec<&String> = schema["properties"].as_object().unwrap().keys().collect();
+        fields.sort();
+        assert_eq!(
+            fields,
+            ["body", "headers", "method", "path", "query_params"]
         );
     }
 

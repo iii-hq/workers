@@ -100,8 +100,8 @@ The event, the function's input and what its observers observe:
 | Field | Description |
 |---|---|
 | `expression` | The expression that fired, exactly as its observers passed it in args. |
-| `scheduled_time` | The fire's scheduled time, RFC 3339, UTC. |
-| `actual_time` | When the worker fired it, RFC 3339, UTC. |
+| `scheduled_time` | The fire's scheduled time: RFC 3339 in UTC with a `+00:00` offset, whole seconds (`2026-11-01T09:00:00+00:00`). |
+| `actual_time` | When the worker fired it: RFC 3339 in UTC with a `+00:00` offset. |
 
 - **Delivery.** The worker runs one job per distinct expression and calls
   `cron::on-tick` once per fire. iii delivers the tick to the observers of
@@ -109,7 +109,9 @@ The event, the function's input and what its observers observe:
   filters accept it. The job starts with the expression's first observer and
   stops with its last.
 - **Filters** select ticks by `input`, e.g.
-  `{ 'input.scheduled_time': { $gte: '2026-11-01T00:00:00Z' } }`.
+  `{ 'input.scheduled_time': { $gte: '2026-11-01T00:00:00+00:00' } }`.
+  Filters compare strings by code point, so a time bound is written in the
+  form the worker emits: RFC 3339 with `+00:00`.
 - **Metadata.** The observer's `metadata` arrives as each delivery's sidecar.
 - **Missed fires.** Fires while the worker is stopped are skipped; there is no
   catch-up replay.

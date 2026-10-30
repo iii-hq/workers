@@ -81,7 +81,7 @@ query string and headers arrive as `req.query_params` / `req.headers`.
 
 | Function | Args or input | What it is |
 |---|---|---|
-| `http::on-request` | args `{ method, path, public_webhook?, middleware_function_ids? }` | One call per HTTP request. Each observer serves one route; observers observe the `HttpRequest`. |
+| `http::on-request` | args `{ method, path, public_webhook?, middleware_function_ids? }` | One call per HTTP request the server receives. Each observer serves one route; its target receives the `HttpRequest`. |
 | `http::status` | none | Where the server listens: `{ host, port, url, last_reload_error }`. |
 | `http::webhook-listener::status` | none | Internal: the restricted listener this process bound, and the last reload error. |
 | `http::configuration-id` | none | Internal: this instance's configuration entry id. |
@@ -100,7 +100,36 @@ Unknown args are refused with `INVALID_ARGS`. Two observers cannot claim the
 same method and path shape (`/a/:x` and `/a/:y` are one shape): the later one
 is rejected with `HTTP_ROUTE_CONFLICT`.
 
-The event, and what the route's target receives:
+The server calls `http::on-request` once for every request it receives (its
+CORS layer answers `OPTIONS` requests). The call's input is the request as the
+server received it:
+
+```jsonc
+{
+  "method": "GET",
+  "path": "/orders/42",              // the request's path
+  "query_params": { "expand": "items" },
+  "headers": { "content-type": "application/json" },
+  "body": null                       // the body parsed as JSON, else null
+}
+```
+
+The worker delivers each call itself:
+
+1. a path with no route gets `404`, and a path whose routes are on other
+   methods gets `405` with `Allow`;
+2. a body over 16 MiB gets `413`;
+3. the observer's `filters` select requests by `input` (the request above);
+   a request they reject gets `422 CONDITION_NOT_MET`;
+4. the global middleware runs, then the route's middleware; a middleware
+   that responds ends the request with its response;
+5. the target runs with the `HttpRequest`, and its return value (or its
+   writes to the response channel) is the response.
+
+Steps 1 to 4 answer the call without calling the target. The middleware and
+the target are called from the call's invocation, so a trace shows each
+request as one call of `http::on-request` with them under it. What the
+route's target receives:
 
 ```jsonc
 {
@@ -114,15 +143,6 @@ The event, and what the route's target receives:
   "response": { /* channel ref: write a streamed response here */ }
 }
 ```
-
-Each request is one call of `http::on-request`. The worker delivers it
-itself, to the observer whose route matched:
-
-1. the observer's `filters` select requests by `input` (the request); a
-   request they reject gets `422 CONDITION_NOT_MET` and nothing is called;
-2. the route's middleware runs;
-3. the target runs with the request, and its return value (or its writes to
-   the response channel) is the response.
 
 The target always receives the `HttpRequest`, whatever the observer's
 `deliver` option says, and the observer's `metadata` arrives as the target's
@@ -214,7 +234,9 @@ Only that opted-in route is eligible on 3112; it remains available on 3111.
 Do not expose 3111 through a public proxy/tunnel. The restricted listener
 mounts no Console, engine, or admin endpoints. Its private paths return 404
 (including OPTIONS); methods not opted in for an eligible path return 405
-with only public methods in `Allow`. Admission runs before CORS. It performs
+with only public methods in `Allow`. The listener admits an OPTIONS request
+before CORS; every other request is a call of `http::on-request`, whose
+deliver hook matches it against the public routes only. Matching performs
 no URL decoding, repeated/trailing-slash normalization, HEAD-to-GET aliasing,
 or method-override handling. Parameter routes are still supported: opting
 one in deliberately exposes every value matched by its parameter segments,

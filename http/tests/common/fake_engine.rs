@@ -41,6 +41,8 @@ struct State {
     /// The latest `registerfunction` frame per function id.
     registrations: StdMutex<HashMap<String, Value>>,
     registered: Notify,
+    /// Every `invokefunction` frame the worker sent, in order.
+    invocations: StdMutex<Vec<Value>>,
 }
 
 pub struct FakeEngine {
@@ -108,6 +110,31 @@ impl FakeEngine {
             .unwrap()
             .get(function_id)
             .cloned()
+    }
+
+    /// The `invokefunction` frames the worker sent for `function_id`, in
+    /// order: its calls of that function.
+    pub fn calls_of(&self, function_id: &str) -> Vec<Value> {
+        self.state
+            .invocations
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|frame| frame["function_id"] == function_id)
+            .cloned()
+            .collect()
+    }
+
+    /// The function ids of every `invokefunction` frame the worker sent, in
+    /// order.
+    pub fn called(&self) -> Vec<String> {
+        self.state
+            .invocations
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|frame| frame["function_id"].as_str().map(str::to_string))
+            .collect()
     }
 
     /// Sends `observeradded` for `function_id` with `observer` (an observer
@@ -289,6 +316,7 @@ async fn reply_to(frame: Value, state: &State) -> Option<Value> {
             None
         }
         "invokefunction" => {
+            state.invocations.lock().unwrap().push(frame.clone());
             let result = match frame["function_id"].as_str().unwrap() {
                 "configuration::get" => Some(json!({"value": state.config.lock().await.clone()})),
                 "engine::channels::create" => {

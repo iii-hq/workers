@@ -123,6 +123,15 @@ impl Scheduler {
         self.jobs.lock().await.by_expression.len()
     }
 
+    /// Whether `observer_id` retains a job.
+    pub async fn retains(&self, observer_id: &str) -> bool {
+        self.jobs
+            .lock()
+            .await
+            .expression_of
+            .contains_key(observer_id)
+    }
+
     /// Stops every job and forgets every observer.
     pub async fn shutdown(&self) {
         let mut jobs = self.jobs.lock().await;
@@ -242,6 +251,61 @@ pub(crate) mod tests {
         assert!(actual >= scheduled, "{tick:?}");
     }
 
+    /// Filters compare strings by code point, so a time bound orders ticks
+    /// only when it is written in the form the worker emits.
+    #[tokio::test]
+    async fn tick_times_are_rfc3339_with_a_plus_zero_offset() {
+        let (s, ticker) = recording_scheduler();
+        s.retain("o1", EVERY_SECOND).await.unwrap();
+        wait_until("a tick", || ticker.count(EVERY_SECOND) >= 1).await;
+        s.shutdown().await;
+        let tick = ticker.of(EVERY_SECOND)[0].clone();
+        for time in [&tick.scheduled_time, &tick.actual_time] {
+            assert!(time.ends_with("+00:00"), "{time}");
+        }
+        // Whole seconds: `YYYY-MM-DDTHH:MM:SS+00:00`.
+        assert_eq!(
+            tick.scheduled_time.len(),
+            "2026-11-01T00:00:00+00:00".len(),
+            "{}",
+            tick.scheduled_time
+        );
+        // A `$gte` bound at the fire's own time, in the emitted form, keeps
+        // it; the same instant written with `Z` sorts after it.
+        let at = tick.scheduled_time.as_str();
+        assert!(at >= at.to_string().as_str());
+        assert!(at < at.replace("+00:00", "Z").as_str());
+    }
+
+    /// Each filter example on `input.scheduled_time` or `input.actual_time`
+    /// in the README and SKILL.md bounds it with a time in the emitted form.
+    #[test]
+    fn the_docs_write_time_bounds_in_the_emitted_form() {
+        for (doc, text) in [
+            ("README.md", include_str!("../README.md")),
+            ("skills/SKILL.md", include_str!("../skills/SKILL.md")),
+        ] {
+            let mut bounds = 0;
+            let examples = text.lines().filter(|line| {
+                line.contains("'input.scheduled_time'") || line.contains("'input.actual_time'")
+            });
+            for line in examples {
+                let quoted = line.split('\'').skip(1).step_by(2);
+                for time in quoted.filter(|q| q.starts_with(|c: char| c.is_ascii_digit())) {
+                    let parsed = chrono::DateTime::parse_from_rfc3339(time)
+                        .unwrap_or_else(|e| panic!("{doc}: {time}: {e}"));
+                    assert_eq!(
+                        parsed.with_timezone(&Utc).to_rfc3339(),
+                        time,
+                        "{doc}: {time} is not in the form the worker emits"
+                    );
+                    bounds += 1;
+                }
+            }
+            assert!(bounds > 0, "{doc} shows a time filter");
+        }
+    }
+
     #[tokio::test]
     async fn observers_of_one_expression_share_one_job_that_ticks_once_per_fire() {
         let (s, ticker) = recording_scheduler();
@@ -311,9 +375,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn an_observer_retained_again_keeps_one_place() {
         let (s, ticker) = recording_scheduler();
+        assert!(!s.retains("o1").await);
         s.retain("o1", "0 0 9 * * Mon-Fri").await.unwrap();
         s.retain("o1", "0 0 9 * * Mon-Fri").await.unwrap();
         assert_eq!(s.job_count().await, 1);
+        assert!(s.retains("o1").await);
 
         s.retain("o1", EVERY_SECOND).await.unwrap();
         assert_eq!(s.job_count().await, 1, "it left its old expression");
@@ -321,6 +387,7 @@ pub(crate) mod tests {
 
         assert!(s.release("o1").await);
         assert_eq!(s.job_count().await, 0);
+        assert!(!s.retains("o1").await);
         assert!(!s.release("o1").await, "released once");
     }
 

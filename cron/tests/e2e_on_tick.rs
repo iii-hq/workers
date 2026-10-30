@@ -298,3 +298,89 @@ async fn calling_on_tick_from_another_worker_is_forbidden() {
     consumer.shutdown_async().await;
     owner.shutdown_async().await;
 }
+
+/// Waits until `cond` holds (up to about 10 s).
+async fn wait_for<F, Fut>(what: &str, cond: F)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..100 {
+        if cond().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{what}: timed out");
+}
+
+/// Two instances of the worker on separate connections. The second
+/// registers `cron::on-tick` as a standby: while the first hosts it, only the
+/// first runs jobs and each expression fires once per scheduled time. When
+/// the first leaves, the second takes over the existing observers and their
+/// ticks continue.
+#[tokio::test]
+#[serial]
+async fn a_standby_instance_takes_over_the_observers_when_the_host_leaves() {
+    let Some(first) = engine::connect_fresh_named("cron-e2e-standby-first").await else {
+        return;
+    };
+    let first_boot = iii_cron::boot::start(first.clone());
+    let Some(consumer) = engine::connect_fresh_named("cron-e2e-standby-consumer").await else {
+        return;
+    };
+    let received = recorder(&consumer, "e2e::tick-standby");
+    let handle = consumer.observe(on_tick(EVERY_SECOND), "e2e::tick-standby");
+    settled(&handle)
+        .await
+        .expect("the first instance accepts the observer");
+    assert!(first_boot.scheduler.retains(handle.id()).await);
+
+    let Some(second) = engine::connect_fresh_named("cron-e2e-standby-second").await else {
+        return;
+    };
+    let second_boot = iii_cron::boot::start(second.clone());
+
+    // Past a few of the standby's registration attempts (one a second).
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    assert!(
+        first_boot.scheduler.retains(handle.id()).await,
+        "the host runs the observer's job"
+    );
+    assert_eq!(
+        second_boot.scheduler.job_count().await,
+        0,
+        "the standby runs no job while the first instance hosts the function"
+    );
+    let before = scheduled_times(&received, |p| &p["input"]);
+    assert!(before.len() >= 3, "{before:?}");
+
+    // The host leaves: its process stops the function, then disconnects.
+    first_boot.shutdown().await;
+    first.shutdown_async().await;
+    wait_for(
+        "the standby takes over the observer and starts its job",
+        || second_boot.scheduler.retains(handle.id()),
+    )
+    .await;
+
+    let seen = received.count();
+    common::wait_for_fires(&received.fires, seen + 2).await;
+    // One tick per scheduled time across the handover, every one of them
+    // through the observer the consumer created before it.
+    let after = scheduled_times(&received, |p| &p["input"]);
+    assert!(after.len() >= before.len() + 2, "{after:?}");
+    for payload in received.lock().iter() {
+        assert_eq!(payload["observer_id"], handle.id(), "{payload}");
+        assert_eq!(payload["input"]["expression"], EVERY_SECOND);
+    }
+
+    handle.dispose().await.unwrap();
+    wait_for("the last observer stops the standby's job", || async {
+        !second_boot.scheduler.retains(handle.id()).await
+    })
+    .await;
+    second_boot.shutdown().await;
+    consumer.shutdown_async().await;
+    second.shutdown_async().await;
+}

@@ -7,8 +7,9 @@
 //!   for the first observer of that expression, or rejects the observer with
 //!   `INVALID_CRON_EXPRESSION`;
 //! - **removed** releases it; the job stops with its last observer;
-//! - **match** gives each tick to the observers of its expression, by keys
-//!   (`args.expression` for an observer, `input.expression` for a call).
+//! - **match** gives each tick to the observers of its expression: an
+//!   observer wants a call when its `args.expression` is the call's
+//!   `input.expression`.
 //!
 //! Each fire of a job calls the function once ([`OnTickCaller`]); iii
 //! delivers the tick to the matched observers whose filters accept it. The
@@ -23,7 +24,7 @@ use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::FunctionRef;
 use iii_sdk::{
-    AddedHook, Call, CallAction, CallRequest, IIIClient, Match, ObserveRejection, Observer,
+    AddedHook, CallAction, CallRequest, IIIClient, Match, ObserveRejection, Observer,
     RegisterFunction, RemovedHook,
 };
 use schemars::JsonSchema;
@@ -62,9 +63,10 @@ pub struct CronArgs {
 pub struct CronTick {
     /// The expression that fired, exactly as its observers passed it in args.
     pub expression: String,
-    /// RFC 3339, UTC.
+    /// The fire's scheduled time: RFC 3339 in UTC with a `+00:00` offset,
+    /// whole seconds.
     pub scheduled_time: String,
-    /// RFC 3339, UTC.
+    /// When the worker fired it: RFC 3339 in UTC with a `+00:00` offset.
     pub actual_time: String,
 }
 
@@ -77,10 +79,7 @@ pub fn register(iii: &IIIClient, scheduler: Arc<Scheduler>) -> FunctionRef {
     // Each tick goes to the observers of its expression.
     iii.on_observer_match_for(
         ON_TICK_FN,
-        Match::keys(
-            |obs| expression_of(obs.args_value()).into(),
-            |call| expression_of(&call.input).into(),
-        ),
+        Match::predicate(|obs, call| same_expression(obs.args_value(), &call.input)),
     );
 
     iii.register_function(
@@ -106,10 +105,13 @@ fn on_tick(tick: CronTick) -> Result<CronTick, Error> {
     Ok(tick)
 }
 
-/// The match key of an observer's args and of a call's input: its
-/// `expression`.
-fn expression_of(value: &Value) -> Option<&str> {
-    value.get("expression")?.as_str()
+/// The match hook's question: do an observer's args and a call's input name
+/// the same `expression`?
+fn same_expression(args: &Value, input: &Value) -> bool {
+    fn expression(value: &Value) -> Option<&str> {
+        value.get("expression")?.as_str()
+    }
+    expression(args).is_some_and(|wanted| expression(input) == Some(wanted))
 }
 
 /// The hooks of [`ON_TICK_FN`]: one retained job per observer's expression.
@@ -153,8 +155,8 @@ async fn admit(
 }
 
 /// The scheduler's [`Ticker`] in the worker: each tick is one fire-and-forget
-/// call of [`ON_TICK_FN`], made only when an observer of its expression is
-/// active.
+/// call of [`ON_TICK_FN`], made only while the function has an active
+/// observer.
 pub struct OnTickCaller {
     iii: Arc<IIIClient>,
 }
@@ -167,6 +169,9 @@ impl OnTickCaller {
 
 impl Ticker for OnTickCaller {
     fn tick(&self, tick: CronTick) {
+        if !self.iii.is_observed(ON_TICK_FN) {
+            return;
+        }
         let input = match serde_json::to_value(&tick) {
             Ok(input) => input,
             Err(error) => {
@@ -174,18 +179,11 @@ impl Ticker for OnTickCaller {
                 return;
             }
         };
-        let call = Call {
-            input,
-            ..Call::default()
-        };
-        if !self.iii.is_observed_for(ON_TICK_FN, &call) {
-            return;
-        }
         let iii = self.iii.clone();
         tokio::spawn(async move {
             let request = CallRequest {
                 action: Some(CallAction::Void),
-                ..CallRequest::new(ON_TICK_FN, call.input)
+                ..CallRequest::new(ON_TICK_FN, input)
             };
             if let Err(error) = iii.call(request).await {
                 tracing::warn!(expression = %tick.expression, %error, "cron::on-tick call failed");
@@ -246,21 +244,27 @@ mod tests {
         assert_eq!(on_tick(tick.clone()).unwrap(), tick);
     }
 
-    /// Observers are filed under their args' expression and a call matches
-    /// the observers of its input's expression.
+    /// An observer wants the ticks of the expression in its args, and no
+    /// other.
     #[test]
-    fn the_match_key_is_the_expression() {
+    fn an_observer_wants_the_ticks_of_its_expression() {
         let args = json!({ "expression": "0 0 9 * * Mon-Fri" });
-        let tick = serde_json::to_value(CronTick {
-            expression: "0 0 9 * * Mon-Fri".into(),
-            scheduled_time: "2026-10-20T09:00:00+00:00".into(),
-            actual_time: "2026-10-20T09:00:00+00:00".into(),
-        })
-        .unwrap();
-        assert_eq!(expression_of(&args), Some("0 0 9 * * Mon-Fri"));
-        assert_eq!(expression_of(&args), expression_of(&tick));
-        assert_eq!(expression_of(&json!({})), None);
-        assert_eq!(expression_of(&json!({ "expression": 5 })), None);
+        let tick = |expression: &str| {
+            serde_json::to_value(CronTick {
+                expression: expression.into(),
+                scheduled_time: "2026-10-20T09:00:00+00:00".into(),
+                actual_time: "2026-10-20T09:00:00+00:00".into(),
+            })
+            .unwrap()
+        };
+        assert!(same_expression(&args, &tick("0 0 9 * * Mon-Fri")));
+        assert!(!same_expression(&args, &tick("0 0 10 * * Mon-Fri")));
+        assert!(!same_expression(&args, &json!({})));
+        assert!(!same_expression(&json!({}), &json!({})));
+        assert!(!same_expression(
+            &json!({ "expression": 5 }),
+            &json!({ "expression": 5 })
+        ));
     }
 
     #[tokio::test]

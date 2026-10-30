@@ -8,11 +8,11 @@
 //! already applies `timeout_ms` internally and surfaces an expired timeout as
 //! `Error::Timeout`.
 //!
-//! A middleware that short-circuits produces a response as a function returns
-//! one (`{ status_code, headers, body }`), which
-//! [`crate::types::HttpResponse::from_function_return`] turns into the HTTP
-//! response: the server does it for global middleware, and `http::on-request`
-//! returns it for route middleware.
+//! Both run in `http::on-request`'s deliver hook, global middleware first. A
+//! middleware that short-circuits produces a response as a function returns
+//! one (`{ status_code, headers, body }`); the hook returns it, and the server
+//! turns it into the HTTP response with
+//! [`crate::types::HttpResponse::from_function_return`].
 
 use std::collections::HashMap;
 
@@ -79,23 +79,6 @@ pub fn build_middleware_input(
             "query_params": query_params,
             "headers": headers,
             "method": method,
-        },
-        "context": {},
-    })
-}
-
-/// [`build_middleware_input`] for a serialized [`crate::types::HttpRequest`]:
-/// the input of a route's middleware, built in `http::on-request`'s deliver
-/// hook from the call's input.
-pub fn middleware_input_for(request: &Value) -> Value {
-    let field = |name: &str| request.get(name).cloned().unwrap_or_else(|| json!({}));
-    json!({
-        "phase": "preHandler",
-        "request": {
-            "path_params": field("path_params"),
-            "query_params": field("query_params"),
-            "headers": field("headers"),
-            "method": request.get("method").cloned().unwrap_or(Value::Null),
         },
         "context": {},
     })
@@ -211,29 +194,6 @@ mod tests {
         assert_eq!(input["request"]["query_params"]["q"], "1");
         assert_eq!(input["request"]["headers"]["x-trace"], "abc");
         assert_eq!(input["context"], json!({}));
-    }
-
-    #[test]
-    fn middleware_input_for_a_serialized_request_matches_the_server_input() {
-        let mut headers = HashMap::new();
-        headers.insert("x-trace".to_string(), "abc".to_string());
-        let mut path_params = HashMap::new();
-        path_params.insert("id".to_string(), "42".to_string());
-        let mut query_params = HashMap::new();
-        query_params.insert("q".to_string(), "1".to_string());
-        let request = json!({
-            "path_params": path_params,
-            "query_params": query_params,
-            "headers": headers,
-            "path": "/users/:id",
-            "method": "POST",
-            "body": { "ignored": true },
-        });
-
-        assert_eq!(
-            middleware_input_for(&request),
-            build_middleware_input(&path_params, &query_params, &headers, "POST")
-        );
     }
 
     // =========================================================================

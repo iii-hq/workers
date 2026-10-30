@@ -1,32 +1,35 @@
-//! Request handler with streaming request/response over SDK channels.
+//! Request handler: every request is one call of `http::on-request`.
 //!
 //! Ported from the in-engine `iii-http` `dynamic_handler` (`views.rs`). For
-//! every request the worker creates two SDK channels via
+//! every request the server reads the body, registers the request in flight
+//! ([`crate::inflight`]) and calls `http::on-request` with the request as it
+//! received it ([`InboundRequest`]), naming the request in flight in the
+//! call's metadata. The function's deliver hook (see [`crate::on_request`])
+//! matches the route, applies the observer's filters, runs the middleware,
+//! and answers the call itself or calls the route's target.
+//!
+//! Before it calls a target, the hook opens two SDK channels via
 //! [`iii_sdk::helpers::create_channel`]:
 //!
-//! - **request-body channel**: the worker WRITES the request body; the target
-//!   function READS it. The worker keeps `req.writer` and passes
-//!   `req.reader_ref` to the function as [`HttpRequest::request_body`].
-//! - **response channel**: the target function WRITES the response; the worker
-//!   READS it. The worker keeps `res.reader` and passes `res.writer_ref` to the
-//!   function as [`HttpRequest::response`].
+//! - **request-body channel**: the hook WRITES the request's bytes; the target
+//!   READS them from [`crate::types::HttpRequest::request_body`].
+//! - **response channel**: the target WRITES the response; the server READS
+//!   it. The hook hands the reader to the server and passes the writer ref to
+//!   the target as [`crate::types::HttpRequest::response`].
 //!
-//! This mirrors the engine's `take_sender`/`take_receiver` semantics exactly
-//! (engine `views.rs:391-466`).
+//! This mirrors the engine's `take_sender`/`take_receiver` semantics (engine
+//! `views.rs:391-466`).
 //!
-//! The worker then calls `http::on-request` with the request, naming the
-//! matched route's observer in the call's metadata, and races the response
-//! channel against that call: its deliver hook (see [`crate::on_request`])
-//! calls the route's target through the observer and returns the target's
-//! result. A target that writes to the response channel streams its body
-//! (control Text messages set status/headers, Binary frames carry the body); a
-//! target that returns a non-null value without touching the channel produces
-//! a buffered response.
+//! The server races the response channel against the call: a target that
+//! writes to the response channel streams its body (control Text messages set
+//! status/headers, Binary frames carry the body); a target that returns a
+//! non-null value without touching the channel, and every answer of the hook
+//! itself, produce a buffered response.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     body::Body,
@@ -38,37 +41,42 @@ use axum::{
 use colored::Colorize;
 use iii_helpers::observability::opentelemetry::metrics::Counter;
 use iii_helpers::observability::opentelemetry::KeyValue;
-use iii_sdk::helpers::create_channel;
+use iii_sdk::channel::ChannelReader;
+use iii_sdk::errors::Error;
 use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::task::JoinHandle;
 use tracing::Instrument;
 
 use crate::configuration::ConfigCell;
-use crate::middleware::{self, generate_error_id, MiddlewareOutcome};
-use crate::on_request::{ON_REQUEST_FN, ROUTE_METADATA_KEY};
+use crate::inflight::{InFlightRequests, REQUEST_ID_KEY};
+use crate::middleware::{self, generate_error_id};
+use crate::on_request::ON_REQUEST_FN;
 use crate::routes::RouteTable;
-use crate::types::{ControlMessage, HttpRequest, HttpResponse};
+use crate::types::{ControlMessage, HttpResponse, InboundRequest};
 
 /// Shared state injected into the handler via an axum `Extension`.
 pub struct AppState {
+    /// Read by the restricted listener's admission of `OPTIONS` requests
+    /// (see [`crate::server::HotRouter`]).
     pub routes: Arc<RwLock<RouteTable>>,
+    /// The requests in flight, shared with `http::on-request`'s hooks.
+    pub requests: InFlightRequests,
     pub iii: Arc<IIIClient>,
-    /// Live config cell, read once per request so `middleware`/`default_timeout`
-    /// changes hot-reload (see [`crate::configuration`]).
+    /// Live config cell, read once per request so `default_timeout` changes
+    /// hot-reload (see [`crate::configuration`]).
     pub config: ConfigCell,
     /// Set only by the listener, never from a request header or query parameter.
     pub public_webhooks_only: bool,
 }
 
-/// Maximum request body size read into memory before it is streamed into the
-/// request-body channel.
+/// Maximum request body size read into memory. A larger body is answered
+/// with `413` by `http::on-request`'s deliver hook.
 const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
-/// Channel buffer size for both request-body and response channels (matches the
-/// engine default in `views.rs`).
-const CHANNEL_BUFFER: usize = 64;
+/// Buffer of the frames forwarded off the response channel.
+const FRAME_BUFFER: usize = 64;
 
 /// Map an HTTP response status code to an OTel span status string.
 ///
@@ -84,7 +92,7 @@ fn otel_status_for(status_code: u16) -> &'static str {
 }
 
 /// Per-request OTEL request counter (`iii.http.requests`), created once from the
-/// global meter. Incremented one-per-request in the `record_status` closure.
+/// global meter. Incremented one-per-request in [`record_status`].
 ///
 /// Uses `opentelemetry::global::meter`, so the instrument binds to whatever
 /// meter provider is installed when this `OnceLock` first initializes (the SDK's
@@ -137,10 +145,87 @@ fn apply_control(
     }
 }
 
-/// Catch-all (fallback) handler. Matches the request against the route table
-/// and, on a hit, calls `http::on-request` with the request and maps the
-/// route target's return value (or its streamed response channel output) to
-/// an HTTP response. Unmatched requests get the stable `NOT_FOUND` envelope.
+/// Records the final response on the current per-request HTTP span: the
+/// matched route's template (`otel.name`, `http.route`; the actual path when
+/// no route matched), `otel.status_code` and `http.response.status_code`.
+/// Increments the OTEL request counter once and logs the request, then
+/// returns the response unchanged.
+///
+/// The engine records the same pair wherever the status becomes known
+/// (`views.rs`). The counter attributes mirror the span tags: method + route +
+/// status.
+fn record_status(response: Response, method: &str, route: &str, started: Instant) -> Response {
+    let code = response.status().as_u16();
+    let span = tracing::Span::current();
+    span.record("otel.name", format!("{method} {route}").as_str());
+    span.record("http.route", route);
+    span.record("otel.status_code", otel_status_for(code));
+    span.record("http.response.status_code", code);
+    request_counter().add(
+        1,
+        &[
+            KeyValue::new("http.request.method", method.to_string()),
+            KeyValue::new("http.route", route.to_string()),
+            KeyValue::new("http.response.status_code", i64::from(code)),
+        ],
+    );
+
+    let status = code.to_string();
+    let status = match code {
+        200..=299 => status.green(),
+        300..=399 => status.cyan(),
+        400..=499 => status.yellow(),
+        _ => status.red(),
+    };
+    tracing::info!(
+        "{} Endpoint {} {} {}",
+        "[CALLED]".blue(),
+        format!("{method} {route}").bright_yellow().bold(),
+        status,
+        format!("({}ms)", started.elapsed().as_millis()).dimmed()
+    );
+    response
+}
+
+/// The HTTP response for the call's result when no target streamed: a
+/// buffered response, or a `500` for a failed call.
+fn buffered(result: Result<Result<Value, Error>, tokio::task::JoinError>, path: &str) -> Response {
+    match result {
+        Ok(Ok(value)) => HttpResponse::from_function_return(value).into_axum_response(),
+        Ok(Err(err)) => {
+            let error_id = generate_error_id();
+            tracing::error!(
+                path = %path,
+                error = %err,
+                error_id = %error_id,
+                "http::on-request call failed"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(middleware::error_body_for_call_error(&err, Some(&error_id))),
+            )
+                .into_response()
+        }
+        Err(join_err) => {
+            let error_id = generate_error_id();
+            tracing::error!(
+                path = %path,
+                error = %join_err,
+                error_id = %error_id,
+                "http::on-request call task panicked"
+            );
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "Internal Server Error",
+            )
+        }
+    }
+}
+
+/// Catch-all (fallback) handler. Calls `http::on-request` with the request
+/// and maps the call's result (or what the route's target streams to the
+/// response channel) to an HTTP response.
 pub async fn dynamic_handler(
     Extension(state): Extension<Arc<AppState>>,
     method: Method,
@@ -151,27 +236,17 @@ pub async fn dynamic_handler(
 ) -> Response {
     let actual_path = uri.path().to_string();
 
-    // Snapshot the live config once for the whole request, so `middleware` and
-    // `default_timeout` reflect the latest hot-reloaded value (see
-    // `crate::configuration`) while staying consistent within this request.
-    let config = state.config.read().await.clone();
-
-    let matched = {
-        let table = state.routes.read().await;
-        table.match_route_for_listener(method.as_str(), &actual_path, state.public_webhooks_only)
-    };
+    // Read once for the whole request, so `default_timeout` reflects the
+    // latest hot-reloaded value (see `crate::configuration`) while staying
+    // consistent within this request.
+    let default_timeout = state.config.read().await.default_timeout;
 
     // Per-request OTEL/tracing HTTP span, mirroring the engine's iii-http
-    // (`views.rs`) minus the request metric (a later phase). Trace-context
-    // parent propagation is applied just below (after the span is built).
-    // `route_path` is the matched route pattern (e.g.
-    // `/users/:id`) when a route matches, else the actual request path (404).
-    // The final status is recorded via `record_status` at every return point.
-    let route_path = matched
-        .as_ref()
-        .map(|(route, _)| route.http_path.clone())
-        .unwrap_or_else(|| actual_path.clone());
-
+    // (`views.rs`). Trace-context parent propagation is applied just below
+    // (after the span is built). `otel.name` and `http.route` start from the
+    // actual request path; `record_status` records the matched route's
+    // template (e.g. `/users/:id`) once the deliver hook matched one.
+    //
     // W3C trace-context parent propagation: read the inbound headers before the
     // span is built. `tracestate` is read for completeness but NOT propagated --
     // the SDK's `extract_context` takes only `traceparent` + `baggage` (unlike
@@ -188,11 +263,11 @@ pub async fn dynamic_handler(
 
     let span = tracing::info_span!(
         "HTTP",
-        otel.name = %format!("{} {}", method, route_path),
+        otel.name = %format!("{} {}", method, actual_path),
         otel.kind = "server",
         otel.status_code = tracing::field::Empty,
         "http.request.method" = %method,
-        "http.route" = %route_path,
+        "http.route" = %actual_path,
         "url.path" = %actual_path,
         "http.response.status_code" = tracing::field::Empty,
     );
@@ -244,184 +319,105 @@ pub async fn dynamic_handler(
         }
     }
 
-    // Record the final response status on the current per-request HTTP span
-    // (`otel.status_code` + `http.response.status_code`) and increment the OTEL
-    // request counter once, then return the response unchanged so it can wrap
-    // any `return <response>` expression.
-    //
-    // Reading the status from the already-built response records+counts it in
-    // exactly one place per return path -- the engine records the same pair
-    // wherever the status becomes known (`views.rs`). The counter attributes
-    // mirror the span tags: method + matched route (captured here) + status.
-    let method_attr = method.as_str().to_string();
-    let route_attr = route_path.clone();
-    let started = std::time::Instant::now();
-    let record_status = move |response: Response| -> Response {
-        let code = response.status().as_u16();
-        let span = tracing::Span::current();
-        span.record("otel.status_code", otel_status_for(code));
-        span.record("http.response.status_code", code);
-        request_counter().add(
-            1,
-            &[
-                KeyValue::new("http.request.method", method_attr.clone()),
-                KeyValue::new("http.route", route_attr.clone()),
-                KeyValue::new("http.response.status_code", i64::from(code)),
-            ],
-        );
-
-        let status = code.to_string();
-        let status = match code {
-            200..=299 => status.green(),
-            300..=399 => status.cyan(),
-            400..=499 => status.yellow(),
-            _ => status.red(),
-        };
-        tracing::info!(
-            "{} Endpoint {} {} {}",
-            "[CALLED]".blue(),
-            format!("{} {}", method_attr, route_attr)
-                .bright_yellow()
-                .bold(),
-            status,
-            format!("({}ms)", started.elapsed().as_millis()).dimmed()
-        );
-        response
-    };
+    let started = Instant::now();
 
     async move {
-    let Some((route, path_params)) = matched else {
-        // Path matches a registered route but the method doesn't -> 405 (with
-        // an `Allow` header listing the methods that would have matched),
-        // mirroring axum's per-method routing in the engine's iii-http. A
-        // path that matches no route at all stays a 404.
-        let allowed = state.routes.read().await.allowed_methods_for_listener(&actual_path, state.public_webhooks_only);
-        if allowed.is_empty() {
-            return record_status(error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "Not Found"));
-        }
-        let mut response = error_response(
-            StatusCode::METHOD_NOT_ALLOWED,
-            "METHOD_NOT_ALLOWED",
-            "Method Not Allowed",
-        );
-        if let Ok(value) = axum::http::HeaderValue::from_str(&allowed.join(", ")) {
-            response.headers_mut().insert(axum::http::header::ALLOW, value);
-        }
-        return record_status(response);
-    };
-
-    let header_map: HashMap<String, String> = headers
-        .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string())))
-        .collect();
-
-    // Global middleware (config-driven, sorted by priority at config-load
-    // time), run before the matched route's per-route middleware and handler.
-    for mw in config.middleware.iter().filter(|mw| mw.phase == "preHandler") {
-        let mw_input = middleware::build_middleware_input(
-            &path_params,
-            &query_params,
-            &header_map,
-            method.as_str(),
-        );
-        match middleware::execute_middleware(
-            &state.iii,
-            &mw.function_id,
-            mw_input,
-            config.default_timeout,
-        )
-        .await
-        {
-            Ok(MiddlewareOutcome::Continue) => {}
-            Err(response) => {
-                return record_status(
-                    HttpResponse::from_function_return(response).into_axum_response(),
-                )
+        // Read the full body. A body over the limit is `None`, which the
+        // deliver hook answers with 413 once the request matched a route.
+        // Empty/invalid bodies parse to null for the `body` field; the raw
+        // bytes go to the request-body channel regardless.
+        let body_bytes = axum::body::to_bytes(body, MAX_BODY_BYTES).await.ok();
+        let parsed_body: Value = match &body_bytes {
+            Some(bytes) if !bytes.is_empty() => {
+                serde_json::from_slice(bytes).unwrap_or(Value::Null)
             }
-        }
+            _ => Value::Null,
+        };
+
+        let header_map: HashMap<String, String> = headers
+            .iter()
+            .filter_map(|(k, v)| {
+                v.to_str()
+                    .ok()
+                    .map(|v| (k.as_str().to_string(), v.to_string()))
+            })
+            .collect();
+        let request = InboundRequest {
+            method: method.as_str().to_string(),
+            path: actual_path.clone(),
+            query_params,
+            headers: header_map,
+            body: parsed_body,
+        };
+
+        let (ticket, opened) = state.requests.open(state.public_webhooks_only, body_bytes);
+        let response = respond(&state, request, ticket.id(), opened, default_timeout).await;
+        let route = ticket.request().route().unwrap_or(&actual_path);
+        record_status(response, method.as_str(), route, started)
     }
+    .instrument(span)
+    .await
+}
 
-    // Read the full body. Empty/invalid bodies parse to null for the
-    // backward-compatible `body` field; the raw bytes are streamed into the
-    // request-body channel regardless.
-    let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return record_status(error_response(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "PAYLOAD_TOO_LARGE",
-                "Request body too large",
-            ));
-        }
-    };
-    let parsed_body: Value = if body_bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&body_bytes).unwrap_or(Value::Null)
-    };
-
-    // Create the request-body and response channels. The worker keeps the
-    // request-body writer and the response reader; the matching refs are handed
-    // to the function (see module docs for the direction mapping).
-    let req_channel = match create_channel(&state.iii, Some(CHANNEL_BUFFER)).await {
-        Ok(c) => c,
-        Err(e) => {
-            return record_status(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                &format!("failed to create request channel: {e}"),
-            ));
-        }
-    };
-    let res_channel = match create_channel(&state.iii, Some(CHANNEL_BUFFER)).await {
-        Ok(c) => c,
-        Err(e) => {
-            return record_status(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                &format!("failed to create response channel: {e}"),
-            ));
-        }
-    };
-
-    let req_writer = req_channel.writer;
-    let req_reader_ref = req_channel.reader_ref;
-    let res_reader = res_channel.reader;
-    let res_writer_ref = res_channel.writer_ref;
-
-    // Stream the request body into the request-body channel, then close it so
-    // the function's reader observes EOF. Detached: the function reads it
-    // concurrently and the response path must not block on it.
-    {
-        let bytes = body_bytes.clone();
-        tokio::spawn(async move {
-            if !bytes.is_empty() {
-                let _ = req_writer.write(&bytes).await;
-            }
-            let _ = req_writer.close().await;
-        });
-    }
-
-    let request = HttpRequest {
-        query_params,
-        path_params,
-        headers: header_map,
-        path: route.http_path.clone(),
-        method: method.as_str().to_string(),
-        body: parsed_body,
-        request_body: req_reader_ref,
-        response: res_writer_ref,
-    };
-
+/// Calls `http::on-request` for the request in flight `request_id` and
+/// builds the HTTP response: buffered from the call's result, or streamed
+/// from the response channel once the hook handed its reader over.
+async fn respond(
+    state: &AppState,
+    request: InboundRequest,
+    request_id: &str,
+    opened: oneshot::Receiver<ChannelReader>,
+    default_timeout: u64,
+) -> Response {
+    let path = request.path.clone();
     let payload = match serde_json::to_value(&request) {
         Ok(v) => v,
         Err(e) => {
-            return record_status(error_response(
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
                 &format!("failed to serialize request: {e}"),
-            ));
+            );
         }
+    };
+
+    // Spawn the call of `http::on-request` so it runs concurrently with
+    // draining the response channel.
+    let mut call: JoinHandle<Result<Value, Error>> = {
+        let iii = state.iii.clone();
+        let request = CallRequest {
+            function_id: ON_REQUEST_FN.to_string(),
+            payload,
+            action: None,
+            timeout_ms: Some(default_timeout),
+        }
+        .metadata(json!({ REQUEST_ID_KEY: request_id }));
+        // Propagate THIS request's HTTP-span trace context onto the outbound
+        // call so `request -> worker -> function` is one unified trace. The
+        // enclosing block is `.instrument(span)`, but `tokio::spawn` starts a
+        // detached task that inherits neither the tracing span nor the OTel
+        // `Context::current()` that the SDK's `inject_traceparent` reads. Capture
+        // the span's OTel context here (still inside the instrumented scope) and
+        // attach it to the spawned future via `with_context`, mirroring the SDK's
+        // own invocation handler (iii `iii.rs`). Without this the SDK injects no
+        // `traceparent` and the callee starts a disconnected trace.
+        use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+        let otel_cx = tracing::Span::current().context();
+        tokio::spawn(async move { iii.call(request).await }.with_context(otel_cx))
+    };
+
+    // The hook either answers the call itself (no route, filters, middleware)
+    // or hands over the response channel's reader just before it calls the
+    // target. Biased: a reader handed over wins over a result that arrived in
+    // the same poll, so a streaming target's frames are drained.
+    let res_reader = tokio::select! {
+        biased;
+        reader = opened => match reader {
+            Ok(reader) => reader,
+            Err(_) => return buffered((&mut call).await, &path),
+        },
+        result = &mut call => return buffered(result, &path),
     };
 
     // Accumulated response control state. Text control messages on the response
@@ -453,7 +449,7 @@ pub async fn dynamic_handler(
     // corrupt the reader. Text frames are consumed internally by `next_binary`
     // and applied via the callback above. The task ends (dropping the reader,
     // closing its socket) when the function closes the response channel.
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(CHANNEL_BUFFER);
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(FRAME_BUFFER);
     let forward = tokio::spawn(async move {
         while let Ok(Some(data)) = res_reader.next_binary().await {
             if tx.send(data).await.is_err() {
@@ -462,35 +458,6 @@ pub async fn dynamic_handler(
         }
     });
 
-    // Spawn the call of `http::on-request` so it runs concurrently with
-    // draining the response channel. The call names the route's observer in
-    // its metadata; the function's deliver hook applies the observer's
-    // filters, runs the route middleware and calls the target through the
-    // observer, and returns the target's result (see `crate::on_request`).
-    let mut call = {
-        let iii = state.iii.clone();
-        let request = CallRequest {
-            function_id: ON_REQUEST_FN.to_string(),
-            payload,
-            action: None,
-            timeout_ms: Some(config.default_timeout),
-        }
-        .metadata(json!({ ROUTE_METADATA_KEY: route.id() }));
-        // Propagate THIS request's HTTP-span trace context onto the outbound
-        // call so `request -> worker -> function` is one unified trace. The
-        // enclosing block is `.instrument(span)`, but `tokio::spawn` starts a
-        // detached task that inherits neither the tracing span nor the OTel
-        // `Context::current()` that the SDK's `inject_traceparent` reads. Capture
-        // the span's OTel context here (still inside the instrumented scope) and
-        // attach it to the spawned future via `with_context`, mirroring the SDK's
-        // own invocation handler (iii `iii.rs`). Without this the SDK injects no
-        // `traceparent` and the callee starts a disconnected trace.
-        use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
-        use tracing_opentelemetry::OpenTelemetrySpanExt;
-        let otel_cx = tracing::Span::current().context();
-        tokio::spawn(async move { iii.call(request).await }.with_context(otel_cx))
-    };
-
     // Overall bound for the streaming drain. The engine bounds an open response
     // channel via `channel_mgr.remove_channel` (drops the origin sender, forcing
     // EOF). The SDK exposes no worker-side `remove_channel`, so the worker cannot
@@ -498,14 +465,13 @@ pub async fn dynamic_handler(
     // null-returning function that never closes its writer. Instead we bound each
     // `rx.recv()` wait with the request timeout as an *idle* timeout (simplest
     // safe choice: total-timeout would penalize legitimate slow long streams).
-    let stream_timeout = Duration::from_millis(config.default_timeout);
+    let stream_timeout = Duration::from_millis(default_timeout);
 
-    // Race the response channel against the invocation result.
+    // Race the response channel against the call's result.
     //
     // - A Binary frame -> the target is streaming; begin building the body.
     // - The call completing with a non-null value -> buffered response (the
-    //   target never touched the channel, or the deliver hook answered for
-    //   it: 404, 422, a route middleware's response).
+    //   target never touched the channel).
     // - The call completing with `null` -> the target streamed (or produced
     //   no body); drain the remaining channel frames into the body.
     // Biased: prefer a ready channel frame over the invocation result, so a
@@ -525,75 +491,32 @@ pub async fn dynamic_handler(
         item = rx.recv() => Race::Chunk(item),
         result = &mut call => {
             match result {
-                Ok(Ok(value)) => {
-                    if value.is_null() {
-                        Race::Streamed
-                    } else {
-                        // Buffered response: the function returned a value
-                        // without streaming. Abort the (idle) reader task.
-                        forward.abort();
-                        return record_status(
-                            HttpResponse::from_function_return(value).into_axum_response(),
-                        );
-                    }
-                }
-                Ok(Err(err)) => {
+                Ok(Ok(value)) if value.is_null() => Race::Streamed,
+                other => {
+                    // Buffered response or a failed call: abort the (idle)
+                    // reader task.
                     forward.abort();
-                    let error_id = generate_error_id();
-                    tracing::error!(
-                        observer_id = %route.id(),
-                        route = %route_path,
-                        error = %err,
-                        error_id = %error_id,
-                        "function invocation failed"
-                    );
-                    return record_status(
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            axum::Json(middleware::error_body_for_call_error(
-                                &err,
-                                Some(&error_id),
-                            )),
-                        )
-                            .into_response(),
-                    );
-                }
-                Err(join_err) => {
-                    forward.abort();
-                    let error_id = generate_error_id();
-                    tracing::error!(
-                        observer_id = %route.id(),
-                        route = %route_path,
-                        error = %join_err,
-                        error_id = %error_id,
-                        "function invocation task panicked"
-                    );
-                    return record_status(error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "INTERNAL_ERROR",
-                        "Internal Server Error",
-                    ));
+                    return buffered(other, &path);
                 }
             }
         }
     };
 
-    // Bug-1 fix: when the invocation result wins the race, control messages
+    // When the invocation result wins the race, control messages
     // (`set_status`/`set_headers`) may still be travelling the separate channel
     // socket. Do NOT snapshot status/headers yet -- wait for the first body
     // chunk first. The forward task folds each control Text into `control`
     // synchronously (inside `next_binary`) before yielding the Binary that
     // follows it, so once a chunk is observed all preceding control is applied.
-    // Bug-2 fix: bound this wait with `stream_timeout` (see above).
+    // The wait is bounded with `stream_timeout` (see above).
     let first_chunk: Option<Vec<u8>> = match race {
         Race::Chunk(item) => item,
         Race::Streamed => match tokio::time::timeout(stream_timeout, rx.recv()).await {
             Ok(item) => item,
             Err(_) => {
                 tracing::warn!(
-                    timeout_ms = config.default_timeout,
-                    observer_id = %route.id(),
-                    route = %route_path,
+                    timeout_ms = default_timeout,
+                    path = %path,
                     "Streaming drain timed out waiting for first frame; ending stream"
                 );
                 forward.abort();
@@ -621,7 +544,7 @@ pub async fn dynamic_handler(
             if let Some(chunk) = pending {
                 return Some((Ok::<Vec<u8>, Infallible>(chunk), (None, rx, abort)));
             }
-            // Bug-2 fix: idle-bound each subsequent frame wait.
+            // Idle-bound each subsequent frame wait.
             match tokio::time::timeout(stream_timeout, rx.recv()).await {
                 Ok(Some(data)) => Some((Ok(data), (None, rx, abort))),
                 Ok(None) => None,
@@ -650,7 +573,7 @@ pub async fn dynamic_handler(
         }
     }
 
-    record_status(match builder.body(Body::from_stream(stream)) {
+    match builder.body(Body::from_stream(stream)) {
         Ok(resp) => resp.into_response(),
         Err(err) => {
             let error_id = generate_error_id();
@@ -665,8 +588,5 @@ pub async fn dynamic_handler(
                 "Internal Server Error",
             )
         }
-    })
     }
-    .instrument(span)
-    .await
 }
