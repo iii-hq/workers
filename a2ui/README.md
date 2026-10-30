@@ -49,11 +49,11 @@ Interactive surfaces automatically submit their complete bound data model with b
 
 A binding stored under iii 0.25, with `trigger_type` and `config`, loads as the function that replaced the type: `state` as `state::on-changed` with `scope` and `key` filters, `shell::changed` as `shell::on-changed` with `config` as args, `stream` as `stream::on-changed` with `stream_name`, `group_id` and `item_id` (`input.id`) filters, and a worker's `W::X` as `W::on-X`. For `W::on-X` the worker reads `engine::functions::info` when the session loads: `config` (without `metadata` and `condition_function_id`) becomes the args when the function registered an `args_format`, and one `{ "input.<field>": { "$eq": <value> } }` filter per field when it takes none. The result passes the same checks as `a2ui::binding::set`. When the function is not registered or a check fails, the binding moves to the surface's `retired_bindings` (`{ id, function_id, reason }`) and the page lists it; `a2ui::binding::set` with the same id replaces it and `a2ui::binding::delete` removes it. The surface's next change writes the result back in the current shape.
 
-The runnable provider in `examples/counter_provider.rs` (`cargo run --example counter_provider -- ws://127.0.0.1:49134`) hosts one event function:
+The runnable provider in `examples/counter_provider/` (`cargo run --example counter_provider -- ws://127.0.0.1:49134`) hosts one event function:
 
 | Function | Args | Delivery | Event |
 |---|---|---|---|
-| `demo::on-counter-changed` | `{ counter }`, 1-64 bytes (`INVALID_ARGS` otherwise) | observers whose `args.counter` is the event's `counter`; at most 64 observers (`OBSERVER_LIMIT`) | `{ counter, revision }`, called after each committed `demo::counter::bump` |
+| `demo::on-counter-changed` | `{ counter }`, 1-64 bytes (`INVALID_ARGS` otherwise) | observers whose `args.counter` is the event's `counter`; at most 64 observers: an observer added while 64 are active is rejected with `OBSERVER_LIMIT` | `{ counter, revision }`, called after each committed `demo::counter::bump` |
 
 An observer of it, from any worker:
 

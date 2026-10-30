@@ -1,49 +1,21 @@
-//! Minimal worker event function that an A2UI live binding can observe. Run
-//! it next to an engine (no iii-stream needed):
-//!
-//! ```bash
-//! cargo run --example counter_provider -- ws://127.0.0.1:49134
-//! ```
-//!
-//! Then bind a surface to it with `a2ui::binding::set`:
-//!
-//! ```json
-//! {
-//!   "surface_id": "clicks",
-//!   "binding": {
-//!     "id": "clicks-count",
-//!     "function_id": "demo::on-counter-changed",
-//!     "args": { "counter": "clicks" },
-//!     "target_path": "/count",
-//!     "query": {
-//!       "function_id": "demo::counter::get",
-//!       "payload": { "counter": "clicks" },
-//!       "result_path": "/value"
-//!     }
-//!   }
-//! }
-//! ```
-//!
-//! `demo::counter::bump { "counter": "clicks" }` commits a new value and then
-//! calls `demo::on-counter-changed` with `{ counter, revision }`; the observers
-//! whose args name that counter receive it, and the A2UI page re-reads through
-//! the read-only `demo::counter::get` query.
+//! The demo counter provider: `demo::on-counter-changed` with its observer
+//! hooks, and the `demo::counter::*` functions around it. `main.rs` runs it
+//! as a worker; `tests/counter_provider.rs` hosts it in process.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    register_worker, Call, CallAction, CallRequest, Error, IIIClient, InitOptions, Keys, Match,
-    ObserveRejection, Observer, RegisterFunction,
+    Call, CallAction, CallRequest, Error, IIIClient, Keys, Match, ObserveRejection, Observer,
+    RegisterFunction,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-const ON_COUNTER_CHANGED_FN: &str = "demo::on-counter-changed";
+pub const ON_COUNTER_CHANGED_FN: &str = "demo::on-counter-changed";
 /// Bound fan-out: observers beyond this are rejected when they are added.
-const MAX_OBSERVERS: usize = 64;
+pub const MAX_OBSERVERS: usize = 64;
 
 /// Observer args of `demo::on-counter-changed`.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -99,8 +71,11 @@ fn observers_of(iii: &IIIClient, counter: &str) -> usize {
         .count()
 }
 
-/// Validate an observer's args and cap the number of observers.
-async fn accept(iii: Arc<IIIClient>, obs: Observer) -> Result<(), ObserveRejection> {
+/// Validate an observer's args and cap the number of observers. The SDK runs
+/// a function's observer hooks one at a time and activates an accepted
+/// observer before the next hook runs, so the active observers are every
+/// observer accepted before this one and not removed since.
+fn accept(iii: &IIIClient, obs: &Observer) -> Result<(), ObserveRejection> {
     let args: CounterArgs = obs.args()?;
     if args.counter.trim().is_empty() || args.counter.len() > 64 {
         return Err(ObserveRejection::new(
@@ -117,29 +92,15 @@ async fn accept(iii: Arc<IIIClient>, obs: Observer) -> Result<(), ObserveRejecti
     Ok(())
 }
 
-#[tokio::main]
-async fn main() {
-    let url = std::env::args()
-        .nth(1)
-        .or_else(|| std::env::var("III_URL").ok())
-        .unwrap_or_else(|| "ws://127.0.0.1:49134".into());
-    let iii = Arc::new(register_worker(
-        &url,
-        InitOptions {
-            metadata: Some(WorkerMetadata {
-                runtime: "rust".into(),
-                name: "a2ui-demo-provider".into(),
-                ..WorkerMetadata::default()
-            }),
-            ..InitOptions::default()
-        },
-    ));
+/// Register the provider's hooks and functions on `iii`.
+pub fn register(iii: &Arc<IIIClient>) {
     let provider = Arc::new(Provider::default());
 
     // Hooks by id before registering, so they see every observer.
     let hook_iii = iii.clone();
     iii.on_observer_added_for(ON_COUNTER_CHANGED_FN, move |obs: Observer| {
-        accept(hook_iii.clone(), obs)
+        let result = accept(&hook_iii, &obs);
+        async move { result }
     });
     // Each bump reaches the observers whose args name its counter.
     iii.on_observer_match_for(
@@ -223,8 +184,4 @@ async fn main() {
         .description("Number of active demo::on-counter-changed observers.")
         .metadata(json!({ "read_only": true })),
     );
-
-    println!("a2ui-demo-provider ready on {url}");
-    let _ = tokio::signal::ctrl_c().await;
-    iii.shutdown_async().await;
 }
