@@ -18,7 +18,9 @@ import (
 
 func fakeWorker(f *fixture, n *testNode, name string) *iii.Client {
 	c := connect(f.t, f.ctx, n.url, name, f.ns)
-	if err := iii.RegisterFunctionTyped(c, "echo", func(_ context.Context, p json.RawMessage) (json.RawMessage, error) { return p, nil }); err != nil {
+	if err := iii.RegisterFunctionTyped(c, "echo", func(context.Context, json.RawMessage) (map[string]string, error) {
+		return map[string]string{"node": n.name}, nil
+	}); err != nil {
 		f.t.Fatal(err)
 	}
 	eventually(f.t, 5*time.Second, "fake echo registration", func() error {
@@ -114,19 +116,25 @@ func TestE2ERevocationWithin5s(t *testing.T) {
 	start := time.Now()
 	f.config.Nodes["evil"] = hub.NodeConfig{Workers: []string{}, Allow: []string{}}
 	f.reload()
-	eventually(t, time.Until(start.Add(5*time.Second)), "existing worker grant revoked", func() error {
-		_, err := call(f.ctx, c, "default", "target::allowed", map[string]any{})
-		if err != nil && (strings.Contains(err.Error(), "forbidden") || strings.Contains(err.Error(), "not allowed")) {
-			return nil
-		}
-		return fmt.Errorf("not yet refused: %v", err)
-	})
+	deadline := start.Add(5 * time.Second)
+	ctx, cancel := context.WithDeadline(f.ctx, deadline)
+	defer cancel()
+	if err := waitForPolicyRefusal(ctx, func(callCtx context.Context) error {
+		_, err := call(callCtx, c, "default", "target::allowed", map[string]any{})
+		return err
+	}); err != nil {
+		t.Fatalf("existing worker grant not revoked within 5s: %v", err)
+	}
+	enforcedAt := time.Now()
+	if !enforcedAt.Before(deadline) {
+		t.Fatalf("policy refusal completed after 5s: %s", enforcedAt.Sub(start))
+	}
 	baseline := calls.Load()
 	refused(t, c, "default", "target::allowed", map[string]any{}, "forbidden")
 	if calls.Load() != baseline {
 		t.Fatal("revoked invocation reached target")
 	}
-	t.Logf("revocation enforced in %s", time.Since(start))
+	t.Logf("revocation enforced in %s", enforcedAt.Sub(start))
 }
 func (f *fixture) startFP() {
 	startProcess(f.t, f.dir, "fp", binary(f.t, "MESH_TEST_FP_BIN"), nil, "--url", f.engineURL)
@@ -258,8 +266,9 @@ func TestE2ENameSquatting(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"evil", "mac"} {
-		b := mustCall(t, f.admin, "default", name+"::echo", map[string]any{"node": name})
-		if !strings.Contains(string(b), name) {
+		b := mustCall(t, f.admin, "default", name+"::echo", map[string]any{"probe": "same-payload"})
+		var reply struct{ Node string }
+		if err := json.Unmarshal(b, &reply); err != nil || reply.Node != name {
 			t.Fatalf("displaced %s: %s", name, b)
 		}
 	}
@@ -294,8 +303,9 @@ func TestE2ETwoNodesSameWorkerName(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"alpha", "beta"} {
-		out := mustCall(t, f.admin, "default", name+"::echo", map[string]any{"node": name})
-		if !strings.Contains(string(out), name) {
+		out := mustCall(t, f.admin, "default", name+"::echo", map[string]any{"probe": "same-payload"})
+		var reply struct{ Node string }
+		if err := json.Unmarshal(out, &reply); err != nil || reply.Node != name {
 			t.Fatalf("echo displaced: %s", out)
 		}
 	}

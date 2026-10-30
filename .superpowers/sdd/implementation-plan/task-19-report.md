@@ -249,3 +249,112 @@ Native Ubuntu 26.04 VM/macOS/Windows, cross-network, privileged TUN/hosts/servic
 No push, native setup, unrelated-service change or controller-ledger edit performed.
 
 Commit subject: `test(mesh): end-to-end and adversarial suite`.
+
+## Fix round 1 — review base 9914b0c13
+
+Addressed the four Important findings in task-19-fix-1.md. Changes are confined to CI and test fixtures/assertions; no additional product or Rust source change was needed. The receiving-code-review, TDD and verification workflows were applied. The condition-callback ruling is corrected: mesh.md:722 requires actual Mesh **and** independent proxy refusal, so the earlier five proxy unit cases plus integrated Mesh refusal did not complete that requirement. The new real proxy case below supplements them and leaves the integrated Mesh hook intact.
+
+### Worker identity and absolute revocation completion
+
+`mesh/tests/e2e/adversarial_test.go`: each fake worker's handler now returns its fixture-owned node name, ignoring caller data. Both `TestE2ENameSquatting` and `TestE2ETwoNodesSameWorkerName` call both final routes with identical `{"probe":"same-payload"}` data after both workers exist, decode the reply, and require the respective node identity. Metadata checks remain. RED ran these new assertions against the old payload-echo handler:
+
+```sh
+PATH=/home/anderson/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/bin:$PATH III_BIN=/home/anderson/.local/bin/iii mesh/tests/e2e/run-tests.sh -run 'TestE2E(NameSquatting|TwoNodesSameWorkerName)$'
+```
+
+Exit 1, both cases failed, package 21.068s; `/tmp/mesh-task19-fix1-identity-red.log`. Exact failures include `displaced evil: {"_caller_worker_id":"9254d3a1-20c9-49a4-b42a-94c71993bd89","probe":"same-payload"}` and `echo displaced: {"_caller_worker_id":"1e9ebd4b-3811-4ad3-90f0-20a32248bd42","probe":"same-payload"}`. Thus the new checks cannot pass by reflecting the caller's claimed identity.
+
+`TestE2ERevocationWithin5s` now starts the same five-second clock before the policy update, applies its absolute deadline to each RPC, and checks refusal completion before that deadline. `mesh/tests/e2e/revocation_test.go` contains the bounded polling helper and four focused cases. Only an actual `*iii.InvocationError` with code `FORBIDDEN` counts; elapsed deadlines, context cancellation, and transport messages containing “forbidden” do not. The post-refusal target counter assertion remains.
+
+The extracted old before-call/string-matching behavior was tested before fixing it:
+
+```sh
+PATH=/home/anderson/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/bin:$PATH CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=readonly GOTOOLCHAIN=local go -C mesh test -tags=e2e ./tests/e2e -run '^TestPolicyRefusalDeadline$' -count=1 -v
+```
+
+RED exit 1, 0.013s, `/tmp/mesh-task19-fix1-deadline-red.log`: `before-deadline` passed; `late-policy-response`, `cancellation-is-not-policy`, and `message-is-not-policy-code` each failed because the helper incorrectly returned `<nil>`. After the fix, this combined focused command passed:
+
+```sh
+PATH=/home/anderson/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/bin:$PATH III_BIN=/home/anderson/.local/bin/iii mesh/tests/e2e/run-tests.sh -run 'TestPolicyRefusalDeadline$|TestE2E(NameSquatting|TwoNodesSameWorkerName|RevocationWithin5s|ConditionCallbackRefused)$'
+```
+
+Exit 0, 42.007s, `/tmp/mesh-task19-fix1-mesh-green.log`: four actual integration cases plus all four deadline subcases passed. Actual revocation refusal completed in **1.153067148s**. The integrated `TestE2EConditionCallbackRefused` still exercises the real Mesh registration hook and proves its forbidden callback never executes.
+
+### Independent actual proxy condition defense
+
+Added `condition-callback-outside-grants-denied` to `rbac-proxy/tests/e2e/workers/harness/src/cases.ts`. It asserts the live proxy configuration has no trigger-registration hook, registers real allowed/forbidden callbacks and an exposed event target on the engine, creates a real configuration entry, and sends the forbidden conditional binding through an authenticated proxy connection. It requires a `REGISTRATION_DENIED` frame naming the forbidden callback. It checks the actual engine binding registry for absence of that callback and presence of the allowed conditional binding, updates the real configuration, then requires both the allowed condition and its target to execute while the forbidden counter stays zero. It unregisters its functions and allowed binding on completion.
+
+Used fresh temporary copies of the existing runner/config/harness to isolate its relative data directory and avoid the unrelated default-port service. Normal runner/config/source bytes were verified against the worktree; the existing harness node_modules was linked. The only controlled RED mutation, in `/tmp/mesh-task19-fix1-proxy-red.srap5dwp/run-tests.sh`, added `match("secret::condition-callback")` to that temporary seed's expose list. No production policy or repository runner was broadened. With that deliberately granted callback, the new case failed after 5012ms with `no condition binding refusal`; `HARNESS_DONE: FAIL 0/1`, exit 1, `/tmp/mesh-task19-fix1-proxy-red.log`. This is test-sensitivity evidence against an over-grant, not a newly discovered proxy product defect.
+
+```sh
+env WORKER_SRC="$PWD/rbac-proxy" WORKER_BIN_TARGET="$PWD/rbac-proxy/target/debug/rbac-proxy" III_BIN=/home/anderson/.local/bin/iii ENGINE_PORT=49834 PROXY_PORT=49871 /tmp/mesh-task19-fix1-proxy-red.srap5dwp/run-tests.sh --no-build --filter=condition-callback
+env WORKER_SRC="$PWD/rbac-proxy" WORKER_BIN_TARGET="$PWD/rbac-proxy/target/debug/rbac-proxy" III_BIN=/home/anderson/.local/bin/iii ENGINE_PORT=49834 PROXY_PORT=49871 /tmp/mesh-task19-fix1-proxy-green._qby4tbs/run-tests.sh --no-build --filter=condition-callback
+env WORKER_SRC="$PWD/rbac-proxy" WORKER_BIN_TARGET="$PWD/rbac-proxy/target/debug/rbac-proxy" III_BIN=/home/anderson/.local/bin/iii ENGINE_PORT=49834 PROXY_PORT=49871 /tmp/mesh-task19-fix1-proxy-full.w9j_m_3b/run-tests.sh --no-build
+```
+
+Unmodified-policy focused GREEN: exit 0, `PASS 1/1`, `/tmp/mesh-task19-fix1-proxy-green.log`. Final whole proxy suite: exit 0, **PASS 10/10**, `/tmp/mesh-task19-fix1-proxy-full.log`. It includes the original nine named cases above and the new condition case (109ms). Exact new evidence in its harness log: `[condition] independent refusal=REGISTRATION_DENIED; allowed callbacks=1; deliveries=1; forbidden callbacks=0`. Per-case JSON and actual engine/proxy/harness logs are under the temporary suite's `reports/`. Timeout waiting for a refusal fails the case; it is never interpreted as refusal.
+
+### CI clean frontend prerequisites
+
+`.github/workflows/mesh-e2e.yml` now uses the repository's existing pinned pnpm/setup-node action revisions, Node 22 and root `packageManager` pnpm 11.13.1, installs frozen dependencies for the three required UI projects plus their workspace dependencies, and builds IDE/harness/state assets before Rust workers. State's identical missing-bundle dependency is included. Relevant shared package/root lockfile/workspace paths now trigger the workflow.
+
+Created a clean archive of tracked FIX_BASE sources at `/tmp/mesh-task19-fix1-clean.ux_3h7y2` with `git archive HEAD | tar -x`. Asserted no `ui/dist` or `ui/node_modules` existed in IDE, harness or state. Compiled each unchanged actual build script with `rustc --edition=2024 <clean>/<worker>/build.rs -o /tmp/mesh-task19-fix1-<worker>-build`, supplying `CARGO_MANIFEST_DIR=<clean>/<worker>` and `TARGET=x86_64-unknown-linux-gnu`. Ran each with `PATH=/usr/bin:/bin`, `PNPM` and `SKIP_UI_BUILD` unset. All three reproduced exit **101**, `pnpm not found on PATH`, in `/tmp/mesh-task19-fix1-prereq-red.log`.
+
+Installed a temporary Node 22/pnpm toolchain only under `/tmp/mesh-task19-fix1-node22` (`npm install --prefix /tmp/mesh-task19-fix1-node22 --no-audit --no-fund node@22`, then the same with `pnpm@11.13.1`). Actual versions: **Node v22.23.4**, **pnpm 11.13.1**. From the clean archive, with that temporary `node_modules/.bin` first on PATH, executed the exact workflow preparation:
+
+```sh
+pnpm --filter '@iii-workers/shell-ui...' --filter '@iii-workers/harness-ui...' --filter '@iii-workers/state-ui...' install --frozen-lockfile
+for directory in ide/ui harness/ui state/ui; do
+  pnpm --dir "$directory" build
+done
+```
+
+Both exited 0. Install selected 5/52 workspace projects, used the existing content-addressed pnpm cache for 173 packages, ran esbuild postinstall successfully, and did not change the root lockfile (byte comparison passed); `/tmp/mesh-task19-fix1-prereq-install.log`. Each build ran `tsc --noEmit && node build.mjs` and reported `lint: 0 errors, 0 warnings (strict: on)`. Generated asset bytes: IDE page.js 773966/styles.css 108613/xterm.js 345444; harness page.js 41866/styles.css 17357; state page.js 23783/styles.css 5515. Running the same three compiled build scripts again with pnpm absent and no bypass now returned **0/0/0**; `/tmp/mesh-task19-fix1-prereq-green.log`. This validates clean source/dependency/bundle prerequisites and the actual build-script acceptance path. It does not claim a new full clean Cargo build or remote GitHub job execution.
+
+### Final scoped verification and self-review
+
+Because the fake-worker helper is shared, reran all 14 actual Mesh integration cases plus the new deadline regression after the focused changes. Real engine and all seven built workers are the same validated local binaries described above. Heavy checks were sequential; no unrelated full Rust/full Go gate was repeated for these test/CI-only changes.
+
+```sh
+PATH=/home/anderson/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/bin:$PATH III_BIN=/home/anderson/.local/bin/iii mesh/tests/e2e/run-tests.sh
+```
+
+Exit **0**, package **115.661s**, `/tmp/mesh-task19-fix1-e2e-full.log`, no skipped cases. Complete top-level results:
+
+```
+TestE2ETemplatesRefused                    PASS  7.44s
+TestE2EMiddlewareNeedsSessionKey           PASS  4.15s
+TestE2ELoopbackWithoutTicket               PASS  4.63s
+TestE2ENodeRegistersMeshIDGetsPrefix        PASS  7.78s
+TestE2ERevocationWithin5s                  PASS  8.19s
+TestE2ESupervisorUnreachable               PASS  7.92s
+TestE2EConditionCallbackRefused            PASS  7.56s
+TestE2ENameSquatting                       PASS 10.38s
+TestE2ETwoNodesSameWorkerName              PASS 10.89s
+TestE2EBootstrapIDEDefaultNamespace        PASS  9.06s
+TestE2EBootstrapIDEProjectNamespace        PASS  9.26s
+TestE2EFsScopeOnRemoteCoder                PASS  9.17s
+TestE2EHooksRefused                        PASS  7.98s
+TestE2ERefusedRegistrationLogged           PASS 11.21s
+TestPolicyRefusalDeadline                  PASS  0.02s
+```
+
+The filesystem direct/pipe/batch subcases and all four deadline subcases passed. Actual policy refusal completed in **1.118041354s**, before its absolute five-second deadline. Default/project bootstrap again recorded the actual configuration RPCs in default and configuration/Console trigger registrations in the worker namespace; their complete observed frames are in this final log. No default grants were broadened. Independent real proxy coverage is the separate 10/10 suite above, while the Mesh case continues to exercise its earlier hook.
+
+Final syntax/format verification, all exit 0:
+
+```sh
+export PATH=/home/anderson/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/bin:$PATH
+export CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=readonly GOTOOLCHAIN=local
+test -z "$(gofmt -l mesh/tests/e2e)"
+go -C mesh vet -tags=e2e ./tests/e2e
+npm --prefix rbac-proxy/tests/e2e/workers/harness run build
+bash -n mesh/tests/e2e/run-tests.sh rbac-proxy/tests/e2e/run-tests.sh
+git diff --check
+```
+
+TypeScript output (`tsc --noEmit`) is in `/tmp/mesh-task19-fix1-proxy-types-final.log`. PyYAML parsed the workflow; each embedded `run` block passed `bash -n -c`, and the frontend-before-worker step-order assertion passed. The existing rbac-proxy E2E workflow already selects `rbac-proxy/**` and invokes the runner, so the new case is also part of that workflow's next run.
+
+Self-review checked all four findings against their covering code and output: caller-controlled identities are gone; deadline completion and typed policy refusal are enforced; the independent proxy test cannot short-circuit through Mesh; and clean assets are built with frozen dependencies before Cargo. No new product behavior or permission grants changed. The previously documented native/live-registry/remote-CI limits and unresolved initial gateway handshake timeout remain; no repair of that intermittent observation is claimed. Expected fake-node status/relay diagnostics remain visible as noted in the review's Minor finding. No push, unrelated-service modification, privileged setup or controller-ledger edit occurred.
+
+Fix commit subject: `test(mesh): close phase gate review gaps`.

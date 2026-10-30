@@ -11,6 +11,10 @@ on:
       - 'state/**'
       - 'queue/**'
       - 'session-manager/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
       - '.github/workflows/mesh-e2e.yml'
   workflow_dispatch:
 
@@ -50,6 +54,20 @@ jobs:
             state
             queue
             session-manager
+      - name: Setup repository pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      - name: Setup Node for embedded frontends
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Build embedded frontends from frozen dependencies
+        run: |
+          pnpm --filter '@iii-workers/shell-ui...' --filter '@iii-workers/harness-ui...' --filter '@iii-workers/state-ui...' install --frozen-lockfile
+          for directory in ide/ui harness/ui state/ui; do
+            pnpm --dir "$directory" build
+          done
       - name: Install current iii engine
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 https://install.iii.dev/iii/main/install.sh | sh
