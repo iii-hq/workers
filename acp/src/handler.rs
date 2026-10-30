@@ -6,13 +6,16 @@ use dashmap::mapref::entry::Entry;
 use dashmap::{DashMap, DashSet};
 use iii_sdk::errors::Error as IiiError;
 use iii_sdk::runtime::FunctionRef;
-use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{
+    CallRequest, Deliver, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::agent_feed::{
-    FeedEvent, Sequencer, final_text_from_brain_result, is_not_found_error, observer_args,
-    parse_feed_payload, readiness_error, resolve_events_functions,
+    FeedEvent, RejectedObserver, Sequencer, final_text_from_brain_result, is_not_found_error,
+    observer_args, observer_rejection_error, parse_feed_payload, readiness_error,
+    resolve_events_functions,
 };
 use crate::session::{
     self, ActivePromptClaim, CloseHistoryResult, HistoryOwnerResult, PromptClaimResult,
@@ -37,6 +40,9 @@ pub const DEFAULT_BRAIN_FN: &str = "run::start_and_wait";
 const BRAIN_TIMEOUT_MS: u64 = 600_000;
 const BRAIN_CANCEL_GRACE_MS: u64 = 60_000;
 const PROMPT_RECOVERY_AFTER_MS: i64 = (BRAIN_TIMEOUT_MS + BRAIN_CANCEL_GRACE_MS) as i64;
+// How long a prompt waits for a session's agent event observers to become
+// active before it runs.
+const OBSERVER_READY_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 struct CancelHandle {
@@ -108,9 +114,11 @@ pub struct AcpHandler {
     // `<namespace>::on-agent-event` functions observed per owned session when
     // an external brain is configured (see agent_feed).
     events_functions: Vec<String>,
-    // One observer per (owned session, events function). Disposed on
-    // session/close and when the handler drops; the engine also drops them
-    // when this connection goes away, and the SDK replays them on reconnect.
+    // One observer per (owned session, events function), in
+    // `events_functions` order. Disposed on session/close and when the
+    // handler drops; the engine also drops them when this connection goes
+    // away, and the SDK replays them on reconnect. A prompt replaces one that
+    // ended in `error` or `disposed` (see session_observer_readiness).
     event_observers: DashMap<String, Vec<ObserverHandle>>,
     event_sink: Arc<EventSink>,
     // The handler function every observer targets. Kept alive for the life
@@ -205,21 +213,83 @@ impl AcpHandler {
             return;
         }
         if let Entry::Vacant(slot) = self.event_observers.entry(session_id.to_string()) {
-            // `observe` returns at once; an observer stays pending until the
-            // agent worker hosts the function, then becomes active.
             let observers = self
                 .events_functions
                 .iter()
-                .map(|function_id| {
-                    self.iii.observe(
-                        Source::function(function_id)
-                            .args(observer_args(session_id))
-                            .deliver(Deliver::Output),
-                        self.event_function_id.as_str(),
-                    )
-                })
+                .map(|function_id| self.observe_events(session_id, function_id))
                 .collect();
             slot.insert(observers);
+        }
+    }
+
+    /// Observe one events function for a session. `observe` returns at once;
+    /// the observer stays pending until the agent worker hosts the function,
+    /// then becomes active once the worker accepts it.
+    fn observe_events(&self, session_id: &str, function_id: &str) -> ObserverHandle {
+        self.iii.observe(
+            Source::function(function_id)
+                .args(observer_args(session_id))
+                .deliver(Deliver::Output),
+            self.event_function_id.as_str(),
+        )
+    }
+
+    /// Readiness of one session's agent event observers. An observer that
+    /// ended in `error` or `disposed` (the agent worker rejected it, e.g.
+    /// with `OBSERVER_LIMIT` while its feed was full) is replaced by a new
+    /// one first. Each observer then gets up to OBSERVER_READY_TIMEOUT to
+    /// become active: a rejection fails the prompt with its code, and one
+    /// still pending is logged and the prompt runs.
+    async fn session_observer_readiness(&self, session_id: &str) -> Result<(), (i32, String)> {
+        let observers: Vec<(String, ObserverHandle)> = {
+            let Some(mut entry) = self.event_observers.get_mut(session_id) else {
+                return Ok(());
+            };
+            for (function_id, observer) in self.events_functions.iter().zip(entry.iter_mut()) {
+                if matches!(
+                    observer.state(),
+                    ObserverState::Error | ObserverState::Disposed
+                ) {
+                    let replaced =
+                        std::mem::replace(observer, self.observe_events(session_id, function_id));
+                    dispose_in_background(replaced);
+                }
+            }
+            self.events_functions
+                .iter()
+                .cloned()
+                .zip(entry.iter().cloned())
+                .collect()
+        };
+        let mut rejected = Vec::new();
+        for (function_id, observer) in observers {
+            match tokio::time::timeout(OBSERVER_READY_TIMEOUT, observer.ready()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let (code, message) = match observer.reason() {
+                        Some(reason) => (reason.code, reason.message),
+                        None => match error {
+                            IiiError::Remote { code, message, .. } => (code, message),
+                            other => ("OBSERVER_ERROR".to_string(), other.to_string()),
+                        },
+                    };
+                    rejected.push(RejectedObserver {
+                        function_id,
+                        code,
+                        message,
+                    });
+                }
+                Err(_) => tracing::warn!(
+                    function_id,
+                    session_id,
+                    state = %observer.state(),
+                    "agent event observer is not active yet; live updates may start late"
+                ),
+            }
+        }
+        match observer_rejection_error(&rejected) {
+            Some(message) => Err((INTERNAL_ERROR, message)),
+            None => Ok(()),
         }
     }
 
@@ -236,8 +306,9 @@ impl AcpHandler {
     }
 
     /// Readiness of the agent event feed for an external brain: the handler
-    /// is registered and every events function has a host.
-    async fn event_feed_readiness(&self) -> Result<(), (i32, String)> {
+    /// is registered, every events function has a host, and the session's
+    /// observers were accepted.
+    async fn event_feed_readiness(&self, session_id: &str) -> Result<(), (i32, String)> {
         let mut missing = Vec::new();
         if self._event_function.is_some() {
             for function_id in &self.events_functions {
@@ -263,14 +334,14 @@ impl AcpHandler {
                 }
             }
         }
-        match readiness_error(
+        if let Some(message) = readiness_error(
             self._event_function.is_some(),
             &self.events_functions,
             &missing,
         ) {
-            Some(message) => Err((INTERNAL_ERROR, message)),
-            None => Ok(()),
+            return Err((INTERNAL_ERROR, message));
         }
+        self.session_observer_readiness(session_id).await
     }
 
     fn history_lock(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -515,7 +586,7 @@ impl AcpHandler {
             ));
         }
         if self.brain_fn.is_some() {
-            self.event_feed_readiness().await?;
+            self.event_feed_readiness(&p.session_id).await?;
         }
 
         let claim_id = Uuid::new_v4().to_string();
@@ -1957,6 +2028,128 @@ fn external_brain_stop_reason(result: &Value, cancellation_accepted: Option<bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The engine named by `III_ENGINE_WS_URL`; `None` skips the test unless
+    /// `III_E2E_REQUIRE` is set.
+    fn engine_url() -> Option<String> {
+        match std::env::var("III_ENGINE_WS_URL") {
+            Ok(url) => Some(url),
+            Err(_) if std::env::var("III_E2E_REQUIRE").is_ok() => {
+                panic!("III_E2E_REQUIRE is set: point III_ENGINE_WS_URL at a running iii engine")
+            }
+            Err(_) => {
+                eprintln!("[skip] III_ENGINE_WS_URL is not set; this test needs an engine");
+                None
+            }
+        }
+    }
+
+    async fn connect(url: &str, name: &str) -> IIIClient {
+        let iii = iii_sdk::register_worker(
+            url,
+            iii_sdk::InitOptions {
+                metadata: Some(iii_sdk::runtime::WorkerMetadata {
+                    name: name.to_string(),
+                    ..Default::default()
+                }),
+                identity: iii_sdk::WorkerIdentityMode::Explicit,
+                ..Default::default()
+            },
+        );
+        iii.wait_until_registered(Duration::from_secs(15))
+            .await
+            .expect("engine reachable");
+        iii
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_rejected_session_observer_fails_the_prompt_until_it_is_accepted() {
+        let Some(url) = engine_url() else {
+            return;
+        };
+        let agent_ns = format!("acpready{}", &Uuid::new_v4().simple().to_string()[..8]);
+        let feed_fn = format!("{agent_ns}::on-agent-event");
+
+        // The agent worker: a private feed with `{ session_id }` args that
+        // rejects observers with OBSERVER_LIMIT while `full` is set.
+        let agent = connect(&url, "acp-readiness-agent").await;
+        let full = Arc::new(AtomicBool::new(true));
+        let gate = full.clone();
+        agent.on_observer_added_for(&feed_fn, move |_obs: iii_sdk::Observer| {
+            let full = gate.load(Ordering::SeqCst);
+            async move {
+                if full {
+                    Err(iii_sdk::ObserveRejection::new(
+                        "OBSERVER_LIMIT",
+                        "observer limit (256) reached",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        });
+        agent.register_function(
+            feed_fn.clone(),
+            RegisterFunction::new(|frame: Value| Ok::<_, IiiError>(frame))
+                .args_format_value(json!({
+                    "type": "object",
+                    "properties": { "session_id": { "type": "string", "minLength": 1 } },
+                    "required": ["session_id"],
+                    "additionalProperties": false,
+                }))
+                .private(),
+        );
+
+        let acp = connect(&url, "acp-readiness").await;
+        let handler = AcpHandler::new(
+            acp.clone(),
+            Arc::new(Outbound::new()),
+            BrainConfig {
+                function_id: Some(format!("{agent_ns}::run")),
+                stop_function_id: None,
+                model: None,
+                provider: None,
+                system_prompt: None,
+                events_functions: Vec::new(),
+            },
+        );
+        assert_eq!(handler.events_functions, vec![feed_fn.clone()]);
+        handler.own_session("s1");
+
+        let (code, message) = handler
+            .event_feed_readiness("s1")
+            .await
+            .expect_err("a rejected observer fails readiness");
+        assert_eq!(code, INTERNAL_ERROR);
+        assert!(
+            message.contains(&format!(
+                "`{feed_fn}` (OBSERVER_LIMIT: observer limit (256) reached)"
+            )),
+            "{message}"
+        );
+        let rejected = handler.event_observers.get("s1").unwrap()[0].clone();
+        assert_eq!(rejected.state(), ObserverState::Error);
+
+        // Once the worker accepts observers, the next prompt observes again.
+        full.store(false, Ordering::SeqCst);
+        handler
+            .event_feed_readiness("s1")
+            .await
+            .expect("the replacement observer is active");
+        let active = handler.event_observers.get("s1").unwrap()[0].clone();
+        assert_ne!(active.id(), rejected.id());
+        assert_eq!(active.state(), ObserverState::Active);
+
+        // A session this connection never owned has no observers to check.
+        handler
+            .event_feed_readiness("unowned")
+            .await
+            .expect("nothing to wait for");
+
+        drop(handler);
+        acp.shutdown_async().await;
+        agent.shutdown_async().await;
+    }
 
     #[tokio::test]
     async fn cancel_before_wait_keeps_a_stored_wakeup() {

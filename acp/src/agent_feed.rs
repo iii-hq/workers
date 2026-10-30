@@ -149,6 +149,33 @@ pub fn readiness_error(
     ))
 }
 
+/// A session observer of a feed function that ended in `error` or
+/// `disposed`: the function and the reason's code and message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedObserver {
+    pub function_id: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// Why a prompt's live updates cannot reach the editor, or `None` when no
+/// session observer was rejected. Each rejection is named with its code
+/// (`OBSERVER_LIMIT`, `INVALID_ARGS`, ...).
+pub fn observer_rejection_error(rejected: &[RejectedObserver]) -> Option<String> {
+    if rejected.is_empty() {
+        return None;
+    }
+    let observers: Vec<String> = rejected
+        .iter()
+        .map(|r| format!("`{}` ({}: {})", r.function_id, r.code, r.message))
+        .collect();
+    Some(format!(
+        "iii-acp: agent event function {} rejected this session's observer; external brain \
+         updates would not reach the editor. The next prompt observes again.",
+        observers.join(", ")
+    ))
+}
+
 /// True when an engine error means "this function does not exist".
 pub fn is_not_found_error(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
@@ -503,6 +530,28 @@ mod tests {
             "remote error (NOT_FOUND): Function 'x::on-agent-event' is not registered."
         ));
         assert!(!is_not_found_error("FORBIDDEN"));
+    }
+
+    #[test]
+    fn a_rejected_observer_is_reported_with_its_code() {
+        assert_eq!(observer_rejection_error(&[]), None);
+        let message = observer_rejection_error(&[RejectedObserver {
+            function_id: "claude::on-agent-event".into(),
+            code: "OBSERVER_LIMIT".into(),
+            message: "claude::on-agent-event: observer limit (256) reached".into(),
+        }])
+        .unwrap();
+        assert!(
+            message.contains(
+                "`claude::on-agent-event` (OBSERVER_LIMIT: claude::on-agent-event: observer \
+                 limit (256) reached)"
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("The next prompt observes again"),
+            "{message}"
+        );
     }
 
     #[test]
