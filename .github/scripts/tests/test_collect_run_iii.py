@@ -1,12 +1,12 @@
 """The engine CLI command collect_worker_interface.py runs for each read."""
+
 from __future__ import annotations
 
 import json
 from types import SimpleNamespace
 
-import pytest
-
 import collect_worker_interface as collector
+import pytest
 
 
 def capture_command(monkeypatch):
