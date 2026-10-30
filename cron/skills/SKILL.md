@@ -67,7 +67,9 @@ Reach for it when:
 
 - You need recurring execution such as cleanup, reports, or maintenance.
 - A schedule should apply only to some fires: filter on the tick, e.g.
-  `{ 'input.scheduled_time': { $gte: '2026-11-01T00:00:00Z' } }`.
+  `{ 'input.scheduled_time': { $gte: '2026-11-01T00:00:00+00:00' } }`.
+  Filters compare strings by code point: write time bounds as the worker
+  emits them, RFC 3339 with `+00:00`.
 - One function should be driven by several schedules; observe once per
   expression and branch on the tick's `expression`.
 

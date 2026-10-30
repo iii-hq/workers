@@ -63,9 +63,10 @@ pub struct CronArgs {
 pub struct CronTick {
     /// The expression that fired, exactly as its observers passed it in args.
     pub expression: String,
-    /// RFC 3339, UTC.
+    /// The fire's scheduled time: RFC 3339 in UTC with a `+00:00` offset,
+    /// whole seconds.
     pub scheduled_time: String,
-    /// RFC 3339, UTC.
+    /// When the worker fired it: RFC 3339 in UTC with a `+00:00` offset.
     pub actual_time: String,
 }
 
