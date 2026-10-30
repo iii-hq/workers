@@ -9,7 +9,10 @@
 //!
 //! The harness emits an event by calling its function with `CallAction::Void`,
 //! after one `is_observed` check; iii delivers it to every observer whose
-//! filters match. None of these functions takes args: consumers select a
+//! filters match. An observer of `harness::on-ready` added after boot gets
+//! the current ready event as a call of the function for that observer alone
+//! (metadata `{ for_observer: <observer id> }`), delivered the same way. None
+//! of these functions takes args: consumers select a
 //! session with filters on `input.session_id`, and a sub-agent's parent with
 //! `input.parent.session_id` or `input.parent_session_id`.
 
@@ -17,7 +20,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{CallAction, CallRequest, IIIClient, ObserveRejection, Observer, RegisterFunction};
+use iii_sdk::{
+    Call, CallAction, CallRequest, IIIClient, Match, ObserveRejection, Observer, RegisterFunction,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -165,10 +170,15 @@ impl TurnEvents {
     pub fn register(iii: &Arc<IIIClient>) -> Self {
         let ready = Arc::new(AtomicBool::new(false));
 
-        // An observer added after boot receives the current ready state
-        // through itself once it is active. Readiness is read after the
-        // observer is active: a ready call made before that missed it, and
-        // one made after reaches it (a second ready event is harmless).
+        // An observer added after boot receives the current ready state once
+        // it is active: a call of `harness::on-ready` with metadata
+        // `{ for_observer: <its id> }`, which the match hook gives to that
+        // observer alone, so iii delivers it with the observer's `deliver`,
+        // filters and policy, in the shape of every ready event. Readiness is
+        // read after the observer is active: a ready call made before that
+        // missed it, and one made after reaches it (a second ready event is
+        // harmless).
+        iii.on_observer_match_for(ON_READY_FN, Match::predicate(for_observer_or_every));
         iii.on_observer_added_for(ON_READY_FN, {
             let iii = iii.clone();
             let ready = ready.clone();
@@ -188,7 +198,8 @@ impl TurnEvents {
             iii,
             ON_READY_FN,
             "The harness completed boot and can accept turns. An observer added later receives \
-             the current ready event when it becomes active.",
+             the current ready event once it is active, delivered like every call of this \
+             function (a call with metadata { for_observer: <observer id> }).",
             schema_value::<ReadyEvent>(),
         );
         register_event(
@@ -406,13 +417,27 @@ fn ready_payload() -> Value {
     })
 }
 
-/// Send the ready event through `obs` once the observer is active, when the
-/// harness is ready by then.
+/// The match hook of a function that sends one observer a call of its own:
+/// a call whose metadata names an observer (`for_observer`) goes to that
+/// observer alone, every other call to every observer.
+fn for_observer_or_every(obs: &Observer, call: &Call) -> bool {
+    call.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("for_observer"))
+        .and_then(Value::as_str)
+        .is_none_or(|id| id == obs.id())
+}
+
+/// Send `obs` the ready event once the observer is active, when the harness
+/// is ready by then: a call of `harness::on-ready` for that observer alone.
+/// A rejected observer gets nothing.
 async fn send_ready(iii: Arc<IIIClient>, ready: Arc<AtomicBool>, obs: Observer) {
     if obs.accepted().await.is_err() || !ready.load(Ordering::SeqCst) {
         return;
     }
-    let request = CallRequest::observer(&obs, ready_payload()).action(CallAction::Void);
+    let request = CallRequest::new(ON_READY_FN, ready_payload())
+        .metadata(serde_json::json!({ "for_observer": obs.id() }))
+        .action(CallAction::Void);
     if let Err(error) = iii.call(request).await {
         tracing::warn!(
             function_id = ON_READY_FN,
