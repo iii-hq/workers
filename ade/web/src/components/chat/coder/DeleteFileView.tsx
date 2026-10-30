@@ -8,6 +8,7 @@
  */
 import { TriangleAlert } from 'lucide-react'
 import { Chip } from '@/components/chat/sandbox/terminal/Terminal'
+import { Hint } from '@/components/ui/Hint'
 import {
   Table,
   TableBody,
@@ -18,11 +19,6 @@ import {
   TableRow,
   TableViewport,
 } from '@/components/ui/Table'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/Tooltip'
 import {
   deleteFileRequestSchema,
   deleteFileResponseSchema,
@@ -108,17 +104,12 @@ export function DeleteFileView({
                       ) : result.success ? (
                         <span className="text-accent">OK</span>
                       ) : result.error ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="inline-flex cursor-help items-center gap-1 text-warn">
-                              <TriangleAlert aria-hidden className="size-4" />
-                              {result.error.code}
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {result.error.message}
-                          </TooltipContent>
-                        </Tooltip>
+                        <Hint label={result.error.message}>
+                          <span className="inline-flex cursor-help items-center gap-1 text-warn">
+                            <TriangleAlert aria-hidden className="size-4" />
+                            {result.error.code}
+                          </span>
+                        </Hint>
                       ) : (
                         <span className="text-warn">Error</span>
                       )}

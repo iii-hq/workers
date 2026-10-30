@@ -31,6 +31,9 @@ export interface WorkspaceTree {
   refresh: () => void
   /** Make sure a folder's children are known; resolves once they are. */
   ensureDir: (dir: string) => Promise<void>
+  /** List a folder ahead of its expansion (the pointer is resting on it),
+      without reporting it as loading. */
+  prefetchDir: (dir: string) => void
   /** Load every folder on the way to `rel` so it can be revealed. */
   ensurePath: (rel: string) => Promise<void>
   /** Apply a watcher burst; folders whose listing is unknown stay unknown. */
@@ -59,14 +62,15 @@ export function useWorkspaceTree(
   }, [])
 
   const fetchDir = useCallback(
-    (dir: string, depth: number): Promise<void> => {
+    (dir: string, depth: number, silent = false): Promise<void> => {
       if (root === null) return Promise.resolve()
       const key = stripDirSlash(dir)
       const existing = inflightRef.current.get(key)
       if (existing) return existing
       const generation = generationRef.current
       const currentRoot = root
-      setLoadingDirs((prev) => new Set(prev).add(key))
+      // A prefetch never shows as "listing…": nobody asked for it yet.
+      if (!silent) setLoadingDirs((prev) => new Set(prev).add(key))
       const promise = coderTree(host, joinPath(currentRoot, key), showHidden, depth)
         .then((out) => {
           if (generationRef.current !== generation) return
@@ -133,6 +137,16 @@ export function useWorkspaceTree(
     [fetchDir],
   )
 
+  const prefetchDir = useCallback(
+    (dir: string) => {
+      const key = stripDirSlash(dir)
+      const current = treeRef.current
+      if (current === null || isDirLoaded(current, key)) return
+      void fetchDir(key, TREE_EXPAND_DEPTH, true)
+    },
+    [fetchDir],
+  )
+
   const ensurePath = useCallback(
     async (rel: string): Promise<void> => {
       for (const dir of ancestorDirs(rel)) {
@@ -162,7 +176,7 @@ export function useWorkspaceTree(
   )
 
   return useMemo(
-    () => ({ tree, refresh, ensureDir, ensurePath, applyChanges, reloadDir, loadingDirs }),
-    [tree, refresh, ensureDir, ensurePath, applyChanges, reloadDir, loadingDirs],
+    () => ({ tree, refresh, ensureDir, prefetchDir, ensurePath, applyChanges, reloadDir, loadingDirs }),
+    [tree, refresh, ensureDir, prefetchDir, ensurePath, applyChanges, reloadDir, loadingDirs],
   )
 }

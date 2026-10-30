@@ -125,7 +125,7 @@ export function FlipMenu<T extends MenuOption>({
   return (
     <div
       ref={menuRef}
-      className="flex w-[300px] max-h-[min(50vh,352px)] flex-col overflow-hidden rounded-md bg-panel-raised shadow-floating"
+      className="flex w-[300px] max-h-[min(50vh,352px)] flex-col overflow-hidden rounded-md bg-panel-raised font-inter text-sm shadow-floating"
     >
       {header ? (
         <Eyebrow as="div" size="lg" className="shrink-0 bg-paper-2 px-3 py-1">
@@ -148,7 +148,7 @@ export function FlipMenu<T extends MenuOption>({
               <div
                 role="presentation"
                 className={cn(
-                  'mx-1 flex items-center gap-1.5 px-2 py-1 font-sans text-[11px] font-medium text-ink-ghost',
+                  'mx-1 flex items-center gap-1.5 px-2 py-1 font-inter text-xs font-medium text-ink-faint',
                   i > 0 && 'mt-1 border-t border-rule-2',
                 )}
               >
@@ -181,7 +181,7 @@ export function FlipMenu<T extends MenuOption>({
         })}
       </div>
       {footer ? (
-        <div className="shrink-0 border-t border-rule-2 px-3 py-1 font-mono text-[11px] text-ink-ghost">
+        <div className="shrink-0 border-t border-rule-2 px-3 py-1 font-mono text-xs text-ink-faint">
           {footer}
         </div>
       ) : null}

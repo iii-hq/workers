@@ -194,7 +194,7 @@ export function AddProviderPanel({
             role="status"
             aria-busy="true"
             aria-label="loading providers"
-            className="divide-y divide-edge overflow-hidden rounded-lg bg-surface ring-1 ring-inset ring-edge"
+            className="divide-y divide-edge overflow-hidden rounded-xl bg-surface ring-1 ring-inset ring-foreground/10"
           >
             {[0, 1, 2, 3].map((row) => (
               <div key={row} className="flex items-center gap-3 px-3 py-3">
@@ -208,7 +208,7 @@ export function AddProviderPanel({
             ))}
           </div>
         ) : registry.error ? (
-          <div className="flex flex-col gap-3 rounded-lg bg-surface px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
+          <div className="flex flex-col gap-3 rounded-xl bg-surface px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
             <span>The workers registry is unreachable right now.</span>
             <div>
               <Button
@@ -222,7 +222,7 @@ export function AddProviderPanel({
             </div>
           </div>
         ) : rows.length === 0 ? (
-          <div className="rounded-lg bg-surface px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
+          <div className="rounded-xl bg-surface px-3 py-4 font-sans text-base text-ink-faint sm:text-sm">
             {everythingInstalled
               ? 'Every provider in the registry is already installed.'
               : 'The registry lists no provider workers.'}
@@ -232,7 +232,7 @@ export function AddProviderPanel({
             // biome-ignore lint/a11y/noRedundantRoles: keep list semantics when CSS resets remove markers.
             role="list"
             aria-label="providers in the workers registry"
-            className="divide-y divide-edge overflow-hidden rounded-lg bg-surface ring-1 ring-inset ring-edge"
+            className="divide-y divide-edge overflow-hidden rounded-xl bg-surface ring-1 ring-inset ring-foreground/10"
           >
             {rows.map(({ worker, present, installed, add, label }) => {
               const adding = add?.kind === 'adding'

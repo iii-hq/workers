@@ -1,3 +1,4 @@
+import type { SplitTarget } from '@/hooks/use-workspace-tabs'
 import type { ScreenPlacement, TabScreen } from '@/lib/workspace-tabs'
 
 export type PendingPanelCommand =
@@ -11,6 +12,9 @@ export type PendingPanelCommand =
       type: 'add'
       tabId: string
       side: 'left' | 'right'
+      /** Split this pane (the new column goes right beside it) instead of
+          growing the tab at its edge. */
+      beside?: SplitTarget
       mobileIndex?: number
     }
 

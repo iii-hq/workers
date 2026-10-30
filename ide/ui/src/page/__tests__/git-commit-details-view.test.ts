@@ -115,7 +115,7 @@ describe('the commit details', () => {
     const get = (seen.menus.at(-1) as GitAction[]).find((action) => action.id === 'get')
     get?.run()
     await vi.waitFor(() => expect(onCommitFiles).toHaveBeenCalledWith('get', details.sha, ['legacy.ts']))
-    expect(seen.confirms.at(-1)?.description).toBe('Uncommitted changes to it are lost.')
+    expect(seen.confirms.at(-1)?.description).toBe('Any uncommitted changes to the file are lost.')
     pane.unmount()
   })
 

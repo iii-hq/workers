@@ -174,3 +174,69 @@ async fn builds_indexes_and_compares_a_real_workspace() {
     assert_eq!((summary.indirect, summary.unchanged), (2, 1));
     assert_eq!(store.list_lines("ws").len(), 2);
 }
+
+/// A workspace reached through a symlink (a linked checkout, macOS `/var`
+/// tempdirs): Vite reports resolved module ids, and the line must still list
+/// each story's imports, workspace-relative, for the watcher to match.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "needs III_STORIES_FIXTURE and III_STORIES_COMPILER_DIR"]
+async fn indexes_the_imports_of_a_workspace_reached_through_a_symlink() {
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
+
+    use iii_stories::builder::{Ctx, build_line};
+    use iii_stories::config::{StoriesConfig, WorkspaceConfig};
+    use iii_stories::events::Subscribers;
+    use iii_stories::lines::LineSpec;
+
+    let (Some(fixture), Some(compiler_dir)) = (
+        env_path("III_STORIES_FIXTURE"),
+        env_path("III_STORIES_COMPILER_DIR"),
+    ) else {
+        eprintln!("skipped: set III_STORIES_FIXTURE and III_STORIES_COMPILER_DIR");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let link = tmp.path().join("link");
+    // A relative target would resolve from the link's own directory.
+    std::os::unix::fs::symlink(std::path::absolute(&fixture).unwrap(), &link).unwrap();
+    let workspace: WorkspaceConfig =
+        serde_json::from_value(serde_json::json!({ "name": "ws", "path": link })).unwrap();
+    let config = StoriesConfig {
+        data_path: tmp.path().join("data").to_string_lossy().into_owned(),
+        workspaces: vec![workspace.clone()],
+        ..StoriesConfig::default()
+    };
+    let iii = Arc::new(iii_sdk::register_worker(
+        "ws://127.0.0.1:9",
+        iii_sdk::InitOptions::default(),
+    ));
+    let (rebuild_tx, _rebuild_rx) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = Arc::new(Ctx {
+        iii: iii.clone(),
+        config: Arc::new(RwLock::new(config)),
+        store: Store::new(tmp.path().join("data")),
+        compiler: Compiler::ensure(compiler_dir).await.expect("compiler"),
+        subscribers: Subscribers::default(),
+        build_lock: tokio::sync::Mutex::new(()),
+        builds: RwLock::new(HashMap::new()),
+        rebuild_tx,
+    });
+    let built = build_line(&ctx, &workspace, &LineSpec::Worktree, "b1").await;
+    iii.shutdown_async().await;
+    let inputs: Vec<_> = built
+        .expect("build")
+        .components
+        .into_iter()
+        .flat_map(|c| c.inputs)
+        .collect();
+    assert!(
+        inputs.iter().any(|i| i.hop == 1),
+        "the stories' imports are missing: {inputs:?}"
+    );
+    assert!(
+        inputs.iter().all(|i| Path::new(&i.path).is_relative()),
+        "inputs must be workspace-relative: {inputs:?}"
+    );
+}

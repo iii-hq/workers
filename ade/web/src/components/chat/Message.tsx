@@ -1,22 +1,44 @@
-import { Bot, MessageSquareQuote, Sparkles } from 'lucide-react'
-import { useContext, useEffect, useRef } from 'react'
+import {
+  Bot,
+  Download,
+  Ellipsis,
+  FileCode,
+  FileIcon,
+  FileText,
+  MessageSquareQuote,
+  Sparkles,
+  Trash2,
+} from 'lucide-react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/shadcn/dropdown-menu'
 import type { TriggerRegistration } from '@/components/trigger-activity/model'
 import { TriggerActivityCard } from '@/components/trigger-activity/TriggerActivityCard'
-import { Caret } from '@/components/ui/Caret'
 import { Chip } from '@/components/ui/Chip'
+import { Hint } from '@/components/ui/Hint'
 import { Prompt } from '@/components/ui/Prompt'
 import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   AskInSideChatContext,
   SideChatQuotesContext,
   splitQuotedMessage,
 } from '@/lib/chat-aside'
-import { FileMessageContext } from '@/lib/file-navigation'
+import { FileMessageContext, useOpenMessageFile } from '@/lib/file-navigation'
 import { Markdown } from '@/lib/markdown'
 import { invocationCommand, parseSlashInvocations } from '@/lib/slash-commands'
 import { JsonHighlight } from '@/lib/syntax'
+import {
+  type ChangedFile,
+  formatReplyClock,
+  formatTurnDuration,
+} from '@/lib/turn-summary'
 import type {
   AssistantMessage as AssistantMessageType,
   Message as MessageType,
@@ -26,11 +48,14 @@ import type {
 } from '@/types/chat'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
 import { AttachmentChip } from './AttachmentChip'
-import { AskInSideChatButton, CopyMessageButton } from './CopyMessageButton'
+import { CopyMessageButton, downloadReply } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
+import { ModelMark } from './ModelMark'
 import { SystemNotice } from './SystemNotice'
 import { ThoughtMessage } from './ThoughtMessage'
+import { useSmoothText } from './use-smooth-text'
 import './streaming-message.css'
+import './conversation-design.css'
 import { Eyebrow, eyebrowClassName } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 
@@ -75,6 +100,22 @@ interface MessageProps {
   /** Session agent profile name shown on assistant message headers. */
   agentName?: string
   /**
+   * Whether an assistant reply opens with the agent / model header. The list
+   * shows it on a turn's first reply (and when the author changes), not on
+   * every segment of one turn. Defaults to true.
+   */
+  showHeader?: boolean
+  /**
+   * The reply appeared while this list was open, streamed or whole (a
+   * mirrored session, a worker that does not stream): write it out at
+   * reading pace instead of dropping it in.
+   */
+  revealOnMount?: boolean
+  /** How long the turn took up to this reply; null when unknown. */
+  turnDurationMs?: number | null
+  /** Files the turn's calls wrote, for the reply footer's chips. */
+  changedFiles?: ChangedFile[]
+  /**
    * The conversation's session id, for chips whose original bytes live in
    * that session's attachment store. Absent on surfaces with no live session
    * (showcase, fixtures), where the chips stay display-only.
@@ -113,6 +154,10 @@ function MessageBody({
   sessionId,
   spawnContext,
   agentName,
+  showHeader,
+  revealOnMount,
+  turnDurationMs,
+  changedFiles,
 }: MessageProps) {
   switch (message.role) {
     case 'user':
@@ -137,6 +182,10 @@ function MessageBody({
           message={message}
           copyText={copyText}
           agentName={agentName}
+          showHeader={showHeader}
+          revealOnMount={revealOnMount}
+          turnDurationMs={turnDurationMs}
+          changedFiles={changedFiles}
         />
       )
     case 'thought':
@@ -426,18 +475,9 @@ function UserMessage({
   const prose = quoted ? quoted.rest : message.content
   return (
     <article
-      className="group flex flex-col items-end gap-2"
+      className="chat-message group flex flex-col items-end gap-2"
       data-message-role="user"
     >
-      <header className="flex items-center gap-2 font-sans text-base font-medium text-ink-faint sm:text-sm">
-        {message.content ? (
-          <CopyMessageButton
-            text={message.content}
-            className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-          />
-        ) : null}
-        <span>You</span>
-      </header>
       {quoted && sideQuotes ? (
         <button
           type="button"
@@ -455,10 +495,22 @@ function UserMessage({
         </button>
       ) : null}
       {prose.trim() ? (
-        <div className="max-w-[92%] break-words rounded-sm bg-surface px-3.5 py-2.5 @2xl:max-w-[80%]">
-          <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
-            {prose}
-          </Markdown>
+        <div className="chat-user-row">
+          <div className="chat-user-bubble-wrap">
+            <div className="chat-user-bubble chat-prose break-words">
+              <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+                {prose}
+              </Markdown>
+            </div>
+            {/* The copy affordance rides the bubble's top-right edge and
+                shows on hover; the bubble's shape already says who spoke. */}
+            <Hint label="Copy message" side="top">
+              <CopyMessageButton
+                text={message.content}
+                className="chat-user-copy"
+              />
+            </Hint>
+          </div>
         </div>
       ) : null}
       {chips.length > 0 ? (
@@ -476,73 +528,274 @@ function AssistantMessage({
   message,
   copyText,
   agentName,
+  showHeader = true,
+  revealOnMount = false,
+  turnDurationMs = null,
+  changedFiles,
 }: {
   message: AssistantMessageType
   copyText?: string | (() => string)
   agentName?: string
+  showHeader?: boolean
+  revealOnMount?: boolean
+  turnDurationMs?: number | null
+  changedFiles?: ChangedFile[]
 }) {
-  const showCaret = !!message.streaming
+  const generating = !!message.streaming
+  // The prose surface mounts only once text arrives, which for a worker
+  // that sends its reply in one piece is the whole reply. Decide here, when
+  // the turn's row first appears, whether this list watched it being
+  // produced (it appeared live, or was still empty and generating); then the
+  // text is written out at reading pace instead of dropped in.
+  const [watched] = useState(revealOnMount || (generating && !message.content))
+  // The footer (copy, timing, changed files) waits for the prose to finish
+  // writing out, so it never lands under a half-written reply.
+  const [revealing, setRevealing] = useState(watched)
   const sideChat = useContext(AskInSideChatContext)
   // A tool-only turn has no prose but still carries a copy payload (its
   // function calls) via copyText; direct renders without a list-provided
   // payload fall back to the prose gate.
   const copySource = copyText ?? (message.content || undefined)
+  const quoted = sideChat?.quotedIds.has(message.id) === true
   return (
     <article
-      className="group flex flex-col gap-2"
+      className="chat-message group flex flex-col gap-2"
       data-message-role="assistant"
+      data-continuation={showHeader ? undefined : ''}
     >
-      <header className="flex flex-wrap items-center gap-2 font-sans text-base text-ink-ghost sm:text-sm">
-        {/* An agent worker names itself on the message; the harness's own
-            turns do not. Fall back to the session's configured profile name,
-            then to the literal "Agent" — a model id is not a name, since two
-            agents can run the same model. */}
-        <span className="font-medium text-ink-faint">
-          {message.agent || agentName || 'Agent'}
-        </span>
-        {/* The message's actions, revealed on hover where there is one. */}
-        {!message.streaming ? (
-          <span className="flex items-center gap-2 opacity-100 sm:order-last sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-            {copySource !== undefined ? (
-              <CopyMessageButton text={copySource} />
-            ) : null}
-            {message.content ? (
-              <AskInSideChatButton
-                text={message.content}
-                messageId={message.id}
-                agent={message.agent || agentName}
-              />
-            ) : null}
-          </span>
-        ) : null}
-        {message.model ? (
-          <span className="text-ink-ghost">· {message.model}</span>
-        ) : null}
-        {message.memory ? <MemoryChip memory={message.memory} /> : null}
-        {sideChat?.quotedIds.has(message.id) ? (
-          <span
-            className="inline-flex items-center gap-1 text-[11px] text-ink-faint"
-            data-quoted-in-side-chat=""
-          >
-            <MessageSquareQuote aria-hidden className="size-4 shrink-0" />
-            In side chat
-          </span>
-        ) : null}
-      </header>
-      <div className="pr-1">
+      {showHeader || message.memory || quoted ? (
+        <header className="chat-agent-header flex flex-wrap items-center font-sans">
+          {showHeader ? (
+            <>
+              {/* The model's mark leads the line so a reader can tell replies
+                from different models apart at a glance. */}
+              <span className="chat-agent-mark" aria-hidden="true">
+                <ModelMark
+                  modelId={message.model ?? null}
+                  modelLabel={message.model ?? null}
+                  providerLabel={message.model ?? 'model'}
+                  className="size-4"
+                />
+              </span>
+              {/* An agent worker names itself on the message; the harness's own
+                turns do not. Fall back to the session's configured profile
+                name, then to the literal "Agent" — a model id is not a name,
+                since two agents can run the same model. */}
+              <span className="chat-agent-name">
+                {message.agent || agentName || 'Agent'}
+              </span>
+              {message.model ? (
+                <span className="chat-agent-model" title={message.model}>
+                  {message.model}
+                </span>
+              ) : null}
+            </>
+          ) : null}
+          {message.memory ? <MemoryChip memory={message.memory} /> : null}
+          {quoted ? (
+            <span
+              className="inline-flex items-center gap-1 text-[11px] text-ink-faint"
+              data-quoted-in-side-chat=""
+            >
+              <MessageSquareQuote aria-hidden className="size-4 shrink-0" />
+              In side chat
+            </span>
+          ) : null}
+        </header>
+      ) : null}
+      <div className="chat-prose min-w-0 pr-1">
         {message.content ? (
           <StreamingMarkdown
             content={message.content}
-            streaming={!!message.streaming}
+            streaming={generating}
+            revealOnMount={watched}
+            onRevealingChange={setRevealing}
           />
         ) : (
-          <div className="font-mono text-[13px] italic thinking-shimmer">
+          <div className="font-sans text-[13px] text-ink-faint thinking-shimmer">
             thinking…
           </div>
         )}
-        {showCaret ? <Caret className="ml-0.5" /> : null}
       </div>
+      {!message.streaming && !(revealing && message.content) ? (
+        <ReplyFooter
+          message={message}
+          copySource={copySource}
+          agentName={agentName}
+          turnDurationMs={turnDurationMs}
+          changedFiles={changedFiles ?? []}
+        />
+      ) : null}
     </article>
+  )
+}
+
+const FILE_CHIP_ICONS: [RegExp, typeof FileIcon][] = [
+  [/\.(pdf|md|txt|docx?)$/i, FileText],
+  [
+    /\.(html?|json|jsx?|tsx?|mjs|cjs|css|ya?ml|toml|sh|py|rs|go|rb|java|kt|swift|sql)$/i,
+    FileCode,
+  ],
+]
+
+/** How many file chips show before the rest fold into "+N more". */
+const VISIBLE_FILE_CHIPS = 2
+
+function ChangedFileChip({
+  file,
+  onOpen,
+}: {
+  file: ChangedFile
+  onOpen?: (path: string) => void
+}) {
+  const Icon =
+    file.kind === 'delete'
+      ? Trash2
+      : (FILE_CHIP_ICONS.find(([pattern]) => pattern.test(file.name))?.[1] ??
+        FileIcon)
+  return (
+    <Hint label={file.path} side="top">
+      <button
+        type="button"
+        className="chat-reply-chip"
+        data-reply-file={file.path}
+        data-kind={file.kind}
+        onClick={() => onOpen?.(file.path)}
+      >
+        <Icon aria-hidden className="size-4 shrink-0 text-ink-faint" />
+        <span className="chat-reply-chip__name">{file.name}</span>
+        {file.additions > 0 ? (
+          <span className="chat-reply-chip__stat" data-sign="plus">
+            +{file.additions}
+          </span>
+        ) : null}
+        {file.deletions > 0 ? (
+          <span className="chat-reply-chip__stat" data-sign="minus">
+            −{file.deletions}
+          </span>
+        ) : null}
+      </button>
+    </Hint>
+  )
+}
+
+/**
+ * The line under a reply: how long the turn took and when it landed, a copy
+ * button, a menu for the rarer actions, and a chip per file the turn wrote
+ * (the first two, then "+N more" with the rest's totals that unfolds). All
+ * of it is always on show; a reader should not have to hunt for the tools.
+ */
+function ReplyFooter({
+  message,
+  copySource,
+  agentName,
+  turnDurationMs,
+  changedFiles,
+}: {
+  message: AssistantMessageType
+  copySource?: string | (() => string)
+  agentName?: string
+  turnDurationMs: number | null
+  changedFiles: ChangedFile[]
+}) {
+  const sideChat = useContext(AskInSideChatContext)
+  const openFile = useOpenMessageFile()
+  const [showAllFiles, setShowAllFiles] = useState(false)
+  const visible = showAllFiles
+    ? changedFiles
+    : changedFiles.slice(0, VISIBLE_FILE_CHIPS)
+  const folded = showAllFiles ? [] : changedFiles.slice(VISIBLE_FILE_CHIPS)
+  const foldedAdditions = folded.reduce((n, f) => n + f.additions, 0)
+  const foldedDeletions = folded.reduce((n, f) => n + f.deletions, 0)
+  const open = openFile ? (path: string) => void openFile({ path }) : undefined
+  return (
+    <footer className="chat-reply-footer" data-reply-footer="">
+      <span className="chat-reply-meta" data-reply-meta="">
+        {turnDurationMs !== null ? (
+          <>
+            <Hint label="Time from your message to this reply" side="top">
+              <span>{formatTurnDuration(turnDurationMs)}</span>
+            </Hint>
+            <span className="chat-reply-meta__dot" aria-hidden>
+              ·
+            </span>
+          </>
+        ) : null}
+        <Hint label="When the reply landed" side="top">
+          <span>{formatReplyClock(message.createdAt)}</span>
+        </Hint>
+      </span>
+      {copySource !== undefined ? (
+        <Hint label="Copy reply" side="top">
+          <CopyMessageButton text={copySource} label="Copy reply" />
+        </Hint>
+      ) : null}
+      <DropdownMenu>
+        <Hint label="More" side="top">
+          <DropdownMenuTrigger
+            className="chat-message-action relative flex size-12 shrink-0 cursor-pointer items-center justify-center text-ink-ghost hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:size-5"
+            aria-label="More reply actions"
+            data-message-action="more"
+          >
+            <Ellipsis className="size-4 shrink-0" aria-hidden />
+          </DropdownMenuTrigger>
+        </Hint>
+        <DropdownMenuContent
+          align="start"
+          sideOffset={6}
+          className="min-w-52 p-1.5"
+        >
+          {sideChat && message.content ? (
+            <DropdownMenuItem
+              className="gap-2.5 rounded-lg px-2.5 py-2 text-sm"
+              onClick={() =>
+                sideChat.ask({
+                  messageId: message.id,
+                  text: message.content,
+                  agent: message.agent || agentName,
+                })
+              }
+            >
+              <MessageSquareQuote aria-hidden />
+              Ask about this in side chat
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem
+            className="gap-2.5 rounded-lg px-2.5 py-2 text-sm"
+            onClick={() => downloadReply(message)}
+          >
+            <Download aria-hidden />
+            Download as Markdown
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {visible.map((file) => (
+        <ChangedFileChip key={file.path} file={file} onOpen={open} />
+      ))}
+      {folded.length > 0 ? (
+        <Hint label={folded.map((f) => f.path).join('\n')} side="top">
+          <button
+            type="button"
+            className="chat-reply-chip"
+            data-reply-more-files={folded.length}
+            onClick={() => setShowAllFiles(true)}
+          >
+            <FileIcon aria-hidden className="size-4 shrink-0 text-ink-faint" />
+            <span className="chat-reply-chip__name">+{folded.length} more</span>
+            {foldedAdditions > 0 ? (
+              <span className="chat-reply-chip__stat" data-sign="plus">
+                +{foldedAdditions}
+              </span>
+            ) : null}
+            {foldedDeletions > 0 ? (
+              <span className="chat-reply-chip__stat" data-sign="minus">
+                −{foldedDeletions}
+              </span>
+            ) : null}
+          </button>
+        </Hint>
+      ) : null}
+    </footer>
   )
 }
 
@@ -573,15 +826,35 @@ export function shouldAnimateStreamingBlockBurst(
 function StreamingMarkdown({
   content,
   streaming,
+  revealOnMount = false,
+  onRevealingChange,
 }: {
   content: string
   streaming: boolean
+  revealOnMount?: boolean
+  /** Told when the paced prefix starts and stops trailing the content. */
+  onRevealingChange?: (revealing: boolean) => void
 }) {
   const surfaceRef = useRef<HTMLDivElement>(null)
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+  // Tokens arrive in bursts; the reader sees one steady pace instead. A
+  // reply that landed whole is written out the same way.
+  const { text: shown, revealing } = useSmoothText(
+    content,
+    streaming,
+    reducedMotion,
+    revealOnMount,
+  )
+  // Still being written out, whether tokens are arriving or not.
+  const live = streaming || revealing
+
+  useEffect(() => {
+    onRevealingChange?.(revealing)
+  }, [revealing, onRevealingChange])
 
   useEffect(() => {
     const surface = surfaceRef.current
-    if (!streaming || !surface || typeof MutationObserver === 'undefined') {
+    if (!live || !surface || typeof MutationObserver === 'undefined') {
       return
     }
 
@@ -647,7 +920,7 @@ function StreamingMarkdown({
 
     observer.observe(markdownRoot, { childList: true })
     return () => observer.disconnect()
-  }, [streaming])
+  }, [live])
 
   return (
     <div
@@ -658,12 +931,13 @@ function StreamingMarkdown({
           : undefined
       }
       data-assistant-stream-surface=""
+      data-streaming={live || undefined}
     >
       <Markdown
-        streaming={streaming}
+        streaming={live}
         className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base"
       >
-        {content}
+        {shown}
       </Markdown>
     </div>
   )

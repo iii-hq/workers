@@ -97,9 +97,10 @@ const BUDGET_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
 /// Keep a small fixed reserve in addition to the deterministic JSON estimate.
 const PROVIDER_FRAMING_ALLOWANCE_TOKENS: u64 = 64;
 
-/// Assembly headroom reserved when pre-generate hooks are bound: hook
-/// appends land AFTER assembly fits the context, so without a reservation
-/// any append overflows an exactly-full context and fails the turn.
+/// Assembly headroom reserved when dynamic pre-generate hooks are bound and
+/// the turn has not measured their text yet: hook appends land AFTER
+/// assembly fits the context, so without a reservation any append overflows
+/// an exactly-full context and fails the turn.
 const PRE_GENERATE_HOOK_ALLOWANCE_TOKENS: u64 = 256;
 
 /// Extra margin folded into the one-shot re-assembly after a post-assembly
@@ -397,6 +398,7 @@ async fn sync_skills(
             record.skill_ack = Some(crate::types::turn::SkillAck {
                 generation,
                 fingerprint: Some(crate::skills::fingerprint(baseline)),
+                ids: crate::skills::listed_ids(baseline),
             });
         }
     }
@@ -673,6 +675,13 @@ async fn generate_step(
     };
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
+    // Static hook injections join before assembly, so the budget, the
+    // compaction gate and the request count the same prompt (MOT-5569). One
+    // snapshot for the whole step: a binding registering mid-step must not be
+    // skipped at pre_generate as static yet missing from assembly.
+    let pre_generate = deps.hooks.pre_generate.ordered();
+    let assembly_system_prompt =
+        crate::hooks::runner::with_static_prompts(&pre_generate, assembly_system_prompt);
     // Registry-change notice: if a function this session may call changed or
     // left since it last acknowledged them, tell the model its cached
     // contracts may be stale. First sighting stamps silently, and so does a
@@ -769,15 +778,17 @@ async fn generate_step(
     // full context even a tiny hook append overflows the final check
     // (observed live: a ~20-token guidance injection over a 220k-usable
     // request killed a 13-step turn). Two defenses, composable: when
-    // pre-generate hooks are bound, reserve a small allowance up front;
-    // and if the final count still overflows, re-assemble ONCE with the
-    // measured deficit folded into the overhead so assembly makes room —
-    // failing the turn only when even that is not enough.
-    let mut extra_overhead_tokens: u64 = if deps.hooks.pre_generate.is_empty() {
-        0
-    } else {
-        PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
-    };
+    // dynamic pre-generate hooks are bound, reserve the hook text the
+    // previous step measured up front; and if the final count still
+    // overflows, re-assemble ONCE with the measured deficit folded into the
+    // overhead so assembly makes room — failing the turn only when even that
+    // is not enough.
+    let mut extra_overhead_tokens = pre_generate_allowance(
+        pre_generate
+            .iter()
+            .any(|binding| binding.inject_prompt.is_none()),
+        record.pre_generate_hook_tokens,
+    );
     let mut reassembled = false;
     let (
         gen_system_prompt,
@@ -798,6 +809,7 @@ async fn generate_step(
             ContextAssemblyInputs {
                 system_prompt: assembly_system_prompt.clone(),
                 tools: &tools,
+                response_format: response_format.as_ref(),
                 request_overhead_tokens: request_overhead_tokens
                     .saturating_add(extra_overhead_tokens),
             },
@@ -819,6 +831,7 @@ async fn generate_step(
         let (gen_system_prompt, appended, gen_annotations) = match deps
             .hooks
             .run_pre_generate(
+                &pre_generate,
                 &record,
                 payload.step,
                 assembled.system_prompt.clone(),
@@ -945,7 +958,18 @@ async fn generate_step(
                 .map_err(HarnessError::Dependency)?;
             final_count.tokens.saturating_add(request_overhead_tokens)
         };
+        let growth = post_assembly_growth(
+            final_request_tokens,
+            assembled.token_count,
+            extra_overhead_tokens,
+        );
         if final_request_tokens <= assembled.usable {
+            // Only a prompt-only change measures the hook text alone: notices,
+            // hook appends and orphan patches are in the next step's window,
+            // where assembly already counts them.
+            if !hook_appended && patched == 0 {
+                record.pre_generate_hook_tokens = Some(growth);
+            }
             let max_output_tokens = record
                 .options
                 .max_output_tokens
@@ -957,6 +981,7 @@ async fn generate_step(
                 &assembled,
                 final_request_tokens,
                 request_overhead_tokens,
+                growth,
             );
             record.context_snapshot = Some(snapshot);
             break (
@@ -3443,6 +3468,7 @@ async fn assemble_context(
         previous_summary: anchor.summary.clone(),
         lease_key: record.session_id.clone(),
         thinking_level: record.options.thinking_level,
+        response_format: inputs.response_format.cloned(),
         tools: inputs.tools.to_vec(),
         request_overhead_tokens: inputs.request_overhead_tokens,
         // Pruning rewrites results the model already reasoned over; on a
@@ -3662,15 +3688,16 @@ fn is_context_overflow_error(error: &str) -> bool {
 }
 
 /// Fold the assembly the loop already performed into the session's context
-/// snapshot. `final_request_tokens >= assembled.token_count` when hooks or
-/// orphan repair grew the request; the difference is the hook_guidance
-/// category. No counting round trips happen here.
+/// snapshot. `post_assembly_tokens` is what hooks or orphan repair grew the
+/// request by: the hook_guidance category. No counting round trips happen
+/// here.
 fn build_context_snapshot(
     record: &TurnRecord,
     step: u64,
     assembled: &Assembled,
     final_request_tokens: u64,
     request_overhead_tokens: u64,
+    post_assembly_tokens: u64,
 ) -> crate::context_snapshot::ContextSnapshotV1 {
     use crate::context_snapshot::{ContextSnapshotV1, SnapshotCategoriesV1};
     // A context-manager that predates the breakdown response reports nothing,
@@ -3695,7 +3722,7 @@ fn build_context_snapshot(
             tools: b.tools_tokens,
             messages: b.by_role.into(),
             overhead: request_overhead_tokens,
-            hook_guidance: final_request_tokens.saturating_sub(assembled.token_count),
+            hook_guidance: post_assembly_tokens,
         },
         compacted: assembled.summarized,
         summarized_head_tokens: assembled.summarized_head_tokens,
@@ -3885,6 +3912,7 @@ struct Assembled {
 struct ContextAssemblyInputs<'a> {
     system_prompt: Option<String>,
     tools: &'a [AgentFunction],
+    response_format: Option<&'a Value>,
     request_overhead_tokens: u64,
 }
 
@@ -3918,6 +3946,30 @@ fn split_prompt_sections<'a>(final_prompt: &'a str, stable: &'a str) -> Option<(
     }
     let rest = final_prompt.strip_prefix(stable)?.strip_prefix("\n\n")?;
     Some((stable, rest))
+}
+
+/// Assembly headroom for what dynamic pre_generate hooks add after assembly:
+/// the hook text the session last measured (MOT-5569: code-runner's guidance
+/// alone is ~930 tokens), never below the flat reserve, which still absorbs a
+/// hook that added nothing on the measured step and text again on this one.
+fn pre_generate_allowance(dynamic_hooks: bool, measured: Option<u64>) -> u64 {
+    if !dynamic_hooks {
+        return 0;
+    }
+    measured
+        .unwrap_or_default()
+        .max(PRE_GENERATE_HOOK_ALLOWANCE_TOKENS)
+}
+
+/// What the final request grew past the request assembly built.
+/// `assembled_token_count` was fit with the reservation folded in, which is
+/// not part of the request.
+fn post_assembly_growth(
+    final_request_tokens: u64,
+    assembled_token_count: u64,
+    extra_overhead_tokens: u64,
+) -> u64 {
+    final_request_tokens.saturating_sub(assembled_token_count.saturating_sub(extra_overhead_tokens))
 }
 
 /// The reservation fold for the one-shot re-assembly: everything the final
@@ -4709,6 +4761,7 @@ mod tests {
             SkillAck {
                 generation: 2,
                 fingerprint: Some("sha256:b".into()),
+                ids: None,
             },
         )
         .await
@@ -4725,6 +4778,7 @@ mod tests {
             SkillAck {
                 generation: 3,
                 fingerprint: Some("sha256:c".into()),
+                ids: None,
             },
         )
         .await
@@ -4738,7 +4792,8 @@ mod tests {
             ack,
             Some(SkillAck {
                 generation: 3,
-                fingerprint: Some("sha256:c".into())
+                fingerprint: Some("sha256:c".into()),
+                ids: None,
             })
         );
     }
@@ -4755,6 +4810,7 @@ mod tests {
         let mut ack = Some(SkillAck {
             generation: 2,
             fingerprint: Some("sha256:b".into()),
+            ids: None,
         });
 
         let result = super::persist_skill_correction(
@@ -4766,6 +4822,7 @@ mod tests {
             SkillAck {
                 generation: 3,
                 fingerprint: Some("sha256:c".into()),
+                ids: None,
             },
         )
         .await;
@@ -5509,6 +5566,41 @@ mod tests {
             &prompt
         ));
         assert!(!super::final_request_unchanged(false, 0, &None, &prompt));
+    }
+
+    #[test]
+    fn pre_generate_allowance_is_the_previous_steps_measured_hook_text() {
+        // Static injections are already in the assembled prompt: nothing to reserve.
+        assert_eq!(super::pre_generate_allowance(false, Some(928)), 0);
+        // Before the turn measured anything, the flat reserve.
+        assert_eq!(
+            super::pre_generate_allowance(true, None),
+            super::PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
+        );
+        // code-runner's guidance (928 DeepSeek tokens) is reserved whole, not 256 of it.
+        assert_eq!(super::pre_generate_allowance(true, Some(928)), 928);
+        // A step whose hooks added nothing (disabled, failed open) keeps the
+        // flat floor for the step where they add text again.
+        assert_eq!(
+            super::pre_generate_allowance(true, Some(0)),
+            super::PRE_GENERATE_HOOK_ALLOWANCE_TOKENS
+        );
+    }
+
+    #[test]
+    fn post_assembly_growth_is_measured_from_the_unreserved_count() {
+        // MOT-5569: assembly counted 92_688 with the 256 reserve, the hook added 928.
+        let assembled = 92_688;
+        let final_request = assembled - 256 + 928;
+        assert_eq!(
+            super::post_assembly_growth(final_request, assembled, 256),
+            928
+        );
+        // An unchanged request's final count drops the unused reserve: no growth.
+        assert_eq!(
+            super::post_assembly_growth(assembled - 256, assembled, 256),
+            0
+        );
     }
 
     #[test]

@@ -125,25 +125,31 @@ afterEach(() => {
 })
 
 describe('compact activity presentation', () => {
-  it('keeps a function marker visible and moves the disclosure chevron outside', () => {
+  it('reads marker, title, status, then the disclosure chevron', () => {
     const out = collapsedHtml({ description: 'Updating project files' })
 
     expect(out).toContain('data-timeline-activity-kind="function"')
     expect(out).toContain('>ƒ</div>')
-    expect(out).toContain('lucide-chevron-right')
+    expect(out).toContain('lucide-chevron-down')
     expect(out).not.toContain('left-full')
-    expect(out).toContain('class="activity-status-icon"')
+    expect(out).toContain('activity-status-icon')
     expect(out).toContain('data-activity-status-layer="running"')
     expect(out).toContain('data-activity-status-layer="done"')
-    expect(out.indexOf('lucide-check')).toBeLessThan(
-      out.indexOf('data-timeline-activity-kind="function"'),
-    )
+    const marker = out.indexOf('data-timeline-activity-kind="function"')
+    const title = out.indexOf('chat-tool-row__title')
+    const status = out.indexOf('activity-status-icon')
+    const chevron = out.indexOf('lucide-chevron-down')
+    expect(marker).toBeLessThan(title)
+    expect(title).toBeLessThan(status)
+    expect(status).toBeLessThan(chevron)
   })
 
-  it('uses the muted foreground token for the agent description', () => {
-    expect(collapsedHtml({ description: 'Updating project files' })).toContain(
-      'text-muted-foreground',
-    )
+  it('shows the settled facts at the trailing edge of the row', () => {
+    const out = collapsedHtml({ description: 'Updating project files' })
+    expect(out).toContain('chat-tool-row__title')
+    expect(out).toContain('Updating project files')
+    expect(out).toContain('chat-tool-row__meta')
+    expect(out).toContain('1 registered · 12ms')
   })
 
   it('shimmers the running description beside a loading indicator', () => {
@@ -154,15 +160,10 @@ describe('compact activity presentation', () => {
       durationMs: undefined,
     })
 
-    expect(out).toContain('text-trigger-running')
     expect(out).toContain('function-trigger-shimmer')
     expect(out).toContain('animate-spin')
-    expect(out).toContain('stroke-trigger-running')
     expect(out).toContain('data-function-status="running"')
-    expect(out).toContain('data-function-status-text="pending"')
-    expect(out).toContain('data-function-status-text="running"')
-    expect(out).toContain('data-function-status-text="error"')
-    expect(out).toContain('data-function-status-text="done"')
+    expect(out).not.toContain('chat-tool-row__meta')
     expect(out).not.toContain('triggering ')
   })
 
@@ -202,7 +203,7 @@ describe('a renderer that declares redactRaw', () => {
     })
     const out = html()
     expect(out).toContain('custom terminal')
-    expect(out).toContain('Raw JSON')
+    expect(out).toContain('Show raw')
     expect(out).not.toContain(SECRET)
     expect(out).toContain(MASKED)
   })
@@ -410,15 +411,13 @@ describe('agent activity and prominent injected content', () => {
     expect(out).toContain('Updating project files')
     expect(out).not.toContain('triggered ')
     expect(out).toContain('data-expanded="false"')
-    expect(out).toContain('bg-transparent')
-    expect(out).not.toContain('fcall-chrome')
+    expect(out).not.toContain('chat-tool-row__body')
   })
 
-  it('restores the raised card surface when the activity is expanded', () => {
+  it('opens the payload under the row when the activity is expanded', () => {
     const out = html({ description: 'Updating project files' })
     expect(out).toContain('data-expanded="true"')
-    expect(out).toContain('fcall-chrome')
-    expect(out).toContain('rounded-md')
+    expect(out).toContain('chat-tool-row__body')
   })
 
   it('reveals the concrete function identity inside the expanded details', () => {

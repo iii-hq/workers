@@ -13,7 +13,10 @@ vi.mock('@/lib/conversations-context', () => ({
 vi.mock('@/hooks/use-container-narrow', () => ({
   useContainerNarrow: () => [() => {}, true],
 }))
-vi.mock('@/hooks/use-media-query', () => ({ useMediaQuery: () => false }))
+vi.mock('@/hooks/use-media-query', () => ({
+  DESKTOP_POINTER_QUERY: '(hover: hover) and (pointer: fine)',
+  useMediaQuery: () => false,
+}))
 vi.mock('@/components/sidebar/ConversationSidebar', () => ({
   ConversationSidebar: () => <div data-sidebar />,
 }))

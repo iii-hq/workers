@@ -1,0 +1,223 @@
+/*
+ * Chrome micro-interactions: the wordmark and the stroke icons in the menu
+ * bar answer the pointer with a small, fully reversible move.
+ *
+ * Two recipes:
+ *
+ * - `.wordmark-live` wraps the inline "iii" mark. Hover lifts the three
+ *   dots in sequence; they settle in reverse order on leave, so the mark
+ *   reads as one object rather than two animations (motion-mirror-the-
+ *   reverse). The base rule holds the reverse delays, the hover rule holds
+ *   the forward delays (transform-reverse-uses-base-rule).
+ *
+ * - `.icon-host` goes on the control (button, pill, radio); `.icon-motion`
+ *   plus one `--<glyph>` modifier goes on the lucide `<svg>` inside it. Each
+ *   glyph has its own gesture keyed to what it draws: a plus turns into a
+ *   cross-hair, a cross spins a quarter turn, the sun's rays wheel, the
+ *   moon tilts, the hamburger's bars slide in a stagger. Pressing any of
+ *   them shrinks the glyph a touch; a radio that becomes checked pops once.
+ *
+ * Every move is a transform (compositor-only) and shares the console's
+ * motion tokens. The hover gestures live under `prefers-reduced-motion:
+ * no-preference`, so a reduced-motion user gets a still glyph rather than
+ * one that snaps to its moved state; state changes that carry meaning (the
+ * open chevron) stay outside the gate and simply snap.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Wordmark                                                            */
+/* ------------------------------------------------------------------ */
+
+.wordmark-live {
+  display: inline-flex;
+  /* The lifted dots travel upward; give them room (motion-no-clipping). */
+  overflow: visible;
+}
+
+.wordmark-live svg {
+  overflow: visible;
+}
+
+.wordmark-live__dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform var(--motion-duration-panel) var(--motion-ease-standard);
+}
+
+/* Reverse order on the way back: the last dot to rise is the first to land.
+   The stagger is keyed on the column group, since each column holds one
+   stem and one dot. */
+.wordmark-live__col:nth-of-type(1) .wordmark-live__dot {
+  transition-delay: 90ms;
+}
+.wordmark-live__col:nth-of-type(2) .wordmark-live__dot {
+  transition-delay: 45ms;
+}
+.wordmark-live__col:nth-of-type(3) .wordmark-live__dot {
+  transition-delay: 0ms;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wordmark-live:is(:hover, :focus-visible) .wordmark-live__dot {
+    transform: translateY(-34%);
+    transition-timing-function: var(--motion-ease-enter);
+  }
+}
+
+.wordmark-live:is(:hover, :focus-visible)
+  .wordmark-live__col:nth-of-type(1)
+  .wordmark-live__dot {
+  transition-delay: 0ms;
+}
+.wordmark-live:is(:hover, :focus-visible)
+  .wordmark-live__col:nth-of-type(2)
+  .wordmark-live__dot {
+  transition-delay: 45ms;
+}
+.wordmark-live:is(:hover, :focus-visible)
+  .wordmark-live__col:nth-of-type(3)
+  .wordmark-live__dot {
+  transition-delay: 90ms;
+}
+
+/* The stems stay planted but lean into the lift: a hair taller from the
+   baseline, so the gap under each dot stays constant as the dot rises. */
+.wordmark-live__stem {
+  transform-box: fill-box;
+  transform-origin: bottom;
+  transition: transform var(--motion-duration-panel) var(--motion-ease-standard);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wordmark-live:is(:hover, :focus-visible) .wordmark-live__stem {
+    transform: scaleY(1.04);
+    transition-timing-function: var(--motion-ease-enter);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Stroke icons                                                        */
+/* ------------------------------------------------------------------ */
+
+.icon-motion {
+  /* The whole-glyph moves (rotate, lift, tilt) pivot on the icon's centre. */
+  transform-origin: center;
+  transition:
+    transform var(--motion-duration-panel) var(--motion-ease-enter),
+    scale var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.icon-motion > * {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform var(--motion-duration-panel) var(--motion-ease-enter);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* A press shrinks whichever glyph is under the pointer, on top of its
+     hover gesture; it springs back with the release. */
+  .icon-host:active .icon-motion {
+    transition-duration: var(--motion-duration-fast);
+    scale: 0.88;
+  }
+
+  /* Plus: a quarter turn, so the glyph lands as the same shape. */
+  .icon-host:is(:hover, :focus-visible) .icon-motion--plus {
+    transform: rotate(90deg);
+  }
+
+  /* Close: the same quarter turn, read as a twist before the cut. */
+  .icon-host:is(:hover, :focus-visible) .icon-motion--x {
+    transform: rotate(90deg);
+  }
+
+  /* Search: the lens tilts toward the handle and grows a touch — a glance. */
+  .icon-host:is(:hover, :focus-visible) .icon-motion--search {
+    transform: scale(1.1) rotate(-10deg);
+  }
+
+  /* Menu: the three bars slide right in a 40ms stagger, the top bar first;
+     they return bottom-first (base rule) so the stack reads as one object. */
+  .icon-motion--menu > path:nth-child(1) {
+    transition-delay: 80ms;
+  }
+  .icon-motion--menu > path:nth-child(2) {
+    transition-delay: 40ms;
+  }
+  .icon-motion--menu > path:nth-child(3) {
+    transition-delay: 0ms;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-motion--menu > path {
+    transform: translateX(2px);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-motion--menu > path:nth-child(1) {
+    transition-delay: 0ms;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-motion--menu > path:nth-child(2) {
+    transition-delay: 40ms;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-motion--menu > path:nth-child(3) {
+    transition-delay: 80ms;
+  }
+
+  /* Compose (square-pen): the pen presses toward the page and tilts to write.
+     lucide draws the square first, then the pen. */
+  .icon-motion--pen > path:last-child {
+    transform-origin: top right;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-motion--pen > path:last-child {
+    transform: translate(-1.25px, 1.25px) rotate(-6deg);
+  }
+
+  /* Sun: the rays wheel. Eight rays sit 45° apart, so a 45° turn lands the
+     glyph exactly on itself and the hover can hold without looking rotated. */
+  .icon-host:is(:hover, :focus-visible) .icon-motion--sun {
+    transform: rotate(45deg);
+  }
+
+  /* Moon: a tilt back, as if it rocks. */
+  .icon-host:is(:hover, :focus-visible) .icon-motion--moon {
+    transform: rotate(-18deg);
+  }
+
+  /* Monitor: a small lift off the desk. */
+  .icon-host:is(:hover, :focus-visible) .icon-motion--monitor {
+    transform: translateY(-1px);
+  }
+
+  /* Chevron: nods on hover; flips while its menu is open. */
+  .icon-host:is(:hover, :focus-visible) .icon-motion--chevron {
+    transform: translateY(1px);
+  }
+
+  /* A radio that the user just checked pops once — the one overshoot the
+     chrome allows, and only on the confirm, never on hover. The host sets
+     `data-pop` after a change, not on mount, so the page doesn't open with
+     a pop. */
+  @keyframes icon-motion-pop {
+    0% {
+      scale: 1;
+    }
+    35% {
+      scale: 0.82;
+    }
+    70% {
+      scale: 1.12;
+    }
+    100% {
+      scale: 1;
+    }
+  }
+
+  .icon-host[data-pop] .icon-motion {
+    animation: icon-motion-pop 320ms var(--motion-ease-standard) both;
+  }
+}
+
+/* The open chevron is state, not flourish: it flips under any motion
+   preference (and snaps there when motion is reduced). Last, so it beats
+   the hover nod while the menu is open. */
+.icon-host:is([aria-expanded="true"], [data-state="open"], [data-popup-open])
+.icon-motion--chevron {
+  transform: rotate(180deg);
+}

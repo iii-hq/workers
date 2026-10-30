@@ -2,9 +2,160 @@
    components; these rules only lay them out and name machine values. The
    add dialog portals out of the page, so rules key on the wk- prefix alone. */
 
+/* ── surface ─────────────────────────────────────────────────────────────
+   The page is set in Inter on a neutral ramp: white and near-white in
+   light, black and near-black in dark. The shared components read the
+   console tokens, so the ramp is remapped here (and shadcn's semantic
+   variables with it, because `--card` and friends are resolved on :root
+   and would not follow the token change on their own). Machine values —
+   paths, versions, pids, the engine URL — stay in Geist Mono at 12–13px. */
+.wk-surface {
+  font-family: var(--font-inter);
+  --color-bg: #fafafa;
+  --color-sidebar: #fafafa;
+  --color-panel: #ffffff;
+  --color-panel-raised: #ffffff;
+  --color-surface: rgba(10, 10, 10, 0.05);
+  --color-surface-hover: rgba(10, 10, 10, 0.08);
+  --color-surface-selected: rgba(10, 10, 10, 0.1);
+  --color-surface-active: rgba(10, 10, 10, 0.1);
+  --color-edge: #e5e5e5;
+  --color-rule-focus: #737373;
+  --background: var(--color-bg);
+  --card: var(--color-panel);
+  --popover: var(--color-panel);
+  --secondary: var(--color-surface);
+  --muted: var(--color-surface);
+  --border: var(--color-edge);
+  --input: var(--color-surface);
+  --ring: var(--color-rule-focus);
+  --shadow-raised: none;
+  --shadow-floating: none;
+  letter-spacing: 0;
+}
+
+[data-theme="dark"] .wk-surface {
+  --color-bg: #000000;
+  --color-sidebar: #000000;
+  --color-panel: #0a0a0a;
+  --color-panel-raised: #000000;
+  --color-paper-2: #141414;
+  --color-surface: rgba(255, 255, 255, 0.06);
+  --color-surface-hover: rgba(255, 255, 255, 0.09);
+  --color-surface-selected: rgba(255, 255, 255, 0.12);
+  --color-surface-active: rgba(255, 255, 255, 0.12);
+  --color-edge: #262626;
+  --color-ink: #fafafa;
+  --color-ink-faint: #a3a3a3;
+  --color-rule-focus: #a3a3a3;
+  --background: var(--color-bg);
+  --card: var(--color-panel);
+  --popover: #141414;
+  --secondary: var(--color-surface);
+  --muted: var(--color-surface);
+  --border: var(--color-edge);
+  --input: var(--color-surface);
+  --ring: var(--color-rule-focus);
+}
+
+/* Press feedback for the page's buttons and pills: 0.96 over 150ms,
+   never while disabled. Hover tints stay on hover-capable pointers only
+   (Tailwind 4's `hover:` already compiles under that query). */
+.wk-press {
+  transition-property: background-color, color, border-color, scale;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wk-press:not(:disabled):active {
+    scale: 0.96;
+  }
+}
+
+/* The shadcn button's default press is a 1px nudge; the scale replaces it. */
+.wk-surface .wk-press:active {
+  translate: none;
+}
+
 .wk-shell {
   min-width: 0;
   min-height: 0;
+}
+
+/* ── header ──────────────────────────────────────────────────────────── */
+
+.wk-surface .wk-header {
+  height: 2.75rem;
+  padding-inline: 0.875rem 0.5rem;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+}
+
+.wk-surface .wk-header h1 {
+  font-family: var(--font-inter);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* The namespace beside the title: a quiet chip in the machine face. */
+.wk-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 1.375rem;
+  padding-inline: 0.5rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 0.5rem;
+  color: var(--color-ink-faint);
+  font-family: var(--font-geist-mono);
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* ── sidebar ─────────────────────────────────────────────────────────── */
+
+.wk-surface .wk-sidebar {
+  background: var(--color-sidebar);
+}
+
+[data-theme="dark"] .wk-surface .wk-sidebar {
+  border-right: 1px solid var(--color-edge);
+}
+
+/* A row's second line. The shared list recipe paints the description in
+   faint ink, which falls under AA on a selected row; the sidebar's own
+   neutral step holds 4.5:1 at rest, hovered and selected. */
+.wk-surface .wk-sidebar .wk-row-detail {
+  color: var(--color-neutral-600);
+}
+
+[data-theme="dark"] .wk-surface .wk-sidebar .wk-row-detail {
+  color: var(--color-neutral-400);
+}
+
+.wk-surface .wk-sidebar .wk-row-detail[data-failed] {
+  color: var(--color-alert-strong);
+}
+
+/* shadcn's Input sets `md:text-sm`; the list face is 13px at any width.
+   When the sidebar is the whole pane (a phone), the box grows to a 48px
+   touch target at 16px so iOS does not zoom into it. */
+.wk-surface .wk-search {
+  height: 2.25rem;
+  font-family: var(--font-inter);
+  font-size: 13px;
+}
+
+.wk-sidebar[data-narrow] .wk-search {
+  height: 48px;
+  font-size: 16px;
+}
+
+.wk-surface .wk-search:focus-visible {
+  border-color: var(--color-rule-focus);
+  box-shadow: 0 0 0 3px
+    color-mix(in oklab, var(--color-rule-focus) 25%, transparent);
 }
 
 .wk-body {
@@ -20,9 +171,15 @@
   min-height: 0;
 }
 
-.wk-mono {
-  font-family: var(--font-mono);
+.wk-mono,
+.wk-machine {
+  font-family: var(--font-geist-mono);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+.wk-machine {
+  font-size: 13px;
 }
 
 .wk-faint,
@@ -32,6 +189,7 @@
 
 .wk-note {
   margin: 0;
+  font-family: var(--font-inter);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -40,54 +198,18 @@
   color: var(--color-alert-strong);
 }
 
-.wk-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 6px;
-  font-size: 11px;
-  color: var(--color-ink-faint);
+/* The live dot pulses in the ok green rather than the accent. */
+.wk-live .pulse-dot {
+  animation-name: wk-pulse-ok;
 }
 
-/* ── sidebar ─────────────────────────────────────────────────────────── */
-
-.wk-side {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  height: 100%;
-  min-height: 0;
-  padding: 8px;
-}
-
-/* The filter stays put; the list scrolls under it. */
-.wk-side > .iii-ui-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  gap: 2px;
-  overflow-y: auto;
-}
-
-/* Two-line rows as dense as the design: name over detail in about 46px. */
-.wk-side .iii-ui-list-group {
-  gap: 2px;
-}
-
-.wk-side .iii-ui-list-item {
-  padding-block: 6px;
-}
-
-.wk-side .iii-ui-list-item__title {
-  line-height: 18px;
-}
-
-.wk-side .iii-ui-list-item__description {
-  line-height: 16px;
-}
-
-.wk-side .iii-ui-list-item[data-selected="true"] .iii-ui-list-item__description,
-.wk-side .iii-ui-list-item [data-badge-variant="default"] {
-  color: var(--color-ink);
+@keyframes wk-pulse-ok {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-ok) 45%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 4px transparent;
+  }
 }
 
 /* ── main column ─────────────────────────────────────────────────────── */
@@ -98,8 +220,10 @@
   gap: 12px;
   min-width: 0;
   min-height: 0;
-  padding: 18px 24px;
+  padding: 20px 24px 28px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--color-panel);
 }
 
 .wk-back {
@@ -125,6 +249,7 @@
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 12px 16px;
+  padding-bottom: 4px;
 }
 
 .wk-identity {
@@ -144,10 +269,12 @@
 
 .wk-title {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: 18px;
+  font-family: var(--font-inter);
+  font-size: 20px;
   font-weight: 600;
+  line-height: 28px;
   letter-spacing: -0.01em;
+  color: var(--color-ink);
   overflow-wrap: anywhere;
 }
 
@@ -157,6 +284,61 @@
   gap: 4px 16px;
   font-size: 12px;
   color: var(--color-ink-faint);
+}
+
+.wk-meta.wk-machine,
+.wk-meta .wk-machine {
+  font-size: 12px;
+}
+
+/* Badges: 24px, rounded-lg, a neutral border, 12px Inter with normal
+   tracking. A status badge tints the border and the text with its colour. */
+.wk-surface [data-slot="badge"] {
+  height: 1.5rem;
+  gap: 0.375rem;
+  padding-inline: 0.625rem;
+  border-radius: 0.5rem;
+  font-family: var(--font-inter);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1;
+  transition: none;
+}
+
+.wk-surface [data-slot="badge"][class~="bg-secondary"] {
+  border-color: var(--color-neutral-200);
+  background: var(--color-neutral-100);
+  color: var(--color-neutral-700);
+}
+
+[data-theme="dark"] .wk-surface [data-slot="badge"][class~="bg-secondary"] {
+  border-color: var(--color-neutral-800);
+  background: var(--color-neutral-900);
+  color: var(--color-neutral-300);
+}
+
+.wk-surface [data-slot="badge"][class~="bg-destructive/10"] {
+  border-color: color-mix(in oklab, var(--color-alert) 30%, transparent);
+  background: var(--color-alert-muted);
+  color: var(--color-alert-strong);
+}
+
+.wk-surface .wk-badge-ok {
+  border-color: color-mix(in oklab, var(--color-ok) 30%, transparent);
+  background: var(--color-ok-muted);
+  color: var(--color-ok);
+}
+
+.wk-surface .wk-badge-warn {
+  border-color: color-mix(in oklab, var(--color-warn) 30%, transparent);
+  background: var(--color-warn-muted);
+  color: var(--color-warn-strong);
+}
+
+.wk-surface [data-slot="badge"].wk-machine {
+  font-family: var(--font-geist-mono);
+  font-size: 12px;
 }
 
 .wk-actions,
@@ -179,6 +361,16 @@
   align-items: center;
   gap: 8px 12px;
   margin: 0;
+  font-family: var(--font-inter);
+  font-size: 13px;
+}
+
+.wk-fact-label {
+  font-family: var(--font-inter);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--color-ink-faint);
 }
 
 .wk-relations dd,
@@ -237,8 +429,9 @@
 }
 
 .wk-facts {
-  grid-template-columns: 96px minmax(0, 1fr);
+  grid-template-columns: 88px minmax(0, 1fr);
   align-items: baseline;
+  gap: 10px 12px;
 }
 
 .wk-facts dd {
@@ -257,6 +450,29 @@
 
 /* ── cards ───────────────────────────────────────────────────────────── */
 
+/* shadcn cards on the page: 12px radius, a 1px neutral border, no shadow
+   and no ring, 20px of padding. The card sits flat on the canvas. */
+.wk-surface .wk-card {
+  --card-spacing: 1.25rem;
+  gap: 1rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 0.75rem;
+  background: var(--color-panel);
+  box-shadow: none;
+}
+
+.wk-surface .wk-card [data-slot="card-header"] {
+  gap: 0.25rem;
+}
+
+.wk-card-title {
+  font-family: var(--font-inter);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  letter-spacing: 0;
+}
+
 .wk-card-header {
   display: flex;
   flex-wrap: wrap;
@@ -270,20 +486,27 @@
 }
 
 .wk-card-note {
+  font-family: var(--font-inter);
   font-size: 12px;
   font-weight: 400;
+  line-height: 16px;
   color: var(--color-ink-faint);
+}
+
+.wk-card-note.wk-machine,
+.wk-card-note .wk-machine {
+  font-size: 12px;
 }
 
 .wk-waves {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .wk-wave {
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
+  grid-template-columns: 176px minmax(0, 1fr);
   align-items: start;
   gap: 12px;
 }
@@ -293,17 +516,63 @@
   align-items: center;
   gap: 10px;
   min-height: 28px;
+  font-family: var(--font-inter);
+  font-size: 13px;
   color: var(--color-ink-faint);
+}
+
+/* The step number: a small rounded tile, so the column reads as a ladder. */
+.wk-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 0.375rem;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The package table: 13px rows, hairline dividers, the head in faint ink. */
+.wk-surface .wk-table {
+  font-family: var(--font-inter);
+}
+
+.wk-surface .wk-table th {
+  height: 2.25rem;
+  padding-inline: 0.75rem;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+}
+
+.wk-surface .wk-table td {
+  height: 2.75rem;
+  padding-inline: 0.75rem;
+  padding-block: 0;
+  font-size: 13px;
+}
+
+.wk-surface .wk-table td.wk-machine {
+  font-size: 13px;
+}
+
+.wk-surface .wk-table tr {
+  border-color: var(--color-edge);
+}
+
+.wk-surface .wk-table tbody tr:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
 }
 
 .wk-columns {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 420px);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 400px);
   align-items: start;
-  gap: 16px 32px;
-}
-
-.wk-columns {
   gap: 16px;
 }
 
@@ -322,6 +591,8 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-edge);
 }
 
 .wk-danger-row .wk-note {
@@ -353,25 +624,34 @@
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 6px;
+  gap: 0.75rem;
   min-height: 0;
 }
 
+.wk-log-tab > [role="toolbar"] {
+  height: auto;
+  padding: 0;
+  gap: 0.5rem;
+  background: transparent;
+}
+
 .wk-log-filter {
-  width: min(16rem, 100%);
+  width: min(18rem, 100%);
 }
 
 .wk-log {
   flex: 1 1 auto;
   min-height: 18rem;
   margin: 0;
-  padding: 10px 12px;
+  padding: 14px 16px;
   overflow: auto;
-  border-radius: var(--radius-md);
+  overscroll-behavior: contain;
+  border: 1px solid var(--color-edge);
+  border-radius: 0.75rem;
   background: var(--color-bg);
-  font-family: var(--font-code);
+  font-family: var(--font-geist-mono);
   font-size: 12px;
-  line-height: 1.7;
+  line-height: 1.75;
   font-variant-ligatures: none;
   white-space: pre;
 }
@@ -400,7 +680,8 @@
   color: var(--color-ink-faint);
 }
 
-.wk-follow[aria-pressed="true"] {
+.wk-surface .wk-follow[aria-pressed="true"] {
+  border-color: var(--color-edge);
   background: var(--color-surface-selected);
   color: var(--color-ink);
 }
@@ -451,9 +732,11 @@
   z-index: 10;
   height: auto;
   min-height: 72px;
-  gap: 12px;
-  padding: 12px;
-  border-radius: var(--radius-md);
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 0.75rem;
+  background: var(--color-panel);
 }
 
 .wk-apply-copy {
@@ -501,8 +784,10 @@
 }
 
 .wk-apply-state {
+  font-family: var(--font-inter);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
+  line-height: 20px;
 }
 
 .wk-validation-jump {
@@ -580,14 +865,16 @@
   width: 100%;
   min-width: 0;
   overflow: auto;
-  border-radius: var(--radius-md);
+  border: 1px solid var(--color-edge);
+  border-radius: 0.75rem;
 }
 
 .wk-field-error {
   margin: 0;
   color: var(--color-alert-strong);
+  font-family: var(--font-inter);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 18px;
   overflow-wrap: anywhere;
 }
 
@@ -635,15 +922,15 @@
 .wk-config-reference-example > pre {
   max-height: 20rem;
   margin: 4px 0 0;
-  padding: 12px;
+  padding: 12px 14px;
   overflow: auto;
-  border: 1px solid var(--color-rule);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--color-edge);
+  border-radius: 0.75rem;
   background: var(--color-bg);
   color: var(--color-ink);
-  font-family: var(--font-mono);
+  font-family: var(--font-geist-mono);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -740,32 +1027,30 @@
   min-height: 5rem;
   margin: 0;
   padding: 0;
-  border: 0;
+  border: 1px solid var(--color-edge);
   overflow: hidden;
-  border-radius: var(--radius-md);
+  border-radius: 0.75rem;
 }
 
 /* ── add dialog ──────────────────────────────────────────────────────── */
 
-.wk-dialog {
-  width: min(600px, calc(100% - 32px));
-}
-
 .wk-dialog-body {
-  margin-top: 16px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 1rem;
   min-height: 0;
   max-height: min(34rem, 60dvh);
+  padding: 0 1.5rem 1.25rem;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .wk-dialog-footer {
-  margin-top: 20px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--color-edge);
 }
 
 .wk-dialog-footer .wk-note {
@@ -778,22 +1063,29 @@
 
 .wk-results {
   max-height: 16rem;
+  padding: 0.25rem;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--color-edge);
+  border-radius: 0.75rem;
 }
 
 .wk-inline-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0.375rem;
 }
 
 .wk-deps {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: baseline;
-  gap: 6px 12px;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
+  gap: 0.5rem 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 0.75rem;
+  font-size: 13px;
+  line-height: 20px;
 }
 
 /* ── loading ─────────────────────────────────────────────────────────── */
@@ -1057,12 +1349,12 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
+  border: 1px solid var(--color-edge);
+  border-radius: 0.75rem;
 }
 
 .wk-picker > :first-child {
-  margin: 6px;
+  margin: 0.5rem;
 }
 
 /* A long worktree list scrolls in place; the search stays on top. */
@@ -1104,8 +1396,11 @@
 
 .wk-mark {
   border-radius: 2px;
-  background: var(--color-accent-muted);
+  background: transparent;
   color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--color-neutral-400);
+  text-underline-offset: 2px;
 }
 
 /* Keep the first editable field within reach while worker context is compact. */
@@ -1148,4 +1443,584 @@
 
 .wk-previous-settings button {
   min-height: 48px;
+}
+
+/* ── components ──────────────────────────────────────────────────────────
+   Every control on the page, the dialogs and the popovers included: Inter
+   at 13px with normal tracking (buttons excepted: they are the shared
+   `rounded-xl` 14px canon), `rounded-lg` for controls and `rounded-xl`
+   for surfaces, a 1px neutral border where a boundary is needed, never a
+   shadow or a ring, and room around the text. The dialog and popover rules
+   carry their own theme selectors because they portal out of the page. */
+
+/* buttons — the shared shadcn Button owns radius, type, padding and the
+   default / secondary / destructive fills; the page only swaps the 1px
+   press nudge for a small scale. */
+.wk-surface [data-slot="button"]:active {
+  translate: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wk-surface [data-slot="button"]:not(:disabled):active {
+    scale: 0.96;
+  }
+}
+
+.wk-surface button[data-icon-button] {
+  border-radius: 0.5rem;
+}
+
+.wk-surface .wk-danger,
+.wk-surface .wk-danger:hover {
+  color: var(--color-alert-strong);
+}
+
+.wk-surface .wk-danger:hover {
+  background: var(--color-alert-muted);
+}
+
+/* inputs and select triggers */
+.wk-surface [data-slot="input"],
+.wk-surface .wk-input,
+.wk-surface .wk-select,
+.wk-surface button[aria-haspopup="listbox"] {
+  height: 2.25rem;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-inter);
+  font-size: 13px;
+  letter-spacing: 0;
+  box-shadow: none;
+  transition:
+    border-color 150ms ease-out,
+    background-color 150ms ease-out,
+    box-shadow 150ms ease-out;
+}
+
+.wk-surface .wk-machine[data-slot="input"],
+.wk-surface .wk-select.wk-machine {
+  font-family: var(--font-geist-mono);
+  font-size: 12.5px;
+}
+
+.wk-surface [data-slot="input"]::placeholder,
+.wk-surface button[aria-haspopup="listbox"] .text-ink-faint {
+  color: var(--color-neutral-400);
+}
+
+.wk-surface [data-slot="input"]:hover,
+.wk-surface button[aria-haspopup="listbox"]:hover {
+  background: var(--color-neutral-50);
+}
+
+.wk-surface [data-slot="input"]:focus-visible,
+.wk-surface button[aria-haspopup="listbox"]:focus-visible,
+.wk-surface button[aria-haspopup="listbox"][aria-expanded="true"] {
+  border-color: var(--color-neutral-400);
+  box-shadow: 0 0 0 3px rgba(10, 10, 10, 0.06);
+  outline: none;
+}
+
+.wk-surface [data-slot="input"][aria-invalid="true"],
+.wk-surface button[aria-haspopup="listbox"][aria-invalid="true"] {
+  border-color: color-mix(in oklab, var(--color-alert) 50%, transparent);
+  background: var(--color-alert-muted);
+}
+
+[data-theme="dark"] .wk-surface [data-slot="input"],
+[data-theme="dark"] .wk-surface .wk-select,
+[data-theme="dark"] .wk-surface button[aria-haspopup="listbox"] {
+  border-color: var(--color-neutral-800);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+[data-theme="dark"] .wk-surface [data-slot="input"]::placeholder,
+[data-theme="dark"]
+  .wk-surface
+  button[aria-haspopup="listbox"]
+  .text-ink-faint {
+  color: var(--color-neutral-500);
+}
+
+[data-theme="dark"] .wk-surface [data-slot="input"]:hover,
+[data-theme="dark"] .wk-surface button[aria-haspopup="listbox"]:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+[data-theme="dark"] .wk-surface [data-slot="input"]:focus-visible,
+[data-theme="dark"] .wk-surface button[aria-haspopup="listbox"]:focus-visible,
+[data-theme="dark"]
+  .wk-surface
+  button[aria-haspopup="listbox"][aria-expanded="true"] {
+  border-color: var(--color-neutral-500);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.07);
+}
+
+.wk-surface button[aria-haspopup="listbox"] > span {
+  font-family: var(--font-inter);
+  font-size: 13px;
+}
+
+.wk-surface .wk-version button[aria-haspopup="listbox"] > span {
+  font-family: var(--font-geist-mono);
+  font-size: 12.5px;
+}
+
+/* tabs */
+.wk-surface .wk-tablist {
+  width: 100%;
+  height: auto;
+  justify-content: flex-start;
+  gap: 1.5rem;
+  padding: 0;
+  border-bottom: 1px solid var(--color-edge);
+  border-radius: 0;
+  background: transparent;
+}
+
+.wk-surface .wk-tablist [data-slot="tabs-trigger"] {
+  flex: 0 0 auto;
+  height: 2.5rem;
+  padding: 0 0.125rem;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-neutral-500);
+  font-family: var(--font-inter);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  box-shadow: none;
+  transition: color 150ms ease-out;
+}
+
+[data-theme="dark"] .wk-surface .wk-tablist [data-slot="tabs-trigger"] {
+  color: var(--color-neutral-400);
+}
+
+.wk-surface .wk-tablist [data-slot="tabs-trigger"]:hover,
+.wk-surface .wk-tablist [data-slot="tabs-trigger"][data-active] {
+  color: var(--color-ink);
+}
+
+.wk-surface .wk-tablist [data-slot="tabs-trigger"]::after {
+  inset-inline: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+}
+
+.wk-surface .wk-tablist [data-slot="tabs-trigger"]:focus-visible {
+  border-radius: 0.375rem;
+  box-shadow: 0 0 0 2px var(--color-rule-focus);
+  outline: none;
+}
+
+/* segmented choices */
+.wk-surface .iii-ui-segmented {
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 0.5rem;
+  background: var(--color-neutral-100);
+  box-shadow: none;
+}
+
+[data-theme="dark"] .wk-surface .iii-ui-segmented {
+  border-color: var(--color-neutral-800);
+  background: var(--color-neutral-900);
+}
+
+.wk-surface .iii-ui-segmented__item {
+  height: 1.875rem;
+  padding: 0 0.75rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--color-neutral-600);
+  font-family: var(--font-inter);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+[data-theme="dark"] .wk-surface .iii-ui-segmented__item {
+  color: var(--color-neutral-400);
+}
+
+.wk-surface .iii-ui-segmented__item:hover {
+  color: var(--color-ink);
+}
+
+.wk-surface .iii-ui-segmented__item[aria-checked="true"],
+.wk-surface .iii-ui-segmented__item[aria-selected="true"],
+.wk-surface .iii-ui-segmented__item[data-selected="true"] {
+  background: var(--color-white);
+  color: var(--color-ink);
+}
+
+[data-theme="dark"] .wk-surface .iii-ui-segmented__item[aria-checked="true"],
+[data-theme="dark"] .wk-surface .iii-ui-segmented__item[aria-selected="true"],
+[data-theme="dark"] .wk-surface .iii-ui-segmented__item[data-selected="true"] {
+  background: var(--color-neutral-800);
+}
+
+/* settings sections, lists and rows */
+.wk-surface .iii-ui-settings-section {
+  gap: 0.875rem;
+}
+
+.wk-surface .iii-ui-settings-section__title {
+  font-family: var(--font-inter);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 22px;
+}
+
+.wk-surface .iii-ui-settings-section__description {
+  margin-top: 0.25rem;
+  max-width: 64ch;
+  color: var(--color-ink-faint);
+  font-family: var(--font-inter);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.wk-surface .iii-ui-settings-list {
+  border: 1px solid var(--color-edge);
+  border-radius: 0.75rem;
+  background: var(--color-panel);
+  box-shadow: none;
+}
+
+.wk-surface .iii-ui-settings-row + .iii-ui-settings-row {
+  border-top: 1px solid var(--color-edge);
+}
+
+.wk-surface .iii-ui-settings-row__inner {
+  min-height: 3.5rem;
+  gap: 1rem;
+  padding: 0.875rem 1.125rem;
+}
+
+.wk-surface .iii-ui-settings-row__label {
+  font-family: var(--font-inter);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 20px;
+}
+
+.wk-surface .iii-ui-settings-row__description,
+.wk-surface .iii-ui-settings-row__meta,
+.wk-surface .iii-ui-settings-row__control {
+  margin-top: 0.125rem;
+  color: var(--color-ink-faint);
+  font-family: var(--font-inter);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.wk-surface .iii-ui-settings-row__control {
+  margin-top: 0;
+}
+
+/* lists: the add dialog's results and the checkout picker */
+.wk-surface .iii-ui-list {
+  gap: 2px;
+}
+
+.wk-surface .iii-ui-list-item {
+  min-height: 2.5rem;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  font-family: var(--font-inter);
+}
+
+.wk-surface .iii-ui-list-item__title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.wk-surface .iii-ui-list-item__description {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.wk-surface .iii-ui-list-item:not([aria-disabled="true"]):not(:disabled):hover,
+.wk-surface .iii-ui-list-item[data-highlighted="true"] {
+  background: var(--color-neutral-100);
+}
+
+[data-theme="dark"]
+  .wk-surface
+  .iii-ui-list-item:not([aria-disabled="true"]):not(:disabled):hover,
+[data-theme="dark"] .wk-surface .iii-ui-list-item[data-highlighted="true"] {
+  background: var(--color-neutral-900);
+}
+
+.wk-surface .iii-ui-list-item[data-selected="true"],
+.wk-surface .iii-ui-list-item[aria-selected="true"] {
+  border-color: transparent;
+  background: var(--color-neutral-100);
+  box-shadow: none;
+}
+
+.wk-surface .iii-ui-list-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-rule-focus);
+}
+
+[data-theme="dark"] .wk-surface .iii-ui-list-item[data-selected="true"],
+[data-theme="dark"] .wk-surface .iii-ui-list-item[aria-selected="true"] {
+  background: var(--color-neutral-800);
+}
+
+.wk-surface .iii-ui-list-group__label {
+  font-family: var(--font-inter);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* skeletons */
+.wk-surface .skeleton-pulse {
+  border-radius: 0.5rem;
+}
+
+/* A plain field keeps 12px of inset; a search box leaves room for its
+   magnifier and clear button. */
+.wk-surface [data-slot="input"]:not(.pl-9):not(.wk-search),
+.wk-surface .wk-select,
+.wk-surface button[aria-haspopup="listbox"] {
+  padding-inline: 0.75rem;
+}
+
+.wk-surface .wk-search,
+.wk-surface [data-slot="input"].pl-9 {
+  padding-inline: 2.25rem;
+}
+
+/* the quiet status strip under the log */
+.wk-surface .wk-log-tab > div:last-child {
+  font-family: var(--font-inter);
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+/* disclosures: worker context, previous settings, the configuration
+   reference and the remove section are `details` with a chevron summary */
+.wk-worker-context > summary,
+.wk-previous-settings > summary,
+.wk-config-reference > summary,
+.wk-config-reference-complete > summary,
+.wk-remove > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 2.25rem;
+  padding: 0.375rem 0.75rem 0.375rem 0.625rem;
+  border-radius: 0.5rem;
+  color: var(--color-ink);
+  font-family: var(--font-inter);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  list-style: none;
+  cursor: pointer;
+  transition: background-color 150ms ease-out;
+}
+
+.wk-worker-context > summary::-webkit-details-marker,
+.wk-previous-settings > summary::-webkit-details-marker,
+.wk-config-reference > summary::-webkit-details-marker,
+.wk-config-reference-complete > summary::-webkit-details-marker,
+.wk-remove > summary::-webkit-details-marker {
+  display: none;
+}
+
+.wk-worker-context > summary::before,
+.wk-previous-settings > summary::before,
+.wk-config-reference > summary::before,
+.wk-config-reference-complete > summary::before,
+.wk-remove > summary::before {
+  content: "";
+  width: 0.375rem;
+  height: 0.375rem;
+  margin-inline: 0.25rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  rotate: -45deg;
+  transition: rotate 150ms ease-out;
+}
+
+.wk-worker-context[open] > summary::before,
+.wk-previous-settings[open] > summary::before,
+.wk-config-reference[open] > summary::before,
+.wk-config-reference-complete[open] > summary::before,
+.wk-remove[open] > summary::before {
+  rotate: 45deg;
+}
+
+.wk-worker-context > summary:hover,
+.wk-previous-settings > summary:hover,
+.wk-config-reference > summary:hover,
+.wk-config-reference-complete > summary:hover,
+.wk-remove > summary:hover {
+  background: var(--color-surface-hover);
+}
+
+.wk-remove > summary {
+  color: var(--color-ink-faint);
+}
+
+.wk-remove[open] > summary {
+  margin-bottom: 0.75rem;
+}
+
+.wk-config-reference-body {
+  gap: 0.75rem;
+  padding: 0.75rem 0.75rem 0;
+}
+
+/* the header's ⋯ menu */
+.wk-menu {
+  min-width: 13rem;
+  padding: 0.25rem;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 0.75rem;
+  box-shadow: none;
+  --tw-ring-shadow: 0 0 #0000;
+}
+
+[data-theme="dark"] .wk-menu {
+  border-color: var(--color-neutral-800);
+  background: #0f0f0f;
+}
+
+.wk-menu [data-slot="dropdown-menu-item"] {
+  min-height: 2.25rem;
+  padding-inline: 0.75rem;
+  border-radius: 0.5rem;
+  font-family: var(--font-inter);
+  font-size: 13px;
+}
+
+/* dialogs */
+.wk-dialog-box {
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 0.75rem;
+  background: var(--color-white);
+  box-shadow: none;
+  --tw-ring-shadow: 0 0 #0000;
+  --color-panel: var(--color-white);
+}
+
+[data-theme="dark"] .wk-dialog-box {
+  --color-panel: #0f0f0f;
+  border-color: var(--color-neutral-800);
+  background: #0f0f0f;
+}
+
+.wk-dialog-box [data-slot="dialog-close"] {
+  top: 1rem;
+  right: 1rem;
+  border-radius: 0.5rem;
+}
+
+/* popovers: the version select and the searchable pickers */
+.wk-popover,
+.iii-ui-panel.wk-popover {
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 0.75rem;
+  background: var(--color-white);
+  box-shadow: none;
+  --tw-ring-shadow: 0 0 #0000;
+  --color-panel-raised: var(--color-white);
+  font-family: var(--font-inter);
+}
+
+[data-theme="dark"] .wk-popover,
+[data-theme="dark"] .iii-ui-panel.wk-popover {
+  --color-panel-raised: #0f0f0f;
+  border-color: var(--color-neutral-800);
+  background: #0f0f0f;
+}
+
+.wk-popover [data-slot="select-item"] {
+  min-height: 2.25rem;
+  padding-inline: 0.75rem;
+  border-radius: 0.5rem;
+  font-size: 13px;
+}
+
+.iii-ui-panel.wk-popover .iii-ui-selector-search {
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 0.5rem;
+  background: transparent;
+  font-family: var(--font-inter);
+}
+
+[data-theme="dark"] .iii-ui-panel.wk-popover .iii-ui-selector-search {
+  border-color: var(--color-neutral-800);
+}
+
+.iii-ui-panel.wk-popover .iii-ui-selector-search::placeholder {
+  color: var(--color-neutral-400);
+}
+
+.iii-ui-panel.wk-popover .iii-ui-list-item {
+  min-height: 2.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  font-family: var(--font-inter);
+  box-shadow: none;
+}
+
+.iii-ui-panel.wk-popover .iii-ui-list-item__title {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.iii-ui-panel.wk-popover .iii-ui-list-item__description {
+  font-size: 12px;
+}
+
+.iii-ui-panel.wk-popover .iii-ui-list-item[data-highlighted="true"],
+.iii-ui-panel.wk-popover .iii-ui-list-item[data-selected="true"],
+.iii-ui-panel.wk-popover .iii-ui-list-item[aria-selected="true"] {
+  border-color: transparent;
+  background: var(--color-neutral-100);
+  box-shadow: none;
+}
+
+[data-theme="dark"]
+  .iii-ui-panel.wk-popover
+  .iii-ui-list-item[data-highlighted="true"],
+[data-theme="dark"]
+  .iii-ui-panel.wk-popover
+  .iii-ui-list-item[data-selected="true"],
+[data-theme="dark"]
+  .iii-ui-panel.wk-popover
+  .iii-ui-list-item[aria-selected="true"] {
+  background: var(--color-neutral-800);
+}
+
+/* ── phones: the disclosures grow to 48px touch targets ─────────────── */
+@container (max-width: 560px) {
+  .wk-worker-context > summary,
+  .wk-previous-settings > summary,
+  .wk-config-reference > summary,
+  .wk-config-reference-complete > summary,
+  .wk-remove > summary {
+    min-height: 48px;
+    padding-block: 12px;
+  }
 }

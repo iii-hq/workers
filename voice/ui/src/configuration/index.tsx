@@ -18,6 +18,7 @@ import {
   SettingsList,
   SettingsSection,
   StatusPanel,
+  Switch,
 } from '@iii-dev/console-ui'
 import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useState } from 'react'
@@ -26,7 +27,7 @@ import { ModelDownload } from '../lib/ModelDownload'
 import { PiperVoicePicker } from '../lib/PiperVoicePicker'
 import { modelOptions } from '../lib/models'
 import { useModelProgress } from '../lib/progress'
-import { DEFAULTS, NONE, numberAt, setPath, stringAt } from '../lib/config'
+import { booleanAt, DEFAULTS, NONE, numberAt, setPath, stringAt } from '../lib/config'
 import { routerModelOptions, useRouterSpeechModels } from '../lib/router'
 import type { ModelInfo } from '../lib/types'
 
@@ -108,6 +109,7 @@ export function createVoiceConfigForm(host: Host) {
     }
 
     const sttBackend = stringAt(value, ['stt', 'backend'], DEFAULTS.sttBackend)
+    const cleanupEnabled = booleanAt(value, ['stt', 'cleanup', 'enabled'], DEFAULTS.cleanupEnabled)
     const ttsBackend = stringAt(value, ['tts', 'backend'], DEFAULTS.ttsBackend)
     const finalModel = stringAt(value, ['stt', 'final_model'], DEFAULTS.finalModel)
     const liveModel = stringAt(value, ['stt', 'model'], DEFAULTS.model)
@@ -414,8 +416,81 @@ export function createVoiceConfigForm(host: Host) {
           </SettingsList>
         </SettingsSection>
 
+        <SettingsSection
+          title="Clean-up"
+          description="When a dictation stops, a language model rewrites the transcript into what you meant: grammar, punctuation, misheard words and pronouns fixed, fillers and false starts gone. Your words and meaning stay. The raw text is kept if the model is slow or unavailable."
+        >
+          <SettingsList>
+            <SettingsField
+              label="Clean up dictation"
+              description="Runs through llm-router with the provider keys already in Settings."
+              controlSize="compact"
+              renderControl={(c) => (
+                <Switch
+                  id={c.id}
+                  checked={cleanupEnabled}
+                  onChange={(event) => set(['stt', 'cleanup', 'enabled'], event.target.checked)}
+                />
+              )}
+            />
+            {cleanupEnabled ? (
+              <>
+                <SettingsField
+                  label="Model"
+                  description="provider::model as llm-router lists it. Empty uses the default model of the first configured provider. A small fast model keeps the pause after you stop short."
+                  renderControl={(c) => (
+                    <Input
+                      id={c.id}
+                      placeholder="provider default"
+                      value={stringAt(value, ['stt', 'cleanup', 'model'])}
+                      onChange={(raw) => set(['stt', 'cleanup', 'model'], raw)}
+                    />
+                  )}
+                />
+                <SettingsField
+                  label="Your vocabulary and style"
+                  description="Names, product terms, spellings and preferences the model should know, one per line. Example: “The product is iii, lowercase. I say ‘A D E’ for ADE.”"
+                  renderControl={(c) => (
+                    <Input
+                      id={c.id}
+                      value={stringAt(value, ['stt', 'cleanup', 'instructions'])}
+                      onChange={(raw) => set(['stt', 'cleanup', 'instructions'], raw)}
+                    />
+                  )}
+                />
+                <SettingsField
+                  label="Time limit"
+                  description="Milliseconds the clean-up may take before the raw transcript is used instead."
+                  controlSize="compact"
+                  renderControl={(c) => (
+                    <Input
+                      id={c.id}
+                      type="number"
+                      step="500"
+                      min="1000"
+                      {...numberField(['stt', 'cleanup', 'timeout_ms'], DEFAULTS.cleanupTimeoutMs, true, 1000)}
+                    />
+                  )}
+                />
+              </>
+            ) : null}
+          </SettingsList>
+        </SettingsSection>
+
         <SettingsSection title="Read aloud" description="How replies are spoken when you ask for it.">
           <SettingsList>
+            <SettingsField
+              label="Controls above the composer"
+              description="Show Read aloud, Read selection and Voice chat in every chat's footer. The voice page keeps read-aloud either way."
+              controlSize="compact"
+              renderControl={(c) => (
+                <Switch
+                  id={c.id}
+                  checked={booleanAt(value, ['tts', 'chat_controls'], DEFAULTS.chatControls)}
+                  onChange={(event) => set(['tts', 'chat_controls'], event.target.checked)}
+                />
+              )}
+            />
             <SettingsField
               label="Engine"
               description="All engines return audio to the requesting browser. Local synthesis uses say (macOS) or espeak-ng (Linux) on the worker without playing on the server."

@@ -135,7 +135,7 @@ function render() {
     }
   }
   const dialog = () =>
-    propsWhere(view.result, (p) => p.confirmLabel === 'Delete') as {
+    propsWhere(view.result, (p) => p.confirmLabel === 'Delete file') as {
       open: boolean
       title: string
       onConfirm(): void

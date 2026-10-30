@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
-  MIN_SHAPE_SIZE,
   addAnnotation,
   addShape,
   annotationFileName,
   annotationPinFileName,
   annotationsMarkdown,
   containedImageBox,
+  MIN_SHAPE_SIZE,
   moveAnnotation,
   noteAnnotation,
   removeAnnotation,

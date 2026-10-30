@@ -138,16 +138,40 @@ describe('classifyTurnFailure', () => {
     })
     expect(presentation.category).toBe('auth')
     expect(presentation.owner).toBe('user')
-    expect(presentation.ownerLabel).toBe('Needs your attention')
-    expect(presentation.title).toBe('Provider credentials rejected')
-    expect(presentation.ownership).toContain('openai')
-    expect(presentation.ownership).toContain('not with iii or the console')
+    expect(presentation.ownerLabel).toBe('Action needed')
+    expect(presentation.title).toBe('openai didn’t accept your API key')
+    expect(presentation.ownership).toContain(
+      'API key is wrong, expired or missing',
+    )
+    expect(presentation.ownership).toContain('Nothing is broken in iii')
     // Console steps are more specific than the harness's generic advice here.
     expect(presentation.actions[0]).toContain('openai')
     expect(presentation.actions[0]).toContain('Configure provider')
   })
 
-  it('keeps the harness next actions for transport failures', () => {
+  it('uses the provider name people know when the console passes one', () => {
+    const presentation = classifyTurnFailure(
+      {
+        content: 'The provider temporarily failed while generating a response.',
+        technicalDetails: {
+          code: 'router/provider_transient',
+          class: 'llm.transient',
+          detail:
+            'openai fetch failed: error sending request for url (https://api.openai.com/v1/responses): client error (Connect): dns error: failed to lookup address information: nodename nor servname provided, or not known',
+          provider: 'openai',
+        },
+        nextActions: ['Retry the turn in a moment.'],
+      },
+      { providerName: 'OpenAI' },
+    )
+    // A DNS failure is the user's network, and the copy says so plainly.
+    expect(presentation.title).toBe('Couldn’t reach OpenAI')
+    expect(presentation.ownerLabel).toBe('Temporary')
+    expect(presentation.ownership).toContain('internet connection')
+    expect(presentation.actions[0]).toContain('online')
+  })
+
+  it('explains a dropped stream in plain words', () => {
     const presentation = classifyTurnFailure({
       content: 'The provider disconnected before completing the response.',
       failure: {
@@ -163,11 +187,13 @@ describe('classifyTurnFailure', () => {
     })
     expect(presentation.category).toBe('connection')
     expect(presentation.owner).toBe('environment')
-    expect(presentation.ownerLabel).toBe('Can happen · retry')
-    expect(presentation.title).toBe('Connection to the provider dropped')
+    expect(presentation.ownerLabel).toBe('Temporary')
+    expect(presentation.title).toBe('Lost the connection to zai')
     expect(presentation.ownership).toContain('zai')
     expect(presentation.ownership).toContain('not caused by anything you did')
-    expect(presentation.actions).toEqual(['Retry the turn to continue.'])
+    expect(presentation.actions[0]).toBe(
+      'Try again; anything already written above is kept.',
+    )
   })
 
   it('describes a billing wall as the provider account, not iii', () => {
@@ -184,8 +210,8 @@ describe('classifyTurnFailure', () => {
       ],
     })
     expect(presentation.category).toBe('billing')
-    expect(presentation.title).toBe('Provider credit or quota exhausted')
-    expect(presentation.ownership).toContain('anthropic account')
+    expect(presentation.title).toBe('Your anthropic account is out of credit')
+    expect(presentation.ownership).toContain('no credit left')
     expect(presentation.ownership).toContain('not an iii or ADE failure')
     expect(presentation.actions[0]).toMatch(/Add credit/)
   })
@@ -199,8 +225,8 @@ describe('classifyTurnFailure', () => {
       },
     })
     expect(presentation.owner).toBe('iii')
-    expect(presentation.ownerLabel).toBe('iii error')
-    expect(presentation.title).toBe('iii could not complete the turn')
+    expect(presentation.ownerLabel).toBe('iii issue')
+    expect(presentation.title).toBe('Something went wrong in iii')
   })
 })
 
@@ -223,8 +249,10 @@ describe('model-switch context overflow', () => {
         ],
       })
       expect(presentation.category).toBe('context')
-      expect(presentation.ownerLabel).toBe('Needs your attention')
-      expect(presentation.title).toBe('Conversation too large for this model')
+      expect(presentation.ownerLabel).toBe('Action needed')
+      expect(presentation.title).toBe(
+        'This conversation is too long for the model',
+      )
       expect(presentation.actions.join(' ')).toContain('before switching again')
       expect(presentation.actions.join(' ')).toContain('new conversation')
       expect(presentation.actions).not.toContain('Inspect the failure details.')

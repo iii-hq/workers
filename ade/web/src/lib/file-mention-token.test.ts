@@ -3,6 +3,7 @@ import {
   formatFileMention,
   formatFileMentionInner,
   formatLineRange,
+  mentionDisplayPath,
   normalizeLineRange,
   parseFileMentionInner,
   sameFileMention,
@@ -68,5 +69,17 @@ describe('formatting', () => {
         { path: 'a.ts', range: { from: 1, to: 2 } },
       ),
     ).toBe(false)
+  })
+})
+
+describe('mentionDisplayPath', () => {
+  it('keeps a relative path as written', () => {
+    expect(mentionDisplayPath('src/page/index.tsx')).toBe('src/page/index.tsx')
+  })
+
+  it('keeps the tail of an absolute one, so the file name stays in view', () => {
+    expect(mentionDisplayPath('/Users/me/repo/src/a.ts')).toBe('…/src/a.ts')
+    expect(mentionDisplayPath('/Users/me/repo/src/')).toBe('…/repo/src/')
+    expect(mentionDisplayPath('/etc/hosts')).toBe('/etc/hosts')
   })
 })

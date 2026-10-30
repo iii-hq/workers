@@ -169,7 +169,8 @@ type AssembleRequest = {
     allow_prune?: boolean;         // default true
     max_result_tokens?: number;    // per-call cap override; null = config default (20000), 0 disables the cap pass
     protected_functions?: string[];    // function_ids exempt from the normal prune pass
-    thinking_level?: ThinkingLevel;    // reserve the model's thinking budget for this tier
+    thinking_level?: ThinkingLevel;    // reserve the model's thinking budget for this tier; also sent to the provider count
+    response_format?: unknown;         // the turn's router::chat format, for the provider count
     lease_key?: string;            // compaction mutual-exclusion key (e.g. a session id); default: hash of the message set
     previous_summary?: string;     // persisted summary from a prior compaction (see "The compaction round trip")
   };

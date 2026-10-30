@@ -80,7 +80,7 @@ describe('SegmentedControl', () => {
     expect(html).toContain('data-icon-only="true"')
     expect(html).toContain('aria-label="Skills"')
     expect(html).toContain('aria-label="Agent Profiles"')
-    expect(html).toContain('data-state="closed"')
+    expect(html).toContain('data-slot="tooltip-trigger"')
     expect(html).not.toContain('<span>Skills</span>')
   })
 })

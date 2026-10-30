@@ -163,143 +163,161 @@ const OWNER_BY_CATEGORY: Record<TurnFailureCategory, TurnFailureOwner> = {
 }
 
 const OWNER_LABEL: Record<TurnFailureOwner, string> = {
-  user: 'Needs your attention',
-  environment: 'Can happen · retry',
-  iii: 'iii error',
+  user: 'Action needed',
+  environment: 'Temporary',
+  iii: 'iii issue',
 }
 
-function titleFor(category: TurnFailureCategory, code: string): string {
-  switch (category) {
-    case 'auth':
-      return 'Provider credentials rejected'
-    case 'billing':
-      return 'Provider credit or quota exhausted'
-    case 'configuration':
-      switch (code) {
-        case 'router/unknown_provider':
-          return 'Provider no longer registered'
-        case 'router/no_provider_for_model':
-          return 'No provider serves this model'
-        case 'router/ambiguous_model':
-          return 'Model offered by several providers'
-        case 'router/structured_output_unsupported':
-          return 'Structured output not supported'
-        case 'router/invalid_request':
-          return 'Request rejected as invalid'
-        default:
-          return 'Provider not configured'
-      }
-    case 'context':
-      return 'Conversation too large for this model'
-    case 'rate-limit':
-      return 'Provider is busy right now'
-    case 'connection':
-      switch (code) {
-        case 'router/stream_idle_timeout':
-          return 'Provider stopped responding'
-        case 'router/provider_unavailable':
-          return 'Provider temporarily unavailable'
-        case 'router/stream_setup_failed':
-          return 'Response stream could not start'
-        default:
-          return 'Connection to the provider dropped'
-      }
-    case 'rejected':
-      return 'Provider rejected the request'
-    case 'send':
-      return 'Message could not be sent'
-    case 'internal':
-      return 'iii could not complete the turn'
-    case 'unknown':
-      return 'Response could not be completed'
-  }
+/**
+ * The connection never opened: DNS, refused, no route. On a laptop that is
+ * nearly always the user's network (offline, VPN, captive portal), not the
+ * provider, so the copy points there first.
+ */
+const UNREACHABLE_PATTERN =
+  /dns error|failed to lookup|nodename nor servname|name or service not known|getaddrinfo|enotfound|eai_again|connection refused|econnrefused|network is unreachable|no route to host|client error \(connect\)/i
+
+/** Every sentence below names the provider the way people do: `OpenAI`. */
+interface Copy {
+  title: string
+  ownership: string
+  actions: string[]
 }
 
-function ownershipFor(
+function copyFor(
   category: TurnFailureCategory,
+  code: string,
   provider: string | undefined,
-): string {
-  const api = provider ? `The ${provider} API` : 'The provider'
+  unreachable: boolean,
+): Copy {
+  const name = provider ?? 'The provider'
+  const lower = provider ?? 'the provider'
   switch (category) {
     case 'auth':
-      return `The credentials configured for ${provider ?? 'this provider'} were refused. This is a problem with the API key or account on the provider side, not with iii or the console.`
+      return {
+        title: `${name} didn’t accept your API key`,
+        ownership: `${name} says the API key is wrong, expired or missing. Nothing is broken in iii; the key needs updating.`,
+        actions: [
+          `Update the API key for ${lower} in the model picker (Configure provider).`,
+          'Then try again.',
+        ],
+      }
     case 'billing':
-      return `The ${provider ?? 'provider'} account has run out of credit or quota. This is a billing limit on the provider side, not an iii or ADE failure.`
-    case 'configuration':
-      return 'No provider is set up to serve this request. This is an ADE setup gap on your side, not a provider outage or an iii bug.'
+      return {
+        title: `Your ${provider ?? 'provider'} account is out of credit`,
+        ownership: `${name} stopped the request because the account has no credit left or hit its usage limit. This is a billing limit on the provider’s side, not an iii or ADE failure.`,
+        actions: [
+          `Add credit or raise the usage limit in your ${provider ?? 'provider'} account.`,
+          'Or switch to a model from another provider.',
+        ],
+      }
+    case 'configuration': {
+      const title =
+        code === 'router/unknown_provider'
+          ? `${name} isn’t set up anymore`
+          : code === 'router/no_provider_for_model'
+            ? 'No provider is set up for this model'
+            : code === 'router/ambiguous_model'
+              ? 'More than one provider offers this model'
+              : code === 'router/structured_output_unsupported'
+                ? 'This model can’t return structured output'
+                : code === 'router/invalid_request'
+                  ? `${name} rejected the request as invalid`
+                  : `${name} isn’t set up yet`
+      return {
+        title,
+        ownership:
+          'The model you picked doesn’t have a working provider behind it yet.',
+        actions: [
+          'Open the model picker and finish setting up the provider.',
+          'Then try again.',
+        ],
+      }
+    }
     case 'context':
-      return 'The conversation exceeds the selected model’s available input budget. It could not be reduced enough to send; please choose another model.'
+      return {
+        title: 'This conversation is too long for the model',
+        ownership:
+          'The conversation has grown past what the selected model can read at once, and it couldn’t be shortened enough to send.',
+        actions: [
+          'Send /compact to shorten the conversation.',
+          'If that fails, switch to a model with a larger context window, compact there, then switch back before switching again.',
+          'Or start a new conversation.',
+        ],
+      }
     case 'rate-limit':
-      return `${api} is throttling requests right now. This happens under load and is not caused by you or by iii.`
+      return {
+        title: `${name} is busy right now`,
+        ownership: `${name} is getting too many requests. This usually clears up within a minute and isn’t caused by you.`,
+        actions: [
+          'Wait a minute, then try again.',
+          'Or switch to another model or provider.',
+        ],
+      }
     case 'connection':
-      return `The connection to ${provider ?? 'the provider'} dropped before the response finished. This can happen with provider APIs and networks, and is usually not caused by anything you did.`
+      if (unreachable) {
+        return {
+          title: `Couldn’t reach ${name}`,
+          ownership: `Your computer couldn’t connect to ${lower}. This is usually the internet connection, a VPN or a firewall, not ${lower} itself.`,
+          actions: [
+            'Check that you’re online and any VPN or proxy is working.',
+            'Then try again; anything already written above is kept.',
+          ],
+        }
+      }
+      return {
+        title:
+          code === 'router/stream_idle_timeout'
+            ? `${name} stopped responding`
+            : code === 'router/provider_unavailable'
+              ? `${name} is down right now`
+              : code === 'router/stream_setup_failed'
+                ? `Couldn’t start a reply from ${lower}`
+                : `Lost the connection to ${lower}`,
+        ownership: `The connection to ${lower} broke before the reply finished. It’s usually a short network or provider hiccup, not caused by anything you did.`,
+        actions: [
+          'Try again; anything already written above is kept.',
+          `If it keeps happening, check ${lower}’s status page.`,
+        ],
+      }
     case 'rejected':
-      return `${api} rejected this request. Something in the selected model or its provider settings is not accepted on the provider side.`
+      return {
+        title: `${name} rejected the request`,
+        ownership: `${name} refused this request. The selected model or one of its settings may not be supported there.`,
+        actions: [
+          'Check the model and its provider settings, then try again.',
+          'Technical details has the provider’s exact message.',
+        ],
+      }
     case 'send':
-      return 'The ADE lost contact with iii while sending. This is a connection problem between the ADE and the iii engine, not a problem with your message.'
+      return {
+        title: 'Your message didn’t send',
+        ownership:
+          'The app lost its connection to iii while sending. Nothing is wrong with your message.',
+        actions: [
+          'Make sure iii and the harness worker are running.',
+          'Then send the message again.',
+        ],
+      }
     case 'internal':
-      return 'iii could not run this turn. This looks like a problem inside iii rather than with your provider or your request.'
+      return {
+        title: 'Something went wrong in iii',
+        ownership:
+          'iii hit an error while running this turn. It isn’t caused by your provider or your message.',
+        actions: [
+          'Try again.',
+          'If it happens again, check the harness worker logs.',
+        ],
+      }
     case 'unknown':
-      return 'The turn ended before a response could be completed. The technical details below carry what the provider and iii reported.'
-  }
-}
-
-function defaultActionsFor(
-  category: TurnFailureCategory,
-  provider: string | undefined,
-): string[] {
-  switch (category) {
-    case 'auth':
-      return [
-        `Check the API key or credentials for ${provider ?? 'the provider'} in the model picker (Configure provider).`,
-        'Retry the turn once the credentials are updated.',
-      ]
-    case 'billing':
-      return [
-        `Add credit or raise the usage limit in the ${provider ?? 'provider'} account.`,
-        'Or pick a model from another provider and retry.',
-      ]
-    case 'configuration':
-      return [
-        'Open the model picker and finish the provider setup.',
-        'Retry once the provider is configured.',
-      ]
-    case 'context':
-      return [
-        'Send /compact to summarise the conversation so far.',
-        'If compaction fails, switch back to a model with a larger context window and compact from there before switching again.',
-        'Or shorten the input or start a new conversation.',
-      ]
-    case 'rate-limit':
-      return [
-        'Wait a moment, then retry the turn.',
-        'Or pick another provider or model.',
-      ]
-    case 'connection':
-      return [
-        'Retry the turn; any partial output above is preserved.',
-        'If it keeps happening, check the provider status page and your network.',
-      ]
-    case 'rejected':
-      return [
-        'Review the selected model and its provider settings, then retry.',
-        "The technical details below carry the provider's own message.",
-      ]
-    case 'send':
-      return [
-        'Check that the iii engine and the harness worker are running.',
-        'Retry sending the message.',
-      ]
-    case 'internal':
-      return [
-        'Retry the turn.',
-        'If it happens again, check the harness worker logs; the technical details identify the turn.',
-      ]
-    case 'unknown':
-      return [
-        'Inspect the technical details below.',
-        'Retry after correcting the request or the provider setup.',
-      ]
+      return {
+        title: 'The reply didn’t finish',
+        ownership:
+          'The reply stopped before it was complete. Technical details shows what was reported.',
+        actions: [
+          'Look at Technical details for the cause.',
+          'Fix the request or the provider setup, then try again.',
+        ],
+      }
   }
 }
 
@@ -312,13 +330,21 @@ const PREFER_CONSOLE_ACTIONS = new Set<TurnFailureCategory>([
   'billing',
   'context',
   'send',
+  'rate-limit',
+  'connection',
+  'internal',
+  'unknown',
 ])
 
 export function classifyTurnFailure(
   message: Pick<SystemMessage, 'content' | 'technicalDetails' | 'failure'> & {
     nextActions?: string[]
   },
-  options: { providerHint?: string } = {},
+  options: {
+    providerHint?: string
+    /** How people name the provider (`OpenAI`); defaults to its id. */
+    providerName?: string
+  } = {},
 ): TurnFailurePresentation {
   const details = message.technicalDetails
   const code = details?.code ?? ''
@@ -331,14 +357,17 @@ export function classifyTurnFailure(
     text,
   })
   const owner = OWNER_BY_CATEGORY[category]
-  const provider = details?.provider
+  const provider = options.providerName ?? details?.provider
+  const copy = copyFor(category, code, provider, UNREACHABLE_PATTERN.test(text))
   const harnessActions = message.nextActions?.filter(
     (action) => action.trim().length > 0,
   )
+  // The harness's steps are generic ("Retry the turn in a moment"); ours are
+  // plainer wherever we know the case.
   const actions =
     !PREFER_CONSOLE_ACTIONS.has(category) && harnessActions?.length
       ? harnessActions
-      : defaultActionsFor(category, provider)
+      : copy.actions
   // Provider-declared add-on: only meaningful under a context overflow.
   const providerNote =
     category === 'context'
@@ -348,8 +377,8 @@ export function classifyTurnFailure(
     category,
     owner,
     ownerLabel: OWNER_LABEL[owner],
-    title: titleFor(category, code),
-    ownership: ownershipFor(category, provider),
+    title: copy.title,
+    ownership: copy.ownership,
     actions,
     ...(providerNote ? { providerNote } : {}),
   }

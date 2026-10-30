@@ -50,6 +50,13 @@
             "type": "integer",
             "format": "int64"
           },
+          "favicon": {
+            "description": "The page's icon for a tab strip: a `data:` URL, or the icon's http(s) URL when the page could not hand the bytes over. Absent when the page has none (or has not reported it yet).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "headless": {
             "type": "boolean"
           },

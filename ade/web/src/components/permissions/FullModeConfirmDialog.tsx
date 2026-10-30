@@ -1,3 +1,4 @@
+import { Button } from '@/components/shadcn/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/Dialog'
 import { cn } from '@/lib/utils'
 
@@ -44,20 +45,25 @@ export function FullModeConfirmContent({
         You can revert from the banner at the top of the chat at any time.
       </p>
       <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="lg"
           onClick={onCancel}
-          className="min-h-12 rounded-sm px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:min-h-9 sm:font-mono sm:text-[12px]"
+          className="min-h-12 sm:min-h-9"
         >
           Cancel
-        </button>
-        <button
+        </Button>
+        {/* Full mode drops every safety prompt, so enabling it reads as danger. */}
+        <Button
           type="button"
+          variant="destructive"
+          size="lg"
           onClick={onConfirm}
-          className="min-h-12 rounded-sm bg-ink px-3 font-sans text-base text-bg hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:min-h-9 sm:font-mono sm:text-[12px]"
+          className="min-h-12 sm:min-h-9"
         >
           Enable full
-        </button>
+        </Button>
       </div>
     </div>
   )

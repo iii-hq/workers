@@ -25,6 +25,13 @@ import { describe, expect, it } from 'vitest'
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { SecretKeyField } from '@/components/secrets/SecretKeyField'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/shadcn/popover'
+import { Separator } from '@/components/shadcn/separator'
+import { Toggle } from '@/components/shadcn/toggle'
 import { ActionLine, MetaRow } from '@/components/ui/ActivityMetadata'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
@@ -225,9 +232,13 @@ const conformance: {
   Panel: typeof ConsoleUi.Panel
   PanelBody: typeof ConsoleUi.PanelBody
   PanelHeader: typeof ConsoleUi.PanelHeader
+  Popover: typeof ConsoleUi.Popover
+  PopoverContent: typeof ConsoleUi.PopoverContent
+  PopoverTrigger: typeof ConsoleUi.PopoverTrigger
   RawValueInput: typeof ConsoleUi.RawValueInput
   Select: typeof ConsoleUi.Select
   SegmentedControl: typeof ConsoleUi.SegmentedControl
+  Separator: typeof ConsoleUi.Separator
   Selector: typeof ConsoleUi.Selector
   SettingsDeck: typeof ConsoleUi.SettingsDeck
   SettingsField: typeof ConsoleUi.SettingsField
@@ -254,6 +265,7 @@ const conformance: {
   TabsTrigger: typeof ConsoleUi.TabsTrigger
   TerminalCommandLine: typeof ConsoleUi.TerminalCommandLine
   TerminalStream: typeof ConsoleUi.TerminalStream
+  Toggle: typeof ConsoleUi.Toggle
   Tooltip: typeof ConsoleUi.Tooltip
   TooltipContent: typeof ConsoleUi.TooltipContent
   TooltipTrigger: typeof ConsoleUi.TooltipTrigger
@@ -338,9 +350,13 @@ const conformance: {
   Panel,
   PanelBody,
   PanelHeader,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   RawValueInput,
   Select,
   SegmentedControl,
+  Separator,
   Selector,
   SettingsDeck,
   SettingsField,
@@ -367,6 +383,7 @@ const conformance: {
   TabsTrigger,
   TerminalCommandLine,
   TerminalStream,
+  Toggle,
   Tooltip,
   TooltipContent,
   TooltipTrigger,

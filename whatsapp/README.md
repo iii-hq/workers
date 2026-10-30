@@ -100,6 +100,8 @@ database:
   name: whatsapp                 # Connection in the database worker
   namespace: ''                  # Empty uses the WhatsApp namespace
 data_dir: data/whatsapp-go        # Private session metadata directory
+device_name: ''                   # Name in the phone's Linked devices; empty shows "Other device"
+device_platform: desktop          # Platform type reported with device_name
 max_inbox_messages: 10000         # Retained messages per archive
 max_media_bytes: 16777216         # 16 MiB worker transfer limit
 operation_timeout_secs: 30        # Deadline for subsequent operations
@@ -107,7 +109,7 @@ cloud:
   enabled: false                 # Linked phones need no Meta credentials
 ```
 
-Native keys and both transports' archives persist through the database worker. Give each WhatsApp process a distinct `data_dir` and configuration identity; keep that identity and its namespace stable across upgrades. Limits and timeouts apply live; `database`, `data_dir`, and `max_events` require a restart. Invalid reloads keep the last valid settings; `whatsapp::config-status` reports the outcome and pending restart fields. Changing the database target does not migrate existing data.
+Native keys and both transports' archives persist through the database worker. Give each WhatsApp process a distinct `data_dir` and configuration identity; keep that identity and its namespace stable across upgrades. Limits and timeouts apply live; `database`, `data_dir`, `device_name`, `device_platform`, and `max_events` require a restart. `device_name` and `device_platform` reach WhatsApp only when a device pairs: an already linked device keeps its name and icon until it is unlinked and its QR code is scanned again. Before downgrading to a version without these keys, remove them from the configuration entry, since older versions reject unknown keys. Invalid reloads keep the last valid settings; `whatsapp::config-status` reports the outcome and pending restart fields. Changing the database target does not migrate existing data.
 
 Other fields and defaults are documented in the [configuration schema](https://github.com/iii-hq/workers/blob/main/whatsapp/config.schema.json).
 

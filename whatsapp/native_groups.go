@@ -624,12 +624,12 @@ func registerGroupContacts(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		blocklist, err := cli.GetBlocklist(ctx)
+		blocklist, err := cli.GetBlocklist(ctx, "")
 		if err != nil {
 			return nil, err
 		}
-		result := make([]map[string]any, 0, len(blocklist.JIDs))
-		for _, jid := range blocklist.JIDs {
+		result := make([]map[string]any, 0, len(blocklist.Items))
+		for _, jid := range blocklist.LIDs() {
 			result = append(result, map[string]any{"jid": jid.String(), "timestamp": nil})
 		}
 		return result, nil
@@ -653,11 +653,11 @@ func registerGroupContacts(r *Registry) {
 		if err != nil {
 			return nil, err
 		}
-		blocklist, err := cli.GetBlocklist(ctx)
+		blocklist, err := cli.GetBlocklist(ctx, "")
 		if err != nil {
 			return nil, err
 		}
-		for _, blocked := range blocklist.JIDs {
+		for _, blocked := range blocklist.LIDs() {
 			if blocked.ToNonAD() == jid || (!alternate.IsEmpty() && blocked.ToNonAD() == alternate) {
 				return map[string]any{"blocked": true}, nil
 			}
@@ -680,7 +680,7 @@ func registerGroupContacts(r *Registry) {
 			if err != nil {
 				return nil, err
 			}
-			_, err = cli.UpdateBlocklist(ctx, jid.ToNonAD(), action)
+			_, err = cli.UpdateBlocklist(ctx, jid.ToNonAD(), action, "")
 			return nil, err
 		})
 	}

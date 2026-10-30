@@ -61,17 +61,15 @@ function CliSignIn({ providerId }: { providerId: string }) {
   return (
     <section
       aria-label="Sign-in"
-      className="flex flex-col gap-1.5 rounded-md bg-surface p-3"
+      className="flex flex-col gap-3 rounded-xl bg-surface p-5 font-inter text-[15px] text-ink ring-1 ring-inset ring-edge"
     >
-      <header className="flex items-center justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-2">
+      <header className="flex items-center justify-between gap-3">
+        <span className="flex min-w-0 items-center gap-2.5">
           <SquareTerminal
             className="size-4 shrink-0 text-ink-faint"
             aria-hidden
           />
-          <span className="font-sans text-[13px] font-medium text-ink">
-            Sign-in
-          </span>
+          <span className="text-[15px] font-medium text-ink">Sign-in</span>
         </span>
         {subscription && tool !== undefined ? (
           <Chip tone={tool?.signed_in ? 'success' : 'warning'}>
@@ -79,7 +77,7 @@ function CliSignIn({ providerId }: { providerId: string }) {
           </Chip>
         ) : null}
       </header>
-      <p className="font-sans text-[12px] leading-relaxed text-ink-faint">
+      <p className="text-[15px] leading-relaxed text-ink-faint">
         {subscription
           ? tool?.signed_in
             ? `Uses your ${subscription.title} sign-in on this machine — ${subscription.plan}, no API key.`
@@ -89,7 +87,7 @@ function CliSignIn({ providerId }: { providerId: string }) {
           : 'This provider signs in on its own; there is no API key to set here.'}
       </p>
       {tool?.credentials_path ? (
-        <span className="font-mono text-[11px] text-ink-ghost">
+        <span data-keep-mono className="font-mono text-[13px] text-ink-faint">
           {tool.credentials_path}
         </span>
       ) : null}

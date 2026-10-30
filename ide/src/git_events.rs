@@ -129,7 +129,8 @@ pub(crate) fn discover(dir: &Path) -> Option<Layout> {
             continue;
         };
         let git_dir = if meta.is_dir() {
-            dot
+            // A `.git` symlinked elsewhere: FSEvents reports the target's paths.
+            dot.canonicalize().unwrap_or(dot)
         } else if meta.is_file() {
             let Ok(text) = std::fs::read_to_string(&dot) else {
                 continue;
@@ -229,7 +230,10 @@ fn name_of(path: &Path) -> &str {
 pub(crate) fn classify(path: &Path, watched: &Path, layout: Option<&Layout>) -> Classified {
     let Some(layout) = layout else {
         let dot = watched.join(".git");
-        return if path.starts_with(&dot) {
+        // A `.git` symlinked elsewhere: FSEvents reports the target's paths.
+        return if path.starts_with(&dot)
+            || dot.canonicalize().is_ok_and(|real| path.starts_with(real))
+        {
             Classified::rebuild(REPOSITORY)
         } else {
             Classified::default()
@@ -819,6 +823,33 @@ mod tests {
         assert!(changes.contains(INDEX), "{changes:?}");
     }
 
+    /// A `.git` symlinked to the real git dir: FSEvents reports the target's
+    /// paths, so HEAD, index and ref changes must be matched there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_git_dir_reports_head_index_and_refs() {
+        let (tmp, root) = repo();
+        let real = tmp.path().canonicalize().unwrap().join("real.git");
+        std::fs::rename(root.join(".git"), &real).unwrap();
+        std::os::unix::fs::symlink(&real, root.join(".git")).unwrap();
+        let (watch, mut rx) = open(&root);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        git(&root, &["switch", "-q", "-c", "topic"]);
+        let (changes, _) = fold(&drain(&mut rx, 500).await, &root, watch.layout.as_ref());
+        assert!(changes.contains(HEAD), "{changes:?}");
+        assert!(changes.contains(REFS), "{changes:?}");
+
+        std::fs::write(root.join("b.txt"), "b").unwrap();
+        git(&root, &["add", "b.txt"]);
+        let (changes, _) = fold(&drain(&mut rx, 500).await, &root, watch.layout.as_ref());
+        assert!(changes.contains(INDEX), "{changes:?}");
+
+        // inotify reports the watched form, so name the target everywhere.
+        let event = watch.event(&root, &BTreeSet::from([HEAD]));
+        assert_eq!(event.git_dir, Some(real.to_string_lossy().into_owned()));
+    }
+
     /// A folder in no repository waits for one: `git init` there is a
     /// `repository` change and a rebuild, after which its HEAD is watched.
     #[tokio::test]
@@ -841,6 +872,30 @@ mod tests {
         git(&plain, &["symbolic-ref", "HEAD", "refs/heads/other"]);
         let (changes, _) = fold(&drain(&mut rx, 500).await, &plain, watch.layout.as_ref());
         assert!(changes.contains(HEAD), "{changes:?}");
+    }
+
+    /// A `.git` symlinked to an empty directory before `git init`: FSEvents
+    /// reports the target's paths, and the repository must still be seen.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_repository_made_through_a_symlinked_git_dir_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plain = tmp.path().canonicalize().unwrap().join("plain");
+        let real = tmp.path().canonicalize().unwrap().join("real.git");
+        std::fs::create_dir(&plain).unwrap();
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, plain.join(".git")).unwrap();
+        assert_eq!(
+            classify(&real.join("HEAD"), &plain, None),
+            Classified::rebuild(REPOSITORY)
+        );
+        let (watch, mut rx) = open(&plain);
+        assert!(watch.layout.is_none());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        git(&plain, &["init", "-q"]);
+        let (changes, rebuild) = fold(&drain(&mut rx, 500).await, &plain, None);
+        assert!(changes.contains(REPOSITORY), "{changes:?}");
+        assert!(rebuild);
     }
 
     #[test]

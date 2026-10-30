@@ -17,6 +17,12 @@ vi.mock('@iii-dev/console-ui', () => ({
   Markdown: () => null,
 }))
 
+// The display preferences read an external store the bare hooks do not run.
+vi.mock('../editor-prefs', async (original) => {
+  const actual = await original<typeof import('../editor-prefs')>()
+  return { ...actual, useEditorPrefs: () => [actual.DEFAULT_EDITOR_PREFS, () => {}] }
+})
+
 const reads = vi.hoisted(() => ({ count: 0 }))
 vi.mock('../diff-load', () => ({
   loadRevisionFile: async (_host: unknown, _root: string, path: string, sha: string) => {

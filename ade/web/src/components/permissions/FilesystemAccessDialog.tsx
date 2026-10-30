@@ -7,6 +7,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
+import { Hint } from '@/components/ui/Hint'
 import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
 import { getShellHostRoots } from '@/lib/backend/shell-roots'
 
@@ -138,15 +139,16 @@ export function FilesystemAccessDialog({
                       >
                         {dir}
                       </span>
-                      <button
-                        type="button"
-                        aria-label={`revoke access to ${dir}`}
-                        title="revoke this session's access"
-                        onClick={() => void onRevoke(dir)}
-                        className="shrink-0 p-1 text-ink-ghost opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
-                      >
-                        <X size={16} aria-hidden />
-                      </button>
+                      <Hint label="Revoke this session's access">
+                        <button
+                          type="button"
+                          aria-label={`revoke access to ${dir}`}
+                          onClick={() => void onRevoke(dir)}
+                          className="shrink-0 p-1 text-ink-ghost opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
+                        >
+                          <X size={16} aria-hidden />
+                        </button>
+                      </Hint>
                     </div>
                   ))}
                 </div>

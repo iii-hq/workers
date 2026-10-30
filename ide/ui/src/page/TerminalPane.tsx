@@ -1,13 +1,6 @@
-import {
-  MAX_FONT_SIZE,
-  MIN_FONT_SIZE,
-  readFontSize,
-  stepFontSize,
-  useTerminalFontSize,
-  writeFontSize,
-} from '@iii-workers/terminal-font'
+import { readFontSize, stepFontSize, writeFontSize } from '@iii-workers/terminal-font'
 import { StatusBar, Tooltip } from '@iii-dev/console-ui'
-import { ArrowDown, Minus, Plus, RefreshCw } from 'lucide-react'
+import { ArrowDown, RefreshCw } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import type { TerminalSession } from './terminal-session'
 
@@ -27,42 +20,6 @@ const STATUS_LABEL: Record<string, string> = {
   disconnected: 'Disconnected',
   exited: 'Session ended',
   error: 'Session failed',
-}
-
-/**
- * The type size, shared with every other terminal in the console: the panes
- * beside this one and the agent pages read the same stored value, so one
- * click here moves all of them.
- */
-function FontSizeControl() {
-  const [fontSize, setFontSize] = useTerminalFontSize()
-  const label =
-    `Terminal font size (${MIN_FONT_SIZE}–${MAX_FONT_SIZE} px).` +
-    ' Ctrl or ⌘ + scroll works too.'
-  return (
-    <span className="shui-terminal-font" title={label}>
-      <span className="shui-terminal-font-label">Font</span>
-      <button
-        type="button"
-        className="shui-terminal-action"
-        onClick={() => setFontSize(stepFontSize(fontSize, -1))}
-        disabled={fontSize <= MIN_FONT_SIZE}
-        aria-label="Smaller terminal font"
-      >
-        <Minus aria-hidden />
-      </button>
-      <output aria-label="Terminal font size in pixels">{fontSize}</output>
-      <button
-        type="button"
-        className="shui-terminal-action"
-        onClick={() => setFontSize(stepFontSize(fontSize, 1))}
-        disabled={fontSize >= MAX_FONT_SIZE}
-        aria-label="Larger terminal font"
-      >
-        <Plus aria-hidden />
-      </button>
-    </span>
-  )
 }
 
 export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
@@ -113,12 +70,7 @@ export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
       {docked ? (
         <StatusBar
           className="shui-terminal-pane-bar"
-          end={
-            <>
-              <FontSizeControl />
-              {actions}
-            </>
-          }
+          end={actions}
         >
           <span className="shui-terminal-pane-cwd" title={cwd}>
             {cwd.split('/').filter(Boolean).slice(-1)[0] ?? cwd}
@@ -148,10 +100,7 @@ export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
         aria-label="Interactive zsh terminal"
       />
       {docked ? null : (
-        <div className="shui-terminal-hud">
-          <FontSizeControl />
-          {actions}
-        </div>
+        <div className="shui-terminal-hud">{actions}</div>
       )}
       {!atBottom ? (
         <Tooltip label="Jump to latest output">

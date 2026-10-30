@@ -98,7 +98,9 @@ fn normalize_instructions(instructions: Option<&str>) -> Option<String> {
 }
 
 /// User prompt: the head messages rendered as a `<conversation>` block
-/// (text blocks verbatim, function calls as terse one-liners).
+/// (text and thinking blocks verbatim, function calls as terse one-liners).
+/// Thinking is where an agent notes what it read: dropping it lost every
+/// fact a truncated result no longer showed.
 pub fn render_user_prompt(older: &[AgentMessage]) -> String {
     let mut out = String::from(
         "Summarise the conversation below following the system-prompt structure exactly. \
@@ -111,6 +113,10 @@ pub fn render_user_prompt(older: &[AgentMessage]) -> String {
                 ContentBlock::Text { text } => {
                     out.push_str(text);
                     out.push('\n');
+                }
+                // Signed blocks with omitted display carry no text.
+                ContentBlock::Thinking { text, .. } if !text.trim().is_empty() => {
+                    out.push_str(&format!("[thinking] {text}\n"));
                 }
                 ContentBlock::FunctionCall {
                     function_id,
@@ -140,26 +146,14 @@ fn role_label(message: &AgentMessage) -> &'static str {
 }
 
 /// Copy of `messages` fit for the summariser: images become
-/// `[image stripped]` placeholders everywhere; `function_result` text
-/// blocks are truncated to `max_output_chars`.
-pub fn strip_media(messages: &[AgentMessage], max_output_chars: usize) -> Vec<AgentMessage> {
+/// `[image stripped]` placeholders everywhere. Results are bounded by the
+/// summariser's caller, under the cap the agent saw them with.
+pub fn strip_media(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     messages
         .iter()
         .map(|message| {
-            let truncate = matches!(message, AgentMessage::FunctionResult { .. });
             let mut stripped = message.clone();
-            let content = stripped
-                .content()
-                .iter()
-                .map(|block| {
-                    let block = strip_image(block);
-                    if truncate {
-                        truncate_text(block, max_output_chars)
-                    } else {
-                        block
-                    }
-                })
-                .collect();
+            let content = stripped.content().iter().map(strip_image).collect();
             stripped.set_content(content);
             stripped
         })
@@ -172,21 +166,6 @@ fn strip_image(block: &ContentBlock) -> ContentBlock {
             text: "[image stripped]".to_string(),
         },
         other => other.clone(),
-    }
-}
-
-fn truncate_text(block: ContentBlock, max: usize) -> ContentBlock {
-    match block {
-        ContentBlock::Text { text } if text.len() > max => {
-            let mut cut = max;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            ContentBlock::Text {
-                text: format!("{}... [truncated]", &text[..cut]),
-            }
-        }
-        other => other,
     }
 }
 
@@ -310,7 +289,29 @@ mod tests {
     }
 
     #[test]
-    fn strip_media_replaces_images_and_truncates_outputs() {
+    fn user_prompt_renders_thinking_notes() {
+        let messages = vec![message(json!({
+            "role": "assistant",
+            "content": [
+                { "type": "thinking", "text": "Segment 7: CTX-N7-e624f1463731.", "signature": "sig" },
+                { "type": "thinking", "text": "", "signature": "omitted" },
+                { "type": "function_call", "id": "c8", "function_id": "e2etest::segment",
+                  "arguments": { "index": 8 } }
+            ],
+            "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 1
+        }))];
+        let prompt = render_user_prompt(&messages);
+        assert!(prompt.contains("[assistant]\n[thinking] Segment 7: CTX-N7-e624f1463731.\n"));
+        assert!(!prompt.contains("sig"), "signatures stay out of the prompt");
+        assert_eq!(
+            prompt.matches("[thinking]").count(),
+            1,
+            "blank thinking adds no line"
+        );
+    }
+
+    #[test]
+    fn strip_media_replaces_images() {
         let messages = vec![
             message(json!({
                 "role": "user",
@@ -322,36 +323,20 @@ mod tests {
                 "content": [{ "type": "text", "text": "x".repeat(50) }], "timestamp": 2
             })),
         ];
-        let stripped = strip_media(&messages, 10);
+        let stripped = strip_media(&messages);
         assert_eq!(
             stripped[0].content(),
             &[ContentBlock::Text {
                 text: "[image stripped]".into()
             }]
         );
-        let ContentBlock::Text { text } = &stripped[1].content()[0] else {
-            panic!("expected text");
-        };
-        assert_eq!(text, &format!("{}... [truncated]", "x".repeat(10)));
+        assert_eq!(stripped[1].content(), messages[1].content());
         // Originals untouched (the head is summarised; the transcript
         // the caller holds must never be mutated).
         assert!(matches!(
             messages[0].content()[0],
             ContentBlock::Image { .. }
         ));
-    }
-
-    #[test]
-    fn user_text_is_never_truncated_by_strip_media() {
-        let messages = vec![message(json!({
-            "role": "user", "content": [{ "type": "text", "text": "y".repeat(100) }],
-            "timestamp": 1
-        }))];
-        let stripped = strip_media(&messages, 10);
-        let ContentBlock::Text { text } = &stripped[0].content()[0] else {
-            panic!("expected text");
-        };
-        assert_eq!(text.len(), 100);
     }
 
     #[test]

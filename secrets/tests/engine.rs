@@ -176,6 +176,44 @@ async fn console_stores_router_resolves_others_are_refused() {
         .unwrap();
     assert_eq!(meta["last_resolved_by"], "llm-router");
 
+    // Conditional writes use the engine-stamped consumer identity too.
+    let swapped = invoke(
+        &router,
+        ids::COMPARE_AND_SET,
+        json!({
+            "name":"ANTHROPIC_API_KEY", "expected":ROTATED, "value":VALUE
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(swapped, json!({"swapped":true}));
+    let changed = tokio::time::timeout(Duration::from_secs(5), changes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(changed["action"], "rotated");
+    assert!(changed.get("value").is_none());
+    let conflict = invoke(
+        &router,
+        ids::COMPARE_AND_SET,
+        json!({
+            "name":"ANTHROPIC_API_KEY", "expected":ROTATED, "value":"loser"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(conflict, json!({"swapped":false}));
+    let refused = invoke(
+        &intruder,
+        ids::COMPARE_AND_SET,
+        json!({
+            "name":"ANTHROPIC_API_KEY", "expected":null, "value":"intruder"
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(remote_code(refused), "SECRET_FORBIDDEN");
+
     // Revoking access stops the router.
     invoke(
         &console,

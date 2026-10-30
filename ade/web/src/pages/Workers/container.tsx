@@ -12,24 +12,26 @@ import {
   Square,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AnsiText } from '@/components/ui/AnsiText'
-import { Badge } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
+import { Badge } from '@/components/shadcn/badge'
+import { Button } from '@/components/shadcn/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@/components/ui/DropdownMenu'
-import { EmptyState } from '@/components/ui/EmptyState'
-import { Eyebrow } from '@/components/ui/Eyebrow'
+} from '@/components/shadcn/dropdown-menu'
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/shadcn/tabs'
+import { AnsiText } from '@/components/ui/AnsiText'
 import { IconButton } from '@/components/ui/IconButton'
-import { SearchField } from '@/components/ui/SearchField'
-import { StatusDot } from '@/components/ui/StatusDot'
-import { StatusPanel } from '@/components/ui/StatusPanel'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { StatusBar, Toolbar } from '@/components/ui/Toolbar'
+import { cn } from '@/lib/utils'
 import type { PageCommandsApi } from '@/types/injectable-ui'
+import { Empty, Notice, SearchBox } from './components/kit'
 import { WorkerSurface } from './components/WorkerSurface'
 import type {
   ComposeApi,
@@ -44,7 +46,6 @@ import type {
 import type { DiscardedSettingsDraft } from './discarded-draft'
 import type { Actions } from './index'
 import {
-  alsoStarts,
   dependentsOf,
   draftFrom,
   hasSettingsChanges,
@@ -56,7 +57,9 @@ import {
   shortPath,
   toneFor,
   validateSettingsDraft,
+  withAlsoStarts,
 } from './model'
+import { WorkerPill } from './project'
 import { type SaveNotice, SettingsTab } from './settings'
 import { SourceTab } from './source'
 import { MANAGEMENT_LABEL, type WorkerRow } from './types'
@@ -184,13 +187,15 @@ export function ContainerView({
   const remove = async () => {
     const ok = await actions.confirm({
       title: `Remove ${name}?`,
-      description: `Compose takes ${name} and every start_after reference to it out of the compose file, then stops only ${name}.`,
-      details: [
-        ...(neededBy.length
-          ? [`No longer waits for it: ${neededBy.join(', ')}`]
-          : []),
-        ...alsoStarts(actions.idle, [name]),
-      ],
+      description: withAlsoStarts(
+        `Compose takes ${name} and every start_after reference to it out of the compose file, then stops only ${name}.${
+          neededBy.length
+            ? ` ${neededBy.join(', ')} no longer ${neededBy.length === 1 ? 'waits' : 'wait'} for it.`
+            : ''
+        }`,
+        actions.idle,
+        [name],
+      ),
       confirmLabel: `Remove ${name}`,
       tone: 'danger',
     })
@@ -205,21 +210,16 @@ export function ContainerView({
 
   const dependencyPills = (names: string[]) =>
     names.map((dep) => (
-      <Button
+      <WorkerPill
         key={dep}
-        variant="pill"
-        size="sm"
-        className="h-7 px-[11px] text-[12px]"
+        name={dep}
+        state={state.get(dep) ?? 'stopped'}
         onClick={() => onSelect(dep)}
-      >
-        <StatusDot tone={toneFor(state.get(dep) ?? 'stopped').dot} />
-        <span className="wk-mono">{dep}</span>
-        <span className="sr-only">{state.get(dep) ?? 'not running'}</span>
-      </Button>
+      />
     ))
 
   const metadata = (
-    <div className="wk-meta wk-mono">
+    <div className="wk-meta wk-machine">
       {declared?.source === 'path' ? (
         <span title={declared.ref}>path {shortPath(declared.ref)}</span>
       ) : null}
@@ -239,7 +239,7 @@ export function ContainerView({
           : 'wk-relations wk-relations-inline'
       }
     >
-      <Eyebrow as="dt">Starts after</Eyebrow>
+      <dt className="wk-fact-label">Starts after</dt>
       <dd className="wk-pills">
         {after.length ? (
           dependencyPills(after)
@@ -247,7 +247,7 @@ export function ContainerView({
           <span className="wk-faint">the engine only</span>
         )}
       </dd>
-      <Eyebrow as="dt">Needed by</Eyebrow>
+      <dt className="wk-fact-label">Needed by</dt>
       <dd className="wk-pills">
         {neededBy.length ? (
           dependencyPills(neededBy)
@@ -267,10 +267,20 @@ export function ContainerView({
       <div className="wk-masthead">
         <div className="wk-identity">
           <div className="wk-title-row">
-            <h2 className="wk-title wk-mono">{name}</h2>
-            <Badge variant={tone.badge}>{container.state}</Badge>
+            <h2 className="wk-title">{name}</h2>
+            <Badge
+              variant={tone.badge === 'alert' ? 'destructive' : 'secondary'}
+              className={cn('wk-badge font-inter', `wk-badge-${tone.badge}`)}
+            >
+              {container.state}
+            </Badge>
             {outdated ? (
-              <Badge variant="accent">{latest} available</Badge>
+              <Badge
+                variant="outline"
+                className="wk-machine border-neutral-200 bg-neutral-100 text-emerald-700 dark:border-neutral-800 dark:bg-neutral-900 dark:text-emerald-400"
+              >
+                {latest} available
+              </Badge>
             ) : null}
           </div>
           {compactContext ? null : metadata}
@@ -278,44 +288,47 @@ export function ContainerView({
         <div className="wk-actions">
           <Button
             variant="ghost"
-            size="sm"
+            className="wk-press font-inter"
             disabled={actions.busy}
             onClick={() => void lifecycle('restart')}
           >
-            <RotateCw />
+            <RotateCw data-icon="inline-start" />
             Restart
           </Button>
           {running ? (
             <Button
               variant="ghost"
-              size="sm"
+              className="wk-press font-inter"
               disabled={actions.busy}
               onClick={() => void lifecycle('down')}
             >
-              <Square />
+              <Square data-icon="inline-start" />
               Stop
             </Button>
           ) : (
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              className="wk-press font-inter"
               disabled={actions.busy}
               onClick={() => void lifecycle('up')}
             >
-              <Play />
+              <Play data-icon="inline-start" />
               Start
             </Button>
           )}
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <IconButton label={`More actions for ${name}`} variant="ghost">
-                <MoreHorizontal />
-              </IconButton>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            <DropdownMenuTrigger
+              render={
+                <IconButton label={`More actions for ${name}`} variant="ghost">
+                  <MoreHorizontal />
+                </IconButton>
+              }
+            />
+            <DropdownMenuContent align="end" className="wk-menu">
               <DropdownMenuItem
+                variant="destructive"
                 disabled={actions.busy}
-                onSelect={() => void remove()}
+                onClick={() => void remove()}
               >
                 Remove from project…
               </DropdownMenuItem>
@@ -325,7 +338,7 @@ export function ContainerView({
       </div>
 
       {container.last_error && !running ? (
-        <StatusPanel
+        <Notice
           variant="alert"
           headline={
             container.state === 'restarting'
@@ -335,8 +348,8 @@ export function ContainerView({
           detail={container.last_error}
           action={
             <Button
-              variant="pill"
-              size="sm"
+              variant="outline"
+              className="wk-press font-inter"
               disabled={actions.busy}
               onClick={() => void lifecycle('restart')}
             >
@@ -363,16 +376,13 @@ export function ContainerView({
         onValueChange={(next) => setTab(next as Tab)}
         className="wk-tabs"
       >
-        <TabsList variant="line" aria-label={name}>
-          <TabsTrigger ref={logTabRef} value="log" icon={false}>
+        <TabsList variant="line" aria-label={name} className="wk-tablist">
+          <TabsTrigger ref={logTabRef} value="log">
             Log
           </TabsTrigger>
-          <TabsTrigger value="source" icon={false}>
-            Source
-          </TabsTrigger>
+          <TabsTrigger value="source">Source</TabsTrigger>
           <TabsTrigger
             value="settings"
-            icon={false}
             aria-label={
               submittedEntry
                 ? `Settings${dirty ? ` · ${changes || 'unsaved'}` : ''} · awaiting verification`
@@ -393,9 +403,7 @@ export function ContainerView({
             ) : null}
           </TabsTrigger>
           {connected ? (
-            <TabsTrigger value="functions" icon={false}>
-              Functions
-            </TabsTrigger>
+            <TabsTrigger value="functions">Functions</TabsTrigger>
           ) : null}
         </TabsList>
         <TabsContent value="log" className="wk-tab">
@@ -412,7 +420,7 @@ export function ContainerView({
               onOpenSettings={() => setTab('settings')}
             />
           ) : (
-            <EmptyState
+            <Empty
               compact
               title="Not in the compose file"
               description={`${name} runs, but the compose file does not declare it.`}
@@ -597,8 +605,7 @@ function LogTab({
           <>
             <Button
               variant="ghost"
-              size="sm"
-              className="wk-follow"
+              className="wk-follow wk-press font-inter"
               aria-pressed={follow}
               aria-label="Follow the log"
               onClick={() => setFollow((on) => !on)}
@@ -630,7 +637,7 @@ function LogTab({
           </>
         }
       >
-        <SearchField
+        <SearchBox
           className="wk-log-filter"
           aria-label="Filter log lines"
           placeholder="Filter lines"
@@ -639,7 +646,7 @@ function LogTab({
         />
       </Toolbar>
       {copyResult ? (
-        <StatusPanel
+        <Notice
           role={copyResult === 'success' ? 'status' : 'alert'}
           variant={copyResult === 'success' ? 'success' : 'warn'}
           headline={
@@ -653,14 +660,14 @@ function LogTab({
         />
       ) : null}
       {error ? (
-        <StatusPanel
+        <Notice
           variant="alert"
           headline="The log is unavailable"
           detail={error}
           action={
             <Button
-              variant="pill"
-              size="sm"
+              variant="outline"
+              className="wk-press font-inter"
               onClick={() => setAttempt((n) => n + 1)}
             >
               Retry
@@ -669,14 +676,14 @@ function LogTab({
         />
       ) : null}
       {lines && lines.length === 0 ? (
-        <EmptyState
+        <Empty
           compact
           icon={FileText}
           title="No output yet"
           description={`${name} has not written anything.`}
         />
       ) : lines && lines.length > 0 && visible.length === 0 ? (
-        <EmptyState
+        <Empty
           compact
           icon={FileText}
           title="No log lines match this filter"
@@ -722,7 +729,7 @@ function LogTab({
         end={follow ? 'following' : 'paused'}
       >
         {logPath ? (
-          <span className="wk-mono" title={logPath}>
+          <span className="wk-machine" title={logPath}>
             {shortPath(logPath)}
           </span>
         ) : null}
@@ -751,11 +758,18 @@ export function WorkerView({ worker }: { worker: WorkerRow }) {
       <div className="wk-masthead">
         <div className="wk-identity">
           <div className="wk-title-row">
-            <h2 className="wk-title wk-mono">{worker.name}</h2>
-            <Badge variant={tone.badge}>{worker.status}</Badge>
-            <Badge>{MANAGEMENT_LABEL[worker.managementKind]}</Badge>
+            <h2 className="wk-title">{worker.name}</h2>
+            <Badge
+              variant={tone.badge === 'alert' ? 'destructive' : 'secondary'}
+              className={cn('wk-badge font-inter', `wk-badge-${tone.badge}`)}
+            >
+              {worker.status}
+            </Badge>
+            <Badge variant="secondary" className="wk-badge font-inter">
+              {MANAGEMENT_LABEL[worker.managementKind]}
+            </Badge>
           </div>
-          <div className="wk-meta wk-mono">
+          <div className="wk-meta wk-machine">
             {worker.runtime ? <span>{worker.runtime}</span> : null}
             {worker.version ? <span>{worker.version}</span> : null}
             {worker.pid ? <span>pid {worker.pid}</span> : null}
@@ -766,7 +780,7 @@ export function WorkerView({ worker }: { worker: WorkerRow }) {
       {worker.status === 'connected' ? (
         <WorkerSurface name={worker.name} />
       ) : (
-        <EmptyState
+        <Empty
           compact
           title="Not connected"
           description={`${worker.name} is not connected to the engine, so it registers nothing.`}

@@ -5,8 +5,8 @@
 //! `secret://NAME`) or `env` (the value is an environment variable in the
 //! project's `.env` or this worker's environment, referenced as `env://NAME`).
 //!
-//! Only two types carry a value: [`SetRequest`] (in) and [`ResolveResponse`]
-//! (out). Both hold it in a [`SecretString`], so their derived `Debug`
+//! Value-carrying types, including [`CompareAndSetRequest`], hold values in
+//! [`SecretString`], so their derived `Debug`
 //! prints `[REDACTED]`. Requests ignore unknown fields: the engine stamps
 //! `_caller_worker_id` into every invocation payload.
 use schemars::JsonSchema;
@@ -18,6 +18,7 @@ use crate::secret::SecretString;
 /// Fully qualified ids.
 pub mod ids {
     pub const SET: &str = "secrets::set";
+    pub const COMPARE_AND_SET: &str = "secrets::compare-and-set";
     pub const ACCESS: &str = "secrets::access";
     pub const DELETE: &str = "secrets::delete";
     pub const GET: &str = "secrets::get";
@@ -27,8 +28,17 @@ pub mod ids {
     pub const IMPORT: &str = "secrets::import";
     pub const STATUS: &str = "secrets::status";
     pub const CHANGED_TRIGGER: &str = "secrets::changed";
-    pub const ALL_FUNCTIONS: [&str; 9] = [
-        SET, ACCESS, DELETE, GET, LIST, RESOLVE, DETECT, IMPORT, STATUS,
+    pub const ALL_FUNCTIONS: [&str; 10] = [
+        SET,
+        COMPARE_AND_SET,
+        ACCESS,
+        DELETE,
+        GET,
+        LIST,
+        RESOLVE,
+        DETECT,
+        IMPORT,
+        STATUS,
     ];
 }
 
@@ -95,6 +105,26 @@ pub struct SetRequest {
     /// Omit to keep the current description; an empty string clears it.
     #[serde(default)]
     pub description: Option<String>,
+}
+
+/// Worker-owned conditional writes to the encrypted vault only.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompareAndSetRequest {
+    pub name: String,
+    /// Null means create only if absent; otherwise match the exact current string.
+    pub expected: Option<SecretString>,
+    pub value: SecretString,
+    /// Required on creation and must include the caller. Existing grants are preserved.
+    pub consumers: Option<Vec<String>>,
+    #[serde(rename = "_caller_worker_id", default)]
+    #[schemars(skip)]
+    pub caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CompareAndSetResponse {
+    pub swapped: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -223,6 +253,25 @@ pub struct StatusResponse {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn compare_and_set_redacts_both_values_and_hides_caller() {
+        let request: CompareAndSetRequest = serde_json::from_value(json!({
+            "name": "SESSION", "expected": "old-secret-value", "value": "new-secret-value",
+            "_caller_worker_id": "worker-1"
+        }))
+        .unwrap();
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("old-secret-value"));
+        assert!(!debug.contains("new-secret-value"));
+        assert_eq!(request.caller_worker_id.as_deref(), Some("worker-1"));
+        let schema = serde_json::to_value(schemars::schema_for!(CompareAndSetRequest)).unwrap();
+        assert!(schema["properties"].get("_caller_worker_id").is_none());
+        assert_eq!(
+            serde_json::to_value(CompareAndSetResponse { swapped: false }).unwrap(),
+            json!({"swapped": false})
+        );
+    }
 
     #[test]
     fn requests_accept_the_engine_stamped_caller() {

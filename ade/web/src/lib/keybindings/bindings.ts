@@ -209,7 +209,17 @@ export function bindingMatchesEvent(
     return false
   }
   if (isAlphanumericToken(parsed.key)) {
-    return event.key.toUpperCase() === parsed.key
+    if (event.key.toUpperCase() === parsed.key) return true
+    // ⌥ on a Mac turns the letter into another character (⌥C is `ç`, ⌥N a
+    // dead key), so an Alt chord falls back to the physical key. Only when
+    // the layout produced no plain letter or digit: on AZERTY the key that
+    // types `a` must stay A, whatever its position says.
+    return (
+      wanted.alt &&
+      event.code !== undefined &&
+      !/^[a-z0-9]$/i.test(event.key) &&
+      event.code === (/^\d$/.test(parsed.key) ? 'Digit' : 'Key') + parsed.key
+    )
   }
   if (isNamedToken(parsed.key)) return event.key === NAMED_KEYS[parsed.key]
   if (event.key === parsed.key) return true
@@ -249,10 +259,12 @@ export function formatBinding(
   if (!parsed) return [binding]
   const mac = platform === 'mac'
   const caps: string[] = []
-  if (parsed.mod) caps.push(mac ? '⌘' : 'ctrl')
-  if (parsed.meta) caps.push(mac ? '⌘' : 'meta')
+  // ⌃ and ⌥ precede ⌘ the way macOS menus spell a chord (⌃⌘C); ⇧ keeps
+  // its place after ⌘ so ⇧⌘O still reads as the ⌘O family.
   if (parsed.ctrl) caps.push(mac ? '⌃' : 'ctrl')
   if (parsed.alt) caps.push(mac ? '⌥' : 'alt')
+  if (parsed.mod) caps.push(mac ? '⌘' : 'ctrl')
+  if (parsed.meta) caps.push(mac ? '⌘' : 'meta')
   if (parsed.shift) caps.push(mac ? '⇧' : 'shift')
   caps.push(KEY_LABELS[parsed.key] ?? parsed.key)
   return caps
@@ -341,5 +353,8 @@ export function isBrowserReserved(
 
 /** The digit a keystroke carries, for shortcuts that select by position. */
 export function digitFromEvent(event: KeyEventLike): string | null {
-  return /^[1-9]$/.test(event.key) ? event.key : null
+  if (/^[1-9]$/.test(event.key)) return event.key
+  // ⌥1 on a Mac reports `¡`; the digit row is still the digit row.
+  const physical = event.altKey ? /^Digit([1-9])$/.exec(event.code ?? '') : null
+  return physical ? physical[1] : null
 }

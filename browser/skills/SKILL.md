@@ -64,9 +64,6 @@ on navigation; re-snapshot before acting after any page change.
   next navigation and never touch source files. Use them to find the right
   value, then edit the codebase.
 - `browser::pick::*`, `browser::screencast::*`, and `browser::frame` are console-UI plumbing, not agent surface.
-- The ghost cursor and session-status badge are in-page overlays for a human
-  watching the streamed viewport; they appear only while screencast is
-  active and never affect page content or the accessibility snapshot.
 - Navigation is limited to the configured URL schemes (http/https by
   default).
 

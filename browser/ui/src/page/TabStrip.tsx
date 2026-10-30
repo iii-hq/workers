@@ -1,17 +1,20 @@
 /**
  * The tab strip: Chrome's, not the console's line tabs. Tabs sit on the
  * window chrome; the active one is cut from the toolbar's own surface and
- * welded to it with inverted corners. Each tab shows its favicon slot, as
- * much of the page title as fits (fading out, never ellipsized), and a close
- * ✕ that appears on hover and on the active tab. A sleeping tab (page
- * closed, tab kept) dims and swaps the globe for a moon; an incognito tab is
- * dark with the hat-and-glasses glyph. Middle-click closes, arrows step the
- * selection, `+` opens a tab.
+ * welded to it with inverted corners. Each tab shows the page's own favicon
+ * (a spinner while a load this pane started is in flight, a globe when the
+ * page has none), as much of the page title as fits (fading out, never
+ * ellipsized), and a close ✕ that appears on hover and on the active tab. A
+ * sleeping tab (page closed, tab kept) dims and keeps its icon, a moon when
+ * it has none; an incognito tab is dark with the hat-and-glasses glyph.
+ * Middle-click closes, arrows step the selection, `+` opens a tab.
  */
 
 import { IconButton } from '@iii-dev/console-ui'
-import { Globe, HatGlasses, Moon, Plus, X } from 'lucide-react'
-import type { KeyboardEvent, MouseEvent } from 'react'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
+import { Globe, HatGlasses, LoaderCircle, Moon, Plus, X } from 'lucide-react'
+import type { KeyboardEvent, MouseEvent, ReactNode } from 'react'
+import { useState } from 'react'
 import type { BrowserSessionInfo } from '../lib/browser'
 import { cn } from '../lib/cn'
 
@@ -19,6 +22,8 @@ interface TabStripProps {
   tabs: BrowserSessionInfo[]
   selectedId: string | null
   starting: boolean
+  /** Tabs with a load in flight (started from this pane). */
+  loadingIds?: ReadonlySet<string>
   onSelect: (sessionId: string) => void
   onClose: (sessionId: string) => void
   onNew: () => void
@@ -40,10 +45,36 @@ export function tabLabel(tab: Pick<BrowserSessionInfo, 'title' | 'url'>): string
   return hostOf(tab.url) || tab.url
 }
 
+/** The page's favicon, falling back to `fallback` when it has none or the
+ * image fails to load (an icon URL this browser can't reach). */
+export function Favicon({
+  src,
+  fallback,
+}: {
+  src: string | undefined
+  fallback: ReactNode
+}) {
+  const [failed, setFailed] = useState<string | null>(null)
+  if (!src || failed === src) return <>{fallback}</>
+  return (
+    <img
+      src={src}
+      alt=""
+      width={16}
+      height={16}
+      draggable={false}
+      referrerPolicy="no-referrer"
+      className="br-ui-favicon"
+      onError={() => setFailed(src)}
+    />
+  )
+}
+
 export function TabStrip({
   tabs,
   selectedId,
   starting,
+  loadingIds,
   onSelect,
   onClose,
   onNew,
@@ -79,6 +110,7 @@ export function TabStrip({
         {tabs.map((tab) => {
           const active = tab.session_id === selectedId
           const asleep = tab.active === false
+          const loading = loadingIds?.has(tab.session_id) === true
           const label = tabLabel(tab)
           const hint = [
             label,
@@ -94,6 +126,7 @@ export function TabStrip({
               role="tab"
               tabIndex={active ? 0 : -1}
               aria-selected={active}
+              aria-busy={loading || undefined}
               data-tab-id={tab.session_id}
               title={hint}
               className={cn(
@@ -118,12 +151,15 @@ export function TabStrip({
               }}
             >
               <span className="br-ui-tab-icon" aria-hidden>
-                {tab.incognito ? (
+                {loading ? (
+                  <LoaderCircle size={16} className={uiClasses.spin} />
+                ) : tab.incognito ? (
                   <HatGlasses size={16} />
-                ) : asleep ? (
-                  <Moon size={16} />
                 ) : (
-                  <Globe size={16} />
+                  <Favicon
+                    src={tab.favicon}
+                    fallback={asleep ? <Moon size={16} /> : <Globe size={16} />}
+                  />
                 )}
               </span>
               <span className="br-ui-tab-title">{label}</span>

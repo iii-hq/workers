@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import type { AgentEntry } from '@/lib/backend/directory-prompts'
 import { getPanelContext, resetPanelContextForTests } from '@/lib/panel-context'
-import { EmptyState } from './EmptyState'
+import { AgentProfilePicker } from './AgentProfilePicker'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   withAgentChoice,
@@ -38,14 +38,14 @@ afterEach(() => {
   resetPanelContextForTests()
 })
 
+/** The composer's agent picker, opened, with one kit that has an update. */
 function render(selected: string) {
   const container = document.body.appendChild(document.createElement('div'))
   root = createRoot(container)
   act(() =>
     root?.render(
       <TooltipProvider>
-        <EmptyState
-          variant="ready"
+        <AgentProfilePicker
           systemPrompt={withAgentChoice(DEFAULT_SYSTEM_PROMPT_STATE, selected)}
           onSystemPromptChange={() => {}}
           agentEntries={[
@@ -66,7 +66,11 @@ function render(selected: string) {
       </TooltipProvider>,
     ),
   )
-  return container
+  const trigger = container.querySelector<HTMLButtonElement>(
+    '.composer-agent-trigger',
+  )
+  act(() => trigger?.click())
+  return document.body
 }
 
 const reviewAction = (view: HTMLElement) =>
@@ -74,8 +78,8 @@ const reviewAction = (view: HTMLElement) =>
     button.textContent?.startsWith('Review update'),
   )
 
-describe('EmptyState kit updates', () => {
-  it('offers the update only on the selected card and notes it on the kit’s other visible cards', () => {
+describe('AgentProfilePicker kit updates', () => {
+  it('offers the update on the chosen profile and notes it on the kit’s other visible profiles', () => {
     const view = render('lead')
 
     expect(reviewAction(view).map((button) => button.textContent)).toEqual([

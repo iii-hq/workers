@@ -14,7 +14,7 @@ import {
 } from '@/hooks/use-hash-route'
 import { useKeybindings } from '@/hooks/use-keybindings'
 import { useMediaQuery } from '@/hooks/use-media-query'
-import { useTheme } from '@/hooks/use-theme'
+import { useThemePreference } from '@/hooks/use-theme'
 import {
   ConversationsProvider,
   type InjectableUiRuntime,
@@ -47,7 +47,7 @@ export function Standalone({
 }: {
   injectableUiRuntime?: Promise<InjectableUiRuntime>
 }) {
-  const [theme, setTheme] = useTheme()
+  const [theme, setTheme] = useThemePreference()
   const hash = useHash()
   const live = useMemo(() => standaloneRouteFromHash(hash), [hash])
   // Settings swap the hash for `#/configuration…`: the surface underneath

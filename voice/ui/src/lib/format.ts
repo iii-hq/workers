@@ -18,6 +18,13 @@ export function formatDuration(secs: number): string {
   return `${minutes}m ${total - minutes * 60}s`
 }
 
+/** A recording clock, `0:06` or `12:40`. */
+export function formatClock(secs: number): string {
+  const total = Number.isFinite(secs) && secs > 0 ? Math.floor(secs) : 0
+  const minutes = Math.floor(total / 60)
+  return `${minutes}:${String(total - minutes * 60).padStart(2, '0')}`
+}
+
 export function truncate(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text
   return `${text.slice(0, Math.max(0, maxChars - 1))}…`

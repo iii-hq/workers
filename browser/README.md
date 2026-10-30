@@ -63,8 +63,8 @@ a native viewer (details in
   (default 2; the app asks for 1 on a metered network);
 - `browser::resize` with `mobile: true` and `fit: true` at the size of its
   view: the page sees a phone (touch, an Android user agent) and fills it;
-- `browser::act` with `ghost_cursor: false`: a person's own taps draw no
-  agent cursor.
+- `browser::act` for a person's own taps and drags (the worker draws
+  nothing into the page; `ghost_cursor` is accepted and ignored).
 
 ## Tabs, sleep, and incognito
 
@@ -322,9 +322,8 @@ expected page state after it returns.
 `browser::recording::start` / `browser::recording::stop` capture a session's
 live viewport to a webm or mp4 file by piping the screencast through ffmpeg
 (turning screencast on if needed); stop returns the path, duration, and
-frame count. While screencast is active a human watching the viewport also
-sees a ghost cursor following the agent's clicks and a session-status badge;
-both are fixed-position in-page overlays that never touch page content.
+frame count. Nothing is injected into the page for the viewer: the live
+viewport shows the page exactly as it draws itself.
 `browser::doctor` reports whether ffmpeg (recording) and attach mode are
 available.
 
@@ -542,8 +541,9 @@ browser:
   default_timeout_ms: 30000 # navigation/act/evaluate default
   max_timeout_ms: 120000    # ceiling; caller timeout_ms clamped DOWN to this
   inactive_after_ms: 1800000 # unused, unwatched tabs sleep after this (incognito closes); 0 disables
-  screenshot_quality: 60    # JPEG quality 1-100 (screenshots and live-view frames)
+  screenshot_quality: 60    # JPEG quality 1-100 (screenshots)
   frame_density: 2          # 1-3: device pixels per CSS pixel the live view can stream; see below
+  live_view_quality: 85     # JPEG quality 1-100 of live-view frames
   allowed_schemes: [http, https, file]  # `file` lets a local document be rendered; see below
   max_snapshot_nodes: 2000  # a11y outline size cap
   default_origin_policy:    # omitted fields default to allow
@@ -703,9 +703,9 @@ the configured viewport, so a viewer resizes again when it reattaches.
 `browser::act` `scroll` takes `delta_x` (positive scrolls right) next to
 `delta_y`; a scroll that names only `delta_x` moves sideways only, and one
 that names neither still pages down 600 px; each delta is held to
-±100 000 px, and `click_count` to 1–3. A viewer sends its person's
-taps and drags with `ghost_cursor: false`: the green arrow that marks an
-agent's actions for whoever watches is for agents only.
+±100 000 px, and `click_count` to 1–3. Nothing is drawn into the page
+for an action, an agent's or a person's: the live view is the page as it
+draws itself (`ghost_cursor` is accepted for older callers and ignored).
 
 Every tab opens on `about:blank` before its first page; `browser::history`
 never steps back (or forward) onto it, so Back from a tab's first page

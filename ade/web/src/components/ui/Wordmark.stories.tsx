@@ -20,6 +20,17 @@ export const Default: Story = {
   ),
 }
 
+export const Live: Story = {
+  name: 'live (hover lifts the dots)',
+  render: () => (
+    <div className="flex items-center gap-6">
+      <Wordmark appearance="live" className="h-[1.2rem] w-auto" />
+      <Wordmark appearance="live" className="size-12" />
+      <Eyebrow size="lg">hover the mark</Eyebrow>
+    </div>
+  ),
+}
+
 export const Inset: Story = {
   render: () => (
     <div className="flex items-center justify-center bg-bg p-8">

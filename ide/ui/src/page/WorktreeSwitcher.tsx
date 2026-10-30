@@ -11,15 +11,19 @@
 import type { ComposerControlProps, Host, LiveAnnouncement } from '@iii-dev/console-ui'
 import {
   ConfirmDialog,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
   IconButton,
+  Kbd,
   List,
   ListGroupLabel,
   LiveRegion,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   SearchField,
+  Separator,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
   uiClasses,
 } from '@iii-dev/console-ui'
 import {
@@ -44,6 +48,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   memo,
+  type ReactElement,
   type ReactNode,
   useCallback,
   useEffect,
@@ -51,6 +56,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { BranchName } from './BranchName'
 import { BranchPage } from './BranchPage'
 import type { BranchContext, BranchRef, GitWindowRequest } from './branch-menu'
 import { workspaceValidate } from './coder'
@@ -138,8 +144,44 @@ function describe(head: Head): string {
   return parts.join(' · ')
 }
 
-// A phone keyboard popping up on every tap hides the list it opened for; a
-// menu opened from a keyboard still focuses the filter.
+/** A home-relative path reads shorter in a tooltip: `~/conductor/…`. */
+const tilde = (path: string) => path.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~')
+
+/** The console's (shadcn) tooltip on a control, never the browser's `title`:
+    a heading line and quieter detail lines under it. */
+function Tip({
+  title,
+  lines = [],
+  side = 'right',
+  off = false,
+  children,
+}: {
+  title?: ReactNode
+  lines?: readonly ReactNode[]
+  side?: 'top' | 'right' | 'bottom' | 'left'
+  /** Leave the control bare: where hovering opens a menu beside it instead. */
+  off?: boolean
+  children: ReactElement
+}) {
+  if (off || (!title && lines.length === 0)) return children
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side={side} sideOffset={8} className="shui-tip">
+        <span className="shui-tip-body">
+          {title ? <span className="shui-tip-title">{title}</span> : null}
+          {lines.map((line, index) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: static lines of one tooltip
+            <span key={index} className="shui-tip-line">
+              {line}
+            </span>
+          ))}
+        </span>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 /** What the actions beside the list are for: a branch, or a worktree on no branch. */
 type PanelTarget = { kind: 'branch'; ref: BranchRef } | { kind: 'worktree'; path: string }
 interface Panel {
@@ -282,7 +324,6 @@ export const WorktreeMenu = memo(function WorktreeMenu({
   const openRef = useRef(open)
   openRef.current = open
   const noteSeqRef = useRef(ops.noteSeq)
-  const byKeyboard = useRef(false)
   const filterRef = useRef<HTMLInputElement>(null)
   const cancelRemove = useRef(ops.cancelRemove)
   cancelRemove.current = () => {
@@ -477,7 +518,6 @@ export const WorktreeMenu = memo(function WorktreeMenu({
       className={`${uiClasses.treeItemAction} shui-wt-row-more`}
       aria-label={`Actions for ${name}`}
       aria-haspopup="menu"
-      title="Actions"
       // From the keyboard (Enter or Space), the first action takes the focus.
       onClick={(event) => {
         const row = rowOf(event.currentTarget)
@@ -534,34 +574,36 @@ export const WorktreeMenu = memo(function WorktreeMenu({
       // gives way to a long name, and they must not be squeezed out.
       <span className={uiClasses.treeItemActions}>
         {merge ? (
-          <button
-            type="button"
-            className={uiClasses.treeItemAction}
-            aria-label={`Merge into ${target}`}
-            title={`Merge into ${target}`}
-            aria-disabled={busy || undefined}
-            onClick={() => !busy && merge()}
-          >
-            <GitMerge aria-hidden />
-          </button>
+          <Tip title={`Merge into ${target}`} side="top">
+            <button
+              type="button"
+              className={uiClasses.treeItemAction}
+              aria-label={`Merge into ${target}`}
+              aria-disabled={busy || undefined}
+              onClick={() => !busy && merge()}
+            >
+              <GitMerge aria-hidden />
+            </button>
+          </Tip>
         ) : null}
         {remove ? (
-          <button
-            type="button"
-            className={uiClasses.treeItemAction}
-            data-tone="alert"
-            aria-label={remove.label}
-            title={remove.title}
-            aria-disabled={busy || undefined}
-            onClick={() => {
-              if (busy) return
-              // The confirmation is a dialog of its own: the menu gives way.
-              setOpen(false)
-              remove.run()
-            }}
-          >
-            <Trash2 aria-hidden />
-          </button>
+          <Tip title={remove.title} side="top">
+            <button
+              type="button"
+              className={uiClasses.treeItemAction}
+              data-tone="alert"
+              aria-label={remove.label}
+              aria-disabled={busy || undefined}
+              onClick={() => {
+                if (busy) return
+                // The confirmation is a dialog of its own: the menu gives way.
+                setOpen(false)
+                remove.run()
+              }}
+            >
+              <Trash2 aria-hidden />
+            </button>
+          </Tip>
         ) : null}
       </span>
     ) : null
@@ -579,22 +621,32 @@ export const WorktreeMenu = memo(function WorktreeMenu({
       return (
         <div key={key} className="shui-wt-row-with-form">
           <div className={`${uiClasses.treeItem} shui-wt-row`} style={depthOf(depth)} {...rowData(`b:${entry.name}`)}>
-            <button
-              type="button"
-              data-list-item=""
-              className="shui-wt-row-main"
-              aria-disabled={busy || undefined}
-              aria-label={[entry.name, ...marks].join(', ')}
-              title={`${entry.name}\nNo worktree yet: opens one at ${worktreePathFor(mainPath, entry.name)}`}
-              onClick={() => !busy && createFor(entry.name)}
-              onKeyDown={toPanel}
+            <Tip
+              off={actions}
+              title={entry.name}
+              lines={[
+                'No worktree yet. Opening it makes one at',
+                <span key="path" className="shui-tip-path">
+                  {tilde(worktreePathFor(mainPath, entry.name))}
+                </span>,
+              ]}
             >
-              <span className={uiClasses.treeItemIcon}>
-                <GitBranch aria-hidden />
-              </span>
-              <span className={uiClasses.treeItemLabel}>{shown}</span>
-              {marksOf(false, marks)}
-            </button>
+              <button
+                type="button"
+                data-list-item=""
+                className="shui-wt-row-main"
+                aria-disabled={busy || undefined}
+                aria-label={[entry.name, ...marks].join(', ')}
+                onClick={() => !busy && createFor(entry.name)}
+                onKeyDown={toPanel}
+              >
+                <span className={uiClasses.treeItemIcon}>
+                  <GitBranch aria-hidden />
+                </span>
+                <span className={uiClasses.treeItemLabel}>{shown}</span>
+                {marksOf(false, marks)}
+              </button>
+            </Tip>
             {actions
               ? moreButton(entry.name)
               : own
@@ -627,24 +679,37 @@ export const WorktreeMenu = memo(function WorktreeMenu({
           style={depthOf(depth)}
           {...rowData(panelId)}
         >
-          <button
-            type="button"
-            data-list-item=""
-            className="shui-wt-row-main"
-            disabled={wt.prunable || wt.bare}
-            aria-disabled={busy || undefined}
-            aria-current={current ? 'true' : undefined}
-            aria-label={[name, folder, wt.dirty ? 'uncommitted changes' : null, ...marks].filter(Boolean).join(', ')}
-            title={titles.join('\n')}
-            onClick={() => !busy && switchTo(wt)}
-            onKeyDown={toPanel}
+          <Tip
+            off={actions}
+            title={name}
+            lines={titles.map((line, index) =>
+              index === 0 ? (
+                <span key="path" className="shui-tip-path">
+                  {tilde(line)}
+                </span>
+              ) : (
+                line
+              ),
+            )}
           >
-            <span className={uiClasses.treeItemIcon}>
-              <FolderGit2 aria-hidden />
-            </span>
-            <span className={uiClasses.treeItemLabel}>{entry.name === '' ? name : shown}</span>
-            {marksOf(wt.dirty === true, marks)}
-          </button>
+            <button
+              type="button"
+              data-list-item=""
+              className="shui-wt-row-main"
+              disabled={wt.prunable || wt.bare}
+              aria-disabled={busy || undefined}
+              aria-current={current ? 'true' : undefined}
+              aria-label={[name, folder, wt.dirty ? 'uncommitted changes' : null, ...marks].filter(Boolean).join(', ')}
+              onClick={() => !busy && switchTo(wt)}
+              onKeyDown={toPanel}
+            >
+              <span className={uiClasses.treeItemIcon}>
+                <FolderGit2 aria-hidden />
+              </span>
+              <span className={uiClasses.treeItemLabel}>{entry.name === '' ? name : shown}</span>
+              {marksOf(wt.dirty === true, marks)}
+            </button>
+          </Tip>
           <span className={uiClasses.treeItemTrailing}>
             {folder ? <span className={uiClasses.treeItemMeta}>{folder}</span> : null}
             {current ? <Check aria-hidden className="shui-wt-row-check" /> : null}
@@ -768,19 +833,20 @@ export const WorktreeMenu = memo(function WorktreeMenu({
     meta?: string | null,
   ) => (
     <div key={key} className={`${uiClasses.treeItem} shui-wt-row`}>
-      <button
-        type="button"
-        data-list-item=""
-        className="shui-wt-row-main"
-        aria-disabled={busy || disabled !== undefined || undefined}
-        title={disabled}
-        onClick={() => !busy && disabled === undefined && onClick()}
-      >
-        <span className={uiClasses.treeItemIcon}>
-          <Icon aria-hidden />
-        </span>
-        <span className={uiClasses.treeItemLabel}>{label}</span>
-      </button>
+      <Tip lines={disabled ? [`Unavailable: ${disabled}`] : []}>
+        <button
+          type="button"
+          data-list-item=""
+          className="shui-wt-row-main"
+          aria-disabled={busy || disabled !== undefined || undefined}
+          onClick={() => !busy && disabled === undefined && onClick()}
+        >
+          <span className={uiClasses.treeItemIcon}>
+            <Icon aria-hidden />
+          </span>
+          <span className={uiClasses.treeItemLabel}>{label}</span>
+        </button>
+      </Tip>
       {meta ? (
         <span className={uiClasses.treeItemTrailing}>
           <span className={uiClasses.treeItemMeta}>{meta}</span>
@@ -825,7 +891,6 @@ export const WorktreeMenu = memo(function WorktreeMenu({
           className="shui-wt-row-main"
           aria-label={`${name}, remote branch`}
           aria-haspopup="menu"
-          title={name}
           onClick={(event) => {
             const row = rowOf(event.currentTarget)
             if (row !== null) showPanel(row, event.detail === 0)
@@ -893,7 +958,7 @@ export const WorktreeMenu = memo(function WorktreeMenu({
     return (
       <div className="shui-wt-section">
         {/* Nothing above it when a filter leaves no local branch. */}
-        {lowered === '' || matches.length > 0 || creatable ? <DropdownMenuSeparator /> : null}
+        {lowered === '' || matches.length > 0 || creatable ? <Separator className="shui-wt-sep" /> : null}
         <ListGroupLabel>Remote</ListGroupLabel>
         {out}
       </div>
@@ -907,7 +972,7 @@ export const WorktreeMenu = memo(function WorktreeMenu({
     return (
       <div className="shui-wt-section">
         {lowered === '' || matches.length > 0 || creatable || remoteMatches.length > 0 ? (
-          <DropdownMenuSeparator />
+          <Separator className="shui-wt-sep" />
         ) : null}
         <ListGroupLabel>Tags</ListGroupLabel>
         {tagMatches.slice(0, cap).map((name) => (
@@ -923,7 +988,6 @@ export const WorktreeMenu = memo(function WorktreeMenu({
               className="shui-wt-row-main"
               aria-label={`${name}, tag`}
               aria-haspopup="menu"
-              title={name}
               onClick={(event) => {
                 const row = rowOf(event.currentTarget)
                 if (row !== null) showPanel(row, event.detail === 0)
@@ -1022,51 +1086,52 @@ export const WorktreeMenu = memo(function WorktreeMenu({
 
   return (
     <span className="shui-wt-switcher" data-side={side} ref={wrapRef}>
-      <DropdownMenu open={open} onOpenChange={onOpenChange}>
-        <DropdownMenuTrigger
-          className="shui-wt-chip"
-          disabled={frozen}
-          aria-haspopup="dialog"
-          onPointerDown={() => {
-            byKeyboard.current = false
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown') byKeyboard.current = true
-          }}
-          aria-busy={busy || undefined}
-          aria-label={`${describe(head)}${unseenWarning ? `. ${note}` : ''}. Switch, create, merge or remove worktrees`}
-          title={unseenWarning ? `${describe(head)}\n${note}` : describe(head)}
+      <Popover open={open} onOpenChange={onOpenChange}>
+        <Tip
+          title={head.branch ?? 'Detached HEAD'}
+          lines={[
+            head.linked ? `Worktree ${head.worktree}` : 'Main worktree',
+            ...(head.dirty ? ['Uncommitted changes'] : []),
+            ...(unseenWarning && note ? [note] : []),
+          ]}
+          side={side === 'top' ? 'top' : 'bottom'}
         >
-          {/* The folder is always a worktree's; the title says which one. */}
-          <FolderGit2 aria-hidden className="shui-wt-chip-icon" />
-          <span className="shui-wt-chip-branch">{head.branch ?? 'detached'}</span>
-          {head.dirty ? <span className="shui-wt-chip-dirty" aria-hidden /> : null}
-          {busy ? (
-            <Loader2 aria-hidden className={`shui-wt-chip-icon ${uiClasses.spin}`} />
-          ) : unseenWarning ? (
-            <AlertCircle aria-hidden className="shui-wt-chip-icon shui-wt-chip-warn" />
-          ) : (
-            <ChevronDown aria-hidden className="shui-wt-chip-icon shui-wt-chip-caret" />
-          )}
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
+          <PopoverTrigger
+            className="shui-wt-chip"
+            disabled={frozen}
+            aria-busy={busy || undefined}
+            aria-label={`${describe(head)}${unseenWarning ? `. ${note}` : ''}. Switch, create, merge or remove worktrees`}
+          >
+            {/* A linked worktree shows the folder icon; the main one, the branch. */}
+            {head.linked ? (
+              <FolderGit2 aria-hidden className="shui-wt-chip-icon" />
+            ) : (
+              <GitBranch aria-hidden className="shui-wt-chip-icon" />
+            )}
+            <BranchName name={head.branch ?? 'detached'} className="shui-wt-chip-branch" />
+            {head.dirty ? <span className="shui-wt-chip-dirty" aria-hidden /> : null}
+            {busy ? (
+              <Loader2 aria-hidden className={`shui-wt-chip-icon ${uiClasses.spin}`} />
+            ) : unseenWarning ? (
+              <AlertCircle aria-hidden className="shui-wt-chip-icon shui-wt-chip-warn" />
+            ) : (
+              <ChevronDown aria-hidden className="shui-wt-chip-icon shui-wt-chip-caret" />
+            )}
+          </PopoverTrigger>
+        </Tip>
+        <PopoverContent
           side={side}
           align="start"
+          sideOffset={6}
+          collisionPadding={8}
           className="shui-wt-menu"
           aria-label="Branches"
-          // It holds a search field, rows and forms rather than menu items.
-          role="dialog"
-          aria-orientation={undefined}
-          // The filter takes focus through the trap Radix sets up, rather than
-          // autoFocus before it, which Shift+Tab could slip out of.
-          onOpenAutoFocus={(event) => {
-            if (!(FINE_POINTER || byKeyboard.current)) return
-            event.preventDefault()
-            filterRef.current?.focus()
-          }}
+          // The filter takes the focus with a fine pointer or from the keyboard;
+          // a phone keyboard popping up on every tap would hide the list.
+          initialFocus={(openType) => (FINE_POINTER || openType === 'keyboard' ? filterRef.current : false)}
           // A control that vanishes under focus (a note replaced, a form
-          // closed) leaves focus on the popup itself, where only Escape
-          // works: the arrows and Tab bring it back to the field or a row.
+          // closed) leaves focus on the popup itself: the arrows and Tab
+          // bring it back to the field or a row.
           onKeyDown={(event) => {
             if (event.target !== event.currentTarget) return
             if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'PageUp', 'PageDown', 'Tab'].includes(event.key)) return
@@ -1076,9 +1141,7 @@ export const WorktreeMenu = memo(function WorktreeMenu({
               ?.focus()
           }}
         >
-          {/* The menu keeps Tab from moving focus; let it reach the rows and their actions. */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: only lets Tab through to the controls inside */}
-          <div className="shui-wt-menu-body" onKeyDown={(event) => event.key === 'Tab' && event.stopPropagation()}>
+          <div className="shui-wt-menu-body">
             {panel !== null && panel.at === null && list !== null && dir !== null ? (
               panelBody(panel)
             ) : (
@@ -1093,7 +1156,7 @@ export const WorktreeMenu = memo(function WorktreeMenu({
                       setPanel(null)
                     }}
                     onKeyDown={onFilterKeyDown}
-                    placeholder="Switch to a branch, or name a new one…"
+                    placeholder="Search branches, or name a new one"
                     aria-label="Filter branches, or name a new one"
                     ref={filterRef}
                     autoComplete="off"
@@ -1194,33 +1257,39 @@ export const WorktreeMenu = memo(function WorktreeMenu({
                     {actions && lowered === '' ? topActions() : null}
                     {actions && lowered === '' && recentEntries.length > 0 ? (
                       <div className="shui-wt-section">
-                        <DropdownMenuSeparator />
+                        <Separator className="shui-wt-sep" />
                         <ListGroupLabel>Recent</ListGroupLabel>
                         {recentEntries.map((entry) => entryRow(entry, 0))}
                       </div>
                     ) : null}
                     {actions && lowered === '' ? (
                       <>
-                        <DropdownMenuSeparator />
+                        <Separator className="shui-wt-sep" />
                         <ListGroupLabel>Local</ListGroupLabel>
                       </>
                     ) : null}
                     {rows()}
                     {creatable ? (
                       <div className={`${uiClasses.treeItem} shui-wt-row`} style={depthOf(0)}>
-                        <button
-                          type="button"
-                          data-list-item=""
-                          className="shui-wt-row-main"
-                          aria-disabled={busy || undefined}
-                          title={`${newFolder}, a new branch from ${target ?? 'HEAD'}`}
-                          onClick={() => !busy && createFor(needle)}
+                        <Tip
+                          title={`New branch ${needle}`}
+                          lines={[`From ${target ?? 'HEAD'}, in a worktree of its own:`, <span key="path" className="shui-tip-path">{newFolder}</span>]}
                         >
-                          <span className={uiClasses.treeItemIcon}>
-                            <Plus aria-hidden />
-                          </span>
-                          <span className={uiClasses.treeItemLabel}>New worktree: {needle}</span>
-                        </button>
+                          <button
+                            type="button"
+                            data-list-item=""
+                            className="shui-wt-row-main"
+                            aria-disabled={busy || undefined}
+                            onClick={() => !busy && createFor(needle)}
+                          >
+                            <span className={uiClasses.treeItemIcon}>
+                              <Plus aria-hidden />
+                            </span>
+                            <span className={uiClasses.treeItemLabel}>
+                              Create <strong className="shui-wt-create-name">{needle}</strong>
+                            </span>
+                          </button>
+                        </Tip>
                         <span className={uiClasses.treeItemTrailing}>
                           <span className={uiClasses.treeItemMeta}>from {target ?? 'HEAD'}</span>
                         </span>
@@ -1241,8 +1310,32 @@ export const WorktreeMenu = memo(function WorktreeMenu({
               {panelBody(panel)}
             </Flyout>
           ) : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
+          {FINE_POINTER && list !== null && (panel === null || panel.at !== null) ? (
+            <div className="shui-wt-menu-foot" aria-hidden>
+              <span>
+                <Kbd>↑</Kbd>
+                <Kbd>↓</Kbd>
+                Move
+              </span>
+              <span>
+                <Kbd>↵</Kbd>
+                {creatable && matches.length === 0 ? 'Create' : 'Open'}
+              </span>
+              {actions ? (
+                <span>
+                  <Kbd>→</Kbd>
+                  Actions
+                </span>
+              ) : null}
+              <span className="spacer" />
+              <span>
+                <Kbd>esc</Kbd>
+                Close
+              </span>
+            </div>
+          ) : null}
+        </PopoverContent>
+      </Popover>
       <DeleteBranchDialog
         deleting={ops.deletingBranch}
         target={target}
@@ -1264,7 +1357,7 @@ export const WorktreeMenu = memo(function WorktreeMenu({
         }}
         title={ops.pushing ? `Push ${ops.pushing.branch} to ${ops.pushing.target.name}?` : 'Push?'}
         description={pushDescription(ops.pushing)}
-        confirmLabel="Push"
+        confirmLabel="Push branch"
         onConfirm={() => {
           ops.confirmPush()
           focusChip()
@@ -1282,9 +1375,9 @@ export const WorktreeMenu = memo(function WorktreeMenu({
           focusChip()
         }}
         title={ops.deletingRemote ? `Delete ${ops.deletingRemote} from its remote?` : 'Delete the remote branch?'}
-        description="The branch goes from the remote for everyone who fetches it. Local branches stay."
+        description="The branch is deleted from the remote for everyone who fetches it. Local branches stay."
         tone="danger"
-        confirmLabel="Delete"
+        confirmLabel="Delete branch"
         onConfirm={() => {
           ops.confirmDeleteRemote()
           focusChip()
@@ -1313,9 +1406,9 @@ export const WorktreeMenu = memo(function WorktreeMenu({
           focusChip()
         }}
         title={`Delete tag ${ops.deletingTag ?? ''}?`}
-        description="The tag goes from this repository; a remote that has it keeps its copy."
+        description="The tag is deleted from this repository. Remotes keep their copy."
         tone="danger"
-        confirmLabel="Delete"
+        confirmLabel="Delete tag"
         onConfirm={() => {
           ops.confirmDeleteTag()
           focusChip()

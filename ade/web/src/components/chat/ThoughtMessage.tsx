@@ -1,3 +1,4 @@
+import { ChevronRight } from 'lucide-react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { Caret } from '@/components/ui/Caret'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -107,21 +108,19 @@ export function ThoughtMessage({
     >
       <div className="chat-thought__presence-inner">
         <details className="iii-details group/thought" open>
-          <summary className="inline-flex items-center gap-2 font-sans text-[12px] text-ink-faint hover:text-ink transition-colors select-none">
-            <span
+          <summary className="chat-thought__summary inline-flex items-center gap-1.5 select-none">
+            <ChevronRight
               aria-hidden
-              className="iii-chev text-ink-ghost w-[8px] inline-block"
-            >
-              ▸
-            </span>
+              className="iii-chev size-4 shrink-0 text-ink-ghost"
+            />
             <span className="flex items-center gap-1.5">
-              <span className="thinking-shimmer">Thought…</span>
+              <span className="thinking-shimmer">Thinking</span>
               {message.streaming ? (
                 <Caret className="h-[10px] w-[5px]" />
               ) : null}
             </span>
           </summary>
-          <div className="mt-2 ml-2 pl-3 border-l border-rule-2 font-sans text-[13px] text-ink-faint italic whitespace-pre-wrap break-words">
+          <div className="chat-thought__body whitespace-pre-wrap break-words">
             <div
               ref={viewportRef}
               id={contentId}

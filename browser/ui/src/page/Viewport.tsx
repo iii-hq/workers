@@ -1,5 +1,6 @@
 import * as ConsoleUi from '@iii-dev/console-ui'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
+import { LoaderCircle } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type BrowserClickOptions, type BrowserPickHint, elementLabel } from '../lib/browser'
 import { cn } from '../lib/cn'
@@ -123,6 +124,9 @@ interface ViewportProps {
    * match the live viewport to the pane (no letterboxing). Not called while
    * annotating (the frozen frame must not resize under the pins). */
   onSurfaceResize?: (width: number, height: number) => void
+  /** The pointer entered or focus landed on the surface: the pane is in use,
+   * so it may claim the shared viewport back (another pane sized it). */
+  onEngage?: () => void
 }
 
 export function Viewport({
@@ -137,6 +141,7 @@ export function Viewport({
   requestHint,
   annotation = null,
   onSurfaceResize,
+  onEngage,
 }: ViewportProps) {
   const surfaceRef = useRef<HTMLDivElement>(null)
   const annotating = annotation !== null
@@ -390,6 +395,8 @@ export function Viewport({
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
       onPointerMove={handlePointerMove}
+      onPointerEnter={() => onEngage?.()}
+      onFocus={() => onEngage?.()}
       onPointerLeave={handlePointerLeave}
       onKeyDown={handleKeyDown}
       onPaste={(e) => {
@@ -437,16 +444,16 @@ export function Viewport({
           className="br-ui-vp-img"
         />
       ) : (
-        <div className={cn('br-ui-vp-empty', loading && !error && uiClasses.pulse)}>
-          {error ? (
+        error ? (
+          <div className="br-ui-vp-empty">
             <ConsoleUi.StatusPanel variant="alert" headline="Live view failed" detail={error} />
-          ) : (
-            <ConsoleUi.EmptyState
-              title={emptyLabel}
-              description="The page streams here as soon as its first frame arrives."
-            />
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="br-ui-vp-loading" role="status">
+            {loading ? <LoaderCircle size={16} aria-hidden className={uiClasses.spin} /> : null}
+            <span>{emptyLabel}</span>
+          </div>
+        )
       )}
       {hint ? (
         <div

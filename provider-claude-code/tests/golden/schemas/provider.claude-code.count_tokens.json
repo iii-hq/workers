@@ -1,5 +1,5 @@
 {
-  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} via the upstream count_tokens metering endpoint with the Claude Code subscription OAuth token; never runs the model and costs nothing.",
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, thinking_level?, messages} via the upstream count_tokens metering endpoint with the Claude Code subscription OAuth token; never runs the model and costs nothing.",
   "function_id": "provider::claude-code::count_tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -419,6 +419,18 @@
         ],
         "type": "string"
       },
+      "ThinkingLevel": {
+        "description": "\"off\" asks the provider not to reason at all and is honoured only where the model advertises `Model::supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns). \"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "type": "string"
+      },
       "Usage": {
         "properties": {
           "cache_read": {
@@ -521,6 +533,18 @@
           "string",
           "null"
         ]
+      },
+      "thinking_level": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ThinkingLevel"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Reasoning level the turn would stream with; mapped to the same `thinking` / `output_config.effort` fields, which Anthropic renders into the prompt. Absent behaves like the stream's absent level."
       },
       "tools": {
         "default": null,

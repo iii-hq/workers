@@ -8,7 +8,7 @@ import type {
   AgentProfileChangeOptions,
   AgentProfileSnapshot,
 } from '@/types/chat'
-import { EmptyState } from './EmptyState'
+import { AgentProfilePicker } from './AgentProfilePicker'
 import { DEFAULT_SYSTEM_PROMPT_STATE } from './system-prompt-selection'
 
 ;(
@@ -54,8 +54,7 @@ describe('Default preselection timing', () => {
     act(() =>
       root.render(
         <>
-          <EmptyState
-            variant="ready"
+          <AgentProfilePicker
             systemPrompt={DEFAULT_SYSTEM_PROMPT_STATE}
             onSystemPromptChange={() => {}}
             onAgentProfileChange={(profile, options) =>

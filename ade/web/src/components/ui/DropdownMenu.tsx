@@ -8,8 +8,7 @@ import { cn } from '@/lib/utils'
  * Radix dropdown-menu adapted to the console design system — the shadcn
  * dropdown-menu anatomy (Root / Trigger / Content / Group / Label /
  * CheckboxItem / Separator, plus Sub / RadioGroup below) restyled with the
- * house tokens (sans interface
- * text and ink/bg/rule), mirroring how `Select.tsx` adapts radix-select.
+ * house tokens (Inter, 14px rows, * text and ink/bg/rule), mirroring how `Select.tsx` adapts radix-select.
  *
  * Behavior (open on click, typeahead, arrow keys, Escape) is Radix's;
  * consumers that want hover-expansion control `open` themselves (see
@@ -32,7 +31,7 @@ export function DropdownMenuContent({
           sideOffset={sideOffset}
           collisionPadding={8}
           className={cn(
-            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 font-sans text-[12px] text-ink shadow-floating',
+            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 font-inter text-sm text-ink shadow-floating',
             className,
           )}
           {...props}
@@ -49,7 +48,7 @@ export function DropdownMenuLabel({
   return (
     <DropdownMenuPrimitive.Label
       className={cn(
-        'px-2 pt-1.5 pb-1 text-[12px] font-semibold text-ink-faint',
+        'px-2 pt-1.5 pb-1 text-xs font-medium text-ink-faint',
         className,
       )}
       {...props}
@@ -172,7 +171,7 @@ export function DropdownMenuSubTrigger({
           here — children space themselves, the caret always sits tight. */}
       <ChevronRight
         aria-hidden
-        className="ml-0.5 size-5 shrink-0 p-0.5 text-ink-ghost"
+        className="ml-0.5 size-5 shrink-0 p-0.5 text-ink-faint"
       />
     </DropdownMenuPrimitive.SubTrigger>
   )
@@ -194,7 +193,7 @@ export function DropdownMenuSubContent({
           alignOffset={alignOffset}
           collisionPadding={8}
           className={cn(
-            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 font-sans text-[12px] text-ink shadow-floating',
+            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 font-inter text-sm text-ink shadow-floating',
             className,
           )}
           {...props}

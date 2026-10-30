@@ -1,4 +1,6 @@
+import { PreviewCard } from '@base-ui/react/preview-card'
 import type { Element, Root, RootContent, Text } from 'hast'
+import { ArrowUpRight, ImageIcon, ImageOff } from 'lucide-react'
 import {
   type ComponentPropsWithoutRef,
   type ReactNode,
@@ -14,6 +16,7 @@ import { FileMentionPill } from '@/components/chat/lexical/FileMentionNode'
 import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
 import { SlashCommandPill } from '@/components/chat/lexical/SlashCommandNode'
 import { WorkerMentionPill } from '@/components/chat/mentions/WorkerMentionPill'
+import { CodeBlock } from '@/components/ui/CodeBlock'
 import {
   MermaidDiagram,
   MermaidStreamingContext,
@@ -35,13 +38,14 @@ import {
   parseFileMentionInner,
 } from '@/lib/file-mention-token'
 import { useOpenMessageFile } from '@/lib/file-navigation'
+import { inlineCodeKind, inlineFileIconSvg } from '@/lib/inline-code-kind'
 import {
   markdownFileLinkError,
   parseMarkdownFileLink,
 } from '@/lib/markdown-file-link'
 import { findMentions } from '@/lib/mentions/token'
+import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
 import { SKILL_PREFIX, SKILL_TOKEN_SOURCE } from '@/lib/slash-commands'
-import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 
 interface MarkdownProps {
@@ -200,7 +204,7 @@ function splitMention(value: string): Array<Text | Element> {
 }
 
 const linkClassName =
-  'text-ink underline decoration-rule decoration-1 underline-offset-2 hover:text-accent hover:decoration-accent transition-colors'
+  'chat-prose-link text-ink underline decoration-1 underline-offset-[3px] transition-colors'
 
 /** Open a validated local reference and announce recoverable failures beside its label. */
 function FileReferenceButton({
@@ -294,7 +298,92 @@ function MarkdownLink({
       rel="noopener noreferrer"
     >
       {children}
+      <ArrowUpRight aria-hidden className="chat-link-arrow size-4" />
     </a>
+  )
+}
+
+const INLINE_CODE_CLASS =
+  'font-code text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1 py-0.5'
+
+/** A file's language mark (Material, as the IDE tree draws it), 16px. */
+function InlineFileMark({ icon }: { icon: string }) {
+  const svg = inlineFileIconSvg(icon)
+  if (!svg) return null
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox={svg.viewBox}
+      className="chat-inline-file-mark"
+      // Generated from the bundled Material set, never from message content.
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: static, generated icon markup
+      dangerouslySetInnerHTML={{ __html: svg.body }}
+    />
+  )
+}
+
+/**
+ * Inline code that is more than code: a bare web address becomes a link
+ * that opens in a new tab; a file name gets its language mark, and opens in
+ * the IDE when the chat has one (like a markdown file link).
+ */
+function InlineCode({
+  text,
+  className,
+  children,
+  rest,
+}: {
+  text: string | null
+  className?: string
+  children: ReactNode
+  rest: ComponentPropsWithoutRef<'code'>
+}) {
+  const openFile = useOpenMessageFile()
+  const kind = text === null ? { kind: 'code' as const } : inlineCodeKind(text)
+  if (kind.kind === 'url') {
+    return (
+      <a
+        href={kind.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={`open ${kind.href}`}
+        className="chat-inline-code-link"
+      >
+        <code className={cn(INLINE_CODE_CLASS, className)} {...rest}>
+          {children}
+        </code>
+        <ArrowUpRight aria-hidden className="chat-link-arrow size-4" />
+      </a>
+    )
+  }
+  if (kind.kind === 'file') {
+    const code = (
+      <code
+        className={cn(INLINE_CODE_CLASS, 'chat-inline-file', className)}
+        {...rest}
+      >
+        <InlineFileMark icon={kind.icon} />
+        {children}
+      </code>
+    )
+    const ref = text ? parseMarkdownFileLink(text) : null
+    if (openFile && ref) {
+      return (
+        <FileReferenceButton
+          reference={ref}
+          className="chat-inline-file-button"
+          title={`open ${ref.path} in the IDE (current file on disk)`}
+        >
+          {code}
+        </FileReferenceButton>
+      )
+    }
+    return code
+  }
+  return (
+    <code className={cn(INLINE_CODE_CLASS, className)} {...rest}>
+      {children}
+    </code>
   )
 }
 
@@ -314,11 +403,116 @@ function MarkdownFileMention({ path, range }: FileMentionRef) {
   )
 }
 
+/** `/a/b/shot.png` → `shot.png`; a URL keeps its last path segment. */
+export function imageFileName(src: string | undefined, alt: string): string {
+  if (!src) return alt || 'image'
+  const withoutQuery = src.split(/[?#]/)[0]
+  const last = withoutQuery.split('/').filter(Boolean).pop()
+  try {
+    return last ? decodeURIComponent(last) : alt || 'image'
+  } catch {
+    return last ?? alt ?? 'image'
+  }
+}
+
+/** A source the browser can fetch on its own; a bare local path cannot be. */
+function isFetchableImage(src: string | undefined): boolean {
+  return (
+    !!src &&
+    /^(https?:|data:|blob:|\/[^/]|\.\.?\/|[^/:]+\/)/.test(src) &&
+    !/^\/Users\/|^\/home\/|^[A-Za-z]:\\/.test(src)
+  )
+}
+
+/**
+ * An image in a reply. A fetchable source renders inline; anything the
+ * browser cannot load (a path on the machine, a missing file) becomes a
+ * file chip naming the image, with the picture itself in a hover card
+ * when it turns out to load after all. No broken-image glyphs either way.
+ */
+function MarkdownImage({
+  src,
+  alt,
+  title,
+}: {
+  src?: string
+  alt: string
+  title?: string
+}) {
+  const [failed, setFailed] = useState(false)
+  const [previewFailed, setPreviewFailed] = useState(false)
+  const name = imageFileName(src, alt)
+  if (src && isFetchableImage(src) && !failed) {
+    return (
+      <img
+        className="chat-prose-image"
+        src={src}
+        alt={alt}
+        title={title}
+        loading="lazy"
+        onError={() => setFailed(true)}
+      />
+    )
+  }
+  const chip = (
+    // An image that is not drawn inline is still an image to a screen
+    // reader: named by its alt text (else its file name).
+    <span
+      className="chat-prose-image-chip"
+      data-image-chip=""
+      role="img"
+      aria-label={alt || name}
+      title={title ?? src ?? name}
+    >
+      <ImageIcon aria-hidden className="size-4 shrink-0 text-ink-faint" />
+      <span className="chat-prose-image-chip__name">{name}</span>
+      {alt && alt !== name ? (
+        <span className="chat-prose-image-chip__alt">{alt}</span>
+      ) : null}
+    </span>
+  )
+  if (!src) return chip
+  return (
+    <PreviewCard.Root>
+      <PreviewCard.Trigger
+        render={<span />}
+        className="chat-prose-image-chip-trigger"
+      >
+        {chip}
+      </PreviewCard.Trigger>
+      <PreviewCard.Portal>
+        <PreviewCard.Positioner side="top" sideOffset={8} className="z-50">
+          <PreviewCard.Popup
+            className={cn(
+              NEUTRAL_SURFACE,
+              'chat-prose-image-preview rounded-xl bg-popover p-1.5 font-inter text-popover-foreground shadow-md ring-1 ring-foreground/10',
+            )}
+          >
+            {previewFailed ? (
+              <span className="chat-prose-image-preview__missing">
+                <ImageOff aria-hidden className="size-4 shrink-0" />
+                No preview for {name}
+              </span>
+            ) : (
+              <img
+                className="chat-prose-image-preview__img"
+                src={src}
+                alt={alt}
+                onError={() => setPreviewFailed(true)}
+              />
+            )}
+          </PreviewCard.Popup>
+        </PreviewCard.Positioner>
+      </PreviewCard.Portal>
+    </PreviewCard.Root>
+  )
+}
+
 const components: Components = {
   h1: ({ className, ...rest }) => (
     <h1
       className={cn(
-        'font-mono text-[20px] font-medium tracking-[-0.02em] text-ink mt-6 mb-3 first:mt-0',
+        'chat-prose-h1 font-mono text-[20px] font-medium tracking-[-0.02em] text-ink mt-6 mb-3 first:mt-0',
         className,
       )}
       {...rest}
@@ -327,7 +521,7 @@ const components: Components = {
   h2: ({ className, ...rest }) => (
     <h2
       className={cn(
-        'font-mono text-[16px] font-semibold tracking-[-0.01em] text-ink mt-6 mb-2 first:mt-0',
+        'chat-prose-h2 font-mono text-[16px] font-semibold tracking-[-0.01em] text-ink mt-6 mb-2 first:mt-0',
         className,
       )}
       {...rest}
@@ -336,7 +530,7 @@ const components: Components = {
   h3: ({ className, ...rest }) => (
     <h3
       className={cn(
-        'font-mono text-[14px] font-semibold text-ink mt-5 mb-2 first:mt-0',
+        'chat-prose-h3 font-mono text-[14px] font-semibold text-ink mt-5 mb-2 first:mt-0',
         className,
       )}
       {...rest}
@@ -345,7 +539,7 @@ const components: Components = {
   h4: ({ className, ...rest }) => (
     <h4
       className={cn(
-        'font-mono text-[13px] font-semibold text-ink-faint mt-4 mb-2 first:mt-0',
+        'chat-prose-h4 font-mono text-[13px] font-semibold text-ink-faint mt-4 mb-2 first:mt-0',
         className,
       )}
       {...rest}
@@ -384,7 +578,7 @@ const components: Components = {
   blockquote: ({ className, ...rest }) => (
     <blockquote
       className={cn(
-        'border-l-2 border-rule pl-4 my-3 text-ink-faint italic',
+        'chat-prose-quote border-l-2 border-edge pl-4 my-3 text-ink-faint',
         className,
       )}
       {...rest}
@@ -392,11 +586,18 @@ const components: Components = {
   ),
   hr: ({ className, ...rest }) => (
     <hr
-      className={cn('my-6 border-0 border-t border-rule', className)}
+      className={cn('my-6 border-0 border-t border-edge', className)}
       {...rest}
     />
   ),
   a: MarkdownLink,
+  img: ({ src, alt, title }) => (
+    <MarkdownImage
+      src={typeof src === 'string' ? src : undefined}
+      alt={typeof alt === 'string' ? alt : ''}
+      title={typeof title === 'string' ? title : undefined}
+    />
+  ),
   strong: ({ className, ...rest }) => (
     <strong className={cn('font-semibold text-ink', className)} {...rest} />
   ),
@@ -415,16 +616,17 @@ const components: Components = {
         </code>
       )
     }
+    const text =
+      typeof children === 'string'
+        ? children
+        : Array.isArray(children) &&
+            children.every((c) => typeof c === 'string')
+          ? children.join('')
+          : null
     return (
-      <code
-        className={cn(
-          'font-code text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1 py-0.5',
-          className,
-        )}
-        {...rest}
-      >
+      <InlineCode text={text} className={className} rest={rest}>
         {children}
-      </code>
+      </InlineCode>
     )
   },
   pre: ({ node, className, children, ...rest }) => {
@@ -444,28 +646,12 @@ const components: Components = {
       if (language === 'mermaid') {
         return <MermaidDiagram source={source} />
       }
-      if (language === 'json') {
-        return (
-          <JsonHighlight
-            code={source}
-            className="rounded-md border border-rule-2 my-4"
-          />
-        )
-      }
-      if (language) {
-        return (
-          <CodeHighlight
-            code={source}
-            language={language}
-            className="rounded-md my-4 px-5 py-4"
-          />
-        )
-      }
+      return <CodeBlock code={source} language={language || undefined} />
     }
     return (
       <pre
         className={cn(
-          'rounded-md border border-rule-2 bg-bg overflow-x-auto px-5 py-4 my-4 font-code text-[12.5px] leading-[1.55] text-ink',
+          'rounded-xl border border-rule-2 bg-bg overflow-x-auto px-5 py-4 my-4 font-code text-[12.5px] leading-[1.55] text-ink',
           className,
         )}
         {...rest}
@@ -514,7 +700,7 @@ const components: Components = {
   table: ({ className, ...rest }) => (
     <TableViewport className="my-4">
       <TableFrame>
-        <Table density="compact" className={className} {...rest} />
+        <Table density="compact" inset className={className} {...rest} />
       </TableFrame>
     </TableViewport>
   ),

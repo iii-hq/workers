@@ -14,7 +14,7 @@
 //! a table compiled into the binary.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -73,8 +73,13 @@ fn cache_dir() -> PathBuf {
 
 type Loaded = Arc<Tokenizer>;
 
-fn loaded() -> &'static Mutex<HashMap<String, Loaded>> {
-    static LOADED: OnceLock<Mutex<HashMap<String, Loaded>>> = OnceLock::new();
+/// One slot per vocabulary id. Concurrent callers on a cold cache wait on
+/// the one load in flight instead of each downloading and parsing the same
+/// file; a failed load leaves the slot empty, so the next caller retries.
+type Slot = Arc<tokio::sync::OnceCell<Loaded>>;
+
+fn loaded() -> &'static Mutex<HashMap<String, Slot>> {
+    static LOADED: OnceLock<Mutex<HashMap<String, Slot>>> = OnceLock::new();
     LOADED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -85,11 +90,26 @@ fn loaded() -> &'static Mutex<HashMap<String, Loaded>> {
 /// own estimate rather than reporting a wrong count as exact; a poisoned
 /// cache lock is treated the same way as a miss.
 pub async fn resolve(reference: &VocabularyRef) -> Option<Loaded> {
-    if let Some(hit) = loaded().lock().ok()?.get(&reference.id).cloned() {
-        return Some(hit);
-    }
+    resolve_in(reference, &cache_dir()).await
+}
 
-    let path = cache_dir().join(format!("{}.json", reference.id));
+/// `resolve` against an explicit cache dir, so tests never mutate the
+/// process-wide environment.
+async fn resolve_in(reference: &VocabularyRef, dir: &Path) -> Option<Loaded> {
+    let slot = loaded()
+        .lock()
+        .ok()?
+        .entry(reference.id.clone())
+        .or_default()
+        .clone();
+    slot.get_or_try_init(|| async { load(reference, dir).await.ok_or(()) })
+        .await
+        .ok()
+        .cloned()
+}
+
+async fn load(reference: &VocabularyRef, dir: &Path) -> Option<Loaded> {
+    let path = dir.join(format!("{}.json", reference.id));
     let bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -106,13 +126,7 @@ pub async fn resolve(reference: &VocabularyRef) -> Option<Loaded> {
             bytes
         }
     };
-
-    let tokenizer = Tokenizer::from_bytes(&bytes).ok()?;
-    let tokenizer = Arc::new(tokenizer);
-    if let Ok(mut cache) = loaded().lock() {
-        cache.insert(reference.id.clone(), tokenizer.clone());
-    }
-    Some(tokenizer)
+    Tokenizer::from_bytes(&bytes).ok().map(Arc::new)
 }
 
 async fn fetch(url: &str) -> Option<Vec<u8>> {
@@ -146,4 +160,66 @@ pub fn count_chat_tokens(
             // its framing.
             .unwrap_or(0)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Concurrent counts on a cold cache share one fetch: a 33 MB vocabulary
+    /// downloaded and parsed once per caller would multiply the cold start by
+    /// the number of turns counting at that moment.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_cold_resolves_share_one_fetch() {
+        let dir = std::env::temp_dir().join(format!("vocab-flight-{}", uuid::Uuid::new_v4()));
+        let body = serde_json::json!({
+            "version": "1.0", "truncation": null, "padding": null, "added_tokens": [],
+            "normalizer": null, "post_processor": null, "decoder": null,
+            "pre_tokenizer": {"type": "Split", "pattern": {"Regex": "[\\s\\S]"},
+                              "behavior": "Isolated", "invert": false},
+            "model": {"type": "WordLevel", "vocab": {"[UNK]": 0}, "unk_token": "[UNK]"},
+        })
+        .to_string();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let served = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                served.fetch_add(1, Ordering::SeqCst);
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    // Slow enough that every caller arrives while the first
+                    // fetch is still in flight.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(body.as_bytes()).await;
+                });
+            }
+        });
+
+        let reference = VocabularyRef::new(
+            format!("flight-{}", uuid::Uuid::new_v4()),
+            format!("http://{addr}/tokenizer.json"),
+        );
+        let calls = (0..8).map(|_| {
+            let reference = reference.clone();
+            let dir = dir.clone();
+            tokio::spawn(async move { resolve_in(&reference, &dir).await })
+        });
+        for call in futures::future::join_all(calls).await {
+            assert!(call.unwrap().is_some());
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

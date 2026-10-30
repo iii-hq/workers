@@ -139,6 +139,7 @@ atomically and left owner-only (`0600`).
 | Function | Purpose | Agents |
 |---|---|---|
 | `secrets::set` | Create or rotate `{name, value, consumers?, description?, store?}`; omitted `consumers` keep the current list. `store: "env"` writes the value to `.env` | denied |
+| `secrets::compare-and-set` | Worker-only vault update `{name, expected, value, consumers?}`. `expected: null` creates only if absent; otherwise matches the exact current value. The caller must be an authorized consumer; creation requires consumers including that caller. Existing consumers are preserved. Returns only `{swapped}`; successful writes emit `secrets::changed` | denied |
 | `secrets::import` | Store a value from `process_env`, `dotenv` or `login_shell`, re-read by the worker. With `store: "env"`, a value already in `.env` or the worker's environment is shared as it is, and one from the login shell is copied into `.env` | denied |
 | `secrets::access` | Replace a secret's `consumers`; `[]` revokes everyone. With `store: "env"`, shares the variable, whether or not it is set yet | denied |
 | `secrets::delete` | Delete a secret and revoke all access. With `store: "env"`, stops sharing the variable; it stays in `.env` | denied |

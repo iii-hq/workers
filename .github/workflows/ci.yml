@@ -968,7 +968,7 @@ jobs:
           [[ -x "$state_bin" ]] || { echo "::error::state worker is unavailable"; exit 3; }
           echo "III_STATE_BIN=$state_bin" >> "$GITHUB_ENV"
 
-      - name: Run real-engine router lifecycle suite
+      - name: Run real-engine router lifecycle and retry suites
         run: |
           set -euo pipefail
           [[ -x "$III_ENGINE_BIN" ]] || { echo "::error::III_ENGINE_BIN is unavailable"; exit 3; }
@@ -977,6 +977,7 @@ jobs:
             --manifest-path llm-router/Cargo.toml \
             --no-default-features \
             --test integration \
+            --test request_retry \
             -- --nocapture --test-threads=1
 
   # ──────────────────────────────────────────────────────────────
@@ -1070,6 +1071,15 @@ jobs:
             --manifest-path crates/provider-integration-testkit/Cargo.toml \
             --features "${{ matrix.provider }}" \
             tests::provider_contract -- --ignored --exact --nocapture
+
+      - name: Run Codex login and migration contracts
+        if: matrix.provider == 'provider-openai-codex'
+        run: |
+          cargo test \
+            --locked \
+            --manifest-path crates/provider-integration-testkit/Cargo.toml \
+            --features provider-openai-codex \
+            codex_login -- --ignored --nocapture
 
       - name: Write contract summary
         if: success()

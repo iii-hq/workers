@@ -165,7 +165,7 @@ export function JudgeStep({
 
       <section
         aria-label="What Judge does"
-        className="rounded-lg border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900"
+        className="rounded-xl border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900"
       >
         <ul className="grid divide-y divide-neutral-200 @md:grid-cols-3 @md:divide-x @md:divide-y-0 dark:divide-neutral-800">
           {JUDGE_USES.map((use) => {
@@ -281,7 +281,7 @@ function JudgeRow({
     <div
       data-selected={checked || undefined}
       className={cn(
-        'flex flex-col rounded-lg border transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)]',
+        'flex flex-col rounded-xl border transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)]',
         checked
           ? 'border-neutral-400 bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-900'
           : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950',

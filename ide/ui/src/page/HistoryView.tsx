@@ -290,9 +290,8 @@ export function HistoryView({
         open={revertFor !== null}
         onOpenChange={(open) => (open ? undefined : setRevertFor(null))}
         title={revertFor ? `Revert ${revertFor.short}?` : 'Revert commit?'}
-        description="Makes a new commit on the current branch that undoes this one."
-        details={revertFor ? [revertFor.subject] : undefined}
-        confirmLabel="Revert"
+        description={`${revertFor ? `“${revertFor.subject}”. ` : ''}Makes a new commit on the current branch that undoes this one.`}
+        confirmLabel="Revert commit"
         onCancel={() => setRevertFor(null)}
         onConfirm={() => {
           const commit = revertFor
@@ -309,7 +308,7 @@ export function HistoryView({
         title="New branch"
         description={branchFor ? `Creates a branch at ${branchFor.short} without switching to it.` : undefined}
         label="Branch name"
-        placeholder="feat/…"
+        placeholder="feat/login-form"
         confirmLabel="Create branch"
         onCancel={() => setBranchFor(null)}
         onConfirm={(name) => {

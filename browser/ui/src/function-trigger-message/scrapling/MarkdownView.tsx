@@ -1,5 +1,6 @@
 import { Badge, Chip, EmptyState, MetaRow } from '@iii-dev/console-ui'
 import { FilterChip } from '../../lib/shared'
+import { TextPreview } from './text-preview'
 import {
   formatChars,
   markdownRequestSchema,
@@ -67,12 +68,10 @@ export function MarkdownView({
       {res.content.length === 0 ? (
         <EmptyState title="Empty" description="The conversion produced no text." />
       ) : (
-        <pre className="br-ui-text">
-          <code>
-            {res.content.slice(0, MAX_PREVIEW_CHARS)}
-            {truncated ? '…' : ''}
-          </code>
-        </pre>
+        <TextPreview
+          format={res.format}
+          text={`${res.content.slice(0, MAX_PREVIEW_CHARS)}${truncated ? '…' : ''}`}
+        />
       )}
     </div>
   )

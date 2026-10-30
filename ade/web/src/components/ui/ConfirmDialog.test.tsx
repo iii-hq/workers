@@ -3,7 +3,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
-import { type ConfirmOptions, useConfirm } from './ConfirmDialog'
+import { ConfirmDialog, type ConfirmOptions, useConfirm } from './ConfirmDialog'
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -88,5 +88,74 @@ describe('useConfirm', () => {
 
     unmount()
     await expect(second).resolves.toBe(false)
+  })
+})
+
+describe('ConfirmDialog with an action that takes time', () => {
+  function mountDialog(onConfirm: () => Promise<void>) {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    let open = true
+    const render = () =>
+      root.render(
+        <ConfirmDialog
+          open={open}
+          onOpenChange={(next) => {
+            open = next
+            render()
+          }}
+          title="Delete conversation?"
+          description="It is permanently deleted. This cannot be undone."
+          confirmLabel="Delete"
+          busyLabel="Deleting…"
+          tone="danger"
+          onConfirm={onConfirm}
+        />,
+      )
+    act(render)
+    mounted.push(() => {
+      act(() => root.unmount())
+      container.remove()
+    })
+  }
+
+  it('stays open and busy, then closes once the action is done', async () => {
+    let finish!: () => void
+    mountDialog(() => new Promise<void>((done) => (finish = done)))
+    act(() => button('Delete')?.click())
+    expect(button('Deleting…')?.disabled).toBe(true)
+    expect(button('Cancel')?.disabled).toBe(true)
+    expect(dialog()?.getAttribute('aria-busy')).toBe('true')
+    await act(async () => finish())
+    expect(dialog()).toBeNull()
+  })
+
+  it('says why it failed and offers to try again', async () => {
+    let attempts = 0
+    mountDialog(async () => {
+      attempts += 1
+      if (attempts === 1) throw new Error('the session is gone')
+    })
+    await act(async () => button('Delete')?.click())
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
+      'the session is gone',
+    )
+    expect(button('Close')).toBeDefined()
+    await act(async () => button('Retry delete')?.click())
+    expect(attempts).toBe(2)
+    expect(dialog()).toBeNull()
+  })
+
+  it('has a title, a description and the actions, nothing else', () => {
+    mountDialog(async () => {})
+    const body = dialog()
+    expect(body?.querySelector('ul')).toBeNull()
+    expect(
+      [...(body?.querySelectorAll('button') ?? [])]
+        .map((el) => el.textContent)
+        // The corner ✕ is the dialog's own close control.
+        .filter((label) => label !== '' && label !== 'Close'),
+    ).toEqual(['Cancel', 'Delete'])
   })
 })

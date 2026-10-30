@@ -51,7 +51,7 @@
         "format": "double"
       },
       "ghost_cursor": {
-        "description": "Draw the agent's ghost cursor where the action lands, for whoever watches the live view. Default true; false for a person's own input from a viewer, so the page shows no agent cursor.",
+        "description": "Accepted for older callers and ignored: the worker draws nothing into the page (no agent cursor), whoever acts.",
         "default": null,
         "type": [
           "boolean",

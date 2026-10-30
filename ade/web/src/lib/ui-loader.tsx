@@ -20,6 +20,7 @@ import {
 import {
   attachToComposer,
   insertIntoComposer,
+  mountedComposerCount,
   requestComposerFocus,
 } from '@/lib/composer-insert'
 import type { IiiClient } from '@/lib/iii-client'
@@ -48,7 +49,7 @@ import {
   setUiAssetsStatus,
 } from '@/lib/ui-slots'
 import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
-import { isValidScreen } from '@/lib/workspace-tabs'
+import { CHAT_SCREEN, isValidScreen } from '@/lib/workspace-tabs'
 import type {
   ComposerActionProps,
   ComposerControlProps,
@@ -434,6 +435,25 @@ function makeHost(
         )
       },
       compose(draft) {
+        const open = mountedComposerCount()
+        // Several chats and a caller that must not guess: nothing lands.
+        if (draft.ifUnambiguous === true && open > 1) return 'ambiguous'
+        // No chat to see it land in: the chat opens beside the caller's
+        // screen, at a third of the room, and takes the draft as it mounts.
+        // The isolated `#/worker/…` shell has no workspace to place it in.
+        if (
+          open === 0 &&
+          draft.beside !== undefined &&
+          isValidScreen(draft.beside) &&
+          !workerRouteFromHash(window.location.hash)
+        ) {
+          requestScreenOpen({
+            screen: CHAT_SCREEN,
+            relativeTo: draft.beside,
+            direction: 'right',
+            sizes: [2, 1],
+          })
+        }
         if (draft.files && draft.files.length > 0) attachToComposer(draft.files)
         if (draft.text) {
           insertIntoComposer(draft.text, {
@@ -442,6 +462,7 @@ function makeHost(
           })
         }
         requestComposerFocus()
+        return 'composed'
       },
       selectConversation(sessionId) {
         conversationAdapter.selectConversation(sessionId)

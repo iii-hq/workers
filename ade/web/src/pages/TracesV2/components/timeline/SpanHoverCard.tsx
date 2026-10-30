@@ -1,35 +1,40 @@
 /**
- * Hover detail card for timeline spans — shared by the live Timeline strip
- * and the static TraceTimeline. Schematic panel styling lifted from the
- * flame-graph tooltip: `bg-panel`, 1px rule border, no shadow, no rounding.
- * Rendered `fixed` at the cursor (clamped to the viewport edges) and
- * `pointer-events-none` so it never steals the hover.
+ * Hover detail card for timeline spans — shared by the live Timeline strip,
+ * the static TraceTimeline and the waterfall. A `FactCard` rendered `fixed`
+ * at the cursor (clamped to the viewport edges) and `pointer-events-none`
+ * so it never steals the hover. It is the "tooltip" for a bar whose label
+ * is clipped: the full name, the worker, the timing.
+ *
+ * The card carries the bar's own colour — the worker hue (alert on error)
+ * tints the kind-icon chip and fills the share-of-trace meter — so the
+ * card and the bar under the pointer read as one thing.
  */
 
-import { StatusDot } from '@/components/ui/StatusDot'
-
+import {
+  Fact,
+  FactCard,
+  FactCardHeader,
+  FactCardStatus,
+  FactList,
+  FactMeter,
+  type FactTone,
+} from '@/components/ui/FactCard'
 import {
   formatDuration,
   formatRelative,
   formatTimestamp,
 } from '../../lib/traceUtils'
 import { effectiveEnd, type TimelineSpan } from './layout'
+import { KIND_ICONS, resolveColor } from './spanVisuals'
 
-const CARD_MAX_WIDTH = 280
+const CARD_MAX_WIDTH = 300
 const CARD_CLEARANCE_Y = 170
 
-function statusTone(
-  status: TimelineSpan['status'],
-): 'accent' | 'alert' | 'warn' {
+function toneOf(status: TimelineSpan['status'], running: boolean): FactTone {
   if (status === 'error') return 'alert'
-  if (status === 'ok') return 'accent'
-  return 'warn'
-}
-
-const STATUS_TEXT: Record<'accent' | 'alert' | 'warn', string> = {
-  accent: 'text-accent',
-  alert: 'text-alert',
-  warn: 'text-warn',
+  if (running || status === 'pending') return 'pending'
+  if (status === 'ok') return 'ok'
+  return 'unset'
 }
 
 export interface SpanHoverCardProps {
@@ -60,75 +65,53 @@ export function SpanHoverCard({
   const running = span.endTime == null
   const duration = effectiveEnd(span, now) - span.startTime
   const status = span.status ?? (running ? 'pending' : 'ok')
-  const tone = statusTone(status)
+  const tone = toneOf(status, running)
   const statusLabel = running ? 'running' : status
+  const accent = resolveColor(span)
 
   return (
     <div
-      className="fixed z-50 pointer-events-none"
+      className="pointer-events-none fixed z-50"
+      role="tooltip"
       style={{
-        left: Math.min(x + 12, window.innerWidth - CARD_MAX_WIDTH),
+        left: Math.min(x + 12, window.innerWidth - CARD_MAX_WIDTH - 8),
         top: Math.min(y + 12, window.innerHeight - CARD_CLEARANCE_Y),
       }}
     >
-      <div
-        className="rounded-md bg-panel-raised shadow-floating px-3 py-2.5 min-w-[200px]"
+      <FactCard
+        accent={accent}
+        className="min-w-[220px]"
         style={{ maxWidth: CARD_MAX_WIDTH }}
       >
-        <div className="font-mono text-[12.5px] text-ink leading-tight mb-1.5 break-all">
-          {span.label ?? span.id}
-        </div>
-
-        {span.meta ? (
-          <div className="flex items-center gap-1.5 mb-2">
-            <StatusDot tone={tone} pulse={running} />
-            <span className="text-[11px] text-ink-faint font-mono truncate">
-              {span.meta}
-            </span>
-          </div>
+        <FactCardHeader
+          icon={KIND_ICONS[span.kind ?? 'zap']}
+          title={span.label ?? span.id}
+          mono
+        />
+        <FactCardStatus tone={tone} label={statusLabel} meta={span.meta} />
+        <FactList>
+          <Fact label="Duration" mono align="end">
+            {formatDuration(duration)}
+          </Fact>
+          <Fact label="Start" mono align="end">
+            {relativeStart
+              ? formatRelative(span.startTime)
+              : formatTimestamp(span.startTime)}
+          </Fact>
+          {tracePercent != null ? (
+            <Fact label="Of trace" mono align="end">
+              {tracePercent.toFixed(1)}%
+            </Fact>
+          ) : null}
+        </FactList>
+        {tracePercent != null ? (
+          <FactMeter
+            value={tracePercent}
+            label="share of the trace"
+            pending={running}
+          />
         ) : null}
-
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-mono">
-          <div className="flex justify-between gap-2">
-            <span className="text-ink-faint">Duration</span>
-            <span className="text-accent tabular-nums">
-              {formatDuration(duration)}
-            </span>
-          </div>
-          <div className="flex justify-between gap-2">
-            <span className="text-ink-faint">Start</span>
-            <span className="text-ink tabular-nums">
-              {relativeStart
-                ? formatRelative(span.startTime)
-                : formatTimestamp(span.startTime)}
-            </span>
-          </div>
-          <div className="flex justify-between gap-2">
-            <span className="text-ink-faint">Status</span>
-            <span className={STATUS_TEXT[tone]}>{statusLabel}</span>
-          </div>
-          {tracePercent != null && (
-            <div className="flex justify-between gap-2">
-              <span className="text-ink-faint">% trace</span>
-              <span className="text-ink tabular-nums">
-                {tracePercent.toFixed(1)}%
-              </span>
-            </div>
-          )}
-        </div>
-
-        {tracePercent != null && (
-          <div className="mt-2 h-1 bg-surface overflow-hidden">
-            <div
-              className="h-full bg-accent"
-              style={{
-                width: `${Math.max(1, tracePercent)}%`,
-                opacity: 0.7,
-              }}
-            />
-          </div>
-        )}
-      </div>
+      </FactCard>
     </div>
   )
 }

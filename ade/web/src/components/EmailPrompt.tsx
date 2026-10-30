@@ -110,7 +110,7 @@ export function EmailPrompt() {
             onChange={(event) => setNever(event.currentTarget.checked)}
           />
           <div className="mt-1 flex items-center justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={close}>
+            <Button type="button" variant="secondary" onClick={close}>
               Not now
             </Button>
             <Button type="submit" disabled={sending || !isEmailish(email)}>

@@ -88,11 +88,7 @@ export function ModelWaitingIndicator({
     outgoing: null,
     revision: 0,
   }))
-  const [longestLabel, setLongestLabel] = useState(resolvedLabel)
   useEffect(() => {
-    setLongestLabel((current) =>
-      resolvedLabel.length > current.length ? resolvedLabel : current,
-    )
     setLabelState((current) => {
       if (current.current === resolvedLabel) {
         return active ? current : { ...current, outgoing: null }
@@ -142,7 +138,15 @@ export function ModelWaitingIndicator({
         aria-hidden="true"
         className="chat-model-waiting__label-stack min-w-0 font-sans text-base font-medium sm:text-[0.8125rem]"
       >
-        <span className="chat-model-waiting__label-sizer">{longestLabel}</span>
+        {/* Sized to the label on screen (the longer of the two while they
+            swap), so the timer sits right after it instead of after the
+            longest label the turn has shown. */}
+        <span className="chat-model-waiting__label-sizer">
+          {labelState.outgoing &&
+          labelState.outgoing.length > labelState.current.length
+            ? labelState.outgoing
+            : labelState.current}
+        </span>
         {labelState.outgoing ? (
           <span
             key={`outgoing-${labelState.revision}`}
@@ -162,7 +166,7 @@ export function ModelWaitingIndicator({
       </div>
       <div
         aria-hidden="true"
-        className="min-w-[7ch] shrink-0 text-right font-mono text-base text-ink-ghost tabular-nums sm:text-[0.75rem]"
+        className="shrink-0 font-mono text-base text-ink-ghost tabular-nums sm:text-[0.75rem]"
       >
         {elapsed}
       </div>

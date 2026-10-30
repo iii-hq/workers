@@ -16,11 +16,22 @@ Three surfaces, one worker:
 
 1. **A mic in every chat.** A `Dictate` button joins the composer toolbar
    beside attach (the chat header on consoles without that slot). Click to
-   toggle, or hold to talk. Words appear as you speak in a header pill and
-   land in the composer when you stop, ready to edit before sending.
-2. **Read aloud.** Every finished turn gets a `Read aloud` action above the
-   composer that speaks the last reply.
-3. **A voice page.** The `voice` page shows the engine state, downloads the
+   toggle or hold to talk; from the keyboard, **Ctrl+Shift+D** on a Mac and
+   **Alt+Shift+D** elsewhere does the same, from the message box or anywhere
+   in the chat: tap to start and tap to stop, or hold the chord while you
+   talk and let go (the palette lists it as `Chat: Dictate`). While you
+   speak the mic turns blue and glows with your voice; the cleaned-up text
+   lands in the composer when you stop, ready to edit before sending.
+2. **Clean-up.** When you stop, the whole transcript goes once through a
+   chat model via llm-router (`stt.cleanup`, on by default) that rewrites it
+   into what you meant: grammar, punctuation and casing fixed, misheard words
+   and pronouns corrected from context, fillers and false starts dropped,
+   spoken self-corrections applied. Your words, meaning and language stay;
+   nothing is added. A slow or missing model hands the raw text back.
+3. **Read aloud.** The voice page reads any text; with `tts.chat_controls`
+   on, every chat also gets `Read aloud`, `Read selection` and `Voice chat`
+   controls above the composer (off by default).
+4. **A voice page.** The `voice` page shows the engine state, downloads the
    model, transcribes a WAV file with per-segment timestamps, and runs a
    dictation test.
 
@@ -353,6 +364,10 @@ endpointing change reloads the recognizer on next use.
 | `stt.max_utterance_secs` | `20` | Longest utterance before a forced commit. |
 | `stt.openai.base_url`, `api_key`, `model`, `language` | OpenAI defaults | The remote transcription endpoint. `api_key` accepts `${OPENAI_API_KEY}`. |
 | `stt.router.model`, `language` | empty | Router model (`provider::model`) for `voice::transcribe` and for the second pass of every dictated sentence; empty lets the router pick. Keys live in the router's Settings, not here. |
+| `stt.cleanup.enabled` | `true` | Rewrite a finished dictation through a chat model (`router::complete`) before `voice::dictation::stop` returns it: grammar, punctuation, misheard words, fillers, self-corrections. Off returns the recognizer's text. |
+| `stt.cleanup.model` | empty | Chat model as llm-router lists it (`provider::model`). Empty uses the default model of the first configured provider. |
+| `stt.cleanup.timeout_ms` | `12000` | Longest the clean-up may take; past it the raw transcript is returned. |
+| `stt.cleanup.instructions` | empty | Extra guidance for the clean-up: names, product terms, spellings, style. |
 | `stt.whisper_cpp.command` | `whisper-cli` | Command on `PATH`, or an explicit executable path. |
 | `stt.whisper_cpp.model` | `whisper-large-v3-turbo` | Catalog id (`whisper-tiny`, `whisper-base`, `whisper-small`, `whisper-medium`, `whisper-large-v3-turbo`) or a custom GGML file path. Download catalog models from the Voice page or `voice::models::download`; custom paths remain user-managed. |
 | `stt.whisper_cpp.language`, `timeout_secs` | `auto`, `300` | ISO 639-1 language hint (`pt`) or detection, and the per-process timeout. |
@@ -361,6 +376,7 @@ endpointing change reloads the recognizer on next use.
 | `tts.piper.command`, `tts.piper.model` | `piper`, `piper-pt-br-faber-medium` | Local neural TTS executable and downloaded voice catalog id. Audio plays in the browser. |
 | `tts.voice`, `tts.rate_wpm` | system default | Host voice and speaking rate. |
 | `tts.max_speak_chars` | `4000` | Longest text one `voice::speak` call reads. |
+| `tts.chat_controls` | `false` | Show `Read aloud`, `Read selection` and `Voice chat` above the chat composer. The voice page reads aloud either way. |
 | `tts.openai.base_url`, `api_key`, `model`, `voice` | OpenAI defaults | The remote speech endpoint. |
 | `tts.router.model`, `voice`, `format` | empty, empty, `mp3` | Router model, voice id or name, and container for `voice::speak`. |
 | `max_audio_bytes` | `10485760` | Largest inline (`audio_base64`) file for `voice::transcribe`. |
@@ -375,12 +391,12 @@ the `openai` backend with an empty `api_key`.
 | Function | What it does |
 | --- | --- |
 | `voice::transcribe` | A WAV file (path or base64) to text with segments. |
-| `voice::dictation::start` / `push` / `stop` / `list` | Live sessions. |
+| `voice::dictation::start` / `push` / `stop` / `list` | Live sessions. `stop` returns the cleaned `text` plus `raw_text` and `cleanup_model` when the clean-up changed it. |
 | `voice::speak` | Generate audio for the requesting client to play. |
 | `voice::speech::prepare` | Prepare a growing Markdown snapshot without audio; returns plain text and the chunk character cap. |
 | `voice::speak::stop` | Legacy compatibility: returns `stopped: 0`; browser playback is stopped locally. |
 | `voice::models::list` / `voice::models::download` / `voice::models::remove` | Local model catalog, install, delete. |
-| `voice::doctor` | Backends, model state, open sessions. |
+| `voice::doctor` | Backends, model state, the clean-up model, open sessions. |
 
 Triggers: `voice::transcript`, `voice::session-started`,
 `voice::session-stopped`, `voice::model-progress`. The legacy

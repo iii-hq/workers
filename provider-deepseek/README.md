@@ -7,8 +7,9 @@ Implements the provider protocol from
 `provider::deepseek::refresh_models` (upstream `GET /models`, enriched with
 local metadata → `router::models::reconcile`), plus
 `provider::deepseek::count_tokens` (prompt token counting behind
-`router::count_tokens`, with DeepSeek's own published vocabulary rather than
-a borrowed one; never runs the model and costs nothing).
+`router::count_tokens`: the prompt DeepSeek-V4.1's published encoder builds
+from the wire, counted with DeepSeek's own vocabulary rather than a borrowed
+one; never runs the model and costs nothing).
 
 Default upstream: `https://api.deepseek.com/chat/completions` — DeepSeek's
 OpenAI-compatible surface is rooted at the bare host, with no `/v1` segment.

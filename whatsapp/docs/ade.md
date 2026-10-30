@@ -127,7 +127,10 @@ and message bodies.
 
 Session/media limits and both timeouts apply to subsequent operations. A lower
 session limit prevents additional creation without deleting existing accounts.
-Changing `database` or `data_dir` requires restart. Changing the database target
+Changing `database`, `data_dir`, `device_name` or `device_platform` requires restart.
+`device_name` and `device_platform` reach WhatsApp only when a device pairs, so
+an already linked device keeps its name until it is unlinked and paired again.
+Changing the database target
 does not copy existing keys or archives; use the documented migration process. `max_events`
 requires restart because it sizes the native and Cloud event queues and native
 session event rings. The page reports pending restart fields. Compose `config_override`

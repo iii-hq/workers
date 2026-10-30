@@ -48,7 +48,7 @@ function render(ui: React.ReactElement): string {
 }
 
 describe('ModelPickerPanel', () => {
-  it('renders one rail glyph per provider group plus the add affordance', () => {
+  it('heads each provider group with its mark and name, then the add affordance', () => {
     const html = render(
       <ModelPickerPanel
         value="openai::gpt-5"
@@ -60,9 +60,8 @@ describe('ModelPickerPanel', () => {
         onAddProvider={() => {}}
       />,
     )
-    expect(html).toContain('aria-label="providers"')
-    expect(html).toContain('data-provider-rail="anthropic"')
-    expect(html).toContain('data-provider-rail="openai"')
+    expect(html).toContain('aria-label="Anthropic"')
+    expect(html).toContain('aria-label="OpenAI"')
     expect(html).toContain('aria-label="Add a provider"')
     // The declared mark paints as a mask; the provider without one gets its initial.
     expect(html).toContain('data-provider-icon="mark"')

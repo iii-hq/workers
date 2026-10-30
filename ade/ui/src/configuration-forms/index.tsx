@@ -1,5 +1,6 @@
 import type { ConfigFormProps, Host } from '@iii-dev/console-ui'
 import { DeclarativeWorkerConfigurationForm } from './form'
+import { IdeEditorSection } from './ide-editor-section'
 import { validateWorkerConfigurationManifest, workerConfigurationManifest, workerConfigurationSpecs } from './manifest'
 import { ConfigurationHostContext } from './model-catalog'
 import { normalizeWorkerConfiguration } from './normalization'
@@ -28,6 +29,8 @@ export function WorkerConfigurationForm({ configurationId, ...props }: ConfigFor
   return (
     <DeclarativeWorkerConfigurationForm
       spec={spec}
+      // The IDE's page also carries its browser-kept editor preferences.
+      leading={spec.id === 'shell' ? <IdeEditorSection /> : undefined}
       {...props}
       value={value}
       onChange={(next) => props.onChange(normalizeWorkerConfiguration(configurationId, next))}

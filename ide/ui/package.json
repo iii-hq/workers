@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*",
+    "@iii-workers/editor-prefs": "workspace:*",
     "@iii-workers/terminal-font": "workspace:*",
     "@pierre/trees": "1.0.0-beta.6",
     "@xterm/addon-fit": "^0.11.0",
@@ -21,6 +22,7 @@
     "@types/react-dom": "catalog:",
     "esbuild": "catalog:",
     "lucide-react": "catalog:",
+    "material-icon-theme": "^5.39.0",
     "react": "catalog:",
     "react-dom": "catalog:",
     "typescript": "catalog:",

@@ -62,7 +62,7 @@ function promptIcon(
  */
 
 const PICK_CLASS =
-  'group flex w-full min-w-0 items-start gap-4 rounded-lg border bg-white px-4 py-3.5 text-left transition-[background-color,border-color,box-shadow] duration-150 ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none dark:bg-neutral-950 dark:focus-visible:ring-offset-neutral-950'
+  'group flex w-full min-w-0 items-start gap-4 rounded-xl border bg-white px-4 py-3.5 text-left transition-[background-color,border-color,box-shadow] duration-150 ease-[var(--motion-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none dark:bg-neutral-950 dark:focus-visible:ring-offset-neutral-950'
 const PICK_IDLE =
   'border-neutral-200 hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:border-neutral-700 dark:hover:bg-neutral-900'
 const PICK_CHECKED =

@@ -35,7 +35,7 @@ export function EmptyState({
   const buttons = all.length ? (
     <div className={cn('flex flex-wrap gap-1.5', compact ? 'mt-2' : 'mt-3')}>
       {all.map((a) => (
-        <Button key={a.label} variant="ghost" size="sm" onClick={a.onClick}>
+        <Button key={a.label} variant="secondary" size="sm" onClick={a.onClick}>
           {a.label}
         </Button>
       ))}
@@ -45,7 +45,7 @@ export function EmptyState({
     return (
       <div
         className={cn(
-          'flex items-start gap-3 rounded-md bg-surface px-3 py-2.5',
+          'flex items-start gap-3 rounded-xl bg-surface px-3 py-2.5',
           className,
         )}
       >
@@ -72,7 +72,7 @@ export function EmptyState({
           />
         ) : null}
         <div className="flex-1">
-          <p className="font-sans text-[13px] text-ink-faint">{description}</p>
+          <p className="text-ink-faint">{description}</p>
           {buttons}
         </div>
       </div>

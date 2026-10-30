@@ -128,7 +128,7 @@ export function Rows({
   return (
     <Tag
       className={cn(
-        'flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-lg border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-950',
+        'flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-950',
         className,
       )}
     >
@@ -574,7 +574,7 @@ function RunningLine({
 
 /** The setup's card surface: the same frame `Rows` draws. */
 const CARD =
-  'flex flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950'
+  'flex flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950'
 
 /**
  * A step past `SLOW_STEP_MS`, on its own card (the Browser step's download).
@@ -722,7 +722,7 @@ export function Terminal({ children }: { children: React.ReactNode }) {
 
 /** The code surface: one neutral step off the dialog in either theme. */
 const TERMINAL_SURFACE =
-  'flex flex-col rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 font-code text-ink dark:border-neutral-800 dark:bg-neutral-900'
+  'flex flex-col rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 font-code text-ink dark:border-neutral-800 dark:bg-neutral-900'
 
 export function CommandLine({
   command,

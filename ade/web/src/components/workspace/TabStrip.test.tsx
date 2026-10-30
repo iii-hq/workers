@@ -61,4 +61,34 @@ describe('TabStrip markup', () => {
   it('renders no overflow menu before the strip has been measured', () => {
     expect(markup()).not.toContain('All workspaces')
   })
+
+  it('disables the new-tab control at the configured limit and says why', () => {
+    const html = renderToStaticMarkup(
+      <TabStrip
+        tabs={tabs}
+        activeTabId="a"
+        extPageTitles={new Map()}
+        onActivate={vi.fn()}
+        onClose={vi.fn()}
+        onCreate={vi.fn()}
+        createDisabled
+        createDisabledTitle="Tab limit reached (3)."
+        onRename={vi.fn()}
+        onReorder={vi.fn()}
+      />,
+    )
+    expect(html).toMatch(
+      /aria-label="New workspace"[^>]*aria-disabled="true"[^>]*disabled=""/,
+    )
+    expect(html).toContain('title="Tab limit reached (3)."')
+    // The tabs themselves are untouched by the limit.
+    expect(html.match(/role="tab"/g)).toHaveLength(3)
+    expect(html).toContain('aria-label="Close IDE"')
+  })
+
+  it('leaves the new-tab control enabled below the limit', () => {
+    expect(markup()).not.toMatch(
+      /aria-label="New workspace"[^>]*aria-disabled="true"/,
+    )
+  })
 })

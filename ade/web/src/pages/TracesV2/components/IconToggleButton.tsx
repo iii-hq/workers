@@ -2,11 +2,7 @@
 // toolbars. Filled with ink when `active`; outlined otherwise. The
 // `label` argument doubles as `aria-label` and as the tooltip text.
 
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/Tooltip'
+import { Hint } from '@/components/ui/Hint'
 import { cn } from '@/lib/utils'
 
 interface IconToggleButtonProps {
@@ -23,24 +19,21 @@ export function IconToggleButton({
   children,
 }: IconToggleButtonProps) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={onClick}
-          aria-label={label}
-          aria-pressed={active}
-          className={cn(
-            'inline-flex items-center justify-center w-7 h-7 rounded-sm transition-colors',
-            active
-              ? 'bg-ink text-bg'
-              : 'bg-transparent text-ink-faint hover:text-ink hover:bg-surface-hover',
-          )}
-        >
-          {children}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">{label}</TooltipContent>
-    </Tooltip>
+    <Hint label={label}>
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        aria-pressed={active}
+        className={cn(
+          'inline-flex items-center justify-center w-7 h-7 rounded-sm transition-colors',
+          active
+            ? 'bg-ink text-bg'
+            : 'bg-transparent text-ink-faint hover:text-ink hover:bg-surface-hover',
+        )}
+      >
+        {children}
+      </button>
+    </Hint>
   )
 }

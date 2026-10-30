@@ -1,13 +1,18 @@
 import { type ConfigFormProps, SettingsList, SettingsSection } from '@iii-dev/console-ui'
-import { useEffect, useRef } from 'react'
+import { type ReactNode, useEffect, useRef } from 'react'
 import { FieldRenderer } from './fields'
 import type { WorkerConfigurationSpec } from './types'
 import { legacyConfigurationValue, migrateLegacyConfiguration } from './value'
 
 export function DeclarativeWorkerConfigurationForm({
   spec,
+  leading,
   ...props
-}: ConfigFormProps & { spec: WorkerConfigurationSpec }) {
+}: ConfigFormProps & {
+  spec: WorkerConfigurationSpec
+  /** A section ahead of the spec's own, for settings that are not part of the entry. */
+  leading?: ReactNode
+}) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const legacyWrapper = spec.legacyWrapper
   const value = legacyWrapper ? legacyConfigurationValue(props.value, legacyWrapper) : props.value
@@ -28,11 +33,9 @@ export function DeclarativeWorkerConfigurationForm({
   }, [props.focusField])
 
   return (
+    // No title of its own: the settings page header already names the worker.
     <div ref={rootRef} className="console-worker-config" data-configuration-id={spec.id}>
-      <div className="console-worker-config-intro">
-        <h2>{spec.title}</h2>
-        <p>{spec.description}</p>
-      </div>
+      {leading}
       {spec.sections.map((section) => (
         <SettingsSection key={section.title} title={section.title} description={section.description}>
           <SettingsList>

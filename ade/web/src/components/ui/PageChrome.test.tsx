@@ -16,10 +16,10 @@ function renderHeader(configurationId?: string) {
 
 describe('PageHeader worker configuration action', () => {
   it('adds the console-owned configuration action for a configured page', () => {
-    expect(renderHeader('browser')).toContain('aria-label="Configure worker"')
+    expect(renderHeader('browser')).toContain('aria-label="Settings"')
   })
 
   it('does not add a configuration action without page metadata', () => {
-    expect(renderHeader()).not.toContain('aria-label="Configure worker"')
+    expect(renderHeader()).not.toContain('aria-label="Settings"')
   })
 })

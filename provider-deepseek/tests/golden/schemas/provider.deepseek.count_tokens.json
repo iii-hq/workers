@@ -1,5 +1,5 @@
 {
-  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with DeepSeek's own published vocabulary; never runs the model and costs nothing.",
+  "description": "Count prompt tokens for {model, system_prompt?, tools?, messages, thinking_level?, response_format?} locally with DeepSeek's own published vocabulary; never runs the model and costs nothing.",
   "function_id": "provider::deepseek::count_tokens",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -409,6 +409,18 @@
         ],
         "type": "string"
       },
+      "ResponseFormat": {
+        "properties": {
+          "schema": true,
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
       "StopReason": {
         "enum": [
           "end",
@@ -416,6 +428,18 @@
           "function_call",
           "aborted",
           "error"
+        ],
+        "type": "string"
+      },
+      "ThinkingLevel": {
+        "description": "\"off\" asks the provider not to reason at all and is honoured only where the model advertises `Model::supports_thinking_off` (elsewhere the provider falls back to its own lowest setting, or omits the parameter, and warns). \"minimal\" requests the lowest reasoning effort and needs only `thinking` support; levels map to provider-native knobs via `Model::thinking_budgets`.",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
         ],
         "type": "string"
       },
@@ -514,6 +538,18 @@
         "description": "Model id the prompt targets. Reported back unchanged; every DeepSeek chat model shares the one vocabulary.",
         "type": "string"
       },
+      "response_format": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ResponseFormat"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's response format. DeepSeek renders the `json_object` body it becomes into the system message, so it is billed as prompt."
+      },
       "system_prompt": {
         "default": null,
         "description": "System prompt counted as its own wire message when present.",
@@ -521,6 +557,18 @@
           "string",
           "null"
         ]
+      },
+      "thinking_level": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ThinkingLevel"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The turn's thinking level. `off` counts the chat-mode prompt; any other level the thinking prompt at the effort it maps to; none the API default (thinking, `high`)."
       },
       "tools": {
         "default": null,

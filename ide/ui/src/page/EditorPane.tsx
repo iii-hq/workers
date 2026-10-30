@@ -21,13 +21,16 @@ import {
   Button,
   CodeEditor,
   type CodeEditorHandle,
+  type CodeEditorQuickEdit,
   type CodeEditorSelection,
   type Host,
   IconButton,
+  Tooltip,
+  useConfirm,
 } from '@iii-dev/console-ui'
-import { CircleAlert, Code, Eye, FileDiff, FileX, FolderOpen, Hash, Lock, MessageSquareQuote, RefreshCw, X } from 'lucide-react'
+import { CircleAlert, Code, Eye, FileCheck, FileDiff, FileX, FolderOpen, Hash, Lock, RefreshCw, X } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
+import { copyText, errorMessage, formatBytes } from '@iii-dev/console-ui/format'
 import { Breadcrumbs } from './Breadcrumbs'
 import {
   coderReadFile,
@@ -36,6 +39,8 @@ import {
   joinPath,
 } from './coder'
 import { loadRevisionFile } from './diff-load'
+import { rememberedViewState, rememberViewState } from './editor-cache'
+import { useEditorPrefs } from './editor-prefs'
 import { readFileBytes } from './file-bytes'
 import { referenceWarning } from './reference-warning'
 import { ImagePreview } from './image-preview'
@@ -50,14 +55,24 @@ import { imageMimeFromPath, monacoLangFromPath } from './file-kinds'
 import { PaneNotice } from './PaneNotice'
 import { dirname } from './paths'
 import { isQuickOpenKey, quickOpenPlatform } from './quick-open'
-import { type LineRange, selectionLines } from './reference'
+import { resolveQuickEditModel, runQuickEdit } from './quick-edit'
+import { modelLabel } from './use-commit-message'
+import { formatFileReference, type LineRange, referenceLabel, selectionLines } from './reference'
 import { isRichPreviewPath, richPreviewNode } from './rich-preview'
+import { isSaveKey, saveKeyAria, saveKeyLabel } from './save-key'
 
 export { imageMimeFromPath, monacoLangFromPath } from './file-kinds'
 
 /** Read-only reasons: binary content, or a byte-capped read (saving a
     truncated body would destroy the tail). */
 export type ReadOnlyReason = 'binary' | 'truncated' | null
+
+/** Where "Add to Chat" put a reference: in a chat's composer, or nowhere,
+    because several chats are open and the console would not guess. */
+export type ReferenceDelivery = 'composed' | 'ambiguous'
+
+/** How long a note about a reference stays over the code. */
+const REFERENCE_NOTE_MS = 4000
 
 const PLATFORM = quickOpenPlatform()
 
@@ -117,6 +132,10 @@ interface EditorPaneProps {
   goToLineSeq?: number
   /** Acknowledge a successfully handled request so remounts cannot replay it. */
   onRevealHandled?: (relPath: string, seq: number) => void
+  /** A one-shot "open preview" request (the explorer's Open preview), applied
+      once the file is loaded and acknowledged like a reveal. */
+  previewRequest?: { seq: number } | null
+  onPreviewHandled?: (relPath: string, seq: number) => void
   onRevealDir: (dir: string) => void
   onCompare: (relPath: string) => void
   /** The page's word on the file being gone from disk (the live feed, a
@@ -130,9 +149,14 @@ interface EditorPaneProps {
   protectedPath?: boolean
   /** Close this tab (the way out of a file that is gone). */
   onClose?: () => void
-  /** Offer "Reference in chat" on a selection: the chosen lines go to the
-      composer as a `#file(path:from-to)` mention. Absent = no offer. */
-  onReferenceInChat?: (relPath: string, range: LineRange) => void
+  /** Offer "Add to Chat" (⌘L) on a selection: the chosen lines' absolute
+      `#file(path:from-to)` reference goes to the chat beside the IDE. When
+      that is `ambiguous` the reference is copied instead. Absent = no offer
+      (Copy Reference is always there). */
+  onAddToChat?: (reference: string) => ReferenceDelivery
+  /** The chat beside this pane: Quick Edit (⌘I) uses the model its
+      composer has picked. */
+  conversationId?: string | null
   /** Open the page's go-to-file overlay. The editor body reclaims its
       chord in the capture phase: Monaco binds Ctrl+P to cursor-up on a
       Mac and would cancel the event before the page's keys see it. */
@@ -153,6 +177,8 @@ function EditorPaneView({
   reveal = null,
   goToLineSeq = 0,
   onRevealHandled,
+  previewRequest = null,
+  onPreviewHandled,
   onDirtyChange,
   onRevealDir,
   onCompare,
@@ -161,7 +187,8 @@ function EditorPaneView({
   onMissing,
   protectedPath = false,
   onClose,
-  onReferenceInChat,
+  onAddToChat,
+  conversationId,
 }: EditorPaneProps) {
   const absPath = joinPath(root, relPath)
   const editorRef = useRef<CodeEditorHandle>(null)
@@ -337,19 +364,69 @@ function EditorPaneView({
     setCitationWarning(referenceWarning(reveal, draft, readOnly))
     onRevealHandled?.(relPath, reveal.seq)
   }, [reveal, ready, readOnly, showPreview, draft, setPreviewChoice, onRevealHandled, relPath])
-  const selectionActions = useMemo(
-    () =>
-      onReferenceInChat
+  // Applied once loaded, so the choice lands in the cache entry and survives
+  // a tab switch; a failed read keeps the request until a retry succeeds.
+  const handledPreviewSeq = useRef<number | null>(null)
+  useEffect(() => {
+    if (!previewRequest || !ready || handledPreviewSeq.current === previewRequest.seq) return
+    handledPreviewSeq.current = previewRequest.seq
+    if (previewable && readOnly !== 'binary') setPreviewChoice(true)
+    onPreviewHandled?.(relPath, previewRequest.seq)
+  }, [previewRequest, ready, previewable, readOnly, setPreviewChoice, onPreviewHandled, relPath])
+  // A reference to the selected lines, for a chat: put there with Add to
+  // Chat, or copied for the person to paste into the chat they choose.
+  // What happened is said for a moment over the code.
+  const [referenceNote, setReferenceNote] = useState<string | null>(null)
+  useEffect(() => {
+    if (referenceNote === null) return
+    const timer = window.setTimeout(() => setReferenceNote(null), REFERENCE_NOTE_MS)
+    return () => window.clearTimeout(timer)
+  }, [referenceNote])
+  const selectionActions = useMemo(() => {
+    const reference = (range: LineRange) => formatFileReference(absPath, range)
+    const copy = (range: LineRange, done: string) => {
+      const where = referenceLabel(relPath, range)
+      void copyText(reference(range)).then((copied) =>
+        setReferenceNote(copied ? done.replace('%s', where) : `Couldn't copy ${where}. The browser blocked the clipboard.`),
+      )
+    }
+    return [
+      ...(onAddToChat
         ? [
             {
               id: 'reference-in-chat',
-              label: 'Reference in chat',
-              icon: <MessageSquareQuote aria-hidden />,
-              run: (selection: CodeEditorSelection) => onReferenceInChat(relPath, selectionLines(selection)),
+              label: 'Add to Chat',
+              shortcut: 'Mod+L',
+              run: (selection: CodeEditorSelection) => {
+                const range = selectionLines(selection)
+                if (onAddToChat(reference(range)) === 'ambiguous') {
+                  copy(range, 'More than one chat is open, so %s was copied. Paste it into the one you mean.')
+                }
+              },
             },
           ]
-        : undefined,
-    [onReferenceInChat, relPath],
+        : []),
+      {
+        id: 'copy-reference',
+        label: 'Copy Reference',
+        run: (selection: CodeEditorSelection) => copy(selectionLines(selection), 'Copied %s. Paste it into any chat.'),
+      },
+    ]
+  }, [onAddToChat, absPath, relPath])
+  const { confirm, dialog: confirmDialog } = useConfirm()
+  // Back to the same scroll and cursor after a tab switch or a remount.
+  const rememberPlace = useCallback((state: unknown) => rememberViewState(absPath, state), [absPath])
+  // Quick Edit (⌘I): the editor runs the prompt; this asks the model.
+  const chatModel = host.chat?.composerModel?.(conversationId ?? null) ?? null
+  const quickEdit = useMemo<CodeEditorQuickEdit>(
+    () => ({
+      shortcut: 'Mod+I',
+      model: chatModel,
+      modelLabel: chatModel ? modelLabel(chatModel) : null,
+      run: async (request) =>
+        runQuickEdit(host, request, relPath, request.model ?? (await resolveQuickEditModel(host, conversationId))),
+    }),
+    [host, relPath, conversationId, chatModel],
   )
   // The page's counter outlives this pane: a request made before it
   // mounted (in another file) is not this pane's to answer.
@@ -361,6 +438,8 @@ function EditorPaneView({
     window.requestAnimationFrame(() => gotoInputRef.current?.select())
   }, [goToLineSeq])
   const canSave = pane.phase === 'ready' && readOnly === null && dirty && !saving
+  // Size, line count and Save stay out of the header unless asked for (IDE settings).
+  const [prefs] = useEditorPrefs()
 
   const setDraft = useCallback(
     (next: string) => {
@@ -409,9 +488,11 @@ function EditorPaneView({
       .finally(() => setSaving(false))
   }, [host, absPath, relPath, cache, saving, missing, onDirtyChange])
 
+  // On the pane, not the editor: the editor's keys bubble here, and so do
+  // the header's, so the chord also saves from the save icon itself.
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      if (isSaveKey(e)) {
         e.preventDefault()
         save()
       }
@@ -436,10 +517,10 @@ function EditorPaneView({
       : `loading ${relPath}…`
 
   return (
-    <div className="shui-main-pane">
+    // biome-ignore lint/a11y/noStaticElementInteractions: the pane relays the save chord bubbling out of the editor and header
+    <div className="shui-main-pane" onKeyDown={onKeyDown}>
       <div className="shui-editor-head">
         <Breadcrumbs path={relPath} rootLabel={rootLabel} onSelectDir={onRevealDir} />
-        {dirty ? <span className="shui-dirty" title="unsaved changes" /> : null}
         {ready && missing ? (
           <span className="shui-ro-note warn" title="The file was deleted or moved on disk while this tab was open.">
             {readOnly === null ? 'gone from disk — save to put it back' : 'gone from disk'}
@@ -458,7 +539,7 @@ function EditorPaneView({
         ) : null}
         <span className="spacer" />
         {saveError ? <span className="shui-ro-note warn">{saveError}</span> : null}
-        {entry?.size != null ? <span className="meta">{formatBytes(entry.size)}</span> : null}
+        {prefs.showFileInfo && entry?.size != null ? <span className="meta">{formatBytes(entry.size)}</span> : null}
         {ready && !entry?.image && !showPreview ? (
           gotoOpen ? (
             <form
@@ -487,7 +568,7 @@ function EditorPaneView({
                 autoFocus
               />
             </form>
-          ) : (
+          ) : prefs.showFileInfo ? (
             <button
               type="button"
               className="shui-goto-btn"
@@ -499,7 +580,7 @@ function EditorPaneView({
               <Hash aria-hidden />
               {lineCount.toLocaleString()} lines
             </button>
-          )
+          ) : null
         ) : null}
         {!entry?.image ? (
           <IconButton label="Compare with…" onClick={() => onCompare(relPath)}>
@@ -518,15 +599,46 @@ function EditorPaneView({
             {showPreview ? <Code aria-hidden /> : <Eye aria-hidden />}
           </IconButton>
         ) : null}
-        {readOnly === null ? (
-          <Button type="button" variant="primary" size="sm" disabled={!canSave} onClick={save} title="save (⌘S)">
-            {saving ? 'saving…' : 'save'}
-          </Button>
+        {/* Unsaved edits show as a Save button (a file with a check) instead
+            of a bare dot; the setting keeps it up always. A click asks first,
+            ⌘S saves straight away. */}
+        {readOnly === null && (dirty || prefs.showSaveButton) ? (
+          <Tooltip label={saving ? 'Saving…' : `Save (${saveKeyLabel(PLATFORM)})`}>
+            <button
+              type="button"
+              className="shui-save-btn"
+              data-dirty={dirty || undefined}
+              aria-label="Save"
+              aria-keyshortcuts={saveKeyAria(PLATFORM)}
+              aria-busy={saving || undefined}
+              disabled={!canSave}
+              onClick={() => {
+                void confirm({
+                  title: `Save changes to ${relPath.slice(relPath.lastIndexOf('/') + 1)}?`,
+                  description: 'Your edits replace the file on disk.',
+                  confirmLabel: 'Save file',
+                }).then((ok) => {
+                  if (ok) save()
+                })
+              }}
+            >
+              <FileCheck aria-hidden />
+            </button>
+          </Tooltip>
         ) : null}
+        {confirmDialog}
       </div>
 
       {citationWarning ? <div className="shui-side-note" role="status">{citationWarning}</div> : null}
       <div className="shui-editor-body" data-keybindings-standdown="" onKeyDownCapture={quickOpenCapture(onQuickOpen)}>
+        {/* Always mounted, so a screen reader hears each note as it lands. */}
+        <div className="shui-editor-toast-region" aria-live="polite" aria-atomic="true">
+          {referenceNote ? (
+            <div key={referenceNote} className="shui-editor-toast">
+              {referenceNote}
+            </div>
+          ) : null}
+        </div>
         {pane.phase === 'loading' ? (
           <div className="shui-side-note">{loadingLabel}</div>
         ) : pane.phase === 'error' ? (
@@ -580,13 +692,17 @@ function EditorPaneView({
             onChange={setDraft}
             language={monacoLangFromPath(relPath)}
             readOnly={readOnly !== null}
-            onKeyDown={onKeyDown}
             aria-label={`edit ${relPath}`}
             className="shui-editor"
             fill
             lineNumbers
             wordWrap={wordWrap}
+            fontSize={prefs.fontSize}
+            contextMenu
             selectionActions={selectionActions}
+            quickEdit={quickEdit}
+            initialViewState={rememberedViewState(absPath)}
+            onViewStateChange={rememberPlace}
           />
         )}
       </div>
@@ -666,6 +782,7 @@ function RevisionPaneView({
   }, [host, root, relPath, sha, id, cache, attempt])
 
   const short = sha.slice(0, 7)
+  const [prefs] = useEditorPrefs()
   return (
     <div className="shui-main-pane">
       <div className="shui-editor-head">
@@ -712,9 +829,11 @@ function RevisionPaneView({
             readOnly
             aria-label={`${relPath} as of ${short}`}
             className="shui-editor"
+            contextMenu
             fill
             lineNumbers
             wordWrap={wordWrap}
+            fontSize={prefs.fontSize}
           />
         )}
       </div>

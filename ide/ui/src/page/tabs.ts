@@ -4,8 +4,10 @@
    file as a commit left it (read-only); all live in the same strip and
    follow the same rules:
 
-   - single click opens a PREVIEW tab (italic): at most one exists, and
-     the next preview replaces it
+   - a file always opens in a tab of its own (the page pins it on open,
+     so the next file never replaces it)
+   - a single-clicked diff or commit view opens as a PREVIEW tab (italic):
+     at most one exists, and the next preview replaces it
    - double click (or editing the file) PINS the tab — pinned tabs only
      close explicitly
 

@@ -187,6 +187,12 @@ def provider_contract_selection(files: list[str], workers: set[str]) -> list[str
 
     selected = set()
     for path in files:
+        if (
+            path.startswith(("secrets/", "state/"))
+            and not is_integration_doc(path.split("/", 1)[1])
+            and "provider-openai-codex" in supported
+        ):
+            selected.add("provider-openai-codex")
         parts = path.split("/", 1)
         if len(parts) != 2 or parts[0] not in supported:
             continue
