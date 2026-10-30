@@ -20,5 +20,6 @@ pub mod pty;
 pub mod scode;
 pub mod target;
 pub mod telemetry;
+pub mod turn_events;
 pub mod ui;
 pub mod ui_state;
