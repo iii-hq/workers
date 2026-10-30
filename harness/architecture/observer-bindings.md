@@ -27,7 +27,8 @@ observer carries only a pointer to it.
 
 ```
 a call of the observed function
-      │  (iii delivers the Observed envelope; sidecar { "__binding": id })
+      │  (iii delivers the Observed envelope, or the source's deliver hook
+      │   calls through the observer with its payload; sidecar { "__binding": id })
       ▼
 harness::observer::deliver         ← the ONE target of every agent observer
       │
@@ -48,8 +49,14 @@ There is no spawn shape: an observer never starts an agent.
 
 The delivery hop is an ordinary, catalog-hidden function (`metadata.internal`).
 It is not private, because a private function cannot be an observer's target.
-It reads the event from the envelope's `output` — for an event source, the
-event itself — and falls back to `input` when the output was not captured.
+It takes a call in two shapes. From iii's delivery it gets the `Observed`
+envelope and reads the event from its `output` — for an event source, the
+event itself — falling back to `input` when the output was not captured. A
+source that delivers itself (an `onObserverDeliver` hook: `kanban::on-change`,
+`stories::on-changed`) calls through the observer, and the payload it sends is
+the event, without the engine's `_caller_worker_id` stamp. Both calls carry the
+observer's metadata sidecar, whose `__binding` names the binding; an envelope
+also names it as its `observer_id`.
 
 ## The binding record
 

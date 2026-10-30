@@ -344,14 +344,16 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     );
     // The ONE target every agent-created observer delivers to. Registered,
     // kept off the catalog: agents describe their target when they observe
-    // and never call this themselves. It receives the Observed envelope.
+    // and never call this themselves. It receives the Observed envelope from
+    // iii's delivery, or the payload a source's deliver hook sends through
+    // the observer.
     register_internal_with_metadata(
         iii,
         deps,
         observer_deliver::DELIVER_ID,
         observer_deliver::DELIVER_DESC,
-        |d, envelope: observer_deliver::DeliverEnvelope, meta| async move {
-            observer_deliver::handle(&d, observer_deliver::observed_event(&envelope), meta).await
+        |d, input: observer_deliver::DeliverInput, meta| async move {
+            observer_deliver::deliver(&d, input, meta).await
         },
     );
     register_trace_hidden(iii, deps, TURN_ID, TURN_DESC, |d, r| async move {

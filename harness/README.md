@@ -719,7 +719,10 @@ creates the observer itself, for the calling session:
 
 Each observer is a durable binding in the harness's state; its engine
 observer targets `harness::observer::deliver` with the binding id as observer
-id and receives the `Observed` envelope. The harness counts delivered fires
+id. The delivery hop takes the `Observed` envelope of iii's delivery (the event
+is the call's `output`) and the payload a source's deliver hook sends through
+the observer (`kanban::on-change`, `stories::on-changed`: the event is the
+payload as sent). The harness counts delivered fires
 itself (`once`, `max_fires`) and runs the conditions before a delivery; the
 lifecycle deadline is also the observer's `expires_in_ms`. The harness waits
 briefly for the observer to become active, so `INVALID_ARGS`, `FORBIDDEN`,

@@ -1,12 +1,17 @@
 //! `harness::observer::deliver` — the ONE target of every agent-created
 //! observer (architecture/observer-bindings.md).
 //!
-//! iii calls it with the `Observed` envelope of each matching call; the event
-//! is the call's `output` (for an event source, the event itself). The
-//! observer's metadata arrives as the call's metadata sidecar and holds a
-//! single key, `__binding`. Everything else — owner, target, conditions,
-//! lifecycle, frozen capability — is read from the durable record, so nothing
-//! an agent can write into metadata is ever trusted or even read.
+//! It receives a call in one of two shapes. iii's delivery hands it the
+//! `Observed` envelope of each matching call, and the event is the call's
+//! `output` (for an event source, the event itself). A source that delivers
+//! itself (an `onObserverDeliver` hook: `kanban::on-change`,
+//! `stories::on-changed`, ...) calls through the observer, and that call's
+//! payload, as the source sent it, is the event (spec §4.6). The observer's
+//! metadata arrives as the call's metadata sidecar in both shapes and holds a
+//! single key, `__binding`: the binding id, which is also the observer id an
+//! envelope carries. Everything else — owner, target, conditions, lifecycle,
+//! frozen capability — is read from the durable record, so nothing an agent
+//! can write into metadata is ever trusted or even read.
 //!
 //! Order is load-bearing:
 //!
@@ -20,11 +25,10 @@
 //! exactly two shapes — wake the owner, or call a plain function — and never
 //! creates an agent.
 
-use std::sync::Arc;
-
-use iii_sdk::errors::Error;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Observed, RegisterFunction};
+use iii_sdk::Observed;
+use schemars::gen::SchemaGenerator;
+use schemars::schema::Schema;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -34,7 +38,6 @@ use crate::conditions::{self, Skip};
 use crate::deps::Deps;
 use crate::policy::CompiledPolicy;
 use crate::subscriptions::fired;
-use crate::surface::schema_value;
 use crate::types::message::AgentMessage;
 
 pub const DELIVER_ID: &str = "harness::observer::deliver";
@@ -42,7 +45,8 @@ pub const DELIVER_DESC: &str =
     "Internal target of every observer an agent created with harness::observe: evaluates the \
      binding's conditions, projects the observed call's output into the target's payload, and \
      dispatches it (a wake into the owner session, or a plain function call). Receives the \
-     Observed envelope; never called directly.";
+     Observed envelope from iii's delivery, or the payload as sent from a call through the \
+     observer (a source's deliver hook); never called directly.";
 
 /// The observer's metadata sidecar. A pointer and nothing else.
 #[derive(Debug, Deserialize)]
@@ -51,8 +55,8 @@ struct DeliverMetadata {
     binding: String,
 }
 
-/// What the observer's target receives: the `Observed` envelope of one call
-/// of the observed function.
+/// What iii's delivery hands the observer's target: the `Observed` envelope
+/// of one call of the observed function.
 pub type DeliverEnvelope = Observed<Value, Value>;
 
 /// The event an envelope delivers: the call's `output` — what observers
@@ -65,6 +69,90 @@ pub fn observed_event(envelope: &DeliverEnvelope) -> Value {
         .clone()
         .or_else(|| envelope.input.clone())
         .unwrap_or(Value::Null)
+}
+
+/// What `harness::observer::deliver` is called with: the [`DeliverEnvelope`]
+/// of iii's delivery, or the payload of a call through the observer, as its
+/// source's deliver hook sent it. Kept as the raw value: which of the two it
+/// is depends on the call's metadata too ([`delivered`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DeliverInput(pub Value);
+
+/// The two shapes [`DeliverInput`] documents in its schema.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum DeliverInputShape {
+    /// iii's delivery: the `Observed` envelope of one call of the observed
+    /// function.
+    Observed(Box<DeliverEnvelope>),
+    /// A call through the observer from the observed function's deliver
+    /// hook: the payload as the source sent it.
+    Payload(Value),
+}
+
+impl JsonSchema for DeliverInput {
+    fn schema_name() -> String {
+        "DeliverInput".to_string()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        DeliverInputShape::json_schema(generator)
+    }
+}
+
+/// The binding a call of the delivery hop is for, and the event it delivers.
+///
+/// The binding id is the `__binding` key of the call's metadata sidecar,
+/// which the engine attaches from the observer to every call it makes to the
+/// target, delivered by iii or through the observer. An envelope carries the
+/// observer id too, the same id; it names the binding only when the call has
+/// no sidecar. The value is an envelope when it decodes as one that names
+/// this binding's observer, and its event is then the envelope's
+/// [`observed_event`]; any other value is a payload sent through the
+/// observer, and is the event as the source sent it: the top-level
+/// `_caller_worker_id` the engine stamps on every call through an observer
+/// (the host's connection id) is removed.
+pub fn delivered(input: Value, metadata: Option<&Value>) -> (Option<String>, Value) {
+    let sidecar = metadata
+        .and_then(|metadata| metadata.get("__binding"))
+        .and_then(Value::as_str);
+    let envelope = DeliverEnvelope::deserialize(&input)
+        .ok()
+        .filter(|envelope| sidecar.is_none_or(|binding| envelope.observer_id == binding));
+    match envelope {
+        Some(envelope) => {
+            let binding = sidecar.map_or_else(|| envelope.observer_id.clone(), str::to_string);
+            (Some(binding), observed_event(&envelope))
+        }
+        None => {
+            let mut event = input;
+            if let Some(object) = event.as_object_mut() {
+                object.remove(CALLER_STAMP);
+            }
+            (sidecar.map(str::to_string), event)
+        }
+    }
+}
+
+/// The engine's stamp on the payload of every call a worker makes.
+const CALLER_STAMP: &str = "_caller_worker_id";
+
+/// One call of `harness::observer::deliver`, in either shape
+/// ([`delivered`]), handed to [`handle`].
+pub async fn deliver(
+    deps: &Deps,
+    input: DeliverInput,
+    metadata: Option<Value>,
+) -> Result<DeliverResult, crate::error::HarnessError> {
+    let (binding, event) = delivered(input.0, metadata.as_ref());
+    handle(
+        deps,
+        event,
+        binding.map(|binding| json!({ "__binding": binding })),
+    )
+    .await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -94,28 +182,6 @@ impl DeliverResult {
             note: Some(note.into()),
         }
     }
-}
-
-/// Register the delivery hop. It is an observer target, so it is not private;
-/// it is kept off the agent catalog (`internal`).
-pub fn register(deps: Arc<Deps>) {
-    let iii = deps.iii.clone();
-    iii.register_function(
-        DELIVER_ID,
-        RegisterFunction::new_async(move |envelope: DeliverEnvelope, metadata: Option<Value>| {
-            let deps = deps.clone();
-            async move {
-                let out = handle(&deps, observed_event(&envelope), metadata)
-                    .await
-                    .unwrap_or_else(|e| DeliverResult::stopped("harness", e.to_string()));
-                Ok::<Value, Error>(json!(out))
-            }
-        })
-        .description(DELIVER_DESC)
-        .request_format(schema_value::<DeliverEnvelope>())
-        .response_format(schema_value::<DeliverResult>())
-        .metadata(json!({ "internal": true })),
-    );
 }
 
 /// An observed call reached a binding. Never errors: an erroring observer
@@ -1403,5 +1469,87 @@ mod tests {
         );
         envelope.input = None;
         assert_eq!(observed_event(&envelope), Value::Null);
+    }
+
+    fn envelope_of(observer_id: &str, output: Value) -> Value {
+        json!({
+            "observer_id": observer_id,
+            "activation_id": "act_1",
+            "function_id": "state::on-changed",
+            "invocation_id": "inv_1",
+            "status": "success",
+            "input": { "scope": "run", "key": "go" },
+            "output": output,
+            "started_at_ms": 1,
+            "duration_ms": 0.5
+        })
+    }
+
+    /// iii's delivery: the envelope's output is the event, and the sidecar
+    /// names the binding.
+    #[test]
+    fn an_envelope_delivers_its_output_to_the_sidecar_binding() {
+        let output = json!({ "scope": "run", "key": "go", "new_value": 1 });
+        let (binding, event) = delivered(
+            envelope_of("sub_1", output.clone()),
+            Some(&json!({ "__binding": "sub_1" })),
+        );
+        assert_eq!(binding.as_deref(), Some("sub_1"));
+        assert_eq!(event, output);
+    }
+
+    /// An envelope without a sidecar names its binding by the observer id it
+    /// carries (a binding's observer id is its binding id).
+    #[test]
+    fn an_envelope_without_a_sidecar_names_its_binding_by_observer_id() {
+        let (binding, event) = delivered(envelope_of("sub_2", json!({ "n": 2 })), None);
+        assert_eq!(binding.as_deref(), Some("sub_2"));
+        assert_eq!(event, json!({ "n": 2 }));
+    }
+
+    /// A call through the observer from a source's deliver hook: the payload
+    /// as sent is the event, whatever its shape, and the sidecar names the
+    /// binding.
+    #[test]
+    fn a_payload_through_the_observer_is_the_event_as_sent() {
+        let sidecar = json!({ "__binding": "sub_3" });
+        for payload in [
+            json!({ "ticket_id": "T-1", "kind": "moved", "to": "done" }),
+            json!("a bare string"),
+            json!([1, 2, 3]),
+            Value::Null,
+        ] {
+            let (binding, event) = delivered(payload.clone(), Some(&sidecar));
+            assert_eq!(binding.as_deref(), Some("sub_3"));
+            assert_eq!(event, payload);
+        }
+        // Without a sidecar a payload names no binding.
+        assert_eq!(delivered(json!({ "k": 1 }), None).0, None);
+        // The engine's caller stamp on the call is not part of the event.
+        let (_, event) = delivered(
+            json!({ "ticket_id": "T-1", "_caller_worker_id": "conn-1" }),
+            Some(&sidecar),
+        );
+        assert_eq!(event, json!({ "ticket_id": "T-1" }));
+    }
+
+    /// A payload that happens to decode as an envelope of another observer
+    /// is a payload: only an envelope naming this binding's observer is
+    /// unwrapped.
+    #[test]
+    fn an_envelope_of_another_observer_is_a_payload() {
+        let forwarded = envelope_of("someone_else", json!({ "n": 4 }));
+        let (binding, event) = delivered(forwarded.clone(), Some(&json!({ "__binding": "sub_4" })));
+        assert_eq!(binding.as_deref(), Some("sub_4"));
+        assert_eq!(event, forwarded);
+    }
+
+    /// The input format documents both shapes.
+    #[test]
+    fn the_input_format_names_the_envelope_and_a_payload() {
+        let schema = crate::surface::schema_value::<DeliverInput>();
+        let shapes = schema["anyOf"].as_array().expect("anyOf of the two shapes");
+        assert_eq!(shapes.len(), 2, "{schema}");
+        assert!(schema.to_string().contains("observer_id"), "{schema}");
     }
 }
