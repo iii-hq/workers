@@ -671,7 +671,7 @@ async fn review_policy_filters_signed_ingress_and_delivers_compact_retryable_eve
         let error = tokio::time::timeout(Duration::from_secs(10), refused.ready()).await
             .expect("rejection in time").unwrap_err();
         assert!(error.to_string().contains("INVALID_ARGS"), "{error}");
-        assert!(fixture.database()["subscribers"].as_object().map_or(true, |s| !s.contains_key(refused.id())));
+        assert!(fixture.database()["subscribers"].as_object().is_none_or(|s| !s.contains_key(refused.id())));
         let check = |id, name, status, conclusion| json!({"repository":{"full_name":"owner/repo"},"action":"completed",
             "check_run":{"id":id,"name":name,"head_sha":"head-1","status":status,"conclusion":conclusion,
                 "completed_at":"2026-01-01T00:01:00Z","details_url":format!("https://ci.example/{id}")}});
