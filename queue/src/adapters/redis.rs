@@ -285,7 +285,9 @@ impl QueueAdapter for RedisAdapter {
         subs.insert(key, SubscriptionInfo { task_handle });
     }
 
-    async fn unsubscribe(&self, topic: &str, id: &str) {
+    /// `_retain` does not apply: a pub/sub subscription holds no queue, so a
+    /// message published while no subscription is connected is lost.
+    async fn unsubscribe(&self, topic: &str, id: &str, _retain: Duration) {
         let mut subs = self.subscriptions.write().await;
         if let Some(sub_info) = subs.remove(&(topic.to_string(), id.to_string())) {
             tracing::debug!(topic = %topic, id = %id, "Unsubscribing from Redis channel");

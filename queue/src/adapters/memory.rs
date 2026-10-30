@@ -16,6 +16,7 @@
 //! a normal build.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -67,8 +68,8 @@ impl QueueAdapter for MemoryAdapter {
             .await;
     }
 
-    async fn unsubscribe(&self, topic: &str, id: &str) {
-        self.inner.unsubscribe(topic, id).await;
+    async fn unsubscribe(&self, topic: &str, id: &str, retain: Duration) {
+        self.inner.unsubscribe(topic, id, retain).await;
     }
 
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
@@ -229,5 +230,39 @@ mod tests {
         let calls = invoker.calls.lock().await;
         assert_eq!(calls[0].0, "fn-1");
         assert_eq!(calls[0].1, json!({"hello": "world"}));
+    }
+
+    /// The retention reaches the builtin transport: an unsubscribed queue
+    /// keeps receiving the topic, and a same-id subscribe within the
+    /// retention gets what arrived meanwhile.
+    #[tokio::test]
+    async fn unsubscribe_retention_keeps_the_queue_receiving() {
+        let invoker = Arc::new(RecordingInvoker::default());
+        let adapter = MemoryAdapter::new(invoker.clone());
+        adapter
+            .subscribe("demo", "sub-1", Subscriber::new("fn-1"), None)
+            .await;
+        adapter
+            .unsubscribe("demo", "sub-1", Duration::from_secs(60))
+            .await;
+        adapter
+            .enqueue("demo", json!("while away"), None, None)
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(invoker.calls.lock().await.is_empty(), "nothing consumed");
+
+        adapter
+            .subscribe("demo", "sub-1", Subscriber::new("fn-1"), None)
+            .await;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while invoker.calls.lock().await.is_empty() {
+            assert!(Instant::now() < deadline, "message was never delivered");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            invoker.calls.lock().await.as_slice(),
+            &[("fn-1".to_string(), json!("while away"))]
+        );
+        adapter.shutdown().await;
     }
 }

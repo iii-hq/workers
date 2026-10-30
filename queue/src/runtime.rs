@@ -1414,7 +1414,7 @@ mod tests {
         ) {
         }
 
-        async fn unsubscribe(&self, _topic: &str, _id: &str) {}
+        async fn unsubscribe(&self, _topic: &str, _id: &str, _retain: Duration) {}
 
         async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
             Ok(0)

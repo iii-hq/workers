@@ -39,5 +39,7 @@ config:
       store_method: file_based
       file_path: data/queue
       save_interval_ms: 5000
+  # How long a removed subscriber's queue keeps receiving its topic (ms).
+  subscriber_retention_ms: 30000
 dependencies:
   configuration: "latest"

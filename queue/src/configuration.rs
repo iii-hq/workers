@@ -376,7 +376,7 @@ mod tests {
             self.subscribe_calls.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn unsubscribe(&self, _topic: &str, _id: &str) {}
+        async fn unsubscribe(&self, _topic: &str, _id: &str, _retain: Duration) {}
 
         async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
             Ok(0)

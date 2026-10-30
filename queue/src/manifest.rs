@@ -59,5 +59,10 @@ mod tests {
         assert!(functions.iter().any(|id| id == ON_MESSAGE_FN));
         assert!(functions.iter().any(|id| id == ENQUEUE_FUNCTION_FN_ID));
         assert!(value["config_schema"].is_object());
+        assert_eq!(value["default_config"]["subscriber_retention_ms"], 30_000);
+        assert_eq!(
+            value["config_schema"]["properties"]["subscriber_retention_ms"]["default"],
+            30_000
+        );
     }
 }

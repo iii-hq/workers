@@ -516,7 +516,9 @@ impl QueueAdapter for RabbitMQAdapter {
         );
     }
 
-    async fn unsubscribe(&self, topic: &str, id: &str) {
+    /// `_retain` does not apply: the subscriber's queue stays bound to the
+    /// topic's exchange, so it keeps receiving the topic whatever `_retain`.
+    async fn unsubscribe(&self, topic: &str, id: &str, _retain: std::time::Duration) {
         let subscriptions = Arc::clone(&self.subscriptions);
         let key = (topic.to_string(), id.to_string());
 

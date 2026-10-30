@@ -425,6 +425,7 @@ mod tests {
     use crate::subscriber_config::SubscriberQueueConfig;
     use serde_json::json;
     use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
 
     #[derive(Debug, Clone, PartialEq)]
     enum Call {
@@ -484,7 +485,7 @@ mod tests {
         ) {
         }
 
-        async fn unsubscribe(&self, _topic: &str, _id: &str) {}
+        async fn unsubscribe(&self, _topic: &str, _id: &str, _retain: Duration) {}
 
         async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
             self.calls.lock().unwrap().push(Call::RedriveDlq {

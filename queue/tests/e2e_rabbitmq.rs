@@ -208,7 +208,7 @@ async fn basic_delivery_connect_or_skip() {
     assert_eq!(seen[0].get("hello"), Some(&json!("world")));
     drop(seen);
 
-    adapter.unsubscribe(&topic, "sub-1").await;
+    adapter.unsubscribe(&topic, "sub-1", Duration::ZERO).await;
     adapter.shutdown().await;
     iii.shutdown_async().await;
 }
@@ -456,7 +456,7 @@ async fn priority_ordering_connect_or_skip() {
         "priority queue should drain highest-priority-first"
     );
 
-    adapter.unsubscribe(&topic, sub_id).await;
+    adapter.unsubscribe(&topic, sub_id, Duration::ZERO).await;
     adapter.shutdown().await;
     let _ = raw_connection.close(200, "test done").await;
     iii.shutdown_async().await;
@@ -500,7 +500,7 @@ async fn unsubscribe_keeps_backlog_for_same_id_resubscribe_connect_or_skip() {
     )
     .await;
 
-    adapter.unsubscribe(&topic, sub_id).await;
+    adapter.unsubscribe(&topic, sub_id, Duration::ZERO).await;
     // Published while detached: both enqueues are broker-confirmed
     // (`Publisher::publish` awaits the confirm), so they are already in the
     // still-bound queue when we assert nothing got delivered.
@@ -530,7 +530,7 @@ async fn unsubscribe_keeps_backlog_for_same_id_resubscribe_connect_or_skip() {
         "the detached-period backlog must drain on resubscribe, got: {deliveries:?}"
     );
 
-    adapter.unsubscribe(&topic, sub_id).await;
+    adapter.unsubscribe(&topic, sub_id, Duration::ZERO).await;
     adapter.shutdown().await;
 }
 
@@ -609,7 +609,9 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
         "fifo mode should preserve publish order"
     );
 
-    adapter.unsubscribe(&topic, "sub-fifo-1").await;
+    adapter
+        .unsubscribe(&topic, "sub-fifo-1", Duration::ZERO)
+        .await;
     adapter.shutdown().await;
     iii.shutdown_async().await;
 }

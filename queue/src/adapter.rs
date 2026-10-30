@@ -10,6 +10,7 @@
 //! dropped — the worker emits its own `tracing` events at call sites.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -209,8 +210,18 @@ pub trait QueueAdapter: Send + Sync + 'static {
         queue_config: Option<SubscriberQueueConfig>,
     );
 
-    /// Remove a previously registered subscriber.
-    async fn unsubscribe(&self, topic: &str, id: &str);
+    /// Remove a previously registered subscriber. Its consumer stops at
+    /// once: nothing more is delivered from its queue. The queue keeps
+    /// receiving `topic`'s messages for `retain`, and a [`Self::subscribe`]
+    /// of the same `(topic, id)` within it consumes everything the queue
+    /// holds, including what arrived meanwhile. When `retain` ends with no
+    /// such subscribe, `topic` stops routing to the queue, which keeps what
+    /// it holds for a later subscribe of the same id. `Duration::ZERO` stops
+    /// routing at once. An unsubscribe of a `(topic, id)` whose routing is
+    /// already pending a stop keeps the earlier of the two stops. Adapters
+    /// whose queues stay bound to the topic (RabbitMQ), or that hold no queue
+    /// (Redis pub/sub), ignore `retain`.
+    async fn unsubscribe(&self, topic: &str, id: &str, retain: Duration);
 
     /// Redrive every dead-lettered message on `topic` back onto the live
     /// queue. Returns the number of messages redriven.
@@ -421,8 +432,8 @@ impl QueueAdapter for SwappableAdapter {
             .await;
     }
 
-    async fn unsubscribe(&self, topic: &str, id: &str) {
-        self.current().await.unsubscribe(topic, id).await;
+    async fn unsubscribe(&self, topic: &str, id: &str, retain: Duration) {
+        self.current().await.unsubscribe(topic, id, retain).await;
     }
 
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
@@ -594,7 +605,7 @@ mod tests {
         ) {
         }
 
-        async fn unsubscribe(&self, _topic: &str, _id: &str) {}
+        async fn unsubscribe(&self, _topic: &str, _id: &str, _retain: Duration) {}
 
         async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
             Ok(0)
