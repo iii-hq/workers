@@ -1,11 +1,14 @@
 //! The six synchronous hook points (harness.md § Hooks), each a private
 //! function `harness::hook::on-<point>`. Siblings observe a hook function
 //! with [`HookArgs`]; at each point the harness calls the function with the
-//! hook input and awaits it. The function's deliver hook runs the chain: the
+//! hook input and awaits it. The function's handler returns the hook input,
+//! so its `request_format` and `response_format` are the point's input
+//! ([`HookPoint::input_format`]). Its deliver hook runs the chain: the
 //! observers whose `sessions` and `functions` globs match the input and whose
 //! filters match the call, in priority order, each called through its
 //! observer and each seeing the input as mutated by the previous. It returns
-//! the merged outcome (veto / hold / mutate) to the harness.
+//! the merged outcome (veto / hold / mutate,
+//! [`runner::HookChainOutcome`]) to the harness.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -84,14 +87,136 @@ impl HookPoint {
 
     fn description(self) -> &'static str {
         match self {
-            HookPoint::PreTurn => "Synchronous hook: first step of a turn, before any model spend. May veto. Observe it with args { sessions?, priority?, timeout_ms?, on_error? }; each observer's target is called with the hook input and answers { decision, reason?, mutations?, annotations? }.",
-            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as args.inject_prompt; it joins the prompt before assembly and its target is not called.",
-            HookPoint::PostGenerate => "Synchronous hook: after the final assistant message update. Observe only.",
-            HookPoint::PreCall => "Synchronous hook: after the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Args `functions` globs select the called functions.",
-            HookPoint::PostCall => "Synchronous hook: after the called function returns, before the result is appended. May rewrite content/details/is_error. Args `functions` globs select the called functions.",
-            HookPoint::PostTurn => "Synchronous hook: at finalize, after the output contract validated the result, before the turn completes. Deny re-prompts the turn (bounded by max_validation_retries). Args `sessions` globs scope it; args `payload`+`result_into` call a plain composition function (fp::pipe) as the validator.",
+            HookPoint::PreTurn => "Synchronous hook: first step of a turn, before any model spend. May veto. Observe it with args { sessions?, priority?, timeout_ms?, on_error? }. Each matching observer's target is called with the hook input { point, session_id, turn_id, step, depth, metadata? } and answers { decision, reason?, mutations?, annotations? }; the harness gets back the merged outcome { decision, reason? }.",
+            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Each matching observer's target is called with the hook input plus `generate` { system_prompt, messages, model, provider, functions_generation, tools, expose }, as the previous target left it; the harness gets back the merged outcome { decision, reason?, system_prompt?, append_messages?, annotations? }. An observer whose contribution is static passes it as args.inject_prompt; it joins the prompt before assembly and its target is not called.",
+            HookPoint::PostGenerate => "Synchronous hook: after the final assistant message update. Observe only: each matching observer's target is called with the hook input plus `generated` { message }; the harness gets back { decision: continue }.",
+            HookPoint::PreCall => "Synchronous hook: after the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` { id, function_id, arguments }, the arguments as the previous target left them; the harness gets back the merged outcome { decision, reason?, held_by?, arguments?, annotations? }.",
+            HookPoint::PostCall => "Synchronous hook: after the called function returns, before the result is appended. May rewrite content/details/is_error. Args `functions` globs select the called functions. Each matching observer's target is called with the hook input plus `call` and `result` { function_call_id, function_id, content, is_error, details }; the harness gets back the merged outcome { decision, held_by?, result?, annotations? }.",
+            HookPoint::PostTurn => "Synchronous hook: at finalize, after the output contract validated the result, before the turn completes. Deny re-prompts the turn (bounded by max_validation_retries). Args `sessions` globs scope it; args `payload`+`result_into` call a plain composition function (fp::pipe) as the validator. Each matching observer's target is called with the hook input plus the turn's `result` (or the template with the result injected); the harness gets back the merged outcome { decision, reason?, prompt? }.",
         }
     }
+
+    /// The schema of the point's hook input: what the harness calls the hook
+    /// function with, what the function returns, and so what observers of
+    /// the function observe.
+    pub fn input_format(self) -> Value {
+        use crate::surface::schema_value;
+        match self {
+            HookPoint::PreTurn => schema_value::<PreTurnInput>(),
+            HookPoint::PreGenerate => schema_value::<PreGenerateInput>(),
+            HookPoint::PostGenerate => schema_value::<PostGenerateInput>(),
+            HookPoint::PreCall => schema_value::<PreCallInput>(),
+            HookPoint::PostCall => schema_value::<PostCallInput>(),
+            HookPoint::PostTurn => schema_value::<PostTurnInput>(),
+        }
+    }
+}
+
+/// The fields every hook input carries.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HookTurn {
+    /// The hook point: `pre_turn`, `pre_generate`, `post_generate`,
+    /// `pre_call`, `post_call` or `post_turn`.
+    pub point: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub step: u64,
+    /// 0 for a top-level turn.
+    pub depth: u32,
+    /// The turn's `options.metadata`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+/// `harness::hook::on-pre-turn` input.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreTurnInput {
+    #[serde(flatten)]
+    pub turn: HookTurn,
+}
+
+/// What generation is about to send.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GenerateInput {
+    pub system_prompt: String,
+    pub messages: Vec<Value>,
+    pub model: String,
+    pub provider: String,
+    pub functions_generation: u64,
+    /// The decision tools the model is offered.
+    pub tools: Vec<Value>,
+    /// The session's function exposure mode.
+    pub expose: Value,
+}
+
+/// `harness::hook::on-pre-generate` input.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreGenerateInput {
+    #[serde(flatten)]
+    pub turn: HookTurn,
+    pub generate: GenerateInput,
+}
+
+/// The generated assistant message.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GeneratedInput {
+    pub message: Value,
+}
+
+/// `harness::hook::on-post-generate` input.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PostGenerateInput {
+    #[serde(flatten)]
+    pub turn: HookTurn,
+    pub generated: GeneratedInput,
+}
+
+/// The function call a call hook runs around.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CallInput {
+    pub id: String,
+    pub function_id: String,
+    pub arguments: Value,
+}
+
+/// `harness::hook::on-pre-call` input.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PreCallInput {
+    #[serde(flatten)]
+    pub turn: HookTurn,
+    pub call: CallInput,
+    /// Set when a released hold resumes the chain after this holder's
+    /// target; removed before any target is called.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_after: Option<String>,
+}
+
+/// What the called function returned.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CallResultInput {
+    pub function_call_id: String,
+    pub function_id: String,
+    pub content: Vec<Value>,
+    pub is_error: bool,
+    pub details: Value,
+}
+
+/// `harness::hook::on-post-call` input.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PostCallInput {
+    #[serde(flatten)]
+    pub turn: HookTurn,
+    pub call: CallInput,
+    pub result: CallResultInput,
+}
+
+/// `harness::hook::on-post-turn` input.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PostTurnInput {
+    #[serde(flatten)]
+    pub turn: HookTurn,
+    /// The turn's result, validated by its output contract.
+    pub result: Value,
 }
 
 /// The args of an observer of a `harness::hook::on-<point>` function.
@@ -257,7 +382,8 @@ impl HookRegistry {
                 id,
                 RegisterFunction::new(|input: Value| Ok::<Value, Error>(input))
                     .description(point.description())
-                    .response_format(crate::surface::schema_value::<runner::HookChainOutcome>())
+                    .request_format(point.input_format())
+                    .response_format(point.input_format())
                     .args_format::<HookArgs>()
                     .private(),
             );

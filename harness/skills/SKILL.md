@@ -201,7 +201,9 @@ on_error?, inject_prompt?, ... }`; at each point the harness calls the function
 and its observers' targets run in `priority` order in the turn's critical path,
 where the harness acts on their answers (veto / hold / mutate).
 `on-pre-call` / `on-post-call` observers take a `functions` glob list to scope
-which calls they gate. These are for operator-trusted policy siblings
+which calls they gate. Each hook function's `request_format` and
+`response_format` (`engine::functions::info`) are the input its observers'
+targets receive; the harness gets back the chain's merged outcome. These are for operator-trusted policy siblings
 (`approval-gate` observes `on-pre-call`); ordinary consumers do not observe
 hooks. An agent may observe `on-post-turn` for its own session, with a
 validator as the target.

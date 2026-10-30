@@ -659,14 +659,22 @@ outcome. Its deliver hook runs the chain: the observers whose `sessions` and
 input as the previous one left it. A target answers
 `{ decision, reason?, mutations?, annotations? }`.
 
-| Function | Runs |
-|---|---|
-| `harness::hook::on-pre-turn` | First step of a turn, before any model spend. May veto. |
-| `harness::hook::on-pre-generate` | After context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as the arg `inject_prompt`; the harness appends it before context assembly, so the budget and compaction count it, and its target is not called. |
-| `harness::hook::on-post-generate` | After the final assistant message. Observe only. |
-| `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. |
-| `harness::hook::on-post-call` | After the called function returns, before the result is persisted. May rewrite the result. |
-| `harness::hook::on-post-turn` | At finalize, after the output contract validated the result. A deny re-prompts the turn (bounded by `max_validation_retries`). |
+The handler returns the hook input, so the function's `request_format` and
+`response_format` are the input, and that is what observers observe. Every
+input carries `{ point, session_id, turn_id, step, depth, metadata? }`
+(`metadata` is the turn's `options.metadata`) plus the point's own fields. The
+harness gets back the merged outcome, `{ decision, reason?, held_by?,
+system_prompt?, append_messages?, arguments?, result?, prompt?, annotations? }`,
+with `decision` `continue`, `deny` or `hold`.
+
+| Function | Runs | Input adds | The harness gets back |
+|---|---|---|---|
+| `harness::hook::on-pre-turn` | First step of a turn, before any model spend. May veto. | — | `decision`, `reason?` |
+| `harness::hook::on-pre-generate` | After context assembly, before generation. May extend the system prompt, append messages, or veto. An observer whose contribution is static passes it as the arg `inject_prompt`; the harness appends it before context assembly, so the budget and compaction count it, and its target is not called. | `generate { system_prompt, messages, model, provider, functions_generation, tools, expose }` | `decision`, `reason?`, `system_prompt?`, `append_messages?`, `annotations?` |
+| `harness::hook::on-post-generate` | After the final assistant message. Observe only. | `generated { message }` | `decision: continue` |
+| `harness::hook::on-pre-call` | After the allow/deny policy passes, before the called function runs. May deny, hold, or rewrite arguments. Never consulted for `harness::ask`, which the turn loop answers itself. | `call { id, function_id, arguments }` | `decision`, `reason?`, `held_by?`, `arguments?`, `annotations?` |
+| `harness::hook::on-post-call` | After the called function returns, before the result is persisted. May rewrite the result. | `call`, `result { function_call_id, function_id, content, is_error, details }` | `decision`, `held_by?`, `result?`, `annotations?` |
+| `harness::hook::on-post-turn` | At finalize, after the output contract validated the result. A deny re-prompts the turn (bounded by `max_validation_retries`). | `result` (the turn's result) | `decision`, `reason?`, `prompt?` |
 
 Hook args: `{ functions?, sessions?, payload?, result_into?, retry_prompt?,
 priority?, timeout_ms?, on_error?, inject_prompt? }` — `functions` globs select

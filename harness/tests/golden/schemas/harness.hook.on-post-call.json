@@ -1,0 +1,268 @@
+{
+  "args_format": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "description": "The args of an observer of a `harness::hook::on-<point>` function.",
+    "properties": {
+      "functions": {
+        "description": "on-pre-call / on-post-call only: called function id globs to consult on.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "inject_prompt": {
+        "description": "on-pre-generate only: a static system-prompt contribution. It joins the prompt before assembly, and the observer's target is not called.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "on_error": {
+        "description": "Failure policy, `fail_open` or `fail_closed` (default fail_closed for pre-* and post-turn, fail_open for the other post-*).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "payload": {
+        "description": "on-post-turn only: template mode — send THIS argument object to the target instead of the hook input, with the turn's parsed result injected at `result_into`. Lets a plain composition function (`fp::pipe`) validate turns without speaking the hook contract; its receipt is read as the verdict (`valid`, or `short_circuited`)."
+      },
+      "priority": {
+        "description": "Chain order: ascending, ties broken by target function id (default 0).",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "result_into": {
+        "description": "on-post-turn template mode: JSON pointer where the result lands in `payload` (default `/value`).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "retry_prompt": {
+        "description": "on-post-turn only: custom corrective prompt sent VERBATIM when this validator denies (replaces the generic \"result was not accepted\" wrapper). Placeholders: `{value}` = the validator's measured value (fp::pipe receipt `value_preview`), `{reason}` = the deny reason. Validator ERRORS keep the generic text — a task-shaped prompt must not mask a broken validator.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "sessions": {
+        "description": "session_id globs this hook applies to (omit = every session).",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "timeout_ms": {
+        "description": "Per-call timeout (default 5000ms).",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "title": "HookArgs",
+    "type": "object"
+  },
+  "function_id": "harness::hook::on-post-call",
+  "request_format": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CallInput": {
+        "description": "The function call a call hook runs around.",
+        "properties": {
+          "arguments": true,
+          "function_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "arguments",
+          "function_id",
+          "id"
+        ],
+        "type": "object"
+      },
+      "CallResultInput": {
+        "description": "What the called function returned.",
+        "properties": {
+          "content": {
+            "items": true,
+            "type": "array"
+          },
+          "details": true,
+          "function_call_id": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "is_error": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content",
+          "details",
+          "function_call_id",
+          "function_id",
+          "is_error"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "`harness::hook::on-post-call` input.",
+    "properties": {
+      "call": {
+        "$ref": "#/definitions/CallInput"
+      },
+      "depth": {
+        "description": "0 for a top-level turn.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "metadata": {
+        "description": "The turn's `options.metadata`."
+      },
+      "point": {
+        "description": "The hook point: `pre_turn`, `pre_generate`, `post_generate`, `pre_call`, `post_call` or `post_turn`.",
+        "type": "string"
+      },
+      "result": {
+        "$ref": "#/definitions/CallResultInput"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "step": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "call",
+      "depth",
+      "point",
+      "result",
+      "session_id",
+      "step",
+      "turn_id"
+    ],
+    "title": "PostCallInput",
+    "type": "object"
+  },
+  "response_format": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "CallInput": {
+        "description": "The function call a call hook runs around.",
+        "properties": {
+          "arguments": true,
+          "function_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "arguments",
+          "function_id",
+          "id"
+        ],
+        "type": "object"
+      },
+      "CallResultInput": {
+        "description": "What the called function returned.",
+        "properties": {
+          "content": {
+            "items": true,
+            "type": "array"
+          },
+          "details": true,
+          "function_call_id": {
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "is_error": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content",
+          "details",
+          "function_call_id",
+          "function_id",
+          "is_error"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "`harness::hook::on-post-call` input.",
+    "properties": {
+      "call": {
+        "$ref": "#/definitions/CallInput"
+      },
+      "depth": {
+        "description": "0 for a top-level turn.",
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "metadata": {
+        "description": "The turn's `options.metadata`."
+      },
+      "point": {
+        "description": "The hook point: `pre_turn`, `pre_generate`, `post_generate`, `pre_call`, `post_call` or `post_turn`.",
+        "type": "string"
+      },
+      "result": {
+        "$ref": "#/definitions/CallResultInput"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "step": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "turn_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "call",
+      "depth",
+      "point",
+      "result",
+      "session_id",
+      "step",
+      "turn_id"
+    ],
+    "title": "PostCallInput",
+    "type": "object"
+  }
+}
