@@ -445,13 +445,17 @@ async fn a_consumer_back_under_its_observer_id_keeps_hearing() {
     )
     .await;
     let file = db.dir.path().join("primary.db");
+    // Observer ids are engine-wide, across namespaces: the id carries the
+    // test's namespace, so it is the same across this test's restart and
+    // fresh on every run against the same engine.
+    let id = format!("consumer-orders-{ns}");
     let observe = |consumer: &IIIClient| {
         consumer.observe_with(
             Source::function("database::on-row-changed")
                 .args(json!({ "db": "watched", "table": "orders" }))
                 .deliver(iii_sdk::Deliver::Input),
             "consumer::orders",
-            ObserverOptions::default().id("consumer-orders"),
+            ObserverOptions::default().id(id.clone()),
         )
     };
 
@@ -482,7 +486,7 @@ async fn a_consumer_back_under_its_observer_id_keeps_hearing() {
         .ready()
         .await
         .expect("the same worker replaces its suspended observer");
-    assert_eq!(handle.id(), "consumer-orders");
+    assert_eq!(handle.id(), id);
     eventually("the observer back on the host", || {
         db.capture.observer_count() == 1
     })
@@ -494,6 +498,7 @@ async fn a_consumer_back_under_its_observer_id_keeps_hearing() {
     );
     silent(&mut after, "one event per write").await;
     silent(&mut before, "the connection that left").await;
+    handle.dispose().await.unwrap();
     second.shutdown_async().await;
     db.iii.shutdown_async().await;
 }
