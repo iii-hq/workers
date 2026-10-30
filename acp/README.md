@@ -117,20 +117,19 @@ iii call compose::add worker=guardrails worker=dlp-scrubber worker=audit-log \
 Store the Anthropic API key once:
 
 ```bash
-iii call \
-  --function-id auth::set_token \
-  --payload '{"provider":"anthropic","credential":{"type":"api_key","key":"sk-ant-..."}}'
+iii call auth::set_token \
+  --json '{"provider":"anthropic","credential":{"type":"api_key","key":"sk-ant-..."}}'
 ```
 
 Verify the brain runs end-to-end before plugging in an editor:
 
 ```bash
-iii call --function-id run::start_and_wait --payload '{
+iii call run::start_and_wait --timeout-ms 30000 --json '{
   "session_id": "smoke",
   "messages": [{"role":"user","content":[{"type":"text","text":"reply with hi"}],"timestamp":0}],
   "model": "claude-sonnet-4-5-20250929",
   "provider": "anthropic"
-}' --timeout-ms 30000
+}'
 ```
 
 A `messages` array ending in an assistant message with `"text":"hi"` means
