@@ -26,8 +26,8 @@ pub struct LoadedEntry {
 /// How much of each message [`SessionClient::messages_from`] asks for.
 /// `Usage` keeps the message shapes but not their bulk: assistant content
 /// is only its `function_call` blocks (no arguments), other roles' content
-/// is empty — enough for usage counters — and custom entries are included
-/// (a `superseded_generation` entry carries billed usage). A session-manager
+/// is empty — enough for usage counters — and the `superseded_generation`
+/// custom entries are included (they carry billed usage). A session-manager
 /// that predates the option ignores it and returns full content, which reads
 /// the same.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -727,6 +727,9 @@ fn messages_page_payload(
     }
     if projection == Projection::Usage {
         payload["content"] = json!("usage");
+        // Custom entries keep their full data under the usage projection; a
+        // session-manager that predates this filter returns them all.
+        payload["custom_types"] = json!([crate::turn_loop::SUPERSEDED_GENERATION]);
     }
     if let Some(value) = cursor {
         payload["cursor"] = json!(value);
@@ -829,12 +832,15 @@ mod tests {
     fn usage_reads_ask_for_custom_entries() {
         let usage = messages_page_payload("s_1", Some("e_9"), Projection::Usage, None);
         assert_eq!(usage["include_custom"], true);
+        // Not the compaction summaries and notices the projection exists to skip.
+        assert_eq!(usage["custom_types"], json!(["superseded_generation"]));
         assert_eq!(usage["content"], "usage");
         assert_eq!(usage["after_entry_id"], "e_9");
 
         let full = messages_page_payload("s_1", None, Projection::Full, Some("c_1"));
         assert_eq!(full["include_custom"], false);
         assert!(full.get("content").is_none());
+        assert!(full.get("custom_types").is_none());
         assert_eq!(full["cursor"], "c_1");
     }
 
