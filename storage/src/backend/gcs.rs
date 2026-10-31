@@ -232,6 +232,11 @@ impl Backend for GcsBackend {
     }
 
     async fn head(&self, req: HeadReq) -> Result<HeadResp, BackendError> {
+        if req.checksum_mode {
+            return Err(BackendError::PresignUnsupported(
+                "checksum-enabled HEAD is unsupported".into(),
+            ));
+        }
         let mut get_req = GetObjectRequest {
             bucket: self.bucket.clone(),
             object: req.key.clone(),
@@ -510,6 +515,55 @@ fn map_gcs_error(err: GcsHttpError) -> BackendError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn head_rejects_checksum_mode_but_preserves_plain_metadata() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route(
+            "/storage/v1/b/bucket/o/key",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({
+                    "selfLink": "", "mediaLink": "", "metageneration": "1",
+                    "name": "key", "id": "bucket/key/1", "bucket": "bucket",
+                    "generation": "1", "size": "5", "contentType": "text/plain",
+                    "etag": "etag", "metadata": {"source": "test"}
+                }))
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let backend = GcsBackend {
+            client: Client::new(ClientConfig {
+                storage_endpoint: format!("http://{addr}"),
+                ..ClientConfig::default().anonymous()
+            }),
+            bucket: "bucket".into(),
+            endpoint_overridden: true,
+            can_sign: false,
+            host_key_file: false,
+        };
+        let head = backend
+            .head(HeadReq {
+                key: "key".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(head.size, 5);
+        assert_eq!(head.content_type, "text/plain");
+        assert_eq!(head.etag, "etag");
+        assert_eq!(head.metadata.unwrap()["source"], "test");
+        assert!(head.checksum_sha256.is_none() && head.checksum_type.is_none());
+        let result = backend
+            .head(HeadReq {
+                key: "key".into(),
+                checksum_mode: true,
+                ..Default::default()
+            })
+            .await;
+        server.abort();
+        assert!(matches!(result, Err(BackendError::PresignUnsupported(_))));
+    }
 
     // GCS construction can't smoke-test without ADC creds (it'll fail auth).
     // Real round-trip lives in tests/e2e/gcs.rs (Phase 17). This test only
