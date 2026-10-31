@@ -47,6 +47,13 @@ deployment it belongs to:
    `actions/attest-build-provenance`, and uploads it as the `build-manifest`
    artifact with 90-day retention.
 
+A worker with `screenshots/screenshots.yaml` has its images in the descriptor's
+top-level `screenshots`. `assemble` copies them from the source SHA, checked
+byte for byte against the descriptor; `upload` puts each on `build-<source_sha>`
+as `<worker>-screenshot-<name>`, under the same identical-bytes rule; and
+`manifest` lists them in the manifest's `screenshots`, present exactly when the
+descriptor has it. See [`screenshots.md`](screenshots.md).
+
 Rerunning a build is safe and is the normal recovery: it converges on the same
 bytes and produces the same manifest.
 
@@ -57,6 +64,13 @@ Registry version, moves the requested channel by compare-and-swap, creates the
 versioned GitHub release pointing at the same assets, and tags the image. It
 then reads every surface back and only calls the deployment converged when they
 all match. Versions, channels and retries are decided there, never here.
+
+Screenshots travel with the version: when the manifest has `screenshots`,
+Release Control registers each image on the version's Registry release, lists
+them in `POST /publish`, and reads the version's list back. `[]` publishes the
+version without screenshots; no field lets it keep the previous version's.
+Versions already published keep theirs, so a new or changed list ships with
+the next version.
 
 ## Capacity
 
