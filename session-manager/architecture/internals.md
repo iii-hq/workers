@@ -397,7 +397,13 @@ is one specific composition of those; the BDD world is another.
 - **`tests/bdd.rs`** (cucumber, `harness = false`, scenarios serialized).
   Tags: `@pure` needs nothing; `@engine` soft-skips without a reachable
   engine (connect-or-skip `OnceCell` in `tests/common/engine.rs`,
-  `III_ENGINE_WS_URL` override).
+  `III_ENGINE_WS_URL` override, default iii's `ws://127.0.0.1:49134`), and
+  also on an engine that already runs session-manager (a worker named
+  `session-manager` or any `session::*` function registered; the pure check
+  is `tests/common/engine_guard.rs`, unit-tested by `tests/engine_guard.rs`):
+  the in-process surface would collide with it and the scenarios would write
+  into its real store. Run them against a dedicated engine with no
+  session-manager.
 - **@pure stack** (`tests/common/world.rs`): per-scenario production stack —
   real handlers/service/emitter — over a real `FsStore` in a tempdir, with
   `SeqIds` + `FakeClock` and a recording deliverer. Feature files assert
@@ -428,7 +434,8 @@ Verification commands (CI parity):
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features          # @engine soft-skips without iii
-cargo test --test bdd -- --tags @engine   # with a running engine
+III_ENGINE_WS_URL=ws://127.0.0.1:<port> cargo test --test bdd -- --tags @engine
+                                   # a bare engine, no session-manager
 ./target/debug/session-manager --manifest | jq .
 ```
 

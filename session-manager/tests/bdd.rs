@@ -11,8 +11,9 @@ use crate::common::world::SessionWorld;
 #[tokio::main]
 async fn main() {
     // Bring up the shared engine connection + in-process registration
-    // exactly once. On a host without an engine this returns None and
-    // every `@engine` scenario short-circuits into a soft skip.
+    // exactly once. On a host without an engine, or on an engine that
+    // already runs session-manager, this returns None and every `@engine`
+    // scenario short-circuits into a soft skip.
     let _ = common::engine::get_or_init().await;
 
     SessionWorld::cucumber()

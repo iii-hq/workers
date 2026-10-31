@@ -221,8 +221,14 @@ stored values are expanded by the configuration worker on every read.
 cargo run --release -- --url ws://127.0.0.1:49134
 cargo test                       # unit + manifest + BDD (engine scenarios self-skip)
 cargo test --test bdd -- --tags @pure    # no engine required
-cargo test --test bdd -- --tags @engine  # requires a running `iii`
+III_ENGINE_WS_URL=ws://127.0.0.1:<port> cargo test --test bdd -- --tags @engine
+                                 # requires a running `iii` with no session-manager
 ```
+
+The @engine scenarios register their own session-manager surface on the engine
+they reach (`III_ENGINE_WS_URL`, default `ws://127.0.0.1:49134`), so they skip
+an engine that already runs session-manager rather than write into its store:
+point them at a bare engine on a free port.
 
 The BDD suite under [`tests/features/`](tests/features) is the
 behavioural contract: @pure scenarios drive the production handlers
