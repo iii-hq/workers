@@ -26,12 +26,11 @@ use crate::wire::teardown::{TeardownRequest, TeardownResponse};
 const MAX_WORKER_NAME_BYTES: usize = 64;
 
 /// A namespace's first segment IS a worker name on the bus (see
-/// `normalize_namespace`), so it is held to the same shape upstream
-/// `iii-worker` requires of one (`iii-worker/src/core/types.rs`): a name
-/// becomes a path segment under `~/.iii/logs/<name>` in that program, so
-/// being looser here would accept a namespace stem this crate happily runs
-/// with, only for the Compose worker resolver to refuse the equivalent name
-/// minutes later, in another program.
+/// `normalize_namespace`), so it is held to the shape a worker name needs
+/// wherever it becomes a path segment (one segment, never a hidden control
+/// directory): being looser here would accept a namespace stem this crate
+/// happily runs with, only for the Compose worker resolver to refuse the
+/// equivalent name minutes later, in another program.
 fn validate_worker_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("worker name must not be empty; it becomes the namespace, \
@@ -91,7 +90,7 @@ fn validate_worker_name(name: &str) -> Result<(), String> {
 /// `validate_worker_name`, because a namespace's first segment IS a worker
 /// name on the bus: the engine splits `service::sub::function` into service
 /// `service` (`iii/engine/src/services.rs`), and a worker name may never
-/// contain `:` (`iii-worker/src/core/types.rs`). So `a::b::` names an identity
+/// contain `:`. So `a::b::` names an identity
 /// the engine cannot represent, and is refused rather than published.
 ///
 /// Nothing expressive is lost, which is the non-obvious part: the guard is a
@@ -840,11 +839,10 @@ mod tests {
         assert!(validate_worker_name(&long).is_err());
     }
 
-    /// Mirrors upstream `iii-worker`'s own directory-safety rules: a name
-    /// that could traverse out of, or land inside, a hidden control
-    /// directory once joined into `~/.iii/logs/<name>`. Being looser than
-    /// upstream here is the bug this test guards against — see the doc
-    /// comment on `validate_worker_name`.
+    /// A name that could traverse out of, or land inside, a hidden control
+    /// directory once joined into a path (`<dir>/<name>`). Being looser
+    /// than that is the bug this test guards against — see the doc comment
+    /// on `validate_worker_name`.
     #[test]
     fn refuses_dotdot_and_leading_dot() {
         for bad in ["..", "a..b", ".", ".hidden"] {

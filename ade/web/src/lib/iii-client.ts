@@ -58,9 +58,9 @@ export interface IiiClient {
    * browser-local handler:
    *   const off = client.on('foo', handler)
    *   const offTrigger = client.registerTrigger({
-   *     type: 'worker',
+   *     type: 'engine::workers-available',
    *     function_id: `foo::${client.browserId}`,
-   *     config: { operations: ['add'] },
+   *     config: {},
    *   })
    */
   registerTrigger(input: RegisterTriggerInput): () => void

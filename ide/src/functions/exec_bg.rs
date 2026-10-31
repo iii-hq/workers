@@ -3,9 +3,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::config::ShellConfig;
+use crate::exec::error::ExecError;
 use crate::exec::host::{build_command, parse_argv};
 use crate::exec::policy::{build_overrides, scope_root_for_target, ExecOverrides};
-use crate::exec::sandbox::SandboxExecResponse;
+use crate::exec::sandbox::{is_engine_timeout, SandboxExecResponse};
 use crate::functions::types::{ExecBgRequest, ExecBgResponse};
 use crate::jobs::{self, JobHandle, JobRecord, JobStatus};
 use crate::target::Target;
@@ -396,11 +397,13 @@ pub(crate) async fn spawn_sandbox_job(
                     Ok(p) => {
                         h.record.stdout = p.stdout;
                         h.record.stderr = p.stderr;
-                        h.record.exit_code = Some(p.exit_code);
+                        h.record.stdout_truncated = p.stdout_truncated;
+                        h.record.stderr_truncated = p.stderr_truncated;
+                        h.record.exit_code = p.exit_code;
                         if !already_killed {
                             h.record.status = if p.timed_out {
                                 JobStatus::Killed
-                            } else if p.exit_code == 0 {
+                            } else if p.exit_code == Some(0) {
                                 JobStatus::Finished
                             } else {
                                 JobStatus::Failed
@@ -417,7 +420,14 @@ pub(crate) async fn spawn_sandbox_job(
             }
             Err(err) => {
                 if !already_killed {
-                    h.record.status = JobStatus::Failed;
+                    // The adapter reports an in-VM timeout as an S200 error,
+                    // not `timed_out: true`; it is the same kill.
+                    let mapped = crate::scode::map_iii_err(&err, ExecError::new);
+                    h.record.status = if is_engine_timeout(&mapped) {
+                        JobStatus::Killed
+                    } else {
+                        JobStatus::Failed
+                    };
                 }
                 h.record.stderr = format!("engine error: {err:?}");
             }
@@ -771,6 +781,58 @@ mod sandbox_path_tests {
         jobs::JOBS.map.lock().await.remove(&resp.job_id);
     }
 
+    /// The job keeps the adapter's truncation flags.
+    #[tokio::test]
+    async fn sandbox_job_keeps_the_truncation_flags() {
+        let fwd: Arc<dyn TriggerFwd> = Arc::new(ImmediateOk(Mutex::new(Some(json!({
+            "stdout": "x",
+            "stderr": "y",
+            "exit_code": 0,
+            "duration_ms": 5,
+            "timed_out": false,
+            "stdout_truncated": true,
+            "stderr_truncated": true,
+        })))));
+        let resp =
+            handle_sandbox_for_test(cfg_open(), fwd, Uuid::new_v4(), vec!["yes".into()], 5000)
+                .await
+                .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert!(r.record.stdout_truncated && r.record.stderr_truncated);
+
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    #[tokio::test]
+    async fn sandbox_job_null_exit_code_marks_failed() {
+        // Signal death: the router reports `exit_code: null`. The job must be
+        // Failed with no exit code, and the output captured so far kept.
+        let cfg = cfg_open();
+        let fwd: Arc<dyn TriggerFwd> = Arc::new(ImmediateOk(Mutex::new(Some(json!({
+            "stdout": "partial\n",
+            "stderr": "",
+            "exit_code": null,
+            "duration_ms": 5,
+            "timed_out": false,
+        })))));
+        let resp =
+            handle_sandbox_for_test(cfg.clone(), fwd, Uuid::new_v4(), vec!["sh".into()], 5000)
+                .await
+                .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert_eq!(r.record.status, JobStatus::Failed);
+        assert_eq!(r.record.exit_code, None);
+        assert_eq!(r.record.stdout, "partial\n");
+
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
     #[tokio::test]
     async fn sandbox_job_timed_out_marks_killed() {
         let cfg = cfg_open();
@@ -795,6 +857,39 @@ mod sandbox_path_tests {
         let h = jobs::get(&resp.job_id).await.expect("job exists");
         let r = h.lock().await;
         assert_eq!(r.record.status, JobStatus::Killed);
+
+        drop(r);
+        jobs::JOBS.map.lock().await.remove(&resp.job_id);
+    }
+
+    #[tokio::test]
+    async fn sandbox_job_in_vm_timeout_error_marks_killed() {
+        // The adapter's in-VM timeout, as the router forwards it.
+        struct TimedOut;
+        #[async_trait]
+        impl TriggerFwd for TimedOut {
+            async fn trigger(&self, _fid: &str, _payload: Value) -> Result<Value, Error> {
+                Err(Error::Remote {
+                    code: "invocation_failed".into(),
+                    message: r#"handler error: {"code":"S200","message":"exec timed out after 1000 ms","retryable":false,"type":"execution"}"#.into(),
+                    stacktrace: None,
+                })
+            }
+        }
+        let resp = handle_sandbox_for_test(
+            cfg_open(),
+            Arc::new(TimedOut),
+            Uuid::new_v4(),
+            vec!["sleep".into(), "30".into()],
+            1000,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let h = jobs::get(&resp.job_id).await.expect("job exists");
+        let r = h.lock().await;
+        assert_eq!(r.record.status, JobStatus::Killed);
+        assert!(r.record.stderr.contains("exec timed out"));
 
         drop(r);
         jobs::JOBS.map.lock().await.remove(&resp.job_id);

@@ -20,10 +20,17 @@ use crate::triggers::TriggerFwd;
 pub(crate) struct SandboxExecResponse {
     pub stdout: String,
     pub stderr: String,
-    pub exit_code: i32,
+    // `null` when the in-VM process died on a signal (no exit status).
+    pub exit_code: Option<i32>,
     pub duration_ms: u64,
     pub timed_out: bool,
-    // The engine wire also has `success` (== exit_code == 0 && !timed_out);
+    // Contract 1.1: the adapter cut the stream at its output cap. A 1.0
+    // adapter sends neither key.
+    #[serde(default)]
+    pub stdout_truncated: bool,
+    #[serde(default)]
+    pub stderr_truncated: bool,
+    // The engine wire also has `success` (== exit_code == Some(0) && !timed_out);
     // we drop it on this side because it's derived.
 }
 
@@ -115,13 +122,11 @@ impl ExecBackend for SandboxExecBackend {
         Ok(ExecOutcome {
             stdout: parsed.stdout,
             stderr: parsed.stderr,
-            exit_code: Some(parsed.exit_code),
+            exit_code: parsed.exit_code,
             duration_ms: parsed.duration_ms,
             timed_out: parsed.timed_out,
-            // sandbox::exec doesn't expose host-side truncation; spec says
-            // sandbox jobs report these as false uniformly.
-            stdout_truncated: false,
-            stderr_truncated: false,
+            stdout_truncated: parsed.stdout_truncated,
+            stderr_truncated: parsed.stderr_truncated,
         })
     }
 }
@@ -133,7 +138,7 @@ impl ExecBackend for SandboxExecBackend {
 /// after N ms", ... }`. We accept either a recovered `S200` code OR a
 /// `"timed out"` substring in the message — the latter catches engine
 /// builds that use a different code but a stable message.
-fn is_engine_timeout(err: &ExecError) -> bool {
+pub(crate) fn is_engine_timeout(err: &ExecError) -> bool {
     err.code == "S200" || err.message.contains("timed out")
 }
 
@@ -233,6 +238,22 @@ mod tests {
         assert_eq!(obj["cmd"].as_str(), Some("echo"));
         assert_eq!(obj["args"][0].as_str(), Some("hi"));
         assert_eq!(obj["timeout_ms"].as_u64(), Some(4000));
+    }
+
+    /// A contract 1.1 adapter's truncation flags reach the caller.
+    #[tokio::test]
+    async fn truncation_flags_pass_through() {
+        let stub = StubFwd::ok(json!({
+            "stdout": "x", "stderr": "", "exit_code": 0,
+            "duration_ms": 1, "timed_out": false,
+            "stdout_truncated": true, "stderr_truncated": false,
+        }));
+        let out = backend(stub, Uuid::new_v4())
+            .run(&["yes".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap();
+        assert!(out.stdout_truncated);
+        assert!(!out.stderr_truncated);
     }
 
     #[tokio::test]
@@ -442,6 +463,43 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "S216");
+    }
+
+    #[tokio::test]
+    async fn signal_death_null_exit_code_round_trips_as_none() {
+        // The router returns `exit_code: null` when the in-VM process died on a
+        // signal; that must surface as `None`, not a decode error.
+        let stub = StubFwd::ok(json!({
+            "stdout": "", "stderr": "Killed\n", "exit_code": null,
+            "duration_ms": 3, "timed_out": false, "success": false,
+        }));
+        let b = backend(stub, Uuid::new_v4());
+        let out = b
+            .run(&["sh".into()], 1000, &ExecOverrides::default())
+            .await
+            .expect("null exit_code is a valid response");
+        assert_eq!(out.exit_code, None);
+        assert!(!out.timed_out);
+        assert_eq!(out.stderr, "Killed\n");
+    }
+
+    #[tokio::test]
+    async fn remote_s301_keeps_router_fix_text() {
+        // The router's S301 (adapter not connected) is retryable and carries
+        // its own fix text: the ide must keep both the code and the text.
+        let stub = StubFwd::remote_err(
+            "invocation_failed",
+            r#"{"type":"transient","code":"S301","message":"adapter sandbox-libkrun not connected in namespace my-proj; compose::add iii-sandbox installs it in the Compose project there, or, if none runs, declare a container with worker: package://sandbox-libkrun in a worker-compose.yaml for my-proj","retryable":true}"#,
+        );
+        let b = backend(stub, Uuid::new_v4());
+        let err = b
+            .run(&["echo".into()], 1000, &ExecOverrides::default())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "S301");
+        assert!(err
+            .message
+            .contains("compose::add iii-sandbox installs it"));
     }
 
     #[tokio::test]

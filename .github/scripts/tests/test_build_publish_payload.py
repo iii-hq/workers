@@ -178,12 +178,12 @@ def test_engine_builtins_are_not_deployment_targets() -> None:
 
     target = _resolve_target_worker_names(
         workers=[
-            {"name": "iii-worker-ops"},
+            {"name": "iii-worker-manager"},
             {"name": "harness"},
             {"name": "iii-stream"},
         ],
         worker_name="harness",
-        baseline_workers_json={"workers": [{"name": "iii-worker-ops"}]},
+        baseline_workers_json={"workers": [{"name": "iii-worker-manager"}]},
     )
     assert target == {"harness"}
 
@@ -194,13 +194,13 @@ def test_builtin_only_diff_uses_exact_worker_name() -> None:
 
     target = _resolve_target_worker_names(
         workers=[
-            {"name": "iii-worker-ops"},
+            {"name": "iii-worker-manager"},
             {"name": "iii-stream"},
             {"name": "harness"},
         ],
         worker_name="harness",
         baseline_workers_json={
-            "workers": [{"name": "iii-worker-ops"}, {"name": "harness"}]
+            "workers": [{"name": "iii-worker-manager"}, {"name": "harness"}]
         },
     )
     assert target == {"harness"}

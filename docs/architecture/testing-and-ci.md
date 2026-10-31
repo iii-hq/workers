@@ -12,7 +12,7 @@ How pull requests are gated for workers in this monorepo.
 trusted `main` push to the previous revision.
 A directory is a **worker** when it is owned by a `source.path` entry in the
 private `.deploy/workers.yaml` build catalog. Publishable worker directories
-also retain `iii.worker.yaml` as the public `iii worker` contract.
+also retain `iii.worker.yaml` as the public worker contract that Compose reads.
 
 Outputs:
 

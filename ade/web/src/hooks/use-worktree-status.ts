@@ -15,7 +15,7 @@ import {
 
 /** Engine worker name for the worktree worker. */
 const WORKTREE_WORKER_NAME = 'worktree'
-/** Base id for the browser-local handler bound to the `worker` trigger. */
+/** Base id for the browser-local `engine::workers-available` handler. */
 const WORKTREE_WATCH_FN = 'console::worktree-watch'
 
 export type WorktreeStatus = WorkerPresence

@@ -12,7 +12,7 @@ are in [`binary-worker.md`](binary-worker.md) for Rust and
   or `pyproject.toml`.
 - Add a consumer-facing `README.md` and a non-empty `tests/` directory, or
   adjacent `*_test.go` files for Go workers.
-- Add `iii.worker.yaml` for local development, scaffolding and `iii worker`.
+- Add `iii.worker.yaml` for local development, scaffolding and Compose.
 - Add an entry to the private
   [`.deploy/workers.yaml`](../../.deploy/workers.yaml) build catalog.
 

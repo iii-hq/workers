@@ -209,7 +209,7 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 
 ### Worker SDK surface
 
-`console` registers a health probe for `iii worker info` smoke tests, plus the workspace functions that let an agent show the human a screen next to the conversation:
+`console` registers a health probe for `engine::workers::info` smoke tests, plus the workspace functions that let an agent show the human a screen next to the conversation:
 
 | Function | Input | Output |
 |---|---|---|

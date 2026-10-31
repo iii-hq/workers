@@ -16,7 +16,7 @@ import {
 
 /** Engine worker name (`engine::workers::list` → `name`) of the ide worker. */
 const SHELL_WORKER_NAME = 'ide'
-/** Base id for the browser-local handler bound to the `worker` trigger. */
+/** Base id for the browser-local `engine::workers-available` handler. */
 const SHELL_WATCH_FN = 'console::shell-watch'
 
 export type ShellStatus = WorkerPresence

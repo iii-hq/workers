@@ -481,6 +481,8 @@ mod tests {
             queued: None,
             result: None,
             result_error: None,
+            stop_reason: None,
+            context: None,
         }
     }
 

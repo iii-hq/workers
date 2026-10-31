@@ -151,7 +151,7 @@ describe('credential fields', () => {
 
   it('explains a worker that predates references and keeps values inline', () => {
     const html = field({ value: undefined, referencesSupported: false })
-    expect(html).toContain('iii worker update storage')
+    expect(html).toContain('iii trigger compose::update worker=storage')
     expect(html).toContain('Plain text in configuration')
     expect(html).toContain('Keep as plain text')
     expect(html).not.toContain('Save to secrets')
@@ -209,7 +209,7 @@ describe('Test bucket', () => {
       <TestBucketRow state={{ status: 'unsupported' }} blocker={null} onTest={() => {}} />,
     )
     expect(html).toContain('storage::testBucket')
-    expect(html).toContain('iii worker update storage')
+    expect(html).toContain('iii trigger compose::update worker=storage')
   })
 })
 

@@ -12,7 +12,9 @@ use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::Value;
+use serde_json::{json, Value};
+
+use crate::error::{classify_probe_error, ProbeOutcome};
 
 pub type CallResult = Result<Value, String>;
 
@@ -106,6 +108,62 @@ impl Engine for IIIEngine {
             .description(desc),
         );
         Box::new(move || function_ref.unregister())
+    }
+}
+
+/// What the startup probe learned about the sandbox adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxProbe {
+    /// An adapter is connected to the router.
+    Ready,
+    /// The engine answered and there is no adapter.
+    Missing,
+    /// An adapter is connected but implements another contract major, so the
+    /// router refuses every call with S302; carries why.
+    Incompatible(String),
+    /// The engine did not answer; carries its raw error.
+    Unverified(String),
+}
+
+/// Ask the sandbox router whether an adapter is connected. Engines without
+/// the router get the older check, whether `sandbox::create` is registered.
+/// Only a clean "not found" on the router id falls back: any other failure
+/// (rbac, timeout) says nothing about the router being absent, and the
+/// fallback would then answer for a function the router owns.
+pub async fn probe_sandbox(engine: &dyn Engine) -> SandboxProbe {
+    const ROUTER: &str = "sandbox::adapter::info";
+    match engine.call(ROUTER.to_string(), json!({}), 5_000).await {
+        Ok(v) => match v.get("info").filter(|i| !i.is_null()) {
+            None => SandboxProbe::Missing,
+            Some(info) if info.pointer("/contract/major") == v.pointer("/contract/major") => {
+                SandboxProbe::Ready
+            }
+            Some(info) => SandboxProbe::Incompatible(format!(
+                "adapter implements sandbox contract {}, but this engine needs major {}",
+                info["contract"], v["contract"]["major"]
+            )),
+        },
+        Err(raw) if classify_probe_error(&raw, ROUTER) == ProbeOutcome::Free => {
+            let legacy = engine
+                .call(
+                    "engine::functions::info".to_string(),
+                    json!({ "function_id": "sandbox::create" }),
+                    5_000,
+                )
+                .await;
+            match legacy {
+                Ok(_) => SandboxProbe::Ready,
+                // Same disambiguation as the register-time probe (see
+                // `classify_probe_error`): a "not found" naming
+                // `engine::functions::info` itself means this engine cannot
+                // dispatch the probe, not that `sandbox::create` is absent.
+                Err(raw) if classify_probe_error(&raw, "sandbox::create") == ProbeOutcome::Free => {
+                    SandboxProbe::Missing
+                }
+                Err(raw) => SandboxProbe::Unverified(raw),
+            }
+        }
+        Err(raw) => SandboxProbe::Unverified(raw),
     }
 }
 
@@ -366,6 +424,106 @@ mod tests {
             .call("sandbox::exec".into(), json!({ "cmd": "node" }), 1)
             .await;
         assert_eq!(out, Ok(json!({ "echoed_cmd": "node" })));
+    }
+
+    const ADAPTER_INFO: &str = "sandbox::adapter::info";
+    const FUNCTION_INFO: &str = "engine::functions::info";
+
+    fn router_reply(info: Value) -> CallResult {
+        Ok(json!({
+            "adapter": "sandbox-libkrun",
+            "namespace": "default",
+            "contract": { "major": 1, "minor": 0 },
+            "info": info,
+        }))
+    }
+
+    fn called_ids(fake: &FakeEngine) -> Vec<String> {
+        fake.calls().into_iter().map(|(id, _)| id).collect()
+    }
+
+    #[tokio::test]
+    async fn probe_ready_when_the_router_reports_an_adapter() {
+        let fake = FakeEngine::new();
+        fake.with_response(
+            ADAPTER_INFO,
+            router_reply(json!({
+                "adapter": "sandbox-libkrun",
+                "adapter_version": "0.2.0",
+                "contract": { "major": 1, "minor": 0 },
+            })),
+        );
+        assert_eq!(probe_sandbox(fake.as_ref()).await, SandboxProbe::Ready);
+        assert_eq!(called_ids(&fake), [ADAPTER_INFO]);
+    }
+
+    #[tokio::test]
+    async fn probe_incompatible_when_the_adapter_major_differs() {
+        let fake = FakeEngine::new();
+        fake.with_response(
+            ADAPTER_INFO,
+            router_reply(json!({
+                "adapter": "sandbox-libkrun",
+                "adapter_version": "2.0.0",
+                "contract": { "major": 2, "minor": 0 },
+            })),
+        );
+        assert_eq!(
+            probe_sandbox(fake.as_ref()).await,
+            SandboxProbe::Incompatible(
+                r#"adapter implements sandbox contract {"major":2,"minor":0}, but this engine needs major 1"#
+                    .into()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_missing_when_the_router_has_no_adapter() {
+        let fake = FakeEngine::new();
+        fake.with_response(ADAPTER_INFO, router_reply(Value::Null));
+        assert_eq!(probe_sandbox(fake.as_ref()).await, SandboxProbe::Missing);
+        assert_eq!(called_ids(&fake), [ADAPTER_INFO]);
+    }
+
+    #[tokio::test]
+    async fn probe_falls_back_on_engines_without_the_router() {
+        let no_router = "remote error (function_not_found): Function sandbox::adapter::info not found in namespace default.";
+
+        let ready = FakeEngine::new();
+        ready.with_response(ADAPTER_INFO, Err(no_router.into()));
+        ready.with_response(FUNCTION_INFO, Ok(json!({})));
+        assert_eq!(probe_sandbox(ready.as_ref()).await, SandboxProbe::Ready);
+        assert_eq!(called_ids(&ready), [ADAPTER_INFO, FUNCTION_INFO]);
+        assert_eq!(
+            ready.calls()[1].1,
+            json!({ "function_id": "sandbox::create" })
+        );
+
+        let missing = FakeEngine::new();
+        missing.with_response(ADAPTER_INFO, Err(no_router.into()));
+        missing.with_response(
+            FUNCTION_INFO,
+            Err("remote error (NOT_FOUND): Function 'sandbox::create' is not registered.".into()),
+        );
+        assert_eq!(probe_sandbox(missing.as_ref()).await, SandboxProbe::Missing);
+    }
+
+    /// A router that is there but did not answer (rbac, timeout) must not be
+    /// read as "no router": falling back would probe `sandbox::create`, which
+    /// the router owns, and report an adapter that may not exist.
+    #[tokio::test]
+    async fn probe_falls_back_only_when_the_router_is_absent() {
+        for raw in [
+            "remote error: FORBIDDEN: rbac denies sandbox::adapter::info",
+            "invocation timed out",
+        ] {
+            let fake = FakeEngine::new();
+            fake.with_response(ADAPTER_INFO, Err(raw.into()));
+            fake.with_response(FUNCTION_INFO, Ok(json!({})));
+            let probe = probe_sandbox(fake.as_ref()).await;
+            assert_eq!(probe, SandboxProbe::Unverified(raw.to_string()));
+            assert!(!called_ids(&fake).contains(&FUNCTION_INFO.to_string()));
+        }
     }
 
     #[tokio::test]

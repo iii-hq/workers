@@ -1,9 +1,5 @@
 /** How the worker is managed — drives badge copy and lifecycle affordances. */
-export type WorkerManagementKind =
-  | 'compose'
-  | 'supervisor'
-  | 'standalone'
-  | 'internal'
+export type WorkerManagementKind = 'compose' | 'standalone' | 'internal'
 
 /** Connection / liveness status shown in the table. */
 export type WorkerConnectionStatus =
@@ -32,17 +28,12 @@ export interface WorkerRow {
   tag: string | null
   managementKind: WorkerManagementKind
   status: WorkerConnectionStatus
-  /** When true the supervisor stop action is enabled (supervisor-managed + running). */
-  stopEnabled: boolean
-  /** Shown when stop is disabled. */
-  stopDisabledReason: string | null
   composeState: ComposeContainerState | null
   lastError: string | null
 }
 
 export const MANAGEMENT_LABEL: Record<WorkerManagementKind, string> = {
   compose: 'compose',
-  supervisor: 'managed',
   standalone: 'standalone',
   internal: 'internal',
 }

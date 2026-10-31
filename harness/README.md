@@ -83,7 +83,7 @@ values (`password`, `token`, `api_key`, `authorization`, …) masked and long st
 repair is noted in the call's result.
 
 The full function reference (every `harness::*` id and its request/response
-schema) lives in the code and `iii worker info harness`.
+schema) lives in the code and `iii trigger engine::workers::info name=harness`.
 
 Building a consumer — a chat UI, a Telegram/WhatsApp bridge, a cron worker, or
 any event-driven loop on top of the harness? Start with the integration

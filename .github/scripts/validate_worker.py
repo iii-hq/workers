@@ -23,7 +23,7 @@ BUNDLE_PRESET_IMAGES = frozenset({
 
 
 def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
-    """Validate the `iii worker` manifest while keeping it out of release planning."""
+    """Validate the public `iii.worker.yaml` manifest while keeping it out of release planning."""
     try:
         manifest = _lib.read_iii_worker_yaml(spec.path)
     except (FileNotFoundError, ValueError) as error:

@@ -606,7 +606,7 @@ Returned error bodies carry a stable `code` field. Denylist rejections come back
 | `S222` | A scoped host exec under `fs.exec_confinement: landlock` could not be confined (no Landlock: kernel, seccomp, non-Linux); it did not run. Set `fs.exec_confinement: off` to run unconfined. |
 | `S300` | Sandbox VM boot failed (needs a virtualization host: Apple Silicon or `/dev/kvm`). |
 
-Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim instead of collapsing to `S216`: `S001`–`S004` (sandbox lifecycle), `S100`–`S102` (image/VM/resource), `S300`, and `S400`. Branch on the specific code where relevant; only an unrecognized engine code falls back to `S216`.
+Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim instead of collapsing to `S216`: `S001`–`S004` (sandbox lifecycle), `S100`–`S102` (image/VM/resource), `S300`, `S400`, and the sandbox router's `S301` (adapter not connected; retryable), `S302` (adapter on another contract major), `S303` (no adapter bound) and `S304` (adapter lacks the operation). Branch on the specific code where relevant; only an unrecognized engine code falls back to `S216`.
 
 ## Upgrading to 0.10.0
 

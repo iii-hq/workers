@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Verify that the resolved worker file pins the released worker and stack.
 
-Accepts either shape a validator produces: an ``iii.lock`` (``workers:``
-mapping) or a ``worker-compose.yaml`` (``containers:`` mapping, one
-``version`` per container as written by ``compose::add``).
+Reads a ``worker-compose.yaml``: its ``containers:`` mapping, one ``version``
+per container as written by ``compose::add``.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lock", type=Path, required=True)
     parser.add_argument("--worker", required=True)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--catalog", type=Path)
     parser.add_argument("--required", action="append", default=[])
     parser.add_argument("--expected-versions-json", default="{}")
     parser.add_argument("--output", type=Path)
@@ -35,12 +33,7 @@ def load_yaml(path: Path) -> dict:
 
 
 def resolved_workers(lock: dict) -> dict:
-    """The name → record mapping, whichever file shape carries it."""
-    if "workers" in lock:
-        workers = lock.get("workers") or {}
-        if not isinstance(workers, dict):
-            raise SystemExit("invalid_lock: workers must be a mapping")
-        return workers
+    """The name → record mapping of the compose file's containers."""
     containers = lock.get("containers")
     if isinstance(containers, dict):
         return {
@@ -48,7 +41,7 @@ def resolved_workers(lock: dict) -> dict:
             for name, entry in containers.items()
             if isinstance(entry, dict)
         }
-    raise SystemExit("invalid_lock: neither workers nor containers is a mapping")
+    raise SystemExit("invalid_lock: containers is not a mapping")
 
 
 def main() -> None:
@@ -65,19 +58,10 @@ def main() -> None:
         )
 
     required = set(args.required)
-    if args.catalog:
-        catalog = load_yaml(args.catalog)
-        worker_definition = (catalog.get("workers") or {}).get(args.worker) or {}
-        registry = worker_definition.get("registry") or {}
-        dependencies = registry.get("dependencies") or {}
-        if not isinstance(dependencies, dict):
-            raise SystemExit("invalid_catalog: registry.dependencies must be a mapping")
-        required.update(dependencies)
-
     missing = sorted(required - workers.keys())
     if missing:
         raise SystemExit(
-            "stack_incomplete: required workers absent from iii.lock: "
+            "stack_incomplete: required workers absent from the compose file: "
             + ", ".join(missing)
         )
 

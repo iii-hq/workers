@@ -22,7 +22,6 @@ import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
 import { shellFixtures } from '@/stories/fixtures/shell-fixtures'
 import { stateFixtures } from '@/stories/fixtures/state-fixtures'
 import { webFixtures } from '@/stories/fixtures/web-fixtures'
-import { workerFixtures } from '@/stories/fixtures/worker-fixtures'
 import { workflowFixtures } from '@/stories/fixtures/workflow-fixtures'
 import { worktreeFixtures } from '@/stories/fixtures/worktree-fixtures'
 import type { FunctionTriggerMessage as FTriggerType } from '@/types/chat'
@@ -394,11 +393,6 @@ export const EngineFamily: Story = {
 export const WebFamily: Story = {
   name: 'web family',
   render: () => <FamilyGallery fixtures={webFixtures} />,
-}
-
-export const WorkerFamily: Story = {
-  name: 'worker family',
-  render: () => <FamilyGallery fixtures={workerFixtures} />,
 }
 
 export const CoderFamily: Story = {

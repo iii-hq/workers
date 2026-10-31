@@ -78,8 +78,6 @@ const COMPOSE_OPERATION_TRIGGER = 'compose-operation'
 const WORKERS_AVAILABLE_TRIGGER = 'engine::workers-available'
 /** ...and this when the function registry changes. */
 const FUNCTIONS_AVAILABLE_TRIGGER = 'engine::functions-available'
-/** Worker-manager lifecycle, where an engine still publishes it. */
-const WORKER_LIFECYCLE_TRIGGER = 'worker'
 const CONFIGURATION_TRIGGER = 'configuration'
 const ROUTER_MODELS_CHANGED = 'router::models::changed'
 const ROUTER_PROVIDER_CHANGED = 'router::provider::changed'
@@ -500,7 +498,7 @@ async function composeAdd(
 /**
  * Wait until every worker in `names` is connected: re-read the worker list
  * once now and once per `engine::workers-available` (a worker connected or
- * registered) — or worker-manager lifecycle — event.
+ * registered) event.
  */
 async function waitForWorkers(
   names: readonly string[],
@@ -509,13 +507,7 @@ async function waitForWorkers(
   let waiting = [...names]
   await waitForEvents<undefined>({
     handler: 'iii::console::onboarding::workers',
-    triggers: [
-      { type: WORKERS_AVAILABLE_TRIGGER },
-      {
-        type: WORKER_LIFECYCLE_TRIGGER,
-        config: { operations: ['add'], stages: ['done'] },
-      },
-    ],
+    triggers: [{ type: WORKERS_AVAILABLE_TRIGGER }],
     check: async () => {
       const connected = await installedWorkerNames()
       waiting = names.filter((worker) => !connected.has(worker))
@@ -543,13 +535,7 @@ async function waitForWorkersGone(
   let lingering = [...names]
   await waitForEvents<undefined>({
     handler: 'iii::console::onboarding::workers-gone',
-    triggers: [
-      { type: WORKERS_AVAILABLE_TRIGGER },
-      {
-        type: WORKER_LIFECYCLE_TRIGGER,
-        config: { operations: ['remove'], stages: ['done'] },
-      },
-    ],
+    triggers: [{ type: WORKERS_AVAILABLE_TRIGGER }],
     check: async () => {
       const connected = await installedWorkerNames()
       lingering = names.filter((worker) => connected.has(worker))

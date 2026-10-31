@@ -120,7 +120,7 @@ export function OnboardingSection() {
           <StatusPanel
             variant="success"
             headline="replayable installs"
-            detail="commit iii.lock, run `iii worker sync` on any engine — same workers, same versions, zero drift."
+            detail="commit worker-compose.lock, run `iii compose --up --frozen` anywhere — same workers, same versions, zero drift."
           />
         </div>
 

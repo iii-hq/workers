@@ -43,7 +43,7 @@ iii trigger tailscale::file::send --json '{"paths":["/Users/me/report.pdf"],"tar
 
 `tailscale::share` returns the HTTPS link and its QR code; `mode=funnel` publishes to the internet and needs `allow_funnel: true` in the configuration plus `confirm_public: true` on the request. `tailscale::serve::add` publishes any local port, loopback URL, or directory the same way. Stopping a Funnel route (`share::stop` / `serve::remove` with `mode=funnel`) removes public access and keeps the tailnet route; `mode=serve` removes the route. The worker never resets routes it did not create unless `serve::reset` is called with `confirm=true`.
 
-The full catalogue lives in [`skills/SKILL.md`](https://github.com/iii-hq/workers/blob/main/tailscale/skills/SKILL.md) and in `iii worker info tailscale`.
+The full catalogue lives in [`skills/SKILL.md`](https://github.com/iii-hq/workers/blob/main/tailscale/skills/SKILL.md) and in `iii trigger engine::workers::info name=tailscale`.
 
 ## Configuration
 

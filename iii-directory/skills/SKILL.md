@@ -34,9 +34,9 @@ Only **installed** workers are visible. `index`, `list`, and `get` show on-disk
 skills for installed workers, plus this worker and the `iii` engine which are
 always present. A skill you know exists stays invisible until its worker is
 downloaded, so when one is missing, install it and look again. With
-`auto_download` enabled the worker subscribes to the engine `worker` add event
-and pulls a newly added worker's skills automatically, so freshly installed
-workers can appear without a manual download. System-installed agent skills
+`auto_download` enabled the worker pulls the skills of every `compose::status`
+worker at boot, and again whenever a worker connects, so a worker added with
+`compose::add` appears once it is up, without a manual download. System-installed agent skills
 under the read-only `agents_skills_folder` (`.agents/skills` under
 `III_COMPOSE_DIR`, or the process current directory when standalone) are
 also always visible in `list`/`get` — they are skills, not workers, so they
@@ -60,7 +60,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - Only installed workers are visible. If the engine daemon is unreachable at boot, filtering is skipped and everything on disk is shown instead.
 - Writes are downloads plus the per-family `create` / `update` / `delete` calls; every read function leaves disk untouched.
 - Skills under `agents_skills_folder` are read-only: `update`/`delete` refuse them (`D116`), and `create` refuses ids in their namespaces (`D115`). Edit them with their owning tool, or copy one into `skills_folder` on disk to fork it.
-- Not the live-connection view. `directory::*` reflects what is on disk or in the registry, not what is connected right now. For that, call the engine directly (`engine::functions::list`, `engine::workers::list`, …); daemon-managed providers (`http`, `cron`, `state`) open no WebSocket, so merge `worker::list` by `name`.
+- Not the live-connection view. `directory::*` reflects what is on disk or in the registry, not what is connected right now. For that, call the engine directly (`engine::functions::list`, `engine::workers::list`, …); for the workers a compose project declares but that are not connected yet, merge `compose::status` by `name`.
 - Do not put a skill id (`/`) in `agent_trigger`'s `function:` field, and do not pass a function id (`::`) to `directory::skills::get`.
 - System prompt files without a `description:` in frontmatter are silently skipped by `directory::system-prompts::list`.
 - Skills and system prompts share `skills_folder`; a `system-prompts/` path component selects the prompt family, other `prompts/` paths are ignored, and `agents/` is reserved. Agent profiles are direct `<agents_folder>/<id>.md` files.

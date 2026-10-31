@@ -1,9 +1,8 @@
 import { Check, Plus, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { z } from 'zod'
 import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { useWorkerLifecycle } from '@/hooks/use-worker-lifecycle'
+import { useWorkersChanged } from '@/hooks/use-workers-changed'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
 import type { ProviderListEntry } from '@/lib/models-catalog'
@@ -23,24 +22,13 @@ import { ProviderIcon } from './ProviderIcon'
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
-/** Base id for the browser-local handler bound to the `worker` add trigger. */
+/** Base id for the browser-local `engine::workers-available` handler. */
 const PROVIDER_ADD_WATCH_FN = 'console::provider-add-watch'
 
 type AddStatus =
-  | { kind: 'adding'; progress?: number }
+  | { kind: 'adding' }
   | { kind: 'done' }
   | { kind: 'failed'; error: string }
-
-const workerEventSchema = z.object({
-  operation: z.string().optional(),
-  stage: z.string().optional(),
-  worker: z.string().nullable().optional(),
-  progress: z.number().nullable().optional(),
-  error: z
-    .object({ code: z.string().optional(), message: z.string().optional() })
-    .nullable()
-    .optional(),
-})
 
 export interface AddProviderPanelProps {
   /** Providers already declared to the router; defaults to the chat context. */
@@ -58,9 +46,9 @@ export interface AddProviderPanelProps {
 /**
  * Every provider worker the public registry publishes, with a one-tap add.
  * Adding runs `compose::add` — exactly what `iii trigger compose::add
- * worker=<name>` does in a terminal — and the row follows the worker
- * lifecycle (downloading → done) so the operator sees the same progress the
- * harness install shows. Once the worker registers with the router the
+ * worker=<name>` does in a terminal — and the row shows it adding until
+ * the add settles. A worker added from a terminal shows as installed once it
+ * connects. Once the worker registers with the router the
  * picker's provider list updates on its own; this panel only has to offer
  * the configuration shortcut.
  */
@@ -107,62 +95,31 @@ export function AddProviderPanel({
     return () => controller.abort()
   }, [registryWorkers, loadRegistry])
 
-  useEffect(() => {
-    if (installedWorkerNames !== undefined) {
-      setInstalled(new Set(installedWorkerNames))
-      return
-    }
-    if (!live) return
-    let cancelled = false
+  // Workers already connected, read again whenever one connects or leaves,
+  // so a worker added from a terminal drops out of the list too.
+  const refreshInstalled = useCallback(() => {
     void fetchEngineWorkersList()
       .then((list) => {
-        if (cancelled) return
         const names = list.workers
           .map((worker) => worker.name)
           .filter((name): name is string => typeof name === 'string')
         setInstalled((current) => new Set([...current, ...names]))
       })
       .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
-  }, [installedWorkerNames, live])
-
-  const handleLifecycleEvent = useCallback((payload: unknown) => {
-    const parsed = workerEventSchema.safeParse(payload)
-    if (!parsed.success || parsed.data.operation !== 'add') return
-    const evt = parsed.data
-    const worker = typeof evt.worker === 'string' ? evt.worker : ''
-    if (!worker) return
-    setAdds((current) => {
-      const next = new Map(current)
-      if (evt.stage === 'done') {
-        next.set(worker, { kind: 'done' })
-      } else if (evt.stage === 'failed') {
-        next.set(worker, {
-          kind: 'failed',
-          error: evt.error?.message
-            ? normalizeErrorMessage(evt.error)
-            : 'failed to add the worker',
-        })
-      } else {
-        next.set(worker, {
-          kind: 'adding',
-          progress: typeof evt.progress === 'number' ? evt.progress : undefined,
-        })
-      }
-      return next
-    })
-    if (evt.stage === 'done') {
-      setInstalled((current) => new Set([...current, worker]))
-    }
   }, [])
 
-  useWorkerLifecycle({
+  useEffect(() => {
+    if (installedWorkerNames !== undefined) {
+      setInstalled(new Set(installedWorkerNames))
+      return
+    }
+    if (live) refreshInstalled()
+  }, [installedWorkerNames, live, refreshInstalled])
+
+  useWorkersChanged({
     enabled: live && installedWorkerNames === undefined,
     fnId: PROVIDER_ADD_WATCH_FN,
-    operations: ['add'],
-    onEvent: handleLifecycleEvent,
+    onChange: refreshInstalled,
   })
 
   const addWorker = useCallback(
@@ -341,9 +298,7 @@ export function AddProviderPanel({
                           className="size-4 shrink-0 animate-spin"
                           aria-hidden
                         />
-                        {typeof add.progress === 'number'
-                          ? `${Math.round(add.progress * 100)}%`
-                          : 'Adding…'}
+                        Adding…
                       </span>
                     ) : (
                       <Button

@@ -210,7 +210,7 @@ catalog.
 
 ### `rbac-proxy::status`
 
-Health/identity probe for `iii worker info` smoke tests. Invocation: **sync**.
+Health/identity probe for `engine::workers::info` smoke tests. Invocation: **sync**.
 
 ```rust
 #[derive(Debug, Default, Deserialize, JsonSchema)]

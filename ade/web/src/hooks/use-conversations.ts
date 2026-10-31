@@ -1852,8 +1852,8 @@ export function useConversations(
               [sessionId]: 'Unable to load this conversation.',
             }))
             // No session-manager registered: a timer will not bring it back,
-            // the `worker` lifecycle trigger re-enables the store when it
-            // arrives. Retrying here only writes an engine error line every
+            // its presence probe (`engine::workers-available`) re-enables the
+            // store when it arrives. Retrying here only writes an engine error line every
             // 5 s for as long as the panel stays open.
             if (isFunctionNotFound(err)) return
             const retryDelay =

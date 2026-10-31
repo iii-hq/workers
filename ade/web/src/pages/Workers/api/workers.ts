@@ -5,19 +5,11 @@ import {
   workerInfoResponseSchema,
   workersListResponseSchema,
 } from '@/components/chat/engine/parsers'
-import {
-  type WorkerEntry,
-  type WorkerListResponse,
-  workerListResponseSchema,
-} from '@/components/chat/worker/parsers'
-import { functionRegistered } from '@/lib/function-presence'
 import { getIiiClient } from '@/lib/iii-client'
 
 export const WORKERS_RPC = {
   engineList: 'engine::workers::list',
   engineInfo: 'engine::workers::info',
-  supervisorList: 'worker::list',
-  supervisorStop: 'worker::stop',
   composeStatus: 'compose::status',
 } as const
 
@@ -55,19 +47,6 @@ export async function fetchEngineWorkerInfo(
   return parsed.success ? parsed.data : null
 }
 
-export async function fetchSupervisorWorkersList(): Promise<WorkerListResponse> {
-  // `worker::list` is the legacy supervisor surface; a compose-managed engine
-  // has no provider for it. The caller already tolerates the miss, but the
-  // engine logged `Function not found` on every Workers-page refresh.
-  if (!(await functionRegistered(WORKERS_RPC.supervisorList))) {
-    return { workers: [] }
-  }
-  const client = await getIiiClient()
-  const raw = await client.trigger<unknown>(WORKERS_RPC.supervisorList, {})
-  const parsed = workerListResponseSchema.safeParse(raw)
-  return parsed.success ? parsed.data : { workers: [] }
-}
-
 export async function fetchComposeStatus(): Promise<ComposeStatus | null> {
   const client = await getIiiClient()
   try {
@@ -83,14 +62,8 @@ export async function fetchComposeStatus(): Promise<ComposeStatus | null> {
   }
 }
 
-export async function stopSupervisorWorker(name: string): Promise<void> {
-  const client = await getIiiClient()
-  await client.trigger(WORKERS_RPC.supervisorStop, { name, yes: true })
-}
-
 export interface RawWorkersSnapshot {
   engineWorkers: WorkersListResponse['workers']
-  supervisorWorkers: WorkerEntry[]
   infoByName: Map<string, WorkerInfoResponse['worker']>
   compose: ComposeStatus | null
 }
@@ -125,15 +98,11 @@ export async function mapWithConcurrency<T, R>(
 }
 
 export async function fetchRawWorkersSnapshot(): Promise<RawWorkersSnapshot> {
-  // Supervisor and compose reads are enrichment: an engine
-  // without worker::list (a compose-managed engine, or one booted with no
-  // supervisor) must not blank the whole page - the connected fleet from
-  // engine::workers::list still renders, just without supervisor actions.
-  const [engineList, supervisorList, compose] = await Promise.all([
+  // The compose read is enrichment: an engine without a compose daemon must
+  // not blank the whole page - the connected fleet from
+  // engine::workers::list still renders.
+  const [engineList, compose] = await Promise.all([
     fetchEngineWorkersList(),
-    fetchSupervisorWorkersList().catch(
-      (): WorkerListResponse => ({ workers: [] }),
-    ),
     fetchComposeStatus(),
   ])
 
@@ -156,7 +125,6 @@ export async function fetchRawWorkersSnapshot(): Promise<RawWorkersSnapshot> {
 
   return {
     engineWorkers: engineList.workers,
-    supervisorWorkers: supervisorList.workers,
     infoByName,
     compose,
   }

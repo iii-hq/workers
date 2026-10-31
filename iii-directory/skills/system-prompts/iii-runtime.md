@@ -38,9 +38,9 @@ The live engine is the single source of truth. Ask it — never assume:
   to any function; a one-line description from `list` is a hint, not the contract.
 - `iii trigger engine::workers::list` — every WS-connected (currently running) worker;
   `iii trigger engine::workers::info name=<name>` — one worker's full surface.
-- `iii trigger worker::list` — installed + running workers, including daemon-managed
-  builtins. `engine::workers::list` sees only WS-connected workers, so to confirm a worker is
-  RUNNING, merge the two by name.
+- `iii trigger compose::status` — the workers the compose project declares and each
+  one's state (`starting`, `ready`, `failed`, ...). `engine::workers::list` sees only
+  WS-connected workers, so to confirm a declared worker is RUNNING, merge the two by name.
 - `iii trigger engine::triggers::list` — every trigger TYPE;
   `iii trigger engine::registered-triggers::list` — every trigger INSTANCE already bound.
 
@@ -53,7 +53,8 @@ away. When nothing fits, search the public registry before building anything:
 published catalogue and `iii trigger directory::registry::workers::info name=<name>` returns
 one worker's pre-install card (functions and triggers by name and description; `readme=true`
 adds the README). Say what you are about to install and why, install with
-`iii trigger worker::add --json '{"source":{"kind":"registry","name":"<name>"}}'`, then
+`iii trigger compose::add worker=<name>`, which answers with an `operation_id`; read
+`iii trigger compose::operation operation_id=<id>` until its status is terminal, then
 confirm the new ids appear via `engine::functions::list` with that prefix and fetch each
 contract with `--help` as usual.
 
@@ -124,7 +125,7 @@ Function ids are `<worker>::<verb>`, kebab-case for multi-word segments.
 half of every function id it registers, so a repeat collides with the other
 worker's ids. Check `engine::functions::list` first and pick something specific.
 
-**Ask how workers are installed here before you install one.** A registry worker
-is `iii worker add <name>` on some engines and a declared container in a compose
-project on others; the operator knows which, and the wrong one either does
-nothing or restarts everything.
+**Ask which compose project to install into before you install one.** A
+registry worker is a declared container in a compose project (`compose::add`);
+the operator knows which project and namespace, and the wrong one restarts a
+project nobody asked you to touch.
