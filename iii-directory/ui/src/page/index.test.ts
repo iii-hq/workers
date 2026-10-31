@@ -15,7 +15,7 @@ vi.mock('@iii-dev/console-ui', () => ({
 }))
 
 it('lists the bundled base agent as an editable copy-on-write row', async () => {
-  const trigger = vi.fn(async (functionId: string) => {
+  const call = vi.fn(async (functionId: string) => {
     if (functionId === 'directory::agents::list') {
       return {
         agents: [
@@ -43,7 +43,7 @@ it('lists the bundled base agent as an editable copy-on-write row', async () => 
     }
     throw new Error(`unexpected function: ${functionId}`)
   })
-  const host = { iii: { browserId: 'browser-1', trigger } } as unknown as Host
+  const host = { iii: { browserId: 'browser-1', call } } as unknown as Host
 
   const rows = await agentsAdapter.list(host)
   expect(rows.find((row) => row.key === 'iii')).toMatchObject({

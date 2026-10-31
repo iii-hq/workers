@@ -5,7 +5,7 @@ description: The authoring and delivery contract for worker UI injected into the
 
 # Injectable console UI
 
-A worker ships pages, function and trigger-activity renderers, forms, and
+A worker ships pages, function and observer-activity renderers, forms, and
 stylesheets into every console tab **at runtime** — no console rebuild, no
 iframe, hot reload. This skill is the delivery contract. Looks, tokens and
 every number: `ade/design-system` (link to `ade/design-system` › Numbers,
@@ -13,14 +13,15 @@ never restate one). Behavior across widths and forms: `ade/design-console-ui`.
 
 ## How it works
 
-A worker registers `console:script` and `console:style` triggers (plus
-`console:module` for code loaded on demand) whose `config.path` identifies an
-asset and whose `function_id` serves `{content}` for `{path}`. The console
-hashes and serves those bytes, then pushes changes to open tabs. Tabs
-`import()` scripts and call their default `setup(host)`; styles load as scoped
-`<link>` assets; modules load only when a script calls
-`host.importModule(path)`. Re-registering a path hot-reloads it.
-Registration is deployment; disconnect is teardown.
+A worker observes `console::ui::asset` once per asset, with args
+`{ kind: 'script' | 'style' | 'module', path }` naming the asset (`module` for
+code loaded on demand) and its content function as the target, which serves
+`{content}` for `{path}`. The console calls the content function through the
+observer, hashes and serves those bytes, then pushes changes to open tabs.
+Tabs `import()` scripts and call their default `setup(host)`; styles load as
+scoped `<link>` assets; modules load only when a script calls
+`host.importModule(path)`. A new observer of a path hot-reloads it. Observing
+is deployment; disconnect is teardown.
 
 ## Project layout
 
@@ -55,7 +56,7 @@ installed from a registry.
 
 `@iii-dev/console-ui`'s root is types-only at build time; the console serves
 its runtime from the running SPA. `iii-console-ui` registers the content
-function, the asset triggers, and the development watcher; Node workers
+function, observes the assets, and runs the development watcher; Node workers
 implement the wire contract directly. Copy `state/build.rs` and
 `state/src/ui.rs`; rename worker and asset paths and keep their tests.
 
@@ -80,7 +81,7 @@ implement the wire contract directly. Copy `state/build.rs` and
 | Migrated list/detail editor | `iii-directory/ui/page.tsx`, `iii-directory/ui/src/page/`, `iii-directory/ui/styles.css` | `SearchField`, `MetaRow`/`ActionLine`, `Kbd`/`KeyCombo`, dirty-draft guards, per-tab state |
 | Migrated workbench | `ide/ui/page.tsx`, `ide/ui/src/page/`, `ide/ui/build.mjs` | `keyframePrefixes`, `allowUnscopedSelectors` for vendor CSS, `CodeEditor`/`FileDiff`, terminal atoms |
 | Minimal template | `state/ui/page.tsx`, `state/ui/src/page/browser.tsx`, `state/ui/styles.css` | Smallest complete page + renderer + config form |
-| Trigger-activity renderer | `cron/ui/src/trigger-activity/`, `cron/src/ui.rs` | `host.triggerRenderers` and the canonical small settings form |
+| Observer-activity renderer | `cron/ui/src/observer-activity/`, `cron/src/ui.rs` | `host.observerRenderers` and the canonical small settings form |
 | Rust delivery | `state/src/ui.rs`, `state/build.rs` | Embedding, registration, asset tests, build freshness |
 
 Copy delivery plumbing when it matches; never copy a reference's sidebar
@@ -144,8 +145,8 @@ consoles: feature-detect them.
 | Surface | What it is |
 |---|---|
 | `host.pages` | `register({ id, title, configurationId?, render })` registers a page the workspace opens through `host.panels.open` or `console::workspace::open { screen: "ext:<id>" }`, plus a nav entry. `host.panels.openScreen({ screen, relativeTo?, direction?, sizes? })` places any workspace screen, built-in ones like `traces` included, in this browser's tab without a bus round trip (optional on older consoles: feature-detect, fall back to `console::workspace::open`); `#/worker/<scope>[/<id>]` renders it alone (Testing below). `render` receives `PageRenderProps` (below). Set `configurationId` when the worker has a configuration entry; the host places the one settings action in `PageHeader`. Never mount `WorkerConfigurationDialog` yourself. |
-| `host.functionTriggers` | Chat/trace renderers. Match only the worker's function ids; return `null` to fall through. `message.description` is the harness's short activity label. `metadata: { display: true }` keeps a successful rich artifact visible while raw details stay collapsed. If raw data can contain secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
-| `host.triggerRenderers?` | Layered trigger presentation; see below. |
+| `host.functionCalls` | Chat/trace renderers. Match only the worker's function ids; return `null` to fall through. `message.description` is the harness's short activity label. `metadata: { display: true }` keeps a successful rich artifact visible while raw details stay collapsed. If raw data can contain secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
+| `host.observerRenderers?` | Layered observer presentation; see below. |
 | `host.configForms` | The deliberate form for one configuration entry in global Settings. There is no schema-generated fallback: every configurable worker registers one. The host owns dirty tracking, validation, save, reset and the SaveBar; honor `focusField`. `{ layout: 'full' }` only for a workbench that owns its scrolling. Form anatomy and primitives: `ade/design-console-ui` › Configuration forms. |
 | `host.providerConfigForms?` | Replace the form body for one exact `llm-router` provider id inside the model picker; provider-owned OAuth, device flow or companion login. Never solicit a plaintext API key. Props: `ProviderConfigFormProps`. |
 | `host.chat?` | `registerSessionChip`, `registerTurnSummary?`, `registerContextSection?`, `registerComposerAction?`, `registerComposerControl?`, `registerTranscriptRenderer?`, `compose?`, `openDraft?`, `selectConversation?`, `composerModel?`, `requestWorkingDirectoryChange?`, `requestThinkingLevelChange?`. Feature-detect each method. `registerComposerControl` puts a compact per-session setting beside the model picker; it gets the session's `metadata` and a `setMetadata(patch)` the console persists through its own writer (never call `session::set-meta` yourself), and the value applies from the next turn like the model (the judge's provider picker). With `placement: 'project'` the control sits in the working-directory strip after the folder instead, only where that strip shows, for what belongs to the folder (the ide's worktree switcher); every control also gets the session's `workingDir`, and moves it with `requestWorkingDirectoryChange`. `registerContextSection({ id, title, order?, render })` adds a section to the chat's Context side panel: the console draws the header (title, worker, count, fold, drag handle) and keeps the user's order; `render` gets `{ sessionId, workingDir?, active, isStreaming, setSummary }`, reads only while `active`, and reports `setSummary({ count, brief, tone, empty })`, where `empty: true` leaves the section out. |
@@ -154,8 +155,8 @@ consoles: feature-detect them.
 | `host.overlays?` | `register({ id, render })` — a floating layer over the workspace (the browser's live preview, the learn-iii tour). `render` receives `{ conversationId }`, the active chat. A worker command registered with `host.commands` is listed whether or not its page exists, so an overlay-only worker keeps its palette row. Fall back to the page when absent. |
 | `host.palette?` | `registerSource({ id, title, kind, prefix?, minQuery?, search })` adds live rows to the command palette; `open({ query? })`. |
 | `host.commands?` | `register(pageId, commands)` — palette rows for a page that may not be open yet (`run` usually calls `panels.open`). A mounted page contributes keys through `PageRenderProps.commands`. |
-| `host.iii` | The tab's bus client: `trigger(functionId, payload?, { timeoutMs? })`, `on(functionId, handler)`, `registerTrigger({ type, function_id, config })`, `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. A link to the worker's public pages takes its port from `http::status` at runtime, never a fixed 3111. |
-| `host.importModule?` | `importModule<T>(path)` imports one of the worker's `console:module` assets on demand and resolves to its namespace (Lazy modules below); rejects when nothing is served at `/ui/<path>`. |
+| `host.iii` | The tab's bus client: `call(functionId, payload?, { timeoutMs? })`, `on(functionId, handler)`, `observe(source, target, options?)`, `addConnectionStateListener`, `browserId`. Injected UI *acts* by calling its own worker's functions. `observe` takes a function id or `{ function_id, args?, filters?, deliver? }` and the full id of a handler registered with `on` (`<functionId>::<browserId>`), delivers the event the observed function returned, and returns its disposer. A link to the worker's public pages takes its port from `http::status` at runtime, never a fixed 3111. |
+| `host.importModule?` | `importModule<T>(path)` imports one of the worker's `module` assets on demand and resolves to its namespace (Lazy modules below); rejects when nothing is served at `/ui/<path>`. |
 | `host.components`, `host.path`, `host.useTheme`, `host.uiClasses`, `host.workspace?`, `host.screen?` | Runtime component record, the current asset path, theme, class recipes, recent directories, visible-screen lease. |
 
 `PageRenderProps`: `panelSide` (`'left' | 'right'`, only to keep wide side
@@ -167,32 +168,33 @@ conversation's live directory, for filesystem-shaped pages only);
 `panelContext?` and `conversationId?`; `setDirty?` (report unsaved work) and
 `commands?` (palette rows and pane-scoped keys, registered from an effect).
 
-Live data: a page registers its own trigger over `host.iii` with a handler id
-like `iii::<worker>-ui::events::<browserId>` (the `iii::` prefix keeps it out
-of the trace feed; the binding is GC'd with the tab) — `useWorkerLive` from
-`@iii-dev/console-ui/hooks` wraps fetch + bindings + visible-tab poll. Every
+Live data: a page registers a handler over `host.iii` with an id like
+`iii::<worker>-ui::events` and observes its worker's event functions with
+`<id>::<browserId>` as the target (the `iii::` prefix keeps it out of the
+trace feed; the observers leave with the tab) — `useWorkerLive` from
+`@iii-dev/console-ui/hooks` wraps fetch + observers + a re-read on tab focus. Every
 injected render is error-bounded: import or setup failures drop the
 extension's contribution and log to the browser console. Scripts run with full
 console-origin privileges; the wrapper scopes styles, it is not a sandbox.
 
-### Trigger renderers: layered ownership
+### Observer renderers: layered ownership
 
 ```ts
-interface TriggerActivityRenderer {
+interface ObserverActivityRenderer {
   id: string
-  isMatch(triggerType: string): boolean
-  tryRender(activity: TriggerActivityMessage): React.ReactNode | null
-  tryRenderDetails?(activity: TriggerActivityMessage): React.ReactNode | null
-  tryRenderDisplay?(activity: TriggerActivityMessage): React.ReactNode | null
+  isMatch(functionId: string): boolean
+  tryRender(activity: ObserverActivityMessage): React.ReactNode | null
+  tryRenderDetails?(activity: ObserverActivityMessage): React.ReactNode | null
+  tryRenderDisplay?(activity: ObserverActivityMessage): React.ReactNode | null
   redactRaw?(value: unknown): unknown
 }
 ```
 
-`TriggerActivityMessage.kind` is `registration`, `fired`, or `retirement`;
-the model carries `triggerType`, opaque `config`, optional `label` and
-`action`, delivery, lifecycle and payload/outcome fields. Match `triggerType`
-(many sources share `engine::register_trigger`), parse config without
-throwing, return `null` per slot to fall through. `tryRender` is the
+`ObserverActivityMessage.kind` is `registration`, `fired`, or `retirement`;
+the model carries the observed `functionId`, its opaque `args` and `filters`,
+optional `label` and `action`, delivery, lifecycle and payload/outcome
+fields. Match `functionId` (every agent observes through `harness::observe`),
+parse args without throwing, return `null` per slot to fall through. `tryRender` is the
 source-specific section inside the generic detail view; `tryRenderDetails`
 replaces the whole expanded Terminal tab and must carry the lifecycle and
 delivery facts the host no longer adds; `tryRenderDisplay` is the compact
@@ -202,16 +204,17 @@ and a throw fails closed. The host owns the click target, expanded state,
 motion, isolation, per-slot fallback and the Raw JSON tab; a once firing and
 its automatic retirement are one activity.
 
-For harness registrations, `label` names the binding and `metadata.action`
+For an agent's `harness::observe`, `label` names the observer and `action`
 describes the future event:
 
 ```json
-{ "trigger_type": "on-message", "config": { "scope": "explorer" },
-  "label": "explorer-messages", "metadata": { "action": "new Explorer message received" } }
+{ "function_id": "session::on-message-added",
+  "filters": { "input.session_id": { "$eq": "explorer" } },
+  "label": "explorer-messages", "action": "new Explorer message received" }
 ```
 
-Registration and active-binding surfaces show `label`; show `action` only
-when `activity.kind === 'fired'`. Action affects presentation only.
+Observe receipts and active-observer surfaces show `label`; show `action`
+only when `activity.kind === 'fired'`. Action affects presentation only.
 
 ### Shared components, hooks, format, icons
 
@@ -240,7 +243,7 @@ Two subpaths **bundle** (React-free code the console itself uses):
   from `ade/design-system` › Numbers or your `below`; synchronous first
   measure, resizes observed, zero widths ignored), `usePaneState(key,
   initial)` (`localStorage`-mirrored, best effort), `useCopyFlash(text, ms?)`,
-  `useWorkerLive({ iii, triggers, fetch, pollMs?, handlerId })`.
+  `useWorkerLive({ iii, sources, fetch, pollMs?, handlerId })`.
 - `@iii-dev/console-ui/format` — `formatRelative`, `formatDuration`,
   `formatBytes`, `errorMessage`, `errorCode`, `copyText`.
 
@@ -253,7 +256,7 @@ SelectProps<T extends string = string>: { value: T | undefined; options?: Select
 Select: <T extends string = string>(props: SelectProps<T>) => React.ReactNode
 CheckboxProps: Omit<React.InputHTMLAttributes<HTMLInputElement>, 'children' | 'className' | 'type'> & { className?: string; label?: React.ReactNode; indeterminate?: boolean }
 Checkbox: React.ComponentType<CheckboxProps & React.RefAttributes<HTMLInputElement>>
-WorkerLiveOptions<T>: { iii: ExtensionIii; triggers: readonly (string | { type: string; config?: Record<string, unknown> })[]; fetch: () => Promise<T>; pollMs?: number /* deprecated, ignored */; handlerId: string }
+WorkerLiveOptions<T>: { iii: ExtensionIii; sources: readonly (string | ObserveSource)[]; fetch: () => Promise<T>; pollMs?: number /* deprecated, ignored */; handlerId: string }
 WorkerLive<T>: { data: T | null; loading: boolean; error: string | null; live: boolean; refresh: () => void }
 useWorkerLive: <T>(options: WorkerLiveOptions<T>) => WorkerLive<T>
 ```
@@ -270,7 +273,7 @@ Never bundle Monaco, CodeMirror, a diff renderer, or an ANSI parser; use
 ### Lazy modules
 
 Heavy code only one view needs (the ide terminal's `@xterm/xterm`) ships as
-a `console:module`: served at `/ui/<path>` like a script, never imported at
+a `module` asset: served at `/ui/<path>` like a script, never imported at
 mount. The page imports it when the view opens:
 
 ```tsx
@@ -344,7 +347,7 @@ attribute** — the console mounts each render inside
 | Option | Default | Purpose |
 |---|---|---|
 | `scope` | required | The `data-iii-ui` value — first asset path segment, normally the worker name |
-| `entryPoints` | `['page.tsx', 'styles.css']` | Extra scripts each need their own `console:script` trigger and a default `setup`; a lazy module needs a `console:module` trigger and no `setup` |
+| `entryPoints` | `['page.tsx', 'styles.css']` | Extra scripts each need their own `script` asset observer and a default `setup`; a lazy module needs a `module` asset observer and no `setup` |
 | `outdir`, `root` | `'dist'`, `process.cwd()` | Pass `root: import.meta.dirname` when invoked from elsewhere |
 | `keyframePrefixes` | `[scope, "<scope>-ui"]` | Allowed `@keyframes` name prefixes |
 | `allowUnscopedSelectors` | `[]` | Selector prefixes that are global on purpose (a portal root, vendor CSS such as `.xterm`) |
@@ -406,7 +409,8 @@ packages/console-ui/lint-worker-ui.mjs <worker>/ui [--strict] [--json]`;
 ## 4. Registration (the worker side)
 
 One content function serving all of the worker's assets (dispatch on
-`path`), one trigger per asset. Rust workers use the `iii-console-ui` crate:
+`path`), one `console::ui::asset` observer per asset. Rust workers use the
+`iii-console-ui` crate:
 
 ```rust
 use iii_console_ui::ConsoleUi;
@@ -417,35 +421,48 @@ ConsoleUi::new("mywork")
     .register(&iii);
 ```
 
-This registers `<worker>::ui-content`, one Message-path trigger per asset,
-and the `III_<WORKER>_UI_WATCH` watcher; it panics on a path the console
-would reject; `.module(path, content)` adds a `console:module` the same way.
+This registers `<worker>::ui-content`, one observer per asset, and the
+`III_<WORKER>_UI_WATCH` watcher; it panics on a path the console would
+reject; `.module(path, content)` adds a `module` asset the same way.
 Export `ui` from the worker library and call `ui::register(&iii)` after its
 normal functions; adapt `state/build.rs` so missing or stale UI sources build
 before `include_str!`. Node workers register one function
-mapping `{path}` to `{content, content_type?}`, then one Message-path
-`console:script`, `console:style` or `console:module` trigger per asset with
-`config: {path}`, modules first.
+mapping `{path}` to `{content, content_type?}`, then observe
+`console::ui::asset` once per asset:
 
-**Always register through the SDK's Message path, never the engine's durable
-`register_trigger`:** Message-path triggers are garbage-collected on
-disconnect and replayed on reconnect.
+```ts
+iii.observe(
+  { function_id: 'console::ui::asset', args: { kind: 'script', path: 'mywork/page.js' } },
+  'mywork::ui-content',
+)
+```
+
+Observe modules first, in every SDK. The console commits assets in the order
+their observers reach it, and every SDK sends a worker's observers to the
+engine in the order the worker created them, on the first connection and on
+every reconnect, so the console serves the modules a script imports before
+the script reaches a tab.
+
+Observe over the worker's own connection: its observers leave with the
+worker on disconnect (the console drops the assets) and are observed again on
+reconnect.
 
 ## Runtime contract
 
 | | |
 |---|---|
-| Trigger types | `console:script` (ESM JS, imported at mount), `console:module` (ESM JS, imported only by `host.importModule`; kind `module` in the manifest and tab pushes), `console:style` (CSS); never register the tab-only `console:assets` type |
-| Trigger config | `{ "path": string }`, nothing else |
-| Path rules | lowercase `[a-z0-9._-]` segments, no leading slash, no `.`/`..` segments, ≤ 512 chars; extension must match the type (`.js` for scripts and modules, `.css`); **convention: first segment = worker name** — it becomes the `data-iii-ui` scope and the only human-readable attribution |
+| Function | `console::ui::asset`; never observe the tab-only `console::ui::on-assets-changed` |
+| Args | `{ "kind": "script" \| "module" \| "style", "path": string }`, nothing else: `script` is ESM JS imported at mount, `module` ESM JS imported only by `host.importModule` (kind `module` in the manifest and tab pushes), `style` CSS |
+| Target | the worker's content function: once the observer is active it receives `{ path }`, in a call of `console::ui::asset` for that observer alone that the function's deliver hook hands to it |
+| Path rules | lowercase `[a-z0-9._-]` segments, no leading slash, no `.`/`..` segments, ≤ 512 chars; extension must match the kind (`.js` for scripts and modules, `.css`); **convention: first segment = worker name** — it becomes the `data-iii-ui` scope and the only human-readable attribution |
 | Content function | input `{ "path": string }` → output `{ "content": string, "content_type"?: string }` |
-| Size cap | 8 MiB per asset — larger registrations are rejected (the driver fails first) |
-| Reload | same path + changed content hash replaces the asset; unchanged content is a no-op |
+| Size cap | 8 MiB per asset — a larger asset's observer is rejected (the driver fails first) |
+| Reload | a new observer of the same path with a changed content hash replaces the asset (the old observer is rejected as `UI_ASSET_SUPERSEDED`); unchanged content is a no-op |
 
 ## The dev loop (hot reload)
 
-Rebuild-on-save stays in the build tool; re-registration stays in the worker
-(new trigger first, then unregister the old handle). The Rust helper polls
+Rebuild-on-save stays in the build tool; re-observing stays in the worker
+(observe the new asset first, then dispose the old observer). The Rust helper polls
 once a second when `III_<WORKER>_UI_WATCH=1` (`ui/dist`) or names a directory:
 
 ```bash
@@ -465,8 +482,8 @@ end.
 | Build exits 1 naming a selector | an unscoped rule, unprefixed `@keyframes` or `@font-face` — `assertScoped` |
 | Build exits 1 on `unknown token` | a `var(--color-…)` the console does not define — check `token-names.mjs`, or declare it on the scope root |
 | Build exits 1 on `design-rule error(s)` | a lint error (or a warning under `strict`) — fix it or `lint-allow` it with a reason |
-| Registration rejected with a path error | path violates the rules table (wrong extension, uppercase, `..`, …) |
-| Registration rejected with a fetch error | the content function threw, returned no string `content`, or timed out |
+| Observer rejected with a path error (`INVALID_ARGS`) | path violates the rules table (wrong extension, uppercase, `..`, …) |
+| Observer rejected with `UI_ASSET_FETCH_FAILED` | the content function threw, returned no string `content`, or timed out |
 | "Invalid hook call" in the tab | a second React in the bundle — a custom build dropped an external |
 | `import()` fails on a bare specifier | a dependency imports a react-family subpath outside the six shared specifiers |
 | `host.importModule` rejects | nothing is served at `/ui/<path>`: a typo, the module is not registered, or its worker's UI is disabled |
@@ -475,7 +492,8 @@ end.
 | Registered but absent | inspect `workers[].enabled` and `injectableUi.disabledWorkers` in the manifest |
 
 Inspect `console::ui-manifest` (or `GET <url>/ui`, `url` from `console::status`),
-`/ui/<path>`, registered triggers, and `[iii-ui]` browser logs in that order.
+`/ui/<path>`, the worker's observers (`engine::observers::list { worker }`),
+and `[iii-ui]` browser logs in that order.
 The manifest is authoritative; its `warnings` must be empty.
 
 ## Testing
@@ -493,8 +511,8 @@ Validate all four layers; a green build alone is not enough.
    and a wide pane (`ade/design-system` › Numbers), both split positions,
    both themes, keyboard only, reduced motion, long content, every async and
    live-update state, dirty navigation, reconnect — the matrix in
-   `ade/design-console-ui` › Validate. For `host.triggerRenderers` add exact
-   type match, malformed-config fallthrough, every slot and activity kind,
+   `ade/design-console-ui` › Validate. For `host.observerRenderers` add exact
+   function-id match, malformed-args fallthrough, every slot and activity kind,
    non-interactive compact display, complete-detail lifecycle fidelity,
    action fallback, fail-closed redaction, and disable/disconnect fallback.
 

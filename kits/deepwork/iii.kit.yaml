@@ -1,6 +1,6 @@
 iii: v1
 name: iii/deepwork
-version: 0.5.2
+version: 0.6.0
 description: "Multi-agent workflows on iii with the kanban board as the task list: parallel implementation tickets, tests and independent verification/review once per integrated wave, and bounded rounds. Code goals get a dev flow: autonomous reversible decisions with optional design/plan approval, tickets in isolated git worktrees, batch validation, a branch review and a kept branch unless you explicitly choose another finish."
 license: Apache-2.0
 repo: https://github.com/iii-hq/workers/tree/main/kits/deepwork
@@ -16,7 +16,8 @@ workers:
   # 0.1.21: subtasks + parent_id (#1396), compact writes (#1400), add_labels / remove_labels (#1384).
   kanban: ^0.1.21
   # shell::exec and coder::* preloaded by the work and verify tiers. 0.12.19, the first synced
-  # manifest after #1150, carries shell::job-finished, which long runs wait on instead of polling.
+  # manifest after #1150, carries the job-finished event that long runs wait on instead of polling
+  # (`shell::on-job-finished` in its observe v2 release).
   # No caret: projects pin ide@latest, and ^0.12 would hold it below 0.13. Not `shell` (a registry
   # alias) or `coder`.
   ide: ">=0.12.19"

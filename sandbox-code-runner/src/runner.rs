@@ -395,19 +395,19 @@ export async function makeIii() {
     return client;
   };
 
-  // A lazy proxy, not the client itself: METHOD access is what triggers
+  // A lazy proxy, not the client itself: METHOD access is what opens
   // the connection; INTROSPECTION never does. Printing the global, listing
   // its keys, or reading its prototype must answer something useful and
   // must never dial the engine — an agent's first move against an unknown
   // global is exactly that probing, and an opaque `{}` here cost a live
   // session six blind runs (console-a2795be8).
   const HINT =
-    "[iii: lazy iii-sdk client — connects on first use. e.g. await iii.trigger({ function_id: 'worker::fn', payload: {} }); registerFunction(id, handler, opts?); docs <https://iii.dev/docs/reference/sdk-node>]";
+    "[iii: lazy iii-sdk client — connects on first use. e.g. await iii.call({ function_id: 'worker::fn', payload: {} }); registerFunction(id, handler, opts?); docs <https://iii.dev/docs/reference/sdk-node>]";
 
   const lookup = (prop) => {
     const c = resolve();
     const value = c[prop];
-    // Bind methods so `const t = iii.trigger; await t(...)` works; leave
+    // Bind methods so `const call = iii.call; await call(...)` works; leave
     // `constructor` alone so introspection sees the real class, not
     // "bound III".
     return typeof value === 'function' && prop !== 'constructor' ? value.bind(c) : value;
@@ -513,7 +513,7 @@ class _LazyIii:
         if self._client is None:
             return (
                 "<iii: lazy iii-sdk client (connects on first use); e.g. "
-                "iii.trigger({'function_id': 'worker::fn', 'payload': {}}); "
+                "iii.call({'function_id': 'worker::fn', 'payload': {}}); "
                 "docs: https://iii.dev/docs/reference/sdk-python>"
             )
         return repr(self._client)

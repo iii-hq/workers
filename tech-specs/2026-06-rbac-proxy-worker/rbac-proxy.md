@@ -28,15 +28,15 @@ The proxy's own worker identity, created at boot with `register_worker(...)`
 like every binary worker. Used for:
 
 - **`configuration`-worker integration** — register the `rbac-proxy` schema,
-  fetch the authoritative config, bind the change trigger.
+  fetch the authoritative config, observe its change event.
 - **Invoking the operator's functions** — the `auth_function_id`,
-  `middleware_function_id`, and the three registration hooks are normal engine
-  functions; the proxy calls them with `iii.trigger(...)`. This is the direct
+  `middleware_function_id`, and the two registration hooks are normal engine
+  functions; the proxy calls them with `iii.call(...)`. This is the direct
   analogue of how the engine's worker-manager invokes them with
   `engine.call(...)`.
-- **The catalog cache feed** — `engine::functions::list` reads and the
-  `engine::functions-available` subscription
-  ([engine-overrides.md § Catalog & binding caches](engine-overrides.md#catalog--binding-caches)).
+- **The catalog cache feed** — `engine::functions::list` reads and an observer
+  of `engine::on-functions-changed`
+  ([engine-overrides.md § Catalog cache](engine-overrides.md#catalog-cache)).
 - **Registering `rbac-proxy::status`.**
 
 ### Data connections (one per downstream worker)
@@ -46,12 +46,12 @@ fresh outbound WebSocket to `engine_url`, with the two halves pumped through the
 interceptor. Per-connection `worker_id`, per-connection registrations, and
 cleanup-on-disconnect are inherited from the engine's existing per-connection
 semantics — when the downstream socket closes, the proxy closes the upstream,
-and the engine tears down that connection's functions/triggers.
+and the engine tears down that connection's functions and observers.
 
 ### Resilience
 
 The control connection is a single point of dependency (auth, middleware, hooks,
-catalog/binding caches all run over it), so its failure mode is specified:
+the catalog cache all run over it), so its failure mode is specified:
 
 - **Control connection drops** → the SDK reconnects with backoff (the standard
   worker SDK behaviour `console` already relies on). While it is down, the proxy
@@ -87,7 +87,7 @@ rbac-proxy/
 │   ├── proxy.rs             # console-style WS pump (data connections)
 │   ├── interceptor.rs       # per-frame parse/gate/rewrite (protocol-interception.md)
 │   ├── rbac.rs              # vendored is_function_allowed + wildcard + carve-out + ProxySession
-│   ├── engine_overrides.rs  # the eight discovery-result rewrites (engine-overrides.md)
+│   ├── engine_overrides.rs  # the six discovery-result rewrites (engine-overrides.md)
 │   ├── channels.rs          # /ws/channels/{id} bridge
 │   ├── manifest.rs          # build_manifest() for the registry
 │   └── functions/
@@ -112,9 +112,9 @@ The proxy is a Tier-1 `configuration` integration with one structural resource
 2. register_worker(--url)          # control connection
 3. register_config(seed) + fetch_config()        # REQUIRED boot dependency (fatal on failure)
 4. build ProxyState from the fetched config; bind the public listener on host:port
-5. register rbac-proxy::status; start the catalog-cache feed
+5. register rbac-proxy::status; observe engine::on-functions-changed for the catalog cache
 6. spawn the axum server (worker-proto route + /ws/channels bridge) on the bound listener
-7. register_config_trigger          # LAST — so the handler closes over fully-built state
+7. observe_config_changes           # LAST — so the handler closes over fully-built state
 8. wait_for_shutdown_signal (SIGINT + SIGTERM) → drain → iii.shutdown_async()
 ```
 
@@ -146,10 +146,14 @@ pub struct RbacConfig {
     #[serde(default)] pub auth_function_id: Option<String>,
     #[serde(default)] pub expose_functions: Vec<FunctionFilter>,   // match("...") | { metadata: {...} }
     #[serde(default)] pub on_function_registration_function_id: Option<String>,
-    #[serde(default)] pub on_trigger_registration_function_id: Option<String>,
-    #[serde(default)] pub on_trigger_type_registration_function_id: Option<String>,
+    #[serde(default)] pub on_observer_registration_function_id: Option<String>,
 }
 ```
+
+`rbac` keys an earlier proxy read are dropped with one `warn` each, naming what
+replaces them, before the stored entry is parsed (`rbac::REMOVED_KEYS`, the
+engine's own list), so an entry written for it still loads; the schema keeps
+them as deprecated.
 
 This is intentionally the same field set as the engine's `WorkerManagerConfig` /
 the devexp `gateway:` block, so an operator's mental model transfers and a
@@ -172,16 +176,21 @@ The proxy uses the Tier-1 `ConfigCell + targeted rebuild` pattern
 `boot_signature()` returns `{ host, port, engine_url }`; the
 `rbac-proxy::on-config-change` handler compares signatures to decide rebind vs
 snapshot-swap. It is a **typed** handler (`OnConfigChangeEvent` → `{ ok }`) that
-**re-fetches** via `configuration::get` and ignores the trigger payload — never a
-`serde_json::Value` handler. It is registered in `configuration.rs` (off the
-public `catalog()`).
+**re-fetches** via `configuration::get` and ignores the event it receives — never
+a `serde_json::Value` handler. It is registered in `configuration.rs` (off the
+public `catalog()`) and is the target of the control connection's observer of
+`configuration::on-updated`, filtered to `input.id` = the proxy's config id and
+`input.event_type` = `configuration:updated`, delivering the event
+(`deliver: output`). Once that observer is active the proxy reloads once more,
+so an update made between the boot-time fetch and the observer going active
+still applies.
 
 ```mermaid
 sequenceDiagram
   participant CFG as configuration worker
   participant H as rbac-proxy::on-config-change
   participant S as ProxyState
-  CFG->>H: configuration:updated (id=rbac-proxy)
+  CFG->>H: configuration::on-updated call (id=rbac-proxy, event_type=configuration:updated)
   H->>CFG: configuration::get(rbac-proxy)   %% re-fetch, ignore payload
   alt host/port/engine_url changed (signature)
     H->>S: bind new listener → swap → drop old (last-good on failure)
@@ -197,16 +206,18 @@ Add the defense-in-depth deny next to the existing integrated-worker entries in
 
 ```yaml
 rbac-proxy:
-  - '!rbac-proxy::on-config-change'   # internal reload handler — never agent-callable
+  - '!rbac-proxy::on-config-change'      # internal reload handler — never agent-callable
+  - '!rbac-proxy::on-functions-changed'  # internal catalog-cache handler — never agent-callable
 ```
 
 (No `config-status` surface in the Tier-1 pattern, so nothing else to deny.)
 
 ## Functions
 
-The proxy registers one public function. The two-step `configuration` trigger
-handler (`rbac-proxy::on-config-change`) is internal and not part of the public
-catalog.
+The proxy registers one public function. The targets of its own observers,
+`rbac-proxy::on-config-change` and `rbac-proxy::on-functions-changed`, are
+internal and not part of the public catalog. It hosts no observable event
+source.
 
 ### `rbac-proxy::status`
 
@@ -300,26 +311,36 @@ Engine-free unit tests plus an opt-in integration test, per
   - prefix resolution: own bare `foo` → `tenant1::foo`; foreign
     `api::users::list` matched against `expose_functions` unprefixed; dispatch
     strips the prefix back to `foo`;
-  - trigger registration: binding to an exposed foreign function succeeds;
-    binding to a forbidden / non-exposed foreign function returns
-    `TriggerRegistrationResult{ error: REGISTRATION_DENIED }`; binding to the
-    session's own registered function succeeds even when the prefixed id is not
-    in `expose_functions`;
+  - observer registration: an observer of an exposed function with an exposed
+    target is forwarded; one whose source or target is forbidden / non-exposed
+    gets `ObserveResult{ state: "error", error: FORBIDDEN }`; one of the
+    session's own registered functions resolves to their prefixed ids and
+    passes even when they are not in `expose_functions`; `engine::*` targets
+    and undisclosable sources are refused;
+  - host frames: `FunctionRegistered`, `ObserverAdded`, `ObserverRemoved`,
+    `ObserverAck`, `InvocationsObserved` and `LocalInvocationStats` pass for
+    the session's own functions with the prefix rewritten, and are dropped
+    otherwise; a call through an observer passes only for an observer the
+    connection hosts; a `caller` is kept only for a call routed to the
+    connection;
+  - every vendored observe wire fixture (`tests/observe_protocol.rs`) has an
+    expectation;
   - the auth-rejection wire shape: `{"type":"error",...}` then Close, no
     `WorkerRegistered`, no upstream opened.
-- **Engine-override tests** (`engine_overrides.rs`): for each of the eight
+- **Engine-override tests** (`engine_overrides.rs`): for each of the six
   discovery functions, a fixture engine response in → filtered response out;
-  the catalog-cache-driven `workers::list` filter and the registered-triggers
-  binding-index join for `triggers::info` `instance_count`; the worker-internals
+  the catalog-cache-driven `workers::list` filter; observer rows kept for the
+  connection's own observers or an accessible function and target; the worker-internals
   strip (per the `WorkerSummary` vs `WorkerDetailEnvelope` field split); the
   prefix strip in results; and the denied-vs-missing error code (`FORBIDDEN`
   default, optional `NOT_FOUND` hardening).
 - **`tests/integration.rs`** (self-skips when the `iii` binary is absent):
   boot an engine + the proxy, connect an SDK worker through the proxy port with
   a bearer token, assert (a) an exposed call succeeds, (b) a forbidden call
-  rejects with `FORBIDDEN`, (c) a trigger bound to a forbidden function is
-  rejected at registration, (d) `createChannel()` round-trips a payload through
-  `/ws/channels/{id}`, and (e) `engine::functions::list` returns only exposed
-  ids.
+  rejects with `FORBIDDEN`, (c) an observer whose target is a forbidden
+  function is refused with `FORBIDDEN`, (d) `createChannel()` round-trips a
+  payload through `/ws/channels/{id}`, and (e) `engine::functions::list`
+  returns only exposed ids; also an accepted observer and an engine event that
+  cannot be observed.
 - **Config tests**: `boot_signature` tuning-vs-structural; JSON round-trip; the
   port-rebind path swaps the listener and a bind failure keeps last-good.

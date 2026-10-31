@@ -107,7 +107,7 @@ pub async fn get_token_if_available(
 }
 
 /// `oauth::openai-codex::refresh` — vault/oauth-worker-owned refresh. The
-/// provider only *triggers* it (never calls the OAuth endpoints itself).
+/// provider only *calls* it (never the OAuth endpoints themselves).
 pub async fn refresh(iii: &IIIClient, provider: &str) -> Result<(), Error> {
     call(
         iii,

@@ -57,7 +57,7 @@ func cloudFlowEndpointHandler(client *iii.Client, manager *Manager, engineURL st
 			if namespace == "" {
 				namespace = Namespace()
 			}
-			return client.Trigger(callCtx, iii.TriggerRequest{FunctionID: config.Cloud.FlowHandlerFunction, Namespace: namespace, Data: data, Timeout: 8 * time.Second})
+			return client.Call(callCtx, iii.CallRequest{FunctionID: config.Cloud.FlowHandlerFunction, Namespace: namespace, Payload: data, Timeout: 8 * time.Second})
 		}
 		return processCloudFlow(ctx, config, raw, cloudHeader(req.Headers, "x-hub-signature-256"), handler), nil
 	}

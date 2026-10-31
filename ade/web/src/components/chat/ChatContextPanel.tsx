@@ -57,10 +57,10 @@ import {
   useImageViewer,
 } from '@/components/ui/ImageViewer'
 import { LiveRegion } from '@/components/ui/LiveRegion'
+import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
-import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { useLazyAttachment } from '@/hooks/use-lazy-attachment'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import {
@@ -70,7 +70,7 @@ import {
   ghViewer,
   readPrActivity,
 } from '@/lib/auto-fix'
-import type { SessionTriggerInfo } from '@/lib/backend/triggers'
+import type { SessionObserverInfo } from '@/lib/backend/observers'
 import {
   type ChatFile,
   capRows,
@@ -129,7 +129,7 @@ import {
 } from './active-subagents'
 import { ContextTrackingBody, useContextTracking } from './ContextTracking'
 import { ReorderHandle, type ReorderTarget } from './ReorderHandle'
-import { TriggerDetailDialog } from './SessionTriggers'
+import { ObserverDetailDialog } from './SessionObservers'
 
 /**
  * Coloured trailing text is a plain span: the tree recipe's `__meta` class
@@ -147,9 +147,9 @@ interface ChatContextPanelProps {
   conversation: Conversation
   conversations: readonly Conversation[]
   connectionState: IIIConnectionState
-  /** Registered trigger rows (ChatView's merged list); inactive ones are skipped. */
-  triggers: readonly SessionTriggerInfo[]
-  onUnregisterTrigger: (subscriptionId: string) => Promise<void> | void
+  /** The session's observer rows (ChatView's merged list); inactive ones are skipped. */
+  observers: readonly SessionObserverInfo[]
+  onDisposeObserver: (observerId: string) => Promise<void> | void
   onOpenConversation: (sessionId: string) => void
   /** git is read through `shell::exec`, so the folder's state needs that worker. */
   shellAvailable: boolean
@@ -191,15 +191,15 @@ function parentDir(path: string): string {
 
 /**
  * The conversation's working context: its folder and branch, pull requests,
- * sub-agents, triggers and the links it mentions. A section with nothing to
+ * sub-agents, observers and the links it mentions. A section with nothing to
  * show is left out; a long one shows its first rows and a "Show N more".
  */
 export function ChatContextPanel({
   conversation,
   conversations,
   connectionState,
-  triggers,
-  onUnregisterTrigger,
+  observers,
+  onDisposeObserver,
   onOpenConversation,
   shellAvailable,
   githubAvailable,
@@ -234,7 +234,7 @@ export function ChatContextPanel({
     void (async () => {
       const client = await getIiiClient()
       const summary = await readGitSummary(
-        client.trigger.bind(client),
+        client.call.bind(client),
         workingDir,
       ).catch(() => null)
       if (alive) setGit({ dir: workingDir, summary })
@@ -265,10 +265,10 @@ export function ChatContextPanel({
   const withGh = async (): Promise<GhRunner | null> => {
     if (!ghVia) return null
     const client = await getIiiClient()
-    const trigger = client.trigger.bind(client)
+    const call = client.call.bind(client)
     return ghVia === 'worker' || !workingDir
-      ? githubWorkerGh(trigger)
-      : folderGh(trigger, workingDir)
+      ? githubWorkerGh(call)
+      : folderGh(call, workingDir)
   }
   const [pullRequests, setPullRequests] = useState<PullRequestRow[]>([])
   /** The repo and branch whose PRs were read: no Create PR before that. */
@@ -424,7 +424,7 @@ export function ChatContextPanel({
     let alive = true
     void (async () => {
       const client = await getIiiClient()
-      const read = await readKanbanBoard(client.trigger.bind(client)).catch(
+      const read = await readKanbanBoard(client.call.bind(client)).catch(
         () => null,
       )
       if (alive) setBoard(read)
@@ -443,30 +443,30 @@ export function ChatContextPanel({
     board === undefined &&
     touches.some((touch) => touch.action)
 
-  const liveTriggers = useMemo(
-    () => triggers.filter((trigger) => !trigger.fired),
-    [triggers],
+  const liveObservers = useMemo(
+    () => observers.filter((observer) => !observer.fired),
+    [observers],
   )
-  const [openTriggerId, setOpenTriggerId] = useState<string | null>(null)
-  const [busyTriggerId, setBusyTriggerId] = useState<string | null>(null)
-  const [confirmTrigger, setConfirmTrigger] =
-    useState<SessionTriggerInfo | null>(null)
-  const unregister = async (id: string) => {
-    setBusyTriggerId(id)
+  const [openObserverId, setOpenObserverId] = useState<string | null>(null)
+  const [busyObserverId, setBusyObserverId] = useState<string | null>(null)
+  const [confirmObserver, setConfirmObserver] =
+    useState<SessionObserverInfo | null>(null)
+  const dispose = async (id: string) => {
+    setBusyObserverId(id)
     try {
-      await onUnregisterTrigger(id)
-      setOpenTriggerId((current) => (current === id ? null : current))
+      await onDisposeObserver(id)
+      setOpenObserverId((current) => (current === id ? null : current))
     } finally {
-      setBusyTriggerId(null)
+      setBusyObserverId(null)
     }
   }
-  const openTrigger =
-    liveTriggers.find((trigger) => trigger.id === openTriggerId) ?? null
+  const openObserver =
+    liveObservers.find((observer) => observer.id === openObserverId) ?? null
 
   const ticketRowsShown = capRows(tickets, SECTION_CAP, !!expanded.tickets)
   const prRows = capRows(listedPrs, SECTION_CAP, !!expanded.prs)
   const subagentRows = capRows(subagents, SUBAGENT_CAP, !!expanded.subagents)
-  const triggerRows = capRows(liveTriggers, SECTION_CAP, !!expanded.triggers)
+  const observerRows = capRows(liveObservers, SECTION_CAP, !!expanded.observers)
   const linkRows = capRows(links, SECTION_CAP, !!expanded.links)
   const imageRows = capRows(images, IMAGE_CAP, !!expanded.images)
   const fileRows = capRows(files, SECTION_CAP, !!expanded.files)
@@ -895,48 +895,53 @@ export function ChatContextPanel({
           />
         </Section>
       ) : null,
-    triggers:
-      liveTriggers.length > 0 ? (
+    observers:
+      liveObservers.length > 0 ? (
         <Section
-          id="triggers"
-          label="Triggers"
-          count={liveTriggers.length}
+          id="observers"
+          label="Observers"
+          count={liveObservers.length}
           brief={
             <span className="truncate font-mono text-ink-ghost">
-              {[...new Set(liveTriggers.map((t) => t.triggerType))].join(' · ')}
+              {[...new Set(liveObservers.map((t) => t.functionId))].join(' · ')}
             </span>
           }
         >
-          {triggerRows.shown.map((trigger) => {
-            const label = trigger.label ?? trigger.action ?? trigger.triggerType
+          {observerRows.shown.map((observer) => {
+            const label =
+              observer.label ?? observer.action ?? observer.functionId
             return (
               <Row
-                key={trigger.id}
+                key={observer.id}
                 icon={
-                  <TriggerIcon size={16} className="fill-current" aria-hidden />
+                  <ObserverIcon
+                    size={16}
+                    className="fill-current"
+                    aria-hidden
+                  />
                 }
                 label={label}
-                mono={label === trigger.triggerType}
-                onActivate={() => setOpenTriggerId(trigger.id)}
+                mono={label === observer.functionId}
+                onActivate={() => setOpenObserverId(observer.id)}
                 ariaLabel={`Show ${label}`}
                 meta={
-                  label === trigger.triggerType ? null : (
+                  label === observer.functionId ? null : (
                     <span className={cn(uiClasses.treeItemMeta, 'font-mono')}>
-                      {trigger.triggerType}
+                      {observer.functionId}
                     </span>
                   )
                 }
                 actions={
-                  <Hint label="Unregister">
+                  <Hint label="Remove">
                     <button
                       type="button"
                       className={uiClasses.treeItemAction}
                       data-tone="alert"
-                      aria-label={`Unregister ${label}`}
-                      disabled={busyTriggerId === trigger.id}
+                      aria-label={`Remove ${label}`}
+                      disabled={busyObserverId === observer.id}
                       onClick={(event) => {
                         event.stopPropagation()
-                        setConfirmTrigger(trigger)
+                        setConfirmObserver(observer)
                       }}
                     >
                       <X aria-hidden />
@@ -947,11 +952,11 @@ export function ChatContextPanel({
             )
           })}
           <ShowMore
-            hidden={triggerRows.hidden}
-            expanded={!!expanded.triggers}
-            total={liveTriggers.length}
+            hidden={observerRows.hidden}
+            expanded={!!expanded.observers}
+            total={liveObservers.length}
             cap={SECTION_CAP}
-            onToggle={() => toggle('triggers')}
+            onToggle={() => toggle('observers')}
           />
         </Section>
       ) : null,
@@ -1038,26 +1043,26 @@ export function ChatContextPanel({
           ),
         )}
 
-        <TriggerDetailDialog
-          trigger={openTrigger}
-          busy={openTrigger !== null && busyTriggerId === openTrigger.id}
+        <ObserverDetailDialog
+          observer={openObserver}
+          busy={openObserver !== null && busyObserverId === openObserver.id}
           onOpenChange={(open) => {
-            if (!open) setOpenTriggerId(null)
+            if (!open) setOpenObserverId(null)
           }}
-          onUnregister={(id) => void unregister(id)}
+          onDispose={(id) => void dispose(id)}
         />
         <ConfirmDialog
-          open={confirmTrigger !== null}
+          open={confirmObserver !== null}
           onOpenChange={(open) => {
-            if (!open) setConfirmTrigger(null)
+            if (!open) setConfirmObserver(null)
           }}
-          title="Unregister this trigger?"
+          title="Remove this observer?"
           description="Nothing will notify this chat from it afterwards."
-          confirmLabel="Unregister"
+          confirmLabel="Remove"
           tone="danger"
           onConfirm={() => {
-            if (confirmTrigger) void unregister(confirmTrigger.id)
-            setConfirmTrigger(null)
+            if (confirmObserver) void dispose(confirmObserver.id)
+            setConfirmObserver(null)
           }}
         />
         <LiveRegion announcement={announcement} />

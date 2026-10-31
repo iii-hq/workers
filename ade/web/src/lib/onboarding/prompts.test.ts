@@ -6,10 +6,10 @@ import {
   resolvePromptModel,
 } from './prompts'
 
-const trigger = vi.fn()
+const call = vi.fn()
 
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ trigger }),
+  getIiiClient: async () => ({ call }),
 }))
 
 const PRIORITY: PromptModel[] = [
@@ -106,17 +106,17 @@ describe('parseExamplePrompts', () => {
 
 describe('fetchExamplePrompts', () => {
   beforeEach(() => {
-    trigger.mockReset()
+    call.mockReset()
   })
 
   it('asks the ADE backend for the project’s prompts', async () => {
-    trigger.mockResolvedValue({
+    call.mockResolvedValue({
       prompts: [{ title: 'T', agent: 'default', prompt: 'P', models: [] }],
     })
     await expect(fetchExamplePrompts()).resolves.toEqual([
       { title: 'T', agent: 'default', prompt: 'P', models: [] },
     ])
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'console::onboarding::prompts',
       {},
       expect.anything(),
@@ -124,7 +124,7 @@ describe('fetchExamplePrompts', () => {
   })
 
   it('shows none on a backend that predates them', async () => {
-    trigger.mockImplementation(async () => {
+    call.mockImplementation(async () => {
       throw { code: 'function_not_found' }
     })
     await expect(fetchExamplePrompts()).resolves.toEqual([])

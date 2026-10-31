@@ -15,11 +15,10 @@ name = "ios_simulator"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
+iii-sdk = "=0.26.0"
 iii-worker-paths = { path = "../crates/worker-paths" }
 iii-console-ui = { path = "../crates/console-ui" }
 arc-swap = "1"
-async-trait = "0.1"
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
@@ -34,3 +33,6 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# A scripted engine for tests/events.rs; both are already in the graph through iii-sdk.
+futures-util = "0.3"
+tokio-tungstenite = "0.28"

@@ -136,7 +136,7 @@ Before Compose takes over the terminal, the run prints a summary like this:
   engine  ws://127.0.0.1:49335
   local   12 workers from this checkout: queue, state, session-manager, ...
 
-  Run `iii trigger ...` from harness. Ctrl+C stops the stack.
+  Run `iii call ...` from harness. Ctrl+C stops the stack.
 ```
 
 It replaces `template/<name>/` with a new `iii project init -t <name>`, so each
@@ -186,8 +186,8 @@ repository's workers instead, run these in place of those two steps, from
 `template/quickstart/`:
 
 ```bash
-iii trigger compose::add --json '{"workers":[{"worker":"../../state","scripts":{"run":"cargo run --bin state"}}]}'
-iii trigger compose::add --json '{"workers":[{"worker":"../../http","scripts":{"run":"cargo run --bin http"}}]}'
+iii call compose::add --json '{"workers":[{"worker":"../../state","scripts":{"run":"cargo run --bin state"}}]}'
+iii call compose::add --json '{"workers":[{"worker":"../../http","scripts":{"run":"cargo run --bin http"}}]}'
 ```
 
 ## Requirements and tests

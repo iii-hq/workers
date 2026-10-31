@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -124,7 +124,7 @@ async fn post_signup(email: &str) -> Result<(), String> {
 
 async fn publish_identify(iii: &IIIClient, email: &str, source: &str) {
     let sent = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: PUBLISH_ID.into(),
             payload: json!({ "topic": IDENTIFY_TOPIC, "data": { "email": email, "source": source } }),
             action: None,

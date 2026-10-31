@@ -13,17 +13,19 @@ use std::time::Duration;
 
 use eval::contract::*;
 use eval::error::EvalError;
-use eval::events::EvalEvents;
-use eval::runtime::{self, Deps};
-use eval::{ids, review, state, validation};
+use eval::events::{CompletedEventV1, EvalEvents, ON_COMPLETED_FN};
+use eval::functions::{ON_TICK_FN, SWEEP_EXPRESSION, SWEEP_ID, WAKE_ID};
+use eval::runtime::{self, Deps, TURN_COMPLETED_FN};
+use eval::{ids, review, state, surface, validation};
 use harness::functions::metrics::{SessionMetricsResponseV1, SessionUsageTotalsV1};
+use harness::policy::AGENT_CALL_NAME;
 use harness::types::content::ContentBlock;
 use harness::types::event::StopReason;
 use harness::types::message::{
     empty_assistant, AgentMessage, FunctionResultMessage, FunctionResultRoleTag,
 };
 use harness::types::turn::{ResponseLanguage, TurnRecord};
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -67,6 +69,9 @@ struct World {
     executions_list: Option<Value>,
     held_judge: Option<Value>,
     extra_frames: Vec<Value>,
+    /// Every frame the worker sent that is not an answered invocation:
+    /// registrations, observers, acks and void calls.
+    frames: Vec<Value>,
     /// The cost every `harness::metrics` call reports; `None` is unknown.
     cost_usd: Option<f64>,
     /// The cost every `router::complete` reply reports; `None` is unknown.
@@ -117,6 +122,7 @@ impl World {
             executions_list: None,
             held_judge: None,
             extra_frames: Vec::new(),
+            frames: Vec::new(),
             cost_usd: None,
             sample_cost_usd: Some(0.001),
             samples_fail: false,
@@ -410,7 +416,7 @@ impl World {
                 reply.content = if notice {
                     vec![ContentBlock::FunctionCall {
                         id: "c3".into(),
-                        function_id: "agent_trigger".into(),
+                        function_id: AGENT_CALL_NAME.into(),
                         arguments: json!({"function": INFO, "description": "re-read",
                             "payload": {"function_id": "crm::profile"}}),
                     }]
@@ -484,7 +490,7 @@ fn info_call(step: u32, call_id: &str) -> Value {
     message.stop_reason = StopReason::FunctionCall;
     message.content = vec![ContentBlock::FunctionCall {
         id: call_id.into(),
-        function_id: "agent_trigger".into(),
+        function_id: AGENT_CALL_NAME.into(),
         arguments: json!({"function": INFO, "description": "read the contract",
             "payload": {"function_id": "crm::profile"}}),
     }];
@@ -572,14 +578,20 @@ impl Harness {
         let world = Arc::new(Mutex::new(world));
         let shared = world.clone();
         let engine = fake_engine::start(move |frame: Value| {
+            let mut world = shared.lock().unwrap();
             if frame["type"] != "invokefunction" || frame["invocation_id"].is_null() {
-                return vec![];
+                // An observer waits for its function's host, as no harness or
+                // cron registers here.
+                let reply = (frame["type"] == "observe").then(
+                    || json!({"type": "observeresult", "id": frame["id"], "state": "pending"}),
+                );
+                world.frames.push(frame);
+                return reply.into_iter().collect();
             }
             let function = frame["function_id"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string();
-            let mut world = shared.lock().unwrap();
             world.calls.push((function.clone(), frame["data"].clone()));
             let Some(reply) = world.respond(
                 &function,
@@ -629,12 +641,49 @@ impl Harness {
 
     /// A fresh process on the same storage: empty in-flight set and locks.
     fn restart(&mut self) {
-        self.deps = Deps::new(self.iii.clone(), EvalEvents::register(&self.iii));
+        // The connection, and the event function it registered, stay.
+        self.deps = Deps::new(self.iii.clone(), self.deps.events.clone());
         self.deps.host_user = None;
     }
 
     fn world(&self) -> std::sync::MutexGuard<'_, World> {
         self.world.lock().unwrap()
+    }
+
+    /// Sends `frame` to the worker, after the reply to a call it makes.
+    async fn send(&self, frame: Value) {
+        self.world().extra_frames.push(frame);
+        self.iii
+            .call(CallRequest::new(
+                "state::get",
+                json!({"scope": "probe", "key": "probe"}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    /// The first frame the worker sent that `matches`, waiting for it.
+    async fn frame(&self, matches: impl Fn(&Value) -> bool) -> Value {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(frame) = self.world().frames.iter().find(|frame| matches(frame)) {
+                    break frame.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the worker sends the frame")
+    }
+
+    /// The worker's void calls of `function` so far.
+    fn void_calls(&self, function: &str) -> Vec<Value> {
+        self.world()
+            .frames
+            .iter()
+            .filter(|frame| frame["type"] == "invokefunction" && frame["function_id"] == function)
+            .cloned()
+            .collect()
     }
 
     /// Plays the queue: runs every enqueued step until none is left.
@@ -1541,6 +1590,181 @@ async fn capacity_rejections_and_provider_checks_are_reported() {
 const SCENARIO: &str = "tool_contract_recovery";
 
 /// An analysis that finished with one suggestion whose plan names `SCENARIO`.
+/// `eval::on-completed` is registered private, with the event as both
+/// formats and no args, and each terminal analysis calls it once, void, while
+/// it is observed, and never while it is not.
+#[tokio::test]
+async fn a_finished_analysis_calls_eval_on_completed_only_while_it_is_observed() {
+    let h = Harness::start(World::new()).await;
+    let registration = h
+        .frame(|frame| frame["type"] == "registerfunction" && frame["id"] == ON_COMPLETED_FN)
+        .await;
+    assert_eq!(registration["private"], true, "{registration}");
+    assert!(
+        registration.get("args_format").is_none(),
+        "takes no args: {registration}"
+    );
+    let spec = surface::catalog()
+        .into_iter()
+        .find(|spec| spec.function_id == ON_COMPLETED_FN)
+        .unwrap();
+    assert_eq!(
+        registration["request_format"],
+        serde_json::to_value(&spec.request_schema).unwrap()
+    );
+    assert_eq!(
+        registration["response_format"],
+        serde_json::to_value(&spec.response_schema).unwrap()
+    );
+
+    // Not observed: the analysis finishes and nothing is called.
+    h.configure(true).await;
+    h.world().judge = JudgeMode::Answer("expected_behavior", 0.95);
+    let unobserved = h.end_turn(ROOT, TURN).await.evaluation_id.unwrap();
+    h.drain().await;
+    assert_eq!(
+        h.result(&unobserved).await.record.status,
+        EvalStatusV1::Completed
+    );
+    assert!(!h.iii.is_observed(ON_COMPLETED_FN));
+    assert!(h.void_calls(ON_COMPLETED_FN).is_empty());
+
+    // Observed: the next terminal analysis is one void call with the event.
+    h.send(
+        json!({"type": "observeradded", "function_id": ON_COMPLETED_FN,
+        "namespace": "my-project", "revision": 1,
+        "observer": {"id": "completed-page", "target": "page::on-completed", "filters": {}}}),
+    )
+    .await;
+    let ack = h
+        .frame(|frame| frame["type"] == "observerack" && frame["id"] == "completed-page")
+        .await;
+    assert!(ack["error"].is_null(), "accepted: {ack}");
+    assert!(h.iii.is_observed(ON_COMPLETED_FN));
+    let started = ids::now_ms();
+    let observed = reanalyze(&h).await;
+    h.drain().await;
+    assert_eq!(
+        h.result(&observed).await.record.status,
+        EvalStatusV1::Completed
+    );
+    let ended = ids::now_ms();
+    let calls = h.void_calls(ON_COMPLETED_FN);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let call = &calls[0];
+    assert!(call["invocation_id"].is_null(), "a void call: {call}");
+    assert_eq!(call["action"], json!({"type": "void"}));
+    let fields: Vec<_> = call["data"].as_object().unwrap().keys().cloned().collect();
+    assert_eq!(fields, ["evaluation_id", "status", "timestamp"], "{call}");
+    let event: CompletedEventV1 = serde_json::from_value(call["data"].clone()).unwrap();
+    assert_eq!(event.evaluation_id, observed);
+    assert_eq!(event.status, EvalStatusV1::Completed);
+    assert!(
+        (started..=ended).contains(&event.timestamp),
+        "{started} <= {} <= {ended}",
+        event.timestamp
+    );
+
+    // Its observer gone, the next one is not called.
+    h.send(
+        json!({"type": "observerremoved", "function_id": ON_COMPLETED_FN,
+        "namespace": "my-project", "revision": 2, "id": "completed-page"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while h.iii.is_observed(ON_COMPLETED_FN) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the observer is removed");
+    let after = reanalyze(&h).await;
+    h.drain().await;
+    assert_eq!(
+        h.result(&after).await.record.status,
+        EvalStatusV1::Completed
+    );
+    assert_eq!(h.void_calls(ON_COMPLETED_FN).len(), 1);
+}
+
+/// The monitor's observers: finished turns into admission and the sweep's
+/// cron tick, each target taking the event; `eval::config` reports the turn
+/// observer's state.
+#[tokio::test]
+async fn the_monitor_observes_finished_turns_and_the_sweep_tick() {
+    let h = Harness::start(World::new()).await;
+    let [turns, sweep] = eval::functions::observe(&h.iii, &h.deps);
+    let frame = h
+        .frame(|frame| frame["type"] == "observe" && frame["id"] == turns.id())
+        .await;
+    assert_eq!(frame["source"]["function_id"], TURN_COMPLETED_FN);
+    assert_eq!(frame["source"]["deliver"], "output");
+    assert!(frame["source"].get("args").is_none(), "{frame}");
+    assert!(frame["source"].get("filters").is_none(), "{frame}");
+    assert_eq!(frame["target"]["function_id"], WAKE_ID);
+    let frame = h
+        .frame(|frame| frame["type"] == "observe" && frame["id"] == sweep.id())
+        .await;
+    assert_eq!(frame["source"]["function_id"], ON_TICK_FN);
+    assert_eq!(
+        frame["source"]["args"],
+        json!({"expression": SWEEP_EXPRESSION})
+    );
+    assert_eq!(frame["source"]["deliver"], "output");
+    assert!(frame["source"].get("filters").is_none(), "{frame}");
+    assert_eq!(frame["target"]["function_id"], SWEEP_ID);
+
+    // Pending: no harness has registered its function.
+    let pending = monitor_state(&h).await;
+    assert!(!pending.observer_bound);
+    assert!(
+        pending
+            .observer_error
+            .as_deref()
+            .is_some_and(|error| error.contains("pending")),
+        "{:?}",
+        pending.observer_error
+    );
+    // Active once the harness registers it and accepts the observer.
+    h.send(json!({"type": "observerstatechanged", "id": turns.id(), "state": "active"}))
+        .await;
+    let active = monitor_state_until(&h, true).await;
+    assert_eq!(active.observer_error, None);
+    // Refused later: unbound, with the engine's reason.
+    h.send(
+        json!({"type": "observerstatechanged", "id": turns.id(), "state": "error",
+        "reason": {"code": "HARNESS_REFUSED", "message": "the harness refused it"}}),
+    )
+    .await;
+    let refused = monitor_state_until(&h, false).await;
+    let error = refused.observer_error.unwrap();
+    assert!(
+        error.contains("HARNESS_REFUSED") && error.contains("the harness refused it"),
+        "{error}"
+    );
+}
+
+async fn monitor_state(h: &Harness) -> MonitorStateResponseV1 {
+    runtime::monitor_state(&h.deps, MonitorStateRequestV1::default())
+        .await
+        .unwrap()
+}
+
+/// `eval::config` once it reports `observer_bound == bound`.
+async fn monitor_state_until(h: &Harness, bound: bool) -> MonitorStateResponseV1 {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let state = monitor_state(h).await;
+            if state.observer_bound == bound {
+                break state;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the observer state reaches eval::config")
+}
+
 async fn analyzed_with_suggestion(mut world: World) -> (Harness, String) {
     let mut planned = suggestion(&format!("e_{TURN}_c2"));
     planned["validation"]["scenario_id"] = json!(SCENARIO);
@@ -1710,7 +1934,7 @@ async fn with_a_code_directory_the_investigation_runs_in_it_and_the_directory_is
                 "allow": ["coder::search", "coder::tree", "coder::read-file",
                     "session::messages", "github::pr::list", "engine::functions::info"],
                 "deny": ["eval::*", "e2e::dashboard::execution-*"],
-                "expose": "agent_trigger"
+                "expose": "agent_call"
             })
         );
         let prompt = send["options"]["system_prompt"].as_str().unwrap();
@@ -1836,7 +2060,7 @@ async fn without_a_code_directory_the_investigation_is_unchanged_and_code_refs_a
     // Deny all: the analyst can call nothing.
     assert_eq!(
         send["options"]["functions"],
-        json!({"allow": [], "deny": [], "expose": "agent_trigger"})
+        json!({"allow": [], "deny": [], "expose": "agent_call"})
     );
     assert_eq!(send["options"]["max_turns"], 1);
     assert_eq!(send["options"]["max_total_tokens"], 200_000);
@@ -2392,7 +2616,9 @@ impl Repo {
     fn new(origin_main: bool) -> Self {
         let dir = std::env::temp_dir().join(format!("eval-git-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
-        git_in(&dir, &["init", "-q"]);
+        // The first commit's branch is neither `main` nor `feat`, whatever
+        // `init.defaultBranch` says: `main` is created below.
+        git_in(&dir, &["init", "-q", "-b", "trunk"]);
         let commit = |name: &str| {
             std::fs::write(dir.join("file.txt"), name).unwrap();
             git_in(&dir, &["add", "."]);
@@ -3772,7 +3998,7 @@ fn turn_record(turn_id: &str) -> Value {
             "provider": "p",
             "system_prompt": "You are an agent.",
             "max_turns": 16,
-            "functions": {"expose": "agent_trigger"}
+            "functions": {"expose": "agent_call"}
         },
         "created_at": 1,
         "updated_at": 1
@@ -4104,7 +4330,7 @@ async fn a_replay_keeps_the_turns_response_language_in_the_tool_schema() {
     );
 
     let expected =
-        serde_json::to_value([harness::policy::agent_trigger_schema(Some(&language))]).unwrap();
+        serde_json::to_value([harness::policy::agent_call_schema(Some(&language))]).unwrap();
     let calls = h.world().calls_to("router::complete");
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["tools"], expected);

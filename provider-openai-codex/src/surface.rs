@@ -28,7 +28,7 @@ pub const REFRESH_MODELS_DESC: &str = "Fetch the authenticated Codex model catal
 
 pub const ON_ROUTER_READY_ID: &str = "provider::openai-codex::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 pub const IMAGE_GENERATE_ID: &str = "provider::openai-codex::image::generate";
 pub const IMAGE_GENERATE_DESC: &str = "Generate one image from a text prompt with gpt-image-2.5-sunburst or gpt-image-2.5-flare on the ChatGPT subscription backend (a Codex chat model hosts the image_generation tool). Returns viewable content blocks (image + caption) that render inline, and saves the file under data/provider-openai-codex/images/ (details.path) for other processes to pick up.";

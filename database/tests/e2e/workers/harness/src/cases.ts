@@ -1,4 +1,4 @@
-import type { IIIClient } from 'iii-sdk'
+import type { IIIClient, ObserverHandle } from 'iii-sdk'
 import type { DriverKey, Dialect } from './dialect.ts'
 
 export interface CaseContext {
@@ -6,7 +6,7 @@ export interface CaseContext {
   dialect: Dialect
   /** Calls a database worker function; returns parsed JSON or throws on engine error. */
   call: (functionId: string, payload: unknown) => Promise<any>
-  /** Direct SDK access for trigger-config edge-case tests. */
+  /** Direct SDK access for observer and function edge-case tests. */
   iii: IIIClient
   /**
    * Asserts that `fn()` rejects and the rejection message contains `expectedCode`.
@@ -34,11 +34,39 @@ export function expect(cond: boolean, msg: string): asserts cond {
   if (!cond) throw new Error(msg)
 }
 
+/** The database worker's change source. */
+export const ROW_CHANGED_FN = 'database::on-row-changed'
+
+/**
+ * Observes `database::on-row-changed` with `args` ({ db, table?, ops? }),
+ * delivering each event to `target`. The handle's `ready()` resolves once
+ * the observer is active: the worker's added hook has validated the args and
+ * installed any native capture, so the next committed write reaches it. It
+ * rejects with the worker's code when the observer is refused.
+ */
+export function observeRowChanged(
+  iii: IIIClient,
+  args: Record<string, unknown>,
+  target: string,
+): ObserverHandle {
+  return iii.observe({ function_id: ROW_CHANGED_FN, args, deliver: 'output' }, target)
+}
+
+/** The code an observer is refused with, or `undefined` once it is active. */
+export async function refusalCode(observer: ObserverHandle): Promise<string | undefined> {
+  try {
+    await observer.ready()
+    return undefined
+  } catch (e) {
+    return (e as { code?: string }).code ?? String(e)
+  }
+}
+
 export const SCHEMA_RESET: TestCase = {
   name: 'schema-reset',
   async run({ driver, dialect, call }) {
-    // `outbox` and `__iii_cursors` are vestigial from the query-poll trigger
-    // surface that was removed on feat/database-and-skills. Drop defensively
+    // `outbox` and `__iii_cursors` are vestigial tables of an early query-poll
+    // change feed. Drop defensively
     // so re-runs against a stale data volume (docker / podman named volumes
     // preserved across `--keep`) still come up clean.
     await call('database::execute', { db: driver, sql: 'DROP TABLE IF EXISTS outbox' })

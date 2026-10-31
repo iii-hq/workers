@@ -406,7 +406,7 @@ function AgentTerminal({
   useEffect(() => {
     let disposed = false
     void host.iii
-      .trigger(`${options.worker}::auth::status`, {}, { timeoutMs: CALL_TIMEOUT_MS })
+      .call(`${options.worker}::auth::status`, {}, { timeoutMs: CALL_TIMEOUT_MS })
       .then((status: AuthStatus) => {
         if (!disposed) setAuth(status)
       })
@@ -444,7 +444,7 @@ function AgentTerminal({
     fitRef.current = fit
 
     const call = <T,>(fn: string, payload: unknown): Promise<T> =>
-      host.iii.trigger(fn, payload, { timeoutMs: CALL_TIMEOUT_MS })
+      host.iii.call(fn, payload, { timeoutMs: CALL_TIMEOUT_MS })
 
     // Shown next to the status while a session runs: "running · 12 frames,
     // 4.2 kB". A blank terminal with no frames is a delivery problem; a blank

@@ -168,7 +168,7 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
     fn: string,
     payload: Record<string, unknown> = {},
     timeoutMs = 15_000,
-  ) => iii.trigger<T>(fn, payload, { timeoutMs })
+  ) => iii.call<T>(fn, payload, { timeoutMs })
   const withFile = (payload: Record<string, unknown> = {}) => {
     const current = file()
     return current ? { file: current, ...payload } : payload

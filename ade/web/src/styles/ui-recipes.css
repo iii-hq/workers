@@ -597,12 +597,12 @@ a.iii-ui-tree-item {
   transition-delay: 0s;
 }
 
-.function-trigger-status-copy {
+.function-call-status-copy {
   display: grid;
   min-width: 0;
 }
 
-.function-trigger-status-copy > [data-function-status-text] {
+.function-call-status-copy > [data-function-status-text] {
   grid-area: 1 / 1;
   min-width: 0;
   overflow: hidden;
@@ -620,13 +620,13 @@ a.iii-ui-tree-item {
     visibility 0s linear var(--motion-duration-control);
 }
 
-.function-trigger-status-copy[data-status="pending"]
+.function-call-status-copy[data-status="pending"]
   > [data-function-status-text="pending"],
-.function-trigger-status-copy[data-status="running"]
+.function-call-status-copy[data-status="running"]
   > [data-function-status-text="running"],
-.function-trigger-status-copy[data-status="error"]
+.function-call-status-copy[data-status="error"]
   > [data-function-status-text="error"],
-.function-trigger-status-copy[data-status="done"]
+.function-call-status-copy[data-status="done"]
   > [data-function-status-text="done"] {
   opacity: 1;
   visibility: visible;
@@ -637,49 +637,49 @@ a.iii-ui-tree-item {
   transition-delay: 0s;
 }
 
-/* A fired trigger uses the same CollapsibleCard while compact and expanded.
+/* A fired observer uses the same CollapsibleCard while compact and expanded.
  * The transparent state is only presentation; the mounted disclosure content
  * remains available for the existing grid-track expansion transition. */
-.trigger-activity-collapsible--compact {
+.observer-activity-collapsible--compact {
   overflow: visible;
   border-color: transparent;
   background: transparent;
   box-shadow: none;
 }
 
-.trigger-activity-collapsible {
+.observer-activity-collapsible {
   transition:
     border-color var(--motion-duration-control) var(--motion-ease-standard),
     background-color var(--motion-duration-control) var(--motion-ease-standard),
     box-shadow var(--motion-duration-panel) var(--motion-ease-standard);
 }
 
-.trigger-activity-collapsible > .trigger-activity-collapsible__trigger {
+.observer-activity-collapsible > .observer-activity-collapsible__trigger {
   padding: 0.375rem 0;
   transition:
     padding var(--motion-duration-panel) var(--motion-ease-standard),
     background-color var(--motion-duration-control) var(--motion-ease-standard);
 }
 
-.trigger-activity-collapsible[data-state="open"]
-  > .trigger-activity-collapsible__trigger {
+.observer-activity-collapsible[data-state="open"]
+  > .observer-activity-collapsible__trigger {
   padding: 1rem;
   transition-timing-function: var(--motion-ease-enter);
 }
 
 /* viewport: phone chrome — touch padding on phones */
 @media (max-width: 640px) {
-  .trigger-activity-collapsible > .trigger-activity-collapsible__trigger {
+  .observer-activity-collapsible > .observer-activity-collapsible__trigger {
     padding-block: 0.25rem;
   }
 
-  .trigger-activity-collapsible[data-state="open"]
-    > .trigger-activity-collapsible__trigger {
+  .observer-activity-collapsible[data-state="open"]
+    > .observer-activity-collapsible__trigger {
     padding: 0.75rem;
   }
 }
 
-.function-trigger-active-collapsible[data-disabled="true"] {
+.function-call-active-collapsible[data-disabled="true"] {
   opacity: 1;
 }
 
@@ -1782,9 +1782,9 @@ a.iii-ui-tree-item {
 
 @media (prefers-reduced-motion: reduce) {
   .activity-status-icon > [data-activity-status-layer],
-  .function-trigger-status-copy > [data-function-status-text],
-  .trigger-activity-collapsible,
-  .trigger-activity-collapsible > .trigger-activity-collapsible__trigger {
+  .function-call-status-copy > [data-function-status-text],
+  .observer-activity-collapsible,
+  .observer-activity-collapsible > .observer-activity-collapsible__trigger {
     filter: none;
     transform: none;
     transition: none;

@@ -1063,7 +1063,7 @@ pub struct OrderedChatMessage<'a> {
     pub reply_markup: Option<serde_json::Value>,
 }
 
-/// Post a new Telegram bubble in per-chat append order (for bindings outside
+/// Post a new Telegram bubble in per-chat append order (for handlers outside
 /// the streaming path, e.g. function_result entries and turn status toasts).
 pub async fn send_chat_message_in_order(
     deps: &Deps,

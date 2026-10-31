@@ -1,0 +1,187 @@
+{
+  "function_id": "harness::observe",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "BindingTarget": {
+        "additionalProperties": false,
+        "description": "What a delivery dispatches. `function_id` is any iii function — `harness::send` for a wake, anything else for a mechanical reaction. Strict: an unknown key (sub-agent fields such as `task`) is refused when the agent observes, never silently dropped.",
+        "properties": {
+          "event_into": {
+            "description": "JSON pointer where the event lands inside the payload (default `/event`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "function_id": {
+            "type": "string"
+          },
+          "payload": {
+            "description": "Payload template; the delivered event is injected into it at `event_into`."
+          }
+        },
+        "required": [
+          "function_id"
+        ],
+        "type": "object"
+      },
+      "ConditionSpec": {
+        "description": "One declared condition. Evaluated at fire time with the typed decision contract; ordinary iii functions, so a barrier or a claim is just a function someone wrote.",
+        "properties": {
+          "config": true,
+          "function_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "function_id"
+        ],
+        "type": "object"
+      },
+      "LifecycleRequest": {
+        "additionalProperties": false,
+        "description": "The caller-settable half of a binding's lifecycle. Strict on purpose: an unknown key here (the retired `expires_at` above all) is a dropped deadline, so it must error naming the accepted fields, never pass.",
+        "properties": {
+          "expires_in_ms": {
+            "description": "Relative deadline: the observer stops this many milliseconds after it was created (the only deadline form).",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_fires": {
+            "description": "Lifetime delivery budget; the observer is removed on its Nth delivery.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "once": {
+            "description": "Remove the observer after its first delivery (same as top-level `once`).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "description": "Agent-facing observe contract.",
+    "properties": {
+      "action": {
+        "description": "User-facing text saying what happened, shown with each delivery.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "args": {
+        "additionalProperties": true,
+        "default": null,
+        "description": "Args for the worker that hosts the function, a JSON object; its description says which it takes: cron `{ \"expression\" }`, database `{ \"db\", \"table\"?, \"ops\"? }`, `harness::on-timer` `{ \"in_ms\" }` or `{ \"at\" }` (epoch ms). Omit for a function that takes none.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "conditions": {
+        "description": "Delivery-time gates, in order; each is an iii function answering `{ decision: \"allow\" | \"skip\", payload?, reason? }`.",
+        "items": {
+          "$ref": "#/definitions/ConditionSpec"
+        },
+        "type": "array"
+      },
+      "filters": {
+        "additionalProperties": true,
+        "default": null,
+        "description": "Which calls reach this observer, a JSON object of explicit operators on the call's fields: `{ \"input.scope\": { \"$eq\": \"run\" } }`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "function_id": {
+        "description": "The function to observe: `state::on-changed`, `cron::on-tick`, `harness::on-timer`, `database::on-row-changed`, or any other function. What it returns is the event.",
+        "type": "string"
+      },
+      "label": {
+        "description": "A short human label echoed back in the notification text.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "lifecycle": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/LifecycleRequest"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "When the observer stops delivering; top-level `once` is the shorthand."
+      },
+      "namespace": {
+        "description": "Where the function is hosted; omitted: this harness's namespace, then `default`, then Compose's.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "once": {
+        "description": "Remove the observer after its first delivery; defaults to true for a wake (no `target`) and `harness::on-timer`, false for a call target and `cron::on-tick`.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "target": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/BindingTarget"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The function called with each event: `{ function_id, payload?, event_into? }` — the fixed payload and the JSON pointer where the event is injected into it (default `/event`). Omit it to be notified in this session instead. `harness::spawn` is never a valid target."
+      }
+    },
+    "required": [
+      "function_id"
+    ],
+    "title": "ObserveArgs",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "note": {
+        "description": "Advisory only — the observer was CREATED, but its wiring looks suspicious (e.g. a filter naming a key someone already wrote). Read it and fix the wiring if it applies.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "observer_id": {
+        "type": "string"
+      },
+      "once": {
+        "description": "The effective `once` flag applied (after the per-function default).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "observer_id",
+      "once"
+    ],
+    "title": "ObserveResponse",
+    "type": "object"
+  }
+}

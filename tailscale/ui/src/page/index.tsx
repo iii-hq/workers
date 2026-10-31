@@ -237,9 +237,9 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const [, setTick] = useState(0)
 
-  const trigger = useCallback(
+  const call = useCallback(
     <T,>(fn: string, payload: Record<string, unknown> = {}, timeoutMs = 60_000) =>
-      host.iii.trigger<T>(fn, payload, { timeoutMs }),
+      host.iii.call<T>(fn, payload, { timeoutMs }),
     [host],
   )
 
@@ -247,8 +247,8 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
     setRefreshing(true)
     try {
       const [nextStatus, nextConfiguration] = await Promise.all([
-        trigger<Status>('tailscale::status'),
-        trigger<Configuration>('tailscale::configuration'),
+        call<Status>('tailscale::status'),
+        call<Configuration>('tailscale::configuration'),
       ])
       setStatus(nextStatus)
       setConfiguration(nextConfiguration)
@@ -259,7 +259,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
     } finally {
       setRefreshing(false)
     }
-  }, [trigger])
+  }, [call])
 
   useEffect(() => {
     void refresh()
@@ -303,20 +303,20 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const connect = useCallback(
     () =>
       act(async () => {
-        const result = await trigger<{ connected: boolean; authorization_url?: string | null }>('tailscale::connect')
+        const result = await call<{ connected: boolean; authorization_url?: string | null }>('tailscale::connect')
         setLoginUrl(result.authorization_url ?? null)
         return result.connected ? 'Connected to the tailnet.' : null
       }),
-    [act, trigger],
+    [act, call],
   )
 
   const disconnect = useCallback(
     () =>
       act(async () => {
-        await trigger('tailscale::disconnect')
+        await call('tailscale::disconnect')
         return 'Disconnected from the tailnet.'
       }),
-    [act, trigger],
+    [act, call],
   )
 
   const connectionLabel = !status
@@ -355,11 +355,11 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
           confirm_public: mode === 'funnel' && confirmPublic,
           ...(custom ? { target: custom } : {}),
         }
-        const next = await trigger<Share>(custom ? 'tailscale::serve::add' : 'tailscale::share', payload)
+        const next = await call<Share>(custom ? 'tailscale::serve::add' : 'tailscale::share', payload)
         setShare(next)
         return null
       }),
-    [act, trigger, mode, port, path, target],
+    [act, call, mode, port, path, target],
   )
 
   const requestShare = useCallback(() => {
@@ -375,7 +375,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
         let restoreError: string | null | undefined
         try {
           const own = share && share.https_port === route.port && share.path === route.path
-          const result = await trigger<{ restore_error?: string | null }>(own ? 'tailscale::share::stop' : 'tailscale::serve::remove', {
+          const result = await call<{ restore_error?: string | null }>(own ? 'tailscale::share::stop' : 'tailscale::serve::remove', {
             mode: route.mode,
             https_port: route.port,
             path: route.path,
@@ -388,7 +388,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
         if (route.mode !== 'funnel') return 'Route stopped.'
         return restoreError ? `Public access removed; ${restoreError}` : 'Public access removed; the tailnet route stays.'
       }),
-    [act, trigger, share],
+    [act, call, share],
   )
 
   const stopShare = useCallback(() => {
@@ -412,7 +412,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const loadPeers = useCallback(
     async (include = includeIngress) => {
       try {
-        const result = await trigger<{ peers: Peer[]; hidden_ingress_count: number }>('tailscale::peers::list', {
+        const result = await call<{ peers: Peer[]; hidden_ingress_count: number }>('tailscale::peers::list', {
           include_ingress: include,
         })
         setPeers(result.peers)
@@ -421,7 +421,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
         setError(errorMessage(cause))
       }
     },
-    [trigger, includeIngress],
+    [call, includeIngress],
   )
 
   const toggleIngress = useCallback(() => {
@@ -438,13 +438,13 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
     async (peer: Peer) => {
       setPings((prev) => ({ ...prev, [peer.id]: 'pending' }))
       try {
-        const result = await trigger<Ping>('tailscale::ping', { target: peer.dns_name || peer.tailscale_ips[0], count: 3 })
+        const result = await call<Ping>('tailscale::ping', { target: peer.dns_name || peer.tailscale_ips[0], count: 3 })
         setPings((prev) => ({ ...prev, [peer.id]: result }))
       } catch (cause) {
         setPings((prev) => ({ ...prev, [peer.id]: errorMessage(cause) }))
       }
     },
-    [trigger],
+    [call],
   )
 
   const [netcheck, setNetcheck] = useState<Netcheck | null>(null)
@@ -456,8 +456,8 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const loadNetwork = useCallback(async () => {
     try {
       const [nextDns, nextExit] = await Promise.all([
-        trigger<DnsStatus>('tailscale::dns::status'),
-        trigger<ExitNodes>('tailscale::exit-node::list'),
+        call<DnsStatus>('tailscale::dns::status'),
+        call<ExitNodes>('tailscale::exit-node::list'),
       ])
       setDns(nextDns)
       setExitNodes(nextExit)
@@ -465,7 +465,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
     } catch (cause) {
       setError(errorMessage(cause))
     }
-  }, [trigger])
+  }, [call])
 
   useEffect(() => {
     if (section === 'network' && dns === null) void loadNetwork()
@@ -474,31 +474,31 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const runNetcheck = useCallback(
     () =>
       act(async () => {
-        setNetcheck(await trigger<Netcheck>('tailscale::netcheck', {}, 90_000))
+        setNetcheck(await call<Netcheck>('tailscale::netcheck', {}, 90_000))
         return null
       }),
-    [act, trigger],
+    [act, call],
   )
 
   const applyExitNode = useCallback(
     () =>
       act(async () => {
-        await trigger('tailscale::exit-node::set', { exit_node: exitChoice })
+        await call('tailscale::exit-node::set', { exit_node: exitChoice })
         await loadNetwork()
         return exitChoice ? `Routing internet traffic through ${exitChoice}.` : 'Exit node cleared.'
       }),
-    [act, trigger, exitChoice, loadNetwork],
+    [act, call, exitChoice, loadNetwork],
   )
 
   const suggestExitNode = useCallback(
     () =>
       act(async () => {
-        const result = await trigger<{ suggestion?: string | null; message: string }>('tailscale::exit-node::suggest')
+        const result = await call<{ suggestion?: string | null; message: string }>('tailscale::exit-node::suggest')
         setSuggestion(result.suggestion ?? result.message)
         if (result.suggestion) setExitChoice(result.suggestion)
         return null
       }),
-    [act, trigger],
+    [act, call],
   )
 
   const [prefs, setPrefs] = useState<Prefs | null>(null)
@@ -507,14 +507,14 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
 
   const loadPrefs = useCallback(async () => {
     try {
-      const next = await trigger<Prefs>('tailscale::prefs::get')
+      const next = await call<Prefs>('tailscale::prefs::get')
       setPrefs(next)
       setHostnameDraft(next.hostname ?? '')
       setRoutesDraft(next.advertise_routes.join(', '))
     } catch (cause) {
       setError(errorMessage(cause))
     }
-  }, [trigger])
+  }, [call])
 
   useEffect(() => {
     if (section === 'settings' && prefs === null) void loadPrefs()
@@ -523,10 +523,10 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const setPref = useCallback(
     (patch: Record<string, unknown>, message: string) =>
       act(async () => {
-        setPrefs(await trigger<Prefs>('tailscale::prefs::set', patch))
+        setPrefs(await call<Prefs>('tailscale::prefs::set', patch))
         return message
       }),
-    [act, trigger],
+    [act, call],
   )
 
   const [fileTargets, setFileTargets] = useState<FileTarget[] | null>(null)
@@ -540,8 +540,8 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const loadFiles = useCallback(async () => {
     try {
       const [targets, nextDns] = await Promise.all([
-        trigger<{ targets: FileTarget[] }>('tailscale::file::targets'),
-        dns ? Promise.resolve(dns) : trigger<DnsStatus>('tailscale::dns::status'),
+        call<{ targets: FileTarget[] }>('tailscale::file::targets'),
+        dns ? Promise.resolve(dns) : call<DnsStatus>('tailscale::dns::status'),
       ])
       setFileTargets(targets.targets)
       setDns(nextDns)
@@ -549,7 +549,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
     } catch (cause) {
       setError(errorMessage(cause))
     }
-  }, [trigger, dns, certDomain])
+  }, [call, dns, certDomain])
 
   useEffect(() => {
     if (section === 'files' && fileTargets === null) void loadFiles()
@@ -558,39 +558,39 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const sendFile = useCallback(
     () =>
       act(async () => {
-        const result = await trigger<{ output: string }>('tailscale::file::send', {
+        const result = await call<{ output: string }>('tailscale::file::send', {
           paths: [sendPath.trim()],
           target: sendTarget,
         })
         return result.output || `Sent ${sendPath.trim()} to ${sendTarget}.`
       }),
-    [act, trigger, sendPath, sendTarget],
+    [act, call, sendPath, sendTarget],
   )
 
   const receiveFiles = useCallback(
     () =>
       act(async () => {
-        const result = await trigger<{ output: string }>('tailscale::file::receive', {
+        const result = await call<{ output: string }>('tailscale::file::receive', {
           directory: receiveDir.trim(),
           conflict,
         })
         return result.output || `Inbox moved into ${receiveDir.trim()}.`
       }),
-    [act, trigger, receiveDir, conflict],
+    [act, call, receiveDir, conflict],
   )
 
   const fetchCert = useCallback(
     () =>
       act(async () => {
         const dir = certDir.trim().replace(/\/$/, '')
-        const result = await trigger<{ cert_file: string; key_file: string }>(
+        const result = await call<{ cert_file: string; key_file: string }>(
           'tailscale::cert',
           { domain: certDomain, cert_file: `${dir}/${certDomain}.crt`, key_file: `${dir}/${certDomain}.key` },
           120_000,
         )
         return `Wrote ${result.cert_file} and ${result.key_file}.`
       }),
-    [act, trigger, certDomain, certDir],
+    [act, call, certDomain, certDir],
   )
 
   const [accounts, setAccounts] = useState<Account[] | null>(null)
@@ -600,9 +600,9 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const loadAccount = useCallback(async () => {
     try {
       const [nextAccounts, nextLock, nextVersion] = await Promise.all([
-        trigger<{ accounts: Account[] }>('tailscale::accounts::list'),
-        trigger<LockStatus>('tailscale::lock::status'),
-        trigger<Version>('tailscale::version', { check_upstream: true }),
+        call<{ accounts: Account[] }>('tailscale::accounts::list'),
+        call<LockStatus>('tailscale::lock::status'),
+        call<Version>('tailscale::version', { check_upstream: true }),
       ])
       setAccounts(nextAccounts.accounts)
       setLock(nextLock)
@@ -610,7 +610,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
     } catch (cause) {
       setError(errorMessage(cause))
     }
-  }, [trigger])
+  }, [call])
 
   useEffect(() => {
     if (section === 'account' && accounts === null) void loadAccount()
@@ -619,48 +619,48 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const switchAccount = useCallback(
     (id: string) =>
       act(async () => {
-        const result = await trigger<{ accounts: Account[] }>('tailscale::accounts::switch', { account: id })
+        const result = await call<{ accounts: Account[] }>('tailscale::accounts::switch', { account: id })
         setAccounts(result.accounts)
         return 'Switched account.'
       }),
-    [act, trigger],
+    [act, call],
   )
 
   const login = useCallback(
     () =>
       act(async () => {
-        const result = await trigger<{ authorization_url?: string | null; connected: boolean }>('tailscale::login', {}, 60_000)
+        const result = await call<{ authorization_url?: string | null; connected: boolean }>('tailscale::login', {}, 60_000)
         setLoginUrl(result.authorization_url ?? null)
         return result.authorization_url ? 'Open the sign-in page to finish.' : 'Signed in.'
       }),
-    [act, trigger],
+    [act, call],
   )
 
   const logout = useCallback(
     () =>
       act(async () => {
-        await trigger('tailscale::logout')
+        await call('tailscale::logout')
         return 'Logged out; the next connect needs a sign-in.'
       }),
-    [act, trigger],
+    [act, call],
   )
 
   const updateClient = useCallback(
     (dryRun: boolean) =>
       act(async () => {
-        const result = await trigger<{ output: string }>('tailscale::update', { dry_run: dryRun }, 300_000)
+        const result = await call<{ output: string }>('tailscale::update', { dry_run: dryRun }, 300_000)
         return result.output
       }),
-    [act, trigger],
+    [act, call],
   )
 
   const bugreport = useCallback(
     () =>
       act(async () => {
-        const result = await trigger<{ report_id: string; output: string }>('tailscale::bugreport', {}, 60_000)
+        const result = await call<{ report_id: string; output: string }>('tailscale::bugreport', {}, 60_000)
         return result.report_id ? `Bug report ${result.report_id}` : result.output
       }),
-    [act, trigger],
+    [act, call],
   )
 
   useEffect(

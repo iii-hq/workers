@@ -10,8 +10,7 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use serde_json::Value;
 
 pub type CallResult = Result<Value, String>;
@@ -76,15 +75,15 @@ impl Engine for IIIEngine {
         let iii = self.iii.clone();
         Box::pin(async move {
             let namespace = call_namespace(&fn_id);
-            let request = TriggerRequest {
+            let request = CallRequest {
                 function_id: fn_id,
                 payload,
                 action: None,
                 timeout_ms: Some(timeout_ms),
             };
             match namespace {
-                Some(namespace) => iii.trigger(request.namespace(namespace)).await,
-                None => iii.trigger(request).await,
+                Some(namespace) => iii.call(request.namespace(namespace)).await,
+                None => iii.call(request).await,
             }
             .map_err(|e| e.to_string())
         })

@@ -59,7 +59,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
           readReply: (turnId) => fetchSpokenReply(host.iii, sessionId, turnId),
           onStarted: onStop,
           streaming: {
-            prepare: (text, complete) => host.iii.trigger('voice::speech::prepare', { text, complete }),
+            prepare: (text, complete) => host.iii.call('voice::speech::prepare', { text, complete }),
             onChunk: (text) => enqueue(() => speak(host.iii, { text, text_format: 'plain' })),
           },
           onReply: setLastReply,

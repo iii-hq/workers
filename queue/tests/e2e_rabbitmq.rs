@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use iii_queue::adapter::{FunctionQueueConfig, QueueAdapter};
 use iii_queue::adapters::rabbitmq::RabbitMQAdapter;
 use iii_queue::subscriber_config::SubscriberQueueConfig;
-use iii_queue::trigger::{IiiInvoker, Invoker};
+use iii_queue::subscribers::{Invoker, Subscriber};
 use iii_sdk::errors::Error;
 use iii_sdk::RegisterFunction;
 use lapin::options::{ExchangeDeclareOptions, QueueBindOptions, QueueDeclareOptions};
@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use common::docker;
 use common::engine;
+use common::invoker::FunctionInvoker;
 
 /// Polls `pred` until it returns `true` or `timeout` elapses, then asserts
 /// once more (for a useful panic message) -- same pattern as this crate's
@@ -141,17 +142,8 @@ struct RecordingInvoker {
 
 #[async_trait]
 impl Invoker for RecordingInvoker {
-    async fn call(&self, _function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
-        Ok(None)
-    }
-
-    async fn call_delivery(
-        &self,
-        _function_id: &str,
-        payload: Value,
-        _metadata: Option<Value>,
-        _namespace: Option<&str>,
-    ) -> Result<Option<Value>, String> {
+    /// The default [`Invoker::deliver`] calls this with the subscriber id.
+    async fn call(&self, _subscriber: &str, payload: Value) -> Result<Option<Value>, String> {
         self.deliveries.lock().await.push(payload);
         Ok(None)
     }
@@ -169,7 +161,7 @@ async fn basic_delivery_connect_or_skip() {
         return; // skip: engine not reachable
     };
 
-    let invoker = Arc::new(IiiInvoker::new(iii.clone()));
+    let invoker = Arc::new(FunctionInvoker::new(iii.clone()));
     let adapter =
         RabbitMQAdapter::from_config(Some(&json!({"amqp_url": container.amqp_url()})), invoker)
             .await
@@ -193,7 +185,7 @@ async fn basic_delivery_connect_or_skip() {
 
     let topic = format!("e2e-rmq-basic-{}", Uuid::new_v4());
     adapter
-        .subscribe(&topic, "sub-1", &function_id, None, None, None, None)
+        .subscribe(&topic, "sub-1", Subscriber::new(&function_id), None)
         .await;
     // Give the consumer task a beat to actually attach before the first
     // publish.
@@ -216,7 +208,7 @@ async fn basic_delivery_connect_or_skip() {
     assert_eq!(seen[0].get("hello"), Some(&json!("world")));
     drop(seen);
 
-    adapter.unsubscribe(&topic, "sub-1").await;
+    adapter.unsubscribe(&topic, "sub-1", Duration::ZERO).await;
     adapter.shutdown().await;
     iii.shutdown_async().await;
 }
@@ -389,7 +381,7 @@ async fn priority_ordering_connect_or_skip() {
         return; // skip: engine not reachable
     };
 
-    let invoker = Arc::new(IiiInvoker::new(iii.clone()));
+    let invoker = Arc::new(FunctionInvoker::new(iii.clone()));
     let adapter = RabbitMQAdapter::from_config(
         Some(&json!({"amqp_url": container.amqp_url(), "priority_field": "priority"})),
         invoker,
@@ -440,15 +432,12 @@ async fn priority_ordering_connect_or_skip() {
         .subscribe(
             &topic,
             sub_id,
-            &function_id,
-            None,
-            None,
+            Subscriber::new(&function_id),
             Some(SubscriberQueueConfig {
                 max_priority: Some(10),
                 concurrency: Some(1),
                 ..Default::default()
             }),
-            None,
         )
         .await;
 
@@ -467,7 +456,7 @@ async fn priority_ordering_connect_or_skip() {
         "priority queue should drain highest-priority-first"
     );
 
-    adapter.unsubscribe(&topic, sub_id).await;
+    adapter.unsubscribe(&topic, sub_id, Duration::ZERO).await;
     adapter.shutdown().await;
     let _ = raw_connection.close(200, "test done").await;
     iii.shutdown_async().await;
@@ -496,7 +485,7 @@ async fn unsubscribe_keeps_backlog_for_same_id_resubscribe_connect_or_skip() {
     let topic = format!("e2e-rmq-rearm-{}", Uuid::new_v4());
     let sub_id = "sub-rearm-1";
     adapter
-        .subscribe(&topic, sub_id, "rearm-fn", None, None, None, None)
+        .subscribe(&topic, sub_id, Subscriber::new("rearm-fn"), None)
         .await;
     // Give the consumer task a beat to attach before the first publish --
     // same as basic_delivery.
@@ -511,7 +500,7 @@ async fn unsubscribe_keeps_backlog_for_same_id_resubscribe_connect_or_skip() {
     )
     .await;
 
-    adapter.unsubscribe(&topic, sub_id).await;
+    adapter.unsubscribe(&topic, sub_id, Duration::ZERO).await;
     // Published while detached: both enqueues are broker-confirmed
     // (`Publisher::publish` awaits the confirm), so they are already in the
     // still-bound queue when we assert nothing got delivered.
@@ -525,7 +514,7 @@ async fn unsubscribe_keeps_backlog_for_same_id_resubscribe_connect_or_skip() {
     );
 
     adapter
-        .subscribe(&topic, sub_id, "rearm-fn", None, None, None, None)
+        .subscribe(&topic, sub_id, Subscriber::new("rearm-fn"), None)
         .await;
     wait_until(
         || {
@@ -541,7 +530,7 @@ async fn unsubscribe_keeps_backlog_for_same_id_resubscribe_connect_or_skip() {
         "the detached-period backlog must drain on resubscribe, got: {deliveries:?}"
     );
 
-    adapter.unsubscribe(&topic, sub_id).await;
+    adapter.unsubscribe(&topic, sub_id, Duration::ZERO).await;
     adapter.shutdown().await;
 }
 
@@ -559,7 +548,7 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
         return; // skip: engine not reachable
     };
 
-    let invoker = Arc::new(IiiInvoker::new(iii.clone()));
+    let invoker = Arc::new(FunctionInvoker::new(iii.clone()));
     let adapter = RabbitMQAdapter::from_config(
         Some(&json!({"amqp_url": container.amqp_url(), "queue_mode": "fifo"})),
         invoker,
@@ -590,15 +579,12 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
         .subscribe(
             &topic,
             "sub-fifo-1",
-            &function_id,
-            None,
-            None,
+            Subscriber::new(&function_id),
             Some(SubscriberQueueConfig {
                 queue_mode: Some("fifo".to_string()),
                 concurrency: Some(1),
                 ..Default::default()
             }),
-            None,
         )
         .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -623,7 +609,9 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
         "fifo mode should preserve publish order"
     );
 
-    adapter.unsubscribe(&topic, "sub-fifo-1").await;
+    adapter
+        .unsubscribe(&topic, "sub-fifo-1", Duration::ZERO)
+        .await;
     adapter.shutdown().await;
     iii.shutdown_async().await;
 }

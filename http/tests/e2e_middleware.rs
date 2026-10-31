@@ -1,8 +1,8 @@
 //! End-to-end middleware coverage (per-route) against a running engine.
 //!
 //! Mirrors `e2e_methods.rs`'s harness usage: skip (early-return) when no
-//! engine is reachable, boot one worker per test, bind backend triggers, wait
-//! for the route to land, then issue the request.
+//! engine is reachable, boot one worker per test, observe `http::on-request`
+//! with the backends, wait for the route to land, then issue the request.
 
 mod common;
 

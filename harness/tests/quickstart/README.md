@@ -10,8 +10,8 @@ printf 'workers: []\n' > config.yaml
 iii -c config.yaml
 iii compose --engine ws://127.0.0.1:49134 --namespace default \
   --file worker-compose.yaml --up
-iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"harness"}'
-iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"console"}'
+iii call compose::add --json '{"file":"worker-compose.yaml","worker":"harness"}'
+iii call compose::add --json '{"file":"worker-compose.yaml","worker":"console"}'
 ```
 
 The `quickstart` project template seeds `worker-compose.yaml` with the
@@ -76,7 +76,7 @@ never written to the compose file or artifacts. A `router::provider::list`
 preflight proves both providers received usable configuration before model
 discovery and browser validation begin.
 Set `HARNESS_QUICKSTART_TRACE=1` to print only the important external commands
-(`iii trigger compose::add`, `iii trigger`, installer, engine, and compose
+(`iii call compose::add` and the other `iii call` reads, installer, engine, and compose
 daemon) and save the list as `commands.log`. Polling attempts, assignments,
 cleanup, and other shell internals are omitted.
 

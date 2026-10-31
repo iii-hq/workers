@@ -6,7 +6,7 @@ import { expect, expectContains, expectEqual, type TestCase, until } from './cas
  *
  * This is the group that most needs to be end-to-end. A unit test can prove
  * the router calls `Engine::register`; only a live engine proves the id
- * reaches the catalog, that a caller can trigger it, and that its answer comes
+ * reaches the catalog, that a caller can call it, and that its answer comes
  * back over the wire. Every case tears its namespace down.
  */
 export const REGISTER_CASES: TestCase[] = [

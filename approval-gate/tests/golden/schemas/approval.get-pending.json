@@ -67,7 +67,7 @@
         "type": "object"
       },
       "PendingApprovalRecord": {
-        "description": "The inbox payload — shared by both triggers, `list_pending`, and `get_pending`. Self-describing (all ids inside the value) and notification-safe (arguments pass through redaction).",
+        "description": "The inbox payload — shared by both event functions, `list_pending`, and `get_pending`. Self-describing (all ids inside the value) and notification-safe (arguments pass through redaction).",
         "properties": {
           "access_request": {
             "anyOf": [
@@ -85,7 +85,7 @@
             "description": "Redacted — safe to forward to notification channels."
           },
           "assistant_excerpt": {
-            "description": "First text block of the assistant message that contained this function_call. Best-effort; not derivable from `pre_trigger` `HookInput` in v1, so always omitted today.",
+            "description": "First text block of the assistant message that contained this function_call. Best-effort; not derivable from the `pre_call` `HookInput` in v1, so always omitted today.",
             "type": [
               "string",
               "null"
@@ -127,7 +127,7 @@
           },
           "session_metadata": {
             "additionalProperties": true,
-            "description": "Tenancy + routing (trigger config filter target).",
+            "description": "Tenancy + routing (what observers filter on as `input.session_metadata.<key>`).",
             "type": [
               "object",
               "null"

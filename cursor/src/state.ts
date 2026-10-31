@@ -16,7 +16,7 @@ export async function loadSession(
   iii: IIIClient,
   sessionId: string,
 ): Promise<SessionRecord | null> {
-  const value = await iii.trigger<unknown, unknown>({
+  const value = await iii.call<unknown, unknown>({
     function_id: 'state::get',
     payload: { scope: SCOPE, key: sessionId },
   });
@@ -30,7 +30,7 @@ export async function compareAndSetSession(
   record: SessionRecord,
 ): Promise<SessionSwap> {
   const response = CompareAndSetResponseSchema.parse(
-    await iii.trigger<unknown, unknown>({
+    await iii.call<unknown, unknown>({
       function_id: 'state::compare-and-set',
       payload: {
         scope: SCOPE,
@@ -68,7 +68,7 @@ export async function updateSession(
 }
 
 export async function listSessions(iii: IIIClient): Promise<SessionRecord[]> {
-  const value = await iii.trigger<unknown, unknown>({
+  const value = await iii.call<unknown, unknown>({
     function_id: 'state::list',
     payload: { scope: SCOPE },
   });

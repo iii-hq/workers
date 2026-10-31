@@ -148,40 +148,49 @@ describe('useCopyFlash', () => {
   })
 })
 
-function fakeIii(opts: { failRegister?: boolean } = {}) {
+function fakeIii(opts: { failObserve?: boolean } = {}) {
   const handlers = new Map<string, (payload: unknown) => void>()
   const offs: Array<ReturnType<typeof vi.fn>> = []
-  const registered: string[] = []
+  const observed: string[] = []
   const iii = {
     browserId: 'console-1',
-    trigger: vi.fn(),
+    call: vi.fn(),
     on: vi.fn((id: string, handler: (payload: unknown) => void) => {
       handlers.set(id, handler)
       const off = vi.fn()
       offs.push(off)
       return off
     }),
-    registerTrigger: vi.fn((input: { type: string; function_id: string }) => {
-      if (opts.failRegister) throw new Error('no such trigger')
-      registered.push(`${input.type}→${input.function_id}`)
-      const off = vi.fn()
-      offs.push(off)
-      return off
-    }),
+    observe: vi.fn(
+      (source: string | { function_id: string }, target: string) => {
+        if (opts.failObserve) throw new Error('observe refused')
+        const id = typeof source === 'string' ? source : source.function_id
+        observed.push(`${id}→${target}`)
+        const off = vi.fn()
+        offs.push(off)
+        return off
+      },
+    ),
     addConnectionStateListener: vi.fn(() => () => {}),
   } as unknown as ExtensionIii
-  return { iii, handlers, offs, registered }
+  return { iii, handlers, offs, observed }
 }
 
 describe('useWorkerLive', () => {
-  it('fetches, binds one handler plus one trigger per type, refetches on events, unbinds', async () => {
-    const { iii, handlers, offs, registered } = fakeIii()
+  it('fetches, registers one handler plus one observer per source, refetches on events, disposes', async () => {
+    const { iii, handlers, offs, observed } = fakeIii()
     let calls = 0
     const fetch = vi.fn(async () => ({ n: ++calls }))
     const hook = renderHook(() =>
       useWorkerLive({
         iii,
-        triggers: ['worktree.created', 'worktree.removed'],
+        sources: [
+          'worktree::on-created',
+          {
+            function_id: 'worktree::on-removed',
+            filters: { 'input.repo_path': { $eq: '/repo' } },
+          },
+        ],
         fetch,
         handlerId: 'iii::wt-ui::events',
       }),
@@ -192,9 +201,9 @@ describe('useWorkerLive', () => {
     expect(hook.current.data).toEqual({ n: 1 })
     expect(hook.current.error).toBeNull()
     expect(hook.current.live).toBe(true)
-    expect(registered).toEqual([
-      'worktree.created→iii::wt-ui::events::console-1',
-      'worktree.removed→iii::wt-ui::events::console-1',
+    expect(observed).toEqual([
+      'worktree::on-created→iii::wt-ui::events::console-1',
+      'worktree::on-removed→iii::wt-ui::events::console-1',
     ])
 
     await act(async () => {
@@ -216,7 +225,7 @@ describe('useWorkerLive', () => {
         }),
     )
     const hook = renderHook(() =>
-      useWorkerLive({ iii, triggers: ['t'], fetch, handlerId: 'h' }),
+      useWorkerLive({ iii, sources: ['t::on-x'], fetch, handlerId: 'h' }),
     )
     await act(async () => {
       handlers.get('h')?.({})
@@ -233,12 +242,12 @@ describe('useWorkerLive', () => {
 
   it('never polls while not live: it re-reads when the tab is focused again', async () => {
     vi.useFakeTimers()
-    const { iii } = fakeIii({ failRegister: true })
+    const { iii } = fakeIii({ failObserve: true })
     const fetch = vi.fn().mockRejectedValue({ code: 'E1', message: 'down' })
     const hook = renderHook(() =>
       useWorkerLive({
         iii,
-        triggers: ['t'],
+        sources: ['t::on-x'],
         fetch,
         handlerId: 'h',
       }),

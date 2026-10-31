@@ -146,11 +146,11 @@ function denialToInvocation(
           ? 'Denied by user'
           : denial.status === 'denied'
             ? 'Denied'
-            : 'Trigger failed'
+            : 'Call failed'
   const message =
     denial.reason ??
     fallbackMessage ??
-    'The browser trigger could not complete.'
+    'The browser call could not complete.'
   return {
     title,
     message,
@@ -171,7 +171,7 @@ function invocationFromFunctionError(
     return denialToInvocation(denial, envelope.message, detailText)
   }
   return {
-    title: 'Trigger failed',
+    title: 'Call failed',
     message: envelope.message,
     detailText,
   }

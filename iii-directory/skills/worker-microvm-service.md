@@ -106,13 +106,13 @@ host paths, no manual setup step, no separate install instructions:
 
 ```js
 // write it: stdin carries the source, bash writes it on the HOST
-await worker.trigger({ function_id: "shell::exec", payload: {
+await worker.call({ function_id: "shell::exec", payload: {
   command: "bash",
   args: ["-lc", `PID=$(cat ${PIDFILE} 2>/dev/null || true); [ -n "$PID" ] && kill "$PID" 2>/dev/null; cat > ${REMOTE}`],
   stdin: await fs.readFile(pumpSourceInsideTheVM, "utf8"),
 }});
 // run it: exec_bg outlives the call; env carries ports + a per-boot secret
-const { job_id } = await worker.trigger({ function_id: "shell::exec_bg", payload: {
+const { job_id } = await worker.call({ function_id: "shell::exec_bg", payload: {
   command: "bash", args: ["-lc", `exec node ${REMOTE}`],
   env: { PUBLIC_PORT: "3210", TUNNEL_PORT: "3211", SECRET: secret, PIDFILE },
 }});
@@ -146,20 +146,20 @@ const { job_id } = await worker.trigger({ function_id: "shell::exec_bg", payload
 
 A worker ships console UI as assets; no console rebuild:
 
-* register `console:script` with `config { path: "<worker>/page.js" }` and
-  `console:style` with `"<worker>/styles.css"`. The trigger's `function_id` is a
+* observe `console::ui::asset` with `args { kind: "script", path: "<worker>/page.js" }`
+  and `{ kind: "style", path: "<worker>/styles.css" }`. The observer's target is a
   content function returning `{ content, content_type }` — read from disk per call
-  and the dev loop is edit + reload the tab. Re-registering a path overrides it.
+  and the dev loop is edit + reload the tab. A later observer of a path supersedes it.
 * the script is **ESM with `export default function setup(host)`**, optionally
   returning a cleanup function. Bare imports resolve through the console's static
   import map — `react`, `react-dom`, `react-dom/client`, `react/jsx-runtime`,
   `@iii-dev/console-ui` — so hand-written `createElement` needs **no bundler**.
-* `host` = `{ iii: { trigger(fnId, payload), on, registerTrigger, browserId,
-  addConnectionStateListener }, components, useTheme, path, pages, functionTriggers,
+* `host` = `{ iii: { call(fnId, payload), on, observe, browserId,
+  addConnectionStateListener }, components, useTheme, path, pages, functionCalls,
   configForms }`.
 * `host.pages.register({ id, title, render })` → a console page, opened through `host.panels.open` or `console::workspace::open`, or alone at `#/worker/<scope>/<id>`;
   `host.configForms.register(configId, Component)` overrides a worker's config form;
-  `host.functionTriggers.register(renderer)` adds trigger-specific UI.
+  `host.functionCalls.register(renderer)` adds UI for calls of your functions.
 * verify with `console::ui-manifest` (paths, hashes, style-lint warnings, per-worker
   enable state); users can disable a worker's UI via the console config
   (`injectableUi.disabledWorkers`).

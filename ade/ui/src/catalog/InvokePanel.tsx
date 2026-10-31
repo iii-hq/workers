@@ -64,13 +64,13 @@ function missingRequired(schema: unknown, payload: unknown): string[] {
 }
 
 /**
- * The same call as a CLI line. `iii trigger` takes `key=value` pairs, so a
+ * The same call as a CLI line. `iii call` takes `key=value` pairs, so a
  * scalar body copies verbatim and anything nested copies as JSON — which is
  * exactly the difference between a command that runs and one that does not.
  */
 export function asCliCommand(functionId: string, payload: unknown): string {
   if (!isRecord(payload) || Object.keys(payload).length === 0) {
-    return `iii trigger ${functionId}`
+    return `iii call ${functionId}`
   }
   const args = Object.entries(payload).map(([key, value]) => {
     const literal =
@@ -80,15 +80,15 @@ export function asCliCommand(functionId: string, payload: unknown): string {
     // emit an escaped quote, reopen.
     return `${key}='${literal.replaceAll("'", `'\\''`)}'`
   })
-  return `iii trigger ${functionId} ${args.join(' ')}`
+  return `iii call ${functionId} ${args.join(' ')}`
 }
 
 export function InvokePanel({
   host,
   functionId,
   requestSchema,
-  label = 'trigger',
-  runningLabel = 'triggering…',
+  label = 'call',
+  runningLabel = 'calling…',
   hint,
   prefill,
   runRef,
@@ -97,12 +97,12 @@ export function InvokePanel({
   host: Host
   functionId: string
   requestSchema: unknown
-  /** Verb on the button — the triggers page fires a target function. */
+  /** Verb on the button — the observers page calls an observer's target. */
   label?: string
   runningLabel?: string
   hint?: string
   /** `split` puts the request beside the response (the functions page's Run
-      tab); `stacked` is the framed card the triggers page embeds. */
+      tab); `stacked` is the framed card the observers page embeds. */
   layout?: 'stacked' | 'split'
   /** A recorded input pushed in from the activity feed; changes replace the body. */
   prefill?: { value: unknown; nonce: number }
@@ -198,11 +198,11 @@ export function InvokePanel({
     <>
       <div className="console-catalog-invoke-head">
         <div>
-          <h3>{split ? 'Request' : 'Trigger function'}</h3>
+          <h3>{split ? 'Request' : 'Call function'}</h3>
           <p className="invoke-description">
             {split
               ? 'A JSON body; required fields are checked before the call.'
-              : 'Provide the input payload and trigger this function.'}
+              : 'Provide the input payload and call this function.'}
           </p>
         </div>
         <Button
@@ -244,7 +244,7 @@ export function InvokePanel({
         <CopyButton
           value={asCliCommand(functionId, safeJson(body))}
           label={split ? 'Copy as command' : 'copy iii command'}
-          title="copies this exact call as an `iii trigger …` line to run from the terminal"
+          title="copies this exact call as an `iii call …` line to run from the terminal"
         />
         {invalid ? (
           <span className="console-catalog-invalid">{invalid}</span>

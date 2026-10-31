@@ -16,7 +16,7 @@ import type { IiiClient } from '@/lib/iii-client'
 
 /* These fetches sit on interactive surfaces (pickers, palette, send path);
  * a hung directory worker must fail them fast, not hold the UI to the
- * client's 5-minute default trigger timeout. */
+ * client's 5-minute default call timeout. */
 const FETCH_TIMEOUT_MS = 10_000
 
 export interface PromptEntry {
@@ -72,7 +72,7 @@ export function skillBodyWithBaseDir(skill: SkillBody): string {
 }
 
 export async function listPrompts(client: IiiClient): Promise<PromptEntry[]> {
-  const res = await client.trigger<{ prompts: PromptEntry[] }>(
+  const res = await client.call<{ prompts: PromptEntry[] }>(
     'directory::system-prompts::list',
     {},
     { timeoutMs: FETCH_TIMEOUT_MS },
@@ -84,7 +84,7 @@ export async function getPrompt(
   client: IiiClient,
   name: string,
 ): Promise<PromptBody> {
-  return client.trigger<PromptBody>(
+  return client.call<PromptBody>(
     'directory::system-prompts::get',
     { name },
     { timeoutMs: FETCH_TIMEOUT_MS },
@@ -92,7 +92,7 @@ export async function getPrompt(
 }
 
 export async function listSkills(client: IiiClient): Promise<SkillEntry[]> {
-  const res = await client.trigger<{ skills: SkillEntry[] }>(
+  const res = await client.call<{ skills: SkillEntry[] }>(
     'directory::skills::list',
     { include_description: true },
     { timeoutMs: FETCH_TIMEOUT_MS },
@@ -104,7 +104,7 @@ export async function getSkill(
   client: IiiClient,
   id: string,
 ): Promise<SkillBody> {
-  return client.trigger<SkillBody>(
+  return client.call<SkillBody>(
     'directory::skills::get',
     { id },
     { timeoutMs: FETCH_TIMEOUT_MS },
@@ -137,7 +137,7 @@ export interface AgentEntry {
 }
 
 export async function listAgents(client: IiiClient): Promise<AgentEntry[]> {
-  const res = await client.trigger<{ agents: AgentEntry[] }>(
+  const res = await client.call<{ agents: AgentEntry[] }>(
     'directory::agents::list',
     {},
     { timeoutMs: FETCH_TIMEOUT_MS },
@@ -158,7 +158,7 @@ export interface KitUpdateEntry {
 export async function listKitUpdates(
   client: IiiClient,
 ): Promise<KitUpdateEntry[]> {
-  const res = await client.trigger<{
+  const res = await client.call<{
     kits?: {
       kit: string
       version: string

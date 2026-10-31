@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use memory_consolidate::consolidate::MemoryRow;
 use memory_consolidate::semantic::{
     build_batch, classify, parse_actions, validate, ActionKind, Outcome, SEMANTIC_SYSTEM,
@@ -144,7 +144,7 @@ async fn judge_golden_cases() {
         candidates.extend(DISTRACTORS.iter().map(|k| row(by_key[k], now)));
         let batch = build_batch(&[(pending, candidates)]);
         let reply = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::complete".into(),
                 payload: json!({
                     "model": model,

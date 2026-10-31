@@ -865,7 +865,7 @@ pub enum CaptureMode {
     #[default]
     Statements,
     /// Capture writes from any client, including other processes.
-    /// Table-scoped bindings only. Postgres: triggers + LISTEN/NOTIFY on a
+    /// Observers must name a table. Postgres: triggers + LISTEN/NOTIFY on a
     /// dedicated connection (needs DDL rights). File-backed sqlite:
     /// triggers + changelog table + filesystem watch. MySQL: the binlog
     /// replication stream (needs replication grants, nothing installed).

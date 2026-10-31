@@ -103,7 +103,7 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       id: K,
       payload: Record<string, unknown> = {},
     ): Promise<RpcResults[K]> =>
-      client.trigger({ function_id: id, payload }) as Promise<RpcResults[K]>
+      client.call({ function_id: id, payload }) as Promise<RpcResults[K]>
     start(sessionBin, [
       '--url',
       engineUrl,

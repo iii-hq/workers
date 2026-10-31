@@ -24,8 +24,7 @@ use std::time::{Duration, Instant};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterFunction, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -211,10 +210,10 @@ async fn emit(iii: &IIIClient, function_id: &str, event: OutputEvent) -> bool {
         return false;
     };
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.to_string(),
             payload,
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             timeout_ms: None,
         })
         .await
@@ -626,6 +625,10 @@ impl TerminalManager {
     }
 }
 
+/// Registers one `tmux::terminal::*` function. None of them can be observed
+/// (`NOT_OBSERVABLE`): `open` returns the terminal's `access_key`, every other
+/// call carries it, and `write` carries the keystrokes typed into the
+/// terminal.
 macro_rules! register_terminal_fn {
     ($iii:expr, $manager:expr, $id:expr, $desc:expr, $req:ty, $method:ident) => {{
         let manager = $manager.clone();
@@ -636,7 +639,8 @@ macro_rules! register_terminal_fn {
                 async move { manager.$method(request).await.map_err(Error::Handler) }
             })
             .description($desc)
-            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
+            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true }))
+            .observable(false),
         );
     }};
 }

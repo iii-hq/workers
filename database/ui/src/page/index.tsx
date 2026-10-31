@@ -22,7 +22,7 @@
  *
  * The grid and its affordances stay read-only; the SQL panel runs writes,
  * routed through `database::execute` — the same function agents call, so
- * engine policy and the `database::row-changed` feed treat both alike.
+ * engine policy and `database::on-row-changed` observers treat both alike.
  *
  * The host only mounts this page when the database worker is connected, so
  * there is no presence gate here; a failed `listDatabases` surfaces as the
@@ -221,7 +221,7 @@ export function DatabasePage({
   const viewCount = tables.length - tableCount
 
   // Selection means "open these rows" on data, a focus on the diagram, a
-  // binding on changes — sql and health barely use it, and the rail says so
+  // table to observe on changes — sql and health barely use it, and the rail says so
   // rather than letting the highlight imply navigation everywhere.
   const passiveAside = mode === 'sql' || mode === 'health'
 
@@ -629,7 +629,7 @@ export function DatabasePage({
                   ) : null}
                   {modes.includes('changes') ? (
                     <div className="db-keep" hidden={mode !== 'changes'}>
-                      {/* Keyed by table: the feed is per-binding. Kept mounted,
+                      {/* Keyed by table: the feed is one observer per table. Kept mounted,
                           it keeps listening while you look at the rows it is
                           telling you about. */}
                       <ChangesPanel

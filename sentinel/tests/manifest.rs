@@ -97,9 +97,9 @@ fn the_interface_registers_before_the_durable_dependencies_are_claimed() {
         .expect("the durable dependencies are claimed");
 
     for registration in [
-        "events::register_trigger_types(&iii, &subscribers)",
+        "events::register_functions(&iii)",
         "functions::register_all(&iii, &deps)",
-        "configuration::bind_reload(&iii, cell.clone(), error_cell.clone())",
+        "configuration::observe_reload(&iii, cell.clone(), error_cell.clone())",
     ] {
         let position = source
             .find(registration)
@@ -148,8 +148,8 @@ fn the_caller_identity_is_read_inside_the_handler_future() {
 #[test]
 fn the_worker_never_logs_at_error_level() {
     // An ERROR log from this worker would come straight back through its own
-    // `log` trigger and ingest itself. Internal failures are WARN plus a
-    // counter in `sentinel::status`.
+    // `observability::on-log` observer and ingest itself. Internal failures
+    // are WARN plus a counter in `sentinel::status`.
     for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
         .expect("read the source directory")
     {

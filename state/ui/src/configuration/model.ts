@@ -12,3 +12,17 @@ export function withPersistenceMode(config: JsonObject, mode: PersistenceMode): 
   if (mode === 'in_memory') delete next.file_path
   return next
 }
+
+/**
+ * Whether `state::on-changed` is emitted (default `true`). The worker migrates
+ * an entry stored by an earlier release to `events_enabled` when it boots,
+ * before it serves this form.
+ */
+export function eventsEnabledFor(value: JsonObject): boolean {
+  return value.events_enabled !== false
+}
+
+/** Set `events_enabled`. */
+export function withEventsEnabled(value: JsonObject, enabled: boolean): JsonObject {
+  return { ...value, events_enabled: enabled }
+}

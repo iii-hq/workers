@@ -18,9 +18,9 @@ name = "voice"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
-# Worker-side injectable console UI (content function + console:script/style
-# triggers + hot-reload watcher) — direct link, never published.
+iii-sdk = "=0.26.0"
+# Worker-side injectable console UI (content function + console::ui::asset
+# observers + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 iii-worker-paths = { path = "../crates/worker-paths" }
 # Streaming speech recognition (onnxruntime, statically linked). The sys crate

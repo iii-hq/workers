@@ -2,7 +2,8 @@
 //!
 //! The worker registers its config schema under the id `http` (what the console
 //! renders as an editable form), reads the authoritative value before binding,
-//! and hot-applies `configuration:updated` events onto a shared [`ConfigCell`].
+//! and hot-applies `configuration:updated` events (it observes
+//! `configuration::on-updated`) onto a shared [`ConfigCell`].
 //!
 //! ## What reloads live vs. restart-only
 //!
@@ -10,8 +11,9 @@
 //! fields it consumes hot-reload without a restart:
 //!
 //! - `middleware` — the global middleware chain.
-//! - `default_timeout` — the per-request invocation, condition, middleware, and
-//!   streaming-drain timeouts read inside the handler.
+//! - `default_timeout` — the per-request invocation, middleware, and
+//!   streaming-drain timeouts read inside the handler and `http::on-request`'s
+//!   deliver hook.
 //!
 //! The CORS layer, the outer tower `TimeoutLayer` (the 504 wrapper, built from
 //! `default_timeout`), and the `ConcurrencyLimitLayer` are baked into the axum
@@ -38,8 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
@@ -89,6 +90,8 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "http::on-config-change";
+/// The engine's configuration change events, hosted in `default`.
+const CONFIG_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 /// Upper bound on every `configuration::*` bus call (mirrors the engine's
@@ -247,7 +250,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&RestApiConfig>) -> R
     let seed = seed.cloned().unwrap_or_default().normalized();
     payload["initial_value"] = seed.to_json();
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
+        call_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
     })
     .await
 }
@@ -273,7 +276,7 @@ mod initialization;
 
 /// Return absence only for the entry's NOT_FOUND code; service failures remain errors.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(
+    match call_configuration_with_retry(
         iii,
         "configuration::get",
         json!({ "id": config_id() }),
@@ -299,23 +302,25 @@ pub async fn apply_config(cell: &ConfigCell, cfg: RestApiConfig) -> bool {
     true
 }
 
-/// Register `http::on-config-change` and subscribe it to `configuration:updated`
-/// events for the `http` entry. The handler ignores the trigger payload and
-/// re-fetches the authoritative value (the bus function is discoverable, so a
-/// caller-supplied payload must not be trusted to repoint config).
+/// Register `http::on-config-change` and observe `configuration::on-updated`
+/// with it, filtered to the `configuration:updated` events of this worker's
+/// entry. The handler ignores the event and re-fetches the authoritative value
+/// (the bus function is discoverable, so a caller-supplied payload must not be
+/// trusted to repoint config).
 ///
 /// `hot_router` (its `inner` is the shared router cell) rebuilds layers on a
 /// same-address change and is reused to spawn a rebound server; `control` tracks
 /// the currently-running server so a host/port change can replace it.
 /// `apply_lock` serializes overlapping invocations of the handler (see
-/// [`ApplyLock`]).
-pub fn register_config_trigger(
+/// [`ApplyLock`]). The observer lives as long as the worker's connection;
+/// dropping the returned handle does not dispose it.
+pub fn register_config_observer(
     iii: &Arc<IIIClient>,
     cell: ConfigCell,
     hot_router: HotRouter,
     control: ServerControlCell,
     apply_lock: ApplyLock,
-) -> Result<(), Error> {
+) -> ObserverHandle {
     let cell_for_fn = cell.clone();
     let hot_router_for_fn = hot_router.clone();
     let control_for_fn = control.clone();
@@ -338,18 +343,20 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    // Deprecated in iii 0.25 (`configuration::on-updated` is its observable
-    // successor); 0.25 engines still serve the `configuration` trigger type.
-    #[allow(deprecated)]
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(CONFIG_UPDATED_FN)
+            .filters(config_updated_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    )
+}
+
+/// Selects the `configuration:updated` events of the entry `id`.
+fn config_updated_filters(id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 async fn on_config_change(
@@ -453,7 +460,7 @@ async fn reload_listeners(
     Ok(())
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -462,8 +469,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -579,6 +586,17 @@ mod tests {
 
     fn cell(cfg: RestApiConfig) -> ConfigCell {
         new_cell(cfg)
+    }
+
+    #[test]
+    fn config_observer_selects_this_entrys_updates() {
+        assert_eq!(
+            config_updated_filters("http"),
+            serde_json::json!({
+                "input.id": { "$eq": "http" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
     }
 
     #[tokio::test]

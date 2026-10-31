@@ -17,12 +17,12 @@ worker ignores unknown reply fields and rejects anything it cannot validate as
 ## Install
 
 ```bash
-iii trigger compose::add worker=judge-openai
+iii call compose::add worker=judge-openai
 ```
 
 Compose starts the provider with its `configuration` dependency; add the
 [`judge`](https://github.com/iii-hq/workers/tree/main/judge) hub as well to call
-it through `judge::evaluate`. Use engine **`iii/v0.24.0-rc.2`**, the verified
+it through `judge::evaluate`. Use engine **`iii/v0.26.0`**, the verified
 release with `configuration::ensure` used by this repository's CI. Wait for the
 provider's functions to register before making a call.
 
@@ -38,7 +38,7 @@ reference to the
 Ask whether a support ticket needs urgent attention:
 
 ```bash
-iii trigger judge::evaluate --timeout-ms 65000 --json '{
+iii call judge::evaluate --timeout-ms 65000 --json '{
   "provider": "openai",
   "timeout_ms": 60000,
   "evaluations": [{
@@ -146,7 +146,8 @@ The key a call uses:
    `judge-openai` among its `consumers` and set `api_key:
    secret://OPENAI_API_KEY`. The reference is resolved through
    `secrets::resolve` at call time, kept only in memory, and re-read when
-   `secrets::changed` names it, after 5 minutes, or 10 seconds after a failure.
+   a `secrets::on-changed` event names it, after 5 minutes, or 10 seconds
+   after a failure.
    A reference that does not resolve returns `missing_key` with
    `provider_error.message` naming the fix, and never falls back to the
    environment. Any other `scheme://` value is rejected the same way. A literal

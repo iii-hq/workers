@@ -7,8 +7,7 @@
 
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use schemars::{schema_for, JsonSchema};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -166,7 +165,7 @@ impl Composer {
     async fn load_turn_routing(&self, session_id: &str) -> Result<TurnRouting, String> {
         let record = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "state::get".into(),
                 payload: json!({"scope": "harness_turn", "key": session_id}),
                 action: None,
@@ -206,7 +205,7 @@ impl Composer {
         }
         let response = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::complete".into(),
                 payload,
                 action: None,

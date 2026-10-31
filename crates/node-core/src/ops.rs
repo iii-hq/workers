@@ -2,6 +2,7 @@
 //! this file is the worker's attack surface — keep it small and obvious.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -11,28 +12,42 @@ use deno_error::JsErrorBox;
 use futures::future::BoxFuture;
 use tokio::sync::mpsc;
 
-use crate::engine::{CallResult, Engine, ProxyHandler, UnregisterFn};
+use crate::engine::{
+    hook_outcome, parse_guest_observe, CallResult, Engine, GuestFunctionOptions, HookMethod,
+    ProxyHandler, UnregisterFn,
+};
 use crate::error::NodeEngineError;
 use crate::runtime::{Command, LogLine};
 
 /// Which kind of registration an `OpsState::unregisters` entry is.
 ///
-/// Function ids, trigger-type ids, and trigger ids all cross as plain
-/// strings and share ONE list — see `OpsState::unregisters` — and a function
-/// and a trigger type CAN legitimately be given the identical literal id (a
-/// tenant has no reason to know the other exists). Without the kind as part
-/// of the lookup key, `op_iii_register`'s dedup check, `op_iii_register_
-/// trigger_type`'s dedup check, and `OpsState::unregister`'s removal all
-/// match on id alone, so registering one kind under an id another kind
-/// already holds either silently no-ops (reports success, never reaches the
-/// bus) or evicts the wrong registration — and unregistering one kind can
-/// remove a live registration of a different kind entirely.
+/// Function ids, observer ids and the function ids observer hooks are set
+/// for all cross as plain strings and share ONE list — see
+/// `OpsState::unregisters` — and the kinds routinely share the identical
+/// literal id: a guest sets hooks on the very function it registers, and may
+/// name an observer after it. Without the kind as part of the lookup key,
+/// `op_iii_register`'s dedup check, `op_iii_set_observer_hooks`'s dedup
+/// check, and `OpsState::unregister`'s removal all match on id alone, so
+/// registering one kind under an id another kind already holds either
+/// silently no-ops (reports success, never reaches the bus) or evicts the
+/// wrong registration — and removing one kind can remove a live
+/// registration of a different kind entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistrationKind {
     Function,
-    Trigger,
-    TriggerType,
+    /// An observer this runtime created with `iii.observe`.
+    Observer,
+    /// The pair of engine-side observer hooks a function id carries once
+    /// the guest set `onObserverAdded` or `onObserverRemoved` on it. One
+    /// entry covers both hooks.
+    ObserverHooks,
 }
+
+/// Observer id → the id of the function it observes, for every observer an
+/// `onObserverAdded` hook of this runtime has seen and no `onObserverRemoved`
+/// hook has seen leave. The hook proxies run on the engine's thread, not the
+/// isolate's, hence the `Arc<Mutex<…>>`.
+pub type HookedObservers = Arc<Mutex<HashMap<String, String>>>;
 
 /// Per-isolate state the ops read and write. Lives in deno_core's `OpState`,
 /// which is thread-local to the isolate, so plain `RefCell` access is enough
@@ -55,41 +70,34 @@ pub struct OpsState {
     /// False between evals: lines from an interleaved handler invocation with
     /// no eval running go to worker tracing instead of a caller's response.
     pub capturing: bool,
-    /// Ids registered by the eval currently in flight, reported back as
-    /// `EvalOutcome::registered`. Kind-tagged for the same reason
-    /// `unregisters` is: a function and a trigger type may hold the identical
-    /// literal id, and a kind-blind `retain` on removal dropped BOTH entries
-    /// — an eval that registered `app::x` as both and unregistered one
-    /// reported `registered: []` while the other was still live on the bus.
+    /// Function ids registered by the eval currently in flight, reported back
+    /// as `EvalOutcome::registered`. Kind-tagged for the same reason
+    /// `unregisters` is: a kind-blind `retain` on removal once dropped every
+    /// entry sharing a literal id, so an eval that registered `app::x` and
+    /// removed something else named `app::x` reported `registered: []` while
+    /// the function was still live on the bus.
     pub registered: Vec<(RegistrationKind, String)>,
     /// Every live registration, shared with the manager so teardown can undo
-    /// them from the main thread. Functions, triggers, AND trigger types all
+    /// them from the main thread. Functions, observers AND observer hooks all
     /// live in this one list — see `MAX_REGISTRATIONS_PER_RUNTIME` — so its
     /// length is the single source of truth the cap checks against. Tagged
-    /// with `RegistrationKind` because the three kinds' ids share one string
+    /// with `RegistrationKind` because the kinds' ids share one string
     /// namespace as far as this list is concerned — see that type's doc
     /// comment.
     pub unregisters: Arc<Mutex<Vec<(RegistrationKind, String, UnregisterFn)>>>,
-    /// `op_iii_register_trigger` calls that have reserved a slot against
-    /// `MAX_REGISTRATIONS_PER_RUNTIME` but not yet pushed into `unregisters`
-    /// — it is async (`Engine::register_trigger` awaits the engine), so
-    /// without a reservation taken BEFORE that await, a tenant firing many
-    /// un-awaited `registerTrigger()` calls at once could have all of them
-    /// pass the same cap check before any of them lands, the same TOCTOU
-    /// `op_iii_call`'s `inflight_calls` already guards against. Functions and
-    /// trigger types register synchronously (no `.await` inside the
-    /// critical section that checks-and-pushes), so neither needs this.
-    pub pending_registrations: usize,
+    /// The observers `op_iii_call_observer` may call through: the ones this
+    /// runtime's own hooks were handed. See [`HookedObservers`].
+    pub hooked_observers: HookedObservers,
     /// Worker-global id ownership. Claimed before `Engine::register`, because
     /// a duplicate there aborts the process.
     pub ids: crate::ids::IdRegistry,
     /// Ownership key for `ids`.
     pub runtime_id: String,
     pub call_timeout_ms: u64,
-    /// Ceiling a guest-supplied `iii.trigger({..., timeout})` is clamped to —
+    /// Ceiling a guest-supplied `iii.call({..., timeout_ms})` is clamped to —
     /// see `RuntimeOpts::max_timeout_ms`.
     pub max_timeout_ms: u64,
-    /// Calls to `iii.trigger` currently awaiting their engine response.
+    /// Calls to `iii.call` currently awaiting their engine response.
     /// Bounds `op_iii_call`'s Rust-heap footprint — see `MAX_INFLIGHT_CALLS`.
     pub inflight_calls: usize,
     /// Weak on purpose: a strong sender here would keep the runtime's channel
@@ -129,6 +137,16 @@ impl OpsState {
     /// unregistering something inside its own namespace that doesn't exist
     /// gets the same quiet success a register-side re-registration gets,
     /// rather than a special error that would leak existence information.
+    fn unregister(&mut self, kind: RegistrationKind, fn_id: &str) {
+        if let Some(unregister) = self.take(kind, fn_id) {
+            unregister();
+        }
+    }
+
+    /// Remove one of this runtime's registrations from the books WITHOUT
+    /// running its undo, and hand the undo back. `unregister` runs it at
+    /// once; `op_iii_dispose_observer` awaits the engine's own removal
+    /// instead of the teardown path's fire-and-forget one.
     ///
     /// Also drops `fn_id` from `registered` — the current eval's reported
     /// delta, echoed back as `RunResponse.registered`. Without this, a
@@ -137,36 +155,32 @@ impl OpsState {
     /// response is often the only record the caller ever sees.
     ///
     /// Both the claim release and the `registered` trim are gated on the
-    /// bus removal ACTUALLY having found a `(kind, fn_id)` entry — a
-    /// review caught this scoped only by `fn_id` in an earlier round: a
-    /// function and a trigger type can share the identical literal id, and
-    /// `unregister(TriggerType, "app::x")` against a live FUNCTION `app::x`
-    /// found nothing to remove (correct) but still released `app::x`'s
-    /// worker-global claim (wrong) — freeing another runtime to claim it and
-    /// reach `Engine::register` on a duplicate, which panics inside an
-    /// `extern "C"` op and aborts the process (see `ids.rs`'s module doc).
+    /// removal ACTUALLY having found a `(kind, fn_id)` entry — a review
+    /// caught this scoped only by `fn_id` in an earlier round: two kinds can
+    /// share the identical literal id, and removing one kind at an id where
+    /// only another kind was live found nothing to remove (correct) but
+    /// still released the id's worker-global claim (wrong) — freeing another
+    /// runtime to claim it and reach `Engine::register` on a duplicate, which
+    /// panics inside an `extern "C"` op and aborts the process (see `ids.rs`'s
+    /// module doc).
     ///
     /// The claim release ALSO checks whether another kind still holds this
     /// exact id after this removal: `ids` tracks id ownership flatly, not
-    /// per kind, so a tenant who deliberately registered a function AND a
-    /// trigger type under the same string must not have the claim freed
-    /// out from under the one still live when the other is unregistered.
-    fn unregister(&mut self, kind: RegistrationKind, fn_id: &str) {
+    /// per kind, so a function whose hooks were just cleared must not have
+    /// its claim freed out from under it.
+    fn take(&mut self, kind: RegistrationKind, fn_id: &str) -> Option<UnregisterFn> {
         let mut registrations = self.unregisters.lock().unwrap();
-        let Some(index) = registrations
+        let index = registrations
             .iter()
-            .position(|(k, id, _)| *k == kind && id == fn_id)
-        else {
-            return;
-        };
+            .position(|(k, id, _)| *k == kind && id == fn_id)?;
         let (_, _, unregister) = registrations.swap_remove(index);
         let still_claimed_by_another_kind = registrations.iter().any(|(_, id, _)| id == fn_id);
         drop(registrations);
-        unregister();
         if !still_claimed_by_another_kind {
             self.ids.release_ids(&[fn_id.to_string()], &self.runtime_id);
         }
         self.registered.retain(|(k, id)| *k != kind || id != fn_id);
+        Some(unregister)
     }
 }
 
@@ -237,29 +251,38 @@ fn op_iii_log(state: &mut OpState, #[string] level: String, #[string] message: S
 /// in-flight copies of a ~976 KiB amplifying payload (`[1,1,1,…]`) measured
 /// at 1098 MiB RSS, roughly 34x the figure above. Capping the parsed value is
 /// a design change, deliberately not attempted here.
+///
+/// `op_iii_call_observer` shares the same counter and the same three caps:
+/// its first argument is an observer id instead of a function id.
 const MAX_INFLIGHT_CALLS: usize = 32;
 const MAX_CALL_PAYLOAD_BYTES: usize = 1024 * 1024;
 /// `#[string] action` is byte-copied to the Rust heap at argument-dispatch
 /// time — before this function's body even runs, and independently of
 /// `MAX_CALL_PAYLOAD_BYTES` two lines up — so an uncapped `action` is the
 /// exact same heap-pinning hazard `payload_json` is capped against, just
-/// easy to miss because every valid action is tiny (`"void"`, or a small
-/// JSON object like `{"type":"enqueue","queue":"..."}`). Generous relative
-/// to any real action; nowhere near `MAX_CALL_PAYLOAD_BYTES`.
+/// easy to miss because every valid action is tiny (`{"type":"void"}`, or
+/// `{"type":"enqueue","queue":"..."}`). Generous relative to any real
+/// action; nowhere near `MAX_CALL_PAYLOAD_BYTES`.
 const MAX_ACTION_BYTES: usize = 512;
+
+/// What a call names: a function, or an observer to call through.
+enum CallTarget {
+    Function(String),
+    Observer(String),
+}
 
 /// Invoke any engine function. Payload and result cross as JSON text so the
 /// isolate boundary has exactly one representation to reason about.
 ///
-/// `action` and `timeout_ms_arg` carry `iii.trigger`'s optional `action` and
-/// `timeout` fields across the same one-representation boundary: an empty
+/// `action` and `timeout_ms_arg` carry `iii.call`'s optional `action` and
+/// `timeout_ms` fields across the same one-representation boundary: an empty
 /// string means "no action" (plain request/response) and `0` means "use the
 /// configured default timeout" — JS `undefined` is not a value `#[string]`/
 /// `#[number]` args can carry, so the prelude substitutes these sentinels
-/// before the op ever sees the call. `action` is capped at
-/// `MAX_ACTION_BYTES`; a non-zero `timeout_ms_arg` is clamped to
-/// `max_timeout_ms`, the same ceiling `NodeEngineConfig::clamp_timeout`
-/// applies to the RPC-level eval budget.
+/// before the op ever sees the call. `action` is the JSON text of the
+/// guest's action object, capped at `MAX_ACTION_BYTES`; a non-zero
+/// `timeout_ms_arg` is clamped to `max_timeout_ms`, the same ceiling
+/// `NodeEngineConfig::clamp_timeout` applies to the RPC-level eval budget.
 // Plain `#[op2]` on an `async fn` IS the eager-async form in deno_ops 0.285 —
 // the same shape deno_core's own `op_add_async` uses. Do not write
 // `#[op2(async)]`: the bare flag requires parentheses in this version
@@ -275,7 +298,7 @@ async fn op_iii_call(
     #[number] timeout_ms_arg: u64,
 ) -> Result<String, JsErrorBox> {
     // Same hazard the log buffer had: everything below lives on the RUST heap,
-    // outside V8's `heap_limits`. `trigger` is async, so tenant code can
+    // outside V8's `heap_limits`. `call` is async, so tenant code can
     // fire it in a loop without awaiting, and each argument copy is made
     // eagerly — deno_core byte-copies every `#[string]` into an owned Rust
     // `String` at dispatch, before this body runs at all — and pinned for up
@@ -283,15 +306,82 @@ async fn op_iii_call(
     // isolate's memory limit through a sanctioned op: one eval passing an
     // 8 MiB `function_id` 32 times took a runtime from 36 MiB to 316 MiB RSS
     // with nothing refused, because only `payload_json` and `action` were
-    // checked. All three checks run BEFORE `inflight_calls` is touched below,
-    // so none of them needs its own `release_inflight` call — there is
-    // nothing yet to release.
+    // checked. All three checks run BEFORE `inflight_calls` is touched in
+    // `dispatch_call`, so none of them needs its own `release_inflight` call
+    // — there is nothing yet to release.
     if fn_id.len() > MAX_FUNCTION_ID_BYTES {
         return Err(JsErrorBox::type_error(format!(
             "function id is {} bytes; the limit is {MAX_FUNCTION_ID_BYTES}",
             fn_id.len()
         )));
     }
+    dispatch_call(
+        state,
+        CallTarget::Function(fn_id),
+        payload_json,
+        action,
+        timeout_ms_arg,
+    )
+    .await
+}
+
+/// Call through an observer: the engine runs the observer's own target with
+/// the payload. `iii.call({ observer, payload })`.
+///
+/// Only observers THIS runtime's hooks were handed may be called through
+/// (`OpsState::hooked_observers`). Every guest shares the worker's one
+/// connection, and the engine checks only that the CONNECTION hosts the
+/// observer's function — so without this, one tenant holding another's
+/// observer id (a forged `{ id }` is all `iii.call` reads) could run that
+/// tenant's targets with a payload of its choosing. "Not yours" and "not
+/// there" are one refusal, for the same reason `op_iii_unregister`'s are.
+#[op2]
+#[string]
+async fn op_iii_call_observer(
+    state: Rc<RefCell<OpState>>,
+    #[string] observer_id: String,
+    #[string] payload_json: String,
+    #[string] action: String,
+    #[number] timeout_ms_arg: u64,
+) -> Result<String, JsErrorBox> {
+    if observer_id.len() > MAX_FUNCTION_ID_BYTES {
+        return Err(JsErrorBox::type_error(format!(
+            "observer id is {} bytes; the limit is {MAX_FUNCTION_ID_BYTES}",
+            observer_id.len()
+        )));
+    }
+    let hooked = {
+        let mut borrowed = state.borrow_mut();
+        let ops = borrowed.borrow_mut::<OpsState>();
+        let hooked_observers = ops.hooked_observers.clone();
+        let known = hooked_observers.lock().unwrap().contains_key(&observer_id);
+        known
+    };
+    if !hooked {
+        return Err(JsErrorBox::type_error(format!(
+            "observer {observer_id:?} is not one this runtime's onObserverAdded hooks were \
+             given; a runtime can only call through observers of its own functions"
+        )));
+    }
+    dispatch_call(
+        state,
+        CallTarget::Observer(observer_id),
+        payload_json,
+        action,
+        timeout_ms_arg,
+    )
+    .await
+}
+
+/// The shared body of `op_iii_call` and `op_iii_call_observer`, once each
+/// has capped and checked its own first argument.
+async fn dispatch_call(
+    state: Rc<RefCell<OpState>>,
+    target: CallTarget,
+    payload_json: String,
+    action: String,
+    timeout_ms_arg: u64,
+) -> Result<String, JsErrorBox> {
     if payload_json.len() > MAX_CALL_PAYLOAD_BYTES {
         return Err(JsErrorBox::type_error(format!(
             "payload is {} bytes; the limit is {MAX_CALL_PAYLOAD_BYTES}",
@@ -312,7 +402,7 @@ async fn op_iii_call(
         let ops = borrowed.borrow_mut::<OpsState>();
         if ops.inflight_calls >= MAX_INFLIGHT_CALLS {
             return Err(JsErrorBox::generic(format!(
-                "too many concurrent iii.trigger calls (limit \
+                "too many concurrent iii.call calls (limit \
                  {MAX_INFLIGHT_CALLS}); await earlier calls before making more"
             )));
         }
@@ -340,7 +430,14 @@ async fn op_iii_call(
     // The text copy is dead once parsed; free it before parking on the await.
     drop(payload_json);
 
-    let result = engine.call(fn_id, payload, timeout_ms, action).await;
+    let result = match target {
+        CallTarget::Function(fn_id) => engine.call(fn_id, payload, timeout_ms, action).await,
+        CallTarget::Observer(observer_id) => {
+            engine
+                .call_observer(observer_id, payload, timeout_ms, action)
+                .await
+        }
+    };
     release_inflight(&state);
 
     match result {
@@ -372,10 +469,6 @@ pub const MAX_REGISTRATIONS_PER_RUNTIME: usize = 256;
 pub const MAX_FUNCTION_ID_BYTES: usize = 512;
 pub const MAX_DESCRIPTION_BYTES: usize = 4 * 1024;
 
-/// The refusal every registration kind — function, trigger, trigger type —
-/// gives once this runtime's shared `MAX_REGISTRATIONS_PER_RUNTIME` budget is
-/// exhausted. One function so the three call sites cannot drift into three
-/// different wordings for what is, from a tenant's perspective, one cap.
 /// Decode one guest-supplied format argument: "" is "not supplied",
 /// anything else must parse as JSON and pass the shared wire rule
 /// (`wire::register::validate_format`). Raw length is checked BEFORE parsing
@@ -399,10 +492,14 @@ fn parse_format(field: &'static str, raw: &str) -> Result<Option<serde_json::Val
     Ok(Some(value))
 }
 
+/// The refusal every registration kind — function, observer, observer
+/// hooks — gives once this runtime's shared `MAX_REGISTRATIONS_PER_RUNTIME`
+/// budget is exhausted. One function so the call sites cannot drift into
+/// different wordings for what is, from a tenant's perspective, one cap.
 fn registration_cap_exceeded() -> JsErrorBox {
     JsErrorBox::generic(format!(
         "this runtime already holds {MAX_REGISTRATIONS_PER_RUNTIME} registrations \
-         (functions, triggers, and trigger types share one budget); reuse an id or \
+         (functions, observers, and observer hooks share one budget); reuse an id or \
          tear the runtime down"
     ))
 }
@@ -432,6 +529,10 @@ fn require_own_namespace(namespace: &str, fn_id: String) -> Result<String, JsErr
 /// The proxy runs on the engine's thread: it pushes an `Invoke` into this
 /// isolate's command channel and awaits the reply, so JS never runs anywhere
 /// but its own thread.
+///
+/// `args_format` is a third format argument with the same "" sentinel and
+/// the same validation as the other two; `private` is the guest's
+/// `options.private`, `false` when omitted.
 #[op2(fast)]
 fn op_iii_register(
     state: &mut OpState,
@@ -439,6 +540,8 @@ fn op_iii_register(
     #[string] description: String,
     #[string] request_format: String,
     #[string] response_format: String,
+    #[string] args_format: String,
+    private: bool,
 ) -> Result<(), JsErrorBox> {
     let ops = state.borrow_mut::<OpsState>();
 
@@ -461,6 +564,10 @@ fn op_iii_register(
 
     let request_format = parse_format("request_format", &request_format)?;
     let response_format = parse_format("response_format", &response_format)?;
+    let options = GuestFunctionOptions {
+        args_format: parse_format("args_format", &args_format)?,
+        private,
+    };
     // Empty means "not supplied": the prelude sends "" when the caller omits
     // the argument, and `Engine::register` substitutes its default.
     let description = (!description.is_empty()).then_some(description);
@@ -528,39 +635,39 @@ fn op_iii_register(
         // no bus write. Checked before the cap so a re-registration never
         // trips it.
         //
-        // The exception is a NEW description or format. Both are published metadata —
-        // `engine::functions::info` is where the next caller reads what this
-        // function does — and the SDK only carries it at registration time, so
-        // keeping the existing registration would silently discard it: the
-        // call reports success and the catalog still shows the old text. Drop
-        // the old registration and make a new one carrying the description.
-        // Safe to do here: the claim is already ours, so no other runtime can
-        // take the id in the gap, and `destroy` cannot interleave because it
-        // holds this same guard.
-        // Scoped to `RegistrationKind::Function` alone, and no longer
-        // additionally gated on `ops.registered.contains(&fn_id)` — that
-        // flat, kind-blind list is what let a same-eval `registerTriggerType
-        // ({id: 'test::x'}, …); registerFunction('test::x', …)` treat the
-        // function as "already registered" (it was not: `held` is `None`),
-        // silently skip the bus write, and still report success and
-        // `registered: ["test::x"]`. `held` (kind-tagged, checked against
-        // `unregisters`, which is NOT eval-scoped) is the reliable source of
-        // truth for "is a FUNCTION already registered under this id" in
-        // every case `ops.registered.contains` was meant to catch.
+        // The exception is NEW metadata: a description, a format, an
+        // `args_format` or `private`. All of it is published — `engine::
+        // functions::info` is where the next caller reads what this function
+        // does, and the engine enforces `args_format` and `private` — and the
+        // SDK only carries it at registration time, so keeping the existing
+        // registration would silently discard it: the call reports success
+        // and the engine still holds the old values. Drop the old
+        // registration and make a new one carrying them. Safe to do here: the
+        // claim is already ours, so no other runtime can take the id in the
+        // gap, and `destroy` cannot interleave because it holds this same
+        // guard.
         //
-        // The two lists are NOT in lockstep and this must not be rewritten to
-        // assume they are: `registered` is the current EVAL's delta (cleared
-        // at the start of every eval, see `runtime.rs`) while `unregisters`
-        // is every live registration for the life of the runtime, and the
-        // description-swap branch just below re-registers without pushing to
-        // `registered` at all. They agree only on the one thing
+        // Scoped to `RegistrationKind::Function` alone, and not additionally
+        // gated on `ops.registered` — that list is the current EVAL's delta
+        // (cleared at the start of every eval, see `runtime.rs`) while
+        // `unregisters` is every live registration for the life of the
+        // runtime, and a kind-blind lookup there once treated a function as
+        // "already registered" because ANOTHER kind held the same literal id,
+        // silently skipping the bus write while still reporting success.
+        // `held` (kind-tagged, checked against `unregisters`) is the reliable
+        // source of truth for "is a FUNCTION already registered under this
+        // id". The two lists agree only on the one thing
         // `OpsState::unregister` keeps aligned: a removal drops the matching
         // `(kind, id)` from both.
         let held = registrations
             .iter()
             .position(|(k, id, _)| *k == RegistrationKind::Function && *id == fn_id);
         if let Some(index) = held {
-            if description.is_none() && request_format.is_none() && response_format.is_none() {
+            if description.is_none()
+                && request_format.is_none()
+                && response_format.is_none()
+                && options == GuestFunctionOptions::default()
+            {
                 return Ok(());
             }
             let (_, _, unregister) = registrations.swap_remove(index);
@@ -574,16 +681,15 @@ fn op_iii_register(
                 description,
                 request_format,
                 response_format,
+                options,
                 handler,
             );
             registrations.push((RegistrationKind::Function, fn_id, fresh));
             return Ok(());
         }
 
-        // `pending_registrations` counts `op_iii_register_trigger` calls
-        // reserved but not yet landed — see its doc comment on `OpsState`.
-        // Functions share the one budget with triggers and trigger types.
-        if registrations.len() + ops.pending_registrations >= MAX_REGISTRATIONS_PER_RUNTIME {
+        // Functions share the one budget with observers and observer hooks.
+        if registrations.len() >= MAX_REGISTRATIONS_PER_RUNTIME {
             return Err(registration_cap_exceeded());
         }
 
@@ -601,6 +707,7 @@ fn op_iii_register(
             description,
             request_format,
             response_format,
+            options,
             handler,
         );
         registrations.push((RegistrationKind::Function, fn_id.clone(), unregister));
@@ -629,9 +736,8 @@ fn op_iii_register(
 ///
 /// `kind` is which registration list entry this id refers to — see
 /// `RegistrationKind`'s doc comment for why a bare id is not enough:
-/// `op_iii_unregister` and `op_iii_unregister_trigger_type` both route
-/// through this, and a function and a trigger type can share the identical
-/// literal id.
+/// `op_iii_unregister` and `op_iii_clear_observer_hooks` both route through
+/// this, and a function and its hooks share the identical literal id.
 fn unregister_checked(
     ops: &mut OpsState,
     kind: RegistrationKind,
@@ -651,203 +757,81 @@ fn op_iii_unregister(state: &mut OpState, #[string] fn_id: String) -> Result<(),
     )
 }
 
-/// Register a trigger on the caller's behalf. Async because
-/// `Engine::register_trigger` is: the trigger id only exists once the engine
-/// call returns, unlike a function's id (chosen by the caller up front, so
-/// `op_iii_register` never has to await anything to know what it is).
+/// The engine-side half of a guest's observer hooks: one proxy, set as both
+/// the added and the removed hook of `fn_id`.
 ///
-/// Counts against `MAX_REGISTRATIONS_PER_RUNTIME` alongside functions and
-/// trigger types via `pending_registrations` — see that field's doc comment
-/// for why the slot is reserved BEFORE the `.await`, not just checked.
-#[op2]
-#[string]
-async fn op_iii_register_trigger(
-    state: Rc<RefCell<OpState>>,
-    #[string] config_json: String,
-) -> Result<String, JsErrorBox> {
-    // Same hazard `MAX_CALL_PAYLOAD_BYTES`/`MAX_ACTION_BYTES` guard in
-    // `op_iii_call`: deno_core byte-copies a `#[string]` argument to the Rust
-    // heap at dispatch time, before this body runs at all. Checked first and
-    // before any counter is touched, so no release is needed on this path.
-    if config_json.len() > MAX_CALL_PAYLOAD_BYTES {
-        return Err(JsErrorBox::type_error(format!(
-            "trigger config is {} bytes; the limit is {MAX_CALL_PAYLOAD_BYTES}",
-            config_json.len()
-        )));
-    }
-
-    let config: serde_json::Value = match serde_json::from_str(&config_json) {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(JsErrorBox::type_error(format!(
-                "trigger config is not JSON: {e}"
-            )))
-        }
-    };
-    // The text copy is dead once parsed; free it before parking on the await.
-    drop(config_json);
-
-    let engine = {
-        let mut borrowed = state.borrow_mut();
-        let ops = borrowed.borrow_mut::<OpsState>();
-        let held = ops.unregisters.lock().unwrap().len();
-        if held + ops.pending_registrations >= MAX_REGISTRATIONS_PER_RUNTIME {
-            return Err(registration_cap_exceeded());
-        }
-        // Reserve BEFORE the await below: without this, a tenant firing many
-        // un-awaited `registerTrigger()` calls at once could have all of
-        // them observe the same "under the cap" snapshot before any of them
-        // pushes into `unregisters` — the exact TOCTOU `inflight_calls`
-        // already guards against in `op_iii_call`.
-        ops.pending_registrations += 1;
-        ops.engine.clone()
-    };
-
-    let result = engine.register_trigger(config).await;
-
-    let mut borrowed = state.borrow_mut();
-    let ops = borrowed.borrow_mut::<OpsState>();
-    ops.pending_registrations -= 1;
-
-    let trigger_id = result.map_err(JsErrorBox::generic)?;
-
-    let unregister_engine = ops.engine.clone();
-    let unregister_id = trigger_id.clone();
-    let unregister: UnregisterFn = Box::new(move || {
-        // `Engine::unregister_trigger` is async only to satisfy the trait —
-        // both implementations (`IIIEngine`, `FakeEngine`) resolve on their
-        // very first poll, with no real suspension inside (a lock and a map
-        // removal, nothing awaited) — so driving it here with a bare
-        // executor cannot block whichever thread calls this closure: the
-        // isolate thread (`op_iii_unregister_trigger`) or the manager's
-        // teardown drain (`RuntimeManager::destroy`), neither of which is
-        // otherwise inside an async fn.
-        let _ = futures::executor::block_on(
-            unregister_engine.unregister_trigger(unregister_id.clone()),
-        );
-    });
-    ops.unregisters.lock().unwrap().push((
-        RegistrationKind::Trigger,
-        trigger_id.clone(),
-        unregister,
-    ));
-
-    Ok(trigger_id)
-}
-
-/// Remove a trigger this runtime registered. Trigger ids are UUIDs the
-/// engine mints (`Engine::register_trigger`), never tenant-chosen — unlike
-/// `op_iii_unregister`, there is no namespace to check: ownership is
-/// entirely "does THIS runtime's own `unregisters` list contain it", which
-/// is already all `OpsState::unregister` looks at.
-#[op2(fast)]
-fn op_iii_unregister_trigger(
-    state: &mut OpState,
-    #[string] trigger_id: String,
-) -> Result<(), JsErrorBox> {
-    if trigger_id.len() > MAX_FUNCTION_ID_BYTES {
-        return Err(JsErrorBox::type_error(format!(
-            "trigger id is {} bytes; the limit is {MAX_FUNCTION_ID_BYTES}",
-            trigger_id.len()
-        )));
-    }
-    state
-        .borrow_mut::<OpsState>()
-        .unregister(RegistrationKind::Trigger, &trigger_id);
-    Ok(())
-}
-
-/// Publish a trigger TYPE. Mirrors `op_iii_register` closely — same
-/// namespace check, same shared cap, same claim-before-bus-write ordering —
-/// because a trigger type's id lives in the SAME id space a function's does
-/// (`require_own_namespace`), and `IIIClient::register_trigger_type` merely
-/// overwrites a duplicate id rather than panicking the way
-/// `register_function` does, which is proof against a same-process abort but
-/// not against a SECOND runtime silently clobbering the first's handler.
-///
-/// Unlike `op_iii_register`, a re-registration under an id THIS runtime
-/// already holds is always a no-op rather than swapping in a new
-/// description: the prelude's `registerTriggerType` updates the JS-side
-/// `triggerTypes` map unconditionally on every call, and the proxy built
-/// below looks that map up FRESH on every invocation (never a captured
-/// function reference — see `prelude.js`'s `invoke`), so the existing bus
-/// registration keeps routing to whatever handler is current without a
-/// second `Engine::register_trigger_type` call.
-/// ponytail: this drops the "swap in a new description on re-registration"
-/// refinement `op_iii_register` has; add it if a trigger type's published
-/// description ever needs to change after its first registration.
-#[op2(fast)]
-fn op_iii_register_trigger_type(
-    state: &mut OpState,
-    #[string] type_id: String,
-    #[string] description: String,
-) -> Result<(), JsErrorBox> {
-    let ops = state.borrow_mut::<OpsState>();
-
-    if type_id.len() > MAX_FUNCTION_ID_BYTES {
-        return Err(JsErrorBox::type_error(format!(
-            "trigger type id is {} bytes; the limit is {MAX_FUNCTION_ID_BYTES}",
-            type_id.len()
-        )));
-    }
-    if description.len() > MAX_DESCRIPTION_BYTES {
-        return Err(JsErrorBox::type_error(format!(
-            "description is {} bytes; the limit is {MAX_DESCRIPTION_BYTES}",
-            description.len()
-        )));
-    }
-
-    let type_id = require_own_namespace(&ops.namespace, type_id)?;
-
+/// The engine calls it with `{ method, observer }`
+/// (`engine::observer_hook_payload`). `method` picks which guest hook
+/// `__iii.invoke` runs and is stripped; `observer` is forwarded as that
+/// hook's whole argument. A function whose guest set only one of the two
+/// hooks still gets both proxies, so this runtime's books
+/// (`hooked_observers`) see every observer arrive AND leave; the prelude
+/// answers a callback with no guest hook behind it the way iii does by
+/// default — accept, nothing to tear down.
+fn hook_proxy(ops: &OpsState, fn_id: String) -> ProxyHandler {
     let weak_tx = ops.command_tx.clone();
     let last_activity = ops.last_activity.clone();
+    let hooked = ops.hooked_observers.clone();
     let timeout = std::time::Duration::from_millis(ops.invoke_timeout_ms);
-    let proxy_type_id = type_id.clone();
-    let handler: ProxyHandler = Arc::new(move |payload: serde_json::Value| {
+    Arc::new(move |payload: serde_json::Value| {
         let weak_tx = weak_tx.clone();
         let last_activity = last_activity.clone();
-        let type_id = proxy_type_id.clone();
+        let hooked = hooked.clone();
+        let fn_id = fn_id.clone();
         Box::pin(async move {
-            // `payload` is the ENGINE's own wrapper — `{method, id,
-            // function_id, config, metadata}` on the live path
-            // (`TriggerHandlerAdapter::payload` / `TriggerConfig`), or a
-            // subset of those keys from a test double. `method` selects
-            // which of the two guest methods `__iii.invoke` calls and is
-            // stripped out; every OTHER key is forwarded verbatim as that
-            // method's entire argument — `id` (which trigger instance) and
-            // `function_id` (which function to invoke) are exactly what a
-            // real `TriggerHandler` implementation needs and cannot recover
-            // from `config` alone (the tenant's own opaque blob). An earlier
-            // version of this forwarded `config` alone, verified against
-            // `FakeEngine::fire_trigger_type`'s narrower `{method, config}`
-            // shape — that made the test evidence about the fake, not the
-            // live wrapper `TriggerHandlerAdapter` actually sends.
             let Some(obj) = payload.as_object() else {
-                return Err("trigger-type callback payload must be an object".to_string());
+                return Err("observer hook payload must be an object".to_string());
             };
-            let Some(method) = obj.get("method").and_then(serde_json::Value::as_str) else {
-                return Err("trigger-type callback payload missing method".to_string());
+            let Some(method) = obj
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .and_then(HookMethod::parse)
+            else {
+                return Err("observer hook payload names no hook method".to_string());
             };
-            let method = method.to_string();
-            let mut forwarded = obj.clone();
-            forwarded.remove("method");
-            let forwarded = serde_json::Value::Object(forwarded);
+            let Some(observer) = obj.get("observer").filter(|o| o.is_object()).cloned() else {
+                return Err("observer hook payload carries no observer".to_string());
+            };
+            let Some(observer_id) = observer
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+            else {
+                return Err("observer hook payload's observer has no id".to_string());
+            };
+
+            // Book the observer BEFORE the guest's added hook runs, so the
+            // hook itself may call through it; unbook it before the removed
+            // hook runs, since a removed observer is no longer callable.
+            match method {
+                HookMethod::ObserverAdded => {
+                    hooked
+                        .lock()
+                        .unwrap()
+                        .insert(observer_id.clone(), fn_id.clone());
+                }
+                HookMethod::ObserverRemoved => {
+                    hooked.lock().unwrap().remove(&observer_id);
+                }
+            }
 
             let Some(tx) = weak_tx.upgrade() else {
-                return Err(NodeEngineError::RuntimeGone(type_id).to_string());
+                hooked.lock().unwrap().remove(&observer_id);
+                return Err(NodeEngineError::RuntimeGone(fn_id).to_string());
             };
             let (reply, rx) = tokio::sync::oneshot::channel();
             if tx
                 .send(Command::Invoke {
-                    fn_id: type_id.clone(),
-                    payload: forwarded,
+                    fn_id: fn_id.clone(),
+                    payload: observer,
                     timeout,
                     reply,
-                    method: Some(method),
+                    method: Some(method.as_str().to_string()),
                 })
                 .is_err()
             {
-                return Err(NodeEngineError::RuntimeGone(type_id).to_string());
+                hooked.lock().unwrap().remove(&observer_id);
+                return Err(NodeEngineError::RuntimeGone(fn_id).to_string());
             }
             // Same rationale as `op_iii_register`'s proxy: this is the only
             // place an INVOKE dispatched straight from the bus touches
@@ -855,76 +839,262 @@ fn op_iii_register_trigger_type(
             // `idle_ttl_secs`, so bumping at send is enough to cover the
             // whole call.
             *last_activity.lock().unwrap() = Instant::now();
-            match rx.await {
+            let result = match rx.await {
                 Ok(result) => result.map_err(|e| e.to_string()),
-                Err(_) => Err(NodeEngineError::RuntimeGone(type_id).to_string()),
+                Err(_) => Err(NodeEngineError::RuntimeGone(fn_id).to_string()),
+            };
+            // A rejected observer never becomes active and never gets a
+            // removed callback, so it leaves the books here.
+            if method == HookMethod::ObserverAdded && hook_outcome(result.clone()).is_err() {
+                hooked.lock().unwrap().remove(&observer_id);
             }
+            result
         }) as BoxFuture<'static, CallResult>
-    });
+    })
+}
 
-    {
-        let mut registrations = ops.unregisters.lock().unwrap();
+/// Give `fn_id` observer hooks: `iii.onObserverAdded(fn_id, hook)` /
+/// `iii.onObserverRemoved(fn_id, hook)`, the first time either is set for
+/// that id.
+///
+/// Mirrors `op_iii_register` closely — same namespace check, same shared
+/// cap, same claim-before-bus-write ordering — because hooks decide who may
+/// observe a function and hand out its observers: a second runtime setting
+/// hooks on an id another runtime holds could reject every observer of that
+/// runtime's function, or collect them and call through them. The claim
+/// makes hooks and the function they belong to one runtime's.
+///
+/// Later calls for the same id are no-ops here: the prelude swaps the JS
+/// hook in its own map, and the proxy built below looks that map up FRESH
+/// on every callback (never a captured function reference — see
+/// `prelude.js`'s `invoke`), so the existing engine hooks keep routing to
+/// whichever guest hook is current without a second engine write.
+#[op2(fast)]
+fn op_iii_set_observer_hooks(
+    state: &mut OpState,
+    #[string] fn_id: String,
+) -> Result<(), JsErrorBox> {
+    let ops = state.borrow_mut::<OpsState>();
 
-        if registrations
-            .iter()
-            .any(|(k, id, _)| *k == RegistrationKind::TriggerType && *id == type_id)
-        {
-            return Ok(());
-        }
-
-        if registrations.len() + ops.pending_registrations >= MAX_REGISTRATIONS_PER_RUNTIME {
-            return Err(registration_cap_exceeded());
-        }
-
-        // Claim before touching the bus — same reasoning as `op_iii_register`:
-        // nothing here proves `IIIClient::register_trigger_type` cannot be
-        // given the same duplicate-id guard treatment later, and claiming
-        // costs nothing when it already isn't needed for a crash.
-        if !ops.ids.claim(&type_id, &ops.runtime_id) {
-            return Err(JsErrorBox::generic(
-                NodeEngineError::IdTaken(type_id).message(),
-            ));
-        }
-
-        let description = (!description.is_empty()).then_some(description);
-        let unregister = ops
-            .engine
-            .register_trigger_type(type_id.clone(), description, handler);
-        registrations.push((RegistrationKind::TriggerType, type_id.clone(), unregister));
+    if fn_id.len() > MAX_FUNCTION_ID_BYTES {
+        return Err(JsErrorBox::type_error(format!(
+            "function id is {} bytes; the limit is {MAX_FUNCTION_ID_BYTES}",
+            fn_id.len()
+        )));
     }
-    // Echoed back as `RunResponse.registered`/`EvalOutcome.registered` — the
-    // same delta functions already report. With one-shot `run` the default,
-    // this is often the only record a caller gets of what its eval
-    // published; omitting trigger types here would silently under-report it.
-    ops.registered
-        .push((RegistrationKind::TriggerType, type_id));
+
+    let fn_id = require_own_namespace(&ops.namespace, fn_id)?;
+    let handler = hook_proxy(ops, fn_id.clone());
+
+    let mut registrations = ops.unregisters.lock().unwrap();
+
+    if registrations
+        .iter()
+        .any(|(k, id, _)| *k == RegistrationKind::ObserverHooks && *id == fn_id)
+    {
+        return Ok(());
+    }
+
+    if registrations.len() >= MAX_REGISTRATIONS_PER_RUNTIME {
+        return Err(registration_cap_exceeded());
+    }
+
+    if !ops.ids.claim(&fn_id, &ops.runtime_id) {
+        return Err(JsErrorBox::generic(
+            NodeEngineError::IdTaken(fn_id).message(),
+        ));
+    }
+
+    ops.engine
+        .on_observer_added(fn_id.clone(), Some(handler.clone()));
+    ops.engine.on_observer_removed(fn_id.clone(), Some(handler));
+    let engine = ops.engine.clone();
+    let hooked = ops.hooked_observers.clone();
+    let hooks_id = fn_id.clone();
+    let unregister: UnregisterFn = Box::new(move || {
+        engine.on_observer_added(hooks_id.clone(), None);
+        engine.on_observer_removed(hooks_id.clone(), None);
+        // With the hooks gone no removed callback will arrive for these, so
+        // they leave the books now.
+        hooked.lock().unwrap().retain(|_, f| *f != hooks_id);
+    });
+    registrations.push((RegistrationKind::ObserverHooks, fn_id, unregister));
+    // Not echoed in `registered`: that delta reports functions, and hooks
+    // publish nothing a caller could call.
     Ok(())
 }
 
-/// Remove a trigger type this runtime registered. `type_id` is tenant-chosen
-/// (`iii.unregisterTriggerType` takes it directly, not from a closure the
-/// way a `registerFunction`/`registerTriggerType` ref's own `unregister()`
-/// does), so — unlike `op_iii_unregister_trigger` — the namespace check here
-/// is load-bearing, not merely defense-in-depth: without it a tenant could
-/// name another namespace's id and learn (via the refusal shape) whether it
-/// exists, the exact thing `require_own_namespace`'s shared refusal exists to
-/// prevent for functions.
+/// Remove `fn_id`'s observer hooks: the prelude calls this once the guest
+/// has set both of them back to `null`. Namespace-checked like
+/// `op_iii_unregister`, since `fn_id` is tenant-chosen.
 #[op2(fast)]
-fn op_iii_unregister_trigger_type(
+fn op_iii_clear_observer_hooks(
     state: &mut OpState,
-    #[string] type_id: String,
+    #[string] fn_id: String,
 ) -> Result<(), JsErrorBox> {
-    if type_id.len() > MAX_FUNCTION_ID_BYTES {
+    if fn_id.len() > MAX_FUNCTION_ID_BYTES {
         return Err(JsErrorBox::type_error(format!(
-            "trigger type id is {} bytes; the limit is {MAX_FUNCTION_ID_BYTES}",
-            type_id.len()
+            "function id is {} bytes; the limit is {MAX_FUNCTION_ID_BYTES}",
+            fn_id.len()
         )));
     }
     unregister_checked(
         state.borrow_mut::<OpsState>(),
-        RegistrationKind::TriggerType,
-        type_id,
+        RegistrationKind::ObserverHooks,
+        fn_id,
     )
+}
+
+/// Create an observer on the caller's behalf: `iii.observe(source, target,
+/// options?)`. Resolves to the observer's id.
+///
+/// The id is settled HERE, before the engine sees the request. A guest that
+/// names its observer (`options.id`) names it inside its own namespace, the
+/// same rule as a function id, and the id is claimed in the worker-global
+/// registry: every guest shares the worker's one connection, so an observer
+/// id another tenant chose would otherwise address — and replace — that
+/// tenant's observer. Without `options.id`, a fresh UUID is minted.
+///
+/// Knowing the id up front is also what lets the registration land in
+/// `unregisters` in the same critical section as the cap check, BEFORE the
+/// `.await`: a tenant firing many un-awaited `observe()` calls cannot have
+/// them all pass one "under the cap" snapshot, and a teardown that drains
+/// the runtime mid-await disposes the observer like any other.
+#[op2]
+#[string]
+async fn op_iii_observe(
+    state: Rc<RefCell<OpState>>,
+    #[string] input_json: String,
+) -> Result<String, JsErrorBox> {
+    // Same hazard `MAX_CALL_PAYLOAD_BYTES`/`MAX_ACTION_BYTES` guard in
+    // `op_iii_call`: deno_core byte-copies a `#[string]` argument to the Rust
+    // heap at dispatch time, before this body runs at all.
+    if input_json.len() > MAX_CALL_PAYLOAD_BYTES {
+        return Err(JsErrorBox::type_error(format!(
+            "observe request is {} bytes; the limit is {MAX_CALL_PAYLOAD_BYTES}",
+            input_json.len()
+        )));
+    }
+    let mut input: serde_json::Value = serde_json::from_str(&input_json)
+        .map_err(|e| JsErrorBox::type_error(format!("observe request is not JSON: {e}")))?;
+    // The text copy is dead once parsed; free it before parking on the await.
+    drop(input_json);
+    let parsed = parse_guest_observe(input.clone()).map_err(JsErrorBox::type_error)?;
+
+    let (engine, observer_id) = {
+        let mut borrowed = state.borrow_mut();
+        let ops = borrowed.borrow_mut::<OpsState>();
+        let observer_id = match parsed.options.id {
+            Some(id) => {
+                if id.len() > MAX_FUNCTION_ID_BYTES {
+                    return Err(JsErrorBox::type_error(format!(
+                        "observer id is {} bytes; the limit is {MAX_FUNCTION_ID_BYTES}",
+                        id.len()
+                    )));
+                }
+                require_own_namespace(&ops.namespace, id)?
+            }
+            None => uuid::Uuid::new_v4().to_string(),
+        };
+
+        let mut registrations = ops.unregisters.lock().unwrap();
+        if registrations
+            .iter()
+            .any(|(k, id, _)| *k == RegistrationKind::Observer && *id == observer_id)
+        {
+            return Err(JsErrorBox::type_error(format!(
+                "observer {observer_id:?} already exists in this runtime; dispose it before \
+                 observing again under the same id"
+            )));
+        }
+        if registrations.len() >= MAX_REGISTRATIONS_PER_RUNTIME {
+            return Err(registration_cap_exceeded());
+        }
+        if !ops.ids.claim(&observer_id, &ops.runtime_id) {
+            return Err(JsErrorBox::generic(
+                NodeEngineError::IdTaken(observer_id).message(),
+            ));
+        }
+
+        let dispose_engine = ops.engine.clone();
+        let dispose_id = observer_id.clone();
+        let unregister: UnregisterFn = Box::new(move || {
+            // Teardown runs this from the manager's thread, which is not
+            // inside an async fn, and the engine's dispose waits on a reply
+            // from the bus. Hand it to the runtime this is called on rather
+            // than blocking teardown on the network.
+            let dispose = dispose_engine.dispose_observer(dispose_id.clone());
+            let id = dispose_id.clone();
+            match tokio::runtime::Handle::try_current() {
+                Ok(rt) => {
+                    rt.spawn(async move {
+                        if let Err(e) = dispose.await {
+                            tracing::debug!(observer_id = %id, error = %e, "observer dispose failed");
+                        }
+                    });
+                }
+                Err(_) => {
+                    if let Err(e) = futures::executor::block_on(dispose) {
+                        tracing::debug!(observer_id = %id, error = %e, "observer dispose failed");
+                    }
+                }
+            }
+        });
+        registrations.push((RegistrationKind::Observer, observer_id.clone(), unregister));
+        (ops.engine.clone(), observer_id)
+    };
+
+    // The engine receives the id settled above, never the guest's raw one.
+    if let Some(obj) = input.as_object_mut() {
+        let options = obj
+            .entry("options")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(options) = options.as_object_mut() {
+            options.insert("id".into(), serde_json::Value::String(observer_id.clone()));
+        }
+    }
+
+    match engine.observe(input).await {
+        Ok(_) => Ok(observer_id),
+        Err(message) => {
+            // Nothing reached the engine to dispose: take the entry off the
+            // books without running it.
+            let mut borrowed = state.borrow_mut();
+            let ops = borrowed.borrow_mut::<OpsState>();
+            drop(ops.take(RegistrationKind::Observer, &observer_id));
+            Err(JsErrorBox::generic(message))
+        }
+    }
+}
+
+/// Remove an observer this runtime created: the handle's `dispose()`.
+/// Ownership is entirely "does THIS runtime's own `unregisters` list hold
+/// it" — an id it does not hold is the same quiet no-op as unregistering an
+/// unknown function, so the op cannot be used to probe or remove another
+/// tenant's observers. Resolves once the engine has removed it.
+#[op2]
+async fn op_iii_dispose_observer(
+    state: Rc<RefCell<OpState>>,
+    #[string] observer_id: String,
+) -> Result<(), JsErrorBox> {
+    if observer_id.len() > MAX_FUNCTION_ID_BYTES {
+        return Err(JsErrorBox::type_error(format!(
+            "observer id is {} bytes; the limit is {MAX_FUNCTION_ID_BYTES}",
+            observer_id.len()
+        )));
+    }
+    let engine = {
+        let mut borrowed = state.borrow_mut();
+        let ops = borrowed.borrow_mut::<OpsState>();
+        if ops.take(RegistrationKind::Observer, &observer_id).is_none() {
+            return Ok(());
+        }
+        ops.engine.clone()
+    };
+    engine
+        .dispose_observer(observer_id)
+        .await
+        .map_err(JsErrorBox::generic)
 }
 
 // ---------------------------------------------------------------------------
@@ -1140,9 +1310,10 @@ fn open_regular(path: &std::path::Path) -> Result<std::fs::File, JsErrorBox> {
 /// `MAX_CALL_PAYLOAD_BYTES` exists to bound, at a far larger size.
 ///
 /// Sync, and it must stay sync. An `.await` between the scan and the write is
-/// precisely the TOCTOU that forced `pending_registrations` into existence: a
-/// tenant firing 100 un-awaited writes would have all 100 observe the same
-/// under-quota snapshot. Sync makes that unrepresentable rather than defended.
+/// precisely the TOCTOU `op_iii_observe` avoids by booking its slot before
+/// it awaits: a tenant firing 100 un-awaited writes would have all 100
+/// observe the same under-quota snapshot. Sync makes that unrepresentable
+/// rather than defended.
 ///
 /// ponytail: the watchdog's `terminate_execution` cannot interrupt a blocking
 /// syscall, so a pathologically slow `$TMPDIR` extends a runtime past its
@@ -1283,12 +1454,13 @@ extension!(
     ops = [
         op_iii_log,
         op_iii_call,
+        op_iii_call_observer,
         op_iii_register,
         op_iii_unregister,
-        op_iii_register_trigger,
-        op_iii_unregister_trigger,
-        op_iii_register_trigger_type,
-        op_iii_unregister_trigger_type,
+        op_iii_set_observer_hooks,
+        op_iii_clear_observer_hooks,
+        op_iii_observe,
+        op_iii_dispose_observer,
         op_iii_fs_write,
         op_iii_fs_read,
         op_iii_fs_list,
@@ -1329,7 +1501,7 @@ mod tests {
             capturing: false,
             registered: Vec::new(),
             unregisters: Arc::new(Mutex::new(Vec::new())),
-            pending_registrations: 0,
+            hooked_observers: Arc::new(Mutex::new(HashMap::new())),
             ids: crate::ids::IdRegistry::default(),
             runtime_id: runtime_id.to_string(),
             call_timeout_ms: 2_000,
@@ -1364,6 +1536,7 @@ mod tests {
             None,
             None,
             None,
+            GuestFunctionOptions::default(),
             noop_handler(),
         );
         assert!(fake
@@ -1414,7 +1587,14 @@ mod tests {
     fn unregister_checked_removes_a_registration_the_runtime_owns() {
         let fake = FakeEngine::new();
         let mut ops = test_ops("app::", "rt-owner", fake.clone());
-        let unregister = fake.register("app::mine".to_string(), None, None, None, noop_handler());
+        let unregister = fake.register(
+            "app::mine".to_string(),
+            None,
+            None,
+            None,
+            GuestFunctionOptions::default(),
+            noop_handler(),
+        );
         ops.unregisters.lock().unwrap().push((
             RegistrationKind::Function,
             "app::mine".to_string(),
@@ -1452,7 +1632,7 @@ mod tests {
     }
 
     /// CRITICAL (Task 12 review, round 2): a cross-kind unregister — asking
-    /// to remove a TRIGGER TYPE at an id that is actually a live FUNCTION —
+    /// to remove OBSERVER HOOKS at an id that is actually a live FUNCTION —
     /// must leave that function's bus registration AND its worker-global
     /// `ids` claim alone. Before this fix, `OpsState::unregister` found
     /// nothing to remove from the bus (correct) but still released the
@@ -1463,7 +1643,14 @@ mod tests {
     fn cross_kind_unregister_does_not_release_a_live_registrations_claim() {
         let fake = FakeEngine::new();
         let mut ops = test_ops("app::", "rt-owner", fake.clone());
-        let unregister = fake.register("app::x".to_string(), None, None, None, noop_handler());
+        let unregister = fake.register(
+            "app::x".to_string(),
+            None,
+            None,
+            None,
+            GuestFunctionOptions::default(),
+            noop_handler(),
+        );
         ops.unregisters.lock().unwrap().push((
             RegistrationKind::Function,
             "app::x".to_string(),
@@ -1471,9 +1658,8 @@ mod tests {
         ));
         ops.ids.claim("app::x", "rt-owner");
 
-        // No trigger type was ever registered at this id — this must be a
-        // pure no-op.
-        ops.unregister(RegistrationKind::TriggerType, "app::x");
+        // No hooks were ever set at this id — this must be a pure no-op.
+        ops.unregister(RegistrationKind::ObserverHooks, "app::x");
 
         assert!(
             fake.registered_ids().contains(&"app::x".to_string()),
@@ -1485,16 +1671,26 @@ mod tests {
         );
     }
 
-    /// A tenant CAN register a function and a trigger type under the
-    /// identical literal id — nothing stops them. Unregistering ONE must not
-    /// release the claim while the OTHER is still live; only once NOTHING
-    /// remains under that id does the claim actually free up.
+    /// A function and its observer hooks share the identical literal id —
+    /// that is the normal case, not an edge. Clearing the hooks must not
+    /// release the claim while the function is still live; only once
+    /// NOTHING remains under that id does the claim actually free up.
     #[test]
     fn unregistering_one_kind_does_not_release_the_claim_while_another_kind_shares_the_id() {
         let fake = FakeEngine::new();
         let mut ops = test_ops("app::", "rt-owner", fake.clone());
-        let unregister_fn = fake.register("app::x".to_string(), None, None, None, noop_handler());
-        let unregister_type = fake.register("app::x".to_string(), None, None, None, noop_handler());
+        let unregister_fn = fake.register(
+            "app::x".to_string(),
+            None,
+            None,
+            None,
+            GuestFunctionOptions::default(),
+            noop_handler(),
+        );
+        fake.on_observer_added("app::x".to_string(), Some(noop_handler()));
+        let hooks_engine = fake.clone();
+        let unregister_hooks: UnregisterFn =
+            Box::new(move || hooks_engine.on_observer_added("app::x".to_string(), None));
         {
             let mut regs = ops.unregisters.lock().unwrap();
             regs.push((
@@ -1503,14 +1699,15 @@ mod tests {
                 unregister_fn,
             ));
             regs.push((
-                RegistrationKind::TriggerType,
+                RegistrationKind::ObserverHooks,
                 "app::x".to_string(),
-                unregister_type,
+                unregister_hooks,
             ));
         }
         ops.ids.claim("app::x", "rt-owner");
 
-        ops.unregister(RegistrationKind::TriggerType, "app::x");
+        ops.unregister(RegistrationKind::ObserverHooks, "app::x");
+        assert!(fake.hooked_ids().0.is_empty(), "the hooks must be cleared");
         assert!(
             !ops.ids.claim("app::x", "rt-other"),
             "the claim was released while the function under the same id is still live"
@@ -1521,6 +1718,34 @@ mod tests {
             ops.ids.claim("app::x", "rt-other"),
             "the claim should free once nothing remains registered under this id"
         );
+    }
+
+    /// `take` is `unregister` without running the undo: the books lose the
+    /// entry and the claim, the engine keeps the registration until whoever
+    /// took the undo decides. `op_iii_dispose_observer` relies on exactly
+    /// that split.
+    #[test]
+    fn take_removes_the_entry_without_running_its_undo() {
+        let fake = FakeEngine::new();
+        let mut ops = test_ops("app::", "rt-owner", fake.clone());
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = ran.clone();
+        ops.unregisters.lock().unwrap().push((
+            RegistrationKind::Observer,
+            "app::watch".to_string(),
+            Box::new(move || flag.store(true, std::sync::atomic::Ordering::SeqCst)),
+        ));
+        ops.ids.claim("app::watch", "rt-owner");
+
+        let undo = ops
+            .take(RegistrationKind::Observer, "app::watch")
+            .expect("the entry was there to take");
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(ops.unregisters.lock().unwrap().is_empty());
+        assert!(ops.ids.claim("app::watch", "rt-other"));
+        undo();
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(ops.take(RegistrationKind::Observer, "app::watch").is_none());
     }
 }
 

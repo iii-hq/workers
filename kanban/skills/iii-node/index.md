@@ -14,13 +14,13 @@ Use this skill to create or restructure a Node.js/TypeScript iii worker, especia
 
 Read the relevant references before implementing:
 
-- [`configuration.md`](./configuration.md) — bundled beside this file: schema-validated configuration registration, reads, updates, and reactive triggers.
+- [`configuration.md`](./configuration.md) — bundled beside this file: schema-validated configuration registration, reads, updates, and reacting to updates through `configuration::on-updated`.
 - The UI half lives in the `ade-worker-design` skill (`directory::skills::get { "id": "kanban/ade-worker-design/<name>" }`) and belongs to the iii ADE Worker Designer profile:
   - `console-injectable-ui` — the complete injectable UI contract, host APIs, asset registration, hot reload, responsiveness, and validation requirements.
   - `console-design` — the Console visual system, component grammar, tokens, typography, spacing, and interaction rules.
   - `patterns` — concrete recipes for record-shaped UIs: boards with lanes and drag-and-drop, a record screen that opens as its own pane, activity timelines with threaded comments, creation modals, chat cards for agent calls, settings forms, and live updates.
 
-This file still owns the worker-side half of an injectable UI — the build script, the asset content function and its triggers, the dev watchers — because those ship inside the worker package. The pages, renderers, forms and styles themselves are the designer's work; when a ticket needs them, hand them to `ade-worker-designer` rather than improvising markup here.
+This file still owns the worker-side half of an injectable UI — the build script, the asset content function and its observers, the dev watchers — because those ship inside the worker package. The pages, renderers, forms and styles themselves are the designer's work; when a ticket needs them, hand them to `ade-worker-designer` rather than improvising markup here.
 
 ### Precedence for this Node scaffold
 
@@ -211,15 +211,15 @@ const iii = registerWorker(
 
 If passing `undefined` as the address is incompatible with the installed SDK types, omit the first argument and let `III_URL` resolve according to the current SDK reference. Do not invent connection setup beyond the documented API.
 
-Import only actual top-level SDK exports such as `registerWorker` and, when needed, `TriggerAction` or documented types. Do not import or destructure `registerFunction`, `registerTrigger`, or other client methods as top-level exports. Call `iii.registerFunction(...)`, `iii.registerTrigger(...)`, and `iii.registerTriggerType(...)`. The `IIIClient` type comes from `iii-sdk`; `TriggerConfig`/`TriggerHandler` come from `iii-sdk/trigger`.
+Import only actual top-level SDK exports such as `registerWorker` and, when needed, `CallAction`, `ObserveRejection`, `EngineSources` or documented types. Do not import or destructure `registerFunction`, `observe`, `call`, or other client methods as top-level exports. Call `iii.registerFunction(...)`, `iii.observe(...)`, and `iii.call(...)`. The `IIIClient`, `Observer` and `Call` types come from `iii-sdk`.
 
 ### Namespaces
 
 A Compose project usually runs its workers in a project namespace (`III_NAMESPACE` is set by Compose); the engine-hosted workers (`configuration`, `state`, `engine::*`) live in `default`. Consequences:
 
-- Calls to engine-hosted functions from the worker need `namespace: 'default'` on `iii.trigger`; calls to the worker's own functions and other project workers omit it.
-- `iii.registerTrigger` for an engine-provided type (`configuration`) and for another project worker's type (`console:script`) both resolve without a `trigger_namespace`; do not set one.
-- A trigger type the worker registers itself lands in the worker's namespace; console tabs and the harness bind to it without extra configuration.
+- Calls to engine-hosted functions from the worker need `namespace: 'default'` on `iii.call`; calls to the worker's own functions and other project workers omit it.
+- `iii.observe` of an engine-hosted source (`configuration::on-updated`) and of another project worker's function (`console::ui::asset`) both resolve without a source `namespace`; do not set one.
+- An event function the worker registers lands in the worker's namespace; console tabs and the harness observe it without extra configuration.
 - The harness and the console reach the worker's functions by bare id; never prefix ids with a namespace.
 
 Every public function must provide:
@@ -270,7 +270,7 @@ Follow [`configuration.md`](./configuration.md). For a configurable worker:
 3. Call `configuration::register` at startup with an id, name, description, JSON Schema, and an `initial_value` only when no value exists.
 4. Read and validate the effective value before constructing resources that depend on it.
 5. Register an internal reload function with accurate request/response schemas and `metadata: { internal: true }` when appropriate.
-6. Bind that function with an SDK Message-path trigger of type `configuration`, filtered to the configuration id and relevant event types.
+6. Observe `configuration::on-updated` with that function as the target, filtered on `input.id` and `input.event_type`, with `deliver: 'output'`.
 7. In the UI, register a purpose-built form with `host.configForms.register(...)`; never fall back to a raw JSON textarea.
 8. Set `configurationId` on the page registration so the Console exposes the standard settings action.
 
@@ -281,7 +281,7 @@ async function configurationCall<T>(
   functionId: string,
   payload: Record<string, unknown>,
 ): Promise<T> {
-  return iii.trigger({
+  return iii.call({
     function_id: functionId,
     namespace: 'default',
     payload,
@@ -290,67 +290,61 @@ async function configurationCall<T>(
 }
 ```
 
-Use an explicit namespace only when required by the destination deployment (see Namespaces above; `default` is required for `configuration::*` when the project runs under a Compose namespace). Copy the exact trigger config from the live `configuration` trigger contract rather than assuming it. Preserve unknown configuration fields and `${ENV:default}` templates as required by the bundled references.
+Use an explicit namespace only when required by the destination deployment (see Namespaces above; `default` is required for `configuration::*` when the project runs under a Compose namespace). Copy the exact event fields from `engine::functions::info { function_id: 'configuration::on-updated' }` (its `response_format`) rather than assuming them. Preserve unknown configuration fields and `${ENV:default}` templates as required by the bundled references.
 
 Contract details the live registry does not advertise:
 
 - `configuration::register` is hidden from `engine::functions::list` and `engine::functions::info` reports it as not available; it still exists (see `engine::workers::info { name: 'configuration' }`). Its payload is `{ id, name, description, schema, initial_value?, metadata: { ui_form: '<configuration-id>' } }`. Re-registering with `initial_value` **replaces** the stored value, so pass it only when the read below returned nothing.
 - `configuration::get { id }` throws when the id is not registered yet; treat that error as “no value” during startup, register, then read again (with defaults expanded) to obtain the effective value.
 - The persisted file is `<config dir>/<id>.yaml` with `id`, `name`, `description`, `metadata`, and `value`.
-- The `configuration` trigger delivers `{ id, event_type, name, description, schema, old_value, new_value, type: 'configuration' }`; filter with `config: { configuration_id, event_types: ['configuration:updated'] }`.
+- `configuration::on-updated` is called with `{ id, event_type, name, description, schema, old_value, new_value, type: 'configuration' }` and takes no args; observe it with `filters: { 'input.id': { $eq: '<configuration-id>' }, 'input.event_type': { $eq: 'configuration:updated' } }` and `deliver: 'output'`.
 - Relative paths in configuration should resolve from a stable root. Resolve them against the project root (the nearest ancestor of the worker directory that contains `worker-compose.yaml`, overridable by an env var), not the process cwd, and expose the resolved path through a small `<worker-name>::config::info` function so the settings form can show it.
 
-## Live updates (own trigger type)
+## Live updates (own event function)
 
-When other tabs, agents, or workers must react to changes without polling, the worker provides its own trigger type and fans events out to every binding:
+When other tabs, agents, or workers must react to changes without polling, the worker hosts an event function and calls it after each change. Its handler returns the event, and that return value is what every observer receives:
 
 ```ts
-import { TriggerAction, type IIIClient } from 'iii-sdk'
-import type { TriggerConfig } from 'iii-sdk/trigger'
+import { CallAction } from 'iii-sdk'
 
-type ChangeConfig = { record_id?: string; events?: string[]; metadata?: unknown }
-const subscribers = new Map<string, TriggerConfig<ChangeConfig>>()
+const CHANGE_FN = '<worker-name>::on-change'
 
-/** A subscription's metadata: declared in the config, or on the binding itself. */
-function subscriptionMetadata(binding: TriggerConfig<ChangeConfig>): unknown {
-  return binding.config.metadata ?? binding.metadata
-}
+type ChangeEvent = { event: string; record_id: string; record: Record<string, unknown>; at: string }
 
-iii.registerTriggerType<ChangeConfig>(
-  {
-    id: '<worker-name>:change',
-    description:
-      'Fires after every mutation. Config: { record_id?, events?, metadata? } — metadata rides along to the invoked handler.',
-  },
-  {
-    registerTrigger: async (binding) => {
-      subscribers.set(binding.id, {
-        ...binding,
-        config: { ...binding.config, metadata: subscriptionMetadata(binding) },
-      })
-    },
-    unregisterTrigger: async (binding) => { subscribers.delete(binding.id) },
-  },
-)
+iii.registerFunction(CHANGE_FN, (event: ChangeEvent) => event, {
+  description:
+    'Called after every mutation with the whole record. Observe it; filter on input.record_id or input.event.',
+  request_format: changeEventSchema,
+  response_format: changeEventSchema,
+  private: true, // only this worker calls it; anyone may observe it
+})
 
-function emit(event: Record<string, unknown>) {
-  for (const binding of subscribers.values()) {
-    if (!matches(binding.config, event)) continue
-    const metadata = subscriptionMetadata(binding)
-    iii.trigger({
-      function_id: binding.function_id,
-      namespace: binding.namespace, // pass the binding's namespace through
-      payload: event,
-      ...(metadata === undefined ? {} : { metadata }), // never drop the subscriber's metadata
-      action: TriggerAction.Void(),  // fire-and-forget; a closed tab must not block the loop
-    }).catch(() => undefined)
-  }
+async function emit(event: ChangeEvent) {
+  if (!iii.isObserved(CHANGE_FN)) return // nobody is watching: skip the call
+  // fire-and-forget: a slow observer must not hold the write that produced the event
+  await iii.call({ function_id: CHANGE_FN, payload: event, action: CallAction.Void() })
 }
 ```
 
 Emit from the store after each persisted mutation and include the **whole record** in the payload so consumers can upsert without a round trip. The UI side of this contract is in the designer's `console-injectable-ui` (`host.iii` → live data) and `patterns` §8.
 
-**Every trigger type the worker provides must carry trigger metadata.** A registration's `metadata` arrives at the provider as `binding.metadata` (`TriggerConfig.metadata`) and must come back out on every `iii.trigger` as `metadata`; the bound handler receives it as its **second argument**, a channel separate from the payload, and a fan-out that omits it silently drops it. Because the top-level `metadata` slot also carries the harness's own control fields (`{ payload, event_into }`) for call-to-function bindings, also accept a `metadata` field inside the trigger's config, name it in the trigger type's `description`, and forward whichever the subscriber set (config first). Never merge metadata into the payload.
+Consumers choose what they want with filters on the event, each with an explicit operator, and pass their metadata as an observe option:
+
+```ts
+iii.observe(
+  {
+    function_id: '<worker-name>::on-change',
+    filters: { 'input.record_id': { $eq: recordId }, 'input.event': { $in: ['record.updated'] } },
+    deliver: 'output',
+  },
+  '<other-worker>::on-record-changed',
+  { metadata: { team: 'ops' } },
+)
+```
+
+**Observer metadata stays with the observer.** The engine hands it to the target as the handler's **second argument** on every delivery; the worker that hosts the event function never sees it and never forwards it. Never merge metadata into the event.
+
+**Args only for per-observer work.** An event that happens anyway takes no args: consumers select with filters. Give the function `args_format` only when the worker must do something per observer — start a watch or a timer, enforce a cap, shape a different payload — and read `obs.args` in its hooks (`.onObserverAdded`, `.onObserverRemoved`, `.onObserverMatch`). Reject a bad observer by throwing `new ObserveRejection(code, message)` from `onObserverAdded`, and list the codes in the README.
 
 ## Injectable UI builder
 
@@ -429,14 +423,14 @@ export default function setup(host: Host) {
 
   // Register only surfaces that are implemented.
   // host.configForms.register('<configuration-id>', WorkerConfigForm)
-  // host.functionTriggers.register(createFunctionRenderer())
-  // host.triggerRenderers?.register(createTriggerRenderer())
+  // host.functionCalls.register(createFunctionRenderer())
+  // host.observerRenderers?.register(createObserverRenderer())
 }
 ```
 
 If the worker has no configuration, omit both `configurationId` and the config form. If it has configuration, implement and register the form; do not advertise settings without a corresponding interface.
 
-The page body is the designer's work: `kanban/ade-worker-design/console-injectable-ui` covers narrow panes, loading/error/empty states, renderer fallthrough, redaction, dirty state, live triggers, accessibility, and real-Console testing; `kanban/ade-worker-design/console-design` covers visual decisions.
+The page body is the designer's work: `kanban/ade-worker-design/console-injectable-ui` covers narrow panes, loading/error/empty states, renderer fallthrough, redaction, dirty state, live updates, accessibility, and real-Console testing; `kanban/ade-worker-design/console-design` covers visual decisions.
 
 Every selector in `ui/styles.css` must be scoped under `[data-iii-ui="<worker-name>"]`:
 
@@ -457,9 +451,9 @@ Node workers implement the injectable UI wire contract directly:
 1. Build first, so `dist/ui/page.js` and `dist/ui/styles.css` exist.
 2. From compiled `dist/index.js`, read them with URLs relative to `import.meta.url`.
 3. Register one content function accepting `{ path }` and returning `{ content, content_type }`.
-4. Register one SDK Message-path trigger per asset:
-   - `console:script` with `config: { path: '<worker-name>/page.js' }`;
-   - `console:style` with `config: { path: '<worker-name>/styles.css' }`.
+4. Observe `console::ui::asset` once per asset, with the content function as the target:
+   - args `{ kind: 'script', path: '<worker-name>/page.js' }`;
+   - args `{ kind: 'style', path: '<worker-name>/styles.css' }`.
 5. Keep the first path segment equal to `<worker-name>`; it defines the CSS scope.
 6. Reject unknown asset paths.
 
@@ -504,20 +498,18 @@ iii.registerFunction(
   },
 )
 
-iii.registerTrigger({
-  type: 'console:script',
-  function_id: UI_CONTENT_FUNCTION,
-  config: { path: '<worker-name>/page.js' },
-})
+iii.observe(
+  { function_id: 'console::ui::asset', args: { kind: 'script', path: '<worker-name>/page.js' } },
+  UI_CONTENT_FUNCTION,
+)
 
-iii.registerTrigger({
-  type: 'console:style',
-  function_id: UI_CONTENT_FUNCTION,
-  config: { path: '<worker-name>/styles.css' },
-})
+iii.observe(
+  { function_id: 'console::ui::asset', args: { kind: 'style', path: '<worker-name>/styles.css' } },
+  UI_CONTENT_FUNCTION,
+)
 ```
 
-Use SDK Message-path trigger registrations here, not the engine's durable trigger-registration function. SDK registrations are replayed after reconnect and removed when the worker disconnects.
+The console calls the content function through each observer with `{ path }`. The SDK replays the worker's observers with the same ids after a reconnect.
 
 The in-memory asset map is intentionally populated at process startup. During development, rebuilding `dist/ui` restarts the worker, which reads the new bytes and re-registers the same paths with new content hashes.
 
@@ -720,7 +712,7 @@ Path rules:
 - If it lives elsewhere, use the correct relative path; do not assume `./workers/` or any particular project layout.
 - Preserve all existing Compose entries and indentation.
 - Use a unique container key.
-- Add no `start_after` naming the console container. The engine holds the worker's `console:*` triggers (`console:script`, `console:style`) until the console registers those trigger types, and applies them again each time the console comes back. A `start_after` would make the worker a dependent, and Compose stops a container's dependents when it exits, so a console exit would take the worker offline.
+- Add no `start_after` naming the console container. The worker's `console::ui::asset` observers stay pending until the console registers that function, and become active again each time the console comes back. A `start_after` would make the worker a dependent, and Compose stops a container's dependents when it exits, so a console exit would take the worker offline.
 - Use `pnpm dev`, not the production `start` script, for this local development block.
 
 If the destination Compose file already has a declaration for the worker, update that declaration instead of adding a duplicate.
@@ -746,7 +738,7 @@ The first `pnpm dev` run restarts the worker once or twice while the watchers wr
 6. Implement and test backend domain behavior.
 7. Register functions with complete contracts and add configuration integration if needed.
 8. Build the injectable UI using shared Console components and scoped CSS.
-9. Add worker-side asset delivery and Message-path registrations.
+9. Add worker-side asset delivery and its `console::ui::asset` observers.
 10. Add the coordinated `scripts/dev.mjs` loop.
 11. Add or update `iii.worker.yaml`.
 12. Manually add or update the `worker-compose.yaml` block.
@@ -761,8 +753,8 @@ Before declaring the worker complete:
 - `pnpm install` succeeds and the lockfile resolves `@iii-dev/console-ui` from npm at `0.1.0`, not through `file:`, `link:`, or `workspace:`.
 - `pnpm typecheck`, `pnpm test`, and `pnpm build` pass.
 - `pnpm dev` builds all outputs before starting watchers and shuts down cleanly.
-- The worker appears in the engine with every intended function and trigger type.
-- A worker-provided trigger type forwards every subscription's metadata (`binding.metadata`, or the config's `metadata` field) on every `iii.trigger`, and its description names that field.
+- The worker appears in the engine with every intended function, and its observers are active (`engine::observers::list`).
+- A worker-provided event function is `private`, returns the event it is called with, is called only when `iii.isObserved` says someone watches, and never carries observer metadata in the event.
 - Every public function exposes accurate descriptions and request/response schemas.
 - Configuration registration, read, update, and reload behavior work without erasing existing or unknown values.
 - `dist/ui/page.js` and `dist/ui/styles.css` are non-empty and React remains external.
@@ -773,5 +765,5 @@ Before declaring the worker complete:
 - Live updates reach an open page without a reload: mutate through a function from outside the UI and watch the page change.
 - A record opens as its own pane in the same workspace tab through `host.panels.open`, and the collection page adapts when the tab splits (narrow mode).
 - The real Console renders the page in narrow and wide panes, light and dark themes, with keyboard navigation, visible focus, stable async states, and no browser-console errors.
-- Reconnects and repeated UI edits do not accumulate duplicate functions, triggers, pages, renderers, or forms.
+- Reconnects and repeated UI edits do not accumulate duplicate functions, observers, pages, renderers, or forms.
 - `worker-compose.yaml` contains exactly one local worker block and Compose launches it with `pnpm dev` after `console`.

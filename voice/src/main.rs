@@ -7,12 +7,12 @@
 //!    publish pipeline calls it and must not need an engine
 //! 3. connect
 //! 4. register and fetch the configuration — a required boot dependency
-//! 5. register the trigger types, then build the engine, sessions and
+//! 5. register the event functions, then build the engine, sessions and
 //!    speaker, then register the functions and the console UI they drive
-//! 6. bind the configuration trigger LAST, so its handler closes over fully
+//! 6. observe configuration updates LAST, so the handler closes over fully
 //!    built state; a config change drops the loaded recognizer so the next
 //!    call reloads it with the new model or endpointing
-//! 7. wait for a signal, close every session so subscribers see the end,
+//! 7. wait for a signal, close every session so observers see the end,
 //!    then shut the SDK down cleanly
 
 use std::sync::Arc;
@@ -130,8 +130,8 @@ async fn main() -> anyhow::Result<()> {
     );
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
-    let sets = events::register_trigger_types(&iii);
-    let emitter = Arc::new(Emitter::new(sets, Arc::new(IiiDeliverer::new(iii.clone()))));
+    events::register(&iii);
+    let emitter = Arc::new(Emitter::new(Arc::new(IiiDeliverer::new(iii.clone()))));
     let engine = Arc::new(Engine::new());
     let sessions = Arc::new(Sessions::new(
         iii.clone(),
@@ -159,11 +159,11 @@ async fn main() -> anyhow::Result<()> {
         let emitter = hotkey_emitter.clone();
         runtime.spawn(async move {
             let event = voice::hotkey::HotkeyEvent {
-                key: "fn",
+                key: "fn".into(),
                 action,
                 timestamp_ms: events::now_ms(),
             };
-            emitter.emit(events::EventKind::Hotkey, None, &event).await;
+            emitter.emit(events::EventKind::Hotkey, &event).await;
         });
     });
 
@@ -173,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
     let sweep = sessions.spawn_sweep();
 
     let reload_engine = engine.clone();
-    configuration::register_config_trigger(
+    configuration::observe_config_changes(
         &iii,
         cell.clone(),
         Arc::new(move |cfg| {
@@ -189,8 +189,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             });
         }),
-    )
-    .map_err(|e| anyhow::anyhow!("configuration trigger registration failed: {e}"))?;
+    );
 
     tracing::info!(url = %cli.url, "voice worker ready");
 

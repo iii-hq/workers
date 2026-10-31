@@ -6,7 +6,7 @@
       "ExposeMode": {
         "description": "How allowed functions reach the model (harness.md § Exposure modes).",
         "enum": [
-          "agent_trigger",
+          "agent_call",
           "native"
         ],
         "type": "string"
@@ -34,7 +34,7 @@
                 "$ref": "#/definitions/ExposeMode"
               }
             ],
-            "default": "agent_trigger"
+            "default": "agent_call"
           }
         },
         "type": "object"
@@ -423,7 +423,7 @@
             "type": "null"
           }
         ],
-        "description": "Set when the message was the `/compact` command: nothing was appended and no turn ran. The compaction runs in the background; its start and outcome reach every client through the transcript and `harness::compaction`."
+        "description": "Set when the message was the `/compact` command: nothing was appended and no turn ran. The compaction runs in the background; its start and outcome reach every client through the transcript and `harness::on-compaction`."
       },
       "deduplicated": {
         "description": "True when `idempotency_key` matched an earlier send.",

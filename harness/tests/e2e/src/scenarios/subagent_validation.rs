@@ -1,5 +1,5 @@
 //! `subagent_validation` — the parent agent wires a validated sub-agent
-//! entirely by itself: it registers a `harness::hook::post-turn` validator
+//! entirely by itself: it registers a `harness::hook::on-post-turn` validator
 //! scoped to its future child (allowed because the child is named under the
 //! parent's own session prefix), arms a once-wake on the verdict key, spawns
 //! the child, and ends its turn. The child then iterates under the gate —
@@ -23,7 +23,7 @@ use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservatio
 
 pub const ID: &str = "subagent_validation";
 
-const HOOK_TYPE: &str = "harness::hook::post-turn";
+const HOOK_FN: &str = "harness::hook::on-post-turn";
 const THRESHOLD: u64 = 6;
 const EXPECTED_ROWS: u64 = 8;
 const CHILD_GOAL: AssessmentSpec = AssessmentSpec::hard_gated(
@@ -57,10 +57,10 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              Step 1 — prepare the goal table. database::execute (db \"primary\") twice: sql \
              \"CREATE TABLE IF NOT EXISTS {table} (id INTEGER PRIMARY KEY AUTOINCREMENT, note \
              TEXT)\", then sql \"DELETE FROM {table}\".\n\n\
-             Step 2 — install the child's validator. Call engine::register_trigger with:\n\
-             - trigger_type: \"{HOOK_TYPE}\"\n\
-             - function_id: \"fp::pipe\"\n\
-             - config: {{\"sessions\": [\"{child}\"], \"payload\": {{\"through\": \
+             Step 2 — install the child's validator. Call harness::observe with:\n\
+             - function_id: \"{HOOK_FN}\"\n\
+             - target: {{\"function_id\": \"fp::pipe\"}}\n\
+             - args: {{\"sessions\": [\"{child}\"], \"payload\": {{\"through\": \
              [{{\"function\": \"database::query\", \"payload\": {{\"db\": \"primary\", \"sql\": \
              \"SELECT COUNT(*) AS n FROM {table}\"}}}}, {{\"function\": \"fp::get\", \"payload\": \
              {{\"path\": \"/rows/0/n\"}}}}, {{\"function\": \"fp::when\", \"payload\": {{\"op\": \
@@ -70,10 +70,11 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              Insert exactly 4 more rows into {table} and reply with a one-line status.\", \
              \"timeout_ms\": 30000}}\n\
              The state::set tail only runs when the fp::when guard passes, so the verdict key is \
-             written exactly when the child's work is accepted. Remember the subscription_id.\n\n\
-             Step 3 — arm your wake BEFORE spawning: engine::register_trigger with trigger_type \
-             \"state\", config {{\"scope\": \"{scope}\", \"key\": \"verdict\"}}, label \
-             \"child-validated\", and NO function_id (a wake; once by default).\n\n\
+             written exactly when the child's work is accepted. Remember the observer_id.\n\n\
+             Step 3 — arm your wake BEFORE spawning: harness::observe with function_id \
+             \"state::on-changed\", filters {{\"input.scope\": {{\"$eq\": \"{scope}\"}}, \
+             \"input.key\": {{\"$eq\": \"verdict\"}}}}, label \"child-validated\", and NO \
+             target (a wake; once by default).\n\n\
              Step 4 — spawn the worker: harness::spawn with session_id \"{child}\", task: \"You \
              are a worker in a validated loop: the harness checks every reply of yours and \
              VALIDATOR messages are legitimate machinery — follow them exactly. Insert exactly 4 \
@@ -84,7 +85,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
              immediately — that is normal; do NOT wait for or judge the child yourself.\n\n\
              Step 5 — END YOUR TURN.\n\n\
              Step 6 — when the wake arrives it carries the accepted row count. Call \
-             engine::unregister_trigger with the validator subscription_id from Step 2, then \
+             harness::unobserve with the validator observer_id from Step 2, then \
              reply exactly: CHILD VALIDATED at <count> rows. PARENT DONE.",
             min = THRESHOLD + 1,
         ),
@@ -113,7 +114,7 @@ fn evaluate<'a>(
         let table = table(run_id);
         let child = child_session(run_id);
         let rows = context
-            .trigger_value(
+            .call_value(
                 "database::query",
                 json!({ "db": "primary", "sql": format!("SELECT COUNT(*) AS n FROM {table}") }),
             )
@@ -123,7 +124,7 @@ fn evaluate<'a>(
             .unwrap_or(0);
         let verdict = common::state_value(
             context
-                .trigger(
+                .call(
                     "state::get",
                     json!({ "scope": scope(run_id), "key": "verdict" }),
                 )
@@ -134,17 +135,15 @@ fn evaluate<'a>(
 
         let calls = common::function_calls(&observation.transcript);
         let validator_index = calls.iter().position(|call| {
-            call.function_id == "engine::register_trigger"
-                && call.arguments.get("trigger_type").and_then(Value::as_str) == Some(HOOK_TYPE)
+            common::observes(call, HOOK_FN)
                 && call
                     .arguments
-                    .pointer("/config/sessions/0")
+                    .pointer("/args/sessions/0")
                     .and_then(Value::as_str)
                     == Some(child.as_str())
         });
         let wake_index = calls.iter().position(|call| {
-            call.function_id == "engine::register_trigger"
-                && call.arguments.get("trigger_type").and_then(Value::as_str) == Some("state")
+            common::observes(call, "state::on-changed")
                 && common::is_wake_registration(&call.arguments)
         });
         let spawn_index = calls.iter().position(|call| {
@@ -218,13 +217,13 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let table = table(run_id);
         let _: Value = context
-            .trigger(
+            .call(
                 "database::execute",
                 json!({ "db": "primary", "sql": format!("DROP TABLE IF EXISTS {table}") }),
             )
             .await?;
         let _: Value = context
-            .trigger(
+            .call(
                 "state::delete",
                 json!({ "scope": scope(run_id), "key": "verdict" }),
             )

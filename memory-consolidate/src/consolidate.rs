@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -108,7 +108,7 @@ pub struct BankReport {
     pub semantic_failed: Vec<String>,
 }
 
-/// Reason carried on the `memory::item-changed` events of a deterministic
+/// Reason carried on the `memory::on-item-changed` events of a deterministic
 /// merge.
 const REASON_NORMALIZED: &str = "normalized-text duplicate";
 /// Reason carried on a judge-confirmed reorder merge.
@@ -237,7 +237,7 @@ pub(crate) async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, String> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,

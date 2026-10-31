@@ -1,6 +1,6 @@
 //! The console worker's *own* injected UI — shipped through the same
-//! `console:script` / `console:style` trigger types it hosts (the engine
-//! routes the registration straight back to this worker).
+//! `console::ui::asset` function it hosts (the engine announces each asset
+//! observer straight back to this worker).
 //!
 //! Two contributions:
 //!
@@ -9,12 +9,11 @@
 //!   and injectable-UI toggle board — one bordered
 //!   card per worker (title + description + switch) flipping
 //!   `injectableUi.disabledWorkers`; both settings apply live through
-//!   [`crate::configuration::register_config_trigger`];
-//! - the engine-catalogue pages (`host.pages`): functions and triggers,
-//!   reading `engine::functions::*` / `engine::triggers::*` /
-//!   `engine::registered-triggers::list`. They are engine-level views no
-//!   single worker owns, and they ship injected so the console SPA carries
-//!   no per-view code.
+//!   [`crate::configuration::register_config_observer`];
+//! - the engine-catalogue pages (`host.pages`): functions and observers,
+//!   reading `engine::functions::*` / `engine::observers::*`. They are
+//!   engine-level views no single worker owns, and they ship injected so the
+//!   console SPA carries no per-view code.
 //! - a renderer for validated working-directory proposals. It presents the
 //!   operator confirmation that applies a proposal to the matching chat.
 //!
@@ -60,8 +59,9 @@ fn console_ui() -> ConsoleUi {
         .style(STYLES_PATH, STYLES_CSS)
 }
 
-/// Register the console's own UI assets. Call only when `injectable_ui` is
-/// on (the trigger types must exist), after `ui_assets::start`.
+/// Observe the console's own UI assets. Call only when `injectable_ui` is
+/// on (the `console::ui::*` functions must be hosted), after
+/// `ui_assets::start`.
 pub fn register(iii: &Arc<IIIClient>) {
     console_ui().register(iii);
 }
@@ -162,10 +162,10 @@ mod tests {
     }
 
     /// The pages are useless if their ids drift from the screens the nav
-    /// and the workspace open (`ext:functions`, `ext:triggers`).
+    /// and the workspace open (`ext:functions`, `ext:observers`).
     #[test]
     fn embedded_catalog_page_registers_every_page() {
-        for id in ["functions", "triggers"] {
+        for id in ["functions", "observers"] {
             assert!(
                 CATALOG_PAGE_JS.contains(id),
                 "built catalog-page.js is missing the `{id}` page"
@@ -173,30 +173,31 @@ mod tests {
         }
     }
 
-    /// The pages are live over engine signals, not timers. A build that lost
-    /// the subscriptions would look fine and silently go stale.
+    /// The pages are live over engine sources, not timers. A build that lost
+    /// the observers would look fine and silently go stale.
     #[test]
-    fn embedded_catalog_page_subscribes_to_engine_signals() {
-        for signal in [
-            "engine::functions-available",
-            "engine::workers-available",
-            "trace",
+    fn embedded_catalog_page_observes_engine_sources() {
+        for source in [
+            "engine::on-functions-changed",
+            "engine::on-workers-changed",
+            "engine::on-observers-changed",
+            "observability::on-span",
         ] {
             assert!(
-                CATALOG_PAGE_JS.contains(signal),
-                "built catalog-page.js no longer subscribes to `{signal}`"
+                CATALOG_PAGE_JS.contains(source),
+                "built catalog-page.js does not observe `{source}`"
             );
         }
     }
 
-    /// Live spans ride the engine `trace` tick plus a bounded re-read, not the
+    /// Live spans ride `observability::on-span` plus a bounded re-read, not the
     /// deprecated iii-stream devtools feed (MOT-3619): the page must work on
     /// an engine without iii-stream and must not trip its deprecation warning.
     #[test]
     fn embedded_catalog_page_reads_spans_without_iii_stream() {
         assert!(
             CATALOG_PAGE_JS.contains("engine::traces::spans"),
-            "built catalog-page.js no longer re-reads spans on trace ticks"
+            "built catalog-page.js does not re-read spans on observability::on-span calls"
         );
         assert!(
             !CATALOG_PAGE_JS.contains("iii:devtools:"),

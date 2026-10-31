@@ -1,6 +1,6 @@
 /**
- * Injected function-trigger renderer for `harness::ask`, registered through
- * `host.functionTriggers` with `metadata.display: true`, so the card stays
+ * Injected function-call renderer for `harness::ask`, registered through
+ * `host.functionCalls` with `metadata.display: true`, so the card stays
  * visible in the chat feed while the raw call details stay collapsed.
  *
  * The card draws the questions from the result `details` (`parseAsk`): per
@@ -34,8 +34,8 @@ import {
   Button,
   Checkbox,
   Chip,
-  type FunctionTriggerMessage,
-  type FunctionTriggerRenderer,
+  type FunctionCallMessage,
+  type FunctionCallRenderer,
   type Host,
   Input,
   uiClasses,
@@ -85,7 +85,7 @@ function useCurrentTurnId(host: Host, sessionId: string, askingTurnId: string) {
   const check = useCallback((): Promise<CurrentTurn> => {
     const request = ++latest.current
     return host.iii
-      .trigger('harness::status', { session_id: sessionId }, { timeoutMs: STATUS_TIMEOUT_MS })
+      .call('harness::status', { session_id: sessionId }, { timeoutMs: STATUS_TIMEOUT_MS })
       .then(turnIdOf, () => undefined)
       .then((read) => {
         if (request !== latest.current) return known.current
@@ -417,8 +417,8 @@ function AskCard({ host, view }: { host: Host; view: AskView }) {
   )
 }
 
-export function createAskRenderer(host: Host): FunctionTriggerRenderer {
-  const render = (message: FunctionTriggerMessage) => {
+export function createAskRenderer(host: Host): FunctionCallRenderer {
+  const render = (message: FunctionCallMessage) => {
     const view = parseAsk(message)
     return view ? <AskCard key={view.questionId} host={host} view={view} /> : null
   }

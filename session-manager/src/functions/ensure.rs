@@ -25,7 +25,7 @@ pub struct EnsureRequest {
 pub struct EnsureResponse {
     pub session_id: String,
     pub meta: SessionMeta,
-    /// True when this call created the session (and fired `session::created`).
+    /// True when this call created the session (and called `session::on-created`).
     pub created: bool,
 }
 

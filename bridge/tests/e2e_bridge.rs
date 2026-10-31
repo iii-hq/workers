@@ -1,7 +1,6 @@
 mod common;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::RegisterFunction;
+use iii_sdk::{CallRequest, RegisterFunction};
 use serde_json::json;
 use serial_test::serial;
 
@@ -48,7 +47,7 @@ forward:
         .expect("bridge worker should boot");
 
     // 1. bridge.invoke -> remote function, result comes back.
-    let res = common::trigger_until_ready(
+    let res = common::call_until_ready(
         &caller,
         "bridge.invoke",
         json!({ "function_id": "e2e::bridge-target", "data": { "n": 1 } }),
@@ -58,19 +57,19 @@ forward:
     assert_eq!(res["echo"]["n"], 1);
 
     // 2. forward local function -> remote function.
-    let res = common::trigger_until_ready(&caller, "e2e::bridge-forward", json!({ "n": 2 }))
+    let res = common::call_until_ready(&caller, "e2e::bridge-forward", json!({ "n": 2 }))
         .await
         .expect("forward");
     assert_eq!(res["echo"]["n"], 2);
 
     // 3. exposed function (registered by the worker's REMOTE client) -> local function.
-    let res = common::trigger_until_ready(&caller, "e2e::bridge-exposed", json!({ "n": 3 }))
+    let res = common::call_until_ready(&caller, "e2e::bridge-exposed", json!({ "n": 3 }))
         .await
         .expect("expose");
     assert_eq!(res["echo"]["n"], 3);
 
     // 4. bridge.invoke_async -> fire-and-forget, returns null.
-    let res = common::trigger_until_ready(
+    let res = common::call_until_ready(
         &caller,
         "bridge.invoke_async",
         json!({ "function_id": "e2e::bridge-target", "data": { "n": 4 } }),
@@ -102,7 +101,7 @@ async fn bridge_invoke_bad_input_surfaces_deserialization_error() {
         .expect("bridge worker should boot");
 
     // Make sure bridge.invoke is routable first (valid probe), then send garbage.
-    let _ = common::trigger_until_ready(
+    let _ = common::call_until_ready(
         &caller,
         "bridge.invoke",
         json!({ "function_id": "engine::workers::list", "data": {} }),
@@ -111,7 +110,7 @@ async fn bridge_invoke_bad_input_surfaces_deserialization_error() {
     .expect("probe invoke");
 
     let err = caller
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "bridge.invoke".to_string(),
             payload: json!({ "bad": true }),
             action: None,

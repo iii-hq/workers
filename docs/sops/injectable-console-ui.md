@@ -15,8 +15,8 @@ does not restate any of it.
 | How injection works, the `ui/` project layout, `setup(host)` and every slot, the wire contract, the shared build driver and its lint, scoped CSS, hooks/format/icons, debugging, the testing layers, the definition of done | `ade/skills/injectable-ui.md` (`ade/injectable-ui`) |
 | Responsive UX, archetypes, configuration and provider forms, the validation matrix | `ade/skills/design-console-ui.md` (`ade/design-console-ui`) |
 | Tokens, typography, shared components, every number | `ade/skills/design-system.md` (`ade/design-system`) |
-| The console worker: functions, trigger types, `console::ui-manifest` | `ade/skills/SKILL.md` |
-| Trigger-activity renderer authoring and its test matrix | `ade/web/docs/custom-trigger-components.md` |
+| The console worker: functions, the observable functions it hosts (`console::ui::asset`, `console::ui::on-assets-changed`), `console::ui-manifest` | `ade/skills/SKILL.md` |
+| Observer-activity renderer authoring and its test matrix | `ade/web/docs/custom-observer-components.md` |
 | Per-worker conformance inventory and the deliberate local exceptions | `docs/sops/console-ui-conformance.md` |
 | The crate: defaults, overrides, what `register` does | `crates/console-ui/README.md`, `crates/console-ui/src/lib.rs` |
 | Node workers | No helper exists; implement the wire contract directly (`ade/injectable-ui` › Registration). `pi`, `vscode`, `onboarding` and `claude-code` are the examples. |
@@ -27,9 +27,9 @@ does not restate any of it.
 |---|---|
 | Two assets, the template to copy | `state/Cargo.toml`, `state/build.rs`, `state/src/ui.rs`, `state/src/boot.rs` |
 | Extra script assets (vendor bundles) | `canvas/src/ui.rs`, `canvas/build.rs` |
-| A lazy `console:module` (xterm, loaded when a terminal opens) | `ide/src/ui.rs`, `ide/build.rs`, `ide/ui/build.mjs` |
+| A lazy `module` asset (xterm, loaded when a terminal opens) | `ide/src/ui.rs`, `ide/build.rs`, `ide/ui/build.mjs` |
 | Custom content function id | `code-runner/src/ui.rs` |
-| A worker that owns a trigger type | `cron/src/ui.rs` |
+| A worker that hosts an event source | `cron/src/ui.rs` |
 
 ## 1. Link the crate
 
@@ -91,26 +91,37 @@ pub fn register(iii: &Arc<IIIClient>) {
 ```
 
 - `pub mod ui;` in `lib.rs`; `crate::ui::register(&iii)` in the boot path
-  right after the functions are registered (`state/src/boot.rs`). The content
-  function must exist before the triggers name it. The console may come up
-  later: the engine parks the registration until a console owns the type.
+  right after the functions are registered (`state/src/boot.rs`). Each asset
+  is an observer of `console::ui::asset` with args `{ kind, path }` and the
+  content function as its target, so the content function must exist before
+  the observers name it. The console may come up later: each observer stays
+  `pending` until the ADE registers `console::ui::asset`.
 - The name passed to `ConsoleUi::new` is the worker's registry name. Every
   asset path starts with it: the first segment becomes the `data-iii-ui`
   style scope and the only attribution, and the builder warns when it does
   not match.
-- One more `console:script` (a vendor bundle, a second page) is one more
+- One more `script` asset (a vendor bundle, a second page) is one more
   `.script(path, include_str!(…))` here, one more dist asset in `build.rs`,
   and one more `entryPoints` entry in `ui/build.mjs`.
 - Code only one view needs (the ide's xterm terminal) ships as a
-  `console:module` instead: `.module(path, include_str!(…))` here, the dist
+  `module` asset instead: `.module(path, include_str!(…))` here, the dist
   asset in `build.rs`, and an `entryPoints` entry that emits a fixed-name
   `dist/<name>.js`. The console serves it but never imports it at mount; the
   page calls `host.importModule<typeof import('./<name>')>(path)` and imports
   the library itself only as types (`ade/injectable-ui` › Lazy modules).
+- Modules come first, in every SDK. The console commits assets in the order
+  their observers reach it, and every SDK sends a worker's observers to the
+  engine in the order the worker created them, on the first connection and
+  on every reconnect. `register` observes modules and styles at once, and
+  each script once every module observer is active or has failed, so the
+  console serves the modules a script imports before the script reaches a
+  tab. A Node or Go worker that observes `console::ui::asset` itself
+  observes its module assets before its scripts.
 - The builder panics on a path the console would reject: empty, over 512
   characters, a leading `/`, an empty, `.` or `..` segment, characters outside
   `[a-z0-9._-]`, an extension that does not match the asset kind, or a
-  duplicate. Runtime trigger failures are warn-logged, not fatal.
+  duplicate. An asset observer the console rejects at runtime is warn-logged,
+  not fatal.
 - Defaults derive from the worker name (`<worker>::ui-content`,
   `III_<WORKER>_UI_WATCH`, `ui/dist`) and each has a builder override
   (`.content_function_id`, `.watch_env`, `.watch_default_dir`). Only
@@ -121,13 +132,13 @@ pub fn register(iii: &Arc<IIIClient>) {
 With the watch env var set, the crate polls the build output once a second.
 `1` or `true` means the default directory; any other value names a directory
 (a `.js` file path means its parent). On change it swaps the served bytes,
-registers a fresh trigger for the same path, then unregisters the previous
-handle, so open tabs never see a zero-trigger window and the SDK holds one
-trigger per path across reconnects.
+observes `console::ui::asset` for the same path afresh, then disposes the
+previous observer, so open tabs never see a window without the asset and the
+SDK replays one observer per path across reconnects.
 
 ```bash
 pnpm --dir mywork/ui watch                    # esbuild --watch → ui/dist
-cd mywork && III_MYWORK_UI_WATCH=1 cargo run  # poll ui/dist, re-register on change
+cd mywork && III_MYWORK_UI_WATCH=1 cargo run  # poll ui/dist, re-observe on change
 ```
 
 `workers-dev` does both for a container whose `ui/` declares a `watch`

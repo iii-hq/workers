@@ -11,11 +11,15 @@ use std::time::{Duration, Instant};
 
 use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{register_worker, IIIClient, RegisterFunction};
+use iii_sdk::{
+    register_worker, Call, CallRequest, Capture, Deliver, IIIClient, Observer, ObserverOptions,
+    RegisterFunction, Source,
+};
 use llm_router::channels::create_router_channel;
 use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value, ENTRY_ID};
+use llm_router::events::RouterEvents;
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
+use llm_router::provider_scaffold::router_client::observe_router_ready;
 use llm_router::register::register_router;
 use llm_router::registry::store::RegistryStore;
 use llm_router::types::router::ProviderDeclaration;
@@ -29,7 +33,7 @@ mod engine_fixture;
 use engine_fixture::*;
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
@@ -357,7 +361,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                     .map(|id| json!({ "id": id, "provider": "real", "context_window": 100000, "max_output_tokens": 8192, "supports_vision": true }))
                     .collect();
                 async move {
-                    iii.trigger(TriggerRequest {
+                    iii.call(CallRequest {
                         function_id: "router::models::reconcile".into(),
                         payload: json!({ "provider": "real", "token": token, "models": models }),
                         action: None,
@@ -370,9 +374,10 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
         );
     }
 
-    // Match the production provider lifecycle: keep a deterministic direct
-    // ready handler so a restarted router can rediscover this still-live
-    // provider even if the one-shot trigger binding was replayed too late.
+    // Match the production provider lifecycle: a deterministic ready handler,
+    // the target of the provider's observer of router::on-ready, which a
+    // restarted router also calls directly when it rediscovers this
+    // still-live provider.
     let iii_ready = iii.clone();
     let token_for_ready = token_cell.clone();
     let opts_for_ready = opts.clone();
@@ -389,7 +394,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
                 let token = token.ok_or_else(|| {
                     Error::Handler("provider ready handler has no registration token".into())
                 })?;
-                iii.trigger(TriggerRequest {
+                iii.call(CallRequest {
                     function_id: "router::provider::register".into(),
                     payload: live_provider_declaration(&opts, Some(token)),
                     action: None,
@@ -400,11 +405,7 @@ async fn start_live_provider(url: &str, opts: ProviderOptions) -> LiveProvider {
             }
         }),
     );
-    let _ = iii.register_trigger(RegisterTriggerInput::new(
-        "router::ready",
-        "provider::real::on_router_ready",
-        json!({}),
-    ));
+    observe_router_ready(&iii, "provider::real::on_router_ready");
 
     // declare (with a short retry in case the router is still booting)
     let mut token = None;
@@ -476,7 +477,7 @@ async fn end_to_end_relay_over_a_live_engine() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
 
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
             action: None,
@@ -547,7 +548,7 @@ async fn route_previews_the_same_provider_chat_executes() {
     // pinning the preview as the explicit provider executes on that provider.
     let (writer_ref, _frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -583,7 +584,7 @@ async fn route_previews_the_same_provider_chat_executes() {
     assert_eq!(route["provider"], "real");
     let (writer_ref, _frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({ "writer_ref": writer_ref, "model": "real::live-1", "messages": [] }),
             action: None,
@@ -637,7 +638,7 @@ async fn consumer_cancellation_propagates_to_the_provider() {
         let writer_ref = channel.writer_ref.clone();
         tokio::spawn(async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
                     action: None,
@@ -687,9 +688,9 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
         .await
         .expect("router reboots");
 
-    // Availability is pessimistically reset on load. The router must recover
-    // this still-live provider itself through its direct engine-function nudge;
-    // relying only on the one-shot router::ready replay has a boot race.
+    // Availability is pessimistically reset on load. The provider's observer
+    // of router::on-ready outlives the first router, so the second one's ready
+    // call reaches it, and the registration sweep nudges it directly too.
     let list = call_until(&second, "router::provider::list", json!({}), |value| {
         value["providers"].as_array().is_some_and(|providers| {
             providers
@@ -713,6 +714,585 @@ async fn registry_survives_a_router_restart_and_token_stays_bound() {
 
     provider.iii.shutdown();
     second.shutdown();
+}
+
+/// A probe worker with one `router::on-ready` target per name, each recording
+/// what it receives. The targets are not `provider::<id>::on_router_ready`,
+/// so the router's rediscovery sweep never calls them: every payload is a
+/// delivery to one of their observers.
+fn ready_probe(url: &str, names: &[&str]) -> (IIIClient, Vec<Received>) {
+    let probe = register_worker(url, test_init_options());
+    let received = names
+        .iter()
+        .map(|name| {
+            let received = Received::default();
+            let sink = received.clone();
+            probe.register_function(
+                ready_target(name),
+                RegisterFunction::new(move |input: Value| {
+                    sink.lock().unwrap().push(input);
+                    Ok::<Value, Error>(json!({}))
+                }),
+            );
+            received
+        })
+        .collect();
+    (probe, received)
+}
+
+/// What one probe target received, in order.
+type Received = Arc<std::sync::Mutex<Vec<Value>>>;
+
+fn ready_target(name: &str) -> String {
+    format!("probe::{name}::on_ready")
+}
+
+/// `router::on-ready` with the default envelope, capturing the call's
+/// metadata, so the target sees which observer each call was for.
+fn ready_envelope_source() -> Source {
+    Source::function("router::on-ready").capture([
+        Capture::Input,
+        Capture::Output,
+        Capture::Metadata,
+    ])
+}
+
+/// Observes `router::on-ready` with the default envelope and the call's
+/// metadata.
+fn observe_router_ready_envelope(iii: &IIIClient, target: &str) -> iii_sdk::ObserverHandle {
+    iii.observe(ready_envelope_source(), target)
+}
+
+async fn wait_active(observer: &iii_sdk::ObserverHandle, what: &str) {
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .unwrap_or_else(|_| panic!("{what}: router::on-ready observer active in time"))
+        .unwrap_or_else(|error| panic!("{what}: router::on-ready observer accepted: {error}"));
+}
+
+/// Waits until `received` holds `want` payloads, then holds for a quiet
+/// period and checks no more arrive.
+async fn assert_count_settles(received: &Received, want: usize, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while received.lock().unwrap().len() < want {
+        assert!(
+            Instant::now() < deadline,
+            "{what}: {} of {want} deliveries",
+            received.lock().unwrap().len()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let got = received.lock().unwrap().clone();
+    assert_eq!(got.len(), want, "{what}: {got:?}");
+}
+
+/// Every payload a `deliver: output` target received is the ready event itself.
+fn assert_ready_events(received: &Received, what: &str) {
+    for payload in received.lock().unwrap().iter() {
+        assert_eq!(
+            payload,
+            &json!({}),
+            "{what}: the ready event is delivered as output"
+        );
+    }
+}
+
+/// Every payload a default-envelope target received is an `Observed` envelope
+/// of a successful `router::on-ready` call for `observer_id` alone (metadata
+/// `for_observer`), carrying the ready event as input and output.
+fn assert_ready_envelopes(received: &Received, observer_id: &str, what: &str) {
+    for envelope in received.lock().unwrap().iter() {
+        assert_eq!(
+            envelope["function_id"], "router::on-ready",
+            "{what}: {envelope}"
+        );
+        assert_eq!(envelope["observer_id"], observer_id, "{what}: {envelope}");
+        assert_eq!(
+            envelope["metadata"]["for_observer"], observer_id,
+            "{what}: a call for this observer alone: {envelope}"
+        );
+        assert_eq!(envelope["output"], json!({}), "{what}: {envelope}");
+        assert_eq!(envelope["input"], json!({}), "{what}: {envelope}");
+        assert!(envelope.get("error").is_none(), "{what}: {envelope}");
+    }
+}
+
+/// A TCP proxy in front of the engine whose connections the test can cut:
+/// a worker connected through it loses its connection, and the SDK reattaches
+/// through the proxy, which keeps listening.
+struct SeverableProxy {
+    url: String,
+    open: Arc<std::sync::Mutex<Vec<std::net::TcpStream>>>,
+}
+
+impl SeverableProxy {
+    fn start(engine_url: &str) -> Self {
+        let upstream = engine_url
+            .strip_prefix("ws://")
+            .expect("a ws:// engine url")
+            .to_string();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the proxy");
+        let url = format!("ws://{}", listener.local_addr().expect("proxy address"));
+        let open: Arc<std::sync::Mutex<Vec<std::net::TcpStream>>> = Arc::default();
+        let streams = open.clone();
+        std::thread::spawn(move || {
+            for client in listener.incoming() {
+                let Ok(client) = client else { continue };
+                let Ok(server) = std::net::TcpStream::connect(&upstream) else {
+                    continue;
+                };
+                let (Ok(client_read), Ok(server_read), Ok(client_held), Ok(server_held)) = (
+                    client.try_clone(),
+                    server.try_clone(),
+                    client.try_clone(),
+                    server.try_clone(),
+                ) else {
+                    continue;
+                };
+                streams.lock().unwrap().extend([client_held, server_held]);
+                pipe(client_read, server);
+                pipe(server_read, client);
+            }
+        });
+        Self { url, open }
+    }
+
+    /// Closes every connection made through the proxy so far.
+    fn sever(&self) {
+        for stream in self.open.lock().unwrap().drain(..) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+/// Copies `from` into `to` on a thread of its own; closes both when `from`
+/// ends.
+fn pipe(mut from: std::net::TcpStream, mut to: std::net::TcpStream) {
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut from, &mut to);
+        let _ = to.shutdown(std::net::Shutdown::Both);
+        let _ = from.shutdown(std::net::Shutdown::Both);
+    });
+}
+
+/// What a router's worker-wide observer hooks saw, in order: `accepted` for an
+/// observer once the function's own added hook ran and the SDK accepted it,
+/// `removed` after the function's own removed hook ran.
+#[derive(Clone, Default)]
+struct HookLog(Arc<std::sync::Mutex<Vec<(&'static str, String)>>>);
+
+impl HookLog {
+    fn install(iii: &IIIClient) -> Self {
+        let log = Self::default();
+        let on_added = log.clone();
+        iii.on_observer_added(move |observer: Observer| {
+            let log = on_added.clone();
+            async move {
+                // The worker's added hook runs before the function's; the
+                // observer is accepted after both.
+                tokio::spawn(async move {
+                    if observer.accepted().await.is_ok() {
+                        log.push("accepted", observer.id());
+                    }
+                });
+                Ok(())
+            }
+        });
+        let on_removed = log.clone();
+        iii.on_observer_removed(move |observer: Observer| {
+            let log = on_removed.clone();
+            async move { log.push("removed", observer.id()) }
+        });
+        log
+    }
+
+    fn push(&self, event: &'static str, id: &str) {
+        self.0.lock().unwrap().push((event, id.to_string()));
+    }
+
+    fn count(&self, event: &str, id: &str) -> usize {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(e, i)| *e == event && i == id)
+            .count()
+    }
+
+    /// Waits until the hooks saw `event` for observer `id` `want` times.
+    async fn wait(&self, event: &str, id: &str, want: usize) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while self.count(event, id) < want {
+            assert!(
+                Instant::now() < deadline,
+                "router hooks: {event} {id} {} of {want} times; saw {:?}",
+                self.count(event, id),
+                self.0.lock().unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}
+
+/// Observers added after the router is ready: each receives the ready event
+/// once, in the shape its `deliver` names, and no other observer receives it.
+#[tokio::test(flavor = "multi_thread")]
+async fn router_ready_reaches_each_late_observer_once_in_its_shape() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    let (probe, received) = ready_probe(&engine.url, &["first", "envelope", "second"]);
+    let first = observe_router_ready(&probe, &ready_target("first"));
+    wait_active(&first, "first").await;
+    assert_count_settles(&received[0], 1, "observer added after the router is ready").await;
+    assert_ready_events(&received[0], "first");
+
+    let envelope = observe_router_ready_envelope(&probe, &ready_target("envelope"));
+    wait_active(&envelope, "envelope").await;
+    assert_count_settles(&received[1], 1, "default-envelope observer").await;
+    assert_ready_envelopes(&received[1], envelope.id(), "envelope");
+
+    let second = observe_router_ready(&probe, &ready_target("second"));
+    wait_active(&second, "second").await;
+    assert_count_settles(&received[2], 1, "second late observer").await;
+    assert_ready_events(&received[2], "second");
+
+    // Each event went to the observer it was for.
+    assert_eq!(
+        received[0].lock().unwrap().len(),
+        1,
+        "first received another's event"
+    );
+    assert_eq!(
+        received[1].lock().unwrap().len(),
+        1,
+        "envelope received another's event"
+    );
+
+    probe.shutdown();
+    router_iii.shutdown();
+}
+
+/// Observers added before any router hosts `router::on-ready` wait pending;
+/// each router start sends each of them the ready event once, in its shape.
+#[tokio::test(flavor = "multi_thread")]
+async fn router_ready_reaches_a_pending_observer_once_per_router_start() {
+    let engine = engine_or_skip!();
+
+    let (probe, received) = ready_probe(&engine.url, &["early", "envelope"]);
+    let _early = observe_router_ready(&probe, &ready_target("early"));
+    let envelope = observe_router_ready_envelope(&probe, &ready_target("envelope"));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        received[0].lock().unwrap().is_empty(),
+        "no router has started"
+    );
+    assert!(
+        received[1].lock().unwrap().is_empty(),
+        "no router has started"
+    );
+
+    let first = register_worker(&engine.url, test_init_options());
+    register_router(first.clone()).await.expect("router boots");
+    assert_count_settles(&received[0], 1, "first router start").await;
+    assert_count_settles(&received[1], 1, "first router start, envelope").await;
+    first.shutdown();
+
+    let second = register_worker(&engine.url, test_init_options());
+    register_router(second.clone())
+        .await
+        .expect("router reboots");
+    assert_count_settles(&received[0], 2, "second router start").await;
+    assert_count_settles(&received[1], 2, "second router start, envelope").await;
+    assert_ready_events(&received[0], "early");
+    assert_ready_envelopes(&received[1], envelope.id(), "envelope");
+
+    probe.shutdown();
+    second.shutdown();
+}
+
+/// Observers added while the router boots (pending before it registers
+/// `router::on-ready`, added before it is ready, added after) each receive
+/// the ready event exactly once.
+///
+/// Exactly once holds by construction: every call the router makes of
+/// `router::on-ready` is a call for one observer, made once per added
+/// observer, so no other call reaches an observer that already has its
+/// event. The envelope observers (every other one) check that each delivery
+/// is a call for that observer; the counts check the outcome across the boot.
+#[tokio::test(flavor = "multi_thread")]
+async fn router_ready_reaches_each_observer_once_while_the_router_boots() {
+    let engine = engine_or_skip!();
+
+    const MAX: usize = 48;
+    let names: Vec<String> = (0..MAX).map(|i| format!("boot{i}")).collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (probe, received) = ready_probe(&engine.url, &name_refs);
+    // Let the probe's targets register before observers name them.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Even observers take the event as output (the provider shape), odd ones
+    // the envelope with the call's metadata.
+    let observe = |i: usize| {
+        let target = ready_target(&names[i]);
+        if i.is_multiple_of(2) {
+            observe_router_ready(&probe, &target)
+        } else {
+            observe_router_ready_envelope(&probe, &target)
+        }
+    };
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    let boot = tokio::spawn(register_router(router_iii.clone()));
+    let mut observers = Vec::new();
+    while !boot.is_finished() && observers.len() < MAX - 2 {
+        observers.push(observe(observers.len()));
+        tokio::time::sleep(Duration::from_millis(3)).await;
+    }
+    boot.await.expect("router boot task").expect("router boots");
+    // Two more once it is ready.
+    for _ in 0..2 {
+        observers.push(observe(observers.len()));
+    }
+    assert!(
+        observers.len() >= 3,
+        "the router booted before observers were added"
+    );
+    eprintln!(
+        "{} observers added while the router booted, 2 after",
+        observers.len() - 2
+    );
+
+    for (i, observer) in observers.iter().enumerate() {
+        wait_active(observer, &names[i]).await;
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while received[..observers.len()]
+        .iter()
+        .any(|r| r.lock().unwrap().is_empty())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "not every observer received the ready event"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    for (i, r) in received.iter().enumerate() {
+        let want = usize::from(i < observers.len());
+        assert_eq!(r.lock().unwrap().len(), want, "{}", names[i]);
+        match observers.get(i) {
+            Some(observer) if !i.is_multiple_of(2) => {
+                assert_ready_envelopes(r, observer.id(), &names[i])
+            }
+            _ => assert_ready_events(r, &names[i]),
+        }
+    }
+
+    probe.shutdown();
+    router_iii.shutdown();
+}
+
+/// An observer removed before the router is ready and added again (its
+/// worker reattached within the observer grace period, or it was disposed
+/// and observed again under its id) receives the ready event once, as does
+/// an observer that stayed: the removed hook stops the send it had pending.
+/// The test holds the router's event functions itself, so it says when the
+/// router is ready.
+#[tokio::test(flavor = "multi_thread")]
+async fn router_ready_reaches_an_observer_removed_before_ready_once() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    let hooks = HookLog::install(&router_iii);
+    let events = RouterEvents::register(&router_iii);
+
+    let proxy = SeverableProxy::start(&engine.url);
+    let (away_probe, away_received) = ready_probe(&proxy.url, &["away"]);
+    let (probe, received) = ready_probe(&engine.url, &["stays", "again"]);
+    let away = observe_router_ready_envelope(&away_probe, &ready_target("away"));
+    let stays = observe_router_ready_envelope(&probe, &ready_target("stays"));
+    const AGAIN: &str = "router-ready-observed-again";
+    let again_options = || ObserverOptions::default().id(AGAIN);
+    let again = probe.observe_with(
+        ready_envelope_source(),
+        ready_target("again"),
+        again_options(),
+    );
+    for (observer, what) in [(&away, "away"), (&stays, "stays"), (&again, "again")] {
+        wait_active(observer, what).await;
+        hooks.wait("accepted", observer.id(), 1).await;
+    }
+
+    // The away worker loses its connection: the engine withdraws its observer
+    // from the router and announces it again when the worker reattaches.
+    proxy.sever();
+    hooks.wait("removed", away.id(), 1).await;
+    hooks.wait("accepted", away.id(), 2).await;
+
+    // Disposed and observed again under the same id.
+    again.dispose().await.expect("dispose the observer");
+    hooks.wait("removed", AGAIN, 1).await;
+    let again = probe.observe_with(
+        ready_envelope_source(),
+        ready_target("again"),
+        again_options(),
+    );
+    wait_active(&again, "again, observed again").await;
+    hooks.wait("accepted", AGAIN, 2).await;
+
+    for (r, what) in [
+        (&away_received[0], "away"),
+        (&received[0], "stays"),
+        (&received[1], "again"),
+    ] {
+        assert!(
+            r.lock().unwrap().is_empty(),
+            "{what}: no event before the router is ready"
+        );
+    }
+
+    events.ready().await;
+    assert_count_settles(&away_received[0], 1, "observer whose worker reattached").await;
+    assert_count_settles(&received[0], 1, "observer that stayed").await;
+    assert_count_settles(&received[1], 1, "observer observed again").await;
+    assert_ready_envelopes(&away_received[0], away.id(), "away");
+    assert_ready_envelopes(&received[0], stays.id(), "stays");
+    assert_ready_envelopes(&received[1], AGAIN, "again");
+
+    away_probe.shutdown();
+    probe.shutdown();
+    router_iii.shutdown();
+}
+
+/// An observer whose worker reattaches after the router is ready (within the
+/// observer grace period) is added again and receives the ready event once
+/// more, in its shape; an observer that stayed receives nothing more.
+#[tokio::test(flavor = "multi_thread")]
+async fn router_ready_reaches_an_observer_again_when_its_worker_reattaches() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    let proxy = SeverableProxy::start(&engine.url);
+    let (away_probe, away_received) = ready_probe(&proxy.url, &["away", "away-envelope"]);
+    let (probe, received) = ready_probe(&engine.url, &["stays"]);
+    let away = observe_router_ready(&away_probe, &ready_target("away"));
+    let away_envelope = observe_router_ready_envelope(&away_probe, &ready_target("away-envelope"));
+    let stays = observe_router_ready_envelope(&probe, &ready_target("stays"));
+    for (observer, what) in [
+        (&away, "away"),
+        (&away_envelope, "away-envelope"),
+        (&stays, "stays"),
+    ] {
+        wait_active(observer, what).await;
+    }
+    assert_count_settles(&away_received[0], 1, "away, router ready").await;
+    assert_count_settles(&away_received[1], 1, "away-envelope, router ready").await;
+    assert_count_settles(&received[0], 1, "stays, router ready").await;
+
+    proxy.sever();
+    assert_count_settles(&away_received[0], 2, "away, its worker reattached").await;
+    assert_count_settles(&away_received[1], 2, "away-envelope, its worker reattached").await;
+    assert_ready_events(&away_received[0], "away");
+    assert_ready_envelopes(&away_received[1], away_envelope.id(), "away-envelope");
+    assert_eq!(
+        received[0].lock().unwrap().len(),
+        1,
+        "an observer that stayed receives no second event"
+    );
+    assert_ready_envelopes(&received[0], stays.id(), "stays");
+
+    away_probe.shutdown();
+    probe.shutdown();
+    router_iii.shutdown();
+}
+
+/// The provider protocol carries the registration token, and `resolve`'s
+/// output and `update_credential`'s input a credential: none of it may reach
+/// an observer.
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_protocol_functions_are_not_observable() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    let spy = register_worker(&engine.url, test_init_options());
+    let delivered = Arc::new(AtomicU64::new(0));
+    let sink = delivered.clone();
+    spy.register_function(
+        "spy::on_protocol",
+        RegisterFunction::new_async(move |_input: Value| {
+            let sink = sink.clone();
+            async move {
+                sink.fetch_add(1, Ordering::SeqCst);
+                Ok::<Value, Error>(json!({}))
+            }
+        }),
+    );
+    let protocol = [
+        "router::provider::register",
+        "router::provider::resolve",
+        "router::provider::update_credential",
+        "router::models::reconcile",
+    ];
+    for function_id in protocol {
+        // The default envelope: input and output.
+        let observer = spy.observe(function_id, "spy::on_protocol");
+        let err = tokio::time::timeout(Duration::from_secs(10), observer.ready())
+            .await
+            .unwrap_or_else(|_| panic!("observing {function_id} answered in time"))
+            .expect_err("observing a provider protocol function fails");
+        assert_eq!(remote_code(&err), "NOT_OBSERVABLE", "{function_id}: {err}");
+    }
+
+    // The protocol runs as before, and nothing reaches the spy.
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+    call(
+        &provider.iii,
+        "router::provider::update_credential",
+        json!({
+            "id": "real", "token": provider.token,
+            "credential": { "type": "oauth", "access_token": "at-spied", "expires_at": 999 }
+        }),
+    )
+    .await
+    .expect("update_credential accepted");
+    let resolved = call(
+        &provider.iii,
+        "router::provider::resolve",
+        json!({ "id": "real", "token": provider.token }),
+    )
+    .await
+    .expect("resolve answers");
+    assert_eq!(resolved["credential"]["access_token"], "at-spied");
+    call(
+        &provider.iii,
+        "router::models::reconcile",
+        json!({ "provider": "real", "token": provider.token, "models": [] }),
+    )
+    .await
+    .expect("reconcile accepted");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        delivered.load(Ordering::SeqCst),
+        0,
+        "a protocol call reached the spy"
+    );
+
+    provider.iii.shutdown();
+    spy.shutdown();
+    router_iii.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -978,7 +1558,7 @@ async fn abort_stops_the_stream_and_terminates_with_done_aborted() {
         let consumer = consumer.clone();
         tokio::spawn(async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({ "writer_ref": writer_ref, "request_id": "abort-me", "model": "live-1", "messages": [] }),
                     action: None,
@@ -1046,7 +1626,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
         let consumer = first_consumer.clone();
         tokio::spawn(async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({
                         "writer_ref": first_ref,
@@ -1070,7 +1650,7 @@ async fn duplicate_request_id_is_rejected_without_orphaning_the_original() {
     let second_consumer = register_worker(&engine.url, test_init_options());
     let (second_ref, second_frames, second_pump) = consumer_channel(&second_consumer).await;
     let duplicate = second_consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": second_ref,
@@ -1172,7 +1752,7 @@ async fn update_credential_persists_and_resolves_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn models_changed_event_reaches_a_trigger_subscriber() {
+async fn models_changed_event_reaches_an_observer() {
     let engine = engine_or_skip!();
 
     let router_iii = register_worker(&engine.url, test_init_options());
@@ -1180,8 +1760,9 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
         .await
         .expect("router boots");
 
-    // Probe worker bound to the router-owned trigger type (README § Events):
-    // the handler must receive the raw payload, no envelope.
+    // Probe worker observing the router's event function (README § Events)
+    // with the event delivered as output: the handler receives the raw event,
+    // no envelope.
     let probe = register_worker(&engine.url, test_init_options());
     let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
     let sink = received.clone();
@@ -1195,13 +1776,16 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
             }
         }),
     );
-    probe
-        .register_trigger(RegisterTriggerInput::new(
-            "router::models::changed",
-            "probe::on_models_changed",
-            json!({}),
-        ))
-        .expect("router::models::changed trigger registered");
+    let observer = probe.observe(
+        Source::function("router::models::on-changed")
+            .filters(json!({ "input.provider": { "$eq": "real" } }))
+            .deliver(Deliver::Output),
+        "probe::on_models_changed",
+    );
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .expect("router::models::on-changed observer active in time")
+        .expect("router::models::on-changed observer accepted");
 
     // Declare already emits count=1 from the static model; reconcile two
     // models so the explicit-reconcile emission is unambiguous.
@@ -1230,12 +1814,117 @@ async fn models_changed_event_reaches_a_trigger_subscriber() {
         }
         assert!(
             Instant::now() < deadline,
-            "router::models::changed never reached the trigger subscriber; got {:?}",
+            "router::models::on-changed never reached the observer; got {:?}",
             received.lock().unwrap()
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    probe.shutdown();
+    router_iii.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn provider_changed_event_reports_register_and_discovery() {
+    let engine = engine_or_skip!();
+
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    let probe = register_worker(&engine.url, test_init_options());
+    let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let sink = received.clone();
+    probe.register_function(
+        "probe::on_provider_changed",
+        RegisterFunction::new_async(move |input: Value| {
+            let sink = sink.clone();
+            async move {
+                sink.lock().unwrap().push(input);
+                Ok::<Value, Error>(json!({}))
+            }
+        }),
+    );
+    let observer = probe.observe(
+        Source::function("router::provider::on-changed")
+            .filters(json!({ "input.provider": { "$eq": "real" } }))
+            .deliver(Deliver::Output),
+        "probe::on_provider_changed",
+    );
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .expect("router::provider::on-changed observer active in time")
+        .expect("router::provider::on-changed observer accepted");
+
+    // The declaration is `register`; a discovery completion is `discovery`.
+    // The provider re-declares when its ready event arrives, which can land
+    // between the two calls and supersede the attempt: begin a new one then,
+    // as a provider does.
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let resolved = call(
+            &provider.iii,
+            "router::provider::resolve",
+            json!({ "id": "real", "token": provider.token, "begin_discovery": true }),
+        )
+        .await
+        .expect("resolve begins a discovery attempt");
+        let attempt = resolved["discovery_attempt"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no discovery_attempt in {resolved}"))
+            .to_string();
+        let reconciled = call(
+            &provider.iii,
+            "router::models::reconcile",
+            json!({
+                "provider": "real",
+                "token": provider.token,
+                "discovery": { "attempt": attempt, "outcome": "success" },
+                "models": [{ "id": "d-1", "provider": "real", "context_window": 100000, "max_output_tokens": 8192 }]
+            }),
+        )
+        .await;
+        match reconciled {
+            Ok(_) => break,
+            Err(error)
+                if error.to_string().contains("discovery attempt superseded")
+                    && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => panic!("discovery reconcile accepted: {error:?}"),
+        }
+    }
+
+    let ops = || -> Vec<String> {
+        received
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                assert_eq!(
+                    event["provider"], "real",
+                    "filtered on input.provider: {event}"
+                );
+                event["op"].as_str().unwrap_or_default().to_string()
+            })
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(ops().iter().any(|op| op == "register") && ops().iter().any(|op| op == "discovery")) {
+        assert!(Instant::now() < deadline, "ops so far: {:?}", ops());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for op in ops() {
+        assert!(
+            ["register", "discovery", "available", "unavailable"].contains(&op.as_str()),
+            "undocumented op {op}"
+        );
+    }
+
+    provider.iii.shutdown();
     probe.shutdown();
     router_iii.shutdown();
 }
@@ -1541,7 +2230,7 @@ async fn late_failure_from_an_old_registration_cannot_mark_the_new_generation_do
         let consumer = consumer.clone();
         tokio::spawn(async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({
                         "writer_ref": writer_ref,
@@ -1667,7 +2356,7 @@ async fn provider_bad_request_is_permanent_and_is_not_retried() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let error = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -1824,7 +2513,7 @@ async fn transient_pre_stream_error_retries_invisibly_with_one_resolution_key() 
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let response = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -1941,7 +2630,7 @@ async fn abort_during_retry_backoff_finishes_without_a_second_dispatch() {
         let consumer = consumer.clone();
         tokio::spawn(async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({
                         "writer_ref": writer_ref,
@@ -2076,7 +2765,7 @@ async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let error = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -2116,45 +2805,71 @@ async fn router_coded_provider_failure_still_emits_one_terminal_and_eof() {
     router.shutdown();
 }
 
+/// The id of the auth function of the listener in
+/// [`internal_channel_creation_failure_still_emits_one_terminal_and_eof`].
+const NO_CHANNELS_AUTH: &str = "test::no_channels::auth";
+
 #[tokio::test(flavor = "multi_thread")]
 async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
-    let engine = engine_or_skip!();
-    let router = register_worker(&engine.url, test_init_options());
-    register_router(router.clone()).await.expect("router boots");
-    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
-
-    // Mint the consumer channel before adversarially shadowing the engine's
-    // channel factory. The chat pipeline must turn the later internal factory
-    // failure into a terminal frame on this already-valid caller channel.
-    let consumer = register_worker(&engine.url, test_init_options());
-    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
-    let saboteur = register_worker(&engine.url, test_init_options());
-    saboteur.register_function(
-        "engine::channels::create",
-        RegisterFunction::new_async(|_input: Value| async move {
-            Err::<Value, Error>(Error::Remote {
-                code: "injected/channel_unavailable".into(),
-                message: "injected channel factory failure".into(),
-                stacktrace: None,
-            })
+    // The router connects through a second listener whose auth denies its
+    // session `engine::channels::create`; everything else is exposed. The
+    // consumer and the provider use the main listener, so the consumer's
+    // channel is valid and only the router's internal channel creation fails.
+    let router_port = free_port();
+    let Some(engine) = spawn_engine_with_state(|port, _dir| {
+        format!(
+            r#"workers:
+  - name: iii-worker-manager
+    config:
+      port: {port}
+  - name: "iii-worker-manager#no-channels"
+    config:
+      host: 127.0.0.1
+      port: {router_port}
+      rbac:
+        auth_function_id: {NO_CHANNELS_AUTH}
+        expose_functions:
+          - match("*")
+"#
+        )
+    })
+    .await
+    else {
+        return;
+    };
+    let gate = register_worker(&engine.url, test_init_options());
+    gate.register_function(
+        NO_CHANNELS_AUTH,
+        RegisterFunction::new(|_input: Value| {
+            Ok::<Value, Error>(json!({ "forbidden_functions": ["engine::channels::create"] }))
         }),
     );
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match call(&saboteur, "engine::channels::create", json!({})).await {
-            Err(error) if remote_code(&error) == "injected/channel_unavailable" => break,
-            _ => {
-                assert!(
-                    Instant::now() < deadline,
-                    "adversarial channel factory did not become active"
-                );
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        }
+
+    let consumer = register_worker(&engine.url, test_init_options());
+    // The listener authenticates the router's connection with this function.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while call(&consumer, NO_CHANNELS_AUTH, json!({})).await.is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "auth function registered in time"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
+    let router = register_worker(
+        &format!("ws://127.0.0.1:{router_port}"),
+        test_init_options(),
+    );
+    register_router(router.clone()).await.expect("router boots");
+    let denied = call(&router, "engine::channels::create", json!({}))
+        .await
+        .expect_err("the router's session may not create channels");
+    assert_eq!(remote_code(&denied), "FORBIDDEN", "{denied:?}");
+    let provider = start_live_provider(&engine.url, ProviderOptions::default()).await;
+    let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
+
     let error = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -2193,7 +2908,7 @@ async fn internal_channel_creation_failure_still_emits_one_terminal_and_eof() {
         "frames: {parsed:?}"
     );
 
-    saboteur.shutdown();
+    gate.shutdown();
     consumer.shutdown();
     provider.iii.shutdown();
     router.shutdown();
@@ -2223,7 +2938,7 @@ async fn chat_provider_disappears_before_dispatch_emits_one_terminal_and_eof() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let err = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -2310,7 +3025,7 @@ async fn terminal_frame_completes_even_when_the_provider_handler_lingers() {
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let started = Instant::now();
     let response = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({ "writer_ref": writer_ref, "model": "live-1", "messages": [] }),
             action: None,
@@ -2540,45 +3255,23 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
 
 /// Stand-in for the `secrets` worker: `secrets::resolve` answers from a
 /// name → value / error-code table (`env://NAME` references under that full
-/// key), and the `secrets::changed` trigger type fans out to whoever bound
-/// it.
+/// key), and `secrets::on-changed` is a private function whose deliver hook
+/// calls every matching observer and waits for each, so an announcement
+/// returns once the router has handled it.
 #[derive(Clone)]
 struct FakeSecretsWorker {
     iii: IIIClient,
     table: Arc<std::sync::Mutex<HashMap<String, Result<String, String>>>>,
-    bindings: Arc<std::sync::Mutex<HashMap<String, String>>>,
     callers: Arc<std::sync::Mutex<Vec<Value>>>,
 }
 
-struct FakeSecretsChanged {
-    bindings: Arc<std::sync::Mutex<HashMap<String, String>>>,
-}
-
-#[async_trait::async_trait]
-impl iii_sdk::trigger::TriggerHandler for FakeSecretsChanged {
-    async fn register_trigger(&self, config: iii_sdk::trigger::TriggerConfig) -> Result<(), Error> {
-        self.bindings
-            .lock()
-            .unwrap()
-            .insert(config.id, config.function_id);
-        Ok(())
-    }
-
-    async fn unregister_trigger(
-        &self,
-        config: iii_sdk::trigger::TriggerConfig,
-    ) -> Result<(), Error> {
-        self.bindings.lock().unwrap().remove(&config.id);
-        Ok(())
-    }
-}
+const SECRETS_ON_CHANGED: &str = "secrets::on-changed";
 
 async fn start_fake_secrets(url: &str) -> FakeSecretsWorker {
     let iii = register_worker(url, test_init_options());
     let fake = FakeSecretsWorker {
         iii: iii.clone(),
         table: Arc::default(),
-        bindings: Arc::default(),
         callers: Arc::default(),
     };
     let (table, callers) = (fake.table.clone(), fake.callers.clone());
@@ -2614,13 +3307,28 @@ async fn start_fake_secrets(url: &str) -> FakeSecretsWorker {
             }
         }),
     );
-    iii.register_trigger_type(iii_sdk::RegisterTriggerType::new(
-        "secrets::changed",
-        "fake secrets worker: a secret changed",
-        FakeSecretsChanged {
-            bindings: fake.bindings.clone(),
-        },
-    ));
+    {
+        let iii_for_deliver = iii.clone();
+        iii.on_observer_deliver_for(
+            SECRETS_ON_CHANGED,
+            move |call: Call, observers: Vec<Observer>| {
+                let iii = iii_for_deliver.clone();
+                async move {
+                    for observer in observers.iter().filter(|obs| obs.matches(&call)) {
+                        iii.call(CallRequest::observer(observer, call.input.clone()))
+                            .await?;
+                    }
+                    Ok(call.input)
+                }
+            },
+        );
+    }
+    iii.register_function(
+        SECRETS_ON_CHANGED,
+        RegisterFunction::new(|event: Value| Ok::<_, Error>(event))
+            .description("fake secrets worker: a secret changed")
+            .private(),
+    );
     fake
 }
 
@@ -2632,8 +3340,9 @@ impl FakeSecretsWorker {
             .insert(name.into(), outcome.map(String::from).map_err(String::from));
     }
 
-    /// Fire `secrets::changed` to every binding, synchronously, once the
-    /// engine has handed this (late) type its parked bindings.
+    /// Call `secrets::on-changed`, which reaches the router's observer
+    /// synchronously, once that observer (pending until this late function
+    /// registered) is active.
     async fn announce(&self, name: &str, action: &str) {
         self.announce_ref(name, &format!("secret://{name}"), action)
             .await;
@@ -2641,26 +3350,20 @@ impl FakeSecretsWorker {
 
     async fn announce_ref(&self, name: &str, reference: &str, action: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let targets = loop {
-            let targets: Vec<String> = self.bindings.lock().unwrap().values().cloned().collect();
-            if !targets.is_empty() {
-                break targets;
-            }
+        while !self.iii.is_observed(SECRETS_ON_CHANGED) {
             assert!(
                 Instant::now() < deadline,
-                "the router's secrets::changed binding never reached the late trigger type"
+                "the router's observer of secrets::on-changed never became active"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
-        };
-        for function_id in targets {
-            call(
-                &self.iii,
-                &function_id,
-                json!({ "name": name, "ref": reference, "action": action, "updated_at": "2026-10-02T00:00:00Z" }),
-            )
-            .await
-            .expect("secrets::changed subscriber answers");
         }
+        call(
+            &self.iii,
+            SECRETS_ON_CHANGED,
+            json!({ "name": name, "ref": reference, "action": action, "updated_at": "2026-10-02T00:00:00Z" }),
+        )
+        .await
+        .expect("secrets::on-changed reaches the router's observer");
     }
 }
 
@@ -2759,7 +3462,7 @@ async fn secret_reference_resolves_late_and_follows_secret_changes() {
         "provider::list never carries a value"
     );
 
-    // Rotation announced on secrets::changed: the router serves the new value
+    // Rotation announced on secrets::on-changed: the router serves the new value
     // and nudges the provider to drop its cached resolve.
     let ready_before = provider.ready_calls.load(Ordering::SeqCst);
     secrets.set("REAL_KEY", Ok("sk-rotated"));

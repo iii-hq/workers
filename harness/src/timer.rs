@@ -1,4 +1,4 @@
-//! `timer` — the one-shot deadline as a first-class trigger type.
+//! `harness::on-timer` — the one-shot deadline as an observable function.
 //!
 //! Every live run that needed "tell me at T that it didn't happen" reached
 //! for cron and fumbled it: boundary expressions fire early (`0 */10` is
@@ -7,14 +7,18 @@
 //! unbounded cron three times rather than apply `once: true`. A deadline is
 //! not a schedule; it deserves its own primitive.
 //!
-//! The provider lives in the harness worker but registers the type with the
-//! ENGINE, so it appears in `engine::triggers::list` for discovery-blind
-//! agents and rides the engine's registration replay: on a harness restart
-//! the engine re-sends every live registration and the timers re-arm at the
-//! SAME absolute instant — which is why the harness's registration intercept
-//! resolves `{ in_ms }` to `{ at }` before the engine ever stores it. A
-//! deadline that passed while the worker was down fires immediately on
-//! replay; the delivery hop's claim makes any double-fire a no-op.
+//! The function is private and its handler returns the event it is called
+//! with. Its observers pass args `{ at }` (epoch ms): the added hook arms one
+//! one-shot per distinct instant, the removed hook cancels it with that
+//! instant's last observer, and the match hook gives each call to the
+//! observers of its own instant. Observer args replay unchanged, which is why
+//! the `harness::observe` intercept resolves `{ in_ms }` to `{ at }` before it
+//! observes. The observers of an instant that already passed (a replay after
+//! downtime) share one call, made once the observers of that instant added
+//! together are active. An observer of that instant added after the call
+//! starts another one, which reaches every observer of the instant still
+//! present; the delivery hop's claim makes a second fire of a `once` binding
+//! a no-op.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,31 +26,59 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::IIIClient;
-use serde::Deserialize;
+use iii_sdk::{
+    AddedHook, Call, CallAction, CallRequest, IIIClient, Keys, Match, ObserveRejection, Observer,
+    RegisterFunction, RemovedHook,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::types::message::AgentMessage;
 
-pub const TIMER_TYPE: &str = "timer";
-pub const TIMER_DESC: &str = "One-shot deadline: fires exactly once at `at` (epoch ms). Register \
-    with { \"in_ms\": <relative ms> } — resolved to an absolute `at` at registration — or \
-    { \"at\": <epoch ms> }. The natural second leg of any armed wake or fan-in gate: 'wake me \
-    when X happens, or tell me at T that it did not'. Fires once and retires; for recurrence \
-    use `cron`.";
+pub const ON_TIMER_FN: &str = "harness::on-timer";
+pub const ON_TIMER_DESC: &str = "One-shot deadline: called once at `at` (epoch ms) with \
+    { scheduled_at, actual_at }. Observe it with args { at }; an observer receives the call for \
+    its own `at` only. An `at` more than 7 days out is refused (CONFIG_ERROR); an `at` already \
+    past is called once as soon as its observers are active. The natural second leg of any armed \
+    wake or fan-in gate: 'wake me when X happens, or tell me at T that it did not'. For \
+    recurrence observe cron::on-tick.";
 
-/// Registered timers stay armable for at most this far out — far beyond any
-/// deadline, and short enough that an epoch-SECONDS timestamp (off by 1000×)
-/// cannot masquerade as a valid future instant.
+/// How long a late call waits for one observer of its instant to become
+/// active; a rejected observer resolves at once, a removed one may never.
+const ACTIVE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a late call waits for more observers of its instant once every
+/// pending one is active: a replay adds an instant's observers in one burst.
+const COALESCE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Timers stay armable for at most this far out — far beyond any deadline,
+/// and short enough that an epoch-SECONDS timestamp (off by 1000×) cannot
+/// masquerade as a valid future instant.
 pub const MAX_TIMER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
-/// The engine-stored config. Raw engine-side registrants may still send
-/// `in_ms`; it resolves at (re)registration — durable across restarts only
-/// as `at`, which is what the harness intercept always produces.
+/// An observer's args: the instant it wants the call at.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimerArgs {
+    /// Epoch milliseconds.
+    pub at: i64,
+}
+
+/// What the function is called with, and what its observers observe.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TimerEvent {
+    /// The observers' `at`.
+    pub scheduled_at: i64,
+    /// When the call was made.
+    pub actual_at: i64,
+}
+
+/// The agent-facing deadline shape `harness::observe` accepts for
+/// `harness::on-timer`: an absolute `at`, or a relative `in_ms` it resolves
+/// to `at` before observing.
 #[derive(Debug, Deserialize)]
-pub struct TimerTriggerConfig {
+pub struct TimerRequestArgs {
     #[serde(default)]
     pub at: Option<i64>,
     #[serde(default)]
@@ -56,8 +88,8 @@ pub struct TimerTriggerConfig {
 /// Keyed one-shot deadlines: each id holds at most one pending task that
 /// sleeps until an absolute epoch-ms instant, then runs its work once.
 ///
-/// The harness's one timer facility — the `timer` trigger provider below and
-/// the binding-expiry deadlines (`bindings::expiry`) both arm through it, so
+/// The harness's one timer facility — the `harness::on-timer` provider below
+/// and the binding-expiry deadlines (`bindings::expiry`) both arm through it, so
 /// nothing in the worker needs a periodic "is anything due?" scan. Re-arming
 /// an id replaces (aborts) its pending task; [`OneShots::cancel`] aborts it.
 /// A task that reaches its deadline DETACHES itself before running its work,
@@ -154,129 +186,221 @@ impl OneShots {
     }
 }
 
-/// Armed timers, keyed by engine trigger-instance id. Re-registration on the
-/// same id replaces (idempotent under the engine's replay); unregistration
-/// aborts the pending task.
+/// The `harness::on-timer` provider: one armed one-shot per distinct `at`,
+/// shared by the observers of that instant.
 #[derive(Clone)]
 pub struct TimerBus {
     iii: Arc<IIIClient>,
-    dispatch_timeout_ms: u64,
     timers: OneShots,
+    /// Observers per instant.
+    observers: Arc<Mutex<HashMap<i64, usize>>>,
+    /// Per past instant with a late call pending: its observers not yet
+    /// known to be active.
+    due: Arc<Mutex<HashMap<i64, Vec<Observer>>>>,
 }
 
 impl TimerBus {
-    pub fn new(iii: Arc<IIIClient>, dispatch_timeout_ms: u64) -> Self {
+    pub fn new(iii: Arc<IIIClient>) -> Self {
         Self {
             iii,
-            dispatch_timeout_ms,
             timers: OneShots::new(),
+            observers: Arc::new(Mutex::new(HashMap::new())),
+            due: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn arm(
-        &self,
-        id: String,
-        function_id: String,
-        namespace: Option<String>,
-        metadata: Option<Value>,
-        at: i64,
-    ) {
-        let bus = self.clone();
-        let task_id = id.clone();
-        self.timers.arm(id, at, async move {
-            bus.fire(&task_id, &function_id, namespace, metadata, at)
-                .await;
-        });
+    /// Set the function's hooks, then register it.
+    pub fn register(iii: &Arc<IIIClient>) -> Self {
+        let bus = Self::new(iii.clone());
+        iii.on_observer_added_for(ON_TIMER_FN, bus.clone());
+        iii.on_observer_removed_for(ON_TIMER_FN, bus.clone());
+        iii.on_observer_match_for(ON_TIMER_FN, Match::keys(observer_instant, call_instant));
+        iii.register_function(
+            ON_TIMER_FN,
+            RegisterFunction::new(|event: TimerEvent| Ok::<TimerEvent, Error>(event))
+                .description(ON_TIMER_DESC)
+                .args_format::<TimerArgs>()
+                .private(),
+        );
+        bus
     }
 
-    pub fn cancel(&self, id: &str) {
-        self.timers.cancel(id);
+    /// Count one more observer of `at`; `true` for its first.
+    fn retain(&self, at: i64) -> bool {
+        let mut observers = self.observers.lock().unwrap_or_else(|p| p.into_inner());
+        let count = observers.entry(at).or_insert(0);
+        *count += 1;
+        *count == 1
+    }
+
+    /// Count one observer of `at` less; `true` for its last.
+    fn release(&self, at: i64) -> bool {
+        let mut observers = self.observers.lock().unwrap_or_else(|p| p.into_inner());
+        match observers.get_mut(&at) {
+            Some(count) if *count > 1 => {
+                *count -= 1;
+                false
+            }
+            Some(_) => {
+                observers.remove(&at);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn arm(&self, at: i64) {
+        let bus = self.clone();
+        self.timers
+            .arm(at.to_string(), at, async move { bus.fire(at).await });
     }
 
     pub fn armed_count(&self) -> usize {
         self.timers.len()
     }
 
-    /// One fire, then done. Awaited (not void) so a failed dispatch is loggable
-    /// with its reason; the stored metadata rides along — for harness-managed
-    /// bindings it is the `__binding` pointer the delivery hop resolves.
-    async fn fire(
-        &self,
-        id: &str,
-        function_id: &str,
-        namespace: Option<String>,
-        metadata: Option<Value>,
-        at: i64,
-    ) {
+    /// Call the function once for the past instant `at` when `obs`, and every
+    /// other observer of `at` added meanwhile, is active. An observer added
+    /// while a late call for its instant is pending joins it.
+    fn fire_late(&self, at: i64, obs: Observer) {
+        {
+            let mut due = self.due.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(waiting) = due.get_mut(&at) {
+                waiting.push(obs);
+                return;
+            }
+            due.insert(at, vec![obs]);
+        }
+        let bus = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let next = bus
+                    .due
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get_mut(&at)
+                    .and_then(Vec::pop);
+                if let Some(obs) = next {
+                    let _ = tokio::time::timeout(ACTIVE_WAIT, obs.accepted()).await;
+                    continue;
+                }
+                tokio::time::sleep(COALESCE).await;
+                let mut due = bus.due.lock().unwrap_or_else(|p| p.into_inner());
+                if due.get(&at).is_some_and(|waiting| !waiting.is_empty()) {
+                    continue;
+                }
+                due.remove(&at);
+                break;
+            }
+            bus.fire(at).await;
+        });
+    }
+
+    /// Call the function once for `at`; the match hook hands the call to the
+    /// observers of that instant.
+    async fn fire(&self, at: i64) {
         let event = json!({
-            "trigger": "timer",
             "scheduled_at": at,
             "actual_at": AgentMessage::now_ms(),
         });
-        let request = TriggerRequest {
-            function_id: function_id.to_string(),
+        let call = Call {
+            input: event.clone(),
+            ..Call::default()
+        };
+        if !self.iii.is_observed_for(ON_TIMER_FN, &call) {
+            return;
+        }
+        let request = CallRequest {
+            function_id: ON_TIMER_FN.to_string(),
             payload: event,
-            action: None,
-            timeout_ms: Some(self.dispatch_timeout_ms),
+            action: Some(CallAction::Void),
+            timeout_ms: None,
         };
-        let request: iii_sdk::protocol::TriggerRequestWithMetadata = match metadata {
-            Some(metadata) => request.metadata(metadata),
-            None => request.into(),
-        };
-        let namespace = namespace.as_deref().unwrap_or("default");
-        let res = self.iii.trigger(request.namespace(namespace)).await;
-        if let Err(e) = res {
-            tracing::warn!(timer = %id, function_id, error = %e, "timer dispatch failed");
-        } else {
-            tracing::info!(timer = %id, function_id, "timer fired");
+        match self.iii.call(request).await {
+            Ok(_) => tracing::info!(at, "timer fired"),
+            Err(error) => tracing::warn!(at, %error, "timer call failed"),
         }
     }
 }
 
-/// When this registration should fire, from a raw engine-side config. The
-/// harness intercept validates strictly for agents; the provider stays
-/// LENIENT — a replayed registration whose `at` already passed must fire now,
-/// not error into a parked binding.
-pub fn resolve_fire_at(cfg: &TimerTriggerConfig, now_ms: i64) -> Result<i64, String> {
-    match (cfg.at, cfg.in_ms) {
+#[async_trait]
+impl AddedHook for TimerBus {
+    async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
+        let args: TimerArgs = obs.args()?;
+        let now = AgentMessage::now_ms();
+        if args.at - now > MAX_TIMER_MS {
+            return Err(config_error(format!(
+                "timer `at` ({}) is more than 7 days out — pass epoch MILLISECONDS",
+                args.at
+            )));
+        }
+        let first = self.retain(args.at);
+        tracing::info!(observer = %obs.id(), at = args.at, "timer armed");
+        if args.at > now {
+            if first {
+                self.arm(args.at);
+            }
+        } else {
+            // Already due (a replay after downtime): call once the observers
+            // are active, or the call would reach nobody.
+            self.fire_late(args.at, obs);
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RemovedHook for TimerBus {
+    async fn on_removed(&self, obs: Observer) {
+        let Ok(args) = obs.args::<TimerArgs>() else {
+            return;
+        };
+        if self.release(args.at) {
+            self.timers.cancel(&args.at.to_string());
+        }
+        if let Some(waiting) = self
+            .due
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(&args.at)
+        {
+            waiting.retain(|pending| pending.id() != obs.id());
+        }
+        tracing::info!(observer = %obs.id(), at = args.at, "timer observer removed");
+    }
+}
+
+/// The instant an observer wants: its `at`.
+fn observer_instant(obs: &Observer) -> Keys<'_> {
+    Keys::from(instant(obs.args_value(), "at"))
+}
+
+/// The instant a call is for: its `scheduled_at`.
+fn call_instant(call: &Call) -> Keys<'_> {
+    Keys::from(instant(&call.input, "scheduled_at"))
+}
+
+/// The epoch-ms instant at `field`, as the key both sides file under.
+fn instant(value: &Value, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(Value::as_i64)
+        .map(|at| at.to_string())
+}
+
+/// When a `harness::observe` timer should fire, from the agent's args.
+pub fn resolve_fire_at(args: &TimerRequestArgs, now_ms: i64) -> Result<i64, String> {
+    match (args.at, args.in_ms) {
         (Some(at), None) => Ok(at),
         (None, Some(in_ms)) if in_ms > 0 => Ok(now_ms + in_ms),
         (None, Some(_)) => Err("`in_ms` must be positive".into()),
-        (None, None) => Err("timer config needs `at` (epoch ms) or `in_ms`".into()),
+        (None, None) => Err("timer args need `at` (epoch ms) or `in_ms`".into()),
         (Some(_), Some(_)) => Err("pass `at` OR `in_ms`, not both".into()),
     }
 }
 
-pub struct TimerHandler {
-    pub bus: TimerBus,
-}
-
-fn config_error(message: String) -> Error {
-    Error::Handler(json!({ "code": "CONFIG_ERROR", "message": message }).to_string())
-}
-
-#[async_trait]
-impl TriggerHandler for TimerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let cfg: TimerTriggerConfig = serde_json::from_value(config.config.clone())
-            .map_err(|e| config_error(format!("timer config: {e}")))?;
-        let at = resolve_fire_at(&cfg, AgentMessage::now_ms()).map_err(config_error)?;
-        self.bus.arm(
-            config.id.clone(),
-            config.function_id.clone(),
-            config.namespace.clone(),
-            config.metadata.clone(),
-            at,
-        );
-        tracing::info!(instance = %config.id, function = %config.function_id, at, "timer armed");
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.bus.cancel(&config.id);
-        tracing::info!(instance = %config.id, "timer unregistered");
-        Ok(())
-    }
+fn config_error(message: String) -> ObserveRejection {
+    ObserveRejection::new("CONFIG_ERROR", message)
 }
 
 #[cfg(test)]
@@ -286,76 +410,83 @@ mod tests {
     #[test]
     fn fire_at_resolves_relative_and_absolute() {
         let now = 1_000_000;
-        let rel = TimerTriggerConfig {
+        let rel = TimerRequestArgs {
             at: None,
             in_ms: Some(600_000),
         };
         assert_eq!(resolve_fire_at(&rel, now).unwrap(), 1_600_000);
-        let abs = TimerTriggerConfig {
+        let abs = TimerRequestArgs {
             at: Some(2_000_000),
             in_ms: None,
         };
         assert_eq!(resolve_fire_at(&abs, now).unwrap(), 2_000_000);
-        // The provider is lenient about the past — a replay after downtime
-        // must fire immediately, not error into a parked binding.
-        let past = TimerTriggerConfig {
-            at: Some(1),
-            in_ms: None,
-        };
-        assert_eq!(resolve_fire_at(&past, now).unwrap(), 1);
     }
 
     #[test]
-    fn fire_at_refuses_ambiguous_and_empty_configs() {
-        let both = TimerTriggerConfig {
+    fn fire_at_refuses_ambiguous_and_empty_args() {
+        let both = TimerRequestArgs {
             at: Some(1),
             in_ms: Some(1),
         };
         assert!(resolve_fire_at(&both, 0).unwrap_err().contains("not both"));
-        let neither = TimerTriggerConfig {
+        let neither = TimerRequestArgs {
             at: None,
             in_ms: None,
         };
         assert!(resolve_fire_at(&neither, 0).unwrap_err().contains("`at`"));
-        let negative = TimerTriggerConfig {
+        let negative = TimerRequestArgs {
             at: None,
             in_ms: Some(-5),
         };
         assert!(resolve_fire_at(&negative, 0).is_err());
     }
 
+    /// The observers of one instant share one armed one-shot; it is cancelled
+    /// with the instant's last observer, never earlier.
+    #[test]
+    fn observers_of_one_instant_share_its_one_shot() {
+        let bus = TimerBus::new(Arc::new(IIIClient::new("ws://127.0.0.1:0")));
+        assert!(
+            bus.retain(5_000),
+            "the first observer of an instant arms it"
+        );
+        assert!(!bus.retain(5_000), "the second shares it");
+        assert!(bus.retain(9_000), "another instant is armed on its own");
+        assert!(!bus.release(5_000), "one observer of 5000 remains");
+        assert!(bus.release(5_000), "the last observer of 5000 cancels it");
+        assert!(!bus.release(5_000), "an unknown instant releases nothing");
+        assert!(bus.release(9_000));
+    }
+
     #[tokio::test]
     async fn cancel_aborts_an_armed_timer() {
-        // No engine: the task would only ever reach the dispatch after its
+        // No engine: the task would only ever reach the call after its
         // sleep; cancelling within the sleep window proves the abort path.
-        let iii = Arc::new(IIIClient::new("ws://127.0.0.1:0"));
-        let bus = TimerBus::new(iii, 1_000);
-        bus.arm(
-            "t1".into(),
-            "noop::fn".into(),
-            None,
-            None,
-            AgentMessage::now_ms() + 60_000,
-        );
+        let bus = TimerBus::new(Arc::new(IIIClient::new("ws://127.0.0.1:0")));
+        let at = AgentMessage::now_ms() + 60_000;
+        bus.arm(at);
         assert_eq!(bus.armed_count(), 1);
-        bus.cancel("t1");
+        bus.timers.cancel(&at.to_string());
         assert_eq!(bus.armed_count(), 0);
-        // Re-arming the same id replaces rather than duplicating.
-        bus.arm(
-            "t2".into(),
-            "noop::fn".into(),
-            None,
-            None,
-            AgentMessage::now_ms() + 60_000,
-        );
-        bus.arm(
-            "t2".into(),
-            "noop::fn".into(),
-            None,
-            None,
-            AgentMessage::now_ms() + 60_000,
-        );
+        // Re-arming the same instant replaces rather than duplicating.
+        bus.arm(at);
+        bus.arm(at);
         assert_eq!(bus.armed_count(), 1);
+    }
+
+    /// An observer's key is its `at`, a call's its `scheduled_at`: the two
+    /// meet, so the call reaches exactly that instant's observers.
+    #[test]
+    fn a_call_and_its_observers_file_under_the_same_instant() {
+        let at = 1_700_000_000_000_i64;
+        assert_eq!(
+            instant(&json!({ "at": at }), "at"),
+            instant(
+                &json!({ "scheduled_at": at, "actual_at": 1 }),
+                "scheduled_at"
+            )
+        );
+        assert_eq!(instant(&json!({}), "scheduled_at"), None);
     }
 
     #[tokio::test(start_paused = true)]

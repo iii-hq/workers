@@ -2,7 +2,7 @@
  * Closes console-UI review finding #1 for the ATTRIBUTES tab: it renders
  * `tool.arguments` (and every other span attribute) and makes each row
  * click-to-copy. The info tab's card redacts the identical payload
- * (functionTriggerFromSpan.ts reads the same sources); this tab did not,
+ * (functionCallFromSpan.ts reads the same sources); this tab did not,
  * so the runtime_id the card hid was one tab-click away.
  *
  * Render assertions go through `renderToStaticMarkup` (no jsdom/testing

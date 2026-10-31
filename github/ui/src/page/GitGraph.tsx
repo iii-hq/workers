@@ -5,8 +5,8 @@
  * graph in an SVG gutter with ref labels, subjects and authors alongside — a
  * Sourcetree/gitk-style graph that refreshes live as the agent works.
  *
- * Live: it binds a tab-scoped subscription to the worker's `github::called`
- * trigger (the same idiom the activity feed uses) and re-fetches the DAG,
+ * Live: it observes the worker's `github::on-called` function with a
+ * tab-scoped handler (the same idiom the activity feed uses) and re-fetches the DAG,
  * debounced, whenever a github call lands — plus a manual refresh and a
  * live/paused toggle in the view's toolbar. Selecting a row opens a detail
  * panel that runs `git show <hash>` and renders it with the shared diff
@@ -57,7 +57,7 @@ import {
 import { ResultView } from './result-views'
 
 /** Per-tab handler id for the graph's live refresh — distinct from the activity
- *  feed's (`iii::github-ui::called`) so the two subscriptions never collide.
+ *  feed's (`iii::github-ui::called`) so the two observers never collide.
  *  The `iii::` prefix keeps per-event invocations out of the trace feed. */
 const GRAPH_EVENTS_FN = 'iii::github-ui::graph-called'
 /** Newest-first cap: one shell call, bounded output, bounded layout work. */
@@ -182,9 +182,9 @@ function refLabels(refs: string[]): RefLabel[] {
 }
 
 /**
- * Fetch + parse the DAG, and keep it live. Binds ONE `github::called`
- * subscription for the component's lifetime; each event schedules a debounced
- * refetch when live. The binding + timer are torn down on unmount.
+ * Fetch + parse the DAG, and keep it live. Observes `github::on-called` with
+ * ONE handler for the component's lifetime; each event schedules a debounced
+ * refetch when live. The observer is disposed and the timer cleared on unmount.
  */
 function useGitGraph(host: Host) {
   const [commits, setCommits] = useState<Commit[]>([])
@@ -202,7 +202,7 @@ function useGitGraph(host: Host) {
     inFlight.current = true
     setRefreshing(true)
     try {
-      const res = await host.iii.trigger<ExecResponse>('shell::exec', {
+      const res = await host.iii.call<ExecResponse>('shell::exec', {
         command: 'git',
         args: [
           'log',
@@ -597,7 +597,7 @@ function CommitDetail({
     let cancelled = false
     setStatus('loading')
     host.iii
-      .trigger<ExecResponse>('shell::exec', {
+      .call<ExecResponse>('shell::exec', {
         command: 'git',
         args: ['show', '--stat', '--patch', '--no-color', hash],
       })

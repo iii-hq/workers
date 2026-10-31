@@ -3,22 +3,22 @@ import { getIiiClient } from '@/lib/iii-client'
 import {
   parseLandBlockedEvent,
   parseLandedEvent,
-  WORKTREE_LAND_BLOCKED_TRIGGER,
-  WORKTREE_LANDED_TRIGGER,
+  WORKTREE_ON_LAND_BLOCKED_FN,
+  WORKTREE_ON_LANDED_FN,
   type WorktreeLandBlockedEvent,
   type WorktreeLandedEvent,
 } from '@/lib/worktrees'
 
 /**
- * Subscribe browser-local handlers to the worktree worker's `worktree::landed`
- * and `worktree::land-blocked` trigger types, following the worker-lifecycle
- * binding pattern: `client.on(fnId)` plus `client.registerTrigger` targeting
- * `<fnId>::<browserId>`. The per-mount `instanceId` keeps two hook instances
- * (route chat + dock) from colliding on the registered function name.
+ * Observe the worktree worker's `worktree::on-landed` and
+ * `worktree::on-land-blocked` with browser-local handlers: `client.on(fnId)`
+ * plus `client.observe` targeting `<fnId>::<browserId>`. The per-mount
+ * `instanceId` keeps two hook instances (route chat + dock) from colliding
+ * on the registered function name.
  *
- * Registration is wrapped in try/catch: with the worker absent (its trigger
- * types unregistered) the binding drops silently — callers already gate
- * `enabled` on worktree presence, this is defense-in-depth for races.
+ * With the worker absent the observers stay pending until it registers;
+ * callers already gate `enabled` on worktree presence. The try/catch drops
+ * a subscription the client refuses.
  */
 
 const LANDED_FN = 'console::worktree-landed'
@@ -51,35 +51,31 @@ export function useWorktreeEvents(opts: UseWorktreeEventsOptions): void {
       try {
         client = await getIiiClient()
       } catch {
-        // Client startup failed; leave the bindings unregistered (callers
-        // already gate `enabled` on worktree presence).
+        // Client startup failed; leave the observers out (callers already
+        // gate `enabled` on worktree presence).
         return
       }
       if (cancelled) return
       const bind = (
         baseFnId: string,
-        triggerType: string,
+        functionId: string,
         onPayload: (payload: unknown) => void,
       ) => {
         const localFnId = `${baseFnId}::${instanceId}`
         try {
           offs.push(client.on(localFnId, onPayload))
           offs.push(
-            client.registerTrigger({
-              type: triggerType,
-              function_id: `${localFnId}::${client.browserId}`,
-              config: {},
-            }),
+            client.observe(functionId, `${localFnId}::${client.browserId}`),
           )
         } catch {
-          // Worker absent or trigger type unregistered; drop the binding.
+          // The client refused the observer; drop the subscription.
         }
       }
-      bind(LANDED_FN, WORKTREE_LANDED_TRIGGER, (payload) => {
+      bind(LANDED_FN, WORKTREE_ON_LANDED_FN, (payload) => {
         const evt = parseLandedEvent(payload)
         if (evt) onLandedRef.current(evt)
       })
-      bind(LAND_BLOCKED_FN, WORKTREE_LAND_BLOCKED_TRIGGER, (payload) => {
+      bind(LAND_BLOCKED_FN, WORKTREE_ON_LAND_BLOCKED_FN, (payload) => {
         const evt = parseLandBlockedEvent(payload)
         if (evt) onLandBlockedRef.current(evt)
       })

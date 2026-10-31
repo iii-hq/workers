@@ -14,12 +14,12 @@ pub const WORKER_START_ORDER: [&str; 7] = [
     // iii 0.23 removed the legacy in-engine cron service. Run the standalone
     // worker so timer scenarios exercise the production architecture.
     "cron",
-    // The standalone state worker (NOT the engine builtin): it owns the
-    // `state` trigger type in production, and its fan-out is the fire-time
+    // The standalone state worker (NOT the engine builtin): it hosts
+    // `state::on-changed` in production, and its delivery is the fire-time
     // metadata-sidecar seam MOT-4209 broke on. INT-006 drives a wake
     // through it; the builtin would mask exactly that path.
     "state",
-    // The database worker owns `database::row-changed` — the second real
+    // The database worker hosts `database::on-row-changed` — the second real
     // medium INT-014 proves the generic wake path over.
     "database",
 ];
@@ -41,8 +41,8 @@ workers:
         name: fs
         config:
           directory: {config_dir}
-  # iii-state deliberately absent: the standalone `state` worker owns the
-  # `state` trigger type (its boot guard refuses to start beside the builtin).
+  # iii-state deliberately absent: the standalone `state` worker hosts
+  # `state::on-changed` (its boot guard refuses to start beside the builtin).
   # iii-stream deliberately absent too: nothing in this stack uses streams.
 "#,
         config_dir = layout.configuration_dir().display(),

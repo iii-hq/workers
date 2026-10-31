@@ -104,7 +104,8 @@ provider id `openai`.
 ## Behavior
 
 - **Registration:** self-declares via `router::provider::register` with backoff,
-  and re-declares on the `router::ready` trigger. It advertises dynamic model
+  and re-declares on every `router::on-ready` event (it observes that function
+  at boot). It advertises dynamic model
   listing and `credential_env_var: None`; identity binds via the
   `registration_token` persisted in state (scope `provider-openai-codex`).
 - **Models:** fetches the account-scoped Codex catalog from authenticated

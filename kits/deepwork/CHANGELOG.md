@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0
+
+- Every wake is an observer armed with `harness::observe`: a long run observes `shell::on-job-finished` with args `{ job_id }`, wave, phase and critic barriers observe `state::on-changed` filtered on `input.scope` with the `state::barrier` condition, and the kanban retry observes `harness::on-timer` with args `{ in_ms }`. A long run reads `shell::status` once after arming its observer, so a job that ended first is read at once. Wakes are removed with `harness::unobserve` and listed with `harness::observers::list`, and those three are what the profiles and the spawn allow lists name. The README's CLI lines use `iii call`. Requires the observe v2 releases of `harness`, `ide`, `state` and `kanban`.
+
 ## 0.5.2
 
 - With `isolation=ticket`, cards whose `Files:` share an implementation file no longer run in the same wave: the later one waits for a later wave of the same round, branches from the run branch after the earlier one is integrated, and may code while that card's batch validates. Before, both coded side by side, the second cherry-pick conflicted, and that card lost its work and waited a whole round (a conflict in the last round left it undone). `isolation=shared` already had the rule. In run KAN-456, KAN-442 and KAN-443 both changed `eval/src/state.rs` in round 6; KAN-443 was coded again on a fresh worktree in round 7, and KAN-460, which depended on it, moved with it.

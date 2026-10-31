@@ -1,20 +1,20 @@
 /**
- * Wire payloads for the reactive surface the console binds around a harness
- * turn. The Rust harness no longer publishes an `agent::events` firehose;
- * instead it emits async turn-boundary triggers, and approval-gate owns the
- * human-in-the-loop inbox triggers. These hand-written shapes mirror the
- * golden schemas so the translator (`lib/backend/translate.ts`) can consume
- * the trigger JSON without a generated client:
+ * Wire payloads for the reactive surface the console observes around a
+ * harness turn. The Rust harness calls its turn-boundary event functions,
+ * and approval-gate hosts the human-in-the-loop inbox events. These
+ * hand-written shapes mirror the golden schemas so the translator
+ * (`lib/backend/translate.ts`) can consume the event JSON without a
+ * generated client:
  *
- *   - `harness::turn-started` / `harness::turn-completed`
+ *   - `harness::on-turn-started` / `harness::on-turn-completed`
  *     (`harness/src/events.rs`)
- *   - `approval::pending-created` / `approval::pending-resolved`
+ *   - `approval::on-pending-created` / `approval::on-pending-resolved`
  *     (`approval-gate/tests/golden/schemas/approval.pending-*.json`)
  *
- * Transcript CONTENT (assistant text, thinking, function-trigger blocks, function
- * results) is NOT carried here — it renders from `session::message-added` /
- * `session::message-updated` reconciled by the conversations layer
- * (`lib/sessions/*`). These trigger payloads carry only turn lifecycle and
+ * Transcript CONTENT (assistant text, thinking, function-call blocks, function
+ * results) is NOT carried here — it renders from `session::on-message-added`
+ * / `session::on-message-updated` reconciled by the conversations layer
+ * (`lib/sessions/*`). These event payloads carry only turn lifecycle and
  * approval state.
  */
 
@@ -25,7 +25,7 @@ export interface TurnParentLink {
   function_call_id: string
 }
 
-/** `harness::turn-started` — a turn began executing (first loop step). */
+/** `harness::on-turn-started` — a turn began executing (first loop step). */
 export interface TurnStartedEvent {
   session_id: string
   turn_id: string
@@ -34,7 +34,7 @@ export interface TurnStartedEvent {
 }
 
 /**
- * `harness::turn-completed` — a turn reached a terminal status, carrying its
+ * `harness::on-turn-completed` — a turn reached a terminal status, carrying its
  * result (or the failure reason). The session's coarse status flips in
  * lock-step (`done` for completed/cancelled, `error` for failed).
  */
@@ -59,7 +59,7 @@ export interface TurnCompletedEvent {
 }
 
 /**
- * `harness::message-queued` — a message parked in the session's server-side
+ * `harness::on-message-queued` — a message parked in the session's server-side
  * queue while a turn step streams. A refresh signal, not the message itself:
  * read the queue via `harness::status` → `queued`.
  */
@@ -72,10 +72,10 @@ export interface MessageQueuedEvent {
 }
 
 /**
- * `harness::triggers-changed` — the session's trigger-binding set or a fire
- * count changed. A doorbell, not the data: refetch `harness::triggers::list`.
+ * `harness::on-observers-changed` — the session's observer set or a fire
+ * count changed. A doorbell, not the data: refetch `harness::observers::list`.
  */
-export interface TriggersChangedEvent {
+export interface ObserversChangedEvent {
   session_id: string
   timestamp: number
 }
@@ -84,8 +84,8 @@ export interface TriggersChangedEvent {
 export type ResolvedOutcome = 'allow' | 'deny' | 'timeout' | 'aborted'
 
 /**
- * `approval::pending-created` payload (the `PendingApprovalRecord`). A model
- * function trigger was held for a human. `arguments_excerpt` is redacted and
+ * `approval::on-pending-created` payload (the `PendingApprovalRecord`). A
+ * model function call was held for a human. `arguments_excerpt` is redacted and
  * clipped — safe to render, but the un-redacted input also arrives via the
  * session transcript's `function_call` block.
  */
@@ -104,10 +104,10 @@ export interface PendingApprovalRecord {
   session_metadata?: Record<string, unknown> | null
   /** Always `"pending"` on the create event; absent on `list-pending` rows. */
   status?: 'pending'
-  /** Discriminates a plain function-trigger approval from a filesystem-access request. */
+  /** Discriminates a plain function-call approval from a filesystem-access request. */
   kind?: 'function' | 'filesystem_access'
   /** Present when `kind === 'filesystem_access'` — the jail-scope rejection that
-   * triggered the ask. */
+   * prompted the ask. */
   access_request?: {
     requested_root: string
     attempted_path: string
@@ -115,7 +115,7 @@ export interface PendingApprovalRecord {
   }
 }
 
-/** `approval::pending-resolved` payload — a held call left the inbox. */
+/** `approval::on-pending-resolved` payload — a held call left the inbox. */
 export interface PendingResolvedEvent {
   function_call_id: string
   function_id: string

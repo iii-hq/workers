@@ -18,7 +18,7 @@ describe('file-bytes', () => {
   it('streams chunks in order into one blob and refuses oversized files', async () => {
     const body = new Uint8Array(10).map((_, i) => i)
     const encode = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
-    const trigger = vi.fn(async (_fn: string, payload: { offset: number; length: number }) => {
+    const call = vi.fn(async (_fn: string, payload: { offset: number; length: number }) => {
       const slice = body.slice(payload.offset, payload.offset + payload.length)
       return {
         path: '/r/x.png',
@@ -30,7 +30,7 @@ describe('file-bytes', () => {
         eof: payload.offset + slice.length >= body.length,
       }
     })
-    const host = { iii: { trigger } } as unknown as Parameters<typeof readFileBytes>[0]
+    const host = { iii: { call } } as unknown as Parameters<typeof readFileBytes>[0]
     const progress: number[] = []
     const out = await readFileBytes(host, '/r/x.png', 'image/png', {
       chunkBytes: 4,
@@ -41,7 +41,7 @@ describe('file-bytes', () => {
     expect(out.mtime).toBe(5)
     expect(new Uint8Array(await out.blob.arrayBuffer())).toEqual(body)
     expect(progress.at(-1)).toBe(10)
-    expect(trigger).toHaveBeenCalledTimes(3)
+    expect(call).toHaveBeenCalledTimes(3)
     await expect(readFileBytes(host, '/r/x.png', 'image/png', { chunkBytes: 4, maxBytes: 5 })).rejects.toThrow(
       'preview limit',
     )

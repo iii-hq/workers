@@ -17,7 +17,7 @@ import {
 
 /** Engine worker name for the standalone approval-gate worker. */
 const APPROVAL_GATE_WORKER_NAME = 'approval-gate'
-/** Base id for the browser-local handler bound to the `worker` trigger. */
+/** Base id for the browser-local handler observing worker joins and leaves. */
 const APPROVAL_GATE_WATCH_FN = 'console::approval-gate-watch'
 
 export type ApprovalGateStatus = WorkerPresence
@@ -37,7 +37,7 @@ export function useApprovalGateStatus(enabled: boolean): ApprovalGateStatus {
 
 /**
  * Whether the approval-gate's `approval::*` functions are registered and safe to
- * trigger. False during the initial presence probe and while the gate is absent.
+ * call. False during the initial presence probe and while the gate is absent.
  */
 export function isApprovalGateAvailable(status: ApprovalGateStatus): boolean {
   return isWorkerPresent(status)

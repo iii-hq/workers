@@ -37,7 +37,7 @@ on:
 
 env:
   # Interface collection boots the built worker and needs atomic configuration initialization.
-  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
+  III_RELEASE_TAG: 'iii/v0.26.0'
   WORKER: ${{ inputs.worker }}
   SOURCE_SHA: ${{ inputs.source_sha }}
   DESCRIPTOR_RUN_ID: ${{ inputs.descriptor_run_id }}
@@ -321,11 +321,10 @@ jobs:
           engine_pid=$!
           for _ in $(seq 1 60); do
             kill -0 "$engine_pid" 2>/dev/null || { cat interface-work/engine.log; exit 1; }
-            iii trigger --port "$engine_port" 'engine::workers::list' --json '{}' >/dev/null 2>&1 && break
+            iii call --engine "$engine_url" 'engine::workers::list' --json '{}' >/dev/null 2>&1 && break
             sleep 1
           done
-          iii trigger --port "$engine_port" 'engine::workers::list' --json '{}' >interface-work/workers-baseline.json
-          iii trigger --port "$engine_port" 'engine::triggers::list' --json '{"include_internal":false}' >interface-work/triggers-baseline.json
+          iii call --engine "$engine_url" 'engine::workers::list' --json '{}' >interface-work/workers-baseline.json
 
           if [[ "$KIND" == oci-image ]]; then
             container_name="deployment-interface-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -346,11 +345,10 @@ jobs:
             worker_pid=$!
           fi
 
-          export III_TRIGGER_PORT="$engine_port"
+          export III_ENGINE_PORT="$engine_port"
           python3 "$tooling/collect_worker_interface.py" \
             --worker "$WORKER" --out interface-work/worker-interface.json \
             --wait-seconds 600 \
-            --trigger-types-baseline interface-work/triggers-baseline.json \
             --workers-baseline interface-work/workers-baseline.json
           python3 "$tooling/collect_worker_interface.py" \
             --assert-typed-schemas \

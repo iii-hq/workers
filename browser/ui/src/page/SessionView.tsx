@@ -46,10 +46,10 @@ import {
 import type { RefObject } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  BROWSER_HANDOFF_REQUESTED_TRIGGER,
-  BROWSER_HANDOFF_RESOLVED_TRIGGER,
-  BROWSER_NAVIGATED_TRIGGER,
-  BROWSER_PICKED_TRIGGER,
+  BROWSER_ON_HANDOFF_REQUESTED_FUNCTION_ID,
+  BROWSER_ON_HANDOFF_RESOLVED_FUNCTION_ID,
+  BROWSER_ON_NAVIGATED_FUNCTION_ID,
+  BROWSER_ON_PICKED_FUNCTION_ID,
   type BrowserClickOptions,
   type BrowserFindAction,
   type BrowserHandoffEvent,
@@ -541,7 +541,7 @@ export function SessionView({
   useBrowserSessionEvent({
     host,
     enabled: enabled && annotating,
-    triggerType: BROWSER_PICKED_TRIGGER,
+    functionId: BROWSER_ON_PICKED_FUNCTION_ID,
     sessionId,
     fnId: PICKED_FN,
     onEvent: (payload) => {
@@ -899,7 +899,7 @@ export function SessionView({
   useBrowserSessionEvent({
     host,
     enabled: enabled && zoom !== 100,
-    triggerType: BROWSER_NAVIGATED_TRIGGER,
+    functionId: BROWSER_ON_NAVIGATED_FUNCTION_ID,
     sessionId,
     fnId: NAVIGATED_FN,
     onEvent: () => {
@@ -955,7 +955,7 @@ export function SessionView({
   useBrowserSessionEvent({
     host,
     enabled,
-    triggerType: BROWSER_HANDOFF_REQUESTED_TRIGGER,
+    functionId: BROWSER_ON_HANDOFF_REQUESTED_FUNCTION_ID,
     sessionId,
     fnId: HANDOFF_FN,
     onEvent: (payload) => {
@@ -971,7 +971,7 @@ export function SessionView({
   useBrowserSessionEvent({
     host,
     enabled,
-    triggerType: BROWSER_HANDOFF_RESOLVED_TRIGGER,
+    functionId: BROWSER_ON_HANDOFF_RESOLVED_FUNCTION_ID,
     sessionId,
     fnId: HANDOFF_RESOLVED_FN,
     onEvent: (payload) => {

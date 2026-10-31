@@ -3,8 +3,9 @@
 //! watched or driven. It streams the framebuffer and injects HID events; see
 //! the Swift file for the JSON-lines protocol.
 //!
-//! Frames reach watchers as `ios-simulator::frame-event` triggers bound to
-//! the udid, so any number of console tabs share one capture. Streaming runs
+//! Frames reach watchers as calls of `ios-simulator::on-frame-event`, which
+//! they observe with the udid, so any number of console tabs share one
+//! capture; a frame no observer wants is never built. Streaming runs
 //! only while someone holds a watch lease; the bridge idles (input only)
 //! otherwise and exits after a minute without use.
 
@@ -172,7 +173,7 @@ impl Bridge {
                         seq: msg["seq"].as_u64().unwrap_or(0),
                         timestamp: now_ms(),
                     };
-                    if self.is_streaming() {
+                    if self.is_streaming() && self.events.frame_observed(&self.tenant, &self.udid) {
                         let (device_width, device_height) = self.size();
                         self.events.frame(FrameEvent {
                             tenant: self.tenant.clone(),

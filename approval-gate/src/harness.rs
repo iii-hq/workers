@@ -5,12 +5,11 @@
 //! timestamps/attribution.
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 
 pub async fn function_resolve(iii: &IIIClient, payload: Value) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "harness::function::resolve".into(),
         payload,
         action: None,
@@ -37,7 +36,7 @@ fn parse_roots(reply: &Value) -> Vec<String> {
 /// harness that doesn't implement this control plane yet).
 pub async fn filesystem_grants(iii: &IIIClient, session_id: &str) -> Result<Vec<String>, Error> {
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "harness::filesystem::grants".into(),
             payload: json!({ "session_id": session_id }),
             action: None,
@@ -56,7 +55,7 @@ pub async fn filesystem_grant(
     root: &str,
 ) -> Result<Vec<String>, Error> {
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "harness::filesystem::grant".into(),
             payload: json!({ "session_id": session_id, "root": root }),
             action: None,

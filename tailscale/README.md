@@ -5,10 +5,10 @@ Tailscale as an iii worker. It drives the `tailscale` CLI on the Console host an
 ## Install
 
 ```bash
-iii trigger compose::add worker=tailscale
+iii call compose::add worker=tailscale
 ```
 
-`iii trigger compose::add` declares the worker in `worker-compose.yaml` and starts it as part of the Compose project. The host needs [Tailscale](https://tailscale.com/download) installed; most functions also need the node signed in (`tailscale::login` returns the sign-in URL, `tailscale::connect` brings it up). Publishing needs MagicDNS and HTTPS certificates enabled for the tailnet; Funnel additionally needs a one-time tailnet-admin approval.
+`iii call compose::add` declares the worker in `worker-compose.yaml` and starts it as part of the Compose project. The host needs [Tailscale](https://tailscale.com/download) installed; most functions also need the node signed in (`tailscale::login` returns the sign-in URL, `tailscale::connect` brings it up). Publishing needs MagicDNS and HTTPS certificates enabled for the tailnet; Funnel additionally needs a one-time tailnet-admin approval.
 
 ## Quickstart
 
@@ -17,9 +17,9 @@ Open **Tailscale** from the Console navigation or press `⌘K` and run `Open Tai
 From a function call, ask the node what it sees:
 
 ```bash
-iii trigger tailscale::status
-iii trigger tailscale::peers::list online_only=true
-iii trigger tailscale::ping target=phone count=3
+iii call tailscale::status
+iii call tailscale::peers::list online_only=true
+iii call tailscale::ping target=phone count=3
 ```
 
 ```json
@@ -37,8 +37,8 @@ iii trigger tailscale::ping target=phone count=3
 Publish the Console to your own devices, then send a file to your phone:
 
 ```bash
-iii trigger tailscale::share mode=serve https_port=443 path=/
-iii trigger tailscale::file::send --json '{"paths":["/Users/me/report.pdf"],"target":"phone"}'
+iii call tailscale::share mode=serve https_port=443 path=/
+iii call tailscale::file::send --json '{"paths":["/Users/me/report.pdf"],"target":"phone"}'
 ```
 
 `tailscale::share` returns the HTTPS link and its QR code; `mode=funnel` publishes to the internet and needs `allow_funnel: true` in the configuration plus `confirm_public: true` on the request. `tailscale::serve::add` publishes any local port, loopback URL, or directory the same way. Stopping a Funnel route (`share::stop` / `serve::remove` with `mode=funnel`) removes public access and keeps the tailnet route; `mode=serve` removes the route. The worker never resets routes it did not create unless `serve::reset` is called with `confirm=true`.

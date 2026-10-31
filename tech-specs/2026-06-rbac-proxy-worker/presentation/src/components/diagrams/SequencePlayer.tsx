@@ -16,7 +16,7 @@ export interface SeqStep {
   label: string
   title: string
   desc: string
-  event?: string // trigger type this step emits
+  event?: string // the event this step emits
 }
 
 interface SequencePlayerProps {

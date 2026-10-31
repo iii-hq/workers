@@ -1,27 +1,27 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { ObserveView } from '../ObserveView'
 import {
   coerceJsonObject,
+  disposeObserverResponseSchema,
   ENGINE_FUNCTION_IDS,
   functionDetailSchema,
   functionInfoRequestSchema,
   functionsListRequestSchema,
   functionsListResponseSchema,
   isEngineListFunction,
+  observeRequestSchema,
+  observeResponseSchema,
+  observerIdRequestSchema,
+  observersListRequestSchema,
+  observersListResponseSchema,
   parseFunctionInfoResponse,
-  parseTriggerInfoResponse,
-  registeredTriggersListRequestSchema,
-  registeredTriggersListResponseSchema,
-  registerTriggerRequestSchema,
-  registerTriggerResponseSchema,
+  parseObserverInfoResponse,
   safeParseRequest,
   safeParseResponse,
-  triggerInfoRequestSchema,
-  triggersListRequestSchema,
-  triggersListResponseSchema,
-  unregisterTriggerRequestSchema,
-  unregisterTriggerResponseSchema,
+  unobserveRequestSchema,
+  unobserveResponseSchema,
   unwrapEnvelope,
   workerInfoRequestSchema,
   workerInfoResponseSchema,
@@ -30,8 +30,7 @@ import {
   workersRegisterRequestSchema,
   workersRegisterResponseSchema,
 } from '../parsers'
-import { RegisterTriggerView } from '../RegisterTriggerView'
-import { UnregisterTriggerView } from '../UnregisterTriggerView'
+import { UnobserveView } from '../UnobserveView'
 
 function wrap<T>(details: T) {
   return {
@@ -51,13 +50,16 @@ describe('isEngineListFunction', () => {
   it('rejects unrelated ids', () => {
     expect(isEngineListFunction('engine::functions')).toBe(false)
     expect(isEngineListFunction('sandbox::exec')).toBe(false)
-    expect(isEngineListFunction('engine::triggers::create')).toBe(false)
+    expect(isEngineListFunction('engine::observers::create')).toBe(false)
   })
 })
 
 describe('coerceJsonObject', () => {
   it('recovers a double-encoded (stringified) payload', () => {
-    const payload = { trigger_type: 'state', config: { scope: 'wiki' } }
+    const payload = {
+      function_id: 'state::on-changed',
+      filters: { 'input.scope': { $eq: 'wiki' } },
+    }
     expect(coerceJsonObject(JSON.stringify(payload))).toEqual(payload)
     expect(coerceJsonObject('  [1, 2]  ')).toEqual([1, 2])
   })
@@ -144,7 +146,7 @@ describe('engine::functions::info', () => {
     const detail = {
       function_id: 'state::get',
       worker_name: 'iii-state',
-      registered_triggers: [],
+      observer_count: 0,
     }
     expect(
       parseFunctionInfoResponse(detail)?.map((d) => d.function_id),
@@ -162,7 +164,7 @@ describe('engine::functions::info', () => {
     const detail = {
       description: 'Stream-upload a file into a sandbox',
       function_id: 'sandbox::fs::write',
-      registered_triggers: [],
+      observer_count: 0,
       request_schema: {
         $schema: 'http://json-schema.org/draft-07/schema#',
         title: 'AnyValue',
@@ -175,120 +177,103 @@ describe('engine::functions::info', () => {
     }
     const parsed = safeParseResponse(functionDetailSchema, wrap(detail))
     expect(parsed?.function_id).toBe('sandbox::fs::write')
-    expect(parsed?.registered_triggers).toEqual([])
+    expect(parsed?.observer_count).toBe(0)
   })
 
-  it('parses a rich payload with registered triggers + schemas', () => {
+  it('parses an observable source with args_format + schemas', () => {
     const detail = {
-      function_id: 'todo::create',
-      worker_name: 'todo-app',
-      description: 'Create a new todo',
+      function_id: 'cron::on-tick',
+      worker_name: 'cron',
+      description: 'Called on each tick of an observed expression',
       request_schema: { type: 'object' },
       response_schema: { type: 'object' },
-      registered_triggers: [
-        {
-          id: '8c7e9d12-2a4f-4b5c-9d3e-1f2a3b4c5d6e',
-          trigger_type: 'http',
-          config: { api_path: '/todos', http_method: 'POST' },
-        },
-      ],
+      args_format: {
+        type: 'object',
+        properties: { expression: { type: 'string' } },
+      },
+      private: true,
+      observer_count: 2,
     }
     const parsed = safeParseResponse(functionDetailSchema, detail)
-    expect(parsed?.registered_triggers).toHaveLength(1)
-    expect(parsed?.registered_triggers[0].trigger_type).toBe('http')
+    expect(parsed?.private).toBe(true)
+    expect(parsed?.observer_count).toBe(2)
+    expect(parsed?.args_format).toMatchObject({ type: 'object' })
   })
 
-  it('rejects a payload missing registered_triggers', () => {
+  it('parses a function with only its identity', () => {
     const parsed = safeParseResponse(functionDetailSchema, {
       function_id: 'x',
       worker_name: 'y',
     })
-    expect(parsed).toBeNull()
+    expect(parsed?.function_id).toBe('x')
+    expect(parsed?.observer_count).toBeUndefined()
   })
 })
 
-describe('engine::triggers::list', () => {
+const observer = {
+  id: 'obs-1',
+  function_id: 'http::on-request',
+  namespace: 'default',
+  args: { method: 'POST', path: '/todos' },
+  filters: {},
+  target: { function_id: 'todo::create', namespace: 'default' },
+  capture: ['input', 'output', 'caller'],
+  on: 'success',
+  deliver: 'output',
+  worker: { worker_id: 'w-1', worker_name: 'todo-app' },
+  state: 'active',
+  fires: 3,
+  dropped: {},
+  activation_failures: {},
+  max_in_flight: 64,
+  created_at_ms: 1_700_000_000_000,
+}
+
+describe('engine::observers::list', () => {
   it('parses a wrapped success payload', () => {
-    const payload = {
-      triggers: [
-        { id: 'http', worker_name: 'http', description: 'HTTP API trigger' },
-        {
-          id: 'log',
-          worker_name: 'log',
-          description: 'Log event trigger',
-        },
-      ],
-    }
-    const resp = safeParseResponse(triggersListResponseSchema, wrap(payload))
-    expect(resp?.triggers).toHaveLength(2)
-  })
-
-  it('parses a search-applied request', () => {
-    expect(
-      safeParseRequest(triggersListRequestSchema, { search: 'http' }),
-    ).toEqual({ search: 'http' })
-  })
-
-  it('rejects payloads missing the `triggers` array', () => {
-    const resp = safeParseResponse(triggersListResponseSchema, { foo: [] })
-    expect(resp).toBeNull()
-  })
-})
-
-describe('engine::triggers::info', () => {
-  it('parses the request payload', () => {
-    expect(safeParseRequest(triggerInfoRequestSchema, { id: 'state' })).toEqual(
-      { id: 'state' },
-    )
-    expect(safeParseRequest(triggerInfoRequestSchema, {})).toBeNull()
-  })
-
-  it('parses a wrapped trigger-type detail (mirrors the live shape)', () => {
-    const detail = {
-      id: 'state',
-      worker_name: 'iii-state',
-      description: 'State trigger',
-      instance_count: 3,
-      configuration_schema: { type: 'object', title: 'StateTriggerConfig' },
-      request_schema: { type: 'object' },
-    }
-    const parsed = parseTriggerInfoResponse(wrap(detail))
-    expect(parsed?.id).toBe('state')
-    expect(parsed?.instance_count).toBe(3)
-  })
-
-  it('returns null for unknown shapes (card falls back to panes)', () => {
-    expect(parseTriggerInfoResponse({ nonsense: true })).toBeNull()
-    expect(parseTriggerInfoResponse(undefined)).toBeNull()
-  })
-})
-
-describe('engine::registered-triggers::list', () => {
-  it('parses a wrapped registered-triggers payload', () => {
-    const payload = {
-      registered_triggers: [
-        {
-          id: '6ebe7d64-3717-4acc-a02d-3f050fb86df2',
-          trigger_type: 'http',
-          function_id: 'todo::html',
-          worker_name: 'todo-app',
-          config_summary: '{"api_path":"/todos/html","http_method":"GET"}',
-        },
-      ],
-    }
     const resp = safeParseResponse(
-      registeredTriggersListResponseSchema,
-      wrap(payload),
+      observersListResponseSchema,
+      wrap({ observers: [observer] }),
     )
-    expect(resp?.registered_triggers).toHaveLength(1)
+    expect(resp?.observers).toHaveLength(1)
+    expect(resp?.observers[0].target.function_id).toBe('todo::create')
   })
 
   it('parses a function_id filter request', () => {
     expect(
-      safeParseRequest(registeredTriggersListRequestSchema, {
-        function_id: 'todo::html',
+      safeParseRequest(observersListRequestSchema, {
+        function_id: 'http::on-request',
       }),
-    ).toEqual({ function_id: 'todo::html' })
+    ).toEqual({ function_id: 'http::on-request' })
+  })
+
+  it('rejects payloads missing the `observers` array', () => {
+    expect(safeParseResponse(observersListResponseSchema, {})).toBeNull()
+  })
+})
+
+describe('engine::observers::get', () => {
+  it('parses the request payload', () => {
+    expect(safeParseRequest(observerIdRequestSchema, { id: 'obs-1' })).toEqual({
+      id: 'obs-1',
+    })
+  })
+
+  it('reads the observer bare or under `observer`', () => {
+    expect(parseObserverInfoResponse(wrap(observer))?.id).toBe('obs-1')
+    expect(parseObserverInfoResponse({ observer })?.state).toBe('active')
+  })
+
+  it('returns null for unknown shapes (card falls back to panes)', () => {
+    expect(parseObserverInfoResponse({ nonsense: true })).toBeNull()
+  })
+})
+
+describe('engine::observers::dispose', () => {
+  it('parses the response', () => {
+    expect(
+      safeParseResponse(disposeObserverResponseSchema, { disposed: true }),
+    ).toEqual({ disposed: true })
   })
 })
 
@@ -389,8 +374,7 @@ describe('engine::workers::info', () => {
           namespace: 'project-a',
         },
       ],
-      trigger_types: [],
-      registered_triggers: [],
+      observers: ['obs-1'],
     }
     const parsed = safeParseResponse(workerInfoResponseSchema, wrap(payload))
     expect(parsed?.worker.internal).toBe(false)
@@ -398,6 +382,7 @@ describe('engine::workers::info', () => {
     expect(parsed?.worker.latest_metrics?.cpu_percent).toBe(1.2)
     expect(parsed?.worker).toHaveProperty('namespace', 'project-a')
     expect(parsed?.functions[0]).toHaveProperty('namespace', 'project-a')
+    expect(parsed?.observers).toEqual(['obs-1'])
   })
 
   it('parses an internal worker without optional fields', () => {
@@ -418,8 +403,6 @@ describe('engine::workers::info', () => {
         internal: true,
       },
       functions: [],
-      trigger_types: [],
-      registered_triggers: [],
     })
     expect(parsed?.worker.internal).toBe(true)
   })
@@ -452,57 +435,59 @@ describe('engine::workers::register', () => {
   })
 })
 
-describe('engine::register_trigger', () => {
+describe('harness::observe', () => {
   it('is included in the engine function id set', () => {
-    expect(ENGINE_FUNCTION_IDS).toContain('engine::register_trigger')
-    expect(isEngineListFunction('engine::register_trigger')).toBe(true)
+    expect(ENGINE_FUNCTION_IDS).toContain('harness::observe')
+    expect(isEngineListFunction('harness::observe')).toBe(true)
   })
 
-  it('parses a state-trigger → call-binding registration', () => {
-    const req = safeParseRequest(registerTriggerRequestSchema, {
-      trigger_type: 'state',
-      function_id: 'database::execute',
-      config: { key: 'build', scope: 'ops' },
-      metadata: {
-        payload: { db: 'primary', sql: 'INSERT INTO builds DEFAULT VALUES' },
-        event_into: '/event',
+  it('parses a state wake (no target, has label/once)', () => {
+    const req = safeParseRequest(observeRequestSchema, {
+      function_id: 'state::on-changed',
+      filters: {
+        'input.scope': { $eq: 'research' },
+        'input.key': { $eq: 'progress' },
       },
+      label: 'research-progress-watch',
+      once: false,
     })
-    expect(req?.trigger_type).toBe('state')
-    expect(req?.function_id).toBe('database::execute')
-    expect(req?.metadata).toMatchObject({ event_into: '/event' })
+    expect(req?.function_id).toBe('state::on-changed')
+    expect(req?.target).toBeUndefined()
+    expect(req?.label).toBe('research-progress-watch')
+    expect(req?.once).toBe(false)
   })
 
-  it('renders an explicit long-form target', () => {
+  it('renders a call target with its payload and event pointer', () => {
     const input = {
-      trigger_type: 'state',
-      config: { key: 'build', scope: 'ops' },
+      function_id: 'state::on-changed',
+      filters: { 'input.key': { $eq: 'build' } },
       target: {
         function_id: 'database::execute',
         payload: { deployment: 'deploy-42' },
         event_into: '/args/event',
       },
     }
-    const req = safeParseRequest(registerTriggerRequestSchema, input)
+    const req = safeParseRequest(observeRequestSchema, input)
     expect(req?.target).toEqual(input.target)
 
     const html = renderToStaticMarkup(
-      createElement(RegisterTriggerView, {
-        messageId: 'register-1',
+      createElement(ObserveView, {
+        messageId: 'observe-1',
         input,
-        output: { subscription_id: 'sub-1', once: false },
+        output: { observer_id: 'obs-1', once: false },
       }),
     )
     expect(html).toContain('database::execute')
     expect(html).toContain('deploy-42')
     expect(html).toContain('/args/event')
+    expect(html).toContain('input.key')
     expect(html).not.toContain('this session')
   })
 
   it('parses and renders gating conditions', () => {
     const input = {
-      trigger_type: 'state',
-      config: { scope: 'rx_run' },
+      function_id: 'state::on-changed',
+      filters: { 'input.scope': { $eq: 'rx_run' } },
       label: 'wake when all couriers done',
       once: true,
       conditions: [
@@ -516,12 +501,12 @@ describe('engine::register_trigger', () => {
         },
       ],
     }
-    const req = safeParseRequest(registerTriggerRequestSchema, input)
+    const req = safeParseRequest(observeRequestSchema, input)
     expect(req?.conditions).toEqual(input.conditions)
 
     const html = renderToStaticMarkup(
-      createElement(RegisterTriggerView, {
-        messageId: 'register-2',
+      createElement(ObserveView, {
+        messageId: 'observe-2',
         input,
         output: undefined,
       }),
@@ -532,152 +517,129 @@ describe('engine::register_trigger', () => {
     expect(html).toContain('all_couriers_done')
   })
 
-  it('parses the harness subscribe variant (no function_id, has label/once)', () => {
-    const req = safeParseRequest(registerTriggerRequestSchema, {
-      trigger_type: 'state',
-      config: { key: 'progress', scope: 'research' },
-      label: 'research-progress-watch',
-      once: false,
-    })
-    expect(req?.trigger_type).toBe('state')
-    expect(req?.function_id).toBeUndefined()
-    expect(req?.label).toBe('research-progress-watch')
-    expect(req?.once).toBe(false)
-  })
-
-  it('preserves lifecycle limits for the generic renderer', () => {
+  it('renders args and lifecycle limits for the generic renderer', () => {
     const input = {
-      trigger_type: 'cron',
-      config: { expression: '0 0 9 * * *' },
-      lifecycle: { once: false, max_fires: 3, expires_at: 2_000 },
+      function_id: 'cron::on-tick',
+      args: { expression: '0 0 9 * * * *' },
+      lifecycle: { once: false, max_fires: 3, expires_in_ms: 3_600_000 },
     }
-    const req = safeParseRequest(registerTriggerRequestSchema, input)
+    const req = safeParseRequest(observeRequestSchema, input)
     expect(req?.lifecycle).toEqual({
       once: false,
       max_fires: 3,
-      expires_at: 2_000,
+      expires_in_ms: 3_600_000,
     })
     const html = renderToStaticMarkup(
-      createElement(RegisterTriggerView, {
-        messageId: 'register-3',
+      createElement(ObserveView, {
+        messageId: 'observe-3',
         input,
         output: undefined,
       }),
     )
+    expect(html).toContain('0 0 9 * * * *')
     expect(html).toContain('Recurring')
-    expect(html).toContain('fire limit')
-    expect(html).toContain('3')
-    expect(html).toContain('expires')
+    expect(html).toContain('Fire limit')
+    expect(html).toContain('in 1h')
   })
 
-  it('rejects a request missing the required trigger_type', () => {
-    expect(
-      safeParseRequest(registerTriggerRequestSchema, { config: {} }),
-    ).toBeNull()
+  it('rejects a request missing the observed function', () => {
+    expect(safeParseRequest(observeRequestSchema, { args: {} })).toBeNull()
   })
 
-  it('parses the engine response { id }', () => {
+  it('parses the response { observer_id, once, note }', () => {
     expect(
-      safeParseResponse(registerTriggerResponseSchema, wrap({ id: 'trg-1' })),
-    ).toEqual({ id: 'trg-1' })
-  })
-
-  it('parses the harness-intercepted response { subscription_id, once }', () => {
-    expect(
-      safeParseResponse(registerTriggerResponseSchema, {
-        subscription_id: 'sub-1',
-        once: false,
-      }),
-    ).toEqual({ subscription_id: 'sub-1', once: false })
-  })
-
-  it('preserves a registration advisory note', () => {
-    expect(
-      safeParseResponse(registerTriggerResponseSchema, {
-        subscription_id: 'sub-1',
-        once: true,
-        note: 'registration succeeded; verify the watched key',
-      }),
+      safeParseResponse(
+        observeResponseSchema,
+        wrap({
+          observer_id: 'obs-1',
+          once: true,
+          note: 'observer created; verify the watched key',
+        }),
+      ),
     ).toEqual({
-      subscription_id: 'sub-1',
+      observer_id: 'obs-1',
       once: true,
-      note: 'registration succeeded; verify the watched key',
+      note: 'observer created; verify the watched key',
     })
   })
 
-  it('does not claim registration succeeded for an invalid result', () => {
+  it('does not claim the observer was added for an invalid result', () => {
     const html = renderToStaticMarkup(
-      createElement(RegisterTriggerView, {
-        messageId: 'register-failed',
-        input: { trigger_type: 'state', config: { key: 'ready' } },
+      createElement(ObserveView, {
+        messageId: 'observe-failed',
+        input: { function_id: 'state::on-changed' },
         output: { error: { message: 'forbidden' } },
       }),
     )
-    expect(html).toContain('Trigger registration failed')
-    expect(html).not.toContain('trigger registered</span>')
+    expect(html).toContain('Observer not added')
+    expect(html).not.toContain('Observer added</div>')
   })
 
   it('recovers a double-encoded request through the full render chain', () => {
     // The whole payload arrives as one JSON string; index.tsx does
     // coerceJsonObject(unwrapEnvelope(input)).
     const stringified = JSON.stringify({
-      trigger_type: 'state',
-      function_id: 'database::execute',
-      config: { session_id: 'analyst-2-deep' },
-      metadata: { payload: { db: 'primary' }, event_into: '/event' },
+      function_id: 'state::on-changed',
+      filters: { 'input.session_id': { $eq: 'analyst-2-deep' } },
+      target: { function_id: 'database::execute', event_into: '/event' },
     })
     const input = coerceJsonObject(unwrapEnvelope(stringified))
-    const req = safeParseRequest(registerTriggerRequestSchema, input)
-    expect(req?.trigger_type).toBe('state')
-    expect(req?.function_id).toBe('database::execute')
-    expect(req?.config).toEqual({ session_id: 'analyst-2-deep' })
+    const req = safeParseRequest(observeRequestSchema, input)
+    expect(req?.function_id).toBe('state::on-changed')
+    expect(req?.target?.function_id).toBe('database::execute')
+    expect(req?.filters).toEqual({
+      'input.session_id': { $eq: 'analyst-2-deep' },
+    })
   })
 })
 
-describe('engine::unregister_trigger', () => {
-  it('parses the core request and idempotent response', () => {
+describe('harness::unobserve', () => {
+  it('parses the request and idempotent response', () => {
+    expect(safeParseRequest(unobserveRequestSchema, { id: 'obs-1' })).toEqual({
+      id: 'obs-1',
+    })
     expect(
-      safeParseRequest(unregisterTriggerRequestSchema, {
-        id: 'trg-1',
-        trigger_type: 'state',
-      }),
-    ).toEqual({ id: 'trg-1', trigger_type: 'state' })
-    expect(
-      safeParseResponse(
-        unregisterTriggerResponseSchema,
-        wrap({ removed: true }),
-      ),
+      safeParseResponse(unobserveResponseSchema, wrap({ removed: true })),
     ).toEqual({ removed: true })
   })
 
   it('renders manual removal distinctly from an idempotent miss', () => {
     const removed = renderToStaticMarkup(
-      createElement(UnregisterTriggerView, {
-        input: { id: 'trg-1', trigger_type: 'cron' },
+      createElement(UnobserveView, {
+        input: { id: 'obs-1' },
         output: { removed: true },
       }),
     )
-    expect(removed).toContain('binding manually removed')
+    expect(removed).toContain('observer manually removed')
     expect(removed).toContain('explicitly removed')
-    expect(removed).toContain('cron')
 
     const missing = renderToStaticMarkup(
-      createElement(UnregisterTriggerView, {
-        input: { id: 'trg-404' },
+      createElement(UnobserveView, {
+        input: { id: 'obs-404' },
         output: { removed: false },
       }),
     )
-    expect(missing).toContain('binding not found')
+    expect(missing).toContain('observer not found')
     expect(missing).not.toContain('explicitly removed')
 
     const failed = renderToStaticMarkup(
-      createElement(UnregisterTriggerView, {
-        input: { id: 'trg-1' },
+      createElement(UnobserveView, {
+        input: { id: 'obs-1' },
         output: { error: { message: 'store unavailable' } },
       }),
     )
-    expect(failed).toContain('binding removal failed')
+    expect(failed).toContain('observer removal failed')
     expect(failed).toContain('valid removal result')
+  })
+
+  it('reads the engine dispose response too', () => {
+    const html = renderToStaticMarkup(
+      createElement(UnobserveView, {
+        input: { id: 'obs-1' },
+        output: { disposed: true },
+      }),
+    )
+    expect(html).toContain('observer manually removed')
   })
 })
 

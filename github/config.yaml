@@ -9,14 +9,14 @@ webhooks:
   # Longest watch lifetime in days (1..=30). Never above 30: each watch holds a
   # quick-tunnel lease, and quick-tunnel leases last at most 30 days.
   max_watch_days: 30
-  # A watch left without any listening binding is stopped (freeing its tunnel
+  # A watch left without any listening observer is stopped (freeing its tunnel
   # lease and, when it was the last one, the repository hook) only after this
-  # many minutes. One-shot agent wakes re-arm at the end of a turn, so keep it
-  # longer than a turn. 0 stops immediately.
+  # many minutes. One-shot agent wakes observe again at the end of a turn, so
+  # keep it longer than a turn. 0 stops immediately.
   orphan_grace_minutes: 60
-  # Default delivery policy for every agent (hot-reloaded). A github::pr::event
-  # binding can override it with its own `notifications` object; profile=all
-  # restores the full per-entity stream.
+  # Default delivery policy for every agent (hot-reloaded). An observer of
+  # github::pr::on-event can override it with its own `notifications` arg;
+  # profile=all restores the full per-entity stream.
   notifications:
     # Only CI failures on the current head, new comments/reviews from others and
     # merge/close, coalesced into one digest per watch. CI success, progress,

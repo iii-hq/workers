@@ -1,7 +1,7 @@
 /* One shell page can be open several times inside a workspace tab, each
    pane on its own folder with its own terminals. Everything an instance
    keeps for itself (persisted UI state, terminal leases, the engine
-   functions its live triggers call) is keyed by the pane, not the tab. */
+   functions its live observers call) is keyed by the pane, not the tab. */
 
 /** The key one page instance keeps its state under: the pane id when the
     console provides one, else the workspace tab id (older consoles host

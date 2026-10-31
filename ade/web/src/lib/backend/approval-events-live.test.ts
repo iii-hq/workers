@@ -14,42 +14,41 @@ import {
 } from './approval-events-live'
 
 function fakeClient(listResult?: unknown) {
-  const triggers: Array<{
-    type: string
-    function_id: string
-    config?: unknown
+  const observers: Array<{
+    source: { function_id: string; filters?: unknown }
+    target: string
   }> = []
   const handlers = new Map<string, (p: unknown) => void>()
   const offHandler = vi.fn()
-  const triggerUnregister = vi.fn()
+  const disposeObserver = vi.fn()
 
   const on = vi.fn((fn: string, h: (p: unknown) => void) => {
     handlers.set(fn, h)
     return offHandler
   })
-  const registerTrigger = vi.fn(
-    (input: { type: string; function_id: string; config?: unknown }) => {
-      triggers.push(input)
-      return triggerUnregister
+  const observe = vi.fn(
+    (source: { function_id: string; filters?: unknown }, target: string) => {
+      observers.push({ source, target })
+      return disposeObserver
     },
   )
-  const trigger = vi.fn(async () => listResult)
+  const call = vi.fn(async () => listResult)
 
   const client = {
     browserId: 'console-test',
     on,
-    registerTrigger,
-    trigger,
+    observe,
+    call,
     addConnectionStateListener: vi.fn(),
     dispose: vi.fn(async () => {}),
   } as unknown as IiiClient
 
   return {
     client,
-    triggers,
-    trigger,
+    observers,
+    call,
     offHandler,
-    triggerUnregister,
+    disposeObserver,
     fire: (fn: string, payload: unknown) => handlers.get(fn)?.(payload),
   }
 }
@@ -65,22 +64,21 @@ const record: PendingApprovalRecord = {
 }
 
 describe('startApprovalEventsSubscription', () => {
-  it('binds both pending triggers scoped to the session', () => {
-    const { client, triggers } = fakeClient()
+  it('observes both pending functions scoped to the session', () => {
+    const { client, observers } = fakeClient()
     startApprovalEventsSubscription(client, 'sess-1', {
       onCreated: () => {},
       onResolved: () => {},
     })
-    expect(triggers).toEqual([
+    const filters = { 'input.session_id': { $eq: 'sess-1' } }
+    expect(observers).toEqual([
       {
-        type: 'approval::pending-created',
-        function_id: 'iii::console::approval_pending_created::console-test',
-        config: { session_id: 'sess-1' },
+        source: { function_id: 'approval::on-pending-created', filters },
+        target: 'iii::console::approval_pending_created::console-test',
       },
       {
-        type: 'approval::pending-resolved',
-        function_id: 'iii::console::approval_pending_resolved::console-test',
-        config: { session_id: 'sess-1' },
+        source: { function_id: 'approval::on-pending-resolved', filters },
+        target: 'iii::console::approval_pending_resolved::console-test',
       },
     ])
   })
@@ -106,26 +104,29 @@ describe('startApprovalEventsSubscription', () => {
     expect(onResolved).toHaveBeenCalledWith(resolved)
   })
 
-  it('unregisters both handlers and triggers on cleanup', () => {
-    const { client, offHandler, triggerUnregister } = fakeClient()
+  it('drops both handlers and disposes both observers on cleanup', () => {
+    const { client, offHandler, disposeObserver } = fakeClient()
     const stop = startApprovalEventsSubscription(client, 'sess-1', {
       onCreated: () => {},
       onResolved: () => {},
     })
     stop()
     expect(offHandler).toHaveBeenCalledTimes(2)
-    expect(triggerUnregister).toHaveBeenCalledTimes(2)
+    expect(disposeObserver).toHaveBeenCalledTimes(2)
   })
 
-  it('can bind unscoped events for a parent chat that filters descendants client-side', () => {
-    const { client, triggers, fire } = fakeClient()
+  it('can observe unscoped events for a parent chat that filters descendants client-side', () => {
+    const { client, observers, fire } = fakeClient()
     const onCreated = vi.fn()
     const onResolved = vi.fn()
     startApprovalEventsSubscription(client, undefined, {
       onCreated,
       onResolved,
     })
-    expect(triggers.map((trigger) => trigger.config)).toEqual([{}, {}])
+    expect(observers.map(({ source }) => source.filters)).toEqual([
+      undefined,
+      undefined,
+    ])
 
     fire('iii::console::approval_pending_created', record)
     expect(onCreated).toHaveBeenCalledWith(record)
@@ -145,9 +146,9 @@ describe('startApprovalEventsSubscription', () => {
 
 describe('listPendingApprovals', () => {
   it('returns the pending array from the response', async () => {
-    const { client, trigger } = fakeClient({ pending: [record] })
+    const { client, call } = fakeClient({ pending: [record] })
     expect(await listPendingApprovals(client, 'sess-1')).toEqual([record])
-    expect(trigger).toHaveBeenCalledWith('approval::list-pending', {
+    expect(call).toHaveBeenCalledWith('approval::list-pending', {
       session_id: 'sess-1',
     })
   })
@@ -158,9 +159,9 @@ describe('listPendingApprovals', () => {
   })
 
   it('reads the full pending inbox when descendant filtering is client-side', async () => {
-    const { client, trigger } = fakeClient({ pending: [record] })
+    const { client, call } = fakeClient({ pending: [record] })
     expect(await listPendingApprovals(client)).toEqual([record])
-    expect(trigger).toHaveBeenCalledWith('approval::list-pending', {
+    expect(call).toHaveBeenCalledWith('approval::list-pending', {
       limit: 500,
     })
   })

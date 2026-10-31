@@ -381,7 +381,7 @@
   white-space: nowrap;
 }
 
-/* ── chat cards (function-trigger views) ────────────────────────────── */
+/* ── chat cards (function-call views) ───────────────────────────────── */
 [data-iii-ui="computer"] .cp-ui-call {
   font-family: var(--font-mono);
   color: var(--color-ink);

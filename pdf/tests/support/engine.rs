@@ -12,8 +12,8 @@ use std::io::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -60,7 +60,7 @@ fn free_port() -> u16 {
 /// nonexistent id still proves it is serving, which is what we need to know.
 async fn configuration_serving(probe: &IIIClient) -> bool {
     match probe
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "configuration::get".into(),
             payload: json!({ "id": "__readiness_probe__" }),
             action: None,
@@ -122,7 +122,7 @@ async fn spawn_engine() -> Option<Engine> {
         // starting before it is ready would fail spuriously. Any response to
         // the probe id counts, including a not-found.
         let core_ready = probe
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::workers::list".into(),
                 payload: json!({}),
                 action: None,
@@ -155,7 +155,7 @@ impl Stack {
     /// would.
     pub async fn call(&self, function_id: &str, payload: Value) -> Result<Value, String> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function_id.to_string(),
                 payload,
                 action: None,
@@ -166,14 +166,27 @@ impl Stack {
     }
 }
 
-/// Boot an engine and register this worker against it, or `None` when no
-/// engine binary is available.
+/// Boot an engine and register this worker against it the way the binary
+/// does (named `pdf`: its functions, its console UI, its configuration
+/// observer), or `None` when no engine binary is available.
 pub async fn boot() -> Option<Stack> {
     let engine = spawn_engine().await?;
-    let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
+    let iii = Arc::new(register_worker(
+        &engine.url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                runtime: "rust".to_string(),
+                name: "pdf".to_string(),
+                ..WorkerMetadata::default()
+            }),
+            ..InitOptions::default()
+        },
+    ));
 
     let cell: ConfigCell = Arc::new(RwLock::new(Arc::new(WorkerConfig::default())));
     pdf::functions::register_all(&iii, &cell);
+    pdf::ui::register(&iii);
+    pdf::configuration::register_config_observer(&iii, cell.clone());
 
     // Let the registrations land before the first call.
     tokio::time::sleep(Duration::from_millis(500)).await;

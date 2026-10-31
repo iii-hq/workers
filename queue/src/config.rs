@@ -1,6 +1,7 @@
 //! Worker configuration: queue transport plus durable named function queues.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,10 @@ use serde_json::Value;
 use crate::adapter::FunctionQueueConfig;
 
 pub const DEFAULT_ADAPTER: &str = "builtin";
+/// The engine's default `observers.observer_grace_ms`: a worker that
+/// reattaches, or restarts under the same name, within it re-observes its
+/// subscribers' ids, and their queues have kept receiving their topics.
+pub const DEFAULT_SUBSCRIBER_RETENTION_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -18,19 +23,45 @@ pub struct AdapterEntry {
     pub config: Option<Value>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueueConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter: Option<AdapterEntry>,
     /// Durable function queues keyed by the name used by
-    /// `TriggerAction::Enqueue`. Definitions are persisted through the
+    /// `CallAction::Enqueue`. Definitions are persisted through the
     /// configuration worker and restored when this worker restarts.
     #[serde(default)]
     pub queue_configs: BTreeMap<String, FunctionQueueConfig>,
     /// The namespace a function-queue job runs in. Read at boot.
     #[serde(default, skip_serializing_if = "RunJobsIn::is_enqueuer")]
     pub run_jobs_in: RunJobsIn,
+    /// How long, in milliseconds, the queue of a `queue::on-message`
+    /// subscriber whose observer is removed (disposed, or its worker
+    /// disconnected) keeps receiving its topic. Its consumer stops at once;
+    /// an observer with the same id (or group) within this time consumes
+    /// everything the queue received. After it, the queue keeps only what it
+    /// holds. `0` stops the queue receiving when the observer is removed.
+    /// The default is the engine's default `observers.observer_grace_ms`;
+    /// keep it at least the engine's setting, so a worker that re-observes
+    /// within the grace period finds everything published while it was away.
+    #[serde(default = "default_subscriber_retention_ms")]
+    pub subscriber_retention_ms: u64,
+}
+
+impl Default for QueueConfig {
+    fn default() -> Self {
+        Self {
+            adapter: None,
+            queue_configs: BTreeMap::new(),
+            run_jobs_in: RunJobsIn::default(),
+            subscriber_retention_ms: DEFAULT_SUBSCRIBER_RETENTION_MS,
+        }
+    }
+}
+
+fn default_subscriber_retention_ms() -> u64 {
+    DEFAULT_SUBSCRIBER_RETENTION_MS
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -73,7 +104,13 @@ impl QueueConfig {
             }),
             queue_configs: BTreeMap::new(),
             run_jobs_in: RunJobsIn::Enqueuer,
+            subscriber_retention_ms: DEFAULT_SUBSCRIBER_RETENTION_MS,
         }
+    }
+
+    /// [`Self::subscriber_retention_ms`] as a duration.
+    pub fn subscriber_retention(&self) -> Duration {
+        Duration::from_millis(self.subscriber_retention_ms)
     }
 
     pub fn normalized(&self) -> Self {
@@ -225,6 +262,42 @@ mod tests {
             builtin.validate().is_err(),
             "only a shared broker can give a job back"
         );
+    }
+
+    #[test]
+    fn subscriber_retention_defaults_to_the_engine_grace_period() {
+        let defaults: QueueConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(defaults, QueueConfig::default());
+        assert_eq!(defaults.subscriber_retention_ms, 30_000);
+        assert_eq!(defaults.subscriber_retention(), Duration::from_secs(30));
+        assert_eq!(
+            QueueConfig::packaged_default().subscriber_retention_ms,
+            30_000
+        );
+        assert_eq!(
+            QueueConfig::default().to_json()["subscriber_retention_ms"],
+            30_000
+        );
+
+        let none: QueueConfig = serde_yaml::from_str("{subscriber_retention_ms: 0}").unwrap();
+        none.validate().unwrap();
+        assert_eq!(none.subscriber_retention(), Duration::ZERO);
+        assert_eq!(QueueConfig::from_json(&none.to_json()).unwrap(), none);
+        assert_eq!(none.to_json()["subscriber_retention_ms"], 0);
+
+        for invalid in [
+            serde_json::json!({ "subscriber_retention_ms": -1 }),
+            serde_json::json!({ "subscriber_retention_ms": 1.5 }),
+            serde_json::json!({ "subscriber_retention_ms": "30s" }),
+            serde_json::json!({ "subscriber_retention_ms": null }),
+        ] {
+            assert!(QueueConfig::from_json(&invalid).is_err(), "{invalid}");
+        }
+
+        let schema = QueueConfig::json_schema();
+        let field = &schema["properties"]["subscriber_retention_ms"];
+        assert_eq!(field["default"], 30_000, "{schema}");
+        assert_eq!(field["minimum"], 0.0, "{schema}");
     }
 
     #[test]

@@ -161,7 +161,7 @@ fn evaluate<'a>(
         let source_action = fetch.or(source_pipeline);
         let registrations = calls
             .iter()
-            .filter(|call| call.function_id == "engine::register_trigger")
+            .filter(|call| call.function_id == common::OBSERVE)
             .count();
         let armed_before_fetch = source_action.is_some_and(|source| {
             registrations == 3
@@ -241,7 +241,7 @@ fn evaluate<'a>(
         let overlapping_sessions = activity_windows_overlap(&analyst_activity);
         let parallel_spawns = parallel_calls || overlapping_sessions;
 
-        let records = common::trigger_fired_records(&observation.transcript);
+        let records = common::observer_fired_records(&observation.transcript);
         let article_records: Vec<_> = records
             .iter()
             .filter(|record| {
@@ -323,32 +323,10 @@ fn evaluate<'a>(
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let names = Names::new(run_id);
-        let listed = context
-            .trigger_value(
-                "harness::triggers::list",
-                json!({ "session_id": names.root_session }),
-            )
-            .await?;
-        for subscription_id in listed
-            .get("subscriptions")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|subscription| subscription.get("subscription_id").and_then(Value::as_str))
-        {
-            let _: Value = context
-                .trigger(
-                    "harness::triggers::unregister",
-                    json!({
-                        "session_id": names.root_session,
-                        "subscription_id": subscription_id,
-                    }),
-                )
-                .await?;
-        }
+        common::dispose_session_observers(context, &names.root_session).await?;
         for key in [ARTICLE_KEY, SUMMARY_KEY, FACTS_KEY] {
             let _: Value = context
-                .trigger("state::delete", json!({ "scope": names.scope, "key": key }))
+                .call("state::delete", json!({ "scope": names.scope, "key": key }))
                 .await?;
         }
         // The barrier record is NOT ours to delete: `state_barrier` is the state
@@ -362,7 +340,7 @@ fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
 async fn get_state(context: &E2eContext, scope: &str, key: &str) -> anyhow::Result<Value> {
     Ok(common::state_value(
         context
-            .trigger_value("state::get", json!({ "scope": scope, "key": key }))
+            .call_value("state::get", json!({ "scope": scope, "key": key }))
             .await?,
     ))
 }
@@ -382,26 +360,17 @@ fn is_state_wake(
     key: Option<&str>,
     label: &str,
 ) -> bool {
-    call.function_id == "engine::register_trigger"
-        && call.arguments.get("trigger_type").and_then(Value::as_str) == Some("state")
-        && call
-            .arguments
-            .pointer("/config/scope")
-            .and_then(Value::as_str)
+    common::observes(call, "state::on-changed")
+        && common::filter_eq(&call.arguments, "input.scope").and_then(Value::as_str)
             == Some(names.scope.as_str())
-        && call
-            .arguments
-            .pointer("/config/key")
-            .and_then(Value::as_str)
-            == key
+        && common::filter_eq(&call.arguments, "input.key").and_then(Value::as_str) == key
         && call.arguments.get("label").and_then(Value::as_str) == Some(label)
         && common::requested_once(&call.arguments)
         && common::is_wake_registration(&call.arguments)
 }
 
 fn is_deadline_watch(call: &common::ObservedFunctionCall) -> bool {
-    call.function_id == "engine::register_trigger"
-        && call.arguments.get("trigger_type").and_then(Value::as_str) == Some("timer")
+    common::observes(call, "harness::on-timer")
         && call
             .arguments
             .get("label")
@@ -409,7 +378,7 @@ fn is_deadline_watch(call: &common::ObservedFunctionCall) -> bool {
             .is_some_and(|label| !label.trim().is_empty())
         && call
             .arguments
-            .pointer("/config/in_ms")
+            .pointer("/args/in_ms")
             .and_then(Value::as_u64)
             .is_some_and(|in_ms| (240_000..=360_000).contains(&in_ms))
         && common::requested_once(&call.arguments)
@@ -609,7 +578,7 @@ fn normalized_block_call(block: &Value) -> Option<(&str, &Value)> {
     }
     let function = block.get("function_id")?.as_str()?;
     let arguments = block.get("arguments")?;
-    if function == "agent_trigger" {
+    if function == "agent_call" {
         return Some((
             arguments.get("function")?.as_str()?,
             arguments.get("payload")?,

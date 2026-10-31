@@ -81,18 +81,18 @@ async fn main() -> Result<()> {
 
     let engine = Arc::new(IIIEngine::new(iii.clone()));
     let manager = RuntimeManager::new(cfg.clone(), engine.clone(), &cli.url);
-    // Register the `sandbox-code-runner::event` trigger type first so the
-    // emitter is wired before any function can run.
-    let emitter = events::register_event_trigger(&iii);
-    manager.set_events(emitter.clone());
-    sandbox_code_runner::fleet_watch::spawn(engine.clone(), emitter);
+    // Register `sandbox-code-runner::on-event` first so the emitter is wired
+    // before any function can run. Its observers start and stop the fleet
+    // watcher.
+    let emitter = events::register_event_function(&iii, engine.clone());
+    manager.set_events(emitter);
     functions::register_all(&iii, &manager);
-    // Injected console UI: the function-trigger cards for the ops above.
+    // Injected console UI: the function-call cards for the ops above.
     sandbox_code_runner::ui::register(&iii);
 
     // The builtin `configuration` worker owns this worker's console-facing
     // knobs; `inject_guidance` defaults on and hot-applies on change by
-    // binding/unbinding the pre-generate guidance hook.
+    // observing the pre-generate hook point or disposing that observer.
     //
     // Best-effort on purpose: the entry carries one cosmetic prompt knob, so
     // unlike the full config integrations (docs/sops/configuration.md §4c) a
@@ -111,15 +111,12 @@ async fn main() -> Result<()> {
     };
     let guidance = configuration::GuidanceState::default();
     configuration::apply_guidance(&iii, &guidance, shared_cfg.inject_guidance);
-    match configuration::register_config_trigger(&iii, guidance) {
-        // One serialized re-fetch to close the boot gap: an update landing
-        // between the fetch above and the binding just registered fired into
-        // nothing, and would otherwise stay invisible until the NEXT change.
-        Ok(reload) => reload.run().await,
-        Err(e) => {
-            tracing::warn!(error = %e, "registering configuration change trigger failed; the inject_guidance knob is frozen until restart");
-        }
-    }
+    // One serialized re-fetch to close the boot gap: an update landing
+    // between the fetch above and the observer becoming active reaches no
+    // one, and would otherwise stay invisible until the NEXT change.
+    configuration::observe_config_changes(&iii, guidance)
+        .run()
+        .await;
 
     // Startup probe: is the iii-sandbox daemon serving? Fail OPEN — the
     // operator may add it later, and every call meanwhile errors with the
@@ -146,7 +143,7 @@ async fn main() -> Result<()> {
                 if classify_probe_error(&raw, "sandbox::create") == ProbeOutcome::Free {
                     tracing::warn!(
                         "iii-sandbox is NOT installed on this engine — every sandbox-code-runner \
-                         call will fail until an operator runs `iii trigger compose::add worker=iii-sandbox`"
+                         call will fail until an operator runs `iii call compose::add worker=iii-sandbox`"
                     );
                 } else {
                     tracing::warn!(error = %raw, "could not verify iii-sandbox presence");

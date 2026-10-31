@@ -154,7 +154,7 @@ wait-engine:
 	while [ $$i -lt 40 ]; do \
 	  engine_cmd=$$(tmux display-message -p -t "$(TMUX_SESSION):engine" '#{pane_current_command}' 2>/dev/null || true); \
 	  if [ "$$engine_cmd" = "iii" ] && \
-	     iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}' >/dev/null 2>&1; then \
+	     iii call engine::workers::list --port "$(ENGINE_PORT)" --json '{}' >/dev/null 2>&1; then \
 	    echo "engine ready in $(TMUX_SESSION):engine on $(ENGINE_URL)"; \
 	    exit 0; \
 	  fi; \
@@ -167,14 +167,14 @@ wait-engine:
 wait-base:
 	@i=0; \
 	while [ $$i -lt 120 ]; do \
-	  workers=$$(iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null || true); \
+	  workers=$$(iii call engine::workers::list --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null || true); \
 	  missing=""; \
 	  for worker in $(BASE_STACK); do \
 	    echo "$$workers" | grep -Fq "\"name\": \"$$worker\"" || missing="$$missing $$worker"; \
 	  done; \
 	  if [ -z "$$missing" ] && \
-	     iii trigger harness::status --help --port "$(ENGINE_PORT)" >/dev/null 2>&1 && \
-	     iii trigger console::ui-manifest --port "$(ENGINE_PORT)" --json '{}' >/dev/null 2>&1; then \
+	     iii call harness::status --help --port "$(ENGINE_PORT)" >/dev/null 2>&1 && \
+	     iii call console::ui-manifest --port "$(ENGINE_PORT)" --json '{}' >/dev/null 2>&1; then \
 	    echo "base stack ready in $(TMUX_SESSION)"; \
 	    exit 0; \
 	  fi; \
@@ -188,10 +188,10 @@ wait-base:
 wait-stack:
 	@i=0; \
 	while [ $$i -lt 120 ]; do \
-	  workers=$$(iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null || true); \
+	  workers=$$(iii call engine::workers::list --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null || true); \
 	  if echo "$$workers" | grep -Fq '"name": "eval"' && \
-	     iii trigger eval::status --help --port "$(ENGINE_PORT)" >/dev/null 2>&1 && \
-	     iii trigger console::ui-manifest --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null | grep -Fq '"worker": "eval"'; then \
+	     iii call eval::status --help --port "$(ENGINE_PORT)" >/dev/null 2>&1 && \
+	     iii call console::ui-manifest --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null | grep -Fq '"worker": "eval"'; then \
 	    echo "stack ready in $(TMUX_SESSION)"; \
 	    exit 0; \
 	  fi; \
@@ -209,7 +209,7 @@ require-engine:
 	  echo "run make dev-up or make engine first"; \
 	  exit 2; \
 	fi
-	@iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}' >/dev/null || { \
+	@iii call engine::workers::list --port "$(ENGINE_PORT)" --json '{}' >/dev/null || { \
 	  echo "engine window exists, but $(ENGINE_URL) is not reachable"; \
 	  exit 2; \
 	}
@@ -297,20 +297,20 @@ stop-engine:
 	fi
 
 status:
-	@iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}'
+	@iii call engine::workers::list --port "$(ENGINE_PORT)" --json '{}'
 
 smoke:
 	@set -e; \
 	echo '== workers =='; \
-	iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}'; \
+	iii call engine::workers::list --port "$(ENGINE_PORT)" --json '{}'; \
 	echo '== harness functions =='; \
-	iii trigger engine::functions::list --port "$(ENGINE_PORT)" --json '{"prefix":"harness::"}'; \
+	iii call engine::functions::list --port "$(ENGINE_PORT)" --json '{"prefix":"harness::"}'; \
 	echo '== harness status =='; \
-	iii trigger harness::status --port "$(ENGINE_PORT)" --json '{"session_id":"dev-smoke"}'; \
+	iii call harness::status --port "$(ENGINE_PORT)" --json '{"session_id":"dev-smoke"}'; \
 	echo '== sessions =='; \
-	iii trigger session::list --port "$(ENGINE_PORT)" --json '{}'; \
+	iii call session::list --port "$(ENGINE_PORT)" --json '{}'; \
 	echo '== providers =='; \
-	iii trigger router::provider::list --port "$(ENGINE_PORT)" --json '{}'
+	iii call router::provider::list --port "$(ENGINE_PORT)" --json '{}'
 
 logs attach:
 	@tmux attach -t "$(TMUX_SESSION)"

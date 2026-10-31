@@ -1,17 +1,16 @@
 //! Bridge to the `configuration` worker through the shared
 //! `iii-config-client` crate: register the `kanban` entry (seeding only when
-//! nothing is stored yet), fetch the authoritative value, and hot-apply
-//! `configuration:updated` into the live [`ConfigCell`].
+//! nothing is stored yet), fetch the authoritative value, and hot-apply each
+//! `configuration::on-updated` update of it into the live [`ConfigCell`].
 
 use std::sync::Arc;
 
 use iii_config_client::{EntrySpec, Reload};
 use iii_sdk::IIIClient;
-use iii_sdk::errors::Error;
 use serde_json::Value;
 
 use crate::config::{self, CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME, KanbanConfig};
-use crate::events::{self, Subscribers};
+use crate::events;
 use crate::store::ConfigCell;
 
 /// Process-stable entry identity; the form family remains CONFIG_ID.
@@ -57,14 +56,10 @@ pub async fn fetch(iii: &IIIClient) -> Result<KanbanConfig, String> {
         .unwrap_or_default())
 }
 
-/// Bind `configuration:updated` → refetch → swap the cell → tell the pages
-/// (`config.updated` on `kanban:change`). Call `.run()` on the returned
-/// handle once right after binding to close the boot gap.
-pub fn bind_reload(
-    iii: &Arc<IIIClient>,
-    cell: ConfigCell,
-    subscribers: Subscribers,
-) -> Result<Reload, Error> {
+/// Observe `configuration::on-updated` for the entry → refetch → swap the
+/// cell → tell the pages (`config.updated` on `kanban::on-change`). Call
+/// `.run()` on the returned handle once right after to close the boot gap.
+pub fn observe_reload(iii: &Arc<IIIClient>, cell: ConfigCell) -> Reload {
     let engine = iii.clone();
     iii_config_client::on_change(
         iii,
@@ -74,14 +69,13 @@ pub fn bind_reload(
         move || {
             let engine = engine.clone();
             let cell = cell.clone();
-            let subscribers = subscribers.clone();
             async move {
                 match fetch(&engine).await {
                     Ok(next) => {
                         let board_file = next.board_file();
                         *cell.write().unwrap_or_else(|p| p.into_inner()) = next;
                         tracing::info!(board_file = %board_file.display(), "kanban configuration reloaded");
-                        events::emit_config_updated(&engine, &subscribers);
+                        events::emit_config_updated(&engine).await;
                     }
                     Err(error) => {
                         tracing::error!(error = %error, "kanban configuration reload failed; keeping previous config");

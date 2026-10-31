@@ -9,8 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::{net::TcpListener, task::JoinHandle};
@@ -27,8 +26,9 @@ impl Drop for FakeEngine {
     }
 }
 
-/// Accept one worker, acknowledge it, hand every text frame to `handle` and
-/// send back the frames it returns.
+/// Accept one worker, acknowledge it as an `observe.v2` engine with local
+/// dispatch, hand every text frame to `handle` and send back the frames it
+/// returns.
 pub async fn fake_engine(
     mut handle: impl FnMut(Value) -> Vec<Value> + Send + 'static,
 ) -> FakeEngine {
@@ -37,7 +37,11 @@ pub async fn fake_engine(
     let task = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut socket = accept_async(stream).await.unwrap();
-        let registered = json!({"type":"workerregistered","worker_id":"fake-secrets-worker"});
+        let registered = json!({
+            "type": "workerregistered",
+            "worker_id": "fake-secrets-worker",
+            "features": ["observe.v1", "observe.v2", "local-dispatch.v1"],
+        });
         socket
             .send(Message::Text(registered.to_string().into()))
             .await
@@ -145,7 +149,7 @@ pub async fn invoke(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, iii_sdk::errors::Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,

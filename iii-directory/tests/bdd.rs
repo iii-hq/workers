@@ -43,6 +43,15 @@ async fn main() {
                 world.stash.clear();
             })
         })
+        .after(|_feature, _rule, _scenario, _finished, world| {
+            Box::pin(async move {
+                if let Some(world) = world {
+                    for handle in world.observers.drain(..) {
+                        let _ = handle.dispose().await;
+                    }
+                }
+            })
+        })
         .run_and_exit("tests/features")
         .await;
 }

@@ -38,7 +38,7 @@ function parseReasoningEfforts(
 
 export async function fetchModelsCatalog(): Promise<CatalogModelRow[]> {
   const client = await getIiiClient()
-  const res = await client.trigger<{ models?: unknown }>(
+  const res = await client.call<{ models?: unknown }>(
     'router::models::list',
     {},
   )
@@ -124,9 +124,7 @@ export async function refreshProviderModels(
   const client = await getIiiClient()
   await Promise.allSettled(
     providers.map((p) =>
-      client
-        .trigger(`provider::${p}::refresh_models`, {})
-        .catch(() => undefined),
+      client.call(`provider::${p}::refresh_models`, {}).catch(() => undefined),
     ),
   )
 }
@@ -134,37 +132,33 @@ export async function refreshProviderModels(
 /** Explicit retry keeps transport failures observable; diagnostics come from the router. */
 export async function retryXaiModels(): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger('provider::xai::refresh_models', {})
+  await client.call('provider::xai::refresh_models', {})
 }
 
 /** iii:: prefix → engine-internal → delivery spans stay out of the Traces view. */
 const MODELS_CHANGED_FN = 'iii::console::models_changed'
-/** llm-router custom trigger type (worker-owned fan-out, not pubsub). */
-const MODELS_CHANGED_TRIGGER = 'router::models::changed'
+/** llm-router's catalog event function (called on every reconcile). */
+const ON_MODELS_CHANGED_FN = 'router::models::on-changed'
 const PROVIDERS_CHANGED_FN = 'iii::console::providers_changed'
-/** Fired on provider availability flips (worker registered / dispatch found it gone). */
-const PROVIDERS_CHANGED_TRIGGER = 'router::provider::changed'
+/** Called on provider availability flips (worker registered / dispatch found it gone). */
+const ON_PROVIDER_CHANGED_FN = 'router::provider::on-changed'
 
-async function subscribeRouterTrigger(
+async function observeRouter(
   fnId: string,
-  triggerType: string,
+  functionId: string,
   onChange: (payload: unknown) => void,
 ): Promise<() => void> {
   const client = await getIiiClient()
   let offHandler: (() => void) | undefined
-  let offTrigger: (() => void) | undefined
+  let offObserver: (() => void) | undefined
   try {
-    // `on()` registers `<fn>::<browserId>`; the trigger targets the same id.
+    // `on()` registers `<fn>::<browserId>`; the observer targets the same id.
     offHandler = client.on(fnId, (payload) => {
       onChange(payload)
     })
-    offTrigger = client.registerTrigger({
-      type: triggerType,
-      function_id: `${fnId}::${client.browserId}`,
-      config: {},
-    })
+    offObserver = client.observe(functionId, `${fnId}::${client.browserId}`)
   } catch {
-    offTrigger?.()
+    offObserver?.()
     offHandler?.()
     return () => {}
   }
@@ -174,7 +168,7 @@ async function subscribeRouterTrigger(
     disposed = true
     offHandler?.()
     try {
-      offTrigger?.()
+      offObserver?.()
     } catch {
       // SDK already disposed; nothing to do.
     }
@@ -182,19 +176,19 @@ async function subscribeRouterTrigger(
 }
 
 /**
- * Subscribe to the llm-router `router::models::changed` trigger so the picker
- * re-pulls the catalog when a provider reconciles — credential added/removed,
+ * Observe llm-router's `router::models::on-changed` so the picker re-pulls
+ * the catalog when a provider reconciles — credential added/removed,
  * `refresh_models`, or a provider worker added/removed.
  *
- * Registers a browser-local handler plus the router-owned trigger type
- * (`llm-router/README.md` § Events). Returns a disposer; on failure (e.g.
- * llm-router absent) the binding is dropped silently and callers rely on
+ * Registers a browser-local handler and observes the router's function with
+ * it (`llm-router/README.md` § Events). Returns a disposer. While
+ * llm-router is absent the observer stays pending, and callers rely on
  * manual refresh / config-save hooks.
  */
 export async function subscribeModelChanges(
   onChange: () => void,
 ): Promise<() => void> {
-  return subscribeRouterTrigger(MODELS_CHANGED_FN, MODELS_CHANGED_TRIGGER, () =>
+  return observeRouter(MODELS_CHANGED_FN, ON_MODELS_CHANGED_FN, () =>
     onChange(),
   )
 }
@@ -205,17 +199,17 @@ export interface ProviderChangedEvent {
 }
 
 /**
- * Subscribe to `router::provider::changed` — availability flips (a provider
+ * Observe `router::provider::on-changed` — availability flips (a provider
  * worker (re)registered, or a dispatch discovered it gone). Model catalogs
- * survive a provider going down, so this trigger updates the existing
+ * survive a provider going down, so this event updates the existing
  * provider snapshot and greys/un-greys the group without another list request.
  */
 export async function subscribeProviderChanges(
   onChange: (event: ProviderChangedEvent) => void,
 ): Promise<() => void> {
-  return subscribeRouterTrigger(
+  return observeRouter(
     PROVIDERS_CHANGED_FN,
-    PROVIDERS_CHANGED_TRIGGER,
+    ON_PROVIDER_CHANGED_FN,
     (payload) => {
       if (!payload || typeof payload !== 'object') return
       const row = payload as Record<string, unknown>
@@ -394,7 +388,7 @@ const CREDENTIAL_SOURCES = new Set(['config', 'env', 'secret', 'none'])
  */
 export async function fetchProviderList(): Promise<ProviderListEntry[]> {
   const client = await getIiiClient()
-  const res = await client.trigger<{ providers?: unknown }>(
+  const res = await client.call<{ providers?: unknown }>(
     'router::provider::list',
     {},
   )

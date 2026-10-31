@@ -12,8 +12,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -276,7 +275,7 @@ async fn forward(
     let surface = surface_name(modality);
     let function_id = format!("provider::{provider}::{surface}");
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.clone(),
             payload,
             action: None,

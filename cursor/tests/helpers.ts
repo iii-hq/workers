@@ -1,4 +1,4 @@
-import type { IIIClient } from 'iii-sdk';
+import type { AddedHook, Call, IIIClient, MatchHook, Observer, RemovedHook } from 'iii-sdk';
 import { isDeepStrictEqual } from 'node:util';
 import type { z } from 'zod';
 import type {
@@ -8,11 +8,11 @@ import type {
   RpcOptions,
 } from '../src/bridge.js';
 import {
-  AGENT_EVENT_TRIGGER_TYPE,
   createAgentFeeds,
   type FeedEmit,
   type FeedPayload,
-  RAW_EVENT_TRIGGER_TYPE,
+  ON_AGENT_EVENT_FN,
+  ON_RAW_EVENT_FN,
 } from '../src/agent-feed.js';
 import { defaultConfig, type Config } from '../src/config.js';
 import type { RunStreamMessageWire } from '../src/types.js';
@@ -22,30 +22,40 @@ type Registration = {
   options: Record<string, unknown>;
 };
 
-export type TriggerBinding = {
+type Hooks = { added?: AddedHook; removed?: RemovedHook; match?: MatchHook };
+
+export type ObserverSpec = {
   id: string;
+  /** The observer's target. */
+  target: string;
+  args: Record<string, unknown>;
+};
+
+/** One call iii's delivery made to an observer's target. */
+export type Delivery = {
+  observer_id: string;
   function_id: string;
-  config: unknown;
-  namespace?: string;
-  metadata?: Record<string, unknown>;
+  target: string;
+  payload: Record<string, unknown>;
 };
 
-export type TriggerTypeHandler = {
-  registerTrigger: (binding: TriggerBinding) => Promise<void>;
-  unregisterTrigger: (binding: TriggerBinding) => Promise<void>;
-};
+export const AGENT = ON_AGENT_EVENT_FN;
+export const RAW = ON_RAW_EVENT_FN;
+export const consumerFor = (functionId: string) => `consumer::${functionId}`;
 
-export const AGENT = AGENT_EVENT_TRIGGER_TYPE;
-export const RAW = RAW_EVENT_TRIGGER_TYPE;
-export const consumerFor = (typeId: string) => `consumer::${typeId}`;
+const asKeys = (key: string | readonly string[]) => (typeof key === 'string' ? [key] : [...key]);
 
 export class MockIII {
   readonly state = new Map<string, unknown>();
   readonly functions = new Map<string, Registration>();
-  readonly triggers: unknown[] = [];
-  /** Owned trigger types the worker registered, with their handler. */
-  readonly triggerTypes = new Map<string, TriggerTypeHandler>();
-  readonly triggerCalls: Array<Record<string, unknown>> = [];
+  /** What the worker observed: `iii.observe(source, target, options)`. */
+  readonly observed: Array<{ source: unknown; target: unknown; options?: unknown }> = [];
+  /** Every call the worker made, in order (its own feed calls included). */
+  readonly calls: Array<Record<string, unknown>> = [];
+  /** Every delivery iii made to an observer's target, in order. */
+  readonly deliveries: Delivery[] = [];
+  private readonly hooks = new Map<string, Hooks>();
+  private readonly active = new Map<string, Observer[]>();
   configValue: unknown = defaultConfig();
   configFailures = 0;
   ensureError: unknown;
@@ -54,59 +64,137 @@ export class MockIII {
     id: string,
     handler: Registration['handler'],
     options: Record<string, unknown>,
-  ): void {
+  ): unknown {
     this.functions.set(id, { handler, options });
-  }
-
-  registerTrigger(trigger: unknown): void {
-    this.triggers.push(trigger);
-  }
-
-  registerTriggerType(type: { id: string }, handler: TriggerTypeHandler): { id: string } {
-    this.triggerTypes.set(type.id, handler);
-    return { id: type.id };
-  }
-
-  /** Bind a consumer to an owned trigger type like the engine would. */
-  async bind(typeId: string, sessionId: string, binding: Partial<TriggerBinding> = {}) {
-    await this.handlerFor(typeId).registerTrigger({
-      id: `${typeId}:${sessionId}`,
-      function_id: consumerFor(typeId),
-      config: { session_id: sessionId },
-      ...binding,
-    });
-  }
-
-  async unbind(typeId: string, id: string) {
-    await this.handlerFor(typeId).unregisterTrigger({
+    const hooks = this.hooksOf(id);
+    const ref = {
       id,
-      function_id: consumerFor(typeId),
-      config: {},
-    });
+      onObserverAdded: (hook: AddedHook | null) => {
+        hooks.added = hook ?? undefined;
+        return ref;
+      },
+      onObserverRemoved: (hook: RemovedHook | null) => {
+        hooks.removed = hook ?? undefined;
+        return ref;
+      },
+      onObserverMatch: (hook: MatchHook | null) => {
+        hooks.match = hook ?? undefined;
+        return ref;
+      },
+      onObserverDeliver: () => ref,
+      observers: () => this.observers(id),
+      isObserved: (call?: Partial<Call>) => this.isObserved(id, call),
+      unregister: () => {
+        this.functions.delete(id);
+      },
+    };
+    return ref;
   }
 
-  /** Payloads delivered to the default consumer of a feed (`consumer::<typeId>`). */
-  feedPayloads(typeId: string): FeedPayload[] {
-    return this.triggerCalls
-      .filter((call) => call.function_id === consumerFor(typeId))
-      .map((call) => call.payload as FeedPayload);
+  observe(source: unknown, target: unknown, options?: unknown) {
+    this.observed.push(options === undefined ? { source, target } : { source, target, options });
+    return {
+      id: `observer-${this.observed.length}`,
+      state: 'pending',
+      ready: async () => {},
+      onStateChange: () => () => {},
+      dispose: async () => {},
+    };
   }
 
-  /** The `event` of every payload delivered to the default consumer of a feed. */
-  feedEvents(typeId: string): Array<Record<string, unknown>> {
-    return this.feedPayloads(typeId).map((payload) => payload.event as Record<string, unknown>);
+  observers(functionId: string): Observer[] {
+    return this.active.get(functionId) ?? [];
   }
 
-  private handlerFor(typeId: string): TriggerTypeHandler {
-    const handler = this.triggerTypes.get(typeId);
-    if (!handler) throw new Error(`trigger type ${typeId} is not registered`);
-    return handler;
+  isObserved(functionId: string, call?: Partial<Call>): boolean {
+    return call === undefined
+      ? this.observers(functionId).length > 0
+      : this.matching(functionId, call).length > 0;
   }
 
-  async trigger(request: Record<string, unknown>): Promise<unknown> {
-    this.triggerCalls.push(structuredClone(request));
+  /** Add an observer of one of the worker's functions like the engine would; rejects with the hook's error. */
+  async addObserver(functionId: string, sessionId: string, spec: Partial<ObserverSpec> = {}) {
+    if (!this.functions.has(functionId)) throw new Error(`${functionId} is not registered`);
+    const obs: Observer = {
+      id: spec.id ?? `${functionId}:${sessionId}`,
+      function_id: functionId,
+      args: spec.args ?? { session_id: sessionId },
+      filters: {},
+      target: spec.target ?? consumerFor(functionId),
+      on: 'success',
+      capture: ['input', 'output', 'caller'],
+      matches: () => true,
+      accepted: async () => {},
+      reject: () => {},
+    };
+    await this.hooks.get(functionId)?.added?.(obs);
+    this.active.set(functionId, [...this.observers(functionId), obs]);
+    return obs.id;
+  }
+
+  /** Remove an observer added with `addObserver`. */
+  async removeObserver(id: string) {
+    for (const [functionId, list] of this.active) {
+      const obs = list.find((o) => o.id === id);
+      if (!obs) continue;
+      this.active.set(
+        functionId,
+        list.filter((o) => o.id !== id),
+      );
+      await this.hooks.get(functionId)?.removed?.(obs);
+    }
+  }
+
+  /** Frames delivered to the default observer target of a feed (`consumer::<functionId>`). */
+  feedPayloads(functionId: string): FeedPayload[] {
+    return this.deliveries
+      .filter((delivery) => delivery.target === consumerFor(functionId))
+      .map((delivery) => delivery.payload as unknown as FeedPayload);
+  }
+
+  /** The `event` of every frame delivered to the default observer target of a feed. */
+  feedEvents(functionId: string): Array<Record<string, unknown>> {
+    return this.feedPayloads(functionId).map((payload) => payload.event as Record<string, unknown>);
+  }
+
+  private hooksOf(functionId: string): Hooks {
+    const entry = this.hooks.get(functionId) ?? {};
+    this.hooks.set(functionId, entry);
+    return entry;
+  }
+
+  private matching(functionId: string, call: Partial<Call>): Observer[] {
+    const match = this.hooks.get(functionId)?.match;
+    const all = this.observers(functionId);
+    if (!match) return all;
+    if (typeof match === 'function') return all.filter((obs) => match(obs, call as Call));
+    const keys = new Set(asKeys(match.call(call as Call)));
+    return all.filter((obs) => asKeys(match.observer(obs)).some((key) => keys.has(key)));
+  }
+
+  async call(request: Record<string, unknown>): Promise<unknown> {
+    this.calls.push(structuredClone(request));
     const functionId = request.function_id;
     const payload = (request.payload ?? {}) as Record<string, unknown>;
+    const hosted = this.functions.get(String(functionId));
+    if (hosted?.options.private) {
+      // The worker's own private function: run it, then iii delivers its
+      // return value to the observers that match the call.
+      const input = structuredClone(payload);
+      const output = (await hosted.handler(input)) as Record<string, unknown>;
+      const call: Partial<Call> = { function_id: String(functionId), input, output };
+      for (const obs of this.matching(String(functionId), call)) {
+        this.deliveries.push({
+          observer_id: obs.id,
+          function_id: String(functionId),
+          target: obs.target,
+          payload: clone(output),
+        });
+      }
+      return (request.action as { type?: string } | undefined)?.type === 'void'
+        ? undefined
+        : output;
+    }
     if (functionId === 'state::get') return clone(this.state.get(String(payload.key)) ?? null);
     if (functionId === 'state::set') {
       this.state.set(String(payload.key), clone(payload.value));
@@ -125,8 +213,6 @@ export class MockIII {
       return { swapped: true };
     }
     if (functionId === 'state::list') return [...this.state.values()].map(clone);
-    // Void feed deliveries to bound consumers: recorded above, nothing to return.
-    if (request.action !== undefined) return undefined;
     if (functionId === 'configuration::register') {
       if (!this.ensureError) throw new Error('unexpected legacy registration');
       if (Object.hasOwn(payload, 'initial_value')) this.configValue = clone(payload.initial_value);
@@ -231,15 +317,15 @@ export class FakeBridgeFactory implements BridgeClientFactory {
   }
 }
 
-/** Register the worker's two feeds on `iii` and bind the default consumers for `sessions`. */
-export async function boundFeeds(
+/** Register the worker's two feeds on `iii` and add the default observers for `sessions`. */
+export async function observedFeeds(
   iii: MockIII,
   ...sessions: string[]
 ): Promise<{ emit: FeedEmit; emitRaw: FeedEmit }> {
   const feeds = createAgentFeeds(iii.asClient());
   for (const session of sessions) {
-    await iii.bind(AGENT, session);
-    await iii.bind(RAW, session);
+    await iii.addObserver(AGENT, session);
+    await iii.addObserver(RAW, session);
   }
   return feeds;
 }

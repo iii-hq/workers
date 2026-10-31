@@ -28,11 +28,11 @@ const applied: ConfigStatus = { id: 'layout-test', source: 'central', last_outco
 const schema = { type: 'object', properties: { ...Object.fromEntries(Object.keys(DEFAULTS).map((key) => [key, {}])), cloud: { type: 'object' }, database: { type: 'object' } } }
 
 async function render(overrides: Partial<ConfigFormProps> = {}, status: ConfigStatus | Error = applied) {
-  const trigger = vi.fn(async () => {
+  const call = vi.fn(async () => {
     if (status instanceof Error) throw status
     return status
   })
-  const host = { iii: { trigger, on: () => () => {}, registerTrigger: () => () => {}, browserId: 'test' } } as unknown as Host
+  const host = { iii: { call, on: () => () => {}, observe: () => () => {}, browserId: 'test' } } as unknown as Host
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
   const props: ConfigFormProps = { id: 'layout-test', schema, value: { ...DEFAULTS, cloud: { ...CLOUD_DEFAULTS }, database: { name: 'whatsapp', namespace: 'my-project' } }, onChange: vi.fn(), ...overrides }

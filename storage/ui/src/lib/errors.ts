@@ -1,5 +1,5 @@
 /**
- * What a rejected `host.iii.trigger` means for this UI, beyond its text.
+ * What a rejected `host.iii.call` means for this UI, beyond its text.
  *
  * The browser SDK rejects with the wire error object, and the worker's own
  * error (`{"code":"BUCKET_UNAVAILABLE",…}`) usually sits inside the

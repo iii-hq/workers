@@ -40,7 +40,7 @@ export async function toggleDictation(
 }
 
 /** The one key that dictates, for tooltips: fn on a Mac whose worker hears
-    it (see `voice::hotkey`), else the right Option/Alt key. */
+    it (see `voice::on-hotkey`), else the right Option/Alt key. */
 export function dictationShortcutLabel(fnKey = false): string {
   const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
   if (mac && fnKey) return 'Hold fn'

@@ -1,27 +1,28 @@
 # Use linked-phone functions and events
 
-Pair a native WhatsApp session, send a message, subscribe to session events, and understand the supported API boundaries. This transport uses whatsmeow and stays separate from Meta Cloud API.
+Pair a native WhatsApp session, send a message, observe session events, and understand the supported API boundaries. This transport uses whatsmeow and stays separate from Meta Cloud API.
 
 ## Pair and send
 
 With the worker registered in a running engine:
 
 ```sh
-iii trigger whatsapp::sessions::create --json '{"session_id":"work"}'
-iii trigger whatsapp::sessions::start --json '{"session_id":"work"}'
-iii trigger whatsapp::sessions::qr --json '{"session_id":"work"}'
-iii trigger whatsapp::sessions::get --json '{"session_id":"work"}'
+iii call whatsapp::sessions::create --json '{"session_id":"work"}'
+iii call whatsapp::sessions::start --json '{"session_id":"work"}'
+iii call whatsapp::sessions::qr --json '{"session_id":"work"}'
+iii call whatsapp::sessions::get --json '{"session_id":"work"}'
 ```
 
 Render the returned QR `code` as a QR image and scan it from WhatsApp's linked
 devices screen, or request `sessions::pair_code` with `phone_number`.
 Pairing material expires and is returned only by these dedicated functions.
-A null QR means none is currently available. Wait for the `connected` state
+Both are registered with `observable: false`: observing them fails with
+`NOT_OBSERVABLE`. A null QR means none is currently available. Wait for the `connected` state
 before sending.
 
 ```sh
-iii trigger whatsapp::messages::send_text --json '{"session_id":"work","chat_id":"+15550000001","text":"Hello"}'
-iii trigger whatsapp::sessions::stop --json '{"session_id":"work"}'
+iii call whatsapp::messages::send_text --json '{"session_id":"work","chat_id":"+15550000001","text":"Hello"}'
+iii call whatsapp::sessions::stop --json '{"session_id":"work"}'
 ```
 
 Send only to an intended, authorized recipient. Phone numbers normalize to
@@ -48,16 +49,31 @@ connected session; connection and pairing use the session lifecycle functions.
 Server/app-state errors are returned, including participant
 errors within otherwise successful group responses.
 
-Trigger type `whatsapp::events` accepts:
+Each native event is one call of `whatsapp::on-events`, a private function
+whose handler returns the event. It takes no args; observe it with filters on
+`input.session_id` and `input.kind`:
 
-```json
-{"session_id":"work","kinds":["message.received","session.connected"]}
+```ts
+iii.observe(
+  {
+    function_id: 'whatsapp::on-events',
+    filters: {
+      'input.session_id': { $eq: 'work' },
+      'input.kind': { $in: ['message.received', 'session.connected'] },
+    },
+    deliver: 'output',
+  },
+  'automation::on-whatsapp-event',
+)
 ```
 
-Omit `session_id` for all sessions; an empty `kinds` list accepts all event kinds.
-Payloads contain `session_id`, `sequence`, `kind`, `timestamp_ms`, and `data`.
-Callbacks preserve the binding's namespace and metadata. QR/pairing events
-announce availability/expiry and do not contain the pairing secret.
+Without a filter on `input.session_id` the observer receives every session;
+without one on `input.kind`, every kind. Events contain `session_id`, `sequence`,
+`kind`, `timestamp_ms`, and `data`. Set `namespace` on the source when the worker
+runs in another namespace; the target resolves in the observing worker's
+namespace, and observer metadata reaches it as the call's metadata. The worker
+calls the function only while it is observed. QR/pairing events announce
+availability/expiry and do not contain the pairing secret.
 
 `message.received` data contains `info`, `message` and `kind`. `info` holds
 `id`, `timestamp_ms`, `push_name`, `edited` and `source` (`chat`, `sender`,
@@ -89,7 +105,7 @@ from the linked phone. Sequence reservations
 survive restart, but event payloads do not. `truncated` reports unavailable
 history; oversized event data is replaced by `{"content_omitted":true}`.
 Default retention is 1000 events per session. Individual event envelopes are
-capped at 64 KiB. Callback failures are not retried automatically.
+capped at 64 KiB. Target failures are not retried automatically.
 Only worker-owned diagnostics are logged; native protocol logs are suppressed
 because they can contain pairing secrets.
 The executable also disables SDK trace payload capture before starting its

@@ -125,7 +125,7 @@ export function tildify(path: string, home: string | null): string {
 
 async function list(dir: string): Promise<Entry[]> {
   const client = await getIiiClient()
-  const res = await client.trigger<{ entries?: Entry[] }>(
+  const res = await client.call<{ entries?: Entry[] }>(
     WORKSPACE_LIST_FUNCTION_ID,
     { path: dir, page_size: 400 },
   )
@@ -172,7 +172,7 @@ export async function listFolders(dir: string): Promise<IndexedFolder[]> {
 
 async function crawl(): Promise<ProjectIndex> {
   const client = await getIiiClient()
-  const info = await client.trigger<{ roots?: string[] }>(
+  const info = await client.call<{ roots?: string[] }>(
     WORKSPACE_ROOTS_FUNCTION_ID,
     {},
   )

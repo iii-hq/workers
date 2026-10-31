@@ -1,8 +1,9 @@
 //! The real `secrets` binary against a fake engine: boot (configuration
-//! entry, catalog, trigger type), the set → list → resolve flow with
-//! engine-stamped callers, detect/import, `secrets::changed` delivery, and a
-//! clean SIGTERM/SIGINT shutdown. No value may appear anywhere except the one
-//! authorized `secrets::resolve` result.
+//! entry, catalog, `secrets::on-changed`), the set → list → resolve flow with
+//! engine-stamped callers, detect/import, the observer of
+//! `secrets::on-changed` matched in-process, and a clean SIGTERM/SIGINT
+//! shutdown. No value may appear anywhere except the one authorized
+//! `secrets::resolve` result.
 mod support;
 
 use std::collections::BTreeSet;
@@ -162,14 +163,22 @@ async fn check(signal: Option<&str>) {
                 };
                 replies.push(reply(&frame, result));
             }
-            // Registered last (bind_reload): the catalog is complete.
+            // Registered last (bind_reload): the catalog is complete. Ack
+            // secrets::on-changed with one observer of ANTHROPIC_API_KEY and
+            // local dispatch, so the worker matches its own calls.
             "registerfunction" if frame["id"] == "secrets::on-config-change" => {
                 replies.push(json!({
-                    "type":"registertrigger","id":"sub-1","trigger_type":"secrets::changed",
-                    "function_id":"subscriber::on-secret","config":{"names":["secret://ANTHROPIC_API_KEY"]}
+                    "type":"functionregistered","id":"secrets::on-changed","namespace":"default",
+                    "revision":1,"local_dispatch":true,
+                    "observers":[{
+                        "id":"sub-1","args":{},
+                        "filters":{"input.ref":{"$eq":"secret://ANTHROPIC_API_KEY"}},
+                        "target":"subscriber::on-secret",
+                        "capture":["input","output","caller"],"on":"success"
+                    }]
                 }));
             }
-            "triggerregistrationresult" if frame["id"] == "sub-1" => {
+            "observerack" if frame["id"] == "sub-1" => {
                 replies.extend(script.next());
             }
             "invocationresult" => replies.extend(script.next()),
@@ -217,9 +226,16 @@ async fn check(signal: Option<&str>) {
                     .unwrap();
                 results.insert(step, frame.clone());
             }
-            if frame["type"] == "invokefunction" && frame["function_id"] == "subscriber::on-secret"
-            {
-                delivered.push(frame["data"].clone());
+            if frame["type"] == "invocationsobserved" {
+                for item in frame["items"].as_array().into_iter().flatten() {
+                    if item["function_id"] == "secrets::on-changed"
+                        && item["matched"]
+                            .as_array()
+                            .is_some_and(|m| m.contains(&json!("sub-1")))
+                    {
+                        delivered.push(item.clone());
+                    }
+                }
             }
             frames.push(frame);
         }
@@ -227,7 +243,7 @@ async fn check(signal: Option<&str>) {
     .await
     .unwrap_or_else(|_| panic!("scripted conversation finished; frames so far: {frames:#?}"));
 
-    // Catalog, reload sink and trigger type all expose typed schemas.
+    // Catalog, reload sink and secrets::on-changed all expose typed schemas.
     let functions: BTreeSet<&str> = frames
         .iter()
         .filter(|f| f["type"] == "registerfunction")
@@ -235,7 +251,14 @@ async fn check(signal: Option<&str>) {
         .collect();
     let mut expected: BTreeSet<&str> = secrets::api::ids::ALL_FUNCTIONS.into_iter().collect();
     expected.insert("secrets::on-config-change");
+    expected.insert("secrets::on-changed");
     assert_eq!(functions, expected);
+    let registration = |id: &str| {
+        frames
+            .iter()
+            .find(|f| f["type"] == "registerfunction" && f["id"] == id)
+            .unwrap_or_else(|| panic!("{id} registered"))
+    };
     // Registry publication rejects the permissive "unknown" schema.
     let typed = |schema: &Value| {
         [
@@ -262,16 +285,20 @@ async fn check(signal: Option<&str>) {
             );
         }
     }
-    let trigger_type = frames
-        .iter()
-        .find(|f| f["type"] == "registertriggertype" && f["id"] == "secrets::changed")
-        .expect("secrets::changed registered");
-    assert!(trigger_type["call_request_format"]["properties"]["action"].is_object());
-    assert!(trigger_type["trigger_request_format"]["properties"]["names"].is_object());
-    let set_schema = frames
-        .iter()
-        .find(|f| f["type"] == "registerfunction" && f["id"] == "secrets::set")
-        .unwrap();
+    // secrets::on-changed: private, takes no args, returns the change event.
+    let on_changed = registration("secrets::on-changed");
+    assert_eq!(on_changed["private"], true);
+    assert!(on_changed.get("args_format").is_none());
+    assert!(on_changed["response_format"]["properties"]["action"].is_object());
+    assert!(on_changed["request_format"]["properties"]["ref"].is_object());
+    // A value in the input or the output is never observable.
+    for id in secrets::api::ids::UNOBSERVABLE {
+        assert_eq!(registration(id)["observable"], false, "{id}");
+    }
+    for id in ["secrets::list", "secrets::get", "secrets::status"] {
+        assert!(registration(id).get("observable").is_none(), "{id}");
+    }
+    let set_schema = registration("secrets::set");
     assert!(set_schema["request_format"]["properties"]["value"].is_object());
     assert!(set_schema["response_format"]["properties"]
         .get("value")
@@ -342,11 +369,15 @@ async fn check(signal: Option<&str>) {
         "{key_path:?}"
     );
 
-    // The subscriber filtered on ANTHROPIC_API_KEY: one creation, no value.
+    // The observer filtered on secret://ANTHROPIC_API_KEY: one creation, no
+    // value. The handler returns the event it is called with, so the report
+    // carries it once.
     assert_eq!(delivered.len(), 1, "{delivered:?}");
-    assert_eq!(delivered[0]["name"], "ANTHROPIC_API_KEY");
-    assert_eq!(delivered[0]["action"], "created");
-    assert_eq!(delivered[0]["fingerprint"], set["fingerprint"]);
+    let event = &delivered[0]["input"];
+    assert_eq!(delivered[0]["output_is_input"], true);
+    assert_eq!(event["name"], "ANTHROPIC_API_KEY");
+    assert_eq!(event["action"], "created");
+    assert_eq!(event["fingerprint"], set["fingerprint"]);
 
     // The only frame carrying a value is the authorized resolve result.
     let carrying: Vec<&Value> = frames

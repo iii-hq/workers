@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient};
+use iii_sdk::{errors::Error, CallRequest, IIIClient};
 use serde_json::{json, Map, Value};
 
 use crate::config::McpConfig;
@@ -48,6 +48,11 @@ fn should_advertise(cfg: &McpConfig, fn_obj: &Map<String, Value>) -> bool {
         None => return false,
     };
     if is_hidden_function_id(cfg, function_id) {
+        return false;
+    }
+    // A private function is callable only by the worker that hosts it (an
+    // event source): `tools/call` would get FORBIDDEN.
+    if matches!(fn_obj.get("private"), Some(Value::Bool(true))) {
         return false;
     }
     if !cfg.require_expose {
@@ -96,7 +101,7 @@ fn unwrap_function_list(raw: &Value) -> Vec<Map<String, Value>> {
 
 pub async fn mcp_tools_list(iii: &Arc<IIIClient>, cfg: &Arc<McpConfig>) -> Result<Value, Error> {
     let raw = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: ENGINE_LIST_FUNCTIONS.to_string(),
             payload: json!({}),
             action: None,
@@ -159,7 +164,7 @@ pub async fn mcp_tools_call(
         _ => json!({}),
     };
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: function_id.clone(),
             payload: arguments,
             action: None,
@@ -289,6 +294,15 @@ mod tests {
         let fn_hidden = json!({"function_id": "demo::echo"});
         assert!(should_advertise(&c, fn_visible.as_object().unwrap()));
         assert!(!should_advertise(&c, fn_hidden.as_object().unwrap()));
+    }
+
+    #[test]
+    fn should_advertise_skips_private_functions() {
+        let c = cfg();
+        let source = json!({"function_id": "cron::on-tick", "private": true});
+        let callable = json!({"function_id": "cron::list", "private": false});
+        assert!(!should_advertise(&c, source.as_object().unwrap()));
+        assert!(should_advertise(&c, callable.as_object().unwrap()));
     }
 
     #[test]

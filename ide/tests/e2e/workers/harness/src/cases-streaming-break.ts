@@ -111,7 +111,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
           channel.writer.stream.end(() => resolve());
         });
       });
-      const trigger = ctx.call('shell::fs::write', {
+      const write = ctx.call('shell::fs::write', {
         target: { kind: 'host' },
         path: path1,
         mode: '0644',
@@ -120,7 +120,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
       });
       await writePromise;
       channel.writer.close();
-      const r1 = await trigger;
+      const r1 = await write;
       expectEqual(r1.bytes_written, payload.length, 'first write succeeded');
 
       let zeroSize = false;
@@ -183,7 +183,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
       const channel = await createChannel(ctx.iii, 64);
       channel.writer.sendMessage('this is text, not binary');
       channel.writer.sendMessage('still text');
-      const trigger = ctx.call('shell::fs::write', {
+      const write = ctx.call('shell::fs::write', {
         target: { kind: 'host' },
         path,
         mode: '0644',
@@ -192,7 +192,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
       });
       await ctx.sleep(100);
       channel.writer.close();
-      const r = await trigger;
+      const r = await write;
       expectEqual(r.bytes_written, 0, 'text frames must not count as bytes_written');
       await expectWorkerHealthy(ctx);
     },
@@ -212,7 +212,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
           channel.writer.stream.end(() => resolve());
         });
       });
-      const trigger = ctx.call('shell::fs::write', {
+      const write = ctx.call('shell::fs::write', {
         target: { kind: 'host' },
         path,
         mode: '0644',
@@ -221,7 +221,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
       });
       await wp;
       channel.writer.close();
-      await trigger;
+      await write;
 
       const resp = await ctx.call('shell::fs::read', {
         target: { kind: 'host' },

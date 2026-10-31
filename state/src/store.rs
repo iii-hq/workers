@@ -945,7 +945,7 @@ mod barrier_tests {
         assert_eq!(allows, 1, "exactly one arrival may complete the barrier");
     }
 
-    /// Redelivery is the normal case with at-least-once triggers: the same
+    /// Redelivery is the normal case with at-least-once delivery: the same
     /// arrival racing itself must still count once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn duplicate_arrivals_racing_do_not_over_count() {

@@ -7,10 +7,10 @@ import {
   type TracesResponse,
 } from './traces'
 
-const triggerMock = vi.fn()
+const callMock = vi.fn()
 
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ trigger: triggerMock }),
+  getIiiClient: async () => ({ call: callMock }),
 }))
 
 function span(overrides: Partial<StoredSpan> = {}): StoredSpan {
@@ -29,7 +29,7 @@ function span(overrides: Partial<StoredSpan> = {}): StoredSpan {
   }
 }
 
-beforeEach(() => triggerMock.mockReset())
+beforeEach(() => callMock.mockReset())
 
 describe('normalizeTracesResponse', () => {
   it('keeps the compact response untouched', () => {
@@ -99,7 +99,7 @@ describe('fetchTraceSpans', () => {
       offset: 0,
       limit: 100,
     }
-    triggerMock
+    callMock
       .mockRejectedValueOnce({
         code: 'function_not_found',
         message: "Function 'engine::traces::spans' is not registered.",
@@ -107,25 +107,25 @@ describe('fetchTraceSpans', () => {
       .mockResolvedValueOnce(legacy)
 
     await expect(fetchTraceSpans()).resolves.toEqual(legacy)
-    expect(triggerMock).toHaveBeenNthCalledWith(1, TRACES_RPC_FUNCTIONS.spans, {
+    expect(callMock).toHaveBeenNthCalledWith(1, TRACES_RPC_FUNCTIONS.spans, {
       offset: 0,
       limit: 100,
     })
-    expect(triggerMock).toHaveBeenNthCalledWith(2, TRACES_RPC_FUNCTIONS.list, {
+    expect(callMock).toHaveBeenNthCalledWith(2, TRACES_RPC_FUNCTIONS.list, {
       offset: 0,
       limit: 100,
     })
   })
 
   it('does not hide real spans RPC failures behind the legacy endpoint', async () => {
-    triggerMock.mockRejectedValueOnce(new Error('archive read failed'))
+    callMock.mockRejectedValueOnce(new Error('archive read failed'))
 
     await expect(fetchTraceSpans()).rejects.toThrow('archive read failed')
-    expect(triggerMock).toHaveBeenCalledTimes(1)
+    expect(callMock).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the full-span contract safe when a mixed-version fallback returns summaries', async () => {
-    triggerMock
+    callMock
       .mockRejectedValueOnce({
         code: 'function_not_found',
         message: "Function 'engine::traces::spans' is not registered.",

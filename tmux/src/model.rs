@@ -1,5 +1,5 @@
 //! Wire shapes shared by `tmux::sessions::list`, `tmux::ports::list` and the
-//! `tmux::changed` live feed. Timestamps are milliseconds since the epoch.
+//! `tmux::on-changed` live feed. Timestamps are milliseconds since the epoch.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -325,7 +325,7 @@ pub struct ComposeWorker {
     pub ports: Vec<u16>,
 }
 
-/// Payload of the `tmux::changed` live feed.
+/// What `tmux::on-changed` returns: the payload of the live feed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Overview {
     /// Sessions, windows, panes and their status.

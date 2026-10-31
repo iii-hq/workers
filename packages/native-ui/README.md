@@ -135,8 +135,11 @@ One component per catalogue type, with the catalogue's names: `Column`,
 - `RemoteScreen` is only configured from the script (`session`, `wire`,
   `enabled`, `mode`, `mobile`, `keyboard`, `placeholder`, `maxScale`):
   frames and gestures go between the worker and the native view and never
-  through the VM. Every function and the trigger in its `wire` must be in
-  the app's namespace, or the view stays empty (the host logs why). Its
+  through the VM. Its `wire` names functions: `frames` is `{ fn, args }`,
+  the function the host observes for frames
+  (`{ fn: 'browser::on-frame-event', args: { session_id: '$session' } }`),
+  and the other keys name the functions it calls. Every one must be in the
+  app's namespace, or the view stays empty (the host logs why). Its
   events: `onReady()`, `onFrame(width, height, modeChanged)` (reload the
   page once when `modeChanged`), `onLongPress(x, y)` in page coordinates,
   `onKeyboard(false)` when the person closes the keyboard, `onError(message)`
@@ -299,7 +302,7 @@ the host checks:
 |---|---|
 | `iii.app` | `{ key: 'worker:<ns>', ns }` |
 | `iii.call(fn, payload?, { timeoutMs? })` | A function of the app's own namespace (`<ns>::…`; never `iii::…` or `engine::…`). Any other is refused here, before it reaches the host, with `IiiError` `forbidden`; the host checks again. `timeoutMs` defaults to 30 000, at most 120 000. |
-| `iii.on(type, config, handler)` | Binds a trigger type of the app's namespace, `<ns>::…` or `<ns>:…` (`kanban:change`); another throws `forbidden` at once (never `iii::…` or `engine::…`). Returns an unsubscribe function with a `ready` promise: bind first, read initial state after `ready`. |
+| `iii.on(functionId, { args?, filters? }, handler)` | Observes a function of the app's namespace (`<ns>::…`, `kanban::on-change`) and runs `handler` with each event, the function's output; another throws `forbidden` at once (never `iii::…` or `engine::…`). `args` go to a function that takes them (its worker's README lists them); `filters` select calls (`{ 'input.session_id': { $eq: id } }`). Returns an unsubscribe function with a `ready` promise that resolves when the observer is active: observe first, read initial state after `ready`. |
 | `iii.nav` | `push`, `pop`, `replace`, `popToRoot` over the pages of `defineApp`. |
 | `iii.env`, `iii.onEnv` | `windowClass` (`compact`/`wide`, the 720 dp cut), `posture`, `platform`, `visible`, `theme`, `locale`, `online`; reactive in Solid scopes. Use `visible` to stop work nobody sees. |
 | `iii.ui` | `toast`, `actionMenu` (an action sheet on the phone, an NSMenu on the Mac; resolves with the index or -1), `confirm`, `prompt`, `focus`. |
@@ -316,8 +319,9 @@ A failed request rejects with `IiiError` (`code` is one of the catalogue's
   `[resource, { refetch, mutate }]`, a Solid resource that calls again when
   `payload()` changes; `payload()` returning `undefined` means "do not call
   now"; without `payload` it calls once.
-- `useTrigger(type, config, handler, { enabled? })`: binds while the scope
-  lives and `enabled()` holds; `config()` returning `null` unbinds.
+- `useObserve(functionId, source, handler, { enabled? })`: observes while
+  the scope lives and `enabled()` holds; `source()` returns
+  `{ args?, filters? }`, and `null` disposes the observer.
 - `useEnv()`, `useNav()`, `usePage()`.
 
 The usual Solid primitives (`createSignal`, `createMemo`, `createEffect`,
@@ -429,7 +433,7 @@ await host.mount('root')
 await host.press('new-tab')            // a testTag, a node id or { type, ...props }
 await host.type('address', 'example.com')
 await host.itemPress('tabs', 's1')
-await host.emitTrigger('browser::session-started', { session_id: 's1' })
+await host.emitObserved('browser::on-session-started', { session_id: 's1' })
 await host.tick(150)                   // the fake clock: timers and microtasks
 expect(host.tree()).toMatchInlineSnapshot()
 ```
@@ -462,12 +466,12 @@ The bundle runs in `quickjs-emscripten` with the device VM's globals (timers
 on a fake clock, `console`, `performance.now`, no `eval`), its heap cap and
 per-step deadline, turn by turn like the app's loop (deliver, timers,
 microtasks). The fake host keeps the tree, answers requests (`calls`, `ui`
-answers, `storage`), keeps the subscriptions and the deck, and checks the
+answers, `storage`), keeps the observers and the deck, and checks the
 protocol on every message: creates before use, inserts of detached nodes,
 indexes in range, no node left detached at the end of a batch, bindings only
 in templates, prop values of their catalogue type (and bound item fields
 too), messages within `limits.maxMessageBytes`. Its policy is the host's:
-calls to `<ns>::…`, bindings of `<ns>::…` and `<ns>:…`. Any violation or uncaught VM error fails the
+calls and observers of `<ns>::…` functions. Any violation or uncaught VM error fails the
 action (`strict: false` to only record them). Like the device, a step
 that passes its deadline fails with `watchdog` even when the interrupt
 landed in a promise job (QuickJS turns it into a rejection there), and
@@ -476,8 +480,10 @@ test-only `__iiiui_request(method, args)` in the VM that skips the SDK's own
 checks, to show what the host answers to a request the SDK would refuse.
 
 API: `mount` (resolves with the page instance), `unmount`, `back`, `tick`,
-`settle`, `deliver`, `respond`, `fail`, `env`, `emitTrigger` (resolves with
-how many subscriptions got it), `press`, `longPress`, `emit`, `type`,
+`settle`, `deliver`, `respond`, `fail`, `env`, `emitObserved` (a call of
+the function with that output: resolves with how many of its observers got
+it; their args and filters are recorded, not evaluated), `press`,
+`longPress`, `emit`, `type`,
 `typeWhileBusy`, `submit`, `toggle`, `select`, `link`, `drop`,
 `itemPress`, `itemLongPress`, `itemEmit`, `find`, `findAll`, `prop`,
 `items`, `keys`, `lanes`, `tree`, `memory`, `dispose`; and the records `messages`, `ops`, `toVm`, `transcript`,
@@ -539,7 +545,7 @@ piece of work (`ide/native/README.md` › Conformance fixtures).
 | `list-splice.json` | Two templates by `kind`, header/empty/footer slots, four `set` diffs, item presses |
 | `text.json` | §5.7: two edits in one turn, the script's normalized write |
 | `text-handshake.json` | A write with an old edit count dropped by the host, the person's text winning |
-| `requests.json` | §5.7: a call and a binding, their answers, a trigger, a call outside the namespace refused by the host |
+| `requests.json` | §5.7: a call and an observer, their answers, an observed event, a call outside the namespace refused by the host |
 | `nav-back.json` | §5.7: push, mount, Back with `{result: null}` |
 | `nav-result.json` | A page popping itself with a result |
 | `env.json` | §5.7: the window passing 720 dp |

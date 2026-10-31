@@ -1,8 +1,8 @@
-//! harness::hook::pre-generate guidance: teach agents the scrapling surface —
-//! which fetch tier to reach for, what needs no browser at all, and which
-//! capabilities this worker does NOT have. Bound with on_error: fail_open
-//! (pre_generate defaults fail-CLOSED and a missing guidance line must never
-//! abort a turn).
+//! harness::hook::on-pre-generate guidance: teach agents the scrapling
+//! surface — which fetch tier to reach for, what needs no browser at all, and
+//! which capabilities this worker does NOT have. Observed with args
+//! `on_error: fail_open` (pre-generate defaults fail-CLOSED and a missing
+//! guidance line must never abort a turn).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

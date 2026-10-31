@@ -1,33 +1,46 @@
 # http
 
-Exposes registered functions as HTTP endpoints. Any function bound to an
-`http` trigger, or observing `http::on-request` on an iii 0.25 engine (see
-[Observable function](#observable-function-httpon-request)), becomes a
-route — external clients call it with a plain HTTP
-request instead of going through the iii SDK, which is what you want for
-webhooks, browser clients, or any caller outside the engine's WebSocket
-protocol. Routing, path params, per-route/global middleware, conditional
-execution, CORS, and chunked streaming responses are all handled by this
-worker; the function just receives an `HttpRequest` and returns a value.
+Exposes registered functions as HTTP endpoints. A function becomes a route
+when it observes `http::on-request` with the route as args: external clients
+then call it with a plain HTTP request, which is what you want for webhooks,
+browser clients, or any caller outside the engine's WebSocket protocol.
+Routing, path params, per-route and global middleware, CORS, and chunked
+streaming responses are handled by this worker; the function receives an
+`HttpRequest` and returns the response.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=http
+iii call compose::add worker=http
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
 
-Register a function and bind it to this worker's trigger type (`http` — see
-[Trigger type](#trigger-type)) with `api_path` and `http_method`:
+Register a function and observe `http::on-request` with it, passing the route
+(`method` and `path`) as args:
+
+```typescript
+iii.registerFunction('orders::get', async (req: HttpRequest) => ({
+  status_code: 200,
+  body: { order_id: req.path_params.id },
+}))
+
+const route = iii.observe(
+  { function_id: 'http::on-request', args: { method: 'GET', path: '/orders/:id' } },
+  'orders::get',
+)
+await route.ready()   // rejected with HTTP_ROUTE_CONFLICT if the shape is taken
+// later: await route.dispose() removes the route
+```
+
+The same in Rust:
 
 ```rust
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::{InitOptions, RegisterFunction, errors::Error, register_worker};
 use iii_http::types::HttpRequest;
+use iii_sdk::{errors::Error, register_worker, InitOptions, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 #[tokio::main]
@@ -44,12 +57,10 @@ async fn main() -> anyhow::Result<()> {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "orders::get".into(),
-        config: json!({ "api_path": "/orders/:id", "http_method": "GET" }),
-        metadata: None,
-    })?;
+    iii.observe(
+        Source::function("http::on-request").args(json!({ "method": "GET", "path": "/orders/:id" })),
+        "orders::get",
+    );
 
     tokio::signal::ctrl_c().await?;
     Ok(())
@@ -62,9 +73,151 @@ curl http://localhost:3111/orders/42
 ```
 
 The function's return value becomes the response: `status_code` (default
-200), `headers`, and `body`. Path segments prefixed with `:` (e.g. `:id`)
-land in `req.path_params`; query string and headers arrive as
-`req.query_params` / `req.headers`.
+200), `headers` (an object, or a list of `"Name: value"` lines), and `body`.
+Path segments prefixed with `:` (e.g. `:id`) land in `req.path_params`; the
+query string and headers arrive as `req.query_params` / `req.headers`.
+
+## Functions
+
+| Function | Args or input | What it is |
+|---|---|---|
+| `http::on-request` | args `{ method, path, public_webhook?, middleware_function_ids? }` | One call per HTTP request the server receives. Each observer serves one route; its target receives the `HttpRequest`. |
+| `http::status` | none | Where the server listens: `{ host, port, url, last_reload_error }`. |
+| `http::webhook-listener::status` | none | Internal: the restricted listener this process bound, and the last reload error. |
+| `http::configuration-id` | none | Internal: this instance's configuration entry id. |
+| `http::on-config-change` | the `configuration::on-updated` event | Internal: reloads the configuration. |
+
+### `http::on-request`
+
+| Arg | Required | Default | Description |
+|---|---|---|---|
+| `method` | yes | — | HTTP method to match (case insensitive). |
+| `path` | yes | — | Route path, e.g. `/orders/:id` (or `/orders/{id}`). `:name` segments become `path_params`. |
+| `public_webhook` | no | `false` | Also expose this route on the restricted listener. |
+| `middleware_function_ids` | no | `[]` | Per-route middleware, run in list order after any global middleware and before the target. |
+
+Unknown args are refused with `INVALID_ARGS`. Two observers cannot claim the
+same method and path shape (`/a/:x` and `/a/:y` are one shape): the later one
+is rejected with `HTTP_ROUTE_CONFLICT`.
+
+A route lasts while its observer's worker is connected. When that worker's
+connection goes away, the engine withdraws its observers from the http worker:
+their routes answer `404`, and another observer can claim the shape. A worker
+that restarts under the same worker name and observes again under the same
+observer id within the engine's `observers.observer_grace_ms` (30 s by
+default) replaces its earlier observer and gets the route back. For this, give
+the worker a name that stays the same across restarts: `III_WORKER_NAME`
+(`iii compose` and `iii worker` set it for the workers they start) or the
+SDK's worker name option. The default name, `hostname:pid`, changes when the
+process restarts, so a restarted process under it is another worker. For any
+other worker the id is taken until the grace period ends: its observe is
+rejected with `OBSERVER_ID_CONFLICT`.
+
+```typescript
+// A non-empty III_WORKER_NAME overrides workerName.
+const iii = registerWorker('ws://localhost:49134', { workerName: 'orders-api' })
+
+const route = iii.observe(
+  { function_id: 'http::on-request', args: { method: 'GET', path: '/orders/:id' } },
+  'orders::get',
+  { id: 'orders-get-route' },   // with the fixed worker name, the route survives a restart
+)
+```
+
+In Rust the name is `WorkerMetadata::name`:
+
+```rust
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{register_worker, InitOptions, ObserverOptions, Source};
+use serde_json::json;
+
+let iii = register_worker(
+    "ws://localhost:49134",
+    InitOptions {
+        metadata: Some(WorkerMetadata {
+            name: "orders-api".to_string(),
+            ..WorkerMetadata::default()
+        }),
+        ..InitOptions::default()
+    },
+);
+iii.observe_with(
+    Source::function("http::on-request").args(json!({ "method": "GET", "path": "/orders/:id" })),
+    "orders::get",
+    ObserverOptions::default().id("orders-get-route"),
+);
+```
+
+The server calls `http::on-request` once for every request it receives (its
+CORS layer answers `OPTIONS` requests). The call's input is the request as the
+server received it:
+
+```jsonc
+{
+  "method": "GET",
+  "path": "/orders/42",              // the request's path
+  "query_params": { "expand": "items" },
+  "headers": { "content-type": "application/json" },
+  "body": null                       // the body parsed as JSON, else null
+}
+```
+
+The worker delivers each call itself:
+
+1. a path with no route gets `404`, and a path whose routes are on other
+   methods gets `405` with `Allow`;
+2. a body over 16 MiB gets `413`;
+3. the observer's `filters` select requests by `input` (the request above);
+   a request they reject gets `422 CONDITION_NOT_MET`;
+4. the global middleware runs, then the route's middleware; a middleware
+   that responds ends the request with its response;
+5. the target runs with the `HttpRequest`, and its return value (or its
+   writes to the response channel) is the response.
+
+Steps 1 to 4 answer the call without calling the target. The middleware and
+the target are called from the call's invocation, so a trace shows each
+request as one call of `http::on-request` with them under it. What the
+route's target receives:
+
+```jsonc
+{
+  "method": "GET",
+  "path": "/orders/:id",             // the matched route's template
+  "path_params": { "id": "42" },
+  "query_params": { "expand": "items" },
+  "headers": { "content-type": "application/json" },
+  "body": null,                      // the body parsed as JSON, else null
+  "request_body": { /* channel ref: the exact request bytes */ },
+  "response": { /* channel ref: write a streamed response here */ }
+}
+```
+
+The target always receives the `HttpRequest`, whatever the observer's
+`deliver` option says, and the observer's `metadata` arrives as the target's
+metadata sidecar:
+
+```typescript
+iii.observe(
+  {
+    function_id: 'http::on-request',
+    args: { method: 'POST', path: '/webhooks/stripe', public_webhook: true },
+    filters: { 'input.headers.stripe-signature': { $exists: true } },
+  },
+  'billing::on-stripe-event',
+)
+```
+
+`http::on-request` is private: only this worker calls it, and it cannot be an
+observer's target. It has one host per namespace: a second `http` worker in
+the same namespace cannot register it.
+
+### Streaming responses
+
+A target can stream its response: write to `req.response` (a
+`StreamChannelRef`) with a `ChannelWriter` to send `set_status` /
+`set_headers` control frames and body chunks for a chunked HTTP response, and
+return `null`. Returning a non-null value instead yields a regular buffered
+response built from `{ status_code, headers, body }`.
 
 ## Configuration
 
@@ -79,11 +232,12 @@ land in `req.path_params`; query string and headers arrive as
 | `cors.allowed_origins` | `[]` (permissive) | Allowed CORS origins. An empty list allows any origin. |
 | `cors.allowed_methods` | `[]` (permissive) | Allowed CORS methods. An empty list allows any method. |
 | `concurrency_request_limit` | `1024` | Maximum in-flight requests; requests over the limit wait for a slot. |
-| `middleware[]` | `[]` | Global middleware, each `{ function_id, phase, priority }`, run on every route in ascending `priority` order before the handler. |
+| `middleware[]` | `[]` | Global middleware, each `{ function_id, phase, priority }`, run on every route in ascending `priority` order before the route's own middleware. |
 
 Configuration is owned by the `configuration` worker — edit it from the
 console (**Configuration → Workers → http**) or seed it once via
-`--config <file>.yaml` on first boot. `middleware` and `default_timeout`
+`--config <file>.yaml` on first boot. The worker observes
+`configuration::on-updated` for its entry. `middleware` and `default_timeout`
 hot-reload without a restart, as do `cors` and `concurrency_request_limit`.
 Changing `host`/`port` or `webhook_listener` binds the new addresses before
 stopping the old listeners. All required binds must succeed; otherwise both
@@ -96,81 +250,6 @@ url, last_reload_error }`, where `url` is the base URL to open from this
 machine (`http://127.0.0.1:<port>` when it listens on every interface). It
 is read-only and open to agents, so code and agents build page URLs from it
 instead of assuming port 3111.
-
-## Observable function: `http::on-request`
-
-On iii 0.25 engines a route can also be declared by observing
-`http::on-request`, next to the `http` trigger type (which stays, so
-`registerTrigger` consumers keep working on 0.24 and 0.25 engines):
-
-```typescript
-iii.registerFunction('orders::get', async (req: HttpRequest) =>
-  ({ status_code: 200, body: { order_id: req.path_params.id } }))
-
-const route = iii.observe(
-  { function_id: 'http::on-request', args: { method: 'GET', path: '/orders/:id' } },
-  'orders::get',
-)
-await route.ready()   // rejected with HTTP_ROUTE_CONFLICT if the shape is taken
-// later: route.dispose() removes the route
-```
-
-| Arg | Required | Default | Description |
-|---|---|---|---|
-| `method` | yes | — | HTTP method to match (case insensitive). |
-| `path` | yes | — | Route path, e.g. `/orders/:id` (or `/orders/{id}`). |
-| `public_webhook` | no | `false` | Also expose this route on the restricted listener. |
-| `middleware_function_ids` | no | `[]` | Per-route middleware, as for the trigger. |
-| `condition_function_id` | no | — | Deprecated: prefer filters. As for the trigger. |
-
-Unknown args are refused with `INVALID_ARGS`. The target receives the same
-`HttpRequest` an `http` trigger's function receives, and its return value (or
-its writes to the response channel) is the response, exactly as for a trigger:
-both kinds of route share one route table and one request pipeline (global and
-route middleware, condition, body limit, channels, timeouts, error mapping,
-spans and logs). Only the call differs: the target is invoked through the
-engine as the observer's activation. The observer's `filters` are evaluated
-in-process against the request as `input`, before the condition and the
-route middleware; a request they reject gets the same `422
-CONDITION_NOT_MET` as an unmet condition, without calling anything:
-
-```typescript
-iii.observe({
-  function_id: 'http::on-request',
-  args: { method: 'POST', path: '/webhooks/stripe', public_webhook: true },
-  filters: { 'input.headers.stripe-signature': { $exists: true } },
-}, 'billing::on-stripe-event')
-```
-
-A trigger binding and an observer cannot claim the same method and path shape
-(`/a/:x` and `/a/:y` are one shape): whichever registers later is refused, the
-observer with `HTTP_ROUTE_CONFLICT`, the trigger registration with today's
-conflict error. The engine keeps a refused trigger binding and offers it again
-when this worker restarts; which of the two then takes the route depends on
-the order they are replayed in, as between two conflicting triggers today.
-`http::on-request` is never invoked directly: requests reach
-its observers through the server, and a direct invocation is refused with
-`FORBIDDEN`. On a 0.24 engine `observe` fails with `UNSUPPORTED`; bind the
-`http` trigger type there.
-
-## Trigger type
-
-This worker always registers the `http` trigger type. Bind a function to it
-with:
-
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `api_path` | yes | — | Route path, e.g. `/orders/:id`. Segments prefixed with `:` are extracted into `path_params`. |
-| `http_method` | no | `GET` | HTTP method to match. |
-| `public_webhook` | no | `false` | Also expose this route on the restricted listener. Omitted/false routes are normal-listener only. |
-| `condition_function_id` | no | — | Function invoked first; if it returns a falsy value the request is rejected with `422`. |
-| `middleware_function_ids` | no | `[]` | Per-route middleware, invoked before the handler in list order, in addition to any global middleware. |
-
-Functions can stream their response: write to `req.response` (a
-`StreamChannelRef`) with a `ChannelWriter` to send `set_status` /
-`set_headers` control frames and body chunks for a chunked HTTP response.
-Returning a non-null value instead yields a regular buffered response built
-from `{ status_code, headers, body }`.
 
 ### Restricted webhook listener
 
@@ -193,26 +272,28 @@ the bound socket (including an OS-assigned port when configured with `0`), or
 by the next successful one. The function waits for an in-progress reload
 before responding and exposes no other HTTP configuration.
 
-Register an explicit opt-in using the **same** `http` trigger provider:
+Opt a route in with `public_webhook` in its observer's args:
 
 ```json
-{"api_path":"/webhooks/github","http_method":"POST","public_webhook":true}
+{"method":"POST","path":"/webhooks/github","public_webhook":true}
 ```
 
 Only that opted-in route is eligible on 3112; it remains available on 3111.
 Do not expose 3111 through a public proxy/tunnel. The restricted listener
 mounts no Console, engine, or admin endpoints. Its private paths return 404
 (including OPTIONS); methods not opted in for an eligible path return 405
-with only public methods in `Allow`. Admission runs before CORS. It performs
+with only public methods in `Allow`. The listener admits an OPTIONS request
+before CORS; every other request is a call of `http::on-request`, whose
+deliver hook matches it against the public routes only. Matching performs
 no URL decoding, repeated/trailing-slash normalization, HEAD-to-GET aliasing,
 or method-override handling. Parameter routes are still supported: opting
 one in deliberately exposes every value matched by its parameter segments,
-never a more specific private handler. Existing normal-listener behavior is
-unchanged. Route removal or opt-in revocation applies to subsequent requests.
+never a more specific private handler. Disposing a route's observer, or
+observing it again without `public_webhook`, applies to subsequent requests.
 
-Both listeners share the route registry, configuration and layered router;
-global/per-route middleware, conditions, timeouts, concurrency and the 16 MiB
-body limit still apply. A bind collision, including using the normal address
+Both listeners share the route table, configuration and layered router;
+global and per-route middleware, timeouts, concurrency and the 16 MiB body
+limit apply to both. A bind collision, including using the normal address
 for the restricted listener, fails safely rather than combining them.
 
 **Signature verification:** read `HttpRequest.request_body` using the SDK
@@ -221,36 +302,23 @@ newlines and binary data included). Never compute HMAC from `body`, which is
 only a parsed JSON convenience projection. Header names follow HTTP's
 case-insensitive/lowercase representation; ASCII values such as
 `x-hub-signature-256` and `x-github-delivery` pass through unchanged. The
-existing header map is not a raw HTTP-header archive: duplicate headers and
-non-text values are not represented byte-for-byte. This listener does not
-validate signatures itself; the opted-in handler must authenticate deliveries.
+header map is not a raw HTTP-header archive: duplicate headers and non-text
+values are not represented byte-for-byte. This listener does not validate
+signatures itself; the opted-in handler must authenticate deliveries.
 
 ### Local tests
 
-`tests/webhook_listener.rs` uses the shared harness's loopback fake engine
-and real SDK binary channels, without any external service or skipped tests:
+`tests/webhook_listener.rs` and `tests/on_request.rs` use the shared harness's
+loopback fake engine, which plays the observer lifecycle of
+`http::on-request`, and real SDK binary channels, without any external service
+or skipped tests:
 
 ```bash
-CARGO_TARGET_DIR=target-http-local cargo test --locked --test webhook_listener
+CARGO_TARGET_DIR=target-http-local cargo test --locked --test webhook_listener --test on_request
 cargo fmt --all -- --check
 CARGO_TARGET_DIR=target-http-local cargo clippy --all-targets --all-features --locked -- -D warnings
 ```
 
-`tests/on_request.rs` covers `http::on-request` the same way, with the fake
-engine playing the observer lifecycle.
-
-Other `e2e_*` suites retain their existing connect-or-skip engine requirement.
-They connect to `III_ENGINE_WS_URL` (default `ws://127.0.0.1:49134`): point it
-at a disposable engine, or at a closed port to skip them.
-
-### Requires removing the legacy built-in HTTP service
-
-The legacy built-in HTTP service also owns the `http` trigger type. Two owners
-of the same trigger type on one engine collide — whichever registers last
-wins — so this worker requires it to be absent: omit it from the
-engine's `config.yaml` (a config that doesn't list a worker won't run it).
-
-On boot, this worker queries the engine for connected workers and refuses to
-start with a clear error if the legacy built-in is still active, so a stale config
-fails loudly instead of silently racing the built-in worker for ownership of
-`http`.
+The `e2e_*` suites need a running engine. They connect to
+`III_ENGINE_WS_URL` (default `ws://127.0.0.1:49134`): point it at a disposable
+engine, or at a closed port to skip them.

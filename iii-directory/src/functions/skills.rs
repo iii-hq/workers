@@ -1,6 +1,6 @@
 //! Filesystem-backed skills reader.
 //!
-//! Public API (reachable by any worker over `iii.trigger`):
+//! Public API (reachable by any worker over `iii.call`):
 //!
 //!   * `directory::skills::list` — enriched listing of every markdown
 //!     skill under `skills_folder`, sorted by id. Each row carries
@@ -23,9 +23,9 @@
 //!
 //! There are no write paths in this module. Files arrive on disk via
 //! `directory::skills::download` (see [`crate::functions::download`])
-//! or by direct editing under `skills_folder`. Mutations fan out
-//! through the `directory::skills::on-change` trigger type which is
-//! fired from the download function on success.
+//! or by direct editing under `skills_folder`. The write paths call
+//! `directory::skills::on-change` on success, and its observers see each
+//! mutation.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,8 +33,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, CallRequestWithMetadata, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -123,7 +122,7 @@ pub(crate) struct SkillEntry {
     /// function id this skill documents (e.g. `sandbox::create`). The
     /// row's `id` field is the SKILL path on disk (e.g.
     /// `sandbox/skills/sandbox/create`); `function_id` is what an
-    /// agent should pass to `agent_trigger`. `null` for skills that
+    /// agent should pass to `agent_call`. `null` for skills that
     /// aren't 1:1 with a single function (index/reference).
     function_id: Option<String>,
     /// Whether model-facing indexes should omit this skill from invocation candidates.
@@ -185,7 +184,7 @@ pub struct SkillGetOutput {
     /// Frontmatter `function_id:` when present — the canonical bus
     /// function id this skill documents (e.g. `sandbox::create`). The
     /// response's `id` field is the SKILL path on disk; `function_id`
-    /// is what the agent should pass to `agent_trigger`. `null` when
+    /// is what the agent should pass to `agent_call`. `null` when
     /// the skill isn't 1:1 with a single function.
     pub function_id: Option<String>,
     /// Whether model-facing indexes should omit this skill from invocation candidates.
@@ -220,7 +219,8 @@ pub struct SkillGetOutput {
 // doesn't hit `compose::status` on every read.  The cache is:
 //
 //   1. Populated lazily on first read.
-//   2. Invalidated when the `worker` trigger fires an `add`/`remove`.
+//   2. Invalidated when a worker connects with missing skills and they
+//      download, and after a kit apply moves workers.
 //   3. On error / daemon-down, falls back to the last-known set.
 //      If no cached set exists yet, returns `None` (meaning: unfiltered).
 
@@ -265,7 +265,7 @@ impl RegisteredWorkersCache {
     /// there is no stale cached set — caller should fall back to
     /// unfiltered.
     ///
-    /// The mutex is NOT held across the `iii.trigger` await — the lock
+    /// The mutex is NOT held across the `iii.call` await — the lock
     /// is acquired only to check / update the cache entry. A brief
     /// duplicate fetch on simultaneous cache misses is acceptable and
     /// far cheaper than serialising all reads behind a 5 s RPC.
@@ -300,7 +300,7 @@ impl RegisteredWorkersCache {
     /// error). `compose::status` replaced `worker::list` in iii 0.23; see
     /// [`compose_status_request`] for how the call is routed.
     async fn fetch_and_store(&self, iii: &IIIClient) -> Option<HashSet<String>> {
-        let result = iii.trigger(compose_status_request(5_000)).await;
+        let result = iii.call(compose_status_request(5_000)).await;
 
         // Re-acquire the lock and store or fall back.
         let mut lock = self.inner.lock().await;
@@ -338,10 +338,10 @@ impl RegisteredWorkersCache {
 /// daemon's; when the supervisor sets `III_COMPOSE_NAMESPACE` (and
 /// `III_COMPOSE_FILE`) the request is routed and scoped the way the harness
 /// does it. Unset, the call stays in this worker's own namespace.
-pub fn compose_status_request(timeout_ms: u64) -> TriggerRequestWithMetadata {
+pub fn compose_status_request(timeout_ms: u64) -> CallRequestWithMetadata {
     let nonempty = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
     let namespace = nonempty("III_COMPOSE_NAMESPACE");
-    let request = TriggerRequest {
+    let request = CallRequest {
         function_id: "compose::status".to_string(),
         payload: compose_status_payload(
             namespace.as_deref(),
@@ -587,7 +587,7 @@ fn register_list_skills(
              description, bytes, modified_at). Filters: `search` (substring on \
              id/title/description), `prefix` (worker namespace), `type`; \
              `include_description: false` for lighter rows. Pass a row's \
-             `function_id`, not its `id`, to agent_trigger.",
+             `function_id`, not its `id`, to agent_call.",
         ),
     );
 }
@@ -1158,7 +1158,7 @@ pub(crate) fn reject_function_id_shaped(id: &str) -> Result<(), String> {
             &format!(
                 "{id:?} looks like a FUNCTION id (service::name), not a skill id. \
                  Skill ids use '/' (e.g. \"database/index\"). To CALL that function pass \
-                 the id to agent_trigger; to READ its skill doc, look up the skill id."
+                 the id to agent_call; to READ its skill doc, look up the skill id."
             ),
             SKILL_NOT_FOUND_NEXT,
         ));
@@ -1782,7 +1782,7 @@ mod tests {
         // hunting through the body. They must NOT become the picker's
         // description — that's reserved for the first real paragraph.
         let md = "\
-> **Function id:** `sandbox::create` — pass this to agent_trigger.
+> **Function id:** `sandbox::create` — pass this to agent_call.
 
 # When to use
 
@@ -1798,7 +1798,7 @@ Boot a sandbox to run untrusted code.
     fn extract_description_skips_multi_line_blockquote_callout() {
         let md = "\
 > **Function id:** `sandbox::create`
-> Pass this to agent_trigger, not the skill path.
+> Pass this to agent_call, not the skill path.
 
 The actual description starts here.
 ";
@@ -2512,7 +2512,7 @@ First paragraph.
     async fn get_surfaces_function_id_from_frontmatter() {
         // Documents the canonical bus function id alongside the skill
         // id so callers don't conflate the two. Models call
-        // `agent_trigger { function: <skill_id> }` when only the id is
+        // `agent_call { function: <skill_id> }` when only the id is
         // visible, then loop on `function_not_found`.
         let tmp = tempfile::tempdir().unwrap();
         let ns = tmp.path().join("sandbox").join("skills").join("sandbox");
@@ -3138,7 +3138,7 @@ First paragraph.
             engine_fallback_worker("iii-sandbox/index", &visible, &registered),
             Some("iii-sandbox".to_string())
         );
-        // Any sub-path under the skill-less worker triggers the same fallback.
+        // Any sub-path under the skill-less worker takes the same fallback.
         assert_eq!(
             engine_fallback_worker("iii-sandbox/anything/here", &visible, &registered),
             Some("iii-sandbox".to_string())

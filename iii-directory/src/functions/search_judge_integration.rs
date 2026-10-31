@@ -675,7 +675,7 @@ async fn mode_reload_waits_for_an_in_progress_hybrid_activation() {
         deps.registry_cache.clone(),
         Arc::new(RegisteredWorkersCache::new(0)),
         cfg.topology(),
-        crate::hook::HintBindingState::default(),
+        crate::hook::HintObserverSlot::default(),
         deps.clone(),
     );
     // Block the activation after it publishes Hybrid, before its rebuild.
@@ -757,7 +757,7 @@ async fn switching_from_lexical_to_judge_prepares_hybrid_and_keeps_the_index_fre
         deps.registry_cache.clone(),
         Arc::new(RegisteredWorkersCache::new(0)),
         cfg.topology(),
-        crate::hook::HintBindingState::default(),
+        crate::hook::HintObserverSlot::default(),
         deps.clone(),
     );
     let mut judge = cfg.clone();
@@ -939,13 +939,17 @@ async fn lexical_mode_ranks_skills_without_calling_the_judge() {
 }
 
 #[tokio::test]
-async fn judge_ranks_registered_triggers_through_the_triggers_corpus() {
+async fn judge_ranks_observers_through_the_observers_corpus() {
     let (judge, requests) = scoring(0.9);
     let deps = deps(judge);
-    let docs = trigger_docs(&json!({ "registered_triggers": [
-        { "id": "t-1", "trigger_type": "cron", "function_id": "harness::sweep-pending",
-          "worker_name": "harness", "config": { "expression": "0 0 0 * * *" } },
-        { "id": "t-2", "trigger_type": "console:style", "function_id": "state::ui-content" },
+    let docs = observer_docs(&json!({ "observers": [
+        { "id": "o-1", "function_id": "cron::on-tick",
+          "args": { "expression": "0 0 0 * * *" },
+          "target": { "function_id": "harness::sweep-pending" },
+          "worker": { "worker_id": "w-1", "worker_name": "harness" } },
+        { "id": "o-2", "function_id": "console::ui::asset",
+          "args": { "kind": "style", "path": "state/page.css" },
+          "target": { "function_id": "state::ui-content" } },
     ] }));
     let (ranked, judged) = side_lane(
         &deps,
@@ -953,26 +957,28 @@ async fn judge_ranks_registered_triggers_through_the_triggers_corpus() {
         &["run a job every night".to_string()],
         Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5)),
         docs,
-        JudgeCorpus::Triggers,
+        JudgeCorpus::Observers,
     )
     .await;
     assert!(judged);
-    let ids: Vec<&str> = ranked.iter().map(|t| t.id.as_str()).collect();
-    assert_eq!(ids, ["t-1"]);
-    assert_eq!(ranked[0].function_id, "harness::sweep-pending");
+    let ids: Vec<&str> = ranked.iter().map(|o| o.id.as_str()).collect();
+    assert_eq!(ids, ["o-1"]);
+    assert_eq!(ranked[0].target, "harness::sweep-pending");
     let bodies = bodies(&requests);
     assert_eq!(bodies.len(), 1);
     let body = &bodies[0];
-    assert!(body["state"]["triggers"]["f0"]["description"]
+    assert!(body["state"]["observers"]["f0"]["description"]
         .as_str()
         .unwrap()
-        .starts_with("cron trigger runs harness::sweep-pending"));
-    assert!(body["state"]["triggers"]["f0"].get("trigger_id").is_none());
+        .starts_with("cron::on-tick observer runs harness::sweep-pending"));
+    assert!(body["state"]["observers"]["f0"]
+        .get("observer_id")
+        .is_none());
     assert!(body["state"].get("functions").is_none());
     assert!(body["questions"]["c0_f0"]["instructions"]
         .as_str()
         .unwrap()
-        .contains("state.triggers.f0"));
+        .contains("state.observers.f0"));
 }
 
 #[tokio::test]

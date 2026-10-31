@@ -36,6 +36,8 @@ fn catalog_matches_the_registered_surface() {
             "sentinel::on-turn-completed",
             "sentinel::on-schedule",
             "sentinel::on-config-change",
+            "sentinel::on-group-changed",
+            "sentinel::on-investigation-changed",
         ]
     );
 }

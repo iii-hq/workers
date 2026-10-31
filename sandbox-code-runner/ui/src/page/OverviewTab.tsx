@@ -11,7 +11,7 @@ import { errorMessage } from '@iii-dev/console-ui/format'
 import { uiClasses } from '@iii-dev/console-ui/ui-classes'
 import { ArrowRight } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { formatTriggerCommand } from './exec'
+import { formatCallCommand } from './exec'
 import {
   displayAgeSecs,
   formatAgeSecs,
@@ -73,7 +73,7 @@ export function OverviewTab({
   // A pending confirm belongs to ONE sandbox: the parent keys this tab by
   // sandbox_id, so a selection change remounts with fresh state.
 
-  // Keyboard flow: the trigger button unmounts when the confirmation
+  // Keyboard flow: the stop button unmounts when the confirmation
   // appears, so focus must move onto the confirm button explicitly.
   const confirmRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -84,7 +84,7 @@ export function OverviewTab({
     setStopping(true)
     setStopError(null)
     host.iii
-      .trigger(
+      .call(
         'sandbox::stop',
         { sandbox_id: sandbox.sandbox_id, wait: true },
         { timeoutMs: 60_000 },
@@ -97,7 +97,7 @@ export function OverviewTab({
       .finally(() => setStopping(false))
   }
 
-  const createCommand = formatTriggerCommand('sandbox::create', {
+  const createCommand = formatCallCommand('sandbox::create', {
     image: sandbox.image,
     ...(sandbox.name ? { name: sandbox.name } : {}),
   })

@@ -60,16 +60,16 @@ import { htmlPreviewLimits } from '../../../../ide/ui/src/page/rich-preview'
 let container: HTMLDivElement
 let root: Root
 const cache: EditorCache = new Map()
-const trigger = vi.fn()
+const call = vi.fn()
 const noop = () => {}
-const host = { iii: { trigger } } as unknown as React.ComponentProps<
+const host = { iii: { call } } as unknown as React.ComponentProps<
   typeof EditorPane
 >['host']
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   cache.clear()
-  trigger.mockReset()
+  call.mockReset()
   reveals.line.mockClear()
   reveals.range.mockClear()
   container = document.createElement('div')
@@ -166,7 +166,7 @@ async function editBuffer(value: string) {
 
 describe('one-shot reference reveals', () => {
   it('preserves preview and does not replay a citation after tab or refresh remounts', async () => {
-    trigger.mockResolvedValue({ content: 'one\ntwo', is_utf8: true })
+    call.mockResolvedValue({ content: 'one\ntwo', is_utf8: true })
     const request = { path: 'note.md', line: 2, seq: 1 }
     await act(async () =>
       root.render(<RevealPage path="note.md" request={request} />),
@@ -201,7 +201,7 @@ describe('one-shot reference reveals', () => {
   })
 
   it('snapshots warnings at reveal time and clears them on edit or remount', async () => {
-    trigger.mockResolvedValue({ content: 'one\ntwo', is_utf8: true })
+    call.mockResolvedValue({ content: 'one\ntwo', is_utf8: true })
     const request = { path: 'note.ts', line: 2, seq: 1 }
     await act(async () =>
       root.render(<RevealPage path="note.ts" request={request} />),
@@ -234,8 +234,8 @@ describe('one-shot reference reveals', () => {
   })
 
   it('keeps a pending reveal after a failed read until retry succeeds', async () => {
-    trigger.mockRejectedValueOnce(new Error('permission denied'))
-    trigger.mockResolvedValueOnce({ content: 'one', is_utf8: true })
+    call.mockRejectedValueOnce(new Error('permission denied'))
+    call.mockResolvedValueOnce({ content: 'one', is_utf8: true })
     const request = { path: 'retry.ts', line: 1, seq: 1 }
     await act(async () =>
       root.render(<RevealPage path="retry.ts" request={request} />),
@@ -252,13 +252,13 @@ describe('one-shot reference reveals', () => {
 describe('IDE reference loading', () => {
   it('does not resurrect a closed tab cache after its read resolves', async () => {
     let finish: (value: unknown) => void = noop
-    trigger.mockImplementationOnce(
+    call.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           finish = resolve
         }),
     )
-    trigger.mockResolvedValueOnce({
+    call.mockResolvedValueOnce({
       content: 'second',
       is_utf8: true,
       revision: 'v2',
@@ -281,7 +281,7 @@ describe('IDE reference loading', () => {
       size: 8,
       mode: 0o644,
     })
-    trigger.mockResolvedValue({ content: 'other', is_utf8: true })
+    call.mockResolvedValue({ content: 'other', is_utf8: true })
     await show('dirty.ts')
     await show('other.ts')
     await show('dirty.ts', { line: 1, seq: 1 })
@@ -290,12 +290,12 @@ describe('IDE reference loading', () => {
       savedContent: 'original',
       revision: 'v1',
     })
-    expect(trigger).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('surfaces worker read failures and allows retrying', async () => {
-    trigger.mockRejectedValueOnce(new Error('permission denied'))
-    trigger.mockResolvedValueOnce({ content: 'readable', is_utf8: true })
+    call.mockRejectedValueOnce(new Error('permission denied'))
+    call.mockResolvedValueOnce({ content: 'readable', is_utf8: true })
     await show('protected.ts')
     expect(container.textContent).toContain('This file could not be opened')
     expect(container.textContent).toContain('permission denied')
@@ -309,7 +309,7 @@ describe('IDE reference loading', () => {
   })
 
   it('warns when a citation is beyond the loaded text', async () => {
-    trigger.mockResolvedValue({ content: 'one line', is_utf8: true })
+    call.mockResolvedValue({ content: 'one line', is_utf8: true })
     await show('short.ts', { line: 999, seq: 1 })
     expect(container.querySelector('[role="status"]')?.textContent).toContain(
       'exceeds the current file',
@@ -357,7 +357,7 @@ function PreviewPage({
 
 describe('explorer Open preview', () => {
   it('opens an HTML file rendered, once, and keeps a later Show source', async () => {
-    trigger.mockResolvedValue({
+    call.mockResolvedValue({
       content: '<h1>Hello</h1>',
       is_utf8: true,
     })
@@ -390,7 +390,7 @@ describe('explorer Open preview', () => {
   })
 
   it('says what a static preview leaves out of an app shell', async () => {
-    trigger.mockResolvedValue({
+    call.mockResolvedValue({
       content:
         '<div id="root"></div><script type="module" src="/src/main.tsx"></script>',
       is_utf8: true,
@@ -404,8 +404,8 @@ describe('explorer Open preview', () => {
   })
 
   it('waits for a failed read to succeed before switching', async () => {
-    trigger.mockRejectedValueOnce(new Error('permission denied'))
-    trigger.mockResolvedValueOnce({ content: '<p>ok</p>', is_utf8: true })
+    call.mockRejectedValueOnce(new Error('permission denied'))
+    call.mockResolvedValueOnce({ content: '<p>ok</p>', is_utf8: true })
     await act(async () =>
       root.render(<PreviewPage path="page.htm" request={{ path: 'page.htm', seq: 1 }} />),
     )
@@ -418,7 +418,7 @@ describe('explorer Open preview', () => {
   })
 
   it('leaves a file with no rendered view as source', async () => {
-    trigger.mockResolvedValue({ content: 'const a = 1', is_utf8: true })
+    call.mockResolvedValue({ content: 'const a = 1', is_utf8: true })
     await act(async () =>
       root.render(<PreviewPage path="main.ts" request={{ path: 'main.ts', seq: 1 }} />),
     )

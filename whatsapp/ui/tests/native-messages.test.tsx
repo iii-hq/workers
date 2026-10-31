@@ -36,7 +36,7 @@ async function render(connected = false, narrow = true) {
   let memory: ReturnType<typeof useDraftMemory> = null
   const MemoryProbe = () => { memory = useDraftMemory(); return null }
   let target = chat, account = 'native:support:1:active', currentConnection = connected
-  const trigger = vi.fn(async (id: string, _input?: unknown) => {
+  const call = vi.fn(async (id: string, _input?: unknown) => {
     if (id === 'whatsapp::chats::list') return { chats: [], next_cursor: null, coverage }
     if (id === 'whatsapp::messages::list') {
       if (archiveError) throw archiveError
@@ -45,7 +45,7 @@ async function render(connected = false, narrow = true) {
     if (id === 'whatsapp::messages::send_text') return { message_id: 'sent', chat_id: target.chat_id }
     throw new Error(`Unexpected function: ${id}`)
   })
-  const host = { iii: { trigger } } as unknown as Host
+  const host = { iii: { call } } as unknown as Host
   const onDirty = vi.fn(), onGoConnection = vi.fn(), onSelect = vi.fn(async () => true)
   const container = document.createElement('div'); document.body.append(container)
   const root = createRoot(container)
@@ -53,7 +53,7 @@ async function render(connected = false, narrow = true) {
   await act(async () => update(connected))
   cleanups.push(() => { act(() => root.unmount()); container.remove() })
   return {
-    container, trigger, onDirty, onGoConnection,
+    container, call, onDirty, onGoConnection,
     draftCount() { return memory?.values.size ?? 0 },
     editor() { return container.querySelector<HTMLTextAreaElement>('textarea')! },
     async conversation(next: ChatTarget) { target = next; await act(async () => update(currentConnection)) },
@@ -103,7 +103,7 @@ describe('Native offline message reader', () => {
     expect(editor.closest('[hidden]')).not.toBeNull()
     await view.click('Connect')
     expect(view.onGoConnection).toHaveBeenCalledOnce()
-    expect(view.trigger.mock.calls.every(([id]) => id.endsWith('::list'))).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => id.endsWith('::list'))).toBe(true)
   })
 
   it('preserves an accessible unsent draft and editor instance through disconnection and refresh errors', async () => {
@@ -128,7 +128,7 @@ describe('Native offline message reader', () => {
     expect(view.editor()).toBe(editor)
     expect(editor.value).toBe('Keep this unsent draft')
     expect(view.onDirty.mock.calls.at(-1)).toEqual([true])
-    expect(view.trigger.mock.calls.every(([id]) => id.endsWith('::list'))).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => id.endsWith('::list'))).toBe(true)
   })
 
   it('restores drafts per conversation and clears a submitted draft without sending on restoration', async () => {
@@ -140,13 +140,13 @@ describe('Native offline message reader', () => {
     await view.draft('Draft for the second chat')
     await view.conversation(chat)
     expect(view.editor().value).toBe('Draft for the first chat')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(0)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(0)
     await view.click('Send')
     await view.conversation(another)
     expect(view.editor().value).toBe('Draft for the second chat')
     await view.conversation(chat)
     expect(view.editor().value).toBe('')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
   })
 
   it('isolates a removed and recreated native session from its previous incarnation', async () => {
@@ -154,7 +154,7 @@ describe('Native offline message reader', () => {
     await view.draft('Private draft from the old account')
     await view.incarnation('native:support:2:active')
     expect(view.editor().value).toBe('')
-    expect(view.trigger.mock.calls.every(([id]) => id.endsWith('::list'))).toBe(true)
+    expect(view.call.mock.calls.every(([id]) => id.endsWith('::list'))).toBe(true)
   })
 
   it('keeps archive availability outside the message scroll area in a wide pane', async () => {
@@ -171,7 +171,7 @@ describe('Native offline message reader', () => {
     expect(document.getElementById(hintId!)?.textContent).toContain('Ctrl/Cmd+Enter to send')
     const event = await view.key({ [modifier]: true })
     expect(event.defaultPrevented).toBe(true)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
     expect(view.editor().value).toBe('')
   })
 
@@ -185,7 +185,7 @@ describe('Native offline message reader', () => {
     await view.draft('Keep this message')
     await view.key(options)
     expect(view.editor().value).toBe('Keep this message')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(0)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(0)
   })
 
   it('does not send a keyboard shortcut while offline or with an empty draft', async () => {
@@ -197,22 +197,22 @@ describe('Native offline message reader', () => {
     await view.connection(true)
     await view.draft('   ')
     await view.key({ metaKey: true })
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(0)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(0)
   })
 
   it('prevents duplicate keyboard sends while the first request is in flight', async () => {
     const view = await render(true)
     await view.draft('One explicit request')
-    const original = view.trigger.getMockImplementation()!
+    const original = view.call.getMockImplementation()!
     let complete!: (value: { message_id: string; chat_id: string }) => void
-    view.trigger.mockImplementation((id) => id.endsWith('send_text') ? new Promise((resolve) => { complete = resolve }) : original(id))
+    view.call.mockImplementation((id) => id.endsWith('send_text') ? new Promise((resolve) => { complete = resolve }) : original(id))
     await act(async () => {
       view.editor().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }))
       view.editor().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }))
     })
     expect(view.editor().disabled).toBe(true)
     await view.key({ metaKey: true })
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
     await act(async () => complete({ message_id: 'sent', chat_id: chat.chat_id }))
     expect(view.editor().value).toBe('')
   })
@@ -220,22 +220,22 @@ describe('Native offline message reader', () => {
   it('keeps the draft and blocks keyboard sends while requesting older history', async () => {
     const view = await render(true)
     await view.draft('Wait for history')
-    const original = view.trigger.getMockImplementation()!
+    const original = view.call.getMockImplementation()!
     let complete!: (value: { request_id: string; requested_count: number }) => void
-    view.trigger.mockImplementation((id) => id.endsWith('request_history') ? new Promise((resolve) => { complete = resolve }) : original(id))
+    view.call.mockImplementation((id) => id.endsWith('request_history') ? new Promise((resolve) => { complete = resolve }) : original(id))
     await view.click('Request older messages')
     await view.key({ ctrlKey: true })
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(0)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(0)
     expect(view.editor().value).toBe('Wait for history')
     await act(async () => complete({ request_id: 'history-request', requested_count: 50 }))
     await view.key({ ctrlKey: true })
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
   })
 
   it('retains an unconfirmed send through editing and remount, checks without resending, and requires an explicit resend', async () => {
     const view = await render(true)
-    const original = view.trigger.getMockImplementation()!
-    view.trigger.mockImplementation(async (id) => {
+    const original = view.call.getMockImplementation()!
+    view.call.mockImplementation(async (id) => {
       if (id.endsWith('send_text')) throw new Error('Timed out waiting for a response')
       return original(id)
     })
@@ -253,20 +253,20 @@ describe('Native offline message reader', () => {
     expect(view.container.textContent).toContain('Sending again may duplicate the previous message')
     await view.key({ ctrlKey: true })
     await view.key({ metaKey: true })
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
-    const listCount = view.trigger.mock.calls.filter(([id]) => id.endsWith('::list')).length
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
+    const listCount = view.call.mock.calls.filter(([id]) => id.endsWith('::list')).length
     await view.click('Check this conversation')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('::list')).length).toBeGreaterThan(listCount)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('::list')).length).toBeGreaterThan(listCount)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
     expect(view.container.textContent).toContain('Message not confirmed')
     const resend = Array.from(view.container.querySelectorAll('button')).find((button) => button.textContent === 'Send again')!
     const check = Array.from(view.container.querySelectorAll('button')).find((button) => button.textContent === 'Check this conversation')!
     expect(resend.dataset.variant).toBe('ghost')
     expect(check.dataset.variant).not.toBe('ghost')
-    view.trigger.mockImplementation(original)
+    view.call.mockImplementation(original)
     await view.click('Send again')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(2)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text')).at(-1)?.[1]).toEqual({ session_id: 'support', chat_id: chat.chat_id, text: 'Edited explicit retry' })
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(2)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text')).at(-1)?.[1]).toEqual({ session_id: 'support', chat_id: chat.chat_id, text: 'Edited explicit retry' })
     expect(view.editor().value).toBe('')
     expect(view.container.textContent).not.toContain('Message not confirmed')
     expect(Array.from(view.container.querySelectorAll('button')).some((button) => button.textContent === 'Send')).toBe(true)
@@ -277,8 +277,8 @@ describe('Native offline message reader', () => {
 
   it('keeps an unresolved send warning after clearing its text and reopening the conversation', async () => {
     const view = await render(true)
-    const original = view.trigger.getMockImplementation()!
-    view.trigger.mockImplementation(async (id) => {
+    const original = view.call.getMockImplementation()!
+    view.call.mockImplementation(async (id) => {
       if (id.endsWith('send_text')) throw new Error('Response is unknown')
       return original(id)
     })
@@ -294,7 +294,7 @@ describe('Native offline message reader', () => {
     expect(view.draftCount()).toBe(0)
     expect(view.onDirty.mock.calls.at(-1)).toEqual([false])
     await view.click('Check this conversation')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(1)
   })
 
   it('treats local validation as a known non-send with a dismissible error', async () => {
@@ -303,7 +303,7 @@ describe('Native offline message reader', () => {
     await view.click('Send')
     expect(view.container.textContent).toContain('Message not sent')
     expect(view.container.textContent).toContain('The message exceeds the 65,536-byte limit.')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(0)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('send_text'))).toHaveLength(0)
     expect(view.container.textContent).not.toContain('Check this conversation')
     await view.click('Dismiss')
     expect(view.container.textContent).not.toContain('Message not sent')

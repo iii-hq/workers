@@ -26,7 +26,7 @@ fn main() {
 }
 
 fn ensure_web_bundle() {
-    // Trigger a re-run when the JS source or its toolchain inputs change.
+    // Re-run when the JS source or its toolchain inputs change.
     // `dist/` itself is *not* listed: rust-embed reads it directly, and
     // listing it would create a dependency cycle (touching dist forces a
     // rebuild that touches dist again).

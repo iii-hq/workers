@@ -31,7 +31,7 @@ pub const REFRESH_MODELS_DESC: &str =
 
 pub const ON_ROUTER_READY_ID: &str = "provider::elevenlabs::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: re-declare with llm-router after it restarts (bound to the router::ready trigger).";
+    "Internal: re-declare with llm-router on every router::on-ready event (each router start).";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

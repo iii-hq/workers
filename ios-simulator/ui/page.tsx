@@ -1,6 +1,7 @@
 /**
  * Entry for the ios-simulator worker's console UI (src/ui.rs serves the
- * built dist/page.js over `console:script`, styles.css over `console:style`).
+ * built dist/page.js as a `script` asset of `console::ui::asset`, and
+ * styles.css as a `style` asset).
  *
  * - src/page/ — the Simulators page: a device rail and a live iPhone you
  *   drive with multi-touch, buttons and the keyboard, plus its media.
@@ -25,7 +26,7 @@ export default function setup(host: Host) {
     render: (props) => <SimulatorsPage host={host} {...props} />,
   })
   host.configForms.register('ios-simulator', IosSimulatorConfigForm)
-  host.functionTriggers.register(screenshotRenderer)
+  host.functionCalls.register(screenshotRenderer)
   // A console without the overlays slot shows no preview; the page still
   // reaches the simulator.
   host.overlays?.register({ id: 'ios-simulator-live', render: () => <SimulatorOverlay host={host} /> })

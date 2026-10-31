@@ -22,8 +22,7 @@ use base64::Engine;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 
 use super::{Driver, Screen, Shot};
 
@@ -89,8 +88,8 @@ impl IiiSandboxHost {
         command_timeout_ms: u64,
     ) -> Result<Self, String> {
         let created = iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "sandbox::create".to_string(),
                     payload: create_payload(image, network, idle_timeout_secs, memory_mb, cpus),
                     action: None,
@@ -218,8 +217,8 @@ impl IiiSandboxHost {
     async fn exec(&self, payload: Value) -> Result<ExecOut, String> {
         let v = self
             .iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "sandbox::exec".to_string(),
                     payload,
                     action: None,
@@ -235,8 +234,8 @@ impl IiiSandboxHost {
 
     async fn stop_sandbox(&self) -> Result<(), String> {
         self.iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "sandbox::stop".to_string(),
                     payload: json!({ "sandbox_id": self.sandbox_id }),
                     action: None,

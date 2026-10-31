@@ -19,7 +19,7 @@ vi.mock('@/lib/conversations-context', () => ({
 }))
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({
-    trigger: async () => ({
+    call: async () => ({
       models: [{ id: 'voice', provider: 'speech', modalities: ['audio'] }],
     }),
   }),

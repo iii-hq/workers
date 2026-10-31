@@ -1,8 +1,8 @@
 //! Building one line end to end: resolve the spec, put the tree on disk,
 //! run the compiler per project, hash every input, assemble the index,
 //! import the vite output into the content-addressed store, and — for the
-//! working tree — classify the changes against the previous build and emit
-//! `stories:changed`.
+//! working tree — classify the changes against the previous build and call
+//! `stories::on-changed`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::compiler::Compiler;
 use crate::config::{ConfigCell, StoriesConfig, WorkspaceConfig};
-use crate::events::{BuildEvent, ChangedEvent, Subscribers, emit_build, emit_changed};
+use crate::events::{BuildEvent, ChangedEvent, emit_build, emit_changed};
 use crate::lines::{self, LineSpec, Resolved};
 use crate::model::{
     ChangeKind, Component, Index, Input, LineInfo, LineKind, ProjectInfo, State, compare,
@@ -47,7 +47,6 @@ pub struct Ctx {
     pub config: ConfigCell,
     pub store: Store,
     pub compiler: Compiler,
-    pub subscribers: Subscribers,
     // ponytail: one global build lock; per-workspace locks if parallel
     // workspaces ever matter.
     pub build_lock: Mutex<()>,
@@ -100,7 +99,6 @@ impl Ctx {
     fn set_build(&self, status: BuildStatus) {
         emit_build(
             &self.iii,
-            &self.subscribers,
             &BuildEvent {
                 workspace: status.workspace.clone(),
                 build_id: status.build_id.clone(),
@@ -553,7 +551,6 @@ async fn compile_tree(
             if !changes.is_empty() {
                 emit_changed(
                     &ctx.iii,
-                    &ctx.subscribers,
                     &ChangedEvent {
                         workspace: ws.to_string(),
                         line: index.line.clone(),

@@ -33,7 +33,7 @@ export async function writeCodeBundle(
     overwrite: false,
   }))
   const response = unwrapEnvelope(
-    await host.iii.trigger('coder::create-file', { files }),
+    await host.iii.call('coder::create-file', { files }),
   ) as CreateFileResponse
   if (!Array.isArray(response?.results) || response.results.length !== files.length) {
     throw new Error('Shell did not return a result for every generated file')

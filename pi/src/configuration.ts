@@ -3,8 +3,8 @@
  * seed installed as `initial_value` on first registration; the live value is
  * authoritative thereafter and hot-reloads on `configuration:updated`.
  *
- * Every field hot-reloads. The event feeds are fixed trigger types
- * (`pi::agent-event`, `pi::raw-event`), not configuration; the former
+ * Every field hot-reloads. The event feeds are fixed functions
+ * (`pi::on-agent-event`, `pi::on-raw-event`), not configuration; the former
  * `events_stream` / `raw_events_stream` keys are accepted and ignored.
  */
 
@@ -20,6 +20,7 @@ import {
 const DEFAULT_CONFIG_ID = 'pi';
 const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || DEFAULT_CONFIG_ID;
 const CONFIG_FN_ID = 'pi::on-config-change';
+const ON_UPDATED_FN = 'configuration::on-updated';
 const TIMEOUT_MS = 5_000;
 
 /** Live snapshot shared with the handlers; `current` is whole-replaced on reload. */
@@ -53,7 +54,7 @@ async function ensureConfiguration(
   payload: Record<string, unknown>,
 ): Promise<void> {
   const call = (function_id: string, payload: Record<string, unknown>) =>
-    iii.trigger({ function_id, namespace: 'default', payload, timeoutMs: TIMEOUT_MS });
+    iii.call({ function_id, namespace: 'default', payload, timeoutMs: TIMEOUT_MS });
   try {
     await call('configuration::ensure', payload);
     return;
@@ -106,7 +107,7 @@ function hasCode(error: unknown, code: string): boolean {
 /** Fetch the live runtime config; null when unset/unreachable. */
 export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null> {
   try {
-    const res = await iii.trigger<unknown, { value?: unknown }>({
+    const res = await iii.call<unknown, { value?: unknown }>({
       function_id: 'configuration::get',
       namespace: 'default',
       payload: { id: CONFIG_ID, raw: false },
@@ -122,10 +123,11 @@ export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null
 }
 
 /**
- * Register the change handler + bind the `configuration` trigger. `onChange` is
- * called once now (reconcile) and on every `configuration:updated`.
+ * Register the change handler and observe `configuration::on-updated` for this
+ * entry. `onChange` is called once now (reconcile) and on every
+ * `configuration:updated`.
  */
-export async function bindConfigTrigger(
+export async function observeConfigChanges(
   iii: IIIClient,
   onChange: () => Promise<void>,
 ): Promise<void> {
@@ -143,9 +145,15 @@ export async function bindConfigTrigger(
       response_format: { type: 'null' },
     },
   );
-  iii.registerTrigger({
-    type: 'configuration',
-    function_id: CONFIG_FN_ID,
-    config: { configuration_id: CONFIG_ID, event_types: ['configuration:updated'] },
-  });
+  iii.observe(
+    {
+      function_id: ON_UPDATED_FN,
+      filters: {
+        'input.id': { $eq: CONFIG_ID },
+        'input.event_type': { $eq: 'configuration:updated' },
+      },
+      deliver: 'output',
+    },
+    CONFIG_FN_ID,
+  );
 }

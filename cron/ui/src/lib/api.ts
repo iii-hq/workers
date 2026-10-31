@@ -1,12 +1,17 @@
 import type { Host } from '@iii-dev/console-ui'
 
+/** The function every schedule observes; its args are `{ expression }`. */
+export const ON_TICK_FN = 'cron::on-tick'
+
+/** The harness's own observer target: observers that wake a session. */
+const HARNESS_DELIVER_FN = 'harness::observer::deliver'
+
 export interface SessionCronTask {
   /** The session a fire wakes. Every schedule the page creates gets its own,
       so a routine never lands in whatever chat happened to be open. */
   sessionId: string
   sessionTitle?: string
-  subscriptionId: string
-  triggerId?: string
+  observerId: string
   expression: string
   target?: string
   label?: string
@@ -18,13 +23,17 @@ export interface SessionCronTask {
   createdAt: number
 }
 
-export interface SystemCronBinding {
+/** An observer of `cron::on-tick` that a worker created for one of its own
+    functions, as `engine::observers::list` reports it. */
+export interface SystemCronObserver {
   id: string
+  /** The function each fire calls. */
   functionId: string
   workerName: string
   expression: string
-  conditionFunctionId?: string
-  configSummary?: string
+  state: string
+  fires: number
+  filters?: Record<string, unknown>
 }
 
 export interface FunctionSummary {
@@ -49,33 +58,27 @@ function rows(value: unknown, key: string): unknown[] {
   return isRecord(value) && Array.isArray(value[key]) ? value[key] : []
 }
 
-function jsonRecord(value: string | undefined): Record<string, unknown> {
-  if (!value) return {}
-  try {
-    const parsed: unknown = JSON.parse(value)
-    return isRecord(parsed) ? parsed : {}
-  } catch {
-    return {}
-  }
+/** A harness row's target: a function id, or `{ function_id }`. */
+function targetFunctionId(value: unknown): string | undefined {
+  return isRecord(value) ? stringValue(value.function_id) : stringValue(value)
 }
 
 async function listSessionCronTasks(host: Host, sessionId: string): Promise<SessionCronTask[]> {
-  const response = await host.iii.trigger('harness::triggers::list', {
+  const response = await host.iii.call('harness::observers::list', {
     session_id: sessionId,
   })
-  return rows(response, 'subscriptions')
+  return rows(response, 'observers')
     .map((row): SessionCronTask | null => {
-      if (!isRecord(row) || row.trigger_type !== 'cron') return null
-      const subscriptionId = stringValue(row.subscription_id)
-      const config = isRecord(row.config) ? row.config : {}
-      const expression = stringValue(config.expression)
-      if (!subscriptionId || !expression) return null
+      if (!isRecord(row) || row.function_id !== ON_TICK_FN) return null
+      const observerId = stringValue(row.observer_id)
+      const args = isRecord(row.args) ? row.args : {}
+      const expression = stringValue(args.expression)
+      if (!observerId || !expression) return null
       return {
         sessionId,
-        subscriptionId,
-        triggerId: stringValue(row.trigger_id),
+        observerId,
         expression,
-        target: stringValue(row.target),
+        target: targetFunctionId(row.target),
         label: stringValue(row.label),
         conditions: Array.isArray(row.conditions) ? row.conditions : [],
         once: row.once === true,
@@ -89,10 +92,10 @@ async function listSessionCronTasks(host: Host, sessionId: string): Promise<Sess
     .sort((left, right) => right.createdAt - left.createdAt)
 }
 
-export async function removeSessionCronTask(host: Host, sessionId: string, subscriptionId: string): Promise<boolean> {
-  const response = await host.iii.trigger('harness::triggers::unregister', {
+export async function removeSessionCronTask(host: Host, sessionId: string, observerId: string): Promise<boolean> {
+  const response = await host.iii.call('harness::observers::dispose', {
     session_id: sessionId,
-    subscription_id: subscriptionId,
+    observer_id: observerId,
   })
   return isRecord(response) && response.removed === true
 }
@@ -119,7 +122,7 @@ export function resolveModel(host: Host, conversationId?: string | null): string
 }
 
 export async function sendToSession(host: Host, sessionId: string, message: string, model?: string): Promise<void> {
-  await host.iii.trigger('harness::send', {
+  await host.iii.call('harness::send', {
     session_id: sessionId,
     message,
     ...(model ? { model } : {}),
@@ -148,7 +151,7 @@ async function listScheduleSessions(host: Host): Promise<ScheduleSession[]> {
   const seenCursors = new Set<string>()
   let cursor: string | undefined
   for (;;) {
-    const response = await host.iii.trigger('session::list', {
+    const response = await host.iii.call('session::list', {
       metadata: { cron_ui: true },
       limit: SESSION_PAGE,
       ...(cursor ? { cursor } : {}),
@@ -197,14 +200,18 @@ export async function listAllSchedules(host: Host, conversationId?: string): Pro
   return collected
 }
 
+/** The agent's observe surface: `harness::observe` creates the schedule's
+    observer, `harness::unobserve` retires the one it replaces. */
+const SCHEDULE_CALLS = ['harness::observe', 'harness::unobserve']
+
 /** Create a schedule in a session of its own. The policy is exactly the two
-    calls a registration needs, and the gate is set to accept them, because the
+    calls a schedule needs, and the gate is set to accept them, because the
     operator asked for this by pressing the button. */
 export async function createSchedule(
   host: Host,
   input: { title: string; instruction: string; model: string },
 ): Promise<string> {
-  const response = await host.iii.trigger('harness::send', {
+  const response = await host.iii.call('harness::send', {
     message: input.instruction,
     model: input.model,
     session: {
@@ -214,7 +221,7 @@ export async function createSchedule(
     options: {
       max_turns: 6,
       functions: {
-        allow: ['engine::register_trigger', 'engine::unregister_trigger'],
+        allow: SCHEDULE_CALLS,
         expose: 'native',
       },
     },
@@ -226,9 +233,7 @@ export async function createSchedule(
   return sessionId
 }
 
-const SCHEDULE_CALLS = ['engine::register_trigger', 'engine::unregister_trigger']
-
-/** Grant exactly the two calls a registration makes, rather than putting the
+/** Grant exactly the two calls a schedule makes, rather than putting the
     session in full-permission mode: the schedule session stays a real chat the
     operator can type into, and a blanket grant would outlive this turn.
 
@@ -241,11 +246,11 @@ const SCHEDULE_CALLS = ['engine::register_trigger', 'engine::unregister_trigger'
     operator asked for this schedule by pressing the button.
 
     Best effort throughout: with no approval gate deployed there is nothing to
-    grant, and the registration simply waits for a human instead. */
+    grant, and the call simply waits for a human instead. */
 export async function allowScheduleCalls(host: Host, sessionId: string): Promise<void> {
   for (const functionId of SCHEDULE_CALLS) {
     try {
-      await host.iii.trigger('approval::approve-always', {
+      await host.iii.call('approval::approve-always', {
         session_id: sessionId,
         function_id: functionId,
       })
@@ -258,7 +263,7 @@ export async function allowScheduleCalls(host: Host, sessionId: string): Promise
 
 async function releaseHeldScheduleCalls(host: Host, sessionId: string): Promise<void> {
   try {
-    const response = await host.iii.trigger('approval::list-pending', {
+    const response = await host.iii.call('approval::list-pending', {
       session_id: sessionId,
     })
     for (const row of rows(response, 'pending')) {
@@ -266,7 +271,7 @@ async function releaseHeldScheduleCalls(host: Host, sessionId: string): Promise<
       const functionId = stringValue(row.function_id)
       const callId = stringValue(row.function_call_id)
       if (!callId || !functionId || !SCHEDULE_CALLS.includes(functionId)) continue
-      await host.iii.trigger('approval::resolve', {
+      await host.iii.call('approval::resolve', {
         session_id: sessionId,
         function_call_id: callId,
         decision: 'allow',
@@ -277,47 +282,47 @@ async function releaseHeldScheduleCalls(host: Host, sessionId: string): Promise<
   }
 }
 
-export async function listSystemCronBindings(host: Host): Promise<SystemCronBinding[]> {
-  const response = await host.iii.trigger('engine::registered-triggers::list', {
-    include_internal: false,
-    trigger_type: 'cron',
+/** Every observer of `cron::on-tick` that a worker made for its own
+    functions. The harness's observers are the schedules above. */
+export async function listSystemCronObservers(host: Host): Promise<SystemCronObserver[]> {
+  const response = await host.iii.call('engine::observers::list', {
+    function_id: ON_TICK_FN,
   })
-  return rows(response, 'registered_triggers')
-    .map((row): SystemCronBinding | null => {
-      if (!isRecord(row) || row.trigger_type !== 'cron') return null
+  return rows(response, 'observers')
+    .map((row): SystemCronObserver | null => {
+      if (!isRecord(row) || row.function_id !== ON_TICK_FN) return null
       const id = stringValue(row.id)
-      const functionId = stringValue(row.function_id)
-      if (!id || !functionId || functionId === 'harness::trigger::deliver') {
-        return null
-      }
-      const configSummary = stringValue(row.config_summary)
-      const summaryConfig = jsonRecord(configSummary)
-      const config = isRecord(row.config) ? row.config : {}
-      const expression = stringValue(config.expression) ?? stringValue(summaryConfig.expression)
+      const functionId = targetFunctionId(row.target)
+      if (!id || !functionId || functionId === HARNESS_DELIVER_FN) return null
+      const args = isRecord(row.args) ? row.args : {}
+      const expression = stringValue(args.expression)
       if (!expression) return null
+      const worker = isRecord(row.worker) ? row.worker : {}
+      const filters = isRecord(row.filters) && Object.keys(row.filters).length > 0 ? row.filters : undefined
       return {
         id,
         functionId,
-        workerName: stringValue(row.worker_name) ?? 'unknown',
+        workerName: stringValue(worker.worker_name) ?? stringValue(worker.worker_id) ?? 'unknown',
         expression,
-        conditionFunctionId:
-          stringValue(config.condition_function_id) ?? stringValue(summaryConfig.condition_function_id),
-        configSummary,
+        state: stringValue(row.state) ?? 'unknown',
+        fires: numberValue(row.fires) ?? 0,
+        filters,
       }
     })
-    .filter((binding): binding is SystemCronBinding => binding !== null)
+    .filter((observer): observer is SystemCronObserver => observer !== null)
     .sort((left, right) => left.functionId.localeCompare(right.functionId))
 }
 
 export async function listFunctions(host: Host): Promise<FunctionSummary[]> {
-  const response = await host.iii.trigger('engine::functions::list', {
+  const response = await host.iii.call('engine::functions::list', {
     include_internal: false,
   })
   return rows(response, 'functions')
     .map((row): FunctionSummary | null => {
       if (!isRecord(row)) return null
       const functionId = stringValue(row.function_id)
-      if (!functionId || functionId.startsWith('harness::')) return null
+      // A private function cannot be an observer's target.
+      if (!functionId || functionId.startsWith('harness::') || row.private === true) return null
       return {
         functionId,
         workerName: stringValue(row.worker_name) ?? 'unknown',

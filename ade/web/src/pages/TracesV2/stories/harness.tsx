@@ -7,9 +7,9 @@
  *    seam in `@/lib/iii-client`. The seam lets us swap the `registerWorker`
  *    dependency for one that returns a fake `ISdk`; `getIiiClient()` then hands
  *    every fetch (`engine::traces::list`, `engine::logs::list`, …) a canned
- *    response built from the fixtures — no WebSocket, no engine. Stream
- *    subscriptions (`registerFunction` / `registerTrigger`) are accepted and
- *    ignored, so the live-append effects simply never fire (static playground).
+ *    response built from the fixtures — no WebSocket, no engine. Handlers and
+ *    observers (`registerFunction` / `observe`) are accepted and ignored, so
+ *    the live-append effects simply never fire (static playground).
  *
  * 2. `LabFrame` — a bounded, themed container. Several trace components
  *    (WaterfallChart's react-virtual list, the timeline lanes) render
@@ -33,7 +33,7 @@ import {
   TRACE_GROUPS_FIXTURE,
 } from '../fixtures/traces-fixtures'
 
-type TriggerArgs = { function_id: string; payload?: Record<string, unknown> }
+type CallArgs = { function_id: string; payload?: Record<string, unknown> }
 
 /** Nest a flat span list into the `{ roots }` tree shape `engine::traces::tree` returns. */
 function buildTraceTree(traceId: string): SpanTreeNode[] {
@@ -85,11 +85,8 @@ function toSummary(root: StoredSpan): TraceSummary {
   }
 }
 
-/** Route a bus trigger to a canned, fixture-backed response. */
-async function fakeTrigger({
-  function_id,
-  payload,
-}: TriggerArgs): Promise<unknown> {
+/** Route a bus call to a canned, fixture-backed response. */
+async function fakeCall({ function_id, payload }: CallArgs): Promise<unknown> {
   const p = payload ?? {}
   switch (function_id) {
     case 'engine::traces::list': {
@@ -160,13 +157,14 @@ async function fakeTrigger({
 }
 
 const noopRef = { unregister() {} }
+const noopObserver = { dispose: async () => {} }
 
 /** A minimal `ISdk` that satisfies everything `wrapSdk` in iii-client.ts touches. */
 function makeFakeSdk(): ISdk {
   const fake = {
-    trigger: (args: TriggerArgs) => fakeTrigger(args),
+    call: (args: CallArgs) => fakeCall(args),
     registerFunction: () => noopRef,
-    registerTrigger: () => noopRef,
+    observe: () => noopObserver,
     // Never emit a state so the reseed-on-connect effect stays quiet.
     addConnectionStateListener: () => () => {},
     shutdown: async () => {},

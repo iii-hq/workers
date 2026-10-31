@@ -14,10 +14,10 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
-iii-helpers = "=0.24.6"
-# Worker-side injectable console UI (content function + console:script/style
-# triggers + hot-reload watcher) — direct link, never published.
+iii-sdk = "=0.26.0"
+iii-helpers = "=0.26.0"
+# Worker-side injectable console UI (content function + console::ui::asset
+# observers + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 # Shared plumbing for the builtin `configuration` worker (seeding, retries,
 # NOT_FOUND semantics, serialized hot-reload, guidance binding slot).

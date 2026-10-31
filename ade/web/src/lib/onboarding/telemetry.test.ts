@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const trigger = vi.fn(async () => ({}))
+const call = vi.fn(async () => ({}))
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ trigger }),
+  getIiiClient: async () => ({ call }),
 }))
 
 import {
@@ -13,7 +13,7 @@ import {
   setupStepMessage,
 } from './telemetry'
 
-beforeEach(() => trigger.mockClear())
+beforeEach(() => call.mockClear())
 
 describe('setup telemetry', () => {
   it('publishes a closed step on the topic the engine forwards', async () => {
@@ -22,8 +22,8 @@ describe('setup telemetry', () => {
       providers: ['claude-code'],
       provider_count: 1,
     })
-    await vi.waitFor(() => expect(trigger).toHaveBeenCalledTimes(1))
-    expect(trigger).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call).toHaveBeenCalledWith(
       'iii::durable::publish',
       {
         topic: STEP_TOPIC,
@@ -53,9 +53,9 @@ describe('setup telemetry', () => {
   })
 
   it('never throws when the engine cannot take it', async () => {
-    trigger.mockRejectedValueOnce(new Error('no queue worker'))
+    call.mockRejectedValueOnce(new Error('no queue worker'))
     expect(() => reportSetupStep('welcome', 1)).not.toThrow()
-    await vi.waitFor(() => expect(trigger).toHaveBeenCalled())
+    await vi.waitFor(() => expect(call).toHaveBeenCalled())
   })
 
   it('names each Explore iii choice as a substep of Finish', () => {

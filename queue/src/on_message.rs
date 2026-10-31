@@ -1,77 +1,94 @@
-//! `queue::on-message`: the `durable:subscriber` trigger type as an
-//! observable function (iii 0.25 observe).
+//! `queue::on-message`: one call per message for one subscriber of a durable
+//! queue topic.
 //!
-//! The function is owner-delivered. Its observers' args are a
-//! `durable:subscriber` trigger's config ([`SubscriberSpec`]:
-//! `{ topic, max_retries?, backoff_ms?, condition_function_id?, queue_config?, group? }`).
-//! [`OnMessageObservers`] is its [`ObserveHandler`]: each observer added
-//! becomes one more subscriber of the [`QueueTriggerHandler`] that serves the
-//! trigger type, validated by the same code, with a
-//! [`SubscriberTarget::Observer`] target; a removed observer (disposed, or its
-//! worker gone past the engine's grace period) is unregistered exactly like
-//! an unregistered trigger. The adapters' consumer loops hand each message to
-//! the observer with `obs.call`, and the target's result acks the message, or
-//! retries it and then dead-letters it, as a trigger target's result does.
+//! The function is private and its handler returns the message it is called
+//! with. Its observers are the topic's subscribers: their args are a
+//! [`SubscriberSpec`] (`{ topic, max_retries?, backoff_ms?, queue_config?, group? }`).
 //!
-//! The function itself refuses invocations (`FORBIDDEN`): messages reach
-//! observers through the consumers only.
-//!
-//! Old consumers keep binding the `durable:subscriber` trigger type, which
-//! this worker still registers on every engine. The function deliberately
-//! declares no `legacy_trigger_type`: this worker is that trigger type's
-//! provider, and moving old consumers onto the engine's legacy shim belongs
-//! with retiring the trigger type. On an engine without observe the SDK
-//! registers this function as a plain function and its hooks never run.
+//! - **Added.** [`OnMessageObservers`] files each observer with
+//!   [`Subscribers`], which opens its consumer on the adapter before the SDK
+//!   acks it (`INVALID_ARGS` without a topic, `OBSERVER_ID_CONFLICT` for an id
+//!   already subscribed).
+//! - **Removed.** The observer's consumer stops at once; its durable queue
+//!   keeps receiving the topic for `subscriber_retention_ms`, then keeps what
+//!   it holds, for a later observer with the same id
+//!   ([`Subscribers::unregister`]).
+//! - **Match.** By keys: an observer is filed under its id, and a call
+//!   matches the subscriber its metadata names (`{ "subscriber": <id> }`).
+//! - **Deliver.** The consumer loops call the function once per message with
+//!   that metadata ([`crate::subscribers::IiiInvoker`]). The deliver hook
+//!   ([`deliver_message`]) calls through the matched observer, and the
+//!   target's result is the call's result: it acks the message, and an error
+//!   retries it with backoff and then dead-letters it. The engine bounds the
+//!   call through the observer by `observers.activation_timeout_ms`; a target
+//!   slower than that fails the delivery with `TIMEOUT`. A subscriber that is
+//!   not active fails the call with `OBSERVER_NOT_ACTIVE` (retried, then
+//!   dead-lettered); a message its filters reject is acked with `null`.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::observe_codes;
 use iii_sdk::runtime::FunctionRef;
-use iii_sdk::{IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction};
+use iii_sdk::{
+    AddedHook, Call, CallRequest, DeliverHook, IIIClient, Match, ObserveRejection, Observer,
+    RegisterFunction, RemovedHook,
+};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::trigger::{
-    observer_key, ObserverSink, QueueTriggerHandler, RegisterError, RegisteredSubscriber,
-    SubscriberSpec, SubscriberTarget, FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS,
+use crate::subscribers::{
+    RegisterError, RegisteredSubscriber, SubscriberSpec, Subscribers,
+    FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS,
 };
 
-/// The observable function a queue topic's messages are delivered through.
+/// The function a queue topic's messages are delivered through.
 pub const ON_MESSAGE_FN: &str = "queue::on-message";
 
-pub const ON_MESSAGE_DESCRIPTION: &str =
-    "One invocation per message published to a durable queue topic. Observe it with args \
-     { topic, max_retries?, backoff_ms?, condition_function_id?, queue_config?, group? } (the \
-     durable:subscriber trigger config); every observer receives every message of its topic, \
-     except that subscribers naming the same group share one queue and handle each message once. \
-     Your target receives the published data; returning acks the message, an error retries it \
-     with backoff and then moves it to the topic's DLQ. Only the queue worker delivers its \
-     messages: invoking it directly is refused.";
+/// The call metadata key naming the subscriber (observer id) a message is for.
+pub const SUBSCRIBER_METADATA_KEY: &str = "subscriber";
 
-/// Registers `queue::on-message` with an [`OnMessageObservers`] over
-/// `subscribers` as its hooks.
-pub fn register(iii: &IIIClient, subscribers: QueueTriggerHandler) -> FunctionRef {
+pub const ON_MESSAGE_DESCRIPTION: &str =
+    "One call per message published to a durable queue topic, for each subscriber of the topic. \
+     Observe it with args { topic, max_retries?, backoff_ms?, queue_config?, group? }: each \
+     observer is a subscriber with its own durable queue, retries and dead-letter queue, except \
+     that observers naming the same group share one queue and handle each message once. The \
+     target receives the published data; returning acks the message, and an error retries it \
+     with backoff and then moves it to the topic's DLQ. The target is called through its \
+     observer, so the engine's observers.activation_timeout_ms (30 s by default) bounds each \
+     delivery: a target that has not answered by then fails it with TIMEOUT and the message is \
+     retried; raise that engine setting for targets that run longer. Filters read the message \
+     as input; a message they reject is acked without a delivery. Only the queue worker calls \
+     it.";
+
+/// Sets the hooks of `queue::on-message` and registers it: private, its
+/// handler returns the message, its observers' args are [`args_format`].
+/// Hooks are set before the registration so they see every observer.
+pub fn register(iii: &IIIClient, subscribers: Subscribers) -> FunctionRef {
+    let observers = OnMessageObservers::new(subscribers);
+    iii.on_observer_added_for(ON_MESSAGE_FN, observers.clone())
+        .on_observer_removed_for(ON_MESSAGE_FN, observers)
+        .on_observer_match_for(
+            ON_MESSAGE_FN,
+            Match::keys(|obs| obs.id().into(), |call| subscriber_of(call).into()),
+        )
+        .on_observer_deliver_for(ON_MESSAGE_FN, OnMessageDelivery { iii: iii.clone() });
     iii.register_function(
         ON_MESSAGE_FN,
-        RegisterFunction::new(refuse_invocation)
+        RegisterFunction::new(on_message)
             .description(ON_MESSAGE_DESCRIPTION)
-            .observe(
-                Observe::owner()
-                    .args_format_value(args_format())
-                    .handler(OnMessageObservers::new(subscribers)),
-            ),
+            .args_format_value(args_format())
+            .private(),
     )
 }
 
-/// What a `queue::on-message` target receives: the data published to the
-/// topic, unchanged. Published data is not always an object, so this keeps a
-/// lossless `Value` while publishing a real schema (the registry publish gate
-/// rejects `AnyValue`).
-#[derive(Debug, Clone, Deserialize)]
+/// What a `queue::on-message` call carries and its target receives: the
+/// data published to the topic, unchanged. Published data is not always an
+/// object, so this keeps a lossless `Value` while publishing a real schema
+/// (the registry publish gate rejects `AnyValue`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct QueueMessage(pub Value);
 
@@ -104,26 +121,17 @@ impl JsonSchema for QueueMessage {
     }
 }
 
-/// The function's handler. Messages are delivered by the consumers with
-/// `obs.call`, never by invoking the function: a caller allowed to invoke it
-/// could otherwise inject messages that were never published.
-fn refuse_invocation(_message: QueueMessage) -> Result<(), Error> {
-    Err(Error::Remote {
-        code: observe_codes::FORBIDDEN.to_string(),
-        message: format!(
-            "{ON_MESSAGE_FN} is delivered by the queue worker: observe it \
-             (iii.observe({{ function_id: '{ON_MESSAGE_FN}', args: {{ topic }} }}, target)) \
-             and publish with iii::durable::publish"
-        ),
-        stacktrace: None,
-    })
+/// The function's handler: it returns the message it is called with, which
+/// is what observers observe (`input` and `output` alike).
+fn on_message(message: QueueMessage) -> Result<QueueMessage, Error> {
+    Ok(message)
 }
 
 /// The observers' `args_format`: [`SubscriberSpec`]'s schema plus the
 /// aliases its serde config accepts (`topic` for `queue`, `maxRetries`,
-/// `backoffDelayMs`), with one of `queue` / `topic` required. The engine then
-/// admits exactly the configs the trigger type does (`INVALID_ARGS`
-/// otherwise); [`parse_args`] and the shared registration path do the rest.
+/// `backoffDelayMs`), with one of `queue` / `topic` required and no other
+/// field. The engine refuses any other args (`INVALID_ARGS`); [`parse_args`]
+/// and [`Subscribers::register`] do the rest.
 pub fn args_format() -> Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(SubscriberSpec))
         .expect("a JSON Schema serializes");
@@ -148,7 +156,7 @@ pub fn args_format() -> Value {
     schema
 }
 
-/// An observer's args, parsed as the trigger type parses its config.
+/// An observer's args, parsed.
 pub fn parse_args(args: &Value) -> Result<SubscriberSpec, ObserveRejection> {
     serde_json::from_value(args.clone()).map_err(|e| {
         ObserveRejection::new(
@@ -158,63 +166,122 @@ pub fn parse_args(args: &Value) -> Result<SubscriberSpec, ObserveRejection> {
     })
 }
 
-/// What a finished `obs.call` means for the message: the target's result
-/// acks it; the observer's filters skipping it acks it without a delivery,
-/// as a `condition_function_id` returning `false` does; any other error
-/// (the target's own, an unreachable target, a suspended observer:
-/// `OBSERVER_NOT_ACTIVE`) fails it, so it is retried and then dead-lettered.
-pub fn call_outcome(result: Result<Value, Error>) -> Result<Option<Value>, String> {
-    match result {
-        Ok(output) => Ok(Some(output)),
-        Err(Error::Remote { code, .. }) if code == observe_codes::FILTERS_NOT_MATCHED => Ok(None),
-        Err(error) => Err(error.to_string()),
+/// The subscriber (observer id) a call is for: its metadata's `subscriber`.
+pub fn subscriber_of(call: &Call) -> Option<&str> {
+    call.metadata
+        .as_ref()?
+        .get(SUBSCRIBER_METADATA_KEY)?
+        .as_str()
+}
+
+/// The subscriber matched to one call, as [`deliver_message`] sees it: an
+/// [`Observer`] called through the engine in production, a fake in tests.
+#[async_trait]
+pub trait MatchedSubscriber: Send + Sync {
+    /// Whether the observer's `on` and filters admit the call.
+    fn matches(&self, call: &Call) -> bool;
+
+    /// Call the observer's target with `payload` and return its result.
+    async fn call_through(&self, payload: Value) -> Result<Value, Error>;
+}
+
+/// Deliver one message to the subscriber matched to it, and return what the
+/// consumer loop gets back: the target's result acks the message and its
+/// error fails it. No matched subscriber (removed while the message was in
+/// flight, or not yet active) is `OBSERVER_NOT_ACTIVE`, so the message is
+/// retried and then dead-lettered; a message the subscriber's filters reject
+/// is acked with `null` and never reaches its target.
+pub async fn deliver_message(
+    call: &Call,
+    subscriber: Option<&dyn MatchedSubscriber>,
+) -> Result<Value, Error> {
+    let Some(subscriber) = subscriber else {
+        return Err(ObserveRejection::new(
+            observe_codes::OBSERVER_NOT_ACTIVE,
+            format!(
+                "{ON_MESSAGE_FN} subscriber '{}' is not active",
+                subscriber_of(call).unwrap_or_default()
+            ),
+        )
+        .into());
+    };
+    if !subscriber.matches(call) {
+        return Ok(Value::Null);
     }
+    subscriber.call_through(call.input.clone()).await
+}
+
+/// An [`Observer`] of `queue::on-message`, called through with this worker's
+/// client.
+struct ThroughObserver<'a> {
+    iii: &'a IIIClient,
+    obs: &'a Observer,
 }
 
 #[async_trait]
-impl ObserverSink for Observer {
-    fn id(&self) -> &str {
-        Observer::id(self)
+impl MatchedSubscriber for ThroughObserver<'_> {
+    fn matches(&self, call: &Call) -> bool {
+        self.obs.matches(call)
     }
 
-    fn target(&self) -> &str {
-        Observer::target(self)
-    }
-
-    async fn call(&self, payload: Value) -> Result<Option<Value>, String> {
-        call_outcome(
-            self.call_with_timeout::<Value>(
-                payload,
-                Duration::from_millis(FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS),
+    async fn call_through(&self, payload: Value) -> Result<Value, Error> {
+        // The call carries the consumer's 30-minute budget for this
+        // function; the engine ends a call through an observer with
+        // `TIMEOUT` after `observers.activation_timeout_ms`, whichever is
+        // shorter.
+        self.iii
+            .call(
+                CallRequest::observer(self.obs, payload)
+                    .timeout(Duration::from_millis(FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS)),
             )
-            .await,
-        )
+            .await
     }
 }
 
-/// The hooks of `queue::on-message`: files each observer as a subscriber.
+/// The deliver hook of `queue::on-message`.
+#[derive(Clone)]
+pub struct OnMessageDelivery {
+    iii: IIIClient,
+}
+
+#[async_trait]
+impl DeliverHook for OnMessageDelivery {
+    async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
+        // Matched by keys on the observer id: at most one observer.
+        let through = observers.first().map(|obs| ThroughObserver {
+            iii: &self.iii,
+            obs,
+        });
+        deliver_message(
+            &call,
+            through
+                .as_ref()
+                .map(|through| through as &dyn MatchedSubscriber),
+        )
+        .await
+    }
+}
+
+/// The added and removed hooks of `queue::on-message`: each observer is one
+/// subscriber of [`Subscribers`], by observer id.
 #[derive(Clone)]
 pub struct OnMessageObservers {
-    subscribers: QueueTriggerHandler,
+    subscribers: Subscribers,
 }
 
 impl OnMessageObservers {
-    pub fn new(subscribers: QueueTriggerHandler) -> Self {
+    pub fn new(subscribers: Subscribers) -> Self {
         Self { subscribers }
     }
 
-    /// Registers the observer behind `sink` as a subscriber of `spec`'s
-    /// topic. Its consumer starts here, before the SDK acks the observer, so
-    /// no message published after `ready()` resolves is missed.
-    pub async fn add(
-        &self,
-        sink: Arc<dyn ObserverSink>,
-        spec: SubscriberSpec,
-    ) -> Result<(), ObserveRejection> {
+    /// Subscribe the observer `id` with its `args`. Its consumer starts here,
+    /// before the SDK acks the observer, so no message published after the
+    /// observer is active is missed.
+    pub async fn add(&self, id: &str, args: &Value) -> Result<(), ObserveRejection> {
+        let spec = parse_args(args)?;
         self.subscribers
-            .register_subscriber(RegisteredSubscriber {
-                trigger_id: observer_key(sink.id()),
-                target: SubscriberTarget::Observer(sink),
+            .register(RegisteredSubscriber {
+                id: id.to_string(),
                 spec,
             })
             .await
@@ -228,21 +295,24 @@ impl OnMessageObservers {
             })
     }
 
-    /// Unregisters the observer `id`: its consumer stops, and its backlog
-    /// stays for a later observer with the same id, as a trigger's does.
+    /// Unsubscribe the observer `id`: its consumer stops at once, and its
+    /// queue stays for a later observer with the same id
+    /// ([`Subscribers::unregister`]).
     pub async fn remove(&self, id: &str) {
-        self.subscribers.unregister(&observer_key(id)).await;
+        self.subscribers.unregister(id).await;
     }
 }
 
 #[async_trait]
-impl ObserveHandler for OnMessageObservers {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        let spec = parse_args(obs.args_value())?;
-        self.add(Arc::new(obs.clone()), spec).await
+impl AddedHook for OnMessageObservers {
+    async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
+        self.add(obs.id(), obs.args_value()).await
     }
+}
 
-    async fn on_observer_removed(&self, obs: &Observer) {
+#[async_trait]
+impl RemovedHook for OnMessageObservers {
+    async fn on_removed(&self, obs: Observer) {
         self.remove(obs.id()).await;
     }
 }
@@ -252,36 +322,42 @@ mod tests {
     use super::*;
     use crate::adapter::{QueueAdapter, SwappableAdapter};
     use crate::adapters::builtin::BuiltinAdapter;
+    use crate::config::QueueConfig;
+    use crate::configuration::new_cell;
     use crate::store::{InMemoryStore, QueueStore};
-    use crate::trigger::Invoker;
-    use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
+    use crate::subscribers::Invoker;
+    use std::collections::HashMap;
     use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
     use tokio::time::{sleep, Instant};
 
-    /// A trigger target: records `(function_id, payload)` per delivery.
-    #[derive(Default)]
-    struct RecordingInvoker {
-        calls: Mutex<Vec<(String, Value)>>,
-    }
-
-    #[async_trait]
-    impl Invoker for RecordingInvoker {
-        async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String> {
-            self.calls
-                .lock()
-                .await
-                .push((function_id.to_string(), payload));
-            Ok(Some(json!({ "ok": true })))
+    fn remote(code: &str, message: &str) -> Error {
+        Error::Remote {
+            code: code.to_string(),
+            message: message.to_string(),
+            stacktrace: None,
         }
     }
 
-    /// An observer: records each delivered `obs.call` payload, after
-    /// failing the first `fail_first` calls with `failure`.
+    /// A call of `queue::on-message` for `subscriber`, as the SDK hands it to
+    /// the deliver hook: the handler returned its input.
+    fn message_call(subscriber: &str, payload: Value) -> Call {
+        Call {
+            function_id: ON_MESSAGE_FN.to_string(),
+            output: Some(payload.clone()),
+            input: payload,
+            metadata: Some(json!({ SUBSCRIBER_METADATA_KEY: subscriber })),
+            ..Call::default()
+        }
+    }
+
+    /// An observer: its filters reject a message whose `skip` is `true`; it
+    /// records each payload called through it, after failing the first
+    /// `fail_first` calls with `failure`.
     struct FakeObserver {
         id: String,
-        target: String,
         calls: Mutex<Vec<Value>>,
         fail_first: usize,
         failure: String,
@@ -296,7 +372,6 @@ mod tests {
         fn failing(id: &str, fail_first: usize, failure: &str) -> Arc<Self> {
             Arc::new(Self {
                 id: id.to_string(),
-                target: format!("{id}::target"),
                 calls: Mutex::new(Vec::new()),
                 fail_first,
                 failure: failure.to_string(),
@@ -310,61 +385,113 @@ mod tests {
     }
 
     #[async_trait]
-    impl ObserverSink for FakeObserver {
-        fn id(&self) -> &str {
-            &self.id
+    impl MatchedSubscriber for FakeObserver {
+        fn matches(&self, call: &Call) -> bool {
+            call.input.get("skip").and_then(Value::as_bool) != Some(true)
         }
 
-        fn target(&self) -> &str {
-            &self.target
-        }
-
-        async fn call(&self, payload: Value) -> Result<Option<Value>, String> {
+        async fn call_through(&self, payload: Value) -> Result<Value, Error> {
             if self.attempts.fetch_add(1, Ordering::SeqCst) < self.fail_first {
-                return Err(self.failure.clone());
+                let (code, message) = self
+                    .failure
+                    .split_once(": ")
+                    .unwrap_or((self.failure.as_str(), ""));
+                return Err(remote(code, message));
             }
             self.calls.lock().await.push(payload);
-            Ok(Some(json!({ "ok": true })))
+            Ok(json!({ "ok": true }))
+        }
+    }
+
+    /// The SDK and the engine between a consumer and its observer: each
+    /// delivery is a call of `queue::on-message` naming the subscriber, the
+    /// observer filed under that id is matched (by keys), and the deliver
+    /// hook runs.
+    #[derive(Default)]
+    struct FakeEngine {
+        observers: StdMutex<HashMap<String, Arc<FakeObserver>>>,
+    }
+
+    #[async_trait]
+    impl Invoker for FakeEngine {
+        async fn call(&self, function_id: &str, _payload: Value) -> Result<Option<Value>, String> {
+            Err(format!("unexpected call of {function_id}"))
+        }
+
+        async fn deliver(&self, subscriber: &str, payload: Value) -> Result<Option<Value>, String> {
+            let call = message_call(subscriber, payload);
+            let matched = self.observers.lock().unwrap().get(subscriber).cloned();
+            deliver_message(
+                &call,
+                matched
+                    .as_deref()
+                    .map(|observer| observer as &dyn MatchedSubscriber),
+            )
+            .await
+            .map(Some)
+            .map_err(|error| error.to_string())
         }
     }
 
     struct Fixture {
         store: Arc<dyn QueueStore>,
         adapter: Arc<SwappableAdapter>,
-        invoker: Arc<RecordingInvoker>,
-        handler: QueueTriggerHandler,
+        engine: Arc<FakeEngine>,
+        subscribers: Subscribers,
         observers: OnMessageObservers,
     }
 
+    impl Fixture {
+        /// The observer is added: the engine knows it, and its hooks run.
+        async fn add(&self, observer: &Arc<FakeObserver>, args: Value) {
+            self.try_add(observer, args)
+                .await
+                .expect("observer accepted");
+        }
+
+        async fn try_add(
+            &self,
+            observer: &Arc<FakeObserver>,
+            args: Value,
+        ) -> Result<(), ObserveRejection> {
+            self.observers.add(&observer.id, &args).await?;
+            self.engine
+                .observers
+                .lock()
+                .unwrap()
+                .insert(observer.id.clone(), observer.clone());
+            Ok(())
+        }
+
+        async fn remove(&self, id: &str) {
+            self.engine.observers.lock().unwrap().remove(id);
+            self.observers.remove(id).await;
+        }
+    }
+
     fn fixture() -> Fixture {
+        fixture_with(QueueConfig::default())
+    }
+
+    fn fixture_with(config: QueueConfig) -> Fixture {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
-        let invoker = Arc::new(RecordingInvoker::default());
+        let engine = Arc::new(FakeEngine::default());
         let builtin: Arc<dyn QueueAdapter> =
-            Arc::new(BuiltinAdapter::new(store.clone(), invoker.clone()));
+            Arc::new(BuiltinAdapter::new(store.clone(), engine.clone()));
         let adapter = Arc::new(SwappableAdapter::new(builtin, "builtin"));
-        let handler = QueueTriggerHandler::new(adapter.clone());
-        let observers = OnMessageObservers::new(handler.clone());
+        let subscribers = Subscribers::new(adapter.clone()).with_config(new_cell(config));
+        let observers = OnMessageObservers::new(subscribers.clone());
         Fixture {
             store,
             adapter,
-            invoker,
-            handler,
+            engine,
+            subscribers,
             observers,
         }
     }
 
     fn spec(args: Value) -> SubscriberSpec {
         parse_args(&args).expect("valid args")
-    }
-
-    fn trigger_config(id: &str, function_id: &str, config: Value) -> TriggerConfig {
-        TriggerConfig {
-            id: id.to_string(),
-            function_id: function_id.to_string(),
-            config,
-            metadata: None,
-            namespace: None,
-        }
     }
 
     async fn wait_until<F, Fut>(mut pred: F)
@@ -383,21 +510,18 @@ mod tests {
     }
 
     #[test]
-    fn args_accept_the_trigger_config_and_its_aliases() {
+    fn args_accept_the_topic_and_its_aliases() {
         let by_topic = spec(json!({ "topic": "orders", "maxRetries": 2, "backoffDelayMs": 5 }));
         assert_eq!(by_topic.queue, "orders");
         assert_eq!(by_topic.max_retries, Some(2));
         assert_eq!(by_topic.backoff_ms, Some(5));
         let by_queue = spec(json!({
             "queue": "orders",
-            "condition_function_id": "orders::wanted",
+            "group": "billing",
             "queue_config": { "type": "fifo", "concurrency": 1 }
         }));
         assert_eq!(by_queue.queue, "orders");
-        assert_eq!(
-            by_queue.condition_function_id.as_deref(),
-            Some("orders::wanted")
-        );
+        assert_eq!(by_queue.group.as_deref(), Some("billing"));
         assert_eq!(
             by_queue.queue_config.unwrap().queue_mode.as_deref(),
             Some("fifo")
@@ -405,11 +529,12 @@ mod tests {
     }
 
     #[test]
-    fn args_without_a_topic_or_with_both_spellings_are_invalid_args() {
+    fn args_without_a_topic_with_both_spellings_or_unknown_fields_are_invalid_args() {
         for args in [
             json!({}),
             json!({ "topic": "a", "queue": "b" }),
             json!({ "topic": 7 }),
+            json!({ "topic": "a", "condition_function_id": "orders::wanted" }),
         ] {
             let rejection = parse_args(&args).unwrap_err();
             assert_eq!(rejection.code, observe_codes::INVALID_ARGS, "{args}");
@@ -424,55 +549,35 @@ mod tests {
             schema["anyOf"],
             json!([{ "required": ["queue"] }, { "required": ["topic"] }])
         );
+        assert_eq!(schema["additionalProperties"], json!(false));
         let properties = schema["properties"].as_object().unwrap();
-        for name in [
-            "queue",
-            "topic",
-            "max_retries",
-            "maxRetries",
-            "backoff_ms",
-            "backoffDelayMs",
-            "condition_function_id",
-            "queue_config",
-            "group",
-        ] {
-            assert!(properties.contains_key(name), "missing {name}");
-        }
+        let mut names: Vec<_> = properties.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "backoffDelayMs",
+                "backoff_ms",
+                "group",
+                "maxRetries",
+                "max_retries",
+                "queue",
+                "queue_config",
+                "topic",
+            ]
+        );
         assert_eq!(properties["topic"], properties["queue"]);
     }
 
-    #[tokio::test]
-    async fn an_empty_topic_is_rejected_by_the_shared_validation() {
-        let f = fixture();
-        let rejection = f
-            .observers
-            .add(FakeObserver::new("obs-1"), spec(json!({ "topic": " " })))
-            .await
-            .unwrap_err();
-        assert_eq!(rejection.code, observe_codes::INVALID_ARGS);
-        assert_eq!(
-            rejection.message,
-            "queue is required for queue::on-message observer"
-        );
-        // The trigger type keeps its own wording.
-        let err = f
-            .handler
-            .register_trigger(trigger_config("t1", "fn", json!({ "queue": "" })))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("durable:subscriber trigger"));
-        assert!(f.handler.registrations().await.is_empty());
-    }
-
     #[test]
-    fn direct_invocation_is_forbidden() {
-        match refuse_invocation(QueueMessage(json!({ "forged": true }))) {
-            Err(Error::Remote { code, message, .. }) => {
-                assert_eq!(code, observe_codes::FORBIDDEN);
-                assert!(message.contains("iii.observe"));
-            }
-            other => panic!("expected FORBIDDEN, got {other:?}"),
-        }
+    fn the_handler_returns_the_message_it_is_called_with() {
+        let message = json!({ "order": 7, "items": ["a"] });
+        let out = on_message(QueueMessage(message.clone())).unwrap();
+        assert_eq!(out.0, message);
+        assert_eq!(
+            on_message(QueueMessage(json!(null))).unwrap().0,
+            json!(null)
+        );
     }
 
     #[test]
@@ -483,56 +588,104 @@ mod tests {
     }
 
     #[test]
-    fn call_outcome_acks_results_and_filter_misses_and_fails_the_rest() {
+    fn a_call_names_its_subscriber_in_its_metadata() {
         assert_eq!(
-            call_outcome(Ok(json!({ "ok": true }))),
-            Ok(Some(json!({ "ok": true })))
+            subscriber_of(&message_call("obs-1", json!(1))),
+            Some("obs-1")
         );
-        let remote = |code: &str| Error::Remote {
-            code: code.to_string(),
-            message: "m".to_string(),
-            stacktrace: None,
+        assert_eq!(subscriber_of(&Call::default()), None);
+        let other = Call {
+            metadata: Some(json!({ "subscriber": 7 })),
+            ..Call::default()
         };
-        assert_eq!(
-            call_outcome(Err(remote(observe_codes::FILTERS_NOT_MATCHED))),
-            Ok(None)
-        );
-        for code in [
-            observe_codes::OBSERVER_NOT_ACTIVE,
-            observe_codes::OVERFLOW,
-            "TIMEOUT",
-        ] {
-            assert!(call_outcome(Err(remote(code))).is_err(), "{code}");
-        }
-        assert!(call_outcome(Err(Error::NotConnected)).is_err());
+        assert_eq!(subscriber_of(&other), None);
     }
 
-    /// An observer and a trigger on one topic are two subscribers: each
-    /// receives every message (fan-out), with the same payload, as two
-    /// triggers with different targets do. Only registrations sharing a
-    /// subscription key (two triggers on one function) share one consumer.
     #[tokio::test]
-    async fn an_observer_and_a_trigger_on_one_topic_each_receive_every_message() {
-        let f = fixture();
-        f.handler
-            .register_trigger(trigger_config(
-                "t1",
-                "orders::legacy",
-                json!({ "queue": "orders" }),
-            ))
-            .await
-            .unwrap();
+    async fn deliver_calls_through_the_matched_subscriber_and_returns_its_result() {
         let observer = FakeObserver::new("obs-1");
-        f.observers
-            .add(observer.clone(), spec(json!({ "topic": "orders" })))
+        let out = deliver_message(
+            &message_call("obs-1", json!({ "id": 1 })),
+            Some(observer.as_ref()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, json!({ "ok": true }));
+        assert_eq!(observer.delivered().await, vec![json!({ "id": 1 })]);
+    }
+
+    #[tokio::test]
+    async fn deliver_without_a_subscriber_is_observer_not_active() {
+        match deliver_message(&message_call("gone", json!({ "id": 1 })), None).await {
+            Err(Error::Remote { code, message, .. }) => {
+                assert_eq!(code, observe_codes::OBSERVER_NOT_ACTIVE);
+                assert!(message.contains("'gone'"), "{message}");
+            }
+            other => panic!("expected OBSERVER_NOT_ACTIVE, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn deliver_acks_a_filter_miss_without_calling_the_target() {
+        let observer = FakeObserver::new("obs-1");
+        let out = deliver_message(
+            &message_call("obs-1", json!({ "skip": true })),
+            Some(observer.as_ref()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, Value::Null);
+        assert_eq!(observer.attempts.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn deliver_passes_the_target_error_through() {
+        let observer = FakeObserver::failing("obs-1", 1, "TARGET_ERROR: boom");
+        match deliver_message(&message_call("obs-1", json!(1)), Some(observer.as_ref())).await {
+            Err(Error::Remote { code, .. }) => assert_eq!(code, "TARGET_ERROR"),
+            other => panic!("expected the target's error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_topic_is_invalid_args() {
+        let f = fixture();
+        let rejection = f
+            .try_add(&FakeObserver::new("obs-1"), json!({ "topic": " " }))
             .await
-            .unwrap();
-        // A second observer of the same topic is one more subscriber too.
+            .unwrap_err();
+        assert_eq!(rejection.code, observe_codes::INVALID_ARGS);
+        assert_eq!(
+            rejection.message,
+            "topic is required for a queue::on-message observer"
+        );
+        assert!(f.subscribers.registrations().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_observer_id_is_observer_id_conflict() {
+        let f = fixture();
+        f.add(&FakeObserver::new("same"), json!({ "topic": "orders" }))
+            .await;
+        let duplicate = f
+            .observers
+            .add("same", &json!({ "topic": "orders" }))
+            .await
+            .unwrap_err();
+        assert_eq!(duplicate.code, observe_codes::OBSERVER_ID_CONFLICT);
+        assert_eq!(f.subscribers.registrations().await.len(), 1);
+        f.subscribers.shutdown().await;
+    }
+
+    /// Two observers of one topic are two subscribers: each receives every
+    /// message (fan-out), with the same payload.
+    #[tokio::test]
+    async fn each_observer_of_a_topic_receives_every_message() {
+        let f = fixture();
+        let first = FakeObserver::new("obs-1");
         let second = FakeObserver::new("obs-2");
-        f.observers
-            .add(second.clone(), spec(json!({ "topic": "orders" })))
-            .await
-            .unwrap();
+        f.add(&first, json!({ "topic": "orders" })).await;
+        f.add(&second, json!({ "topic": "orders" })).await;
 
         for i in 0..3 {
             f.adapter
@@ -540,66 +693,71 @@ mod tests {
                 .await;
         }
         wait_until(|| async {
-            f.invoker.calls.lock().await.len() == 3
-                && observer.delivered().await.len() == 3
-                && second.delivered().await.len() == 3
+            first.delivered().await.len() == 3 && second.delivered().await.len() == 3
         })
         .await;
 
-        let mut via_trigger: Vec<Value> = f
-            .invoker
-            .calls
-            .lock()
-            .await
-            .iter()
-            .map(|(function_id, payload)| {
-                assert_eq!(function_id, "orders::legacy");
-                payload.clone()
-            })
-            .collect();
-        let mut via_observer = observer.delivered().await;
-        via_trigger.sort_by_key(|p| p["n"].as_i64());
-        via_observer.sort_by_key(|p| p["n"].as_i64());
-        assert_eq!(via_trigger, via_observer, "the same payload either way");
-        f.handler.shutdown().await;
+        let mut via_first = first.delivered().await;
+        let mut via_second = second.delivered().await;
+        via_first.sort_by_key(|p| p["n"].as_i64());
+        via_second.sort_by_key(|p| p["n"].as_i64());
+        assert_eq!(via_first, via_second, "the same payload to each subscriber");
+        f.subscribers.shutdown().await;
     }
 
     #[tokio::test]
     async fn a_successful_call_acks_the_message() {
         let f = fixture();
         let observer = FakeObserver::new("obs-1");
-        f.observers
-            .add(observer.clone(), spec(json!({ "topic": "orders" })))
-            .await
-            .unwrap();
+        f.add(&observer, json!({ "topic": "orders" })).await;
         f.adapter
             .enqueue("orders", json!({ "id": 1 }), None, None)
             .await;
         wait_until(|| async { observer.delivered().await.len() == 1 }).await;
-        let queue = format!("orders::{}", observer_key("obs-1"));
         wait_until(|| async {
-            let stats = f.store.topic_stats(&queue).await;
+            let stats = f.store.topic_stats("orders::observer:obs-1").await;
             stats.depth == 0 && stats.delivered == 1
         })
         .await;
         assert_eq!(f.adapter.dlq_count("orders").await.unwrap(), 0);
-        f.handler.shutdown().await;
+        f.subscribers.shutdown().await;
+    }
+
+    /// A message the observer's filters reject is acked with no delivery
+    /// and no retry.
+    #[tokio::test]
+    async fn a_filter_miss_acks_the_message() {
+        let f = fixture();
+        let observer = FakeObserver::new("obs-1");
+        f.add(&observer, json!({ "topic": "orders", "max_retries": 2 }))
+            .await;
+        f.adapter
+            .enqueue("orders", json!({ "skip": true }), None, None)
+            .await;
+        wait_until(|| async {
+            f.store
+                .topic_stats("orders::observer:obs-1")
+                .await
+                .delivered
+                == 1
+        })
+        .await;
+        assert_eq!(observer.attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(f.adapter.dlq_count("orders").await.unwrap(), 0);
+        f.subscribers.shutdown().await;
     }
 
     /// A failing target is retried with the observer's own backoff and
-    /// then dead-lettered, after as many attempts as a trigger target with
-    /// the same config.
+    /// then dead-lettered.
     #[tokio::test]
-    async fn a_failing_call_is_retried_then_dead_lettered_like_a_trigger_target() {
+    async fn a_failing_target_is_retried_then_dead_lettered() {
         let f = fixture();
         let observer = FakeObserver::failing("obs-1", usize::MAX, "TARGET_ERROR: boom");
-        f.observers
-            .add(
-                observer.clone(),
-                spec(json!({ "topic": "orders", "max_retries": 2, "backoff_ms": 1 })),
-            )
-            .await
-            .unwrap();
+        f.add(
+            &observer,
+            json!({ "topic": "orders", "max_retries": 2, "backoff_ms": 1 }),
+        )
+        .await;
         f.adapter
             .enqueue("orders", json!({ "id": 1 }), None, None)
             .await;
@@ -609,7 +767,7 @@ mod tests {
         assert_eq!(dead[0]["attempts"], json!(2));
         assert_eq!(observer.attempts.load(Ordering::SeqCst), 2);
         assert!(observer.delivered().await.is_empty());
-        f.handler.shutdown().await;
+        f.subscribers.shutdown().await;
     }
 
     /// A suspended observer (its worker briefly gone) fails its calls with
@@ -623,13 +781,11 @@ mod tests {
             2,
             "OBSERVER_NOT_ACTIVE: observer obs-1 is not active",
         );
-        f.observers
-            .add(
-                observer.clone(),
-                spec(json!({ "topic": "orders", "max_retries": 5, "backoff_ms": 1 })),
-            )
-            .await
-            .unwrap();
+        f.add(
+            &observer,
+            json!({ "topic": "orders", "max_retries": 5, "backoff_ms": 1 }),
+        )
+        .await;
         f.adapter
             .enqueue("orders", json!({ "id": 1 }), None, None)
             .await;
@@ -637,124 +793,165 @@ mod tests {
         assert_eq!(observer.delivered().await, vec![json!({ "id": 1 })]);
         assert_eq!(observer.attempts.load(Ordering::SeqCst), 3);
         assert_eq!(f.adapter.dlq_count("orders").await.unwrap(), 0);
-        f.handler.shutdown().await;
+        f.subscribers.shutdown().await;
     }
 
-    /// Removing an observer stops its consumer as unregistering a trigger
-    /// does: later messages stay in its queue, and an observer with the same
-    /// id picks them up.
+    /// Removing an observer stops its consumer at once: later messages reach
+    /// the subscribers that stay and none reach it. Its queue keeps receiving
+    /// the topic for the retention window, so an observer back under the same
+    /// id within it gets what was published while it was gone.
     #[tokio::test]
-    async fn removal_stops_delivery_and_keeps_the_backlog_for_the_same_id() {
+    async fn removal_stops_delivery_and_keeps_the_queue_for_the_same_id() {
         let f = fixture();
-        f.handler
-            .register_trigger(trigger_config(
-                "t1",
-                "orders::legacy",
-                json!({ "queue": "orders" }),
-            ))
-            .await
-            .unwrap();
-        let observer = FakeObserver::new("obs-1");
-        f.observers
-            .add(observer.clone(), spec(json!({ "topic": "orders" })))
-            .await
-            .unwrap();
+        let stays = FakeObserver::new("obs-stays");
+        let leaves = FakeObserver::new("obs-1");
+        f.add(&stays, json!({ "topic": "orders" })).await;
+        f.add(&leaves, json!({ "topic": "orders" })).await;
         f.adapter
             .enqueue("orders", json!({ "n": 1 }), None, None)
             .await;
-        wait_until(|| async { observer.delivered().await.len() == 1 }).await;
+        wait_until(|| async { leaves.delivered().await.len() == 1 }).await;
 
-        f.observers.remove("obs-1").await;
-        assert_eq!(
-            f.handler.registrations().await.len(),
-            1,
-            "the trigger stays"
-        );
+        f.remove("obs-1").await;
+        assert_eq!(f.subscribers.registrations().await.len(), 1);
         f.adapter
             .enqueue("orders", json!({ "n": 2 }), None, None)
             .await;
-        wait_until(|| async { f.invoker.calls.lock().await.len() == 2 }).await;
+        wait_until(|| async { stays.delivered().await.len() == 2 }).await;
         sleep(Duration::from_millis(100)).await;
         assert_eq!(
-            observer.delivered().await.len(),
+            leaves.delivered().await.len(),
             1,
             "no delivery after removal"
         );
 
-        // Back under the same id: its queue was kept, but the topic no longer
-        // fans out to it while it is gone, as for a trigger.
+        // Back under the same id within the window: its queue kept receiving
+        // the topic, so it gets 2 as well as 3, each once.
         let again = FakeObserver::new("obs-1");
-        f.observers
-            .add(again.clone(), spec(json!({ "topic": "orders" })))
-            .await
-            .unwrap();
+        f.add(&again, json!({ "topic": "orders" })).await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 3 }), None, None)
+            .await;
+        wait_until(|| async { again.delivered().await.len() == 2 }).await;
+        sleep(Duration::from_millis(100)).await;
+        let mut delivered = again.delivered().await;
+        delivered.sort_by_key(|message| message["n"].as_i64());
+        assert_eq!(delivered, vec![json!({ "n": 2 }), json!({ "n": 3 })]);
+        f.subscribers.shutdown().await;
+    }
+
+    /// With `subscriber_retention_ms: 0` the topic stops routing to a removed
+    /// observer's queue at once: an observer back under the same id gets
+    /// what is published after it is back, and not what was published while
+    /// it was gone.
+    #[tokio::test]
+    async fn with_no_retention_the_queue_stops_receiving_when_the_observer_is_removed() {
+        let f = fixture_with(QueueConfig {
+            subscriber_retention_ms: 0,
+            ..QueueConfig::default()
+        });
+        let leaves = FakeObserver::new("obs-1");
+        f.add(&leaves, json!({ "topic": "orders" })).await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 1 }), None, None)
+            .await;
+        wait_until(|| async { leaves.delivered().await.len() == 1 }).await;
+
+        f.remove("obs-1").await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 2 }), None, None)
+            .await;
+        let again = FakeObserver::new("obs-1");
+        f.add(&again, json!({ "topic": "orders" })).await;
         f.adapter
             .enqueue("orders", json!({ "n": 3 }), None, None)
             .await;
         wait_until(|| async { again.delivered().await.len() == 1 }).await;
+        sleep(Duration::from_millis(100)).await;
         assert_eq!(again.delivered().await, vec![json!({ "n": 3 })]);
-        f.handler.shutdown().await;
+        assert_eq!(
+            f.store.topic_stats("orders").await.depth,
+            1,
+            "2 on the bare topic"
+        );
+        f.subscribers.shutdown().await;
     }
 
-    #[tokio::test]
-    async fn an_observer_id_never_collides_with_a_trigger_id() {
+    /// A group's queue keeps being consumed while a member remains: when the
+    /// member it delivered into leaves, the one that stays takes every later
+    /// message, before and after the retention.
+    #[tokio::test(start_paused = true)]
+    async fn a_group_keeps_its_queue_while_a_member_remains() {
         let f = fixture();
-        f.handler
-            .register_trigger(trigger_config(
-                "same",
-                "orders::legacy",
-                json!({ "queue": "orders" }),
-            ))
-            .await
-            .unwrap();
-        f.observers
-            .add(
-                FakeObserver::new("same"),
-                spec(json!({ "topic": "orders" })),
-            )
-            .await
-            .unwrap();
-        assert_eq!(f.handler.registrations().await.len(), 2);
-        let duplicate = f
-            .observers
-            .add(
-                FakeObserver::new("same"),
-                spec(json!({ "topic": "orders" })),
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(duplicate.code, observe_codes::OBSERVER_ID_CONFLICT);
-        // Removing the observer leaves the trigger of the same id alone.
-        f.observers.remove("same").await;
-        let left = f.handler.registrations().await;
-        assert_eq!(left.len(), 1);
-        assert_eq!(left[0].target.function_id(), "orders::legacy");
-        f.handler.shutdown().await;
+        let a = FakeObserver::new("obs-a");
+        let b = FakeObserver::new("obs-b");
+        let group = json!({ "topic": "orders", "group": "billing" });
+        f.add(&a, group.clone()).await;
+        f.add(&b, group).await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 1 }), None, None)
+            .await;
+        wait_until(|| async { a.delivered().await.len() == 1 }).await;
+
+        f.remove("obs-a").await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 2 }), None, None)
+            .await;
+        wait_until(|| async { b.delivered().await.len() == 1 }).await;
+        sleep(Duration::from_secs(60)).await;
+        f.adapter
+            .enqueue("orders", json!({ "n": 3 }), None, None)
+            .await;
+        wait_until(|| async { b.delivered().await.len() == 2 }).await;
+        assert_eq!(a.delivered().await, vec![json!({ "n": 1 })]);
+        assert_eq!(
+            b.delivered().await,
+            vec![json!({ "n": 2 }), json!({ "n": 3 })]
+        );
+        f.subscribers.shutdown().await;
     }
 
-    /// A configuration hot-swap re-attaches observers to the new adapter
-    /// along with the triggers.
+    /// The members of a group share one queue: each message reaches one of
+    /// them.
+    #[tokio::test]
+    async fn a_group_handles_each_message_once() {
+        let f = fixture();
+        let a = FakeObserver::new("obs-a");
+        let b = FakeObserver::new("obs-b");
+        let group = json!({ "topic": "orders", "group": "billing" });
+        f.add(&a, group.clone()).await;
+        f.add(&b, group).await;
+        for i in 0..4 {
+            f.adapter
+                .enqueue("orders", json!({ "n": i }), None, None)
+                .await;
+        }
+        wait_until(|| async { a.delivered().await.len() + b.delivered().await.len() == 4 }).await;
+        sleep(Duration::from_millis(100)).await;
+        assert_eq!(a.delivered().await.len() + b.delivered().await.len(), 4);
+        f.subscribers.shutdown().await;
+    }
+
+    /// A configuration hot-swap re-attaches the subscribers to the new
+    /// adapter.
     #[tokio::test]
     async fn an_adapter_swap_resubscribes_observers() {
         let f = fixture();
         let observer = FakeObserver::new("obs-1");
-        f.observers
-            .add(observer.clone(), spec(json!({ "topic": "orders" })))
-            .await
-            .unwrap();
+        f.add(&observer, json!({ "topic": "orders" })).await;
 
         let next_store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let next: Arc<dyn QueueAdapter> =
-            Arc::new(BuiltinAdapter::new(next_store, f.invoker.clone()));
+            Arc::new(BuiltinAdapter::new(next_store, f.engine.clone()));
         let previous = f.adapter.current().await;
         f.adapter.replace(next, "builtin").await;
         previous.shutdown().await;
-        f.handler.resubscribe_all().await;
+        f.subscribers.resubscribe_all().await;
 
         f.adapter
             .enqueue("orders", json!({ "after": "swap" }), None, None)
             .await;
         wait_until(|| async { observer.delivered().await.len() == 1 }).await;
-        f.handler.shutdown().await;
+        f.subscribers.shutdown().await;
     }
 }

@@ -36,7 +36,7 @@ mod tests {
 
     #[tokio::test]
     async fn handler_delegates_to_the_shared_binding_predicate() {
-        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let deps = crate::functions::observe::tests::disconnected_deps();
         for (model, allow_prune) in [("claude-opus-5-5", false), ("claude-mythos-5-1", true)] {
             let response = handle(
                 &deps,

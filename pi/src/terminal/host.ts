@@ -17,7 +17,7 @@ export async function exec(
   command: string,
   options: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {},
 ): Promise<ExecResult> {
-  const res = await iii.trigger<unknown, Partial<ExecResult>>({
+  const res = await iii.call<unknown, Partial<ExecResult>>({
     function_id: 'shell::exec',
     payload: {
       command,
@@ -56,7 +56,7 @@ export async function probe(iii: IIIClient, command: string): Promise<string> {
 }
 
 export async function mkdir(iii: IIIClient, path: string): Promise<void> {
-  await iii.trigger({
+  await iii.call({
     function_id: 'shell::fs::mkdir',
     payload: { path, parents: true },
     timeoutMs: 30_000,
@@ -64,7 +64,7 @@ export async function mkdir(iii: IIIClient, path: string): Promise<void> {
 }
 
 export async function writeFile(iii: IIIClient, path: string, content: string): Promise<void> {
-  await iii.trigger({
+  await iii.call({
     function_id: 'shell::fs::write',
     payload: { path, content, parents: true },
     timeoutMs: 60_000,
@@ -84,7 +84,7 @@ export async function writeFile(iii: IIIClient, path: string, content: string): 
  */
 export async function readFile(iii: IIIClient, path: string): Promise<string | null> {
   try {
-    const res = await iii.trigger<unknown, { content?: string }>({
+    const res = await iii.call<unknown, { content?: string }>({
       function_id: 'coder::read-file',
       payload: { path },
       timeoutMs: 30_000,

@@ -168,13 +168,16 @@ async fn main() -> Result<()> {
     let cfg = Arc::new(cfg);
     let port = configuration::new_port_cell(cfg.http_port);
 
-    // Trigger types register before functions (approval-gate/memory
-    // ordering convention). `None` = injectable UI disabled via config.
+    // The console::ui::* functions register with their observer hooks
+    // before the console's own UI observes them. `None` = injectable UI
+    // disabled via config.
     let (ui, ui_control) = if cfg.injectable_ui {
         let (registry, control) = ui_assets::start(&iii);
         (Some(registry), Some(control))
     } else {
-        tracing::info!("injectable_ui disabled — skipping console:* trigger types and /ui routes");
+        tracing::info!(
+            "injectable_ui disabled — skipping the console::ui::* functions and /ui routes"
+        );
         (None, None)
     };
 
@@ -207,7 +210,7 @@ async fn main() -> Result<()> {
     let server_handle = server::start(cfg.http_port, state.clone()).await?;
     let apply_lock: configuration::ApplyLock = Arc::new(tokio::sync::Mutex::new(()));
 
-    if let Err(error) = configuration::register_config_trigger(
+    configuration::register_config_observer(
         &iii,
         port.clone(),
         state.clone(),
@@ -215,25 +218,20 @@ async fn main() -> Result<()> {
         ui_control.clone(),
         workspace.clone(),
         apply_lock.clone(),
-    ) {
-        tracing::warn!(
-            %error,
-            "console configuration trigger registration failed; live updates are disabled"
-        );
-    } else {
-        // Close the fetch→subscribe race: an edit that landed while the server
-        // was binding is reconciled through the same serialized apply path.
-        configuration::apply_current_config(
-            &iii,
-            &port,
-            &state,
-            &server_handle.control,
-            ui_control.as_ref(),
-            &workspace,
-            &apply_lock,
-        )
-        .await;
-    }
+    );
+    // Close the fetch→observe race: an edit that landed while the server was
+    // binding, or before the observer became active, is reconciled through
+    // the same serialized apply path.
+    configuration::apply_current_config(
+        &iii,
+        &port,
+        &state,
+        &server_handle.control,
+        ui_control.as_ref(),
+        &workspace,
+        &apply_lock,
+    )
+    .await;
 
     let ready_addr = server_handle
         .current_addr()

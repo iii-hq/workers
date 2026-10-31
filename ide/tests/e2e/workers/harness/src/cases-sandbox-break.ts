@@ -126,7 +126,7 @@ export const SANDBOX_BREAK_CASES: TestCase[] = [
           channel.writer.stream.end(() => resolve());
         });
       });
-      const trigger = ctx.call('shell::fs::write', {
+      const write = ctx.call('shell::fs::write', {
         target: SB_TARGET,
         path: join(root, 'big.bin'),
         mode: '0644',
@@ -135,7 +135,7 @@ export const SANDBOX_BREAK_CASES: TestCase[] = [
       });
       await writePromise;
       channel.writer.close();
-      const r = await trigger;
+      const r = await write;
       expectEqual(
         r.bytes_written,
         oversize.length,

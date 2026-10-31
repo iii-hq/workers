@@ -7,7 +7,7 @@
 //! deserialization paths must both keep working:
 //!
 //! - `Deserialize` (serde derive below) — used when the worker parses
-//!   `SubscriberSpec.queue_config` out of a `TriggerConfig`'s JSON config.
+//!   `SubscriberSpec.queue_config` out of a `queue::on-message` observer's args.
 //! - [`SubscriberQueueConfig::from_value`] — a manual, permissive extractor
 //!   ported verbatim from the engine, matching its exact json keys
 //!   (including `maxPriority`, camelCase) and its "ignore unknown/malformed

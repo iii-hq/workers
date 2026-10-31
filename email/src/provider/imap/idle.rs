@@ -1,5 +1,5 @@
 //! Real-time IDLE listener. Server pushes `EXISTS` → we fetch the new UIDs and
-//! dispatch via [`crate::triggers::dispatcher`]. NO polling: the only timer
+//! dispatch via [`crate::events::dispatcher`]. NO polling: the only timer
 //! present is the RFC 2177 IDLE refresh (29 minutes), which is per-spec, not
 //! application-level polling.
 
@@ -12,8 +12,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 
 use super::Session;
-use crate::triggers::dispatcher::EventDispatcher;
-use crate::triggers::Event;
+use crate::events::dispatcher::EventDispatcher;
+use crate::events::Event;
 
 /// Park on IDLE until the server pushes data or shuts down. Returns the
 /// underlying connection error so the supervisor (`connection::run_until_shutdown`)
@@ -68,7 +68,7 @@ pub async fn run(
                                 uid,
                                 from = summary.from.as_deref().unwrap_or(""),
                                 subject = summary.subject.as_deref().unwrap_or(""),
-                                "imap IDLE: dispatching email::new-mail event"
+                                "imap IDLE: new message; dispatching email::on-new-mail"
                             );
                             dispatcher
                                 .dispatch(Event {

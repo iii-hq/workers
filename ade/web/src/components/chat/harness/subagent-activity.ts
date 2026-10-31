@@ -89,7 +89,7 @@ interface ResolveChildSessionInput {
   responseSessionId?: string | null
   requestSessionId?: string | null
   parentSessionId?: string
-  functionTriggerId?: string
+  functionCallId?: string
   conversations: readonly Conversation[]
 }
 
@@ -99,16 +99,16 @@ export function resolveChildSessionId({
   responseSessionId,
   requestSessionId,
   parentSessionId,
-  functionTriggerId,
+  functionCallId,
   conversations,
 }: ResolveChildSessionInput): string | null {
   if (responseSessionId) return responseSessionId
   if (requestSessionId) return requestSessionId
-  if (!functionTriggerId) return null
+  if (!functionCallId) return null
   return (
     conversations.find(
       (conversation) =>
-        conversation.parentFunctionCallId === functionTriggerId &&
+        conversation.parentFunctionCallId === functionCallId &&
         (!parentSessionId || conversation.parentId === parentSessionId),
     )?.id ?? null
   )

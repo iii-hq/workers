@@ -6,7 +6,7 @@ import { createAgentFeeds } from './agent-feed.js';
 import { ProductionBridgeClientFactory } from './bridge.js';
 import { ProductionCursorCliFactory } from './cli.js';
 import { type ConfigHolder, defaultConfig } from './config.js';
-import { bindConfigTrigger, fetchRuntime, registerCursorConfig } from './configuration.js';
+import { fetchRuntime, observeConfigChanges, registerCursorConfig } from './configuration.js';
 import { CursorProvider } from './provider.js';
 import { CursorWorker } from './run.js';
 
@@ -26,13 +26,13 @@ await registerCursorConfig(iii, defaultConfig());
 const holder: ConfigHolder = { current: await fetchRuntime(iii) };
 const factory = new ProductionBridgeClientFactory();
 const cliFactory = new ProductionCursorCliFactory();
-// Owned feeds: cursor::agent-event and cursor::raw-event (bind with { session_id }).
+// Event feeds: cursor::on-agent-event and cursor::on-raw-event (observe with args { session_id }).
 const { emit, emitRaw } = createAgentFeeds(iii);
 const worker = new CursorWorker(iii, () => holder.current, emit, emitRaw, factory, cliFactory);
 const provider = new CursorProvider(iii, () => holder.current, cliFactory);
 worker.register();
 provider.register();
-await bindConfigTrigger(iii, holder);
+await observeConfigChanges(iii, holder);
 
 console.log(`cursor worker connected to ${url}`);
 

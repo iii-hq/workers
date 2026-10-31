@@ -24,7 +24,7 @@ function fakeShell(
   const files: Record<string, string> = { ...options.files };
   const iii = {
     // biome-ignore lint/suspicious/noExplicitAny: minimal stand-in for the SDK client
-    trigger: async (request: any): Promise<any> => {
+    call: async (request: any): Promise<any> => {
       const payload = (request.payload ?? {}) as Record<string, unknown>;
       calls.push({ function_id: request.function_id, payload });
       switch (request.function_id) {
@@ -129,7 +129,7 @@ describe('preparing the terminal host', () => {
     const command = hooks.PreToolUse[0].hooks[0].command;
     // The CLI path is quoted: a `command -v` answer can carry a space, and the
     // payload expands exactly once so a prompt full of shell syntax stays data.
-    expect(command).toContain(`'/usr/bin/iii' trigger claude::terminal::activity --json "$(cat)"`);
+    expect(command).toContain(`'/usr/bin/iii' call claude::terminal::activity --json "$(cat)"`);
     expect(hooks.PreToolUse[0].matcher).toBe('*');
 
     // The iii runtime text arrives as a SKILL, from iii-directory.

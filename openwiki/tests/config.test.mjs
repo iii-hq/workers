@@ -11,7 +11,7 @@ test('config has sane defaults', () => {
 test('fetchConfig merges the stored value over defaults', async () => {
   let namespace;
   const worker = {
-    async trigger({ function_id, namespace: requestNamespace }) {
+    async call({ function_id, namespace: requestNamespace }) {
       namespace = requestNamespace;
       if (function_id === 'configuration::get') return { value: { max_parallel: 7 } };
       return {};
@@ -26,7 +26,7 @@ test('fetchConfig merges the stored value over defaults', async () => {
 test('registerConfig writes the schema in default', async () => {
   let request;
   await configuration.registerConfig({
-    async trigger(value) {
+    async call(value) {
       request = value;
       return {};
     },
@@ -38,7 +38,7 @@ test('registerConfig writes the schema in default', async () => {
 
 test('fetchConfig falls back to defaults when the config worker errors', async () => {
   const worker = {
-    async trigger() {
+    async call() {
       throw new Error('no configuration worker');
     },
   };

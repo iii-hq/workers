@@ -1,47 +1,80 @@
-//! The four trigger types this worker provides.
+//! The four observable functions this worker provides. Each is private (only
+//! this worker calls it), and its handler returns the event it is called
+//! with: that event is what observers observe.
 //!
-//! - `ios-simulator::device-changed` — a simulator appeared, disappeared or
-//!   changed state (booted, shut down, renamed), whoever caused it: this
+//! - `ios-simulator::on-device-changed` — a simulator appeared, disappeared
+//!   or changed state (booted, shut down, renamed), whoever caused it: this
 //!   worker, Xcode, or `simctl` in a terminal.
-//! - `ios-simulator::media-changed` — a screenshot or recording was saved or
-//!   deleted.
-//! - `ios-simulator::frame-event` — one live-view frame of a watched
-//!   simulator, delivered straight to the bindings (as `browser::frame-event`
-//!   does): the live view depends on no other worker.
-//! - `ios-simulator::activity` — a caller drove a simulator (a gesture, a
+//! - `ios-simulator::on-media-changed` — a screenshot or recording was saved
+//!   or deleted.
+//! - `ios-simulator::on-frame-event` — one live-view frame of a watched
+//!   simulator, delivered straight to its observers (as
+//!   `browser::on-frame-event` does): the live view depends on no other
+//!   worker.
+//! - `ios-simulator::on-activity` — a caller drove a simulator (a gesture, a
 //!   button, typing, an app, a screenshot, `ios-simulator::open`), so live
 //!   previews can surface it while an agent works.
 //!
-//! Config `{ tenant?, udid? }` narrows a binding. A binding without `tenant`
-//! sees every tenant (the operator's console); a shared deployment's
-//! `rbac-proxy` trigger-registration hook stamps `tenant` on bindings made by
-//! tenants. Delivery is fire-and-forget in the binding's namespace.
+//! The device, media and activity functions take no args: observers select
+//! calls with filters on `input.tenant` and `input.udid`. Frames take args
+//! `{ tenant?, udid? }`: each observer is filed under its tenant and udid
+//! (`*` for one it omits), and the bridge builds a frame only when an
+//! observer is filed under one of its four keys. An observer that names no
+//! tenant sees every tenant (the operator's console); a shared deployment's
+//! `rbac-proxy` observer-registration hook stamps the tenant on observers
+//! made by tenants (`args.tenant` for frames, an `input.tenant` filter for
+//! the rest). Calls are fire-and-forget.
 
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{TriggerAction, TriggerRequest, TriggerRequestWithMetadata};
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType};
+use iii_sdk::{Call, CallAction, CallRequest, IIIClient, Match, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
-pub const DEVICE_CHANGED: &str = "ios-simulator::device-changed";
-pub const MEDIA_CHANGED: &str = "ios-simulator::media-changed";
-pub const FRAME_EVENT: &str = "ios-simulator::frame-event";
-pub const ACTIVITY: &str = "ios-simulator::activity";
+pub const ON_DEVICE_CHANGED_FN: &str = "ios-simulator::on-device-changed";
+pub const ON_MEDIA_CHANGED_FN: &str = "ios-simulator::on-media-changed";
+pub const ON_FRAME_EVENT_FN: &str = "ios-simulator::on-frame-event";
+pub const ON_ACTIVITY_FN: &str = "ios-simulator::on-activity";
 
+/// The args of `ios-simulator::on-frame-event`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BindingConfig {
-    /// Only this tenant's events. Omit for every tenant.
+pub struct FrameArgs {
+    /// Only this tenant's frames. Omit for every tenant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
-    /// Only this simulator's events.
+    /// Only this simulator's frames.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub udid: Option<String>,
+}
+
+/// Stands for an omitted tenant or udid in a key. Tenants are slugs and
+/// udids are UUIDs, so neither is ever `*` or holds `|`.
+const ANY: &str = "*";
+
+fn key(tenant: &str, udid: &str) -> String {
+    format!("{tenant}|{udid}")
+}
+
+/// The key an observer of frames is filed under.
+pub fn observer_key(args: &FrameArgs) -> String {
+    key(
+        args.tenant.as_deref().unwrap_or(ANY),
+        args.udid.as_deref().unwrap_or(ANY),
+    )
+}
+
+/// The keys a frame of `tenant`'s simulator `udid` matches: four lookups,
+/// whatever the number of observers.
+pub fn frame_keys(tenant: &str, udid: &str) -> Vec<String> {
+    vec![
+        key(tenant, udid),
+        key(tenant, ANY),
+        key(ANY, udid),
+        key(ANY, ANY),
+    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -99,145 +132,124 @@ pub struct ActivityEvent {
     pub timestamp: i64,
 }
 
-type Bindings = Arc<RwLock<HashMap<String, (TriggerConfig, BindingConfig)>>>;
-
-struct BindingTable(Bindings);
-
-#[async_trait]
-impl TriggerHandler for BindingTable {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let raw = if config.config.is_null() {
-            serde_json::json!({})
-        } else {
-            config.config.clone()
-        };
-        let filter: BindingConfig = serde_json::from_value(raw)
-            .map_err(|e| Error::Handler(format!("invalid ios-simulator trigger config: {e}")))?;
-        self.0
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(config.id.clone(), (config, filter));
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.0
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&config.id);
-        Ok(())
-    }
-}
-
-pub fn matches(filter: &BindingConfig, tenant: &str, udid: &str) -> bool {
-    filter.tenant.as_deref().is_none_or(|t| t == tenant)
-        && filter.udid.as_deref().is_none_or(|u| u == udid)
-}
-
 pub struct Events {
     iii: Arc<IIIClient>,
-    device: Bindings,
-    media: Bindings,
-    frame: Bindings,
-    activity: Bindings,
 }
 
 impl Events {
-    /// Register the trigger types. Run before any function can emit.
+    /// Register the four functions. Run before any function can emit.
     pub fn register(iii: &Arc<IIIClient>) -> Arc<Self> {
-        let events = Arc::new(Self {
-            iii: iii.clone(),
-            device: Bindings::default(),
-            media: Bindings::default(),
-            frame: Bindings::default(),
-            activity: Bindings::default(),
-        });
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                DEVICE_CHANGED,
-                "A simulator was added, removed, booted or shut down (by this worker, Xcode or simctl). Config: { tenant?, udid? }.",
-                BindingTable(events.device.clone()),
-            )
-            .trigger_request_format::<BindingConfig>()
-            .call_request_format::<DeviceChangedEvent>(),
+        iii.register_function(
+            ON_DEVICE_CHANGED_FN,
+            RegisterFunction::new(|event: DeviceChangedEvent| Ok::<_, Error>(event))
+                .description(
+                    "A simulator was added, removed, booted or shut down (by this worker, Xcode or simctl). \
+                     No args; filter on input.tenant and input.udid.",
+                )
+                .private(),
         );
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                MEDIA_CHANGED,
-                "A simulator screenshot or recording was saved or deleted. Config: { tenant?, udid? }.",
-                BindingTable(events.media.clone()),
-            )
-            .trigger_request_format::<BindingConfig>()
-            .call_request_format::<MediaChangedEvent>(),
+        iii.register_function(
+            ON_MEDIA_CHANGED_FN,
+            RegisterFunction::new(|event: MediaChangedEvent| Ok::<_, Error>(event))
+                .description(
+                    "A simulator screenshot or recording was saved or deleted. \
+                     No args; filter on input.tenant and input.udid.",
+                )
+                .private(),
         );
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                FRAME_EVENT,
-                "A live-view frame of a simulator someone is watching (ios-simulator::watch). Config: { tenant?, udid? }.",
-                BindingTable(events.frame.clone()),
-            )
-            .trigger_request_format::<BindingConfig>()
-            .call_request_format::<FrameEvent>(),
+        iii.register_function(
+            ON_ACTIVITY_FN,
+            RegisterFunction::new(|event: ActivityEvent| Ok::<_, Error>(event))
+                .description(
+                    "A caller drove a simulator (gesture, button, typing, app, screenshot, ios-simulator::open). \
+                     No args; filter on input.tenant and input.udid.",
+                )
+                .private(),
         );
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                ACTIVITY,
-                "A caller drove a simulator (gesture, button, typing, app, screenshot, ios-simulator::open). Config: { tenant?, udid? }.",
-                BindingTable(events.activity.clone()),
-            )
-            .trigger_request_format::<BindingConfig>()
-            .call_request_format::<ActivityEvent>(),
+        // Set before registering, so it files every observer. The engine
+        // validated the args against `FrameArgs`; args that do not parse
+        // file the observer under no key.
+        iii.on_observer_match_for(
+            ON_FRAME_EVENT_FN,
+            Match::keys(
+                |obs| {
+                    obs.args::<FrameArgs>()
+                        .ok()
+                        .map(|args| observer_key(&args))
+                        .into()
+                },
+                |call| {
+                    let input = &call.input;
+                    frame_keys(
+                        input["tenant"].as_str().unwrap_or_default(),
+                        input["udid"].as_str().unwrap_or_default(),
+                    )
+                    .into()
+                },
+            ),
         );
-        events
+        iii.register_function(
+            ON_FRAME_EVENT_FN,
+            RegisterFunction::new(|event: FrameEvent| Ok::<_, Error>(event))
+                .description(
+                    "A live-view frame of a simulator someone is watching (ios-simulator::watch). \
+                     Args: { tenant?, udid? }. Observe with max_in_flight: 1 so a slow viewer drops frames.",
+                )
+                .args_format::<FrameArgs>()
+                .private(),
+        );
+        Arc::new(Self { iii: iii.clone() })
     }
 
     pub fn device(&self, event: DeviceChangedEvent) {
-        self.deliver(&self.device, &event.tenant, &event.udid, &event);
+        self.emit(ON_DEVICE_CHANGED_FN, &event);
     }
 
     pub fn media(&self, event: MediaChangedEvent) {
-        self.deliver(&self.media, &event.tenant, &event.udid, &event);
+        self.emit(ON_MEDIA_CHANGED_FN, &event);
+    }
+
+    /// Whether a frame of `tenant`'s simulator `udid` would reach an
+    /// observer. The bridge builds a frame only then.
+    pub fn frame_observed(&self, tenant: &str, udid: &str) -> bool {
+        if !self.iii.is_observed(ON_FRAME_EVENT_FN) {
+            return false;
+        }
+        let call = Call {
+            input: json!({ "tenant": tenant, "udid": udid }),
+            ..Call::default()
+        };
+        self.iii.is_observed_for(ON_FRAME_EVENT_FN, &call)
     }
 
     pub fn frame(&self, event: FrameEvent) {
-        self.deliver(&self.frame, &event.tenant, &event.udid, &event);
+        self.emit(ON_FRAME_EVENT_FN, &event);
     }
 
     pub fn activity(&self, event: ActivityEvent) {
-        self.deliver(&self.activity, &event.tenant, &event.udid, &event);
+        self.emit(ON_ACTIVITY_FN, &event);
     }
 
-    fn deliver<T: Serialize>(&self, table: &Bindings, tenant: &str, udid: &str, event: &T) {
-        let targets: Vec<TriggerConfig> = table
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .filter(|(_, filter)| matches(filter, tenant, udid))
-            .map(|(binding, _)| binding.clone())
-            .collect();
-        if targets.is_empty() {
+    /// One fire-and-forget call of `function_id`; iii delivers it to the
+    /// observers that want it.
+    fn emit<T: Serialize>(&self, function_id: &'static str, event: &T) {
+        // Before serializing: an event nobody observes is never encoded.
+        if !self.iii.is_observed(function_id) {
             return;
         }
-        // After the binding check: a frame nobody watches is never encoded.
         let Ok(payload) = serde_json::to_value(event) else {
             return;
         };
         let iii = self.iii.clone();
         tokio::spawn(async move {
-            for binding in targets {
-                let mut request: TriggerRequestWithMetadata = TriggerRequest {
-                    function_id: binding.function_id.clone(),
-                    payload: payload.clone(),
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                }
-                .into();
-                if let Some(namespace) = &binding.namespace {
-                    request = request.namespace(namespace.clone());
-                }
-                if let Err(e) = iii.trigger(request).await {
-                    tracing::warn!(function_id = %binding.function_id, error = %e, "event delivery failed");
-                }
+            let request = CallRequest {
+                function_id: function_id.to_string(),
+                payload,
+                action: Some(CallAction::Void),
+                timeout_ms: None,
+            };
+            if let Err(e) = iii.call(request).await {
+                tracing::warn!(function_id, error = %e, "event call failed");
             }
         });
     }
@@ -247,27 +259,44 @@ impl Events {
 mod tests {
     use super::*;
 
+    fn args(tenant: Option<&str>, udid: Option<&str>) -> FrameArgs {
+        FrameArgs {
+            tenant: tenant.map(str::to_string),
+            udid: udid.map(str::to_string),
+        }
+    }
+
+    /// A frame reaches an observer when the observer's key is among the
+    /// frame's: the tenant and udid it named, `*` for one it omitted.
     #[test]
-    fn filters_narrow_by_tenant_and_udid() {
-        let any = BindingConfig::default();
-        assert!(matches(&any, "acme", "U1"));
-        let acme = BindingConfig {
-            tenant: Some("acme".into()),
-            udid: None,
+    fn frame_keys_narrow_by_tenant_and_udid() {
+        let wants = |args: &FrameArgs, tenant: &str, udid: &str| {
+            frame_keys(tenant, udid).contains(&observer_key(args))
         };
-        assert!(matches(&acme, "acme", "U1"));
-        assert!(!matches(&acme, "globex", "U1"));
-        let one = BindingConfig {
-            tenant: Some("acme".into()),
-            udid: Some("U1".into()),
-        };
-        assert!(!matches(&one, "acme", "U2"));
+        assert!(wants(&args(None, None), "acme", "U1"));
+        let acme = args(Some("acme"), None);
+        assert!(wants(&acme, "acme", "U1"));
+        assert!(!wants(&acme, "globex", "U1"));
+        let one = args(Some("acme"), Some("U1"));
+        assert!(wants(&one, "acme", "U1"));
+        assert!(!wants(&one, "acme", "U2"));
+        let any_tenant = args(None, Some("U1"));
+        assert!(wants(&any_tenant, "globex", "U1"));
+        assert!(!wants(&any_tenant, "globex", "U2"));
     }
 
     #[test]
-    fn misspelled_filter_keys_are_refused() {
-        assert!(
-            serde_json::from_value::<BindingConfig>(serde_json::json!({ "tenat": "x" })).is_err()
-        );
+    fn misspelled_args_are_refused() {
+        assert!(serde_json::from_value::<FrameArgs>(serde_json::json!({ "tenat": "x" })).is_err());
+    }
+
+    /// The args schema the engine validates observers against.
+    #[test]
+    fn frame_args_schema_is_closed() {
+        let schema = serde_json::to_value(schemars::schema_for!(FrameArgs)).unwrap();
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(schema["properties"]["tenant"].is_object());
+        assert!(schema["properties"]["udid"].is_object());
+        assert!(schema.get("required").is_none());
     }
 }

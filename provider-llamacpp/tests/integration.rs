@@ -3,8 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient};
+use iii_sdk::{register_worker, CallRequest, IIIClient};
 use llm_router::register::register_router;
 use provider_llamacpp::register::register_provider;
 use serde_json::{json, Value};
@@ -21,7 +20,7 @@ async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, iii_sdk::errors::Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
@@ -200,7 +199,7 @@ async fn configure_stub_no_key(router_iii: &IIIClient, stub_url: &str) {
 
 /// Call `provider::llamacpp::refresh_models`, retrying while the router's
 /// in-memory configuration snapshot has not yet absorbed the test's
-/// `configuration::set` (the engine delivers the configuration trigger
+/// `configuration::set` (`configuration::on-updated` reaches the router
 /// asynchronously, so an immediate refresh can still resolve the pre-set
 /// default api_url and fail to connect). Unlike the keyed cloud providers —
 /// whose refresh no-ops until a credential is visible — llamacpp's
@@ -324,7 +323,7 @@ async fn chat_streams_end_to_end_with_no_credential_and_no_authorization_header(
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -381,7 +380,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -449,7 +448,7 @@ async fn provider_redeclares_on_router_ready() {
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
 
     // simulate a router restart that LOST its registry: wipe the persisted
-    // record so only a real re-declare (router::ready → on_router_ready →
+    // record so only a real re-declare (router::on-ready → on_router_ready →
     // declare_and_refresh) can bring the provider back — a durable-registry
     // restore alone must not satisfy this test.
     router_iii.shutdown();
@@ -466,7 +465,7 @@ async fn provider_redeclares_on_router_ready() {
         .await
         .expect("router reboots");
 
-    // router::ready trigger → provider re-declares with its persisted token
+    // router::on-ready → provider re-declares with its persisted token
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let list = call(&router2, "router::provider::list", json!({}))

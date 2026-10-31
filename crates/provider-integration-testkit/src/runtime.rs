@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 use iii_sdk::errors::Error as IiiError;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -124,7 +123,6 @@ impl Engine {
                 )),
             )),
             callers: secrets::access::CallerDirectory::new(iii.clone()),
-            subscribers: secrets::events::Subscribers::default(),
             detector: secrets::detect::Detector {
                 process_env: false,
                 dotenv: None,
@@ -266,7 +264,7 @@ pub(crate) async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, IiiError> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,

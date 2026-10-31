@@ -13,7 +13,7 @@ export async function loadSession(
   iii: IIIClient,
   session_id: string,
 ): Promise<SessionRecord | null> {
-  const res = await iii.trigger<unknown, SessionRecord | null>({
+  const res = await iii.call<unknown, SessionRecord | null>({
     function_id: 'state::get',
     payload: { scope: SCOPE, key: session_id },
   });
@@ -21,14 +21,14 @@ export async function loadSession(
 }
 
 export async function saveSession(iii: IIIClient, record: SessionRecord): Promise<void> {
-  await iii.trigger({
+  await iii.call({
     function_id: 'state::set',
     payload: { scope: SCOPE, key: record.session_id, value: record },
   });
 }
 
 export async function listSessions(iii: IIIClient): Promise<SessionRecord[]> {
-  const res = await iii.trigger<unknown, SessionRecord[] | null>({
+  const res = await iii.call<unknown, SessionRecord[] | null>({
     function_id: 'state::list',
     payload: { scope: SCOPE },
   });

@@ -172,7 +172,7 @@ export function SandboxPage({
         <EmptyState
           icon={Box}
           title="no sandbox daemon on this engine"
-          description="sandbox::list is not registered. Add the iii-sandbox daemon (`iii trigger compose::add worker=iii-sandbox`) and the fleet appears here — this page keeps checking."
+          description="sandbox::list is not registered. Add the iii-sandbox daemon (`iii call compose::add worker=iii-sandbox`) and the fleet appears here — this page keeps checking."
         />
       )
     }
@@ -249,8 +249,8 @@ export function SandboxPage({
               className="cr-page-live"
               title={
                 live
-                  ? 'push only: fleet snapshots stream in on sandbox-code-runner::event'
-                  : 'live binding unavailable — use refresh'
+                  ? 'push only: fleet snapshots arrive through the observer of sandbox-code-runner::on-event'
+                  : 'observer unavailable — use refresh'
               }
             >
               <StatusDot tone={live ? 'accent' : 'ink'} pulse={live} />

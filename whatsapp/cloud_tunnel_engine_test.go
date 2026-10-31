@@ -11,23 +11,26 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-// This provider exercises the actual engine namespace and subscription wiring
+// This provider exercises the actual engine namespace and observer wiring
 // without launching cloudflared or publishing a test service on the Internet.
 type smokeTunnelProvider struct {
-	mu       sync.Mutex
-	client   *iii.Client
-	bindings map[string]iii.TriggerConfig
-	leases   map[string]map[string]any
-	status   string
-	origin   any
-	released []string
+	mu sync.Mutex
+	// observers maps each observer of quick-tunnel::on-changed to its target.
+	observers map[string]string
+	client    *iii.Client
+	leases    map[string]map[string]any
+	status    string
+	origin    any
+	released  []string
 }
+
+const smokeTunnelChangedFn = "quick-tunnel::on-changed"
 
 func newSmokeTunnelProvider(t *testing.T, engine, engineURL string) *smokeTunnelProvider {
 	t.Helper()
 	p := &smokeTunnelProvider{
-		client:   iii.New(engineURL, iii.WithName("smoke-quick-tunnel"), iii.WithNamespace(smokeNamespace)),
-		bindings: map[string]iii.TriggerConfig{},
+		client:    iii.New(engineURL, iii.WithName("smoke-quick-tunnel"), iii.WithNamespace(smokeNamespace)),
+		observers: map[string]string{},
 		leases: map[string]map[string]any{"github-existing": {
 			"lease_id": "github-existing", "consumer_id": "github:existing", "tunnel_id": "webhooks",
 			"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
@@ -40,9 +43,9 @@ func newSmokeTunnelProvider(t *testing.T, engine, engineURL string) *smokeTunnel
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = p.client.Close() })
-	register := func(id string, handler iii.Handler) {
+	register := func(id string, handler iii.Handler, opts ...iii.RegisterFunctionOptions) {
 		t.Helper()
-		if err := p.client.RegisterFunction(id, handler); err != nil {
+		if _, err := p.client.RegisterFunction(id, handler, opts...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -87,11 +90,21 @@ func newSmokeTunnelProvider(t *testing.T, engine, engineURL string) *smokeTunnel
 		}
 		return map[string]bool{"released": exists}, nil
 	})
-	if err := p.client.RegisterTriggerType("quick-tunnel::changed", "Synthetic tunnel lifecycle", p); err != nil {
-		t.Fatal(err)
-	}
+	// Hooks by id before registering, so they see every observer.
+	p.client.OnObserverAddedFor(smokeTunnelChangedFn, func(_ context.Context, obs *iii.Observer) error {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.observers[obs.ID] = obs.Target
+		return nil
+	})
+	p.client.OnObserverRemovedFor(smokeTunnelChangedFn, func(_ context.Context, obs *iii.Observer) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		delete(p.observers, obs.ID)
+	})
+	register(smokeTunnelChangedFn, iii.Identity, iii.FunctionOptions{Description: "Synthetic tunnel lifecycle", Private: true})
 	smokeWait(t, "synthetic tunnel provider", func() bool {
-		_, err := smokeTrigger(engine, engineURL, smokeNamespace, "quick-tunnel::status", map[string]any{})
+		_, err := smokeCall(engine, engineURL, smokeNamespace, "quick-tunnel::status", map[string]any{})
 		return err == nil
 	})
 	return p
@@ -112,18 +125,6 @@ func (p *smokeTunnelProvider) snapshot() map[string]any {
 		"prerequisites": map[string]any{"cloudflared": map[string]any{"found": true, "path": "/test/cloudflared", "error": nil}},
 	}
 }
-func (p *smokeTunnelProvider) RegisterTrigger(_ context.Context, cfg iii.TriggerConfig) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.bindings[cfg.ID] = cfg
-	return nil
-}
-func (p *smokeTunnelProvider) UnregisterTrigger(_ context.Context, cfg iii.TriggerConfig) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.bindings, cfg.ID)
-	return nil
-}
 func (p *smokeTunnelProvider) change(t *testing.T, state string, origin any) {
 	t.Helper()
 	p.mu.Lock()
@@ -132,28 +133,23 @@ func (p *smokeTunnelProvider) change(t *testing.T, state string, origin any) {
 	p.mu.Unlock()
 	p.deliver(t, state, origin)
 }
+
+// deliver calls the synthetic source once; iii delivers the change to every
+// observer whose filters match it.
 func (p *smokeTunnelProvider) deliver(t *testing.T, state string, origin any) {
 	t.Helper()
 	p.mu.Lock()
-	bindings := make([]iii.TriggerConfig, 0, len(p.bindings))
-	for _, binding := range p.bindings {
-		bindings = append(bindings, binding)
-	}
+	observed := len(p.observers)
 	p.mu.Unlock()
-	if len(bindings) == 0 {
-		t.Fatal("WhatsApp did not subscribe to tunnel changes")
+	if observed == 0 {
+		t.Fatal("WhatsApp does not observe tunnel changes")
 	}
-	for _, binding := range bindings {
-		if binding.Namespace != smokeNamespace {
-			t.Fatalf("tunnel callback escaped namespace: %s", binding.Namespace)
-		}
-		data, _ := json.Marshal(map[string]any{"tunnel_id": "webhooks", "status": state, "public_url": origin, "generation": "test-generation", "error": nil})
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := p.client.Trigger(ctx, iii.TriggerRequest{FunctionID: binding.FunctionID, Namespace: binding.Namespace, Data: data, Timeout: 5 * time.Second})
-		cancel()
-		if err != nil {
-			t.Fatalf("tunnel event dispatch: %v", err)
-		}
+	data, _ := json.Marshal(map[string]any{"tunnel_id": "webhooks", "status": state, "public_url": origin, "generation": "test-generation", "error": nil})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, err := p.client.Call(ctx, iii.CallRequest{FunctionID: smokeTunnelChangedFn, Payload: data, Timeout: 5 * time.Second})
+	cancel()
+	if err != nil {
+		t.Fatalf("tunnel change: %v", err)
 	}
 }
 
@@ -161,7 +157,7 @@ func smokeDevelopmentTunnel(t *testing.T, engine, engineURL string, p *smokeTunn
 	t.Helper()
 	call := func(operation string) map[string]any {
 		t.Helper()
-		result, err := smokeTrigger(engine, engineURL, smokeNamespace, "whatsapp::cloud::tunnel::"+operation, map[string]any{})
+		result, err := smokeCall(engine, engineURL, smokeNamespace, "whatsapp::cloud::tunnel::"+operation, map[string]any{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -170,7 +166,23 @@ func smokeDevelopmentTunnel(t *testing.T, engine, engineURL string, p *smokeTunn
 	if got := call("status"); got["enabled"] != false || got["webhook_url"] != nil {
 		t.Fatalf("page load started a tunnel: %v", got)
 	}
-	smokeWait(t, "WhatsApp tunnel subscription", func() bool { p.mu.Lock(); defer p.mu.Unlock(); return len(p.bindings) > 0 })
+	smokeWait(t, "WhatsApp tunnel observer", func() bool { p.mu.Lock(); defer p.mu.Unlock(); return len(p.observers) > 0 })
+	p.mu.Lock()
+	observers := make(map[string]string, len(p.observers))
+	for id, target := range p.observers {
+		observers[id] = target
+	}
+	p.mu.Unlock()
+	for id, target := range observers {
+		info, err := smokeCall(engine, engineURL, "default", "engine::observers::get", map[string]any{"id": id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolved, _ := info["target"].(map[string]any)
+		if target != "whatsapp::cloud::tunnel::changed" || resolved["namespace"] != smokeNamespace {
+			t.Fatalf("tunnel observer target escaped its namespace: %v", info)
+		}
+	}
 	started := call("start")
 	if started["enabled"] != true || started["webhook_url"] != nil {
 		t.Fatalf("unready tunnel advertised URL: %v", started)

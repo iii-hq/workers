@@ -15,7 +15,7 @@ the verdict, the per-page OCR decision, and the extracted markdown.
 ## Install
 
 ```bash
-iii trigger compose::add worker=pdf
+iii call compose::add worker=pdf
 ```
 
 ## Quickstart
@@ -25,15 +25,14 @@ doing: extraction on a scan returns nothing, and without the verdict an empty
 result is indistinguishable from an empty document.
 
 ```rust
-use iii_sdk::{register_worker, InitOptions};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    let verdict = iii.trigger(TriggerRequest {
+    let verdict = iii.call(CallRequest {
         function_id: "pdf::classify".into(),
         payload: json!({ "path": "/tmp/report.pdf" }),
         action: None,
@@ -42,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     // { "document_type": "text_based", "confidence": 1.0, "page_count": 40,
     //   "pages_needing_ocr": [], "ocr_reasons": [], "elapsed_ms": 18, … }
 
-    let markdown = iii.trigger(TriggerRequest {
+    let markdown = iii.call(CallRequest {
         function_id: "pdf::to-markdown".into(),
         payload: json!({ "path": "/tmp/report.pdf", "pages": [1, 2, 3] }),
         action: None,
@@ -117,7 +116,8 @@ comes back, just from the wrong end of the page.
 ## Configuration
 
 Configuration lives in the `configuration` worker under the id `pdf` and every
-field hot-reloads. Nothing here needs a restart.
+field hot-reloads: the worker observes `configuration::on-updated` for its
+entry and re-reads it. Nothing here needs a restart.
 
 ```yaml
 max_input_bytes: 268435456   # largest document accepted, before parsing

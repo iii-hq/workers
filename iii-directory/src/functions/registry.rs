@@ -13,7 +13,7 @@
 //!   * `directory::registry::workers::info`  — a pre-install card for
 //!     one worker. Wraps the registry-side fields in a top-level
 //!     `worker` envelope (same shape as the list rows), with
-//!     `api_reference` (public function/trigger names + descriptions,
+//!     `api_reference` (public function names + descriptions,
 //!     schemas dropped — the contract comes from `engine::functions::info`
 //!     after installing) and `skills_tree` as surface-specific extras;
 //!     `readme` only when the caller asks (`readme: true`), it runs
@@ -199,24 +199,11 @@ pub struct ApiReferenceFunction {
     pub metadata: Option<Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
-pub struct ApiReferenceTrigger {
-    pub name: String,
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invocation_schema: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub return_schema: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, Default, JsonSchema)]
 pub struct ApiReference {
+    /// Every public function, the event sources workers observe included.
     #[serde(default)]
     pub functions: Vec<ApiReferenceFunction>,
-    #[serde(default)]
-    pub triggers: Vec<ApiReferenceTrigger>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
@@ -264,19 +251,6 @@ impl WorkerInfoOutput {
             function.request_schema = None;
             function.response_schema = None;
             function.metadata = None;
-        }
-        self.api_reference.triggers.retain(|trigger| {
-            trigger
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("internal"))
-                .and_then(Value::as_bool)
-                != Some(true)
-        });
-        for trigger in &mut self.api_reference.triggers {
-            trigger.invocation_schema = None;
-            trigger.return_schema = None;
-            trigger.metadata = None;
         }
         self
     }
@@ -391,8 +365,8 @@ fn register_worker_info(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: Registr
         })
         .description(
             "Preview one registry worker before installing: envelope (version, \
-             kind, dependencies, config), its public function and trigger names \
-             with descriptions, and skill file paths. Schemas are omitted — \
+             kind, dependencies, config), its public function names with \
+             descriptions (the event sources it hosts included), and skill file paths. Schemas are omitted — \
              install, then read contracts with engine::functions::info. Pass \
              `readme: true` for the README prose; `version` or `tag` (default tag \
              \"latest\").",
@@ -679,13 +653,8 @@ pub fn parse_worker_info_response(
         .get("functions")
         .cloned()
         .unwrap_or_else(|| Value::Array(Vec::new()));
-    let triggers = detail
-        .get("triggers")
-        .cloned()
-        .unwrap_or_else(|| Value::Array(Vec::new()));
     let api_reference = serde_json::from_value::<ApiReference>(serde_json::json!({
         "functions": functions,
-        "triggers": triggers,
     }))
     .unwrap_or_default();
 
@@ -928,18 +897,14 @@ mod tests {
                   "metadata": {} },
                 { "name": "browser::ui-content", "description": "Serve UI assets.",
                   "metadata": { "internal": true } },
-                { "name": "browser::on-config-change", "description": "Reload settings." }
-            ],
-            "triggers": [
-                { "name": "browser::on-download", "description": "A download finished.",
-                  "invocation_schema": { "type": "object" }, "return_schema": { "type": "object" } },
-                { "name": "browser::ui-tick", "description": "Internal UI refresh.",
-                  "metadata": { "internal": true } }
+                { "name": "browser::on-config-change", "description": "Reload settings." },
+                { "name": "browser::on-download-changed", "description": "A download changed.",
+                  "request_schema": { "type": "object" }, "response_schema": { "type": "object" } }
             ]
         } });
         let full = parse_worker_info_response("browser", &detail, &json!({}));
         assert!(full.readme.is_some());
-        assert_eq!(full.api_reference.functions.len(), 3);
+        assert_eq!(full.api_reference.functions.len(), 4);
 
         let card = full.into_card(false);
         assert!(card.readme.is_none());
@@ -949,19 +914,13 @@ mod tests {
             .iter()
             .map(|function| function.name.as_str())
             .collect();
-        assert_eq!(names, ["browser::fetch"]);
+        assert_eq!(names, ["browser::fetch", "browser::on-download-changed"]);
         let function = &card.api_reference.functions[0];
         assert_eq!(function.description.as_deref(), Some("Fetch a page."));
         assert!(function.request_schema.is_none() && function.response_schema.is_none());
         assert!(function.metadata.is_none());
-        assert_eq!(
-            card.api_reference.triggers.len(),
-            1,
-            "internal triggers are dropped"
-        );
-        let trigger = &card.api_reference.triggers[0];
-        assert_eq!(trigger.name, "browser::on-download");
-        assert!(trigger.invocation_schema.is_none() && trigger.return_schema.is_none());
+        let source = &card.api_reference.functions[1];
+        assert!(source.request_schema.is_none() && source.response_schema.is_none());
         // Dropped schemas leave the wire entirely.
         let wire = serde_json::to_value(&card).unwrap();
         assert!(wire["api_reference"]["functions"][0]
@@ -1000,14 +959,6 @@ mod tests {
                         "request_schema": { "type": "object" },
                         "response_schema": { "type": "object" }
                     }
-                ],
-                "triggers": [
-                    {
-                        "name": "on-bounce",
-                        "description": "Fires when a delivery bounces.",
-                        "invocation_schema": { "type": "object" },
-                        "return_schema": { "type": "object" }
-                    }
                 ]
             }
         });
@@ -1039,8 +990,6 @@ mod tests {
         assert!(out.readme.as_deref().unwrap().contains("# Resend"));
         assert_eq!(out.api_reference.functions.len(), 1);
         assert_eq!(out.api_reference.functions[0].name, "send");
-        assert_eq!(out.api_reference.triggers.len(), 1);
-        assert_eq!(out.api_reference.triggers[0].name, "on-bounce");
         assert_eq!(out.skills_tree.skills.len(), 2);
         assert_eq!(out.skills_tree.skills[0].path, "index.md");
     }
@@ -1070,8 +1019,7 @@ mod tests {
             "total_downloads": 0,
             "dependencies": [],
             "author": null,
-            "functions": [{ "name": "f1" }],
-            "triggers": []
+            "functions": [{ "name": "f1" }]
         });
         let skills = json!({ "skills": [], "prompts": [] });
         let out = parse_worker_info_response("legacy", &detail, &skills);

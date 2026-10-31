@@ -11,8 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -38,6 +37,8 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "document::on-config-change";
+/// The engine's configuration change events, hosted in `default`.
+const CONFIG_UPDATED_FN: &str = "configuration::on-updated";
 const CONFIG_RETRIES: u32 = 3;
 /// Base backoff between configuration RPC retries, multiplied by the attempt
 /// number for a linear backoff.
@@ -69,7 +70,7 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -95,7 +96,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// `Ok(None)` when the entry does not exist. The engine's missing-entry codes
 /// vary in case, so match case-insensitively.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -125,10 +126,13 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger. The handler re-fetches via `configuration::get` and ignores the
-/// trigger payload, so a direct call can never inject config.
-pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), Error> {
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` with it, filtered to the
+/// `configuration:updated` events of this worker's entry. The handler
+/// re-fetches via `configuration::get` and ignores the event, so a direct call
+/// can never inject config. The observer lives as long as the worker's
+/// connection; dropping the returned handle does not dispose it.
+pub fn register_config_observer(iii: &IIIClient, cell: ConfigCell) -> ObserverHandle {
     let cell_for_fn = cell.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -148,20 +152,25 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(CONFIG_UPDATED_FN)
+            .filters(config_updated_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    )
+}
+
+/// Selects the `configuration:updated` events of the entry `id`.
+fn config_updated_filters(id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 /// Reload from the AUTHORITATIVE configuration.
 ///
-/// The caller-supplied trigger payload is deliberately ignored:
+/// The delivered event is deliberately ignored:
 /// `document::on-config-change` is a bus function, so trusting a `new_value` in
 /// the payload would let any caller lift the size ceiling without touching
 /// persisted state.
@@ -201,7 +210,7 @@ fn is_not_found(error: &str) -> bool {
         || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -209,8 +218,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -284,6 +293,17 @@ mod tests {
         ));
         assert!(!is_not_found("connection reset by peer"));
         assert!(!is_not_found("timed out"));
+    }
+
+    #[test]
+    fn config_observer_selects_this_entrys_updates() {
+        assert_eq!(
+            config_updated_filters("document"),
+            json!({
+                "input.id": { "$eq": "document" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
     }
 
     #[tokio::test]

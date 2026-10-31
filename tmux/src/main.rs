@@ -134,9 +134,8 @@ async fn main() -> Result<()> {
         }),
     );
     terminal::register(&iii, terminals.clone());
-    events::register_changed_trigger(&iii, monitor.clone());
-    let reload =
-        configuration::bind_reload(&iii, config).context("binding tmux configuration reload")?;
+    events::register(&iii, monitor.clone());
+    let reload = configuration::bind_reload(&iii, config);
     reload.run().await;
     ui::register(&iii);
 

@@ -114,7 +114,7 @@
           },
           "metadata": {
             "additionalProperties": true,
-            "description": "App-defined; the tenancy hook (e.g. `{ \"owner\": \"u_1\" }`) that `session::list` and every trigger config can filter on.",
+            "description": "App-defined; the tenancy hook (e.g. `{ \"owner\": \"u_1\" }`) that `session::list` filters on and every session event carries as `session_metadata`.",
             "type": [
               "object",
               "null"

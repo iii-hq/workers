@@ -1,6 +1,6 @@
 import type { ModelId } from '@/types/chat'
 import type { HarnessFileBlock, HarnessImageBlock } from './harness-send'
-import type { SessionTriggerInfo } from './triggers'
+import type { SessionObserverInfo } from './observers'
 
 /**
  * The streaming contract every ChatBackend honors. The order is:
@@ -25,13 +25,13 @@ export type StreamEvent =
       input: unknown
       pendingApproval?: boolean
       /** iii function_call_id — needed to resolve approval. */
-      functionTriggerId?: string
+      functionCallId?: string
       /** iii session_id owning this call — needed to resolve approval. */
       sessionId?: string
       /**
        * Present when the pending approval is a filesystem-access request
        * (`PendingApprovalRecord.kind === 'filesystem_access'`) rather than a
-       * plain function-trigger approval. Drives `FilesystemAccessPrompt` instead of
+       * plain function-call approval. Drives `FilesystemAccessPrompt` instead of
        * the standard approve/deny/always row.
        */
       filesystemAccess?: {
@@ -50,7 +50,7 @@ export type StreamEvent =
        * order, so the consumer MUST match the end to its card by this id, not
        * by "the most recently started call".
        */
-      functionTriggerId?: string
+      functionCallId?: string
     }
   | {
       /**
@@ -60,7 +60,7 @@ export type StreamEvent =
        * `fcall-end`; both patching to non-pending is idempotent.
        */
       kind: 'fcall-approval-cleared'
-      functionTriggerId: string
+      functionCallId: string
       /**
        * True when the approval was allowed: the released call is now
        * executing, so the card flips to the running state until its result
@@ -110,7 +110,7 @@ export type StreamEvent =
        * `accepted` = harness::send seeded a turn (step-0 sits on the durable
        * queue); `merged` = folded into an in-flight turn; `queued` = parked
        * in the server-side queue (the queued strip owns that surface);
-       * `started` = harness::turn-started fired, the loop is running.
+       * `started` = harness::on-turn-started was called, the loop is running.
        */
       kind: 'turn-status'
       phase: 'accepted' | 'merged' | 'queued' | 'started'
@@ -176,7 +176,7 @@ export interface ChatStreamOptions {
    * Per-send message id (`msg-<uuid>`). The harness derives the user
    * message's session-manager entry id from it (`<message_id>-user-0`), so
    * the console's optimistic user message reconciles in place when the
-   * `session::message-added` snapshot arrives. The real backend mints one
+   * `session::on-message-added` snapshot arrives. The real backend mints one
    * when omitted.
    */
   messageId?: string
@@ -186,16 +186,17 @@ export interface ChatStreamOptions {
    * groups every turn under one session in the traces UI.
    *
    * The real backend uses it as the `session_id` in `harness::send` and as
-   * the config filter on its scoped `harness::turn-completed` / `approval::*`
-   * trigger subscriptions; the mock backend ignores it. When omitted, the
+   * the `input.session_id` filter on its scoped
+   * `harness::on-turn-completed` / `approval::on-*` observers; the mock
+   * backend ignores it. When omitted, the
    * real backend falls back to a fresh `console-<uuid>` (one session per
    * send) so callers that haven't been updated yet still work.
    */
   sessionId?: string
   /**
    * Whether the optional standalone `approval-gate` worker is connected. When
-   * `false`, the real backend skips the `approval::pending-*` trigger
-   * subscriptions and the `approval::list-pending` catch-up read — those
+   * `false`, the real backend skips the `approval::on-pending-*` observers
+   * and the `approval::list-pending` catch-up read — those
    * functions don't exist without the gate. Defaults to `true` so callers that
    * haven't been updated keep the approval surface.
    */
@@ -302,7 +303,7 @@ export interface ChatBackend {
    */
   resolveApproval?(
     sessionId: string,
-    functionTriggerId: string,
+    functionCallId: string,
     decision: 'allow' | 'deny',
     /**
      * Filesystem access duration. Sent only for filesystem_access resolutions.
@@ -324,7 +325,7 @@ export interface ChatBackend {
   /**
    * The session's server-side message queue (`harness::status` → `queued`):
    * everything parked while the current step streams — including messages
-   * from other tabs and subagent/subscription notifications, not just this
+   * from other tabs and subagent/observer notifications, not just this
    * tab's sends. Empty when idle.
    */
   listQueued?(sessionId: string): Promise<QueuedMessagePreview[]>
@@ -359,36 +360,36 @@ export interface ChatBackend {
     },
   ): Promise<void>
   /**
-   * Subscribe to `harness::message-queued` for a session: fires when any
+   * Observe `harness::on-message-queued` for a session: called when any
    * client's message parks in the server-side queue mid-stream — the signal
    * to refetch `listQueued`. Returns an unsubscribe.
    */
   onQueuedMessage?(sessionId: string, onEvent: () => void): () => void
   /**
-   * The session's registered trigger subscriptions — the harness's durable
-   * binding rows (`harness::triggers::list`), source-generic: raw trigger
-   * type + config, delivery = notify-this-chat or call-a-function.
-   * Rejects when the snapshot is unavailable; `[]` is a successful empty
-   * snapshot.
+   * The observers the session created — the harness's durable rows
+   * (`harness::observers::list`), source-generic: the observed function
+   * with its raw args and filters, delivery = notify-this-chat or
+   * call-a-function. Rejects when the snapshot is unavailable; `[]` is a
+   * successful empty snapshot.
    */
-  listTriggers?(sessionId: string): Promise<SessionTriggerInfo[]>
+  listObservers?(sessionId: string): Promise<SessionObserverInfo[]>
   /**
-   * Subscribe to `harness::triggers-changed` for a session: fires when the
-   * binding set or a fire count changes (registration, unregistration from
-   * any tab, a fire, expiry, GC) — the signal to refetch `listTriggers`.
+   * Observe `harness::on-observers-changed` for a session: called when the
+   * observer set or a fire count changes (an observe, a dispose from any
+   * tab, a fire, expiry, GC) — the signal to refetch `listObservers`.
    * Returns an unsubscribe.
    */
-  onTriggersChanged?(sessionId: string, onEvent: () => void): () => void
+  onObserversChanged?(sessionId: string, onEvent: () => void): () => void
   /**
-   * Tear one subscription down via `harness::triggers::unregister` (engine
-   * trigger AND durable record; a raw engine unregister would orphan the
-   * record and strand the owner's armed wake).
+   * Remove one observer via `harness::observers::dispose` (the engine
+   * observer AND the durable record; an engine-only dispose would orphan
+   * the record and strand the owner's armed wake).
    */
-  unregisterTrigger?(subscriptionId: string, sessionId: string): Promise<void>
+  disposeObserver?(observerId: string, sessionId: string): Promise<void>
   /**
    * Whether a state key currently exists (`state::get` non-null). Lets the
-   * triggers strip mark a `state` binding whose watched key was never
-   * written — the "armed on something nothing produces" stall. `null` =
+   * observers strip mark a `state::on-changed` observer whose watched key
+   * was never written — the "armed on something nothing produces" stall. `null` =
    * unknown (call failed).
    */
   stateKeyExists?(

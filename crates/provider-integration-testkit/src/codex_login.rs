@@ -8,8 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, ensure, Context};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::{register_worker, IIIClient, RegisterFunction};
+use iii_sdk::{register_worker, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 use provider_openai_codex::credential_store::{
     PrivateStateStore, SecretsSessionStore, SessionRecord, SessionStore, AUTH_SCOPE,
 };
@@ -472,12 +471,9 @@ async fn codex_login_logout_wins_over_a_secrets_backed_refresh() -> anyhow::Resu
     Ok(())
 }
 
-async fn observe_state(
-    client: &IIIClient,
-) -> anyhow::Result<(
-    iii_sdk::trigger::Trigger,
-    mpsc::UnboundedReceiver<ObservedEvent>,
-)> {
+/// Observes every `state::on-changed` event (no filter), delivered as output to
+/// a target that forwards it to the returned receiver.
+fn observe_state(client: &IIIClient) -> (ObserverHandle, mpsc::UnboundedReceiver<ObservedEvent>) {
     let (sender, receiver) = mpsc::unbounded_channel();
     client.register_function(
         "contract::codex-state-event",
@@ -490,12 +486,11 @@ async fn observe_state(
             async { Ok::<_, Error>(json!({ "ok": true })) }
         }),
     );
-    let trigger = client.register_trigger(RegisterTriggerInput::new(
-        "state",
+    let observer = client.observe(
+        Source::function("state::on-changed").deliver(Deliver::Output),
         "contract::codex-state-event",
-        json!({}),
-    ))?;
-    Ok((trigger, receiver))
+    );
+    (observer, receiver)
 }
 
 async fn public_event_barrier(
@@ -511,7 +506,7 @@ async fn public_event_barrier(
                 json!({ "scope": PUBLIC_SCOPE, "key": key, "value": "public" }),
             )
             .await?;
-            // Repeated marker writes also handle asynchronous trigger registration.
+            // Repeated marker writes also cover the observer becoming active.
             while let Ok(Some(event)) =
                 tokio::time::timeout(Duration::from_millis(100), events.recv()).await
             {
@@ -534,7 +529,7 @@ async fn public_event_barrier(
 #[ignore = "requires III_ENGINE_BIN and III_STATE_BIN; hermetic Codex login integration"]
 async fn codex_login_persists_discovers_streams_and_logs_out() -> anyhow::Result<()> {
     let fixture = Fixture::start().await?;
-    let (_trigger, mut events) = observe_state(&fixture.operator).await?;
+    let (_observer, mut events) = observe_state(&fixture.operator);
     public_event_barrier(&fixture.operator, &mut events, "before-login").await?;
     let status = fixture
         .rpc("provider::openai-codex::auth::status", json!({}))

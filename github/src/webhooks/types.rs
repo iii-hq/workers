@@ -8,7 +8,8 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebhookConfig {
-    /// Default delivery policy; individual subscriptions can override it. Hot-reloaded.
+    /// Default delivery policy; an observer of github::pr::on-event can override
+    /// it with its `notifications` arg. Hot-reloaded.
     pub notifications: super::notifications::NotificationPolicy,
     /// Opt in only after configuring the durable queue and public HTTP listener.
     pub enabled: bool,
@@ -23,10 +24,10 @@ pub struct WebhookConfig {
     /// quick-tunnel accepts leases of at most 30 days. Hot-reloaded.
     #[schemars(range(min = 1, max = 30))]
     pub max_watch_days: u32,
-    /// Minutes a watch may stay without any github::pr::event binding before it
-    /// is stopped (0..=1440). One-shot agent wakes unregister right after they
-    /// fire and are re-armed at the end of the turn, so keep this longer than a
-    /// turn. 0 stops immediately. Hot-reloaded.
+    /// Minutes a watch may stay without any github::pr::on-event observer
+    /// before it is stopped (0..=1440). One-shot agent wakes are disposed right
+    /// after they fire and observed again at the end of the turn, so keep this
+    /// longer than a turn. 0 stops immediately. Hot-reloaded.
     #[schemars(range(max = 1440))]
     pub orphan_grace_minutes: u32,
 }
@@ -74,7 +75,7 @@ pub enum StopOn {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WatchRequest {
-    /// Stable caller-selected identifier. Arm the event trigger before calling watch.
+    /// Stable caller-selected identifier. Observe github::pr::on-event before calling watch.
     #[schemars(length(min = 1, max = 128), regex(pattern = "^[A-Za-z0-9_.:-]+$"))]
     pub watch_id: String,
     /// HTTPS github.com/owner/repo/pull/number, exclusive with repo + number.
@@ -281,13 +282,13 @@ pub struct EventDetail {
     pub path: Option<String>,
     pub line: Option<u64>,
 }
+/// One observer of `github::pr::on-event`: its id and its args. The engine
+/// holds its target, namespace and metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subscriber {
+    /// The observer id.
     pub id: String,
-    pub function_id: String,
     pub filter: EventFilter,
-    pub metadata: Option<Value>,
-    pub namespace: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Watch {
@@ -297,7 +298,7 @@ pub struct Watch {
     pub lease_id: Option<String>,
     pub error: Option<String>,
     pub seen: BTreeSet<String>,
-    /// When the last listening binding left; cleared when one returns. The
+    /// When the last listening observer left; cleared when one returns. The
     /// watch stops once this is older than `orphan_grace_minutes`.
     #[serde(default)]
     pub orphaned_at: Option<DateTime<Utc>>,

@@ -63,7 +63,7 @@
   --color-ink: #0a0a0a;
   --color-ink-faint: #6b6b6b;
   --color-muted-foreground: #6b6b6b;
-  --color-trigger-running: #57534f;
+  --color-call-running: #57534f;
   --color-ink-ghost: #909090;
   --color-ink-disabled: #b5b5b5;
 
@@ -107,7 +107,7 @@
   --color-ok: #356f3d;
   --color-ok-muted: rgba(53, 111, 61, 0.12);
   /* Session scope (working directory) — the folder mark in the chat
-     timeline's activity-kind trail, beside ƒ (accent), trigger (warn) and
+     timeline's activity-kind trail, beside ƒ (accent), observer (warn) and
      registration (ok). Tailwind sky-500, identical in both themes so the
      folder reads the same wherever the marker appears. Single use: never a
      fill, a border, or body text. */
@@ -291,7 +291,7 @@
   /* Compact agent activity stays secondary, but remains comfortably legible
      against the near-black chat canvas. */
   --color-muted-foreground: #b8b8b8;
-  --color-trigger-running: #a6a6a6;
+  --color-call-running: #a6a6a6;
   --color-ink-ghost: #6f6f6f;
   --color-ink-disabled: #4d4d4d;
   --color-rule: transparent;
@@ -960,21 +960,21 @@
    like the traces page's payload panes — Geist Mono (the raw request and
    response panes wear `.code-theme-editor` for the size, leading and token
    palette). */
-.function-trigger-surface,
-.function-trigger-surface .font-mono,
-.chat-surface .function-trigger-surface,
-.chat-surface .function-trigger-surface .font-mono {
+.function-call-surface,
+.function-call-surface .font-mono,
+.chat-surface .function-call-surface,
+.chat-surface .function-call-surface .font-mono {
   font-family: var(--font-inter);
 }
 
-.function-trigger-surface pre,
-.function-trigger-surface pre.font-mono,
-.function-trigger-surface code,
-.function-trigger-surface code.font-mono,
-.chat-surface .function-trigger-surface pre,
-.chat-surface .function-trigger-surface pre.font-mono,
-.chat-surface .function-trigger-surface code,
-.chat-surface .function-trigger-surface code.font-mono {
+.function-call-surface pre,
+.function-call-surface pre.font-mono,
+.function-call-surface code,
+.function-call-surface code.font-mono,
+.chat-surface .function-call-surface pre,
+.chat-surface .function-call-surface pre.font-mono,
+.chat-surface .function-call-surface code,
+.chat-surface .function-call-surface code.font-mono {
   font-family: var(--font-geist-mono);
 }
 
@@ -1527,12 +1527,12 @@
 
 /* A quieter shimmer for an in-flight function description. Its resting tone
    sits one step below muted foreground while the sweep supplies the motion. */
-@utility function-trigger-shimmer {
+@utility function-call-shimmer {
   background-image: linear-gradient(
     90deg,
-    var(--color-trigger-running) 0%,
-    color-mix(in oklab, var(--color-trigger-running) 68%, var(--color-ink)) 50%,
-    var(--color-trigger-running) 100%
+    var(--color-call-running) 0%,
+    color-mix(in oklab, var(--color-call-running) 68%, var(--color-ink)) 50%,
+    var(--color-call-running) 100%
   );
   background-size: 200% 100%;
   background-clip: text;
@@ -1542,7 +1542,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     background-image: none;
-    color: var(--color-trigger-running);
+    color: var(--color-call-running);
     animation: none;
   }
 }

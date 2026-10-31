@@ -5,10 +5,10 @@
 //! `engine_url` is intentionally NOT here — it is bootstrap (you need it to
 //! reach the configuration worker), so it stays on the `--url` CLI flag.
 //!
-//! The event feeds are the fixed trigger types `grok::agent-event` and
-//! `grok::raw-event` (see `agent_feed`), so there are no stream-name keys.
-//! A stored config that still carries the retired `events_stream` /
-//! `raw_events_stream` keys keeps loading: unknown fields are ignored.
+//! The event feeds are the fixed functions `grok::on-agent-event` and
+//! `grok::on-raw-event` (see `agent_feed`), so there are no stream-name keys.
+//! A stored config with `events_stream` / `raw_events_stream` keys loads:
+//! unknown fields are ignored.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

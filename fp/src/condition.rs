@@ -1,29 +1,28 @@
-//! `fp::condition` — [`util::when`]'s guard, shaped for a trigger binding.
+//! `fp::condition` — [`util::when`]'s guard, shaped for the `conditions` of
+//! a harness observer (`harness::observe { conditions }`).
 //!
-//! A binding's `conditions` entry is called with an envelope, not with the
+//! The harness calls each `conditions` entry with an envelope, not with the
 //! target's own arguments:
 //!
 //! ```jsonc
 //! { "event": { … }, "condition_config": { … }, "binding": { … }, "context": { … } }
 //! ```
 //!
-//! That is the difference that makes this function possible at all. The
-//! engine's own `condition_function_id` hands the raw event over as the WHOLE
-//! payload, so a predicate has nowhere to read its threshold from and every
-//! reusable function fails on the shape. Here the per-binding half arrives in
-//! `condition_config`, so ONE function serves every binding that wants a
-//! comparison:
+//! The per-observer half arrives in `condition_config`, so ONE function
+//! serves every observer that wants a comparison:
 //!
 //! ```jsonc
 //! "conditions": [ { "function_id": "fp::condition",
 //!                   "config": { "path": "/new_value/findings", "op": ">=", "to": 3 } } ]
 //! ```
 //!
-//! Without it, every predicate means writing and deploying a worker.
+//! The observer's iii filters select calls before the harness sees them;
+//! a condition runs in the harness and leaves its reason on the delivery
+//! record, so a guard that did not let an event through says why.
 //!
 //! The comparison is [`util::when`]'s, unchanged — same ops, same pointer
 //! rules, same "a miss fails the guard rather than erroring". What is new is
-//! only the envelope and the typed decision the binding expects back.
+//! only the envelope and the typed decision the harness expects back.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -33,12 +32,12 @@ use crate::util::{when, WhenOp};
 
 pub const CONDITION_ID: &str = "fp::condition";
 pub const CONDITION_DESC: &str =
-    "Trigger-binding guard: compare a JSON pointer inside the fired event and answer \
+    "Harness observer guard: compare a JSON pointer inside the observed event and answer \
      { decision: \"allow\" | \"skip\", reason }; config is { path?, op, to?, negate? } with \
      the fp::when ops. A pointer that resolves to nothing SKIPS rather than erroring.";
 // Filters one event at a time — not a fan-in gate (that is state::barrier).
 
-/// The caller-authored half, out of the binding's `conditions[].config`.
+/// The caller-authored half, out of the observer's `conditions[].config`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ConditionConfig {
     /// JSON pointer into the event; defaults to the whole event.
@@ -64,7 +63,7 @@ pub struct ConditionInput {
     pub condition_config: Option<ConditionConfig>,
 }
 
-/// The typed answer a binding's condition contract expects.
+/// The typed answer the harness condition contract expects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum Decision {
@@ -143,8 +142,8 @@ fn describe(op: WhenOp, to: Option<&Value>) -> String {
 pub fn evaluate(input: ConditionInput) -> Result<Decision, String> {
     let cfg = input.condition_config.ok_or_else(|| {
         format!(
-            "{CONDITION_ID} needs `condition_config` {{ path?, op, to?, negate? }} — as a binding \
-             it goes in `conditions: [{{ function_id, config }}]`"
+            "{CONDITION_ID} needs `condition_config` {{ path?, op, to?, negate? }} — as an \
+             observer's guard it goes in `conditions: [{{ function_id, config }}]`"
         )
     })?;
     decide(&input.event, &cfg)
@@ -188,7 +187,7 @@ mod tests {
         let Decision::Skip { reason } = d else {
             panic!("expected skip");
         };
-        // The delivery record is the only place a mis-wired binding explains
+        // The delivery record is the only place a mis-wired observer explains
         // itself, so the observed value has to be in the reason.
         assert!(reason.contains("/new_value/findings"), "{reason}");
         assert!(reason.contains('4'), "{reason}");
@@ -294,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn the_envelope_tolerates_the_extra_keys_a_binding_sends() {
+    fn the_envelope_tolerates_the_extra_keys_the_harness_sends() {
         // `binding` and `context` ride along in the harness envelope; ignoring
         // them is what lets the same function serve a direct call.
         let input: ConditionInput = serde_json::from_value(json!({

@@ -2,8 +2,8 @@
  * The VM side of the wire (design §5): `__vm_receive` for host→VM json-v0
  * text, one batch of entries per VM turn handed to `__host_send` as an
  * array (the native VM encodes it as bin-v1, the test harness as json-v0;
- * the SDK never serializes, D16), requests and their responses, trigger
- * subscriptions, and error reporting.
+ * the SDK never serializes, D16), requests and their responses, observers,
+ * and error reporting.
  */
 
 import { batch } from 'solid-js'
@@ -223,31 +223,36 @@ onEntry(IN.response, ([, reqId, ok, value]) => {
   }
 })
 
-// ── Trigger subscriptions ───────────────────────────────────────────────────
+// ── Observers ───────────────────────────────────────────────────────────────
 
 const subscriptions = new Map<number, (payload: JsonValue) => void>()
 
-/** Binds a trigger (request `on`); the returned function unbinds it (request `off`). */
-export function subscribe(
-  trigger: string,
-  config: JsonObject,
+/**
+ * Observes `fn` with `args` and `filters` (request `on`); the host delivers
+ * each event as an `observed` entry for `sub`. The returned function disposes
+ * the observer (request `off`).
+ */
+export function observe(
+  fn: string,
+  args: JsonObject,
+  filters: JsonObject,
   handler: (payload: JsonValue) => void,
 ): { sub: number; ready: Promise<void>; off: () => void } {
   const sub = ids.sub++
   subscriptions.set(sub, handler)
-  const ready = request(METHOD.on, { sub, trigger, config }).then(() => undefined)
-  ready.catch((err) => console.warn(`native-ui: binding ${trigger} failed`, describe(err)))
-  let bound = true
+  const ready = request(METHOD.on, { sub, fn, args, filters }).then(() => undefined)
+  ready.catch((err) => console.warn(`native-ui: observing ${fn} failed`, describe(err)))
+  let observing = true
   const off = () => {
-    if (!bound) return
-    bound = false
+    if (!observing) return
+    observing = false
     subscriptions.delete(sub)
     notify(METHOD.off, { sub })
   }
   return { sub, ready, off }
 }
 
-onEntry(IN.trigger, ([, sub, payload]) => {
+onEntry(IN.observed, ([, sub, payload]) => {
   const handler = subscriptions.get(sub as number)
   if (handler) run(() => handler((payload ?? null) as JsonValue))
 })
@@ -277,8 +282,8 @@ export function reportError(error: unknown, opts?: { fatal?: boolean }): void {
 }
 
 /**
- * Runs app code from the host (an event, a trigger, a text edit) in one
- * Solid batch; a throw is reported, not fatal, and what the code changed
+ * Runs app code from the host (an event, an observed call, a text edit) in
+ * one Solid batch; a throw is reported, not fatal, and what the code changed
  * before it threw still renders.
  */
 export function run(fn: () => void): void {

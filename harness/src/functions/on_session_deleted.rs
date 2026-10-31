@@ -1,5 +1,5 @@
 //! `harness::on-session-deleted` — drop a deleted session's ephemeral
-//! subscriptions. Bound to session-manager's `session::deleted` trigger.
+//! subscriptions. An observer of session-manager's `session::on-deleted`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::deps::Deps;
 use crate::error::HarnessError;
 
-/// `session::deleted` payload (only the field we read).
+/// `session::on-deleted` event (only the field we read).
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SessionDeletedEvent {
     pub session_id: String,
@@ -33,7 +33,7 @@ pub async fn handle(
         tracing::info!(
             session_id = %event.session_id,
             removed = swept,
-            "session deleted: trigger bindings dropped"
+            "session deleted: observer bindings dropped"
         );
     }
 

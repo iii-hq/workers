@@ -58,15 +58,18 @@ pub const STATIC_IDS: &[&str] = &[
 /// Every id this worker owns, for seeding the runtime manager's id registry.
 ///
 /// STRICTLY LARGER than `STATIC_IDS`, which is only what `register_all`
-/// registers: the console UI's content function is published later by
-/// `crate::ui::register`, and the config reload hook later still by
-/// `configuration::register_config_trigger` — after two awaited
+/// registers: the event function `sandbox-code-runner::on-event` is
+/// registered by `events::register_event_function` before it, the console
+/// UI's content function is published later by `crate::ui::register`, and
+/// the config reload hook later still by
+/// `configuration::observe_config_changes` — after two awaited
 /// configuration RPCs, a window in which a guest `register_function` could
 /// otherwise claim the id and drive the SDK's duplicate-id panic when the
 /// worker's own registration lands (aborting the whole process). Same
 /// pattern and reasoning as code-runner's `seeded_ids`.
 pub fn seeded_ids() -> Vec<&'static str> {
     let mut ids = STATIC_IDS.to_vec();
+    ids.push(crate::events::ON_EVENT_FN);
     ids.push(crate::ui::CONTENT_FUNCTION_ID);
     ids.push(crate::configuration::CONFIG_FN_ID);
     ids
@@ -222,8 +225,9 @@ mod tests {
         register_all(&iii, &manager);
     }
 
-    /// The ids registered OUTSIDE `register_all` (ui-content by
-    /// `ui::register`, on-config-change by `register_config_trigger`) must be
+    /// The ids registered OUTSIDE `register_all` (on-event by
+    /// `events::register_event_function`, ui-content by `ui::register`,
+    /// on-config-change by `observe_config_changes`) must be
     /// reserved by the seed all the same: an unseeded late registration is
     /// claimable by a guest during the boot window, and the claim ends in the
     /// SDK's duplicate-id process abort when the worker's own registration
@@ -234,6 +238,7 @@ mod tests {
         for id in STATIC_IDS {
             assert!(ids.contains(id), "seed lost a static id: {id}");
         }
+        assert!(ids.contains(&crate::events::ON_EVENT_FN));
         assert!(ids.contains(&crate::ui::CONTENT_FUNCTION_ID));
         assert!(ids.contains(&crate::configuration::CONFIG_FN_ID));
     }

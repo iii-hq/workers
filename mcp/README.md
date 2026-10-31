@@ -1,9 +1,9 @@
 # mcp
 
 Model Context Protocol (MCP) bridge for the [iii engine](https://iii.dev),
-shipped as a single self-contained Rust binary worker. Registers an HTTP
+shipped as a single self-contained Rust binary worker. Serves an HTTP
 endpoint (default `POST /mcp`) that speaks MCP 2025-06-18 JSON-RPC and maps
-each method onto an `iii.trigger` call. [`skills`](https://workers.iii.dev/workers/skills) is listed as a
+each method onto an `iii.call`. [`skills`](https://workers.iii.dev/workers/skills) is listed as a
 worker dependency in [`worker-compose.yaml`](worker-compose.yaml), so MCP clients see
 registered skills as `iii://{id}` resources and slash-commands as MCP
 prompts when `mcp` is installed.
@@ -11,7 +11,7 @@ prompts when `mcp` is installed.
 ## Install
 
 ```bash
-iii trigger compose::add worker=mcp
+iii call compose::add worker=mcp
 ```
 
 ## Quickstart
@@ -41,6 +41,25 @@ curl -sNX POST http://127.0.0.1:3111/mcp \
 `-N` disables curl's output buffering so the SSE frame appears as soon as the
 bridge writes it.
 
+## Functions
+
+| Function | What it is |
+|---|---|
+| `mcp::handler` | The bridge. It observes `http::on-request` with args `{ method: "POST", path: <api_path> }`, so the http worker calls it with each `POST <api_path>` request (an `HttpRequest`: the JSON-RPC body in `body`, the response channel in `response`); it writes the SSE response to the channel and returns `null`. |
+
+The route is the one observer this worker creates:
+
+```rust
+iii.observe(
+    Source::function("http::on-request").args(json!({ "method": "POST", "path": "/mcp" })),
+    "mcp::handler",
+);
+```
+
+It stays pending until the http worker is running, and is rejected with
+`HTTP_ROUTE_CONFLICT` when another observer already serves the same method
+and path.
+
 ## Configuration
 
 ```yaml
@@ -59,7 +78,7 @@ api_path: "/mcp"
 ```
 
 `require_expose: true` advertises only functions whose `metadata.mcp.expose == true`.
-`api_path` lets you bind a different path (e.g. `/mcp-custom`) for the bridge.
+`api_path` sets the path of the bridge's `http::on-request` route (e.g. `/mcp-custom`).
 
 ### Hidden namespaces
 
@@ -91,8 +110,8 @@ discovery and invocation:
 | `initialize` | Returns `{ protocolVersion: "2025-06-18", capabilities: { tools, resources, prompts }, serverInfo }` |
 | `ping` | Returns `{}` |
 | `notifications/initialized` | Acknowledged with no response |
-| `tools/list` | Enumerates non-hidden iii functions |
-| `tools/call` | Invokes the named iii function via `iii.trigger` |
+| `tools/list` | Enumerates non-hidden iii functions, leaving out private ones (only their own worker may call them) |
+| `tools/call` | Invokes the named iii function via `iii.call` |
 | `resources/list` | Delegates to `skills::resources-list` |
 | `resources/read` | Delegates to `skills::resources-read` |
 | `resources/templates/list` | Delegates to `skills::resources-templates` |

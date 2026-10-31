@@ -67,7 +67,7 @@ export function numberAt(value: JsonValue | undefined, path: readonly string[], 
 
 /** Resolve the addressed Voice worker before reading its live configuration. */
 export async function readConfig(iii: ExtensionIii): Promise<JsonObject> {
-  const res = await iii.trigger<{ value?: JsonValue }>('configuration::get', {
+  const res = await iii.call<{ value?: JsonValue }>('configuration::get', {
     id: await resolveConfigurationId(iii, 'voice'),
   })
   return asObject(res?.value)
@@ -76,9 +76,9 @@ export async function readConfig(iii: ExtensionIii): Promise<JsonObject> {
 /** Read, apply `patch`, write. The worker hot-reloads on the change. */
 export async function patchConfig(iii: ExtensionIii, patch: (current: JsonObject) => JsonObject): Promise<JsonObject> {
   const id = await resolveConfigurationId(iii, 'voice')
-  const response = await iii.trigger<{ value?: JsonValue }>('configuration::get', { id, raw: true })
+  const response = await iii.call<{ value?: JsonValue }>('configuration::get', { id, raw: true })
   const next = patch(asObject(response?.value))
-  await iii.trigger('configuration::set', { id, value: next })
+  await iii.call('configuration::set', { id, value: next })
   return next
 }
 

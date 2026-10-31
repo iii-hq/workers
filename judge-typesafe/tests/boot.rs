@@ -43,9 +43,13 @@ async fn check_boot(shutdown_signal: Option<&str>) {
         let mut socket = accept_async(stream).await.unwrap();
         socket
             .send(Message::Text(
-                json!({"type":"workerregistered","worker_id":"boot-test"})
-                    .to_string()
-                    .into(),
+                json!({
+                    "type": "workerregistered",
+                    "worker_id": "boot-test",
+                    "features": ["observe.v1", "observe.v2"]
+                })
+                .to_string()
+                .into(),
             ))
             .await
             .unwrap();
@@ -177,33 +181,47 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                     assert_eq!(value["metadata"]["internal"], true, "{id} must be internal");
                     functions.insert(id.to_owned());
                 }
-                "registertrigger" if value["trigger_type"] == "configuration" => {
-                    assert_eq!(value["function_id"], "judge-typesafe::on-config-change");
+                "observe" if value["source"]["function_id"] == "configuration::on-updated" => {
                     assert_eq!(
-                        value["config"],
+                        value["target"]["function_id"],
+                        "judge-typesafe::on-config-change"
+                    );
+                    assert_eq!(
+                        value["source"]["filters"],
                         json!({
-                            "configuration_id": "jev-boot-test",
-                            "event_types": ["configuration:updated"]
+                            "input.id": { "$eq": "jev-boot-test" },
+                            "input.event_type": { "$eq": "configuration:updated" }
                         })
                     );
+                    assert_eq!(value["source"]["deliver"], "output");
                     reload = true;
                 }
-                // Bound even though no secrets worker exists: the engine parks it.
-                "registertrigger" if value["trigger_type"] == "secrets::changed" => {
-                    assert_eq!(value["function_id"], "judge-typesafe::on-secret-change");
-                    assert_eq!(value["config"], json!({}));
+                // Observed even though no secrets worker exists: the observer stays pending.
+                "observe" if value["source"]["function_id"] == "secrets::on-changed" => {
+                    assert_eq!(
+                        value["target"]["function_id"],
+                        "judge-typesafe::on-secret-change"
+                    );
+                    assert!(value["source"].get("args").is_none());
+                    assert_eq!(value["source"]["deliver"], "output");
                     secret_reload = true;
                 }
-                "registertrigger" if value["trigger_type"] == "console:script" => {
+                "observe"
+                    if value["source"]["function_id"] == "console::ui::asset"
+                        && value["source"]["args"]["kind"] == "script" =>
+                {
                     assert!(console_ui_enabled);
-                    assert_eq!(value["function_id"], "judge-typesafe::ui-content");
-                    assert_eq!(value["config"]["path"], "judge-typesafe/page.js");
+                    assert_eq!(value["target"]["function_id"], "judge-typesafe::ui-content");
+                    assert_eq!(value["source"]["args"]["path"], "judge-typesafe/page.js");
                     script = true;
                 }
-                "registertrigger" if value["trigger_type"] == "console:style" => {
+                "observe"
+                    if value["source"]["function_id"] == "console::ui::asset"
+                        && value["source"]["args"]["kind"] == "style" =>
+                {
                     assert!(console_ui_enabled);
-                    assert_eq!(value["function_id"], "judge-typesafe::ui-content");
-                    assert_eq!(value["config"]["path"], "judge-typesafe/styles.css");
+                    assert_eq!(value["target"]["function_id"], "judge-typesafe::ui-content");
+                    assert_eq!(value["source"]["args"]["path"], "judge-typesafe/styles.css");
                     style = true;
                 }
                 "invocationresult" if value["function_id"] == "judge-typesafe::evaluate" => {

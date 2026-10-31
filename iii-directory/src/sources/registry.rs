@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(result.system_prompts_written, vec!["reviewer".to_string()]);
 
         // Still lands on disk at the path the registry sent — only the
-        // REPORTED bucket (and thus which on-change trigger fires) changes.
+        // REPORTED bucket (and thus which on-change is called) changes.
         let sys =
             std::fs::read_to_string(tmp.path().join("resend/system-prompts/reviewer.md")).unwrap();
         assert!(sys.contains("Body."));

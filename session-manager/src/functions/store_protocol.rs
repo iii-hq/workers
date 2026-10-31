@@ -3,8 +3,10 @@
 //! as their `SessionStore`, plus the event ingest that makes the main
 //! the single fan-out point.
 //!
-//! Only authoritative (fs-mode) instances register these; bridge mode
-//! never serves them (a bridge forwarding to itself would recurse).
+//! Every instance registers these, so an adapter hot-reload needs no
+//! registration, and only an authoritative (fs-mode) instance serves them:
+//! in bridge mode each call is refused (a bridge forwarding to itself would
+//! recurse).
 //! These functions bypass all domain logic — they are deployment
 //! plumbing, not an app API. Deny them to agents like every other
 //! mutating surface.
@@ -520,8 +522,8 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
             }
         })
         .description(
-            "Internal store protocol: ingest a bridged instance's event envelopes and fan them \
-             out to local subscribers and every attached bridge.",
+            "Internal store protocol: ingest a bridged instance's event envelopes and call this \
+             instance's session::on-* event functions and session::store::on-events with them.",
         )
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
@@ -533,7 +535,6 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
 mod tests {
     use super::*;
     use crate::config::{BridgeBackendConfig, StorageAdapter, WorkerConfig};
-    use crate::events::{BridgeSubscribers, TriggerSets};
     use crate::runtime::{build_runtime, SessionBuildContext};
 
     #[tokio::test]
@@ -553,8 +554,6 @@ mod tests {
         let ctx = Arc::new(SessionBuildContext {
             iii,
             local_url: "ws://127.0.0.1:59641".to_string(),
-            sets: TriggerSets::new(),
-            bridge_subscribers: BridgeSubscribers::new(),
             config_cell,
         });
         let runtime = build_runtime(&cfg, &ctx).expect("bridge runtime builds");

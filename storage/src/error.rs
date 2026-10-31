@@ -81,10 +81,6 @@ pub enum StorageError {
     #[serde(rename = "CF_QUEUE_AUTH_FAILED")]
     #[error("cloudflare queue auth failed: {message}")]
     CfQueueAuthFailed { message: String },
-
-    #[serde(rename = "TRIGGER_DISPATCH_TIMEOUT")]
-    #[error("trigger handler exceeded {timeout_ms}ms")]
-    TriggerDispatchTimeout { timeout_ms: u64 },
 }
 
 impl StorageError {

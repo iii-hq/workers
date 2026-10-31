@@ -36,14 +36,14 @@ async function render(options: { newChat?: boolean; latestIncomingAt?: number; g
   const templateResults: Array<Promise<TemplatePage>> = []
   const sendResults: Array<Promise<CloudSent>> = []
   const uploadResults: Array<Promise<unknown>> = []
-  const trigger = vi.fn(async (id: string, _input: unknown) => {
+  const call = vi.fn(async (id: string, _input: unknown) => {
     if (id === 'whatsapp::config-status') return { active: { max_media_bytes: options.maxMediaBytes ?? 16 * 1024 * 1024 } }
     if (id === 'whatsapp::cloud::media::upload') return uploadResults.shift() ?? { media_id: '123456789', media_type: 'document', file_name: 'report.txt', mimetype: 'text/plain', file_length: 6 }
     if (id.endsWith('templates::list')) return templateResults.shift() ?? { templates: [approved], next_cursor: null }
     if (id.includes('messages::send_')) return sendResults.shift() ?? accepted
     throw new Error(`Unexpected function: ${id}`)
   })
-  const host = { iii: { trigger } } as unknown as Host
+  const host = { iii: { call } } as unknown as Host
   const onDirty = vi.fn()
   const onSent = vi.fn()
   const onCheckConversation = vi.fn()
@@ -61,7 +61,7 @@ async function render(options: { newChat?: boolean; latestIncomingAt?: number; g
   const unmount = () => { if (mounted) { act(() => root.unmount()); container.remove(); mounted = false } }
   cleanups.push(unmount)
   return {
-    container, trigger, onDirty, onSent, onCheckConversation, templateResults, sendResults, uploadResults, unmount,
+    container, call, onDirty, onSent, onCheckConversation, templateResults, sendResults, uploadResults, unmount,
     draftCount() { return memory?.values.size ?? 0 },
     async hide() { retained = false; await act(async () => renderComposer()) },
     async restore() { retained = true; await act(async () => renderComposer()) },
@@ -73,7 +73,7 @@ async function render(options: { newChat?: boolean; latestIncomingAt?: number; g
       Object.defineProperty(field, 'files', { configurable: true, value: [file] })
       await act(async () => field.dispatchEvent(new Event('change', { bubbles: true })))
     },
-    sends() { return trigger.mock.calls.filter(([id]) => id.includes('messages::send_')) },
+    sends() { return call.mock.calls.filter(([id]) => id.includes('messages::send_')) },
     field(label: string) {
       const id = Array.from(container.querySelectorAll('label')).find((element) => element.textContent === label)?.htmlFor
       return (id ? container.querySelector(`[id="${id}"]`) : container.querySelector(`[aria-label="${label}"]`)) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
@@ -273,7 +273,7 @@ describe('Cloud message composition', () => {
     const view = await render({ newChat: true, initialMode: 'template' })
     expect(view.field('Cloud message type').value).toBe('template')
     expect(view.field('Cloud message template').textContent).toContain('request_update')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
     expect(view.button('Send template')?.disabled).toBe(true)
     expect(view.sends()).toHaveLength(0)
   })
@@ -294,7 +294,7 @@ describe('Cloud message composition', () => {
     expect(view.field('Cloud message type').value).toBe('text')
     expect(view.field('Cloud message text').value).toBe('Keep this reply draft')
     expect(view.button('Send')?.disabled).toBe(false)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
     expect(view.sends()).toHaveLength(0)
   })
 
@@ -310,11 +310,11 @@ describe('Cloud message composition', () => {
     await view.fill('Cloud message type', 'attachment')
     await view.attach(new File(['Report'], 'report.txt', { type: 'text/plain' }))
     expect(view.sends()).toHaveLength(0)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(0)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(0)
     await view.fill('Caption (optional)', 'Monthly report')
     await view.click('Send attachment')
     await act(async () => { await vi.waitFor(() => expect(view.sends()).toHaveLength(1)) })
-    expect(view.trigger).toHaveBeenCalledWith('whatsapp::cloud::media::upload', { media_type: 'document', data_base64: btoa('Report'), mimetype: 'text/plain', file_name: 'report.txt' })
+    expect(view.call).toHaveBeenCalledWith('whatsapp::cloud::media::upload', { media_type: 'document', data_base64: btoa('Report'), mimetype: 'text/plain', file_name: 'report.txt' })
     expect(view.sends()).toEqual([['whatsapp::cloud::messages::send_document', { chat_id: accepted.chat_id, media_id: '123456789', file_name: 'report.txt', caption: 'Monthly report' }]])
   })
 
@@ -328,7 +328,7 @@ describe('Cloud message composition', () => {
     expect(view.field('Cloud message type').value).toBe('attachment')
     expect(view.field('Caption (optional)').value).toBe('Kept attachment caption')
     expect(view.container.textContent).toContain('report.txt')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(0)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(0)
     expect(view.sends()).toHaveLength(0)
     await view.click('Send attachment')
     await act(async () => { await vi.waitFor(() => expect(view.sends()).toHaveLength(1)) })
@@ -352,10 +352,10 @@ describe('Cloud message composition', () => {
     expect(view.container.textContent).toContain('Request timed out; the outcome is unknown.')
     expect(view.container.textContent).toContain('Check the conversation before sending again')
     expect(view.sends()).toHaveLength(1)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(1)
     await view.click('Send again')
     expect(view.sends()).toHaveLength(2)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(1)
   })
 
   it('keeps Cloud drafts separate for different configured business phones', async () => {
@@ -378,7 +378,7 @@ describe('Cloud message composition', () => {
     await view.attach(new File(['Report'], 'report.txt', { type: 'text/plain' }))
     expect(view.container.textContent).toContain('exceeds')
     expect(view.button('Send attachment')?.disabled).toBe(true)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(0)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(0)
   })
 
   it('retains uploaded media after an ambiguous send and reuses it only on explicit resend', async () => {
@@ -392,10 +392,10 @@ describe('Cloud message composition', () => {
     await act(async () => response.reject(new Error('Send timed out')))
     expect(view.container.textContent).toContain('Check the conversation before sending again')
     expect(view.container.textContent).toContain('report.txt')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(1)
     await view.click('Send again')
     expect(view.sends()).toHaveLength(2)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(1)
   })
 
   it('does not send an attachment when its upload completes after unmount', async () => {
@@ -405,7 +405,7 @@ describe('Cloud message composition', () => {
     await view.fill('Cloud message type', 'attachment')
     await view.attach(new File(['Report'], 'report.txt', { type: 'text/plain' }))
     await view.click('Send attachment')
-    await act(async () => { await vi.waitFor(() => expect(view.trigger.mock.calls.some(([id]) => id.endsWith('media::upload'))).toBe(true)) })
+    await act(async () => { await vi.waitFor(() => expect(view.call.mock.calls.some(([id]) => id.endsWith('media::upload'))).toBe(true)) })
     view.unmount()
     await act(async () => upload.resolve({ media_id: '123456789' }))
     expect(view.sends()).toHaveLength(0)
@@ -428,24 +428,24 @@ describe('Cloud message composition', () => {
     await view.fill('Cloud message type', 'attachment')
     await view.attach(new File(['Report'], 'report.txt', { type: 'text/plain' }))
     await view.click('Send attachment')
-    await act(async () => { await vi.waitFor(() => expect(view.trigger.mock.calls.some(([id]) => id.endsWith('media::upload'))).toBe(true)) })
+    await act(async () => { await vi.waitFor(() => expect(view.call.mock.calls.some(([id]) => id.endsWith('media::upload'))).toBe(true)) })
     await act(async () => upload.reject(new Error('Upload timed out')))
     expect(view.container.textContent).toContain('No message was sent')
     expect(view.container.textContent).toContain('report.txt')
     expect(view.sends()).toHaveLength(0)
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('media::upload'))).toHaveLength(1)
   })
   it('loads templates on entering their mode once and sends named fields only on an explicit action', async () => {
     const view = await render()
-    expect(view.trigger).not.toHaveBeenCalled()
+    expect(view.call).not.toHaveBeenCalled()
     await view.fill('Cloud message type', 'template')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
     await view.fill('Cloud message template', 'approved')
     await view.fill('Body parameter customer — {{customer}}', 'Ada')
     expect(view.sends()).toHaveLength(0)
     await view.fill('Cloud message type', 'text')
     await view.fill('Cloud message type', 'template')
-    expect(view.trigger.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
+    expect(view.call.mock.calls.filter(([id]) => id.endsWith('templates::list'))).toHaveLength(1)
     await view.click('Send template')
     expect(view.sends()).toEqual([['whatsapp::cloud::messages::send_template', { chat_id: accepted.chat_id, name: 'request_update', language: 'en_US', components: [{ type: 'body', parameters: [{ type: 'text', parameter_name: 'customer', text: 'Ada' }] }] }]])
     expect(view.onSent).toHaveBeenCalledWith(accepted, 'template')
@@ -591,12 +591,12 @@ describe('Cloud message composition', () => {
     const response = deferred<TemplatePage>()
     view.templateResults.push(response.promise)
     await view.fill('Cloud message type', 'template')
-    expect(view.trigger).toHaveBeenCalledTimes(1)
+    expect(view.call).toHaveBeenCalledTimes(1)
     await act(async () => response.reject(new Error('Meta unavailable')))
     expect(view.container.textContent).toContain('Meta unavailable')
     await view.fill('Cloud message type', 'text')
     await view.fill('Cloud message type', 'template')
-    expect(view.trigger).toHaveBeenCalledTimes(1)
+    expect(view.call).toHaveBeenCalledTimes(1)
     await view.click('Retry templates')
     expect(view.field('Cloud message template').textContent).toContain('request_update')
   })
@@ -638,7 +638,7 @@ describe('Cloud message composition', () => {
     await view.fill('Cloud message type', 'template')
     view.templateResults.push(Promise.resolve({ templates: [{ ...approved, id: 'pending', name: 'pending_offer', status: 'PENDING' }], next_cursor: null }))
     await view.click('Load more templates')
-    expect(view.trigger).toHaveBeenLastCalledWith('whatsapp::cloud::templates::list', { limit: 50, after: 'page-two' })
+    expect(view.call).toHaveBeenLastCalledWith('whatsapp::cloud::templates::list', { limit: 50, after: 'page-two' })
     expect(view.field('Cloud message template').textContent).toContain('request_update')
     expect(view.field('Cloud message template').textContent).toContain('pending_offer')
     await view.fill('Cloud message template', 'pending')

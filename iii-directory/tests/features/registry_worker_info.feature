@@ -4,7 +4,7 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
     * `GET {base}/w/{name}?version=…` returns `{ worker: WorkerDetail }`
       whose `worker` field carries name / description / version / repo /
       author / type / config / supported_targets / total_downloads /
-      dependencies plus readme / functions / triggers.
+      dependencies plus readme / functions.
     * `GET {base}/w/{name}/skills?version=…` returns the skills tree
       merged into the response as `skills_tree`.
   The OpenAPI uses `?version=` for both endpoints; tags (`latest`) and
@@ -38,14 +38,12 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
               "description": "Send an email.",
               "request_schema": { "type": "object" },
               "response_schema": { "type": "object" }
-            }
-          ],
-          "triggers": [
+            },
             {
-              "name": "on-bounce",
-              "description": "Fires on a bounce.",
-              "invocation_schema": { "type": "object" },
-              "return_schema": { "type": "object" }
+              "name": "resend::on-bounce",
+              "description": "Called when a delivery bounces; observe it.",
+              "request_schema": { "type": "object" },
+              "response_schema": { "type": "object" }
             }
           ]
         }
@@ -59,17 +57,16 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
         "skills": [{ "path": "index.md", "content": "# resend" }]
       }
       """
-    When I trigger directory::registry::workers::info with payload:
+    When I call directory::registry::workers::info with payload:
       """
-      {"name": "resend", "tag": "latest"}
+      {"name": "resend", "tag": "latest", "readme": true}
       """
     Then the directory::registry::workers::info call succeeds
     And  the registry worker-info worker name is "resend"
     And  the registry worker-info worker version is "1.2.3"
     And  the registry worker-info worker description is "Email worker"
     And  the registry worker-info response has a non-empty readme
-    And  the registry worker-info api_reference functions count is 1
-    And  the registry worker-info api_reference triggers count is 1
+    And  the registry worker-info api_reference functions count is 2
     And  the registry worker-info skills_tree skills count is 1
 
   Scenario: workers::info defaults to tag latest when neither version nor tag is given
@@ -88,8 +85,7 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
           "dependencies": [],
           "author": null,
           "readme": "",
-          "functions": [],
-          "triggers": []
+          "functions": []
         }
       }
       """
@@ -97,35 +93,38 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
       """
       { "name": "resend", "version": "1.2.3", "skills": [] }
       """
-    When I trigger directory::registry::workers::info with payload:
+    When I call directory::registry::workers::info with payload:
       """
       {"name": "resend"}
       """
     Then the directory::registry::workers::info call succeeds
     And  the registry worker-info worker name is "resend"
+    And  the registry worker-info response has no readme
 
   Scenario: workers::info rejects both version and tag
-    When I trigger directory::registry::workers::info with payload:
+    When I call directory::registry::workers::info with payload:
       """
       {"name": "resend", "version": "1.2.3", "tag": "latest"}
       """
     Then the directory::registry::workers::info call fails with a message mentioning "either version OR tag"
 
   Scenario: workers::info rejects an empty name
-    When I trigger directory::registry::workers::info with payload:
+    When I call directory::registry::workers::info with payload:
       """
       {"name": "  "}
       """
     Then the directory::registry::workers::info call fails with a message mentioning "non-empty"
 
-  Scenario: workers::info HTTP 404 surfaces in the failure message
+  Scenario: workers::info of a worker the registry does not have fails with D310 not_found
     Given a wiremock registry that returns 404 for worker info "missing"
     And a wiremock registry that returns 404 for worker skills "missing"
-    When I trigger directory::registry::workers::info with payload:
+    When I call directory::registry::workers::info with payload:
       """
       {"name": "missing", "tag": "latest"}
       """
-    Then the directory::registry::workers::info call fails with a message mentioning "404"
+    Then the directory::registry::workers::info call fails with a message mentioning "D310 not_found"
+    And  the directory::registry::workers::info call fails with a message mentioning "missing@latest"
+    And  the directory::registry::workers::info call fails with a message mentioning "does not exist"
 
   Scenario: workers::info caches identical lookups within the TTL window
     Given a wiremock registry serving worker info "cached" at tag "latest" with body:
@@ -143,8 +142,7 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
           "dependencies": [],
           "author": null,
           "readme": "",
-          "functions": [],
-          "triggers": []
+          "functions": []
         }
       }
       """
@@ -152,12 +150,12 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
       """
       { "name": "cached", "version": "1.0.0", "skills": [] }
       """
-    When I trigger directory::registry::workers::info with payload:
+    When I call directory::registry::workers::info with payload:
       """
       {"name": "cached", "tag": "latest"}
       """
     Then the directory::registry::workers::info call succeeds
-    When I trigger directory::registry::workers::info with payload:
+    When I call directory::registry::workers::info with payload:
       """
       {"name": "cached", "tag": "latest"}
       """

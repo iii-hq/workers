@@ -88,26 +88,28 @@ rule; point-in-time information belongs in memories.
   removes a rule.
 - `memory::supersede` — retire one memory in favor of another (tombstone +
   pointer); the consolidation seam, agent-denied by default. `reinforce`
-  makes it a merge; `reason` rides the item-changed events.
+  makes it a merge; `reason` rides the `memory::on-item-changed` events.
 - `memory::doctor` — end-to-end self-test plus sibling, embeddings and
   extraction health.
 - `memory::reload` — re-read every bank from disk after hand-editing files.
 
-## Reactive triggers
+## Observing changes
 
-The worker emits two trigger types; bind to them for live views instead of
+The worker hosts two change functions; observe them for live views instead of
 polling `memory::list` / `memory::bank::list`.
 
-1. **Why bind** — `memory::item-changed` fires on every memory create / update /
-   supersede / delete (`{ event_type, bank, memory, reason? }`); `memory::bank-changed`
-   fires on bank create / trash and rule changes (`{ event_type, bank }`). A
-   consumer that mutates memory already has the new record in its return
-   payload — bind only when you need to observe changes made by OTHERS
-   (extraction, other sessions, the console).
-2. **When to bind** — a UI or index that must stay current with background
-   extraction; a worker reacting to new memories in a specific bank (use the
-   `bank` filter in the binding config).
-3. **How to bind** — two steps: register a handler function, then register a
-   trigger of the wanted type pointing at it, optionally with
-   `config: { "bank": "blog" }` to filter. Delivery is fire-and-forget,
-   at-least-once, unordered.
+1. **What they carry** — `memory::on-item-changed` is called on every memory
+   create / update / supersede / delete and returns
+   `{ event_type, bank, memory, reason? }`; `memory::on-bank-changed` is
+   called on bank create / trash and rule changes and returns
+   `{ event_type, bank }`. A consumer that mutates memory already has the new
+   record in its return payload — observe only when you need changes made by
+   OTHERS (extraction, other sessions, the console).
+2. **When to observe** — a UI or index that must stay current with background
+   extraction; a worker reacting to new memories in a specific bank (filter
+   on `input.bank`).
+3. **How to observe** — neither function takes args; select calls with
+   filters: `harness::observe { "function_id": "memory::on-item-changed",
+   "filters": { "input.bank": { "$eq": "blog" } } }` wakes this session on
+   each change, and a `target: { "function_id": ... }` calls that function
+   instead. Delivery is fire-and-forget and unordered.

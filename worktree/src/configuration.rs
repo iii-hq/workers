@@ -1,7 +1,7 @@
 //! Integration with the `configuration` worker: register the schema, fetch
 //! the authoritative value at boot, and hot-reload on change (Tier 1:
-//! ConfigCell snapshot swap plus a targeted cron re-bind when
-//! `prune_schedule` changes). Mirrors `approval-gate`.
+//! ConfigCell snapshot swap plus a new prune observer of `cron::on-tick`
+//! when `prune_schedule` changes). Mirrors `approval-gate`.
 //!
 //! `configuration` is a REQUIRED boot dependency: a failed register/fetch
 //! aborts startup.
@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::trigger::Trigger;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{
+    CallRequest, Deliver, IIIClient, ObserverHandle, ObserverState, RegisterFunction, Source,
+};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -42,6 +42,9 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "worktree::on-config-change";
+const ON_UPDATED_FN: &str = "configuration::on-updated";
+const ON_TICK_FN: &str = "cron::on-tick";
+const PRUNE_FN_ID: &str = "worktree::prune";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
@@ -73,7 +76,7 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -126,7 +129,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// `Ok(None)` when the entry does not exist; missing-entry codes vary in
 /// case across engine versions, so match case-insensitively.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -139,48 +142,70 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// The live prune cron binding, re-bindable on `prune_schedule` change.
-/// Register the new binding first, then unregister the old (fail-safe
-/// overlap).
+/// The live prune observer of `cron::on-tick`, replaced on a
+/// `prune_schedule` change: the new schedule is observed first, then the old
+/// observer is disposed. `worktree::prune` receives the tick as output and
+/// ignores its fields.
 #[derive(Clone, Default)]
 pub struct CronSlot {
-    inner: Arc<Mutex<Option<Trigger>>>,
+    inner: Arc<Mutex<Option<ObserverHandle>>>,
 }
 
 impl CronSlot {
     pub fn rebind(&self, iii: &IIIClient, schedule: &str) {
-        // `expression` is the binding key the cron trigger type consumes
-        // (engine built-in and the standalone cron worker alike), matching
-        // how the harness binds its own sweep.
-        let new = match iii.register_trigger(RegisterTriggerInput::new(
-            "cron".to_string(),
-            "worktree::prune".to_string(),
-            json!({ "expression": schedule }),
-        )) {
-            Ok(trigger) => {
-                tracing::info!(schedule, "prune cron binding registered");
-                trigger
+        let new = iii.observe(
+            Source::function(ON_TICK_FN)
+                .args(json!({ "expression": schedule }))
+                .deliver(Deliver::Output),
+            PRUNE_FN_ID,
+        );
+        let expression = schedule.to_string();
+        new.on_state_change(move |state, reason| {
+            if *state == ObserverState::Error {
+                tracing::warn!(
+                    schedule = %expression,
+                    reason = ?reason,
+                    "prune observer of cron::on-tick was rejected; the sweep does not run on this schedule"
+                );
             }
-            Err(e) => {
-                // Keep the working binding: swapping in a failed registration
-                // would unregister the live cron and leave the sweep unbound.
-                tracing::warn!(error = %e, schedule, "prune cron binding failed; keeping previous binding");
-                return;
-            }
-        };
+        });
+        tracing::info!(
+            schedule,
+            observer_id = new.id(),
+            "prune observer of cron::on-tick added"
+        );
         let old = {
             let mut slot = self.inner.lock().unwrap_or_else(|p| p.into_inner());
             slot.replace(new)
         };
         if let Some(old) = old {
-            old.unregister();
+            dispose_in_background(old);
         }
     }
 }
 
-/// Internal `worktree::on-config-change` trigger payload. The handler
-/// re-fetches the authoritative configuration and ignores this payload, so
-/// a direct call can never inject config.
+/// `dispose` waits for the engine's confirmation; it runs on its own task so
+/// the caller (the boot path, or a config reload) never waits on it.
+fn dispose_in_background(handle: ObserverHandle) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => {
+            runtime.spawn(async move {
+                if let Err(error) = handle.dispose().await {
+                    tracing::warn!(observer_id = handle.id(), %error, "observer dispose failed");
+                }
+            });
+        }
+        Err(_) => tracing::warn!(
+            observer_id = handle.id(),
+            "no tokio runtime to dispose the observer on; it stays active"
+        ),
+    }
+}
+
+/// The `configuration::on-updated` event, delivered as output to the internal
+/// `worktree::on-config-change`. The handler re-fetches the authoritative
+/// configuration and ignores this payload, so a direct call can never inject
+/// config.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
     /// Configuration id that changed (advisory; the handler re-fetches).
@@ -194,14 +219,12 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger. Registered here (not in `functions::register_all`) but still
-/// pinned by `surface::catalog()`.
-pub fn register_config_trigger(
-    iii: &Arc<IIIClient>,
-    cell: ConfigCell,
-    cron: CronSlot,
-) -> Result<(), Error> {
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` with it, for this entry's
+/// `configuration:updated` events. Registered here (not in
+/// `functions::register_all`) but still pinned by `surface::catalog()`. The
+/// observer stays `pending` while the configuration source is not registered.
+pub fn observe_config_changes(iii: &Arc<IIIClient>, cell: ConfigCell, cron: CronSlot) {
     let cell_for_fn = cell.clone();
     let engine = iii.clone();
     let cron_for_fn = cron.clone();
@@ -219,20 +242,22 @@ pub fn register_config_trigger(
         .description(
             "Internal: hot-reload the worktree worker from the authoritative \
              configuration when it changes — swaps the per-call snapshot and \
-             re-binds the prune cron on a schedule change.",
+             observes the new prune schedule on a schedule change.",
         )
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    // The observer lives as long as the worker's connection; dropping the
+    // handle does not dispose it.
+    iii.observe(
+        Source::function(ON_UPDATED_FN)
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
 }
 
 /// Reload from the AUTHORITATIVE configuration; keep the previous snapshot
@@ -258,7 +283,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, cron: &CronSlot) {
     tracing::info!(structural, "worktree configuration reloaded");
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -266,8 +291,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,

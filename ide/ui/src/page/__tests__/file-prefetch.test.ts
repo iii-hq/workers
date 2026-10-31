@@ -3,7 +3,7 @@ import type { EditorCache } from '../EditorPane'
 import { createFilePrefetcher } from '../file-prefetch'
 
 function setup(overrides: Partial<Parameters<typeof createFilePrefetcher>[0]> = {}) {
-  const trigger = vi.fn(async (_fn: string, args: { path: string }) => ({
+  const call = vi.fn(async (_fn: string, args: { path: string }) => ({
     content: `body of ${args.path}`,
     revision: 'r1',
     is_utf8: true,
@@ -11,7 +11,7 @@ function setup(overrides: Partial<Parameters<typeof createFilePrefetcher>[0]> = 
     mode: 420,
     size: 12,
   }))
-  const host = { iii: { trigger } } as unknown as Parameters<typeof createFilePrefetcher>[0]['host']
+  const host = { iii: { call } } as unknown as Parameters<typeof createFilePrefetcher>[0]['host']
   const cache: EditorCache = new Map()
   let token = 1
   const prefetcher = createFilePrefetcher({
@@ -23,7 +23,7 @@ function setup(overrides: Partial<Parameters<typeof createFilePrefetcher>[0]> = 
     keep: 2,
     ...overrides,
   })
-  return { trigger, cache, prefetcher, bump: () => void (token += 1) }
+  return { call, cache, prefetcher, bump: () => void (token += 1) }
 }
 
 describe('createFilePrefetcher', () => {
@@ -31,12 +31,12 @@ describe('createFilePrefetcher', () => {
   afterEach(() => vi.useRealTimers())
 
   it('reads a file once the pointer has rested on it, into the editor cache', async () => {
-    const { trigger, cache, prefetcher } = setup()
+    const { call, cache, prefetcher } = setup()
     prefetcher.prefetch('src/a.ts')
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(60)
-    expect(trigger).toHaveBeenCalledTimes(1)
-    expect(trigger.mock.calls[0]?.[1]).toMatchObject({ path: '/root/src/a.ts' })
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call.mock.calls[0]?.[1]).toMatchObject({ path: '/root/src/a.ts' })
     expect(cache.get('src/a.ts')).toMatchObject({
       savedContent: 'body of /root/src/a.ts',
       draft: 'body of /root/src/a.ts',
@@ -46,27 +46,27 @@ describe('createFilePrefetcher', () => {
   })
 
   it('only reads the row the pointer stopped on, not every row it crossed', async () => {
-    const { trigger, prefetcher } = setup()
+    const { call, prefetcher } = setup()
     prefetcher.prefetch('a.ts')
     await vi.advanceTimersByTimeAsync(20)
     prefetcher.prefetch('b.ts')
     await vi.advanceTimersByTimeAsync(20)
     prefetcher.prefetch('c.ts')
     await vi.advanceTimersByTimeAsync(60)
-    expect(trigger).toHaveBeenCalledTimes(1)
-    expect(trigger.mock.calls[0]?.[1]).toMatchObject({ path: '/root/c.ts' })
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call.mock.calls[0]?.[1]).toMatchObject({ path: '/root/c.ts' })
   })
 
   it('cancels a pending read when the pointer leaves the tree', async () => {
-    const { trigger, prefetcher } = setup()
+    const { call, prefetcher } = setup()
     prefetcher.prefetch('a.ts')
     prefetcher.cancel()
     await vi.advanceTimersByTimeAsync(100)
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('leaves cached, protected and image files alone', async () => {
-    const { trigger, cache, prefetcher } = setup()
+    const { call, cache, prefetcher } = setup()
     cache.set('open.ts', { savedContent: 'x', draft: 'x', readOnly: null, mode: null, size: null })
     prefetcher.prefetch('open.ts')
     await vi.advanceTimersByTimeAsync(60)
@@ -74,25 +74,25 @@ describe('createFilePrefetcher', () => {
     await vi.advanceTimersByTimeAsync(60)
     prefetcher.prefetch('logo.png')
     await vi.advanceTimersByTimeAsync(60)
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
     expect(cache.get('open.ts')?.draft).toBe('x')
   })
 
   it('does not cache a truncated or binary read, and does not ask again', async () => {
-    const { trigger, cache, prefetcher } = setup()
-    trigger.mockResolvedValueOnce({ content: 'head', revision: 'r', is_utf8: true, more_lines: true, mode: 420, size: 1 })
+    const { call, cache, prefetcher } = setup()
+    call.mockResolvedValueOnce({ content: 'head', revision: 'r', is_utf8: true, more_lines: true, mode: 420, size: 1 })
     prefetcher.prefetch('big.log')
     await vi.advanceTimersByTimeAsync(60)
     expect(cache.has('big.log')).toBe(false)
     prefetcher.prefetch('big.log')
     await vi.advanceTimersByTimeAsync(60)
-    expect(trigger).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('drops a read that lands after the root changed', async () => {
-    const { trigger, cache, prefetcher, bump } = setup()
-    let release: (value: Awaited<ReturnType<typeof trigger>>) => void = () => {}
-    trigger.mockImplementationOnce(
+    const { call, cache, prefetcher, bump } = setup()
+    let release: (value: Awaited<ReturnType<typeof call>>) => void = () => {}
+    call.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           release = resolve
@@ -100,7 +100,7 @@ describe('createFilePrefetcher', () => {
     )
     prefetcher.prefetch('a.ts')
     await vi.advanceTimersByTimeAsync(50)
-    expect(trigger).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledTimes(1)
     bump()
     release({ content: 'late', revision: 'r', is_utf8: true, more_lines: false, mode: 420, size: 4 })
     await vi.advanceTimersByTimeAsync(10)

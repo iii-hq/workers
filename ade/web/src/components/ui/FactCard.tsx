@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils'
 /**
  * The fact card: one recipe for every "a thing and its numbers" surface in
  * the console — the span hover card, the context-usage popover, technical
- * details under a notice, a trigger's subscription, error metadata.
+ * details under a notice, an observer's registration, error metadata.
  *
  * Anatomy: an optional header (a tinted icon chip in the subject's colour,
  * then the name), an optional status line (a semantic dot and word), then

@@ -55,13 +55,13 @@ import {
   predictedUserEntryId,
 } from '@/lib/backend/harness-send'
 import {
-  type SessionTriggerLoader,
-  startSessionTriggerLoader,
-} from '@/lib/backend/session-trigger-loader'
+  mergeFiredObservers,
+  type SessionObserverInfo,
+} from '@/lib/backend/observers'
 import {
-  mergeFiredTriggers,
-  type SessionTriggerInfo,
-} from '@/lib/backend/triggers'
+  type SessionObserverLoader,
+  startSessionObserverLoader,
+} from '@/lib/backend/session-observer-loader'
 import type {
   ApprovalStreamEvent,
   CompactResult,
@@ -144,15 +144,15 @@ import {
   type Attachment,
   type Conversation,
   DEFAULT_THINKING_LEVEL,
-  type FunctionTriggerMessage,
+  type FunctionCallMessage,
   type Message,
   type MessagePatch,
   type ModelId,
   type ModelOption,
+  type ObserverFiredData,
   type SystemMessage,
   type ThinkingLevel,
   type ThoughtMessage,
-  type TriggerFiredData,
   type UserMessage,
   type WorkingDirScope,
 } from '@/types/chat'
@@ -176,8 +176,8 @@ import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { formatModelLabel } from './model-picker-presentation'
-import { RegisteredTriggerStatusProvider } from './RegisteredTriggerStatus'
-import { SessionTriggers } from './SessionTriggers'
+import { RegisteredObserverStatusProvider } from './RegisteredObserverStatus'
+import { SessionObservers } from './SessionObservers'
 import {
   agentIdForSend,
   DEFAULT_SYSTEM_PROMPT_STATE,
@@ -582,7 +582,7 @@ export function ChatView({
 
   // Live view of the transcript for the long-running stream loop: the
   // session-events reconciler (use-conversations) may add/replace rows while
-  // a turn is in flight, and dedupe-by-functionTriggerId must see them.
+  // a turn is in flight, and dedupe-by-functionCallId must see them.
   const messagesRef = useRef(conversation.messages)
   messagesRef.current = conversation.messages
 
@@ -615,7 +615,7 @@ export function ChatView({
   // Sibling latch for the queue-drain flag: unlike stopRequestedRef it is
   // NEVER reset by the abortRun-failure retry path or the indicator effect —
   // only by the next stream this tab opens. A stream that saw ANY stop
-  // attempt must not claim its leftovers are `triggering…` (a cancelled
+  // attempt must not claim its leftovers are `delivering…` (a cancelled
   // turn's queue lands in the transcript unreacted).
   const stopSeenRef = useRef(false)
   useEffect(() => {
@@ -629,7 +629,7 @@ export function ChatView({
   // harness drains them into the transcript. Each draft carries the predicted
   // entry id of its eventual transcript row.
   const [queuedDrafts, setQueuedDrafts] = useState<UserMessage[]>([])
-  // Queue rows read `triggering…` instead of `queued` while this is set —
+  // Queue rows read `delivering…` instead of `queued` while this is set —
   // see the drain-window block below `queuedStrip` for who sets/clears it.
   const [drainingQueue, setDrainingQueue] = useState(false)
 
@@ -663,11 +663,11 @@ export function ChatView({
     }
   }, [streamingIndicator, queuedDrafts, conversation.id, onAppendMessage])
 
-  // Server-side queue: while a step streams, `harness::message-queued` events
-  // signal that another tab or a subagent/subscription notification parked a
-  // row — refetch `harness::status` → `queued` so the strip shows them, not
+  // Server-side queue: while a step streams, `harness::on-message-queued`
+  // events signal that another tab or a subagent/observer notification parked
+  // a row — refetch `harness::status` → `queued` so the strip shows them, not
   // just this tab's drafts. One catch-up fetch on stream start covers rows
-  // queued before the subscription bound; cleared when idle (the transcript
+  // queued before the observer was active; cleared when idle (the transcript
   // owns everything by then).
   const [serverQueued, setServerQueued] = useState<QueuedMessagePreview[]>([])
   useEffect(() => {
@@ -697,44 +697,44 @@ export function ChatView({
     conversation.id,
   ])
 
-  // Registered trigger subscriptions (the harness's durable binding rows,
-  // owned by this session): shown above the composer, unregisterable, detail
-  // on click. Pushed — `harness::triggers-changed` rings on every binding
+  // The observers this session's agent created (the harness's durable rows,
+  // owned by this session): shown above the composer, removable, detail on
+  // click. Pushed — `harness::on-observers-changed` rings on every observer
   // mutation (any tab, fires, expiry, GC) and the handler refetches the list.
-  const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
-    [],
-  )
-  const [triggersSnapshotSessionId, setTriggersSnapshotSessionId] = useState<
+  const [sessionObservers, setSessionObservers] = useState<
+    SessionObserverInfo[]
+  >([])
+  const [observersSnapshotSessionId, setObserversSnapshotSessionId] = useState<
     string | null
   >(null)
-  // Every full row this tab has EVER fetched, by subscription id. When a once
-  // binding fires and retires, the refetch drops it — this cache lets the
-  // fired ghost keep its full config/conditions after retirement.
-  const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
+  // Every full row this tab has EVER fetched, by observer id. When a once
+  // observer fires and retires, the refetch drops it — this cache lets the
+  // fired ghost keep its full args/filters/conditions after retirement.
+  const seenObserversRef = useRef<Map<string, SessionObserverInfo>>(new Map())
   // The current conversation's serialized list loader. Doorbells arrive
   // at-least-once and burst on rapid fires; serialRefresh coalesces them
   // behind one in-flight read so snapshots never apply out of order.
-  const triggersLoaderRef = useRef<SessionTriggerLoader | null>(null)
-  const refreshTriggers = useCallback(() => {
-    triggersLoaderRef.current?.refresh()
+  const observersLoaderRef = useRef<SessionObserverLoader | null>(null)
+  const refreshObservers = useCallback(() => {
+    observersLoaderRef.current?.refresh()
   }, [])
   useEffect(() => {
-    seenTriggersRef.current = new Map()
-    setSessionTriggers([])
-    setTriggersSnapshotSessionId(null)
-    const listTriggers = backend.listTriggers
-    if (!listTriggers) return
-    const loader = startSessionTriggerLoader({
+    seenObserversRef.current = new Map()
+    setSessionObservers([])
+    setObserversSnapshotSessionId(null)
+    const listObservers = backend.listObservers
+    if (!listObservers) return
+    const loader = startSessionObserverLoader({
       sessionId: conversation.id,
-      listTriggers,
-      onTriggersChanged: backend.onTriggersChanged,
+      listObservers,
+      onObserversChanged: backend.onObserversChanged,
       onSnapshot: (rows) => {
-        for (const row of rows) seenTriggersRef.current.set(row.id, row)
-        setSessionTriggers(rows)
-        setTriggersSnapshotSessionId(conversation.id)
+        for (const row of rows) seenObserversRef.current.set(row.id, row)
+        setSessionObservers(rows)
+        setObserversSnapshotSessionId(conversation.id)
       },
     })
-    triggersLoaderRef.current = loader
+    observersLoaderRef.current = loader
     // Catch-up for doorbells missed while hidden (throttled tab). Missed
     // doorbells across a socket outage are reseeded by the backend's
     // reconnect listener.
@@ -747,88 +747,87 @@ export function ChatView({
       // Discard any in-flight snapshot so the old conversation's rows can't
       // land in the next conversation's state.
       loader.dispose()
-      if (triggersLoaderRef.current === loader) triggersLoaderRef.current = null
+      if (observersLoaderRef.current === loader)
+        observersLoaderRef.current = null
     }
-  }, [backend.listTriggers, backend.onTriggersChanged, conversation.id])
+  }, [backend.listObservers, backend.onObserversChanged, conversation.id])
 
-  const handleUnregisterTrigger = useCallback(
-    async (subscriptionId: string) => {
+  const handleDisposeObserver = useCallback(
+    async (observerId: string) => {
       try {
-        await backend.unregisterTrigger?.(subscriptionId, conversation.id)
-        setSessionTriggers((rows) =>
-          rows.filter((t) => t.id !== subscriptionId),
-        )
+        await backend.disposeObserver?.(observerId, conversation.id)
+        setSessionObservers((rows) => rows.filter((t) => t.id !== observerId))
       } catch (err) {
         onAppendMessage(
           conversation.id,
           makeSystemNotice(
-            `could not unregister the trigger — ${err instanceof Error ? err.message : String(err)}`,
+            `could not remove the observer — ${err instanceof Error ? err.message : String(err)}`,
             'error',
           ),
         )
       }
-      refreshTriggers()
+      refreshObservers()
     },
-    [backend, conversation.id, onAppendMessage, refreshTriggers],
+    [backend, conversation.id, onAppendMessage, refreshObservers],
   )
 
-  const handleClearAllTriggers = useCallback(async () => {
-    const unreg = backend.unregisterTrigger
-    if (!unreg) return
-    const ids = sessionTriggers.map((t) => t.id)
-    // Fire all unregisters, tolerate partial failure, surface a single notice.
+  const handleClearAllObservers = useCallback(async () => {
+    const dispose = backend.disposeObserver
+    if (!dispose) return
+    const ids = sessionObservers.map((t) => t.id)
+    // Remove them all, tolerate partial failure, surface a single notice.
     const results = await Promise.allSettled(
-      ids.map((id) => unreg(id, conversation.id)),
+      ids.map((id) => dispose(id, conversation.id)),
     )
     const cleared = new Set(
       ids.filter((_, i) => results[i].status === 'fulfilled'),
     )
-    setSessionTriggers((rows) => rows.filter((t) => !cleared.has(t.id)))
+    setSessionObservers((rows) => rows.filter((t) => !cleared.has(t.id)))
     const failed = results.filter((r) => r.status === 'rejected').length
     if (failed > 0) {
       onAppendMessage(
         conversation.id,
         makeSystemNotice(
-          `could not unregister ${failed} of ${ids.length} triggers — they may have already fired or been removed`,
+          `could not remove ${failed} of ${ids.length} observers — they may have already fired or been removed`,
           'error',
         ),
       )
     }
-    refreshTriggers()
+    refreshObservers()
   }, [
     backend,
-    sessionTriggers,
+    sessionObservers,
     conversation.id,
     onAppendMessage,
-    refreshTriggers,
+    refreshObservers,
   ])
 
-  // Fired-trigger history: durable `trigger_fired` transcript entries (mapped to
-  // system messages). Drives the panel's fired/unregistered ghost rows so a
-  // once-trigger stays visible after the engine drops it from the list.
-  const firedTriggers = useMemo<TriggerFiredData[]>(() => {
-    const out: TriggerFiredData[] = []
+  // Fired-observer history: durable `observer_fired` transcript entries (mapped
+  // to system messages). Drives the panel's fired/removed ghost rows so a once
+  // observer stays visible after the harness drops it from the list.
+  const firedObservers = useMemo<ObserverFiredData[]>(() => {
+    const out: ObserverFiredData[] = []
     for (const m of conversation.messages) {
-      if (m.role === 'system' && m.kind === 'trigger-fired' && m.trigger) {
-        out.push(m.trigger)
+      if (m.role === 'system' && m.kind === 'observer-fired' && m.observer) {
+        out.push(m.observer)
       }
     }
     return out
   }, [conversation.messages])
-  const mergedTriggers = useMemo(
+  const mergedObservers = useMemo(
     () =>
-      mergeFiredTriggers(
-        sessionTriggers,
-        firedTriggers,
-        seenTriggersRef.current,
+      mergeFiredObservers(
+        sessionObservers,
+        firedObservers,
+        seenObserversRef.current,
       ),
-    [sessionTriggers, firedTriggers],
+    [sessionObservers, firedObservers],
   )
-  // Registration lookup for trigger-fired cards: a fire record carries only
-  // the subscription id — the binding's config/conditions live in these rows.
-  const triggersById = useMemo(
-    () => new Map(mergedTriggers.map((t) => [t.id, t])),
-    [mergedTriggers],
+  // Registration lookup for observer-fired cards: a fire record carries only
+  // the observer id — the observer's conditions and lifecycle live in these rows.
+  const observersById = useMemo(
+    () => new Map(mergedObservers.map((t) => [t.id, t])),
+    [mergedObservers],
   )
 
   // The strip's rows: this tab's drafts first, then server-queued rows not
@@ -850,7 +849,7 @@ export function ChatView({
   // Delivery window: the turn stream this tab owned finished normally while
   // messages were still parked — the harness is draining them into the
   // transcript now (`serverWorking` keeps the strip mounted until each
-  // drained row arrives and pops its entry). Rows read `triggering…` instead
+  // drained row arrives and pops its entry). Rows read `delivering…` instead
   // of `queued` for that stretch. The flag is set only by the stream loop's
   // own clean exit — never by /compact's isStreaming toggle, a stream error,
   // or a user stop (a cancelled turn's leftovers land in the transcript
@@ -1276,14 +1275,14 @@ export function ChatView({
     if (!fn) return undefined
     return (
       sessionId: string,
-      functionTriggerId: string,
+      functionCallId: string,
       decision: 'allow' | 'deny',
-    ) => fn(sessionId, functionTriggerId, decision)
+    ) => fn(sessionId, functionCallId, decision)
   }, [backend])
 
   // Approval UI + `approval::*` RPC require BOTH the harness AND the optional
   // standalone approval-gate worker. The gate owns `approval::*`; without it,
-  // enabling approval would trigger "function not found", so we treat approval
+  // enabling approval would call functions nobody hosts, so we treat approval
   // as off and let calls run ungated.
   const approvalEnabled =
     backend.id === 'real' &&
@@ -1296,14 +1295,14 @@ export function ChatView({
   const handleApprovalEvent = useCallback(
     (event: ApprovalStreamEvent) => {
       if (event.kind === 'fcall-start') {
-        const existing = event.functionTriggerId
+        const existing = event.functionCallId
           ? messagesRef.current.find(
-              (message): message is FunctionTriggerMessage =>
-                message.role === 'function-trigger' &&
-                message.functionTriggerId === event.functionTriggerId,
+              (message): message is FunctionCallMessage =>
+                message.role === 'function-call' &&
+                message.functionCallId === event.functionCallId,
             )
           : undefined
-        const announcementId = event.functionTriggerId ?? existing?.id
+        const announcementId = event.functionCallId ?? existing?.id
         if (
           !announcementId ||
           !announcedApprovalIdsRef.current.has(announcementId)
@@ -1324,20 +1323,20 @@ export function ChatView({
           onPatchMessage(conversation.id, existing.id, {
             pendingApproval: true,
             running: false,
-            functionTriggerId: event.functionTriggerId,
+            functionCallId: event.functionCallId,
             sessionId: event.sessionId,
             filesystemAccess: event.filesystemAccess,
           })
           return
         }
-        const message: FunctionTriggerMessage = {
+        const message: FunctionCallMessage = {
           id: uid(),
-          role: 'function-trigger',
+          role: 'function-call',
           functionId: event.functionId,
           input: event.input,
           running: false,
           pendingApproval: true,
-          functionTriggerId: event.functionTriggerId,
+          functionCallId: event.functionCallId,
           sessionId: event.sessionId,
           filesystemAccess: event.filesystemAccess,
           createdAt: Date.now(),
@@ -1347,11 +1346,11 @@ export function ChatView({
       }
 
       const existing = messagesRef.current.find(
-        (message): message is FunctionTriggerMessage =>
-          message.role === 'function-trigger' &&
-          message.functionTriggerId === event.functionTriggerId,
+        (message): message is FunctionCallMessage =>
+          message.role === 'function-call' &&
+          message.functionCallId === event.functionCallId,
       )
-      announcedApprovalIdsRef.current.delete(event.functionTriggerId)
+      announcedApprovalIdsRef.current.delete(event.functionCallId)
       if (existing) {
         onPatchMessage(conversation.id, existing.id, {
           pendingApproval: false,
@@ -1509,13 +1508,9 @@ export function ChatView({
   const handleAlwaysAllow = useMemo(() => {
     const resolveFn = backend.resolveApproval
     if (!resolveFn) return undefined
-    return async (
-      sId: string,
-      functionTriggerId: string,
-      functionId: string,
-    ) => {
+    return async (sId: string, functionCallId: string, functionId: string) => {
       await approvalSettings.approveAlways(functionId)
-      await resolveFn(sId, functionTriggerId, 'allow')
+      await resolveFn(sId, functionCallId, 'allow')
       announcer.announce(`approved always this session: ${functionId}`)
     }
   }, [backend, approvalSettings, announcer])
@@ -1531,17 +1526,16 @@ export function ChatView({
     if (!resolveFn) return undefined
     return async (
       sId: string,
-      functionTriggerId: string,
+      functionCallId: string,
       action: FilesystemAccessAction,
     ) => {
       const requestedRoot = messagesRef.current.find(
-        (m): m is FunctionTriggerMessage =>
-          m.role === 'function-trigger' &&
-          m.functionTriggerId === functionTriggerId,
+        (m): m is FunctionCallMessage =>
+          m.role === 'function-call' && m.functionCallId === functionCallId,
       )?.filesystemAccess?.requestedRoot
 
       if (action === 'deny') {
-        await resolveFn(sId, functionTriggerId, 'deny')
+        await resolveFn(sId, functionCallId, 'deny')
         announcer.announce(
           requestedRoot
             ? `denied filesystem access to ${requestedRoot}`
@@ -1550,7 +1544,7 @@ export function ChatView({
         return
       }
 
-      await resolveFn(sId, functionTriggerId, 'allow', {
+      await resolveFn(sId, functionCallId, 'allow', {
         accessDuration: action,
       })
       if (requestedRoot && (action === 'session' || action === 'always')) {
@@ -1689,7 +1683,7 @@ export function ChatView({
       // options.agent (see selectionForSend / agentIdForSend). Gate on a row
       // a turn produced rather than a user row: if an earlier send failed
       // before a turn ran, there is nothing to inherit yet and the retry
-      // must carry the prompt again. Function-trigger rows count as well as
+      // must carry the prompt again. Function-call rows count as well as
       // assistant text: a turn ran, and a first turn that ends on
       // harness::ask produces only calls (see turnEstablishedFrom).
       let turnEstablished = turnEstablishedFrom(messagesRef.current)
@@ -1765,7 +1759,7 @@ export function ChatView({
       // `harness::send` carries `idempotency_key: messageId`, so the harness
       // appends the user message with the deterministic entry id
       // `e_idem_<messageId>`; using the same id here lets the
-      // session::message-added snapshot reconcile this optimistic row in place.
+      // session::on-message-added snapshot reconcile this optimistic row in place.
       const messageId = newMessageId()
       const trimmed = payload.text.trim()
       // `/compact` starts no turn (the harness runs it as a compaction), so
@@ -2179,24 +2173,24 @@ export function ChatView({
               break
             }
             case 'fcall-start': {
-              if (event.functionTriggerId) {
+              if (event.functionCallId) {
                 // Dedupe against rows created earlier in this stream AND
                 // rows the session-events reconciler derived from the
                 // assistant entry's function_call blocks.
                 const existing =
                   [...fcallMap.entries()].find(
-                    ([, fcid]) => fcid === event.functionTriggerId,
+                    ([, fcid]) => fcid === event.functionCallId,
                   )?.[0] ??
                   messagesRef.current.find(
                     (m) =>
-                      m.role === 'function-trigger' &&
-                      m.functionTriggerId === event.functionTriggerId,
+                      m.role === 'function-call' &&
+                      m.functionCallId === event.functionCallId,
                   )?.id
                 if (existing) {
                   onPatchMessage(conversationId, existing, {
                     pendingApproval: event.pendingApproval,
                     running: !event.pendingApproval,
-                    functionTriggerId: event.functionTriggerId,
+                    functionCallId: event.functionCallId,
                     sessionId: event.sessionId,
                     filesystemAccess: event.filesystemAccess,
                   })
@@ -2211,35 +2205,35 @@ export function ChatView({
                 assistantId = null
                 assistantBuffer = ''
               }
-              const msg: FunctionTriggerMessage = {
+              const msg: FunctionCallMessage = {
                 id: uid(),
-                role: 'function-trigger',
+                role: 'function-call',
                 functionId: event.functionId,
                 input: event.input,
                 running: !event.pendingApproval,
                 pendingApproval: event.pendingApproval,
-                functionTriggerId: event.functionTriggerId,
+                functionCallId: event.functionCallId,
                 sessionId: event.sessionId,
                 filesystemAccess: event.filesystemAccess,
                 createdAt: Date.now(),
               }
               fcallId = msg.id
-              if (event.functionTriggerId)
-                fcallMap.set(msg.id, event.functionTriggerId)
+              if (event.functionCallId)
+                fcallMap.set(msg.id, event.functionCallId)
               onAppendMessage(conversationId, msg)
               break
             }
             case 'fcall-end': {
-              // Prefer targeting by functionTriggerId (parallel batches end out
+              // Prefer targeting by functionCallId (parallel batches end out
               // of order; the row may also be an entry-derived segment).
-              const targetId: string | null = event.functionTriggerId
+              const targetId: string | null = event.functionCallId
                 ? ([...fcallMap.entries()].find(
-                    ([, fcid]) => fcid === event.functionTriggerId,
+                    ([, fcid]) => fcid === event.functionCallId,
                   )?.[0] ??
                   messagesRef.current.find(
                     (m) =>
-                      m.role === 'function-trigger' &&
-                      m.functionTriggerId === event.functionTriggerId,
+                      m.role === 'function-call' &&
+                      m.functionCallId === event.functionCallId,
                   )?.id ??
                   null)
                 : fcallId
@@ -2257,17 +2251,17 @@ export function ChatView({
             case 'fcall-approval-cleared': {
               const clearedId =
                 [...fcallMap.entries()].find(
-                  ([, fcid]) => fcid === event.functionTriggerId,
+                  ([, fcid]) => fcid === event.functionCallId,
                 )?.[0] ??
                 messagesRef.current.find(
                   (m) =>
-                    m.role === 'function-trigger' &&
-                    m.functionTriggerId === event.functionTriggerId,
+                    m.role === 'function-call' &&
+                    m.functionCallId === event.functionCallId,
                 )?.id
               if (clearedId) {
                 const cleared = messagesRef.current.find(
-                  (m): m is FunctionTriggerMessage =>
-                    m.id === clearedId && m.role === 'function-trigger',
+                  (m): m is FunctionCallMessage =>
+                    m.id === clearedId && m.role === 'function-call',
                 )
                 onPatchMessage(conversationId, clearedId, {
                   pendingApproval: false,
@@ -2373,7 +2367,7 @@ export function ChatView({
                     }
                   : {}),
                 // The transcript owns the authoritative lifecycle notice under
-                // this id. Trigger delivery is unordered, so a late live
+                // this id. Event delivery is unordered, so a late live
                 // fallback may fill a gap but must not overwrite that record.
                 provisional: true,
                 createdAt: Date.now(),
@@ -2434,7 +2428,7 @@ export function ChatView({
         setIsStreaming(false)
         setTurnPhase(null)
         // Turn finished cleanly with messages still parked: the harness is
-        // delivering them now — flip the strip's rows to `triggering…`.
+        // delivering them now — flip the strip's rows to `delivering…`.
         if (
           streamEndedNormally &&
           !stopSeenRef.current &&
@@ -3226,9 +3220,9 @@ export function ChatView({
           workingDir={conversation.workingDir ?? null}
           enabled={workingDirEnabled}
         >
-          <RegisteredTriggerStatusProvider
-            loaded={triggersSnapshotSessionId === conversation.id}
-            triggersById={triggersById}
+          <RegisteredObserverStatusProvider
+            loaded={observersSnapshotSessionId === conversation.id}
+            observersById={observersById}
           >
             <AskInSideChatContext.Provider value={sideChatValue}>
               <SideChatQuotesContext.Provider value={sideQuotesValue}>
@@ -3270,7 +3264,7 @@ export function ChatView({
                       ? { enabled: true, onPick: handlePickWorktree }
                       : undefined
                   }
-                  triggersById={triggersById}
+                  observersById={observersById}
                   focusMessageId={quoteFocusId ?? focusMessageId}
                   onFocusMessageHandled={() => {
                     setQuoteFocusId(null)
@@ -3282,7 +3276,7 @@ export function ChatView({
                 />
               </SideChatQuotesContext.Provider>
             </AskInSideChatContext.Provider>
-          </RegisteredTriggerStatusProvider>
+          </RegisteredObserverStatusProvider>
         </ChatFileNavigation>
         <LiveRegion announcement={announcer.announcement} />
         {modelSwitch.dialog}
@@ -3326,11 +3320,11 @@ export function ChatView({
                   onOpen={conversationsCtx.openConversationInPanel}
                 />
               ) : null}
-              <SessionTriggers
-                triggers={mergedTriggers}
-                onUnregister={handleUnregisterTrigger}
+              <SessionObservers
+                observers={mergedObservers}
+                onDispose={handleDisposeObserver}
                 onClearAll={
-                  backend.unregisterTrigger ? handleClearAllTriggers : undefined
+                  backend.disposeObserver ? handleClearAllObservers : undefined
                 }
                 checkStateKey={backend.stateKeyExists}
               />
@@ -3353,7 +3347,7 @@ export function ChatView({
                           {row.text}
                         </span>
                         <span className="shrink-0 text-ink-ghost">
-                          {drainingQueue ? 'Triggering…' : 'Queued'}
+                          {drainingQueue ? 'Delivering…' : 'Queued'}
                         </span>
                       </div>
                     ))}
@@ -3544,8 +3538,8 @@ export function ChatView({
             sheetOpen={asideSheetOpen}
             onSheetOpenChange={setAsideSheetOpen}
             request={asideRequest}
-            triggers={mergedTriggers}
-            onUnregisterTrigger={handleUnregisterTrigger}
+            observers={mergedObservers}
+            onDisposeObserver={handleDisposeObserver}
             landBlocked={worktreeInfo?.lifecycle === 'land-blocked'}
             pendingQuote={pendingQuote}
             onPendingQuoteChange={setPendingQuote}

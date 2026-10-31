@@ -38,12 +38,13 @@ const schemaEntry = {
     },
   },
 }
-const trigger = vi.fn()
+const call = vi.fn()
 const client: Awaited<ReturnType<typeof getIiiClient>> = {
   browserId: 'configuration-reference-test',
-  trigger,
+  call,
+  trigger: call,
   on: () => () => {},
-  registerTrigger: () => () => {},
+  observe: () => () => {},
   addConnectionStateListener: () => () => {},
   dispose: async () => {},
 }
@@ -63,8 +64,7 @@ const workerInfo = (functions: string[]): WorkerInfoResponse => ({
     worker_name: 'ade',
     namespace: 'worker-space',
   })),
-  trigger_types: [],
-  registered_triggers: [],
+  observers: [],
 })
 
 describe('loadWorkerConfigurationReference', () => {
@@ -77,7 +77,7 @@ describe('loadWorkerConfigurationReference', () => {
     })
     vi.mocked(listConfigurations).mockResolvedValue([schemaEntry])
     vi.mocked(getConfigurationSchema).mockResolvedValue(schemaEntry)
-    trigger.mockResolvedValue({ id: schemaEntry.id })
+    call.mockResolvedValue({ id: schemaEntry.id })
   })
 
   it('loads the advertised instance ID rather than guessing from the worker name', async () => {
@@ -89,7 +89,7 @@ describe('loadWorkerConfigurationReference', () => {
       entry: schemaEntry,
     })
     expect(fetchEngineWorkerInfo).toHaveBeenCalledWith('ade')
-    expect(trigger).toHaveBeenCalledExactlyOnceWith(
+    expect(call).toHaveBeenCalledExactlyOnceWith(
       'console::configuration-id',
       {},
       { namespace: 'worker-space' },
@@ -112,7 +112,7 @@ describe('loadWorkerConfigurationReference', () => {
       entries: [schemaEntry],
     })
     expect(listConfigurations).toHaveBeenCalledOnce()
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
     expect(getConfigurationSchema).not.toHaveBeenCalled()
     expect(getConfiguration).not.toHaveBeenCalled()
     expect(setConfiguration).not.toHaveBeenCalled()
@@ -127,7 +127,7 @@ describe('loadWorkerConfigurationReference', () => {
       reason: 'ambiguous',
       entries: [schemaEntry],
     })
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
     expect(getConfigurationSchema).not.toHaveBeenCalled()
   })
 
@@ -135,7 +135,7 @@ describe('loadWorkerConfigurationReference', () => {
     vi.mocked(fetchEngineWorkerInfo).mockResolvedValue(
       workerInfo(['console::configuration-id']),
     )
-    trigger.mockResolvedValue({ id: '  ' })
+    call.mockResolvedValue({ id: '  ' })
     await expect(loadWorkerConfigurationReference('ade')).rejects.toThrow(
       /entry ID/i,
     )
@@ -153,7 +153,7 @@ describe('loadWorkerConfigurationReference', () => {
     await expect(loadWorkerConfigurationReference('ade')).rejects.toThrow(
       'Schema service unavailable',
     )
-    expect(trigger).toHaveBeenCalledExactlyOnceWith(
+    expect(call).toHaveBeenCalledExactlyOnceWith(
       'console::configuration-id',
       {},
       { namespace: 'worker-space' },
@@ -171,7 +171,7 @@ describe('loadWorkerConfigurationReference', () => {
       'Worker lookup failed',
     )
     expect(listConfigurations).not.toHaveBeenCalled()
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('rejects a schema for a different entry instead of mislabeling it as the worker reference', async () => {
@@ -204,7 +204,7 @@ describe('loadWorkerConfigurationReference', () => {
       entries: [schemaEntry],
     })
     expect(fetchEngineWorkerInfo).not.toHaveBeenCalled()
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
     expect(getConfigurationSchema).not.toHaveBeenCalled()
   })
 
@@ -226,7 +226,7 @@ describe('loadWorkerConfigurationReference', () => {
       entry: schemaEntry,
     })
     expect(fetchEngineWorkersList).toHaveBeenCalledOnce()
-    expect(trigger).toHaveBeenCalledExactlyOnceWith(
+    expect(call).toHaveBeenCalledExactlyOnceWith(
       'console::configuration-id',
       {},
       { namespace: 'worker-space' },
@@ -246,7 +246,7 @@ describe('loadWorkerConfigurationReference', () => {
       entries: [schemaEntry],
     })
     expect(fetchEngineWorkerInfo).not.toHaveBeenCalled()
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('requires catalog selection when the advertised namespace is unavailable', async () => {
@@ -259,7 +259,7 @@ describe('loadWorkerConfigurationReference', () => {
       reason: 'unverified',
       entries: [schemaEntry],
     })
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('does not invoke an advertised identity scoped outside the resolved worker', async () => {
@@ -271,7 +271,7 @@ describe('loadWorkerConfigurationReference', () => {
       reason: 'unverified',
       entries: [schemaEntry],
     })
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('requires the info result to identify the unique live worker before invoking its identity', async () => {
@@ -283,6 +283,6 @@ describe('loadWorkerConfigurationReference', () => {
       reason: 'unverified',
       entries: [schemaEntry],
     })
-    expect(trigger).not.toHaveBeenCalled()
+    expect(call).not.toHaveBeenCalled()
   })
 })

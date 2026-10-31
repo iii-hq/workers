@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type {
   AssistantMessage,
-  FunctionTriggerMessage,
+  FunctionCallMessage,
   SystemMessage,
   ThoughtMessage,
   UserMessage,
@@ -43,9 +43,9 @@ describe('deriveTurnVisualState', () => {
   })
 
   it('distinguishes live calls from their between-step result dwell', () => {
-    const call: FunctionTriggerMessage = {
+    const call: FunctionCallMessage = {
       id: 'call-1',
-      role: 'function-trigger',
+      role: 'function-call',
       functionId: 'shell::run',
       input: {},
       running: true,
@@ -83,28 +83,28 @@ describe('deriveTurnVisualState', () => {
     })
   })
 
-  it('uses each trigger notification as a new turn clock identity', () => {
+  it('uses each observer notification as a new turn clock identity', () => {
     const notification: UserMessage = {
       ...user,
-      id: 'e_fire_sub_1_4',
+      id: 'e_fire_obs_1_4',
       notification: true,
     }
 
     expect(deriveTurnVisualState([notification], true)).toMatchObject({
       phase: 'waiting',
-      turnKey: 'trigger:fire:sub_1_4',
+      turnKey: 'observer:fire:obs_1_4',
     })
   })
 
-  it('keeps one clock identity when the trigger record arrives first', () => {
+  it('keeps one clock identity when the observer record arrives first', () => {
     const record: SystemMessage = {
-      id: 'e_trigfired_sub_1_4',
+      id: 'e_obsfired_obs_1_4',
       role: 'system',
       content: '',
-      kind: 'trigger-fired',
+      kind: 'observer-fired',
       createdAt: 0,
-      trigger: {
-        subscription_id: 'sub_1',
+      observer: {
+        observer_id: 'obs_1',
         target: 'harness::send',
         once: false,
         retired: false,
@@ -113,17 +113,17 @@ describe('deriveTurnVisualState', () => {
     }
     const notification: UserMessage = {
       ...user,
-      id: 'e_fire_sub_1_4',
+      id: 'e_fire_obs_1_4',
       notification: true,
     }
 
     expect(deriveTurnVisualState([record], true)).toMatchObject({
       phase: 'waiting',
-      turnKey: 'trigger:fire:sub_1_4',
+      turnKey: 'observer:fire:obs_1_4',
       betweenSteps: false,
     })
     expect(deriveTurnVisualState([record, notification], true).turnKey).toBe(
-      'trigger:fire:sub_1_4',
+      'observer:fire:obs_1_4',
     )
   })
 })

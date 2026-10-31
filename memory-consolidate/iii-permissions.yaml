@@ -8,3 +8,5 @@ rules:
   - '!memory-consolidate::run'
   - '!memory-consolidate::on-tick'
   - '!memory-consolidate::on-config-change'
+  # The REST adapter runs run and status for the http worker's routes.
+  - '!memory-consolidate::rest'

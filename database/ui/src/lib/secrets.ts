@@ -70,7 +70,7 @@ export function isMissingFunction(error: unknown): boolean {
 export async function getSecret(host: Host, name: string): Promise<SecretMeta | null | undefined> {
   let raw: unknown
   try {
-    raw = await host.iii.trigger<unknown>('secrets::get', { name }, { timeoutMs: 10_000 })
+    raw = await host.iii.call<unknown>('secrets::get', { name }, { timeoutMs: 10_000 })
   } catch (error) {
     if (isMissingFunction(error)) return undefined
     throw error
@@ -98,7 +98,7 @@ export async function storeSecret(
   if (existing === undefined) {
     throw new Error('The secrets worker is not running — start it to keep credentials out of configuration.')
   }
-  await host.iii.trigger<unknown>(
+  await host.iii.call<unknown>(
     'secrets::set',
     {
       name: input.name,

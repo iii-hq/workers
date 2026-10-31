@@ -159,7 +159,7 @@ func controlCall(ctx context.Context, client *iii.Client, id string, data any) (
 	if err != nil {
 		return nil, err
 	}
-	result, err := client.Trigger(ctx, iii.TriggerRequest{FunctionID: id, Data: b, Namespace: "default", Timeout: 15 * time.Second})
+	result, err := client.Call(ctx, iii.CallRequest{FunctionID: id, Payload: b, Namespace: "default", Timeout: 15 * time.Second})
 	return result, err
 }
 func fetchConfig(ctx context.Context, client *iii.Client) (Config, error) {
@@ -235,12 +235,12 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 		status.Source = "local"
 	}
 	internal := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
-	if err := iii.RegisterFunctionTyped(client, "whatsapp::configuration-id", func(context.Context, callbackRequest[callbackNotification]) (callbackConfigurationID, error) {
+	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::configuration-id", func(context.Context, callbackRequest[callbackNotification]) (callbackConfigurationID, error) {
 		return callbackConfigurationID{ID: ConfigID()}, nil
 	}, internal); err != nil {
 		return err
 	}
-	if err := iii.RegisterFunctionTyped(client, "whatsapp::config-status", func(ctx context.Context, _ callbackRequest[callbackNotification]) (ConfigStatus, error) {
+	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::config-status", func(ctx context.Context, _ callbackRequest[callbackNotification]) (ConfigStatus, error) {
 		if err := lockSessionContext(ctx, &mu); err != nil {
 			return ConfigStatus{}, err
 		}
@@ -280,7 +280,11 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 		status.Active = accepted.Redacted()
 		return nil
 	}
-	if err := iii.RegisterFunctionTyped(client, "whatsapp::on-config-change", func(ctx context.Context, _ callbackRequest[callbackNotification]) (callbackOK, error) {
+	// Its input is the configuration::on-updated event, whose new_value holds the
+	// Cloud access token, app secret, verify token and Flow private key.
+	credentialInput := internal
+	credentialInput.Observable = notObservable()
+	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::on-config-change", func(ctx context.Context, _ callbackRequest[callbackNotification]) (callbackOK, error) {
 		if m.interfaceOnly {
 			return callbackOK{}, interfaceCallbackError()
 		}
@@ -288,11 +292,14 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 			return callbackOK{}, err
 		}
 		return callbackOK{OK: true}, nil
-	}, internal); err != nil {
+	}, credentialInput); err != nil {
 		return err
 	}
-	b, _ := json.Marshal(map[string]any{"configuration_id": ConfigID(), "event_types": []string{"configuration:updated"}})
-	if err := client.RegisterTriggerNamespaced("whatsapp:configuration:"+ConfigID(), "configuration", "whatsapp::on-config-change", Namespace(), b); err != nil {
+	if err := observeFunction(client, iii.Source{
+		FunctionID: "configuration::on-updated",
+		Filters:    iii.Filters{"input.id": iii.Op{"$eq": ConfigID()}, "input.event_type": iii.Op{"$eq": "configuration:updated"}},
+		Deliver:    iii.DeliverOutput,
+	}, "whatsapp::on-config-change"); err != nil {
 		return err
 	}
 	if !m.interfaceOnly {

@@ -919,7 +919,7 @@ mod tests {
     #[tokio::test]
     async fn jail_escape_aborts_batch_before_any_write() {
         // Jail-scope failures must be top-level call errors so the harness
-        // post-trigger approval hook can see the C215/C220 and hold the call.
+        // post-call approval hook can see the C215/C220 and hold the call.
         // Preflight all paths before I/O: a later escape must not leave earlier
         // entries partially written before the call is re-invoked after a grant.
         let (tmp, r, c) = setup();

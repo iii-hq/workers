@@ -1,5 +1,5 @@
-//! Injectable console UI for the cron worker's schedule page, configuration,
-//! and source-specific trigger activity.
+//! Injectable console UI for the cron worker's schedule page and the activity
+//! of `cron::on-tick` observers.
 
 use std::sync::Arc;
 
@@ -35,16 +35,16 @@ mod tests {
     fn embedded_page_registers_all_cron_surfaces() {
         assert!(PAGE_JS.contains("export"), "built page.js looks wrong");
         assert!(
-            PAGE_JS.contains("configForms"),
-            "built page.js must register the cron configuration form"
+            PAGE_JS.contains("observerRenderers"),
+            "built page.js must register the observer activity renderer"
         );
         assert!(
-            PAGE_JS.contains("triggerRenderers"),
-            "built page.js must register the trigger activity renderer"
-        );
-        assert!(
-            PAGE_JS.contains("cron/page.js#trigger-activity"),
+            PAGE_JS.contains("cron/page.js#observer-activity"),
             "built page.js must retain the renderer identity"
+        );
+        assert!(
+            PAGE_JS.contains("harness::observe"),
+            "built page.js must schedule through harness::observe"
         );
     }
 

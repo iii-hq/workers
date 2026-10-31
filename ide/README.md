@@ -6,21 +6,21 @@ Run Unix commands, background jobs, and structured filesystem operations from th
 
 This worker used to be called `shell`. Only its identity changed, so nothing that talks to it needs to be rewritten:
 
-- worker name, binary, Cargo package and registry entry: `shell` → `ide` (`iii trigger compose::add worker=ide`, `npx skills add iii-hq/workers --skill ide`)
+- worker name, binary, Cargo package and registry entry: `shell` → `ide` (`iii call compose::add worker=ide`, `npx skills add iii-hq/workers --skill ide`)
 - source directory: `shell/` → `ide/`; dependents pin `ide` in their `iii.worker.yaml`
 - renamed with it (2026-09-17): the console page id, the UI asset scope (`ide/page.js`, `data-iii-ui="ide"`) and the configuration entry are `ide`; a stored `shell` configuration value is carried over to `ide` once on boot
-- unchanged on purpose: the `shell::*` function ids (`shell::exec`, `shell::fs::*`, `shell::pty::*`, …), `coder::*`, the `shell::changed` trigger type and the `data/shell/` data directory
+- unchanged on purpose: the `shell::*` function ids (`shell::exec`, `shell::fs::*`, `shell::pty::*`, …), `coder::*` and the `data/shell/` data directory
 
 ## Install
 
 ```sh
-iii trigger compose::add worker=ide
+iii call compose::add worker=ide
 ```
 
-Sandbox-targeted execution and `shell::fs::*` forwarding need the `iii-sandbox` worker; `iii trigger compose::add worker=ide` does not pull it in. To surface `shell::*` to LLM agents, pair with `iii-directory`:
+Sandbox-targeted execution and `shell::fs::*` forwarding need the `iii-sandbox` worker; `iii call compose::add worker=ide` does not pull it in. To surface `shell::*` to LLM agents, pair with `iii-directory`:
 
 ```sh
-iii trigger compose::add worker=iii-sandbox worker=iii-directory
+iii call compose::add worker=iii-sandbox worker=iii-directory
 ```
 
 ## Skills
@@ -159,7 +159,7 @@ import { registerWorker } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134')
 
-const result = await iii.trigger({
+const result = await iii.call({
   function_id: 'shell::exec',
   payload: { command: 'echo', args: ['hello'] },
 })
@@ -174,7 +174,7 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 | Function | Purpose |
 |---|---|
 | `shell::exec` | Run a command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (confined to `fs.host_roots` when set, else absolute), `env` (deny-only, gated by a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
-| `shell::exec_bg` | Spawn a command as a background job; returns `{ job_id, argv }` immediately. Accepts an optional caller-chosen `job_id` on host and sandbox targets so you can [subscribe before starting the job](#background-job-completion-shelljob-finished). Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. |
+| `shell::exec_bg` | Spawn a command as a background job; returns `{ job_id, argv }` immediately. Accepts an optional caller-chosen `job_id` on host and sandbox targets so you can [observe its completion before starting the job](#background-job-completion-shellon-job-finished). Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. |
 | `shell::status` | Fetch one job's full record: state, exit code, and captured stdout/stderr. A missing id — one that never existed or aged out past `job_retention_secs` — returns an `S211` ("no such job") error. |
 | `shell::list` | Enumerate current jobs as lightweight summaries; argv, stdout, and stderr are redacted. |
 | `shell::kill` | Terminate a running background job by `job_id`. Sandbox jobs cannot be hard-killed: the record flips to `killed` but the in-VM process runs until its `timeout_ms` (or `sandbox::stop`). |
@@ -239,7 +239,7 @@ out explicitly below:
 | `C234` | Invalid template: a bad `template.yaml` or `worker:` block, a `files:` entry that is absolute, contains `..`, is missing or leaves `worker.dir` through a symlink, a worker file that is not UTF-8 text (binary files are not supported), or no `containers.<worker.compose>` in its `worker-compose.yaml`. Nothing was written. | n/a |
 | `C235` | `coder::scaffold-worker` with `start` (the default) found a container named after the worker already in the stack: adding it would repoint that container at the new folder. Checked before any write, so nothing was written; pick another name, or pass `start: false`. | n/a |
 
-No separate install: `iii trigger compose::add worker=ide` brings the whole surface.
+No separate install: `iii call compose::add worker=ide` brings the whole surface.
 
 ## Terminal sessions (`shell::pty::*`)
 
@@ -390,57 +390,108 @@ Conventions (hold these when adding functions to either surface):
 - **Sandbox**: `shell::fs::*`/`shell::exec` accept `target: sandbox`;
   `coder::*` is host-only.
 
-## Custom trigger types
+## Observable functions
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `shell::job-finished` | A background job finishes, is killed, or fails. A binding filtered by `job_id` also receives a retained terminal result when registered after completion. | `{ job_id, argv, status, exit_code, started_at_ms, finished_at_ms, duration_ms }` |
-| `shell::changed` | A file or directory under the watched root changes. | `{ path, kind, root, dir }` |
-| `shell::git-changed` | The repository `config.path` sits in changes state: HEAD, the index, refs, another worktree, or the repository itself appearing or going (a path in no repository is watched for a `.git`). One event per ~200 ms batch. `.git` is what `shell::changed` leaves out. | `{ path, worktree?, git_dir?, common_dir?, changes: ["head" \| "index" \| "refs" \| "worktrees" \| "repository"] }` |
-| `shell::turns::changed` | A session's change history (`shell::turns::list`) is stored again: a turn opened or closed, a change recorded. `config: { session_id? }`; at most one event per session per ~200 ms. | `{ session_id }` |
+The worker hosts four event functions. Each is private (only this worker
+calls it) and its handler returns the event it is called with, so its
+observers observe the event. iii delivers each call to the observers that
+want it.
 
-### Background job completion (`shell::job-finished`)
+| Function | Called when | Args | Event |
+|---|---|---|---|
+| `shell::on-job-finished` | A background job finishes, is killed, or fails. An observer with a `job_id` added after its job finished receives the retained completion once it is accepted, from a call only that observer receives. | `{ job_id? }` | `{ job_id, argv, status, exit_code, started_at_ms, finished_at_ms, duration_ms }` |
+| `shell::on-changed` | A file or directory under the observed directory changes. | `{ path, include_ignored? }` | `{ path, kind, root, dir, ignored }` |
+| `shell::on-git-changed` | The repository `args.path` sits in changes state: HEAD, the index, refs, another worktree, or the repository itself appearing or going (a path in no repository is watched for a `.git`). One call per ~200 ms batch. `.git` is what `shell::on-changed` leaves out. | `{ path }` | `{ path, worktree?, git_dir?, common_dir?, changes: ["head" \| "index" \| "refs" \| "worktrees" \| "repository"] }` |
+| `shell::turns::on-changed` | A session's change history (`shell::turns::list`) is stored again: a turn opened or closed, a change recorded. At most one call per session per ~200 ms. | none; filter on `input.session_id` | `{ session_id }` |
 
-Choose a job ID, register a completion subscription, then start the job with
-`shell::exec_bg` using that same ID. The subscription tells you when the job
+An observer of `shell::on-changed` or `shell::on-git-changed` whose `path`
+the path policy refuses, or that is not a directory, is rejected with
+`INVALID_PATH`; one whose watcher does not start is rejected with
+`WATCH_FAILED`.
+
+One observer per consumer pattern:
+
+```ts
+// wake on one background job, once
+iii.observe(
+  { function_id: 'shell::on-job-finished', args: { job_id }, deliver: 'output' },
+  'builds::on-job-finished',
+  { max_fires: 1 },
+)
+
+// follow a directory
+iii.observe(
+  { function_id: 'shell::on-changed', args: { path: '/some/dir' }, deliver: 'output' },
+  'indexer::on-file-changed',
+)
+
+// follow one session's change history
+iii.observe(
+  {
+    function_id: 'shell::turns::on-changed',
+    filters: { 'input.session_id': { $eq: sessionId } },
+    deliver: 'output',
+  },
+  'review::on-turns-changed',
+)
+```
+
+### Background job completion (`shell::on-job-finished`)
+
+Choose a job ID, observe its completion, then start the job with
+`shell::exec_bg` using that same ID. The observer tells you when the job
 ends without polling `shell::status`.
 
 `shell::exec_bg` accepts an optional `job_id` on both host and sandbox targets.
 It must be a string containing at least one non-whitespace character. Omitting
-it or passing `null` generates a `job-<UUID>` ID, preserving the existing
-behavior. A supplied ID is reserved atomically before the command starts or
-the sandbox execution request is sent. If that ID already belongs to a
-running job or a retained finished job, the request is rejected without
-executing the command or changing the original job.
+it or passing `null` generates a `job-<UUID>` ID. A supplied ID is reserved
+atomically before the command starts or the sandbox execution request is
+sent. If that ID already belongs to a running job or a retained finished job,
+the request is rejected without executing the command or changing the
+original job.
 
 IDs belong to one worker process. Generate a fresh, globally unique ID for
 every execution, even after an older record has been pruned. This field is
 not an idempotency key: resubmitting an ID does not resume or return its
 original job.
 
-The trigger's binding configuration accepts one field:
+The function's args accept one field:
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `job_id` | Optional string | No filter | Receive the named job's completion. Omit it to receive future completions of all background jobs in this worker process. |
+| `job_id` | Optional string | Every job | Receive the named job's completion. Omit it to receive future completions of all background jobs in this worker process. |
 
-A filtered subscription also receives the result if its job has already
+An observer with a `job_id` also receives the result if its job has already
 completed, including a job that finished before `shell::exec_bg` returned.
-Registration and live completion are deduplicated for that binding. An
-unfiltered subscription receives future completions only; it does not replay
+Once iii accepts the observer, the worker calls the function again with the
+retained event and `{ "for_observer": "<observer id>" }` as the call's
+metadata, and the function's match hook gives that call to that observer
+alone. iii delivers it as it delivers a live completion: in the shape the
+observer's `deliver` asks for (the `Observed` envelope by default), through
+its filters and `on`. Each observer of a job receives its completion once
+each time iii adds it, from the live call or from the replay. An observer
+without a `job_id` receives future completions only; it does not replay
 existing records.
 
+iii removes an observer from this worker when the observing worker's
+connection drops, and adds it again when that worker comes back (it
+reattaches, or observes again under the same observer id). An observer
+added again after its job finished receives the retained completion from a
+replay: for the first time when the job ended while its worker was away,
+and a second time when it received the completion before the connection
+dropped. An observer with `max_fires: 1` ends with its first delivery, so it
+receives the completion once.
+
 For a harness agent, generate a new ID, such as `job-` followed by a UUID.
-Call `engine::register_trigger` with that ID and wait for registration to
-succeed before starting the job. Save its returned `subscription_id` for
-cleanup if execution cannot start. Omitting `function_id` registers a wake
-for the calling session; sibling workers instead register the trigger with
-their own handler as its target:
+Call `harness::observe` with that ID and wait for it to return before starting
+the job. Save its returned `observer_id` for cleanup if execution cannot
+start. Omitting `target` wakes the calling session; sibling workers observe
+with their own function as the target, as above:
 
 ```json
 {
-  "trigger_type": "shell::job-finished",
-  "config": { "job_id": "<new-unique-job-id>" },
+  "function_id": "shell::on-job-finished",
+  "args": { "job_id": "<new-unique-job-id>" },
   "once": true
 }
 ```
@@ -456,34 +507,33 @@ Then call `shell::exec_bg` with the same ID and await its response:
 }
 ```
 
-If `shell::exec_bg` fails before starting a job, no completion event will be
-emitted for that attempted job. Remove the subscription by calling
-`engine::unregister_trigger` with the saved harness subscription ID:
+If `shell::exec_bg` fails before starting a job, the function is never called
+for that attempted job. Remove the observer by calling `harness::unobserve`
+with the saved observer ID:
 
 ```json
-{ "id": "<returned-subscription-id>" }
+{ "id": "<returned-observer-id>" }
 ```
 
-A session whose policy forbids unregistration, including a leaf sub-agent,
-can bound the wake when registering it with
+A session that may not remove observers, including a leaf sub-agent, can
+bound the wake when observing with
 `"lifecycle": { "expires_in_ms": 600000 }` (ten minutes in this example).
 An expiry notification reports that the wake ended; it is not a job completion
 event.
 
-The existing flow also works: call `shell::exec_bg` without `job_id`:
+The job can also start first: call `shell::exec_bg` without `job_id`:
 
 ```json
 { "command": "pnpm", "args": ["build"], "cwd": "/path/to/project" }
 ```
 
-Then call `engine::register_trigger` with the generated `job_id` from the
-response. A job that already completed is replayed while its record remains
-in memory:
+Then call `harness::observe` with the generated `job_id` from the response. A
+job that already completed is replayed while its record remains in memory:
 
 ```json
 {
-  "trigger_type": "shell::job-finished",
-  "config": { "job_id": "<returned-job-id>" },
+  "function_id": "shell::on-job-finished",
+  "args": { "job_id": "<returned-job-id>" },
   "once": true
 }
 ```
@@ -506,52 +556,56 @@ The event excludes stdout and stderr. Read captured output with
 Replay and output retrieval depend on the job record remaining in this
 worker's memory. Finished records are pruned after `job_retention_secs`
 (default `3600`, one hour after completion), and a worker restart loses them.
-Subscribe and retrieve output within that window; a pruned record cannot be
+Observe and retrieve output within that window; a pruned record cannot be
 replayed and `shell::status` returns `S211`. Delivery is best effort, without
 retries or a durable event history.
 
-### Live change feed (`shell::changed`)
+### Live change feed (`shell::on-changed`)
 
-The worker registers a custom **trigger type** backed by a system-level
-directory watch (FSEvents on macOS, inotify on Linux, via the `notify`
-crate). A subscriber names the directory in its binding config:
+`shell::on-changed` is backed by a system-level directory watch (FSEvents on
+macOS, inotify on Linux, via the `notify` crate). An observer names the
+directory in its args:
 
-```json
-{ "type": "shell::changed", "config": { "path": "/some/dir" } }
+```ts
+iii.observe(
+  { function_id: 'shell::on-changed', args: { path: '/some/dir' }, deliver: 'output' },
+  'my-worker::on-changed',
+)
 ```
 
 Paths the root ignores — git-ignored inside a repository; `data/`,
 `config/`, `.iii/`, `node_modules/` and the root `.gitignore` outside one —
-are **not delivered** unless the binding also sets `include_ignored: true`.
+are **not delivered** unless the observer also sets `include_ignored: true`.
 A watch on a project root would otherwise fire on the engine's own
 `data/observability` and `data/session-manager` writes, i.e. on the
-subscriber's own transcript. The workspace UI opts in to count them.
+observer's own transcript. The workspace UI opts in to count them.
 
-Every fire carries the binding's registered `metadata` and `namespace`
-back to the bound function, the same way the engine's own trigger types
-do — the harness relies on it to match a wake to its `__binding`.
+The worker calls the function once per change, and iii delivers the call to
+the observers of the watch that saw it. The engine hands each target its
+observer's `metadata`; the harness matches a wake to its `__binding` that
+way.
 
-Bindings on one directory (and `include_ignored` setting) share one
-watch: the first starts it, the last to unregister (or the console GC'ing
-a closed tab's binding) tears it down. The watch puts one OS watch on each
-directory, `.git` and symlinks left out, and gitignored trees too unless
-the binding sets `include_ignored: true`. It takes at most 32768
-directories (a sixteenth of the host's `fs.inotify.max_user_watches` when
-that is less), breadth-first from the root: on a bigger tree, changes
-deeper down go unreported and the worker logs a warning once; the binding
-is never refused. On macOS one recursive FSEvents watch covers the whole
-tree instead. `config.path` goes
-through the same path policy as every `coder::*` call — jail containment
-(`fs.host_roots`), the operator denylist, canonicalization — and must be
-a directory: watching a tree is a read of every filename under it, so a
-path you can't read is a path you can't watch.
+Observers of one directory (and `include_ignored` setting) share one
+watch: the first starts it, and the watch stops when its last observer is
+removed (the console disposes a closed tab's observer). The watch puts one
+OS watch on each directory, `.git` and symlinks left out, and gitignored
+trees too unless the observer sets `include_ignored: true`. It takes at most
+32768 directories (a sixteenth of the host's `fs.inotify.max_user_watches`
+when that is less), breadth-first from the root: on a bigger tree, changes
+deeper down go unreported and the worker logs a warning once; the observer
+is never refused for it. On macOS one recursive FSEvents watch covers the
+whole tree instead. `args.path` goes through the same path policy as every
+`coder::*` call — jail containment (`fs.host_roots`), the operator denylist,
+canonicalization — and must be a directory: watching a tree is a read of
+every filename under it, so a path you can't read is a path you can't watch.
 
-The payload is lean — `{ path, kind, root, dir }` with `kind` ∈
+The payload is lean — `{ path, kind, root, dir, ignored }` with `kind` ∈
 `created | modified | deleted`, `path` relative to the watched `root`,
-and `dir` true when the path is a directory (a subscriber that opens
-files must skip those; deleted paths can't be probed and report false).
-A subscriber that wants content asks `coder::read-file`; one that wants
-the diff asks git.
+`dir` true when the path is a directory (an observer that opens files must
+skip those; deleted paths can't be probed and report false), and `ignored`
+true when git ignores the path (always false outside a repository). An
+observer that wants content asks `coder::read-file`; one that wants the
+diff asks git.
 
 Semantics:
 
@@ -565,10 +619,10 @@ Semantics:
   came before, a create-after-delete is `created`). `.git` internals
   are filtered — the visible outcome arrives as worktree events of its
   own.
-- **Best-effort fan-out**: events fire with no reply expected; a slow
-  or absent subscriber never delays anything.
+- **Best-effort fan-out**: the worker calls the function without waiting
+  for a reply; a slow or absent observer never delays anything.
 
-The console explorer page binds this on its browsed root: the tree and
+The console explorer page observes this on its browsed root: the tree and
 git panels refresh live, a clean active buffer follows the disk (a dirty
 one keeps the user's edits), and the last written file follows the
 writer into view as a diff — git baseline in a repo, empty baseline for
@@ -642,9 +696,9 @@ Sandbox-forwarded `fs::*`/`exec` errors can also surface engine codes verbatim i
   ```ts
   import { registerWorker } from 'iii-sdk'
   const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134')
-  const { value } = await iii.trigger({ function_id: 'configuration::get', payload: { id: 'shell' } })
+  const { value } = await iii.call({ function_id: 'configuration::get', payload: { id: 'shell' } })
   delete value.allowlist
-  await iii.trigger({ function_id: 'configuration::set', payload: { id: 'shell', value } })
+  await iii.call({ function_id: 'configuration::set', payload: { id: 'shell', value } })
   ```
 
   If you seed from a `--config` file instead, just delete the `allowlist: []` line.

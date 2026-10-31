@@ -20,7 +20,7 @@ import {
 import type {
   AssistantMessage,
   Conversation,
-  FunctionTriggerMessage,
+  FunctionCallMessage,
   Message,
   MessagePatch,
   ThoughtMessage,
@@ -84,10 +84,10 @@ function childMessage(
         model: MODEL_ID,
         createdAt: now,
       }
-    case 'function-trigger':
+    case 'function-call':
       return {
         id,
-        role: 'function-trigger',
+        role: 'function-call',
         functionId: entry.functionId,
         input: entry.input,
         output: entry.output,
@@ -130,7 +130,7 @@ export interface PlayerState {
   /** Set while a call sits in the approval gate. */
   resolveApproval: (
     sessionId: string,
-    functionTriggerId: string,
+    functionCallId: string,
     decision: 'allow' | 'deny',
   ) => Promise<void>
   /** Root chat plus every session `harness::spawn` created, for the sidebar. */
@@ -332,7 +332,7 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
       while (pausedRef.current && !stale()) await wait(150)
     }
 
-    const gate = (_functionTriggerId: string) =>
+    const gate = (_functionCallId: string) =>
       new Promise<void>((resolve) => {
         let done = false
         const finish = () => {
@@ -431,25 +431,25 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
               assistantId = null
               assistantBuffer = ''
             }
-            const msg: FunctionTriggerMessage = {
+            const msg: FunctionCallMessage = {
               id: uid(),
-              role: 'function-trigger',
+              role: 'function-call',
               functionId: ev.functionId,
               input: ev.input,
               running: !ev.pendingApproval,
               pendingApproval: ev.pendingApproval,
-              functionTriggerId: ev.functionTriggerId,
+              functionCallId: ev.functionCallId,
               sessionId: ev.sessionId,
               createdAt: Date.now(),
             }
             fcallId = msg.id
-            if (ev.functionTriggerId) fcallMap.set(msg.id, ev.functionTriggerId)
+            if (ev.functionCallId) fcallMap.set(msg.id, ev.functionCallId)
             append(msg)
             break
           }
           case 'fcall-approval-cleared': {
             const clearedId = [...fcallMap.entries()].find(
-              ([, fcid]) => fcid === ev.functionTriggerId,
+              ([, fcid]) => fcid === ev.functionCallId,
             )?.[0]
             if (clearedId) {
               patch(clearedId, {
@@ -460,9 +460,9 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
             break
           }
           case 'fcall-end': {
-            const targetId: string | null = ev.functionTriggerId
+            const targetId: string | null = ev.functionCallId
               ? ([...fcallMap.entries()].find(
-                  ([, fcid]) => fcid === ev.functionTriggerId,
+                  ([, fcid]) => fcid === ev.functionCallId,
                 )?.[0] ?? fcallId)
               : fcallId
             if (!targetId) break
@@ -614,9 +614,9 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
   const rootThinking =
     isStreaming &&
     (lastRole === 'user' ||
-      (lastRole === 'function-trigger' &&
-        !(messages[messages.length - 1] as FunctionTriggerMessage).running &&
-        !(messages[messages.length - 1] as FunctionTriggerMessage)
+      (lastRole === 'function-call' &&
+        !(messages[messages.length - 1] as FunctionCallMessage).running &&
+        !(messages[messages.length - 1] as FunctionCallMessage)
           .pendingApproval))
 
   /* Rebuilt only when a child or the root's status changes — not per token,

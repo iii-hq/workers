@@ -1,10 +1,10 @@
 /**
- * The catalog's live span feed: notify-then-query over the engine's `trace`
- * trigger, the same model the Traces masthead uses
+ * The catalog's live span feed: notify-then-query over the engine's
+ * `observability::on-span` source, the same model the Traces masthead uses
  * (`ade/web/src/lib/traces-activity.ts`, `useAllSpans`).
  *
  * The engine's observability worker coalesces span activity into one
- * `{ trace_ids }` tick per ~300ms window, fired on span start and close for
+ * `{ trace_ids }` call per ~300ms window, made on span start and close for
  * every non-internal span. The tick carries ids only; this feed re-reads the
  * touched traces with `engine::traces::spans` and hands the page the
  * `execute <function_id>` spans it has not delivered yet. The engine's span
@@ -38,15 +38,11 @@ export interface SpanEvent {
 
 export type SpanFeedBus = Pick<
   ExtensionIii,
-  | 'browserId'
-  | 'on'
-  | 'registerTrigger'
-  | 'trigger'
-  | 'addConnectionStateListener'
+  'browserId' | 'on' | 'observe' | 'call' | 'addConnectionStateListener'
 >
 
-/** The engine observability worker's coalesced span-activity trigger type. */
-export const TRACE_TRIGGER_TYPE = 'trace'
+/** The engine observability worker's coalesced span-activity source. */
+export const ON_SPAN_FN = 'observability::on-span'
 /** Most trace ids one read asks for; more switch the read to recovery. */
 export const MAX_TRACE_IDS = 64
 /** Spans per read: the strip shows a handful, the map keeps the newest. */
@@ -168,7 +164,7 @@ export function createSeenSpans(max = MAX_SEEN) {
   }
 }
 
-/** Pull `trace_ids` out of a `trace` tick; malformed payloads yield `[]`. */
+/** Pull `trace_ids` out of an `observability::on-span` event; malformed payloads yield `[]`. */
 export function traceIdsOf(payload: unknown): string[] {
   if (!isRecord(payload) || !Array.isArray(payload.trace_ids)) return []
   return payload.trace_ids.filter((id): id is string => typeof id === 'string')
@@ -186,8 +182,9 @@ export interface SpanFeedOptions {
 
 /**
  * Start the feed. `onSpans` receives each batch of not-yet-delivered calls.
- * Returns a cleanup that unregisters the trigger, handler and listeners.
- * A bus without the `trace` trigger type degrades to manual refresh.
+ * Returns a cleanup that disposes the observer and removes the handler and
+ * listeners. Without an observability worker the observer stays pending and
+ * the page degrades to manual refresh.
  */
 export function startSpanFeed(
   bus: SpanFeedBus,
@@ -215,7 +212,7 @@ export function startSpanFeed(
 
   const spansRead = async (traceIds: string[]): Promise<void> => {
     if (traceIds.length === 0) return
-    const out = await bus.trigger(
+    const out = await bus.call(
       'engine::traces::spans',
       {
         trace_ids: traceIds,
@@ -236,7 +233,7 @@ export function startSpanFeed(
 
   /** Bounded catch-up: recent trace summaries since the last read. */
   const recoveryIds = async (since: number): Promise<string[]> => {
-    const out = await bus.trigger(
+    const out = await bus.call(
       'engine::traces::list',
       {
         include_internal: false,
@@ -332,16 +329,14 @@ export function startSpanFeed(
     request()
   })
 
-  let offTrigger: (() => void) | undefined
+  let offObserver: (() => void) | undefined
   try {
-    offTrigger = bus.registerTrigger({
-      type: TRACE_TRIGGER_TYPE,
-      function_id: `${options.handlerId}::${bus.browserId}`,
-      config: {},
-    })
+    offObserver = bus.observe(
+      { function_id: ON_SPAN_FN, namespace: 'default', deliver: 'output' },
+      `${options.handlerId}::${bus.browserId}`,
+    )
   } catch {
-    // No observability worker on this engine: the page degrades to manual
-    // refresh.
+    // The client refused to observe: the page degrades to manual refresh.
   }
 
   let dropped = false
@@ -380,9 +375,9 @@ export function startSpanFeed(
     offVisibility?.()
     offConnection()
     try {
-      offTrigger?.()
+      offObserver?.()
     } catch {
-      // Client already disposed; nothing to unregister.
+      // Client already disposed; nothing to dispose.
     }
     offHandler()
   }

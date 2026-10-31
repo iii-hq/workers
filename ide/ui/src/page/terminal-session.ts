@@ -133,10 +133,10 @@ let xtermLoad: Promise<XtermModule> | null = null
 
 /**
  * The terminal emulator, imported once on first use: it ships as its own
- * console:module (ui/xterm.ts) so a console tab that never opens a terminal
- * never downloads it. A failed import clears the memo so the next attempt
- * imports again. The memo outlives a hot reload of xterm.js alone: new bytes
- * reach a tab when page.js reloads.
+ * module asset (ui/xterm.ts, kind `module`) so a console tab that never
+ * opens a terminal never downloads it. A failed import clears the memo so
+ * the next attempt imports again. The memo outlives a hot reload of
+ * xterm.js alone: new bytes reach a tab when page.js reloads.
  */
 function loadXterm(host: Host): Promise<XtermModule> {
   if (!host.importModule) {
@@ -263,7 +263,7 @@ export async function detachTerminalSessionForUnmount(
   })
   active.unsubscribe()
   router.drain(active.sessionId)
-  await host.iii.trigger('shell::pty::detach', {
+  await host.iii.call('shell::pty::detach', {
     session_id: active.sessionId,
     access_key: active.accessKey,
   })
@@ -452,7 +452,7 @@ export function useTerminalSession(
     async (session: ActiveTerminalSession, data: Uint8Array) => {
       if (!host) return
       try {
-        await host.iii.trigger('shell::pty::write', {
+        await host.iii.call('shell::pty::write', {
           session_id: session.sessionId,
           access_key: session.accessKey,
           data: encodeBase64(data),
@@ -505,7 +505,7 @@ export function useTerminalSession(
       resizeTimerRef.current = window.setTimeout(() => {
         resizeTimerRef.current = null
         void host.iii
-          .trigger('shell::pty::resize', {
+          .call('shell::pty::resize', {
             session_id: active.sessionId,
             access_key: active.accessKey,
             cols: dimensions.cols,
@@ -974,7 +974,7 @@ export function useTerminalSession(
       }
       const { cols, rows } = dimensionsRef.current
       void host.iii
-        .trigger('shell::pty::resize', {
+        .call('shell::pty::resize', {
           session_id: active.sessionId,
           access_key: active.accessKey,
           cols,
@@ -1016,7 +1016,7 @@ export function useTerminalSession(
     const active = activeRef.current
     if (active && host) {
       try {
-        await host.iii.trigger('shell::pty::close', {
+        await host.iii.call('shell::pty::close', {
           session_id: active.sessionId,
           access_key: active.accessKey,
         })
@@ -1095,7 +1095,7 @@ export function useTerminalSession(
       router?.drain(active.sessionId)
       if (host) {
         void host.iii
-          .trigger('shell::pty::detach', {
+          .call('shell::pty::detach', {
             session_id: active.sessionId,
             access_key: active.accessKey,
           })

@@ -23,14 +23,12 @@ send or database commit failed.
 
 Actual artifact capture also exposed a registration race: the collector took a
 snapshot after the first function batch, yielding only 86 of 239 functions.
-Positive waits now require three unchanged nonempty target registration samples
+Positive waits require three unchanged nonempty target registration samples
 before collecting a function interface. No-wait behavior remains unchanged;
-empty or unstable interfaces fail instead of writing partial metadata.
-Trigger-only workers retain the previous deadline timing and require stable,
-attributable trigger registrations. Late functions reset readiness. This path
-has dedicated regression coverage.
-The native `whatsapp::events` trigger now advertises filter and event-envelope
-schemas, preserving omitted/null filters and generic event data.
+empty or unstable interfaces fail instead of writing partial metadata. Late
+functions reset readiness. This path has dedicated regression coverage.
+The native event source `whatsapp::on-events` advertises its event envelope as
+its request and response format and keeps event-specific data open.
 
 ## Release and interface contracts
 
@@ -65,7 +63,7 @@ Executed against the final Go source with the cached Go 1.27.1 toolchain and
 | Worker manifest validator and actionlint for CI/build workflows | Passed |
 | Deployment descriptor compilation and JSON Schema | All 82 publishable descriptors passed |
 | Four real `deployment_train build` units, assembly, inventory verification, and interface staging | Passed; staged executable reports `whatsapp 0.1.0` |
-| Actual engine capture from the prepared Linux amd64 artifact, without database/configuration sidecars | 239 functions and 2 triggers; both schemas present for every entry; no schema warnings or storage creation |
+| Actual engine capture from the prepared Linux amd64 artifact, without database/configuration sidecars | 239 functions and the 2 event sources; both schemas present for every entry; no schema warnings or storage creation |
 | Existing UI tests | 180 passed across 10 files |
 | UI type check, strict build, and embedded asset comparison | Passed; zero lint errors/warnings; embedded JS/CSS identical to build output |
 | `TestEngineSmoke` with local engine, database, and HTTP binaries | Passed, including central reload, all public schemas, ADE assets, offline lifecycle, webhook signatures/deduplication, Cloud filters, namespace/metadata, and synthetic tunnel controls |
@@ -79,7 +77,7 @@ also failed as expected against an overlay restoring the old unconditional lock,
 then passed with the fix.
 
 Independent reviews checked release integration, runtime cancellation, native
-trigger schemas, and the collector changes. Additional findings from those
+event schemas, and the collector changes. Additional findings from those
 reviews were fixed and covered by regressions; the final rechecks reported no
 remaining concrete issues in those changes.
 

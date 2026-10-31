@@ -4,7 +4,7 @@ Feature: the compaction round trip — summaries persist, converge, never grow
   Contract (context-manager.md § The compaction round trip): the worker
   never persists a summary; the caller does. previous_summary is
   rendered into the system prompt under "# Conversation summary"; when
-  compaction triggers again the summariser UPDATES that summary instead
+  compaction runs again the summariser UPDATES that summary instead
   of starting over, so summaries converge. Callers that skip
   persistence still get correct output — at one bounded summarisation pipeline per
   over-budget request. Large histories require multiple anchored calls.

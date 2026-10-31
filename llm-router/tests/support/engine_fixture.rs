@@ -30,8 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -213,28 +212,39 @@ where
 /// shape every engine since 0.22 accepts in a direct `config.yaml`. Port is
 /// pinned so parallel tests don't collide on the default.
 pub async fn spawn_bare_engine() -> Option<Engine> {
-    spawn_engine_with(|port, _dir| {
-        format!(
-            r#"workers:
+    spawn_engine_with(bare_config).await
+}
+
+/// The bare engine's `config.yaml`: the main `iii-worker-manager` listener on
+/// `port`.
+pub fn bare_config(port: u16, _dir: &Path) -> String {
+    format!(
+        r#"workers:
   - name: iii-worker-manager
     config:
       port: {port}
 "#
-        )
-    })
-    .await
+    )
 }
 
 /// Bare engine plus the standalone `state` worker (in-memory kv), polled
 /// until `state::get` answers. None = skip (reason already printed).
 pub async fn spawn_engine() -> Option<Engine> {
+    spawn_engine_with_state(bare_config).await
+}
+
+/// [`spawn_engine`] with the engine config the caller composes (its main
+/// listener on the port it is given, where `state` connects).
+pub async fn spawn_engine_with_state(
+    config_for: impl FnOnce(u16, &Path) -> String,
+) -> Option<Engine> {
     let (state_bin, state_from) = state_bin().or_else(|| {
         eprintln!(
             "skipping: no state worker (set III_STATE_BIN, build state/ with `cargo build --manifest-path state/Cargo.toml --bin state`, or install any iii project once so the package cache holds one)"
         );
         None
     })?;
-    let mut engine = spawn_bare_engine().await?;
+    let mut engine = spawn_engine_with(config_for).await?;
     let state_config = engine.dir.join("state-config.yaml");
     std::fs::write(
         &state_config,
@@ -260,7 +270,7 @@ pub async fn spawn_engine() -> Option<Engine> {
         let probe = probe.clone();
         async move {
             probe
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "state::get".into(),
                     payload: json!({ "scope": "engine-fixture", "key": "ready" }),
                     action: None,
@@ -327,7 +337,7 @@ pub async fn spawn_engine_with(config_for: impl FnOnce(u16, &Path) -> String) ->
         let probe = probe.clone();
         async move {
             probe
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "engine::workers::list".into(),
                     payload: json!({}),
                     action: None,

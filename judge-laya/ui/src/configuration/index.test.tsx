@@ -62,13 +62,13 @@ vi.mock('@iii-dev/console-ui', () => ({
 }))
 
 const card = { status: 'ok', models: [{ name: 'laya', description: 'laya checkpoint', release_date: '1c5edc1' }] }
-type Engine = Pick<ExtensionIii, 'trigger'>
+type Engine = Pick<ExtensionIii, 'call'>
 const engine = (reply: unknown = card) => {
-  const trigger = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
+  const call = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
     if (reply instanceof Error) throw reply
     return reply
   })
-  return { trigger } as unknown as Engine & { trigger: typeof trigger }
+  return { call } as unknown as Engine & { call: typeof call }
 }
 
 let root: Root | undefined
@@ -96,7 +96,7 @@ describe('loadedModel', () => {
 describe('LayaConfigForm', () => {
   it('offers both checkpoints and reports the running one', async () => {
     const { container, iii } = await mount({ model: 'laya' })
-    expect(iii.trigger).toHaveBeenCalledWith('judge-laya::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
+    expect(iii.call).toHaveBeenCalledWith('judge-laya::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
     const select = container.querySelector<HTMLSelectElement>('select[name="model"]')!
     expect([...select.options].map((o) => o.value)).toEqual(['', 'laya', 'laya-multilingual', 'laya-typed-decisions'])
     // The default checkpoint is never offered for preloading.

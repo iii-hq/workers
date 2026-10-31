@@ -113,7 +113,7 @@ export type SessionMeta = {
  *
  * `elided` marks a placeholder inside a collapsed activity run on a tail
  * page: the assistant keeps its text and every `function_call` id + function
- * id but `arguments: {}` — an `agent_trigger` call keeps its string
+ * id but `arguments: {}` — an `agent_call` call keeps its string
  * `function` + `description` (the row's label) and drops only `payload` — and
  * a `function_result` keeps its pairing fields with `content: []`. It says
  * "fetch me later through `session::messages-range`", never "this message was
@@ -127,18 +127,19 @@ export type TranscriptItem = {
   elided?: boolean
 }
 
-export const SESSION_TRIGGER_TYPES = [
-  'session::created',
-  'session::message-added',
-  'session::message-updated',
-  'session::status-changed',
-  'session::meta-updated',
-  'session::deleted',
+/** session-manager's event functions, observed with `input.session_id` filters. */
+export const SESSION_FUNCTIONS = [
+  'session::on-created',
+  'session::on-message-added',
+  'session::on-message-updated',
+  'session::on-status-changed',
+  'session::on-meta-updated',
+  'session::on-deleted',
 ] as const
 
-export type SessionTriggerType = (typeof SESSION_TRIGGER_TYPES)[number]
+export type SessionFunction = (typeof SESSION_FUNCTIONS)[number]
 
-// Event payloads (per the trigger table in integration.md §5).
+// Event payloads (per the event table in integration.md §5).
 
 export type SessionCreatedEvent = {
   session_id: string

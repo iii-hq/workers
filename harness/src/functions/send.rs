@@ -240,7 +240,7 @@ pub struct SendResponse {
     /// Set when the message was the `/compact` command: nothing was appended
     /// and no turn ran. The compaction runs in the background; its start and
     /// outcome reach every client through the transcript and
-    /// `harness::compaction`.
+    /// `harness::on-compaction`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<CompactionStarted>,
 }
@@ -899,7 +899,7 @@ pub struct EditQueuedResponse {
 /// while keeping the same internal id, `entry_id`, `queued_at`, and `origin`,
 /// so re-writing the same state key leaves the message where it was in the
 /// queue order (unlike remove + re-queue, which moves it to the tail). Emits
-/// `harness::message-queued` so other clients refetch the new content.
+/// `harness::on-message-queued` so other clients refetch the new content.
 pub async fn edit_queued(
     deps: &Deps,
     req: EditQueuedRequest,
@@ -2655,7 +2655,7 @@ mod tests {
     #[test]
     fn a_woken_child_keeps_its_leaf_boundary_and_depth() {
         let policy = policy::CompiledPolicy::from(Some(&FunctionPolicy {
-            allow: vec!["engine::register_trigger".into(), "state::*".into()],
+            allow: vec!["harness::observe".into(), "state::*".into()],
             deny: vec![],
             expose: Default::default(),
         }));
@@ -3649,7 +3649,7 @@ mod tests {
     }
     #[tokio::test]
     async fn agent_send_validation_runs_before_profile_rpc() {
-        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let deps = crate::functions::observe::tests::disconnected_deps();
         let cfg = WorkerConfig::default();
         let invalid = agent_send_request(SendOptions {
             agent: Some("fixture".into()),

@@ -1,11 +1,11 @@
 //! The phantom-tick ring.
 //!
 //! The ingest runs as a trace of its own — the queue step, the
-//! `database::*` calls it makes — and those traces tick the very `trace`
-//! trigger that feeds it. The engine already drops ticks for spans of
-//! functions registered as a trace-trigger target, which covers the handler,
-//! but not the work the handler queued: a `database::execute` span belongs to
-//! `database`, ticks normally, and turns one ingest into two.
+//! `database::*` calls it makes — and those traces tick the very
+//! `observability::on-span` source that feeds it. The engine does not tick
+//! the source for the spans of its own activations, which covers the
+//! handler, but not the work the handler queued: a `database::execute` span
+//! belongs to `database`, ticks normally, and turns one ingest into two.
 //!
 //! Registration metadata does not close this either. `metadata.internal` is
 //! about discovery; the engine stamps `iii.function.kind = internal` only for

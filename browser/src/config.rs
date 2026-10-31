@@ -84,7 +84,7 @@ pub struct ScraplingConfig {
     pub adaptive_storage_path: String,
     pub adaptive_max_bytes: u64,
     /// Append the browser::* scraping guidance to agent system prompts.
-    /// Hot-applies: flipping it in the console binds/unbinds the
+    /// Hot-applies: flipping it in the console observes or disposes the
     /// pre-generate hook live, no restart (same knob the Python scrapling
     /// worker and the fp/web workers carry).
     pub inject_guidance: bool,

@@ -14,15 +14,13 @@ export const useApi = <TBody = any>(
   const function_id = `api::${config.http_method.toLowerCase()}::${config.api_path}`
   const logger = console
 
-  iii.registerFunction({ id: function_id, metadata: config.metadata }, (req) => handler(req, logger))
-  iii.registerTrigger({
-    type: 'http',
-    function_id,
-    config: {
-      api_path: config.api_path,
-      http_method: config.http_method,
-      description: config.description,
-      metadata: config.metadata,
-    },
+  iii.registerFunction(function_id, (req: ApiRequest<TBody>) => handler(req, logger), {
+    description: config.description,
+    metadata: config.metadata,
   })
+  observeRoute(function_id, config.http_method, config.api_path)
 }
+
+/** Serves `method path` with `function_id`: the http worker routes each matching request to it. */
+export const observeRoute = (function_id: string, method: string, path: string) =>
+  iii.observe({ function_id: 'http::on-request', args: { method, path } }, function_id)

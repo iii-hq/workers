@@ -2,14 +2,13 @@
 //! carry the registration token (identity binding, spec adaptation #1).
 use crate::PROVIDER_ID;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use llm_router::types::model::Model;
 use llm_router::types::router::ProviderResolveResponse;
 use serde_json::{json, Value};
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,

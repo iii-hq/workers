@@ -1,9 +1,9 @@
 # storage
 
 Object storage for the iii engine over S3, GCS, R2, and a native local
-filesystem backend. Streamed uploads, signed downloads, and `object-created` /
-`object-deleted` triggers — all behind one `bucket:` name regardless of
-the cloud underneath.
+filesystem backend. Streamed uploads, signed downloads, and observable
+object-created / object-deleted events — all behind one `bucket:` name
+regardless of the cloud underneath.
 
 ## S3 multipart controls
 
@@ -22,10 +22,10 @@ The version in Cargo.toml is source metadata, not proof that this code is publis
 ## Install
 
 ```bash
-iii trigger compose::add worker=storage
+iii call compose::add worker=storage
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 The worker depends on `configuration` (where its settings live) and `secrets`
 (which resolves `secret://` / `env://` credentials, see
@@ -42,7 +42,7 @@ import { registerWorker } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134')
 
-await iii.trigger({
+await iii.call({
   function_id: 'storage::putObject',
   payload: {
     bucket: 'uploads',
@@ -52,7 +52,7 @@ await iii.trigger({
   },
 })
 
-const { url, expires_at } = await iii.trigger({
+const { url, expires_at } = await iii.call({
   function_id: 'storage::presignUrl',
   payload: {
     bucket: 'uploads',
@@ -69,7 +69,7 @@ await fetch(url, {
   body: file,
 })
 
-const { body_base64, content_type } = await iii.trigger({
+const { body_base64, content_type } = await iii.call({
   function_id: 'storage::getObject',
   payload: {
     bucket: 'uploads',
@@ -77,7 +77,7 @@ const { body_base64, content_type } = await iii.trigger({
   },
 })
 
-await iii.trigger({
+await iii.call({
   function_id: 'storage::deleteObject',
   payload: {
     bucket: 'uploads',
@@ -85,7 +85,7 @@ await iii.trigger({
   },
 })                                  // idempotent: returns { deleted: false } if absent
 
-const { content_type, etag, size, last_modified } = await iii.trigger({
+const { content_type, etag, size, last_modified } = await iii.call({
   function_id: 'storage::headObject',
   payload: {
     bucket: 'uploads',
@@ -97,7 +97,7 @@ const { content_type, etag, size, last_modified } = await iii.trigger({
 For a multipart upload to a native local bucket, use `presignPost`:
 
 ```ts
-const { url, fields } = await iii.trigger({
+const { url, fields } = await iii.call({
   function_id: 'storage::presignPost',
   payload: {
     bucket: 'scratch',
@@ -125,12 +125,12 @@ await fetch(url, { method: 'POST', body: form })
 From a Rust worker:
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-iii.trigger(TriggerRequest {
+iii.call(CallRequest {
     function_id: "storage::putObject".into(),
     payload: json!({
         "bucket": "uploads",
@@ -151,7 +151,8 @@ not from a local file. On startup it:
 1. Registers its config schema with the `configuration` worker
    (`configuration::register`, id `storage`).
 2. Fetches the live, env-expanded config (`configuration::get`).
-3. Subscribes to `configuration:updated` events and hot-reloads.
+3. Observes `configuration::on-updated` (its entry's `configuration:updated`
+   events) and hot-reloads.
 
 `--config <path>` is an **optional seed**: when given, the file is loaded and
 sent as `initial_value` the first time the schema is registered (no stored value
@@ -176,7 +177,7 @@ secret it references changes. A reload rebuilds only the buckets whose entry or
 resolved credentials changed: the others keep their clients, and notification
 pollers whose source did not change keep running. A notification source that
 cannot be prepared (a Cloudflare token the queue refuses) leaves its buckets
-working without triggers and is reported as `notifications_error`.
+working without object events and is reported as `notifications_error`.
 
 The native-local listener stays transactional: the worker binds a new
 `bind_address` before publishing anything, and a port that is taken rejects the
@@ -189,7 +190,7 @@ bucket is configured.
 
 Each bucket pins a `provider` (`s3` | `gcs` | `r2` | `local`) and the
 credentials for that provider. Buckets without `notifications:` work fine for
-RPCs; they just don't fire triggers.
+RPCs; they produce no object events, and an observer of one is refused.
 
 ```yaml
 providers:
@@ -262,8 +263,8 @@ bucket is unavailable with `error_stage: "secrets"` and a message saying so.
 Resolved values never appear in the configuration, a reply, logs or traces,
 and every error message is scrubbed of the credentials used.
 
-Resolved values are cached. The worker binds the secrets worker's
-`secrets::changed` trigger to its internal `storage::on-secret-change`: a
+Resolved values are cached. The worker observes the secrets worker's
+`secrets::on-changed` with its internal `storage::on-secret-change`: a
 rotated, deleted or re-shared secret is re-read at once and only the buckets
 that use it are rebuilt (deleted → those buckets report the error; re-created →
 they come back). Without the event a cached value is re-read every 5 minutes,
@@ -332,44 +333,77 @@ worker derive the endpoint automatically.
 | S3 | `notifications.sqs_queue_url` | SQS queue + bucket event config for `s3:ObjectCreated:*` / `s3:ObjectRemoved:*` + `sqs:ReceiveMessage,DeleteMessage` IAM on the queue ARN. |
 | GCS | `notifications.pubsub_subscription` | `gsutil notification create -t TOPIC -e OBJECT_FINALIZE,OBJECT_DELETE gs://<bucket>` + `roles/pubsub.subscriber` on the subscription. |
 | R2 | `notifications.queue_id` + `notifications.api_token` | Cloudflare Queue + R2 event notifications on the bucket + API token scoped `queue:consume`. |
-| local | (none) | The worker dispatches events immediately after a native local write/delete commits. |
+| local | (none) | The worker calls the object functions immediately after a native local write/delete commits. |
 
 Other config keys and their defaults live in
 [`src/config.rs`](src/config.rs); wire-stable error codes returned by
 every RPC live in [`src/error.rs`](src/error.rs).
 
-## Custom trigger types
+## Object events
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `storage::object-created` | An object is written (PUT, multipart complete, copy-in). | `{ bucket, key, size, content_type, etag, version_id?, event_time }` |
-| `storage::object-deleted` | An object (or version, on versioned buckets) is removed. | `{ bucket, key, version_id?, event_time }` |
+| Function | Args | Called when | Event |
+|---|---|---|---|
+| `storage::on-object-created` | `{ bucket, handler_timeout_ms? }` | An object is written to a bucket with a notifications source (PUT, multipart complete, copy-in; every write to a `local` bucket). | `{ bucket, key, size, etag, content_type, created_at, raw_event_id }` |
+| `storage::on-object-deleted` | `{ bucket, handler_timeout_ms? }` | An object is removed from such a bucket. | `{ bucket, key, deleted_at, raw_event_id }` |
 
-The worker itself binds two internal functions (metadata `internal: true`,
-denied to agents): `storage::on-config-change` to the configuration worker's
-`configuration:updated` for its entry, and `storage::on-secret-change` to the
-secrets worker's `secrets::changed` (the binding waits for the secrets worker
-when it is not running yet). Both ignore their payload's values and re-read the
-authoritative state.
+Both functions are private: only this worker calls them, once per event its
+notifications source reports, and any worker may observe them. An observer
+names one worker bucket in `args.bucket`; `handler_timeout_ms` (default
+60000) bounds how long its target may take per event. An observer of a bucket
+without a running notifications source is rejected with `CONFIG_ERROR`. A
+configuration change that removes a bucket, or its `notifications:`, rejects
+the observers of that bucket with `CONFIG_ERROR` as well; observers of a bucket
+whose source is configured but fails to start stay, and receive events once it
+runs again.
 
-Delivery is at-least-once. Handlers must return `{ ack: true }`; `false`,
-panic, or timeout (`handler_timeout_ms`, default 60 s) leaves the
-message in the upstream queue for redelivery.
+Delivery is custom and at-least-once. For each event, the worker calls the
+target of every observer of its bucket whose filters match, concurrently, and
+the target receives the event itself (the observer's `deliver` choice does not
+apply). A target acks by returning `null` or `{ ack: true }`. The upstream
+message (SQS, Pub/Sub, Cloudflare Queues) is acked only when every target
+acked; `{ ack: false }`, an error or a timeout leaves it for redelivery. A
+call of either function answers its caller `{ acked }`. With no observer of
+the bucket, the worker builds no event and acks the upstream message.
 
-```yaml
-triggers:
-  - type: storage::object-created
-    config:
-      bucket: uploads
-      # event_types: [ObjectCreated:Put, ObjectCreated:CompleteMultipartUpload]   # optional filter
-      # handler_timeout_ms: 60000
+```typescript
+iii.registerFunction('uploads::on-created', async (event) => {
+  await thumbnails.queue(event.bucket, event.key)
+  return { ack: true }
+})
 
-  - type: storage::object-deleted
-    config:
-      bucket: uploads
+iii.observe(
+  { function_id: 'storage::on-object-created', args: { bucket: 'uploads', handler_timeout_ms: 30000 } },
+  'uploads::on-created',
+)
 ```
 
-> **R2 trigger v1 caveat:** the Cloudflare Queues consume-from-outside
+```rust
+use iii_sdk::Source;
+use serde_json::json;
+
+iii.observe(
+    Source::function("storage::on-object-deleted").args(json!({ "bucket": "uploads" })),
+    "uploads::on-deleted",
+);
+```
+
+Filters narrow an observer further, by the event's fields:
+`{ "input.key": { "$prefix": "avatars/" } }` delivers only keys under
+`avatars/`, and an event it filters out counts as acked.
+
+The worker itself observes two functions with internal handlers (metadata
+`internal: true`, denied to agents): `configuration::on-updated`, filtered to
+its entry's `configuration:updated` events, with `storage::on-config-change`,
+and the secrets worker's `secrets::on-changed` with
+`storage::on-secret-change` (the observer stays pending while the secrets
+worker is not running). Both ignore their payload's values and re-read the
+authoritative state.
+
+`storage::saveBucket` and `storage::testBucket` accept literal credentials in
+their input, so they are registered with `observable: false`: observing one
+fails with `NOT_OBSERVABLE`.
+
+> **R2 notifications v1 caveat:** the Cloudflare Queues consume-from-outside
 > REST API is the youngest of the four upstreams. The worker probes the
 > consume endpoint at startup and surfaces `CF_QUEUE_AUTH_FAILED` for
 > 401/403, so token misconfiguration is visible immediately. If you hit
@@ -601,7 +635,7 @@ either on a `PUT` presign returns `INVALID_PRESIGN_PARAMS`.
 | `response_content_type` | `string` (optional) | Override `Content-Type` header on the served response (e.g. `"application/pdf"`). |
 
 ```ts
-const { url } = await iii.trigger({
+const { url } = await iii.call({
   function_id: 'storage::presignUrl',
   payload: {
     bucket: 'uploads',
@@ -663,7 +697,7 @@ cargo run -- --manifest | jq .
 ### Tests
 
 ```bash
-cargo test --lib                # unit tests (config, manifest, handlers, triggers)
+cargo test --lib                # unit tests (config, manifest, handlers, object events)
 cargo test --test schemas       # schema regression for every `storage::*` RPC
 cargo test --test manifest      # `--manifest` subprocess contract
 cargo test --test integration   # spec §9 pattern A: spawns engine + worker

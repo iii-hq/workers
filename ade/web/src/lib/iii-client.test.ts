@@ -6,10 +6,11 @@
  */
 
 import type {
+  CallRequest,
   InitOptions,
   ISdk,
+  ObserveSource,
   RemoteFunctionHandler,
-  TriggerRequest,
 } from 'iii-browser-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -21,7 +22,9 @@ import {
 
 function fakeSdk() {
   const functions = new Map<string, RemoteFunctionHandler>()
-  const triggers: TriggerRequest[] = []
+  const calls: CallRequest[] = []
+  const observed: Array<{ source: ObserveSource; target: unknown }> = []
+  const disposed: string[] = []
   const sdk = {
     registerFunction(id: string, handler: RemoteFunctionHandler) {
       // Mirror iii-browser-sdk's duplicate guard (dist/index.mjs:291).
@@ -34,15 +37,24 @@ function fakeSdk() {
         },
       }
     },
-    registerTrigger: () => ({ unregister: () => {} }),
-    trigger: async (request: TriggerRequest) => {
-      triggers.push(request)
+    call: async (request: CallRequest) => {
+      calls.push(request)
       return null
+    },
+    observe: (source: ObserveSource, target: unknown) => {
+      const id = `obs-${observed.length + 1}`
+      observed.push({ source, target })
+      return {
+        id,
+        dispose: async () => {
+          disposed.push(id)
+        },
+      }
     },
     addConnectionStateListener: () => () => {},
     shutdown: async () => {},
   } as unknown as ISdk
-  return { sdk, functions, triggers }
+  return { sdk, functions, calls, observed, disposed }
 }
 
 const BROWSER_ID = 'console-test'
@@ -163,17 +175,21 @@ describe('namespaced browser connection', () => {
   })
 
   it('inherits project calls and routes engine control-plane calls to default', async () => {
-    const { sdk, triggers } = fakeSdk()
+    const { sdk, calls } = fakeSdk()
     const client = wrapSdk(sdk, BROWSER_ID)
 
-    await client.trigger('router::models::list', {})
-    await client.trigger('engine::functions::list', {})
-    await client.trigger('configuration::get', {})
-    await client.trigger('worker::list', {})
-    await client.trigger('sandbox::catalog::list', {})
-    await client.trigger('sandbox-code-runner::run', {})
+    await client.call('router::models::list', {})
+    await client.call('engine::functions::list', {})
+    await client.call('configuration::get', {})
+    await client.call('worker::list', {})
+    await client.call('sandbox::catalog::list', {})
+    await client.call('sandbox-code-runner::run', {})
 
-    expect(triggers.map((request) => request.namespace)).toEqual([
+    expect(
+      calls.map((request) =>
+        'namespace' in request ? request.namespace : undefined,
+      ),
+    ).toEqual([
       undefined,
       'default',
       'default',
@@ -181,6 +197,55 @@ describe('namespaced browser connection', () => {
       'default',
       undefined,
     ])
+  })
+
+  it('observes with deliver output and resolves engine sources in default', () => {
+    const { sdk, observed } = fakeSdk()
+    const client = wrapSdk(sdk, BROWSER_ID)
+
+    client.observe('session::on-created', `${FN}::${BROWSER_ID}`)
+    client.observe(
+      {
+        function_id: 'observability::on-span',
+        deliver: 'input',
+      },
+      `${FN}::${BROWSER_ID}`,
+    )
+    client.observe(
+      {
+        function_id: 'harness::on-turn-completed',
+        filters: { 'input.session_id': { $eq: 's1' } },
+      },
+      `${FN}::${BROWSER_ID}`,
+    )
+
+    expect(observed.map(({ source }) => source)).toEqual([
+      { function_id: 'session::on-created', deliver: 'output' },
+      {
+        function_id: 'observability::on-span',
+        deliver: 'input',
+        namespace: 'default',
+      },
+      {
+        function_id: 'harness::on-turn-completed',
+        filters: { 'input.session_id': { $eq: 's1' } },
+        deliver: 'output',
+      },
+    ])
+    expect(observed.every(({ target }) => target === SDK_ID)).toBe(true)
+  })
+
+  it('disposes every observer on dispose, once', async () => {
+    const { sdk, disposed } = fakeSdk()
+    const client = wrapSdk(sdk, BROWSER_ID)
+
+    const off = client.observe('engine::on-workers-changed', SDK_ID)
+    client.observe('engine::on-functions-changed', SDK_ID)
+    off()
+    off()
+    await client.dispose()
+
+    expect(disposed).toEqual(['obs-1', 'obs-2'])
   })
 
   it('refuses to connect when runtime namespace discovery fails', async () => {

@@ -102,7 +102,7 @@ describe('categorizeTurnFailure', () => {
     ).toBe('internal')
     expect(
       categorizeTurnFailure({
-        text: 'response failed: harness::send failed — trigger timed out',
+        text: 'response failed: harness::send failed — call timed out',
       }),
     ).toBe('internal')
   })

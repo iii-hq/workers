@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use dashmap::DashMap;
-use iii_sdk::trigger::Trigger;
 use iii_sdk::IIIClient;
+use iii_sdk::ObserverHandle;
 use reqwest::Client;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
@@ -123,12 +123,13 @@ pub struct RuntimeState {
     pub poller_cancel: Mutex<Option<CancellationToken>>,
     /// Join handle for the background poller task.
     pub poller_handle: Mutex<Option<JoinHandle<()>>>,
-    /// Engine HTTP-trigger handle for the webhook ingress route. `Some` only
-    /// while the webhook adapter is active; retained so the route can be
-    /// unregistered when switching back to polling (the SDK `Trigger` has no
-    /// `Drop`, so it must be explicitly `take()`n and `.unregister()`ed).
-    pub webhook_trigger: Mutex<Option<Trigger>>,
-    /// Latest harness turn_id per session (for trace baggage on binding handlers).
+    /// The `http::on-request` observer that serves the webhook ingress route.
+    /// `Some` only while the webhook adapter is active; retained so the route
+    /// can be removed when switching back to polling (dropping an
+    /// `ObserverHandle` does not dispose the observer, so it must be
+    /// explicitly `take()`n and disposed).
+    pub webhook_route: Mutex<Option<ObserverHandle>>,
+    /// Latest harness turn_id per session (for trace baggage on observer handlers).
     pub active_turns: DashMap<String, String>,
 }
 
@@ -159,7 +160,7 @@ impl RuntimeState {
             poll_offset: AtomicI64::new(0),
             poller_cancel: Mutex::new(None),
             poller_handle: Mutex::new(None),
-            webhook_trigger: Mutex::new(None),
+            webhook_route: Mutex::new(None),
             active_turns: DashMap::new(),
         }
     }

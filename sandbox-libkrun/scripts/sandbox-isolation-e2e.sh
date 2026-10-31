@@ -3,7 +3,7 @@
 #
 # Drives the production path: an isolated engine, the sandbox-libkrun adapter
 # (handle_create + VmBootLauncher, config from the engine's configuration
-# worker) and `iii trigger` for every call, on a real image pulled from its
+# worker) and `iii call` for every call, on a real image pulled from its
 # registry. The default image is Red Hat UBI 9:
 # /usr/bin, /usr/lib and /root ship without owner write bits and
 # /etc/shadow and /etc/gshadow with mode 0000, so the unprivileged adapter has
@@ -66,19 +66,19 @@ manifest() {
     "${SUDO[@]}" find . -type f -exec sha256sum {} + 2> /dev/null | LC_ALL=C sort)
 }
 
-# trig <secs> <function id> <json payload>: `iii trigger` against the e2e engine,
+# call_fn <secs> <function id> <json payload>: `iii call` against the e2e engine,
 # result JSON on stdout. Its stderr (the deprecated --address/--port warning
 # too) is shown only when the call fails.
-trig() {
+call_fn() {
   local secs=$1 fn=$2 json=$3 rc
   # The wrapper outlives --timeout-ms so a slow call reports the engine's own "timed out".
-  run timeout $((secs + 10)) "$III_BIN" trigger "$fn" --json "$json" \
-    --address 127.0.0.1 --port "$PORT" --timeout-ms $((secs * 1000)) 2> "$LOGS/trig.stderr"
+  run timeout $((secs + 10)) "$III_BIN" call "$fn" --json "$json" \
+    --address 127.0.0.1 --port "$PORT" --timeout-ms $((secs * 1000)) 2> "$LOGS/call.stderr"
   rc=$?
-  [ "$rc" -eq 0 ] || cat "$LOGS/trig.stderr" >&2
+  [ "$rc" -eq 0 ] || cat "$LOGS/call.stderr" >&2
   return "$rc"
 }
-stop_vm() { trig 60 "$P::stop" "$(jq -nc --arg id "$1" '{sandbox_id: $id, wait: true}')" > /dev/null 2>&1; }
+stop_vm() { call_fn 60 "$P::stop" "$(jq -nc --arg id "$1" '{sandbox_id: $id, wait: true}')" > /dev/null 2>&1; }
 
 PIDS=()
 CREATED=()
@@ -104,14 +104,14 @@ wait_until() {  # wait_until <seconds> <cmd...>
   done
 }
 port_open() { (exec 3<> "/dev/tcp/127.0.0.1/$PORT") 2> /dev/null; }
-adapter_ready() { trig 10 "$P::list" '{}'; }
+adapter_ready() { call_fn 10 "$P::list" '{}'; }
 
 create() {  # create <var>: boot a sandbox on the e2e image, store its id in <var>
   local t0=$SECONDS id rc attempt
-  # The first create pulls the image; the trigger gives up after its timeout
+  # The first create pulls the image; the call gives up after its timeout
   # while the adapter keeps pulling, so retry.
   for attempt in 1 2 3; do
-    id=$(trig 900 "$P::create" '{"image":"e2e-image"}' 2> "$LOGS/create-$1.stderr" | jq -r '.sandbox_id // empty')
+    id=$(call_fn 900 "$P::create" '{"image":"e2e-image"}' 2> "$LOGS/create-$1.stderr" | jq -r '.sandbox_id // empty')
     rc=$?
     echo "create $1 (attempt $attempt): rc=$rc id=$id after $((SECONDS - t0))s"
     { [ "$rc" -eq 0 ] && [ -n "$id" ]; } && break
@@ -130,7 +130,7 @@ gx() {  # gx <id> <label> <script> [KEY=VALUE...]: sandbox::exec, returns the gu
   payload=$(jq -nc --arg id "$id" --arg s "$script" --argjson env "$envs" \
     '{sandbox_id: $id, argv: ["/bin/sh", "-c", $s], env: $env, timeout_ms: 290000}')
   echo "----- [guest ${id:0:8}] $label"
-  if out=$(trig 300 "$P::exec" "$payload"); then
+  if out=$(call_fn 300 "$P::exec" "$payload"); then
     jq -rj '.stdout, .stderr' <<< "$out"
     rc=$(jq -r '.exit_code // 1' <<< "$out")
   else
@@ -141,7 +141,7 @@ gx() {  # gx <id> <label> <script> [KEY=VALUE...]: sandbox::exec, returns the gu
   return "$rc"
 }
 upload() {  # upload <id> <local file> <guest path>: sandbox::fs::write with the file's text
-  trig 60 "$P::fs::write" "$(jq -nc --arg id "$1" --arg p "$3" --rawfile c "$2" \
+  call_fn 60 "$P::fs::write" "$(jq -nc --arg id "$1" --arg p "$3" --rawfile c "$2" \
     '{sandbox_id: $id, path: $p, content: $c}')" > /dev/null
 }
 stop_sb() {
@@ -199,7 +199,7 @@ REGISTER=$(jq -nc --argjson config "$SANDBOX_CONFIG" '{
 PIDS+=($!)
 if ! wait_until 120 port_open; then tail -40 "$LOGS/engine.log"; fail "engine did not listen on $PORT"; exit 1; fi
 # The port can open before the configuration worker serves; register is idempotent.
-if ! wait_until 60 trig 30 configuration::register "$REGISTER"; then
+if ! wait_until 60 call_fn 30 configuration::register "$REGISTER"; then
   tail -40 "$LOGS/engine.log"; fail "configuration::register did not succeed"; exit 1
 fi
 "${RUN_ENV[@]}" III_URL="ws://127.0.0.1:$PORT" "$ADAPTER_BIN" > "$LOGS/adapter.log" 2>&1 &

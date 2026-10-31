@@ -13,7 +13,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
 use iii_sdk::helpers::create_channel;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -29,7 +29,7 @@ const MODELS_GET_TIMEOUT_MS: u64 = 5_000;
 const COUNT_TOKENS_TIMEOUT_MS: u64 = 10_000;
 /// Grace period for the stream reader to drain after `router::chat`
 /// returns; the terminal `done`/`error` event lands before or with the
-/// trigger response, so this only covers socket latency.
+/// call response, so this only covers socket latency.
 const READER_DRAIN_MS: u64 = 2_000;
 
 fn is_unroutable(err: &Error) -> bool {
@@ -61,7 +61,7 @@ impl ModelResolver for RouterModelResolver {
         }
         let resp = match self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::models::budget".to_string(),
                 payload: payload.clone(),
                 action: None,
@@ -77,7 +77,7 @@ impl ModelResolver for RouterModelResolver {
                 // to the 8k fallback model.
                 let response = self
                     .iii
-                    .trigger(TriggerRequest {
+                    .call(CallRequest {
                         function_id: "router::models::get".to_string(),
                         payload,
                         action: None,
@@ -144,7 +144,7 @@ impl ModelResolver for RouterModelResolver {
         let payload = count_payload(provider, id, system_prompt, tools, messages, knobs);
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::count_tokens".to_string(),
                 payload,
                 action: None,
@@ -257,9 +257,9 @@ impl Summarizer for RouterSummarizer {
         // Read the outer budget from the live snapshot so a
         // summarizer_timeout_ms change takes effect without a restart.
         let timeout_ms = self.config.read().await.summarizer_timeout_ms;
-        let trigger_result = self
+        let call_result = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "router::chat".to_string(),
                 payload,
                 action: None,
@@ -267,7 +267,7 @@ impl Summarizer for RouterSummarizer {
             })
             .await;
 
-        // The terminal event precedes the trigger response; give the
+        // The terminal event precedes the call response; give the
         // socket a short drain window, then stop reading either way.
         let abort = read_task.abort_handle();
         let binary =
@@ -279,7 +279,7 @@ impl Summarizer for RouterSummarizer {
                 }
             };
 
-        let response = match trigger_result {
+        let response = match call_result {
             Ok(v) => v,
             Err(e) if is_unroutable(&e) => {
                 return Err(SummarizeError::Unavailable(e.to_string()));

@@ -28,6 +28,24 @@ fn the_catalog_lists_every_public_function_in_order() {
 }
 
 #[test]
+fn the_event_functions_are_pinned() {
+    let ids: Vec<&str> = voice::events::EventKind::all()
+        .iter()
+        .map(|kind| kind.function_id())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "voice::on-transcript",
+            "voice::on-session-started",
+            "voice::on-session-stopped",
+            "voice::on-model-progress",
+            "voice::on-hotkey",
+        ]
+    );
+}
+
+#[test]
 fn request_schemas_name_their_required_fields() {
     let by_id: std::collections::HashMap<&str, _> = functions::catalog()
         .into_iter()

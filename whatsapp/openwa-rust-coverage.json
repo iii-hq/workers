@@ -261,7 +261,7 @@
       "functions": [
         "whatsapp::chats::subscribe_presence"
       ],
-      "notes": "Subscribes to native presence events; observe them via the iii event trigger or events::poll."
+      "notes": "Subscribes to native presence events; observe them through whatsapp::on-events or events::poll."
     },
     {
       "method": "PUT",
@@ -368,7 +368,7 @@
       "operationId": "WebhookController_create",
       "status": "not_implemented",
       "functions": [],
-      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has the observable whatsapp::on-events function and bounded events::poll."
     },
     {
       "method": "GET",
@@ -376,7 +376,7 @@
       "operationId": "WebhookController_findBySession",
       "status": "not_implemented",
       "functions": [],
-      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has the observable whatsapp::on-events function and bounded events::poll."
     },
     {
       "method": "GET",
@@ -384,7 +384,7 @@
       "operationId": "WebhookController_findOne",
       "status": "not_implemented",
       "functions": [],
-      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has the observable whatsapp::on-events function and bounded events::poll."
     },
     {
       "method": "PUT",
@@ -392,7 +392,7 @@
       "operationId": "WebhookController_update",
       "status": "not_implemented",
       "functions": [],
-      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has the observable whatsapp::on-events function and bounded events::poll."
     },
     {
       "method": "DELETE",
@@ -400,7 +400,7 @@
       "operationId": "WebhookController_delete",
       "status": "not_implemented",
       "functions": [],
-      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has the observable whatsapp::on-events function and bounded events::poll."
     },
     {
       "method": "POST",
@@ -408,7 +408,7 @@
       "operationId": "WebhookController_test",
       "status": "not_implemented",
       "functions": [],
-      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has the observable whatsapp::on-events function and bounded events::poll."
     },
     {
       "method": "GET",
@@ -416,7 +416,7 @@
       "operationId": "WebhooksListController_deliveryFailures",
       "status": "not_implemented",
       "functions": [],
-      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has the observable whatsapp::on-events function and bounded events::poll."
     },
     {
       "method": "GET",
@@ -424,7 +424,7 @@
       "operationId": "WebhooksListController_findAll",
       "status": "not_implemented",
       "functions": [],
-      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has a distinct iii event trigger and bounded events::poll."
+      "notes": "No OpenWA webhook records, HTTP test endpoint, delivery retry store or delivery-failure queries. The worker has the observable whatsapp::on-events function and bounded events::poll."
     },
     {
       "method": "POST",

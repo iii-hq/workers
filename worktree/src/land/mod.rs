@@ -5,8 +5,8 @@
 //!   and every phase re-inspects real git state on entry, so queue
 //!   redelivery at any point converges without duplicate side effects.
 //! - Business failures (rebase conflict, failed tests, dirty tree, moved
-//!   target, checked-out-dirty target) return `Ok` and emit a
-//!   `worktree::land-blocked` event; only infra failures (git spawn/timeout,
+//!   target, checked-out-dirty target) return `Ok` and call
+//!   `worktree::on-land-blocked`; only infra failures (git spawn/timeout,
 //!   state store) return `Err` so the engine queue redelivers.
 //! - The merge is a fast-forward compare-and-swap: `git update-ref
 //!   refs/heads/<target> <new> <old>`. A lost CAS loops back to rebase,
@@ -22,12 +22,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, TriggerAction};
+use iii_sdk::CallRequest;
+use iii_sdk::{CallAction, IIIClient};
 use serde_json::Value;
 
 use crate::error::{codes, WError};
-use crate::events::{Emitter, EventCtx, EventKind, LandBlockedEvent, LandedEvent};
+use crate::events::{Emitter, EventKind, LandBlockedEvent, LandedEvent};
 use crate::git::ops;
 use crate::locks::RepoLocks;
 use crate::state::{self, StateStore};
@@ -55,10 +55,10 @@ impl IiiEnqueuer {
 impl Enqueuer for IiiEnqueuer {
     async fn enqueue(&self, queue: &str, function_id: &str, payload: Value) -> Result<(), WError> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function_id.to_string(),
                 payload,
-                action: Some(TriggerAction::Enqueue {
+                action: Some(CallAction::Enqueue {
                     queue: queue.to_string(),
                 }),
                 timeout_ms: None,
@@ -390,11 +390,6 @@ pub async fn run_step(deps: &LandDeps, job_id: &str) -> Result<StepResult, WErro
                 deps.emitter
                     .emit(
                         EventKind::Landed,
-                        EventCtx {
-                            repo_path: &job.repo_path,
-                            worktree_id: &job.worktree_id,
-                            session_id: session_id.as_deref(),
-                        },
                         &LandedEvent {
                             worktree_id: job.worktree_id.clone(),
                             repo_path: job.repo_path.clone(),
@@ -435,7 +430,7 @@ async fn set_phase(deps: &LandDeps, job: &mut LandJob, phase: LandPhase) -> Resu
 }
 
 /// Terminal business block: persist the blocked job, flip the record to
-/// `land-blocked`, clear the active marker, and emit `worktree::land-blocked`.
+/// `land-blocked`, clear the active marker, and call `worktree::on-land-blocked`.
 /// Returns `Ok` — a blocked land is an outcome, not an infra failure.
 async fn block(
     deps: &LandDeps,
@@ -478,11 +473,6 @@ async fn block(
     deps.emitter
         .emit(
             EventKind::LandBlocked,
-            EventCtx {
-                repo_path: &job.repo_path,
-                worktree_id: &job.worktree_id,
-                session_id: session_id.as_deref(),
-            },
             &LandBlockedEvent {
                 worktree_id: job.worktree_id.clone(),
                 repo_path: job.repo_path.clone(),

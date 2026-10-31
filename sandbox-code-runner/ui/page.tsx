@@ -1,14 +1,15 @@
 /**
  * Entry for the sandbox-code-runner worker's injected console UI — compiled
  * by esbuild (react + @iii-dev/console-ui external) into dist/page.js and
- * served over the `console:script` trigger (see src/ui.rs). The stylesheet
- * is its own asset: ./styles.css ships over `console:style` as
- * sandbox-code-runner/styles.css — the console mounts and link-swaps it,
+ * served through an observer of `console::ui::asset` with `kind: 'script'`
+ * (see src/ui.rs). The stylesheet is its own asset: ./styles.css ships with
+ * `kind: 'style'` as sandbox-code-runner/styles.css — the console mounts and
+ * link-swaps it,
  * styles-before-scripts on boot.
  *
  * The worker's console contributions:
  *
- * - src/function-trigger-message/ — the per-op cards (run, register_function,
+ * - src/function-call-message/ — the per-op cards (run, register_function,
  *   teardown)
  * - src/sandbox-family/           — the sandbox::* daemon family cards
  *   (formerly first-party in the console)
@@ -22,7 +23,7 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
-import { createSandboxCodeRunnerRenderers } from './src/function-trigger-message'
+import { createSandboxCodeRunnerRenderers } from './src/function-call-message'
 import { createSandboxSessionChip, SandboxPage } from './src/page'
 import { registerSandboxPalette } from './src/page/palette'
 import { bindSandboxHost } from './src/lib/selection'
@@ -34,9 +35,9 @@ export default function setup(host: Host) {
 
   const removers = [
     ...createSandboxCodeRunnerRenderers(host).map((renderer) =>
-      host.functionTriggers.register(renderer),
+      host.functionCalls.register(renderer),
     ),
-    host.functionTriggers.register(createSandboxFamilyRenderer(host)),
+    host.functionCalls.register(createSandboxFamilyRenderer(host)),
     host.pages.register({
       id: 'sandbox',
       title: 'sandbox',

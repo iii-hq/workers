@@ -1,5 +1,5 @@
 /**
- * One readable string out of whatever a rejected `iii.trigger` throws.
+ * One readable string out of whatever a rejected `iii.call` throws.
  *
  * The browser SDK rejects with the wire error *object*, not an `Error`, so a
  * naive `String(err)` renders `[object Object]`. The shared
@@ -12,10 +12,10 @@ import { errorCode, errorMessage } from '@iii-dev/console-ui/format'
 export { errorMessage as errText }
 
 /**
- * Whether a rejected `iii.trigger` says the function is not registered at
+ * Whether a rejected `iii.call` says the function is not registered at
  * all — the worker that owns it is not installed (or not up yet). Callers
  * use it to stop a retry ladder: a missing worker does not come back on a
- * timer, it comes back through the `worker` lifecycle trigger.
+ * timer, it comes back through `engine::on-workers-changed`.
  */
 export function isFunctionNotFound(err: unknown): boolean {
   return errorCode(err)?.toLowerCase() === 'function_not_found'

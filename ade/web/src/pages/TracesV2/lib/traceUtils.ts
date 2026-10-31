@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import type { VisualizationSpan } from './traceTransform'
 
-export type SpanType = 'trigger' | 'enqueue' | 'function'
+export type SpanType = 'call' | 'enqueue' | 'function'
 
 export function classifySpanType(span: VisualizationSpan): SpanType {
   const attrs = span.attributes || {}
@@ -10,11 +10,8 @@ export function classifySpanType(span: VisualizationSpan): SpanType {
     attrs['messaging.destination.name']
   )
     return 'enqueue'
-  if (
-    span.name.startsWith('trigger') ||
-    attrs['iii.function.kind'] !== undefined
-  )
-    return 'trigger'
+  if (span.name.startsWith('call ') || attrs['iii.function.kind'] !== undefined)
+    return 'call'
   return 'function'
 }
 

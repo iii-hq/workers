@@ -20,7 +20,7 @@ export const Metadata: Story = {
   },
 }
 
-/** The strip a function-trigger card opens with: pairs, chips, then the
+/** The strip a function-call card opens with: pairs, chips, then the
     action lines — icon in the tone, body in ink. */
 export const CardChrome: Story = {
   args: {},

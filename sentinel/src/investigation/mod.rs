@@ -972,7 +972,7 @@ fn send_request(
             "functions": {
                 "allow": crate::functions::INVESTIGATION_ALLOW,
                 "deny": crate::functions::INVESTIGATION_DENY,
-                "expose": "agent_trigger",
+                "expose": "agent_call",
             },
             "metadata": match filesystem_root {
                 Some(root) => json!({ "fs_scope": { "root": root } }),
@@ -1012,7 +1012,7 @@ mod tests {
         );
         assert_eq!(payload["session"]["kind"], "automation");
         assert_eq!(payload["options"]["metadata"]["fs_scope"]["root"], "/repo");
-        assert_eq!(payload["options"]["functions"]["expose"], "agent_trigger");
+        assert_eq!(payload["options"]["functions"]["expose"], "agent_call");
     }
 
     #[test]

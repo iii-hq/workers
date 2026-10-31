@@ -14,7 +14,7 @@ use crate::{dispatch, httpio};
 
 pub const INTERACTIONS_ID: &str = "slack::interactions";
 
-/// Published request shape for `slack::interactions` (an HTTP trigger payload).
+/// Published request shape for `slack::interactions` (an `http::on-request` request).
 /// The handler reads the raw form body from the request channel; this typed
 /// struct exists so the function publishes a typed schema rather than AnyValue.
 #[derive(serde::Deserialize, schemars::JsonSchema)]

@@ -20,7 +20,7 @@ export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
 /** Reads only, so never on the index lock (see `READ_ONLY`). */
 function git(host: Host, cwd: string, args: string[]): Promise<ExecResponse> {
-  return host.iii.trigger<ExecResponse>('shell::exec', {
+  return host.iii.call<ExecResponse>('shell::exec', {
     command: 'git',
     args: [READ_ONLY, ...args],
     cwd,

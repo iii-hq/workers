@@ -417,6 +417,8 @@ const MIGRATED_SCREENS: Record<string, string> = {
   github: 'github',
   // The ide worker's page was `shell` until its UI/configuration rename.
   'ext:shell': 'ide',
+  // The catalog's Observers page was `triggers` before 0.26.
+  'ext:triggers': 'observers',
 }
 
 /** A column of its own for the IDE's side chat, saved by an unreleased

@@ -3,9 +3,9 @@
  *
  * Sessions ARE the conversations: the sidebar lists `session::list`, the
  * transcript hydrates from `session::messages`, and live rendering
- * reconciles the six `session::*` trigger types (per
- * `session-manager/architecture/integration.md`). localStorage no longer
- * persists transcripts — only UI affordances (active id, last model).
+ * reconciles the six `session::on-*` event functions (per
+ * `session-manager/architecture/integration.md`). localStorage persists only
+ * UI affordances (active id, last model), never transcripts.
  *
  * Lifecycle:
  * - "new chat" is a LOCAL DRAFT (`draft: true`, id `console-<uuid>`); the
@@ -16,7 +16,7 @@
  *   `{ surface, model, thinking_level, skills, title_manual }`;
  *   metadata replaces WHOLESALE, so the full object is always sent.
  * - delete delegates the entire subtree to the harness; local cleanup waits
- *   for completion. Authoritative `session::deleted` events still reconcile.
+ *   for completion. Authoritative `session::on-deleted` events still reconcile.
  * - transcript content reconciles `message-added` / `message-updated`
  *   snapshots by entry, keeping the highest revision per entry
  *   (at-least-once, unordered delivery).
@@ -305,6 +305,16 @@ const SUBAGENT_COLOR_VALUES = new Set<SubagentColor>([
   'amber',
   'rose',
 ])
+
+/**
+ * Who started a child session, from `metadata.spawned_by`. Sessions written
+ * before 0.26 name an observer's reaction `trigger`.
+ */
+function spawnedByOf(value: unknown): Conversation['spawnedBy'] {
+  if (value === 'agent') return 'agent'
+  if (value === 'observer' || value === 'trigger') return 'observer'
+  return undefined
+}
 
 function decodeSubagentAppearance(
   value: unknown,
@@ -776,10 +786,7 @@ function conversationFromMeta(
     parentFunctionCallId:
       typeof md.function_call_id === 'string' ? md.function_call_id : undefined,
     depth: typeof md.depth === 'number' ? md.depth : undefined,
-    spawnedBy:
-      md.spawned_by === 'trigger' || md.spawned_by === 'agent'
-        ? md.spawned_by
-        : undefined,
+    spawnedBy: spawnedByOf(md.spawned_by),
     draftText:
       typeof meta.draft === 'string' && meta.draft.length > 0
         ? meta.draft
@@ -848,10 +855,7 @@ export function applyConversationMetadataEvent(
         ? md.function_call_id
         : conversation.parentFunctionCallId,
     depth: typeof md.depth === 'number' ? md.depth : conversation.depth,
-    spawnedBy:
-      md.spawned_by === 'trigger' || md.spawned_by === 'agent'
-        ? md.spawned_by
-        : conversation.spawnedBy,
+    spawnedBy: spawnedByOf(md.spawned_by) ?? conversation.spawnedBy,
     updatedAt: Math.max(conversation.updatedAt, event.timestamp),
   }
   return reconcileLegacySkillMigration(conversation, next)
@@ -926,7 +930,7 @@ export function applyCatalogModelFallback(
   return changed ? next : conversations
 }
 
-/** Keep a just-selected session even if `session::created` has not yet
+/** Keep a just-selected session even if `session::on-created` has not yet
  *  inserted it into the sidebar list. Without this, the boot-time "always
  *  have an active chat" effect snaps back to conversations[0]. */
 export function resolveActiveConversationId(input: {
@@ -954,7 +958,7 @@ export function resolveActiveConversationId(input: {
  * Mark every backgrounded server-backed conversation stale so the next
  * activation re-hydrates it. A transcript subscription exists only for the
  * ACTIVE session, so entry events emitted while a session is backgrounded
- * are lost — a function trigger caught mid-snapshot freezes as `ƒ …` with an
+ * are lost — a function call caught mid-snapshot freezes as `ƒ …` with an
  * empty request/response until durable truth is re-fetched. Returns the
  * same array when nothing changed.
  */
@@ -1051,7 +1055,7 @@ export function mergeConversationMeta(
 }
 
 /** Merge the boot-time session list without dropping sessions discovered by
- * a concurrent `session::created` event. The list RPC may have been captured
+ * a concurrent `session::on-created` event. The list RPC may have been captured
  * before that event, so treating it as a replacement can invalidate the
  * active conversation and send the user back to the local draft. */
 export function mergeSessionListSnapshot(
@@ -1132,7 +1136,7 @@ export function appendMessageToConversation(
     updatedAt: now,
   }
   // A typed send starts a harness turn, so mark the session working until
-  // `session::status-changed` reports back. A client-handled `command` row
+  // `session::on-status-changed` reports back. A client-handled `command` row
   // (`/compact`) starts no turn: flipping it here would leave the session
   // working forever, since no status event will ever clear it.
   const startsTurn = message.role === 'user' && !message.command
@@ -1336,7 +1340,7 @@ export function mergeHydratedTranscript(
     else liveByEntry.set(entryId, [m])
   }
   const isPlaceholder = (m: Message) =>
-    m.role === 'function-trigger' && m.unloaded === true
+    m.role === 'function-call' && m.unloaded === true
   // Window order of entries, for anchoring rows the page does not hold.
   const windowEntries: string[] = []
   for (const m of order) {
@@ -1852,7 +1856,7 @@ export function useConversations(
               [sessionId]: 'Unable to load this conversation.',
             }))
             // No session-manager registered: a timer will not bring it back,
-            // the `worker` lifecycle trigger re-enables the store when it
+            // the workers-changed observer re-enables the store when it
             // arrives. Retrying here only writes an engine error line every
             // 5 s for as long as the panel stays open.
             if (isFunctionNotFound(err)) return
@@ -1963,7 +1967,7 @@ export function useConversations(
             ),
           )
         }
-        // Session triggers are at-least-once but not replayed. Re-list after
+        // Session events are at-least-once but not replayed. Re-list after
         // reconnect so terminal child states missed while offline replace the
         // cached working rows instead of leaving false-active chips behind.
         void (async () => {
@@ -2107,7 +2111,7 @@ export function useConversations(
             }
             return [stub, ...prev]
           })
-          // `session::created` carries no metadata (by contract), so a spawned
+          // `session::on-created` carries no metadata (by contract), so a spawned
           // sub-agent / workflow node arrives here with no parent link and would
           // sit flat until a reload re-lists it. Fetch its meta once to learn
           // parent_session_id so it nests live in the sidebar tree.
@@ -2804,7 +2808,7 @@ export function useConversations(
       const conv = conversationsRef.current.find((c) => c.id === id)
       // A removed new chat takes its saved text with it, never another's.
       if (conv?.draft) forgetNewChatDraft(id)
-      // Unknown ids must still reach the idempotent backend: session::deleted
+      // Unknown ids must still reach the idempotent backend: session::on-deleted
       // can arrive while the dialog is open or before a failed wait is retried.
       const deletedIds = new Set(
         !serverEnabled || conv?.draft

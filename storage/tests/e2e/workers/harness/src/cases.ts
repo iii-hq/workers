@@ -14,10 +14,10 @@ export const BUCKETS: Record<Provider, string> = {
   r2:    'scratch-r2',
 };
 
-/** Single-bucket constant retained for trigger cases that pin to local. */
+/** Single-bucket constant retained for object-event cases that pin to local. */
 export const LOCAL_BUCKET = BUCKETS.local;
 
-/** Discriminator used by trigger cases to route on `harness::on_object_event`. */
+/** Discriminator used by object-event cases: which sink function received the event. */
 export type ObjectEventKind = 'created' | 'deleted';
 
 export interface ObjectEvent {
@@ -73,7 +73,7 @@ export interface CaseContext {
 export interface TestCase {
   name: string;
   /** When set, the case targets a specific provider. Unset means "any provider"
-   *  (used by trigger cases that pin to local). */
+   *  (used by object-event cases that pin to local). */
   provider?: Provider;
   /** When set, overrides the runner's default bucket selection for this case. */
   bucket?: string;
@@ -106,8 +106,8 @@ export function buildSchemaReset(providers: readonly Provider[]): TestCase {
       const keys = [
         'harness/roundtrip', 'harness/overwrite', 'harness/delete-target',
         'harness/presign-get', 'harness/presign-put',
-        'harness/triggers/created-target', 'harness/triggers/deleted-target',
-        'harness/triggers/multi-put', 'harness/triggers/silence-probe',
+        'harness/events/created-target', 'harness/events/deleted-target',
+        'harness/events/multi-put', 'harness/events/silence-probe',
         'harness/errors/missing-key',
       ];
       for (const provider of providers) {
@@ -210,7 +210,7 @@ export function buildFunctionCases(providers: readonly Provider[]): TestCase[] {
 
 /**
  * Generate one TestCase per active provider from a single template.
- * Trigger cases that pin to local stay as plain TestCase entries (no helper).
+ * Object-event cases that pin to local stay as plain TestCase entries (no helper).
  */
 export function forEachProvider(
   baseName: string,

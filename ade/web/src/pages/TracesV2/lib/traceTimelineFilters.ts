@@ -27,7 +27,7 @@
  * degrades to the historical explicit/baggage/name behavior.
  */
 
-import { explicitFunctionId } from './functionTriggerFromSpan'
+import { explicitFunctionId } from './functionCallFromSpan'
 import { inheritedTags, tagRootKind } from './spanLabel'
 import type { VisualizationSpan } from './traceTransform'
 

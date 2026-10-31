@@ -73,7 +73,7 @@ vi.mock('@iii-dev/console-ui/hooks', () => ({
 }))
 
 const host = {
-  iii: { trigger: async () => null },
+  iii: { call: async () => null },
 } as unknown as Host
 
 function field(overrides: Partial<CredentialFieldProps> & { value: JsonValue | undefined }) {

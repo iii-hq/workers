@@ -1,6 +1,6 @@
 /**
  * Governance denial. Throw so iii records InvocationResult.error.
- * Returning { ok: false } would look like a successful trigger.
+ * Returning { ok: false } would look like a successful call.
  */
 export class GantryDenied extends Error {
   constructor(code, hint) {

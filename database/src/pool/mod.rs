@@ -37,7 +37,27 @@ pub struct PoolStats {
     pub waiting: Option<u32>,
 }
 
+/// One built pool: its clones share it, and a pool built again (a reload
+/// that changed its entry or a value it resolves) gets a new one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PoolId(u64);
+
+impl PoolId {
+    fn next() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
 impl Pool {
+    pub fn id(&self) -> PoolId {
+        match self {
+            Pool::Postgres(p) => p.id(),
+            Pool::Mysql(p) => p.id(),
+            Pool::Sqlite(p) => p.id(),
+        }
+    }
+
     pub fn driver(&self) -> DriverKind {
         match self {
             Pool::Postgres(_) => DriverKind::Postgres,

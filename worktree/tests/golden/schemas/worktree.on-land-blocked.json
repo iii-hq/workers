@@ -1,0 +1,125 @@
+{
+  "function_id": "worktree::on-land-blocked",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`worktree::on-land-blocked` — a land ended blocked; see `reason` and `code`.",
+    "properties": {
+      "code": {
+        "description": "The stable `W###` code for the block.",
+        "type": "string"
+      },
+      "conflict_files": {
+        "description": "Unmerged paths, on `rebase_conflict`.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "exit_code": {
+        "description": "Test gate exit code, on `test_failed`.",
+        "format": "int32",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "reason": {
+        "description": "One of `rebase_conflict`, `test_failed`, `dirty`, `worktree_path_missing`, `rebase_in_progress`, `target_ref_not_found`, `target_moved_exhausted`, `target_checked_out_dirty`.",
+        "type": "string"
+      },
+      "repo_path": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "target_branch": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "worktree_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "code",
+      "reason",
+      "repo_path",
+      "target_branch",
+      "timestamp",
+      "worktree_id"
+    ],
+    "title": "LandBlockedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`worktree::on-land-blocked` — a land ended blocked; see `reason` and `code`.",
+    "properties": {
+      "code": {
+        "description": "The stable `W###` code for the block.",
+        "type": "string"
+      },
+      "conflict_files": {
+        "description": "Unmerged paths, on `rebase_conflict`.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "exit_code": {
+        "description": "Test gate exit code, on `test_failed`.",
+        "format": "int32",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "reason": {
+        "description": "One of `rebase_conflict`, `test_failed`, `dirty`, `worktree_path_missing`, `rebase_in_progress`, `target_ref_not_found`, `target_moved_exhausted`, `target_checked_out_dirty`.",
+        "type": "string"
+      },
+      "repo_path": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "target_branch": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "worktree_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "code",
+      "reason",
+      "repo_path",
+      "target_branch",
+      "timestamp",
+      "worktree_id"
+    ],
+    "title": "LandBlockedEvent",
+    "type": "object"
+  }
+}

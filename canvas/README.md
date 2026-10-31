@@ -17,10 +17,10 @@ guessing dialect details.
 ## Install
 
 ```bash
-iii trigger compose::add worker=canvas worker=state # state stores canvas records
+iii call compose::add worker=canvas worker=state # state stores canvas records
 ```
 
-`iii trigger compose::add` resolves the workers and their dependencies, writes
+`iii call compose::add` resolves the workers and their dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ### Companion workers
@@ -35,14 +35,13 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 Get the primer, validate, store:
 
 ```rust
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    let call = |id: &str, payload| iii.trigger(TriggerRequest {
+    let call = |id: &str, payload| iii.call(CallRequest {
         function_id: id.into(), payload, action: None, timeout_ms: Some(10_000),
     });
 
@@ -50,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let primer = call("canvas::syntax", json!({ "family": "sequence" })).await?;
     println!("{}", primer["families"][0]["example"]);
 
-    let source = "sequenceDiagram\n    Client->>Engine: trigger\n    Engine-->>Client: result";
+    let source = "sequenceDiagram\n    Client->>Engine: call\n    Engine-->>Client: result";
 
     // Parse before storing, so a broken diagram never lands in the store.
     let verdict = call("canvas::validate", json!({
@@ -115,10 +114,11 @@ as text through `canvas::update`.
 The `canvas` page lists every stored canvas and opens each one for
 editing: mermaid source beside its live rendering, a freeform scene on a
 drawable whiteboard. The page streams: records live in the state worker's
-`canvas` scope, so an agent-side create pops into the sidebar (and opens,
-when nothing else is), an update redraws the open diagram in place, and
-element calls land on the open whiteboard as they happen — no reload,
-no polling. Renders sketch themselves in with a stroke animation, mermaid
+`canvas` scope, and the page observes `state::on-changed` filtered on
+`{ 'input.scope': { $eq: 'canvas' } }`, so an agent-side create pops into
+the sidebar (and opens, when nothing else is), an update redraws the open
+diagram in place, and element calls land on the open whiteboard as they
+happen — no reload, no polling. Renders sketch themselves in with a stroke animation, mermaid
 ships the hand-drawn look, and both panes export SVG and PNG with a
 background-or-transparent and light-or-dark choice independent of the
 console theme. In chat, a `canvas::*` call renders as the diagram it
@@ -127,8 +127,9 @@ touched, not as JSON.
 ## Configuration
 
 Configuration lives in the `configuration` worker under the id `canvas` and
-every field hot-reloads — handlers read the live snapshot per call, so
-nothing needs a restart.
+every field hot-reloads — the worker observes `configuration::on-updated` for
+its entry, and handlers read the live snapshot per call, so nothing needs a
+restart.
 
 ```yaml
 max_source_bytes: 2097152   # largest canvas source accepted, in bytes

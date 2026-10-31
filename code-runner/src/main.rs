@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
     );
 
     // The engines above captured the structural fields; the shared snapshot
-    // serves the per-call knobs and is what the configuration trigger swaps.
+    // serves the per-call knobs and is what the configuration reload swaps.
     let shared = cfg.into_shared();
     let manager = Manager::new(shared.clone(), node, engine, python);
     functions::register_all(&iii, &manager);
@@ -148,11 +148,10 @@ async fn main() -> Result<()> {
     code_runner::ui::register(&iii);
     functions::setup_harness_hooks(&iii);
     // LAST, so the reload handler closes over fully-built state.
-    configuration::register_config_trigger(&iii, shared.clone())
-        .context("registering the configuration change trigger")?;
-    // An update between the boot fetch and the trigger registration above
-    // fired into nothing; one refresh now closes that window (serialized
-    // with trigger-driven refreshes inside `refresh` itself).
+    configuration::observe_config_changes(&iii, shared.clone());
+    // An update between the boot fetch and the observer becoming active
+    // reaches no one; one refresh now closes that window (serialized with
+    // observer-driven refreshes inside `refresh` itself).
     configuration::refresh(&iii, &shared).await;
 
     // Backstop for callers that never call teardown.

@@ -37,11 +37,6 @@ workers:
           provider: local
           bucket: scratch
 
-triggers:
-  - type: storage::object-created
-    config:
-      bucket: uploads
-
-  - type: storage::object-deleted
-    config:
-      bucket: uploads
+# A worker that reacts to object changes observes storage::on-object-created
+# or storage::on-object-deleted with args { bucket: uploads } (a bucket with a
+# notifications source); see the README.

@@ -45,8 +45,8 @@ Every worker README has these sections, in this order:
 
 Optional, only when relevant:
 
-- `## Custom trigger types` — if your worker emits subscribable trigger
-  types for sibling workers.
+- `## Event functions` — if your worker hosts functions that other workers
+  observe for its events.
 - `## Migration notes` — for renamed function ids or breaking payload
   changes in a recent release.
 
@@ -73,7 +73,7 @@ Always exactly one command:
 
 ````markdown
 ```bash
-iii trigger compose::add worker=<name>
+iii call compose::add worker=<name>
 ```
 ````
 
@@ -81,7 +81,7 @@ Where `<name>` is the value of `worker-compose.yaml.name` (which equals the
 folder name; see [`docs/sops/new-worker.md`](docs/sops/new-worker.md) §1).
 That is the whole user-facing install — no source build, no
 `sudo install`, no `--manifest | jq` verification step. The
-`iii trigger compose::add` call declares the worker in `worker-compose.yaml`
+`iii call compose::add` call declares the worker in `worker-compose.yaml`
 and starts it as part of the Compose project.
 
 ### Companion workers
@@ -91,7 +91,7 @@ call and include one sentence that explains what it unlocks:
 
 ````markdown
 ```bash
-iii trigger compose::add worker=<name> worker=<companion>
+iii call compose::add worker=<name> worker=<companion>
 ```
 ````
 
@@ -125,14 +125,14 @@ Example skeleton (Rust):
 ## Quickstart
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    let result = iii.trigger(TriggerRequest {
+    let result = iii.call(CallRequest {
         function_id: "<worker>::<verb>".into(),
         payload: json!({ /* … */ }),
         action: None,
@@ -175,22 +175,42 @@ defaults in code rather than paginating every field:
 Other keys (and their defaults) live in [`src/config.rs`](src/config.rs).
 ```
 
-## Optional: Custom trigger types
+## Optional: Event functions
 
-Include this section only if your worker publishes custom trigger
-types other workers can subscribe to. Show a table:
+Include this section only if your worker hosts functions other workers
+observe for its events. Each one is a private function (only your worker
+calls it) whose handler returns the event, so its observers receive the
+event. List every one with its args, when the worker calls it, and the
+event, then show one `iii.observe` per way a consumer uses it:
 
-```markdown
-## Custom trigger types
+````markdown
+## Event functions
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `<worker>::on-change` | After every mutation | `{ "op": "register" \| "unregister", "id": "..." }` |
+| Function | Args | Called when | Event (what observers receive) |
+|---|---|---|---|
+| `<worker>::on-change` | none; filter on `input.op`, `input.id` | After every mutation | `{ "op": "register" \| "unregister", "id": "..." }` |
+
+```rust
+iii.observe(
+    Source::function("<worker>::on-change")
+        .filters(json!({ "input.op": { "$eq": "register" } }))
+        .deliver(Deliver::Output),
+    "my-worker::on-register",
+);
 ```
+````
+
+A function takes args only when your worker sets something up for each
+observer (a schedule, a route, a watch); name them and their schema, and
+the rejection codes `onObserverAdded` throws. A function without args
+answers `INVALID_ARGS` to an observer that passes some; its observers
+select events with filters on the event's fields. When the function
+delivers calls itself (`onObserverDeliver`), say what each target
+receives and what the caller gets back.
 
 This is one of the few cases the README **should** carry a reference
-table — sibling-worker authors need the trigger names + payload shapes
-to write `iii.register_trigger(...)` calls.
+table: sibling-worker authors need the function ids, args and event shapes
+to write their `iii.observe(...)` calls.
 
 ## Optional: Migration notes
 
@@ -212,23 +232,23 @@ most important thing it gives you.
 ## Install
 
 ```bash
-iii trigger compose::add worker=<worker>
+iii call compose::add worker=<worker>
 ```
 
-`iii trigger compose::add` declares the worker in `worker-compose.yaml` and
+`iii call compose::add` declares the worker in `worker-compose.yaml` and
 starts it as part of the Compose project.
 
 ## Quickstart
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    let result = iii.trigger(TriggerRequest {
+    let result = iii.call(CallRequest {
         function_id: "<worker>::<verb>".into(),
         payload: json!({ "key": "value" }),
         action: None,

@@ -1,5 +1,5 @@
 {
-  "description": "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a plain delete. The consolidation seam; pinned memories cannot be superseded. reinforce makes it a merge (the non-pinned survivor absorbs the retired record's observations); reason is carried on the item-changed events.",
+  "description": "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a plain delete. The consolidation seam; pinned memories cannot be superseded. reinforce makes it a merge (the non-pinned survivor absorbs the retired record's observations); reason is carried on the memory::on-item-changed events.",
   "function_id": "memory::supersede",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -18,7 +18,7 @@
       },
       "reason": {
         "default": null,
-        "description": "Why — carried on the `memory::item-changed` events this call emits (not persisted on the record). Trimmed, capped at 500 chars.",
+        "description": "Why — carried on the `memory::on-item-changed` events this call emits (not persisted on the record). Trimmed, capped at 500 chars.",
         "type": [
           "string",
           "null"

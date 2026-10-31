@@ -11,6 +11,9 @@ rules:
   - '!memory::on-session-deleted'
   - '!memory::extract-job'
   - '!memory::on-config-change'
+  # The REST adapter runs whichever public function a route's path names,
+  # the ones denied below included; only the http worker's routes call it.
+  - '!memory::rest'
   # Bank and rule writes are human-owned surfaces (console, REST, CLI) by
   # default; agents read and save memories but do not reshape banks or the
   # always-injected rules without an explicit grant.

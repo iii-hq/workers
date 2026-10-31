@@ -6,7 +6,7 @@
 //! Port of `engine/src/workers/queue/adapters/rabbitmq/adapter.rs`. Seams
 //! applied for the standalone worker (mirrors every other adapter in this
 //! crate, e.g. `adapters/redis.rs`):
-//! - `Arc<Engine>` -> `Arc<dyn crate::trigger::Invoker>`.
+//! - `Arc<Engine>` -> `Arc<dyn crate::subscribers::Invoker>`.
 //! - The engine's `make_adapter`/`register_adapter!` factory-registration
 //!   macro (which plugs into the engine's own adapter registry) has no
 //!   equivalent here; instead this module exposes
@@ -66,7 +66,7 @@ use uuid::Uuid;
 use crate::adapter::{FunctionQueueConfig, QueueAdapter, QueueMessage, TopicInfo};
 use crate::store::TopicStats;
 use crate::subscriber_config::SubscriberQueueConfig;
-use crate::trigger::{Invoker, SubscriberTarget};
+use crate::subscribers::{Invoker, Subscriber};
 
 use super::naming::{FnQueueNames, RabbitNames};
 use super::publisher::Publisher;
@@ -408,17 +408,16 @@ impl QueueAdapter for RabbitMQAdapter {
         }
     }
 
-    async fn subscribe_target(
+    async fn subscribe(
         &self,
         topic: &str,
         id: &str,
-        target: SubscriberTarget,
-        condition_function_id: Option<String>,
+        subscriber: Subscriber,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         let topic = topic.to_string();
         let id = id.to_string();
-        let function_id = target.function_id().to_string();
+        let subscriber_id = subscriber.id().to_string();
         let subscriptions = Arc::clone(&self.subscriptions);
 
         // Hold the write lock from the duplicate check through the insert:
@@ -492,8 +491,7 @@ impl QueueAdapter for RabbitMQAdapter {
                 .run(
                     topic_clone,
                     id_clone,
-                    target,
-                    condition_function_id,
+                    subscriber,
                     consumer_tag_clone,
                     queue_name_clone,
                     cancelled,
@@ -512,13 +510,15 @@ impl QueueAdapter for RabbitMQAdapter {
 
         tracing::debug!(
             topic = %topic,
-            function_id = %function_id,
+            subscriber = %subscriber_id,
             queue = %subscriber_queue,
             "Subscribed to RabbitMQ per-subscription queue"
         );
     }
 
-    async fn unsubscribe(&self, topic: &str, id: &str) {
+    /// `_retain` does not apply: the subscriber's queue stays bound to the
+    /// topic's exchange, so it keeps receiving the topic whatever `_retain`.
+    async fn unsubscribe(&self, topic: &str, id: &str, _retain: std::time::Duration) {
         let subscriptions = Arc::clone(&self.subscriptions);
         let key = (topic.to_string(), id.to_string());
 
@@ -551,7 +551,7 @@ impl QueueAdapter for RabbitMQAdapter {
             // same-id resubscribe exists to drain. The worker task is
             // DETACHED, not awaited: it finishes its in-flight deliveries
             // (acking or republishing) and exits on its own, while the
-            // caller — which may hold the trigger handler's registrations
+            // caller — which may hold the subscribers' registrations
             // lock — returns after the broker-side consumer cancel instead
             // of blocking for up to one whole invocation.
             drop(sub_info.task_handle);

@@ -79,7 +79,7 @@ pub(crate) async fn resolve_model(
 
 /// Register one typed handler under `id`, mapping `ContextError` into
 /// the bus error shape (`code: message`). `internal` hides the function
-/// from the discoverable `engine::functions::list` (trigger/config plumbing
+/// from the discoverable `engine::functions::list` (observer/config plumbing
 /// stays callable by id); see harness's iii-permissions.yaml.
 ///
 /// Every `context::*` function is registered with `trace_hidden: true`

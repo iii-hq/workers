@@ -32,7 +32,7 @@ const preview = (
 }
 
 describe('read-only model switch preview', () => {
-  const trigger = vi.fn()
+  const call = vi.fn()
   const defaultImplementation = async (id: string) => {
     switch (id) {
       case 'harness::status':
@@ -53,8 +53,8 @@ describe('read-only model switch preview', () => {
     }
   }
   beforeEach(() => {
-    trigger.mockReset().mockImplementation(defaultImplementation)
-    vi.mocked(getIiiClient).mockResolvedValue({ trigger } as never)
+    call.mockReset().mockImplementation(defaultImplementation)
+    vi.mocked(getIiiClient).mockResolvedValue({ call } as never)
   })
   it('uses the full persisted compacted window, Router budgets and a no-inference preview', async () => {
     await expect(preview('s', 'openai::small', 'low')).resolves.toEqual({
@@ -62,7 +62,7 @@ describe('read-only model switch preview', () => {
       tokens: 25000,
       usable: 10000,
     })
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'context::assemble',
       expect.objectContaining({
         messages: [message('recent').message],
@@ -79,13 +79,13 @@ describe('read-only model switch preview', () => {
       }),
     )
     expect(
-      trigger.mock.calls.some(([id]) =>
+      call.mock.calls.some(([id]) =>
         ['context::compact', 'session::append', 'router::chat'].includes(id),
       ),
     ).toBe(false)
   })
   it('uses Harness policy false for a thinking-bound Opus destination', async () => {
-    trigger.mockImplementation(
+    call.mockImplementation(
       async (id: string, _payload: { model?: string }) => {
         if (id === 'harness::context-policy') return { allow_prune: false }
         if (id === 'context::assemble')
@@ -94,10 +94,10 @@ describe('read-only model switch preview', () => {
       },
     )
     await preview('s', 'claude-opus-5-5')
-    expect(trigger).toHaveBeenCalledWith('harness::context-policy', {
+    expect(call).toHaveBeenCalledWith('harness::context-policy', {
       model: 'claude-opus-5-5',
     })
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'context::assemble',
       expect.objectContaining({
         options: expect.objectContaining({ allow_prune: false }),
@@ -105,20 +105,20 @@ describe('read-only model switch preview', () => {
     )
   })
   it('fails closed when Harness policy is unavailable', async () => {
-    trigger.mockImplementation(async (id: string, _payload: unknown) => {
+    call.mockImplementation(async (id: string, _payload: unknown) => {
       if (id === 'harness::context-policy') return null
       return defaultImplementation(id)
     })
     await expect(preview('s', 'openai::small')).rejects.toThrow(
       'context policy',
     )
-    expect(trigger).not.toHaveBeenCalledWith(
+    expect(call).not.toHaveBeenCalledWith(
       'context::assemble',
       expect.anything(),
     )
   })
   it('does not request confirmation for a fitting window', async () => {
-    trigger.mockImplementation((id, _payload) =>
+    call.mockImplementation((id, _payload) =>
       id === 'context::assemble'
         ? { token_count: 9000, usable: 10000, model_resolved: 'router' }
         : defaultImplementation(id),
@@ -126,7 +126,7 @@ describe('read-only model switch preview', () => {
     expect((await preview('s', 'openai::small')).needsCompaction).toBe(false)
   })
   it('does not silently use fallback model limits', async () => {
-    trigger.mockImplementation((id, _payload) =>
+    call.mockImplementation((id, _payload) =>
       id === 'context::assemble'
         ? { token_count: 9000, usable: 10000, model_resolved: 'fallback' }
         : defaultImplementation(id),
@@ -136,8 +136,8 @@ describe('read-only model switch preview', () => {
     )
   })
   it('refuses a live turn before reading or mutating history', async () => {
-    trigger.mockResolvedValue({ status: 'running' })
+    call.mockResolvedValue({ status: 'running' })
     await expect(preview('s', 'openai::small')).rejects.toThrow('current turn')
-    expect(trigger).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledTimes(1)
   })
 })

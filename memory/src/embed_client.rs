@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -41,7 +41,7 @@ pub async fn embed_texts(
         payload["model"] = json!(model);
     }
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::embed".into(),
             payload,
             action: None,

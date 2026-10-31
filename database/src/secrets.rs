@@ -8,7 +8,7 @@
 //! settings built from them — never in the configuration snapshot, a reply,
 //! logs or traces — and are wiped from memory when replaced or evicted. The
 //! cache is keyed by the canonical reference ([`SecretRef::key`]). An entry is
-//! re-read on `secrets::changed`, after [`RESOLVED_TTL`] / [`FAILED_TTL`] by
+//! re-read on `secrets::on-changed`, after [`RESOLVED_TTL`] / [`FAILED_TTL`] by
 //! the maintenance tick, and on demand when a configuration that references
 //! it is applied. The caller id the secrets worker checks against a secret's
 //! `consumers` is stamped by the engine: the secret must list [`CONSUMER`].
@@ -22,8 +22,7 @@ use std::time::Duration;
 
 use futures_util::future::{join_all, BoxFuture};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 use tokio::time::Instant;
 
@@ -32,16 +31,17 @@ pub const SCHEME: &str = "secret://";
 /// Reference scheme for an environment variable kept by the secrets worker.
 pub const ENV_SCHEME: &str = "env://";
 pub const RESOLVE_ID: &str = "secrets::resolve";
-/// Trigger type the `secrets` worker fires on create / rotate / delete /
-/// access change. Payload: `{name, ref, action, fingerprint?, updated_at}`.
-pub const CHANGED_TRIGGER_TYPE: &str = "secrets::changed";
+/// The `secrets` worker's function it calls on create / rotate / delete /
+/// access change; this worker observes it. Event:
+/// `{name, ref, action, fingerprint?, updated_at}`.
+pub const ON_CHANGED_FN: &str = "secrets::on-changed";
 /// The worker name a secret's `consumers` must list for this worker to read it.
 pub const CONSUMER: &str = "database";
 /// A missing secrets worker answers `function_not_found` at once; this only
 /// bounds a hung one.
 pub const RESOLVE_TIMEOUT_MS: u64 = 3_000;
 /// Re-read a resolved value at least this often, bounding staleness when a
-/// `secrets::changed` event is missed.
+/// `secrets::on-changed` event is missed.
 pub const RESOLVED_TTL: Duration = Duration::from_secs(300);
 /// Retry a failed resolution after this long.
 pub const FAILED_TTL: Duration = Duration::from_secs(10);
@@ -267,7 +267,7 @@ pub fn bus_fetch(iii: Arc<IIIClient>) -> Fetch {
         let iii = iii.clone();
         Box::pin(async move {
             let response = iii
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: RESOLVE_ID.into(),
                     payload: json!({ "ref": reference }),
                     action: None,
@@ -483,7 +483,7 @@ fn store(
     true
 }
 
-/// The reference a `secrets::changed` event is about, canonical: from `ref`
+/// The reference a `secrets::on-changed` event is about, canonical: from `ref`
 /// (which names the store), or else from `name` as a vault secret.
 pub fn event_reference(event: &Value) -> Option<String> {
     if let Some(Some(Ok(reference))) = event.get("ref").and_then(Value::as_str).map(parse_ref) {

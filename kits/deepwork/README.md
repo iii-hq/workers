@@ -27,13 +27,13 @@ Every profile except `deepwork` is hidden.
 ## Install
 
 ```
-iii trigger directory::download-kit kit=iii/deepwork apply=true --timeout-ms 1200000
+iii call directory::download-kit kit=iii/deepwork apply=true --timeout-ms 1200000
 ```
 
 Sometimes the reply is a plan instead of an install. That happens when there are warnings or decisions, for example a profile with the same id already exists. Review the plan and apply it in the ADE under Directory → Kits, or run:
 
 ```
-iii trigger directory::kits::apply plan_id=<plan_id> --timeout-ms 1200000
+iii call directory::kits::apply plan_id=<plan_id> --timeout-ms 1200000
 ```
 
 Applying can take minutes. If the command times out, the apply keeps running, so check Directory → Kits instead of running it again.
@@ -87,12 +87,12 @@ args: max_rounds=2 concurrency=4 budget_usd=5
 The console only has the soft `budget_usd`. For a hard cap, start the run from the CLI:
 
 ```
-iii trigger harness::send --json '{"message":"<goal + args>","model":"<provider::model>","options":{"agent":"deepwork","max_cost_usd":5,"max_total_tokens":2000000}}'
+iii call harness::send --json '{"message":"<goal + args>","model":"<provider::model>","options":{"agent":"deepwork","max_cost_usd":5,"max_total_tokens":2000000}}'
 ```
 
 You must pass `model`, because the profile sets none. Every model the run uses needs catalog pricing, judges included. With `approve=on`, design, plan and finish questions show up in that session in the console. The default `approve=auto` asks only when a consequential decision cannot be resolved from the goal, evidence and repository conventions. Material assumptions go on the run ticket; push, merge, discard and production writes are never implied by autonomy.
 
-A profile's `functions:` list is the contracts it preloads into the prompt, not a permission list. If you restrict the session with `options.functions`, don't copy that list: the run also needs `state::barrier` (the wave and phase wakes are its conditions), `fp::pipe`/`fp::get`, `router::models::list`, `directory::search_functions`, `engine::functions::info`, the `shell::job-finished` wake, and every function its phases use (`coder::*`, `shell::*`, the cards' Verify lines), because a child's policy can't exceed its parent's. The simplest is `"functions":{"allow":["*"]}`, plus your own `deny`.
+A profile's `functions:` list is the contracts it preloads into the prompt, not a permission list. If you restrict the session with `options.functions`, don't copy that list: the run also needs `state::barrier` (the wave and phase wakes are its conditions), `fp::pipe`/`fp::get`, `router::models::list`, `directory::search_functions`, `engine::functions::info`, `harness::observe` for the `shell::on-job-finished` wake, and every function its phases use (`coder::*`, `shell::*`, the cards' Verify lines), because a child's policy can't exceed its parent's. The simplest is `"functions":{"allow":["*"]}`, plus your own `deny`.
 
 ## The dev flow
 
@@ -141,7 +141,7 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
 ## Prerequisites
 
 - **kanban** with the default columns: ids `backlog`, `todo`, `in_progress` and `done`, and `done_status: done`.
-- **state** with the defaults: the kv adapter (redis won't work), `store_method: file_based` and `triggers_enabled: true`.
+- **state** with the defaults: the kv adapter (redis won't work), `store_method: file_based` and `events_enabled: true` (so writes call `state::on-changed`).
 - **harness** with `max_depth` of at least 3 and `max_children` of at least `concurrency`. The defaults, 3 and 8, are enough.
 - **Approval rules**, only when the project runs the `approval-gate` worker (a project without it prompts for nothing, so skip this). These functions must run without a prompt:
 
@@ -149,8 +149,8 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
   |---|---|
   | the harness | `state::barrier` |
   | orchestrator | `harness::spawn`, `harness::metrics`, `harness::stop`, `state::compare-and-set`, `state::get`, `kanban::ticket::list`, `kanban::project::create`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, plus `directory::agents::get` with `judges=` |
-  | leads | `harness::spawn`, `harness::status`, `harness::stop`, `engine::register_trigger`, `engine::unregister_trigger`, `harness::triggers::list`, `state::list`, `state::compare-and-set` |
-  | phase sub-agents | `state::compare-and-set`, `kanban::ticket::get`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, `engine::register_trigger` (long runs), `coder::read-file`, plus whatever the work needs. `deepwork-impl` also needs `coder::create-file` and `coder::update-file`. Checkers, and the worker of the plain flow's synthesis ticket, also need `state::get` |
+  | leads | `harness::spawn`, `harness::status`, `harness::stop`, `harness::observe`, `harness::unobserve`, `harness::observers::list`, `state::list`, `state::compare-and-set` |
+  | phase sub-agents | `state::compare-and-set`, `kanban::ticket::get`, `shell::exec`, `shell::exec_bg`, `shell::status`, `shell::kill`, `harness::observe` (long runs), `coder::read-file`, plus whatever the work needs. `deepwork-impl` also needs `coder::create-file` and `coder::update-file`. Checkers, and the worker of the plain flow's synthesis ticket, also need `state::get` |
 
   A phase call that waits for approval parks its ticket as `blocked`. If every lead in a wave waits for approval, the run ends as `blocked`.
 - **`harness::stop`.** With `approval-gate`, the repository rules (`iii-permissions.yaml`) may deny it with a `'!harness::stop'` line. To allow it, remove that line and add `- harness::stop`. An allow above the deny line is not enough, because the console makes every deny rule session-wide. If you keep the deny, leads that time out are parked as `stuck`.
@@ -174,7 +174,7 @@ Sub-agents work only inside their worktree. They never push, merge, rebase, rese
 
    The report goes on the run ticket, into the chat and to `notify`.
 
-A command that outlives the foreground cap (`shell::exec` stops at 120 s), such as the baseline, the full suite or the first build in a fresh ticket worktree, runs as a background job (`shell::exec_bg`), in any phase. The agent registers a `shell::job-finished` wake for that job and ends its turn; the harness wakes it with the exit code when the job ends. It never polls, and it kills a job whose wake expires. This needs `ide` 0.12.19 or later.
+A command that outlives the foreground cap (`shell::exec` stops at 120 s), such as the baseline, the full suite or the first build in a fresh ticket worktree, runs as a background job (`shell::exec_bg`), in any phase. The agent observes `shell::on-job-finished` with args `{ job_id }` for that job, reads `shell::status` once (a job that already ended is read there), and otherwise ends its turn; the harness wakes it with the exit code when the job ends. It never polls, and it kills a job whose wake expires. This needs the observe v2 release of `ide`, which hosts `shell::on-job-finished`.
 
 Results go through `state` rather than kanban events. State has compare-and-set, and a kanban outage won't lose results.
 

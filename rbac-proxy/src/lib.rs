@@ -6,9 +6,11 @@
 //! port, speaks the iii worker protocol verbatim, and transparently proxies
 //! every frame (functions *and* channels) to a trusted engine listener —
 //! authenticating the connection, gating each invocation, namespacing
-//! registrations, gating trigger bindings, running middleware and registration
-//! hooks, and rewriting the results of the built-in `engine::*` discovery
-//! functions so a caller only ever sees what its boundaries allow.
+//! registrations, gating observers (their source and their target), the frames
+//! a host exchanges about its observers and the calls it makes through them,
+//! running middleware and registration hooks, and rewriting the results of the
+//! built-in `engine::*` discovery functions so a caller only ever sees what
+//! its boundaries allow.
 
 pub mod channels;
 pub mod config;

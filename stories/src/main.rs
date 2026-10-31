@@ -1,6 +1,6 @@
 //! `stories` binary entry.
 //!
-//! Boot: parse the CLI, connect to the engine, register the trigger types,
+//! Boot: parse the CLI, connect to the engine, register the event functions,
 //! register the `stories` configuration entry and load it, materialize the
 //! Node compiler under the data folder, register the `stories::*` functions
 //! and the console UI, start the working-tree watchers, then sleep until
@@ -16,7 +16,6 @@ use iii_sdk::{InitOptions, register_worker};
 
 use iii_stories::builder::{self, Ctx};
 use iii_stories::compiler::Compiler;
-use iii_stories::events::Subscribers;
 use iii_stories::store::Store;
 use iii_stories::{configuration, functions, ui, watch};
 
@@ -78,16 +77,13 @@ async fn main() -> Result<()> {
     ));
 
     let config = Arc::new(RwLock::new(iii_stories::config::StoriesConfig::default()));
-    let subscribers = Subscribers::default();
-    iii_stories::events::register_trigger_types(&iii, &subscribers);
+    iii_stories::events::register(&iii);
 
     configuration::register(&iii, seed)
         .await
         .map_err(anyhow::Error::msg)
         .context("registering stories configuration schema")?;
-    let reload = configuration::bind_reload(&iii, config.clone())
-        .map_err(anyhow::Error::msg)
-        .context("binding configuration trigger")?;
+    let reload = configuration::bind_reload(&iii, config.clone());
     reload.run().await;
 
     let data_dir = config
@@ -108,7 +104,6 @@ async fn main() -> Result<()> {
         config: config.clone(),
         store,
         compiler,
-        subscribers,
         build_lock: tokio::sync::Mutex::new(()),
         builds: RwLock::new(HashMap::new()),
         rebuild_tx,

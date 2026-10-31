@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { CoderToolView } from '../index'
 
-function pending(input: unknown): FunctionTriggerMessage {
+function pending(input: unknown): FunctionCallMessage {
   return {
     functionId: 'coder::update-file',
     input,
     pendingApproval: true,
-  } as unknown as FunctionTriggerMessage
+  } as unknown as FunctionCallMessage
 }
 
 describe('CoderToolView.tryRenderPreview', () => {

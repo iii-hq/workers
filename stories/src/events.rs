@@ -1,53 +1,44 @@
-//! The two trigger types this worker provides.
+//! The two event functions this worker hosts. Both are private: only this
+//! worker calls them, and their handlers return the event they are called
+//! with, which is what observers observe.
 //!
-//! - `stories:changed` fires after every working-tree rebuild that changed
-//!   at least one component, with the classified changes against the
-//!   previous build. Config `{ workspace?, project?, kinds? }`.
-//! - `stories:build` fires on every build state transition (queued, running,
-//!   done, failed) for any line. Config `{ workspace? }`.
+//! - `stories::on-changed` is called after every working-tree rebuild that
+//!   changed at least one component, with the classified changes against
+//!   the previous build. Args `{ workspace?, project?, kinds? }`; its deliver
+//!   hook narrows the event to each observer's args and calls the observer
+//!   with what is left, skipping an observer left with nothing.
+//! - `stories::on-build` is called on every build state transition (queued,
+//!   running, done, failed) of any line. No args; observers filter on
+//!   `input.workspace`.
 //!
-//! Bindings live in an in-process map keyed by trigger id; delivery is
-//! fire-and-forget in the binding's namespace with its metadata attached.
+//! The emitters call a function only while it has observers.
 
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{TriggerAction, TriggerRequest, TriggerRequestWithMetadata};
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType};
+use iii_sdk::{Call, CallAction, CallRequest, IIIClient, Observer, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::model::{Change, ChangeKind, ChangeSummary, LineInfo};
 
-pub const CHANGED_TRIGGER: &str = "stories:changed";
-pub const BUILD_TRIGGER: &str = "stories:build";
+pub const ON_CHANGED_FN: &str = "stories::on-changed";
+pub const ON_BUILD_FN: &str = "stories::on-build";
 
+/// The args of a `stories::on-changed` observer: which changes it wants.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct ChangedConfig {
+#[serde(deny_unknown_fields)]
+pub struct ChangedArgs {
     /// Workspace slug. Omit for every workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
     /// Project name. Omit for every project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
-    /// Change kinds to fire for: direct, indirect, new, removed. Omit for all.
+    /// Change kinds to receive: direct, indirect, new, removed. Omit for all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kinds: Option<Vec<String>>,
-    /// Metadata attached to every invocation this binding receives.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct BuildConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -74,59 +65,70 @@ pub struct BuildEvent {
     pub at: String,
 }
 
-pub type Bindings = Arc<RwLock<HashMap<String, TriggerConfig>>>;
-
-#[derive(Clone, Default)]
-pub struct Subscribers {
-    pub changed: Bindings,
-    pub build: Bindings,
-}
-
-struct BindingTable(Bindings);
-
-#[async_trait]
-impl TriggerHandler for BindingTable {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.0
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(config.id.clone(), config);
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.0
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&config.id);
-        Ok(())
-    }
-}
-
-pub fn register_trigger_types(iii: &Arc<IIIClient>, subscribers: &Subscribers) {
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            CHANGED_TRIGGER,
-            "Fires after a working-tree rebuild changed components, with each change classified as direct, indirect, new or removed. Config: { workspace?, project?, kinds?, metadata? }.",
-            BindingTable(subscribers.changed.clone()),
-        )
-        .trigger_request_format::<ChangedConfig>()
-        .call_request_format::<ChangedEvent>(),
+/// Registers `stories::on-changed` and `stories::on-build`. The deliver hook
+/// is set by id before the registration, so it serves every call.
+pub fn register(iii: &Arc<IIIClient>) {
+    let engine = iii.clone();
+    iii.on_observer_deliver_for(
+        ON_CHANGED_FN,
+        move |call: Call, observers: Vec<Observer>| {
+            let engine = engine.clone();
+            async move { deliver_changed(&engine, call, observers).await }
+        },
     );
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            BUILD_TRIGGER,
-            "Fires on every build state transition (queued, running, done, failed) of any line. Config: { workspace?, metadata? }.",
-            BindingTable(subscribers.build.clone()),
-        )
-        .trigger_request_format::<BuildConfig>()
-        .call_request_format::<BuildEvent>(),
+    iii.register_function(
+        ON_CHANGED_FN,
+        RegisterFunction::new(|event: ChangedEvent| Ok::<_, Error>(event))
+            .description(
+                "Called after a working-tree rebuild changed components, with each change \
+                 classified as direct, indirect, new or removed. Args: { workspace?, project?, \
+                 kinds? }. Each observer receives the ChangedEvent narrowed to its args, and \
+                 none when nothing is left.",
+            )
+            .args_format::<ChangedArgs>()
+            .private(),
+    );
+    iii.register_function(
+        ON_BUILD_FN,
+        RegisterFunction::new(|event: BuildEvent| Ok::<_, Error>(event))
+            .description(
+                "Called on every build state transition (queued, running, done, failed) of any \
+                 line. No args; filter on input.workspace.",
+            )
+            .private(),
     );
 }
 
-fn text<'a>(config: &'a Value, key: &str) -> &'a str {
-    config
-        .get(key)
+/// `stories::on-changed`'s delivery: each observer whose filters match gets
+/// the event narrowed to its args, fire-and-forget; an observer left with
+/// nothing is skipped. The caller gets the event back.
+async fn deliver_changed(
+    iii: &IIIClient,
+    call: Call,
+    observers: Vec<Observer>,
+) -> Result<Value, Error> {
+    let event: ChangedEvent = serde_json::from_value(call.input.clone())
+        .map_err(|error| Error::Handler(format!("invalid {ON_CHANGED_FN} input: {error}")))?;
+    for obs in observers {
+        if !obs.matches(&call) {
+            continue;
+        }
+        let Some(narrowed) = narrow_changed(obs.args_value(), &event) else {
+            continue;
+        };
+        let Ok(payload) = serde_json::to_value(narrowed) else {
+            continue;
+        };
+        let request = CallRequest::observer(&obs, payload).action(CallAction::Void);
+        if let Err(error) = iii.call(request).await {
+            tracing::warn!(observer_id = obs.id(), error = %error, "stories::on-changed delivery failed");
+        }
+    }
+    Ok(call.output.unwrap_or(call.input))
+}
+
+fn text<'a>(args: &'a Value, key: &str) -> &'a str {
+    args.get(key)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .trim()
@@ -142,15 +144,15 @@ fn kind_name(kind: ChangeKind) -> &'static str {
     }
 }
 
-/// The event narrowed to what the binding asked for; `None` when nothing is
-/// left to deliver.
-pub fn narrow_changed(config: &Value, event: &ChangedEvent) -> Option<ChangedEvent> {
-    let workspace = text(config, "workspace");
+/// The event narrowed to what an observer's args ask for; `None` when nothing
+/// is left to deliver.
+pub fn narrow_changed(args: &Value, event: &ChangedEvent) -> Option<ChangedEvent> {
+    let workspace = text(args, "workspace");
     if !workspace.is_empty() && workspace != event.workspace {
         return None;
     }
-    let project = text(config, "project");
-    let kinds: Vec<&str> = config
+    let project = text(args, "project");
+    let kinds: Vec<&str> = args
         .get("kinds")
         .and_then(Value::as_array)
         .map(|k| {
@@ -178,75 +180,34 @@ pub fn narrow_changed(config: &Value, event: &ChangedEvent) -> Option<ChangedEve
     })
 }
 
-pub fn matches_build(config: &Value, event: &BuildEvent) -> bool {
-    let workspace = text(config, "workspace");
-    workspace.is_empty() || workspace == event.workspace
-}
-
-fn subscription_metadata(binding: &TriggerConfig) -> Option<Value> {
-    binding
-        .config
-        .get("metadata")
-        .filter(|value| !value.is_null())
-        .cloned()
-        .or_else(|| binding.metadata.clone())
-}
-
-fn deliver(iii: Arc<IIIClient>, deliveries: Vec<(TriggerConfig, Value)>) {
-    if deliveries.is_empty() {
+/// Calls `function_id` with `event`, fire-and-forget, when it has observers.
+fn emit(iii: &Arc<IIIClient>, function_id: &'static str, event: impl Serialize) {
+    if !iii.is_observed(function_id) {
         return;
     }
+    let Ok(payload) = serde_json::to_value(event) else {
+        return;
+    };
+    let iii = iii.clone();
     tokio::spawn(async move {
-        for (binding, payload) in deliveries {
-            let mut request: TriggerRequestWithMetadata = TriggerRequest {
-                function_id: binding.function_id.clone(),
-                payload,
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            }
-            .into();
-            if let Some(metadata) = subscription_metadata(&binding) {
-                request = request.metadata(metadata);
-            }
-            if let Some(namespace) = &binding.namespace {
-                request = request.namespace(namespace.clone());
-            }
-            if let Err(error) = iii.trigger(request).await {
-                tracing::warn!(function_id = binding.function_id, error = %error, "stories trigger delivery failed");
-            }
+        let request = CallRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: Some(CallAction::Void),
+            timeout_ms: None,
+        };
+        if let Err(error) = iii.call(request).await {
+            tracing::warn!(function_id, error = %error, "stories event call failed");
         }
     });
 }
 
-pub fn emit_changed(iii: &Arc<IIIClient>, subscribers: &Subscribers, event: &ChangedEvent) {
-    let deliveries: Vec<(TriggerConfig, Value)> = subscribers
-        .changed
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .values()
-        .filter_map(|binding| {
-            let narrowed = narrow_changed(&binding.config, event)?;
-            serde_json::to_value(narrowed)
-                .ok()
-                .map(|payload| (binding.clone(), payload))
-        })
-        .collect();
-    deliver(iii.clone(), deliveries);
+pub fn emit_changed(iii: &Arc<IIIClient>, event: &ChangedEvent) {
+    emit(iii, ON_CHANGED_FN, event);
 }
 
-pub fn emit_build(iii: &Arc<IIIClient>, subscribers: &Subscribers, event: &BuildEvent) {
-    let Ok(payload) = serde_json::to_value(event) else {
-        return;
-    };
-    let deliveries: Vec<(TriggerConfig, Value)> = subscribers
-        .build
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .values()
-        .filter(|binding| matches_build(&binding.config, event))
-        .map(|binding| (binding.clone(), payload.clone()))
-        .collect();
-    deliver(iii.clone(), deliveries);
+pub fn emit_build(iii: &Arc<IIIClient>, event: &BuildEvent) {
+    emit(iii, ON_BUILD_FN, event);
 }
 
 #[cfg(test)]
@@ -290,6 +251,14 @@ mod tests {
             changes,
             at: "t".into(),
         }
+    }
+
+    #[test]
+    fn changed_args_take_only_workspace_project_and_kinds() {
+        let args: ChangedArgs =
+            serde_json::from_value(json!({ "workspace": "ws", "kinds": ["direct"] })).unwrap();
+        assert_eq!(args.workspace.as_deref(), Some("ws"));
+        assert!(serde_json::from_value::<ChangedArgs>(json!({ "metadata": {} })).is_err());
     }
 
     #[test]

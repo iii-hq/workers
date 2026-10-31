@@ -28,10 +28,12 @@ use crate::workspace_store::WorkspaceStore;
 use status::{StatusInput, StatusOutput};
 
 /// Register every `console::*` function. Called once from `main` after
-/// `register_worker` (and after `ui_assets::start`, which owns the
-/// injectable-UI trigger types — types register before functions;
-/// `workspace::register` does the same for `console::workspace::changed`).
-/// Each handler captures the live runtime state without re-parsing the YAML.
+/// `register_worker` (and after `ui_assets::start`, which hosts the
+/// `console::ui::*` functions). Hooks are set by id before each observable
+/// function registers (`workspace::register` for
+/// `console::workspace::on-changed`, `compose::register` for
+/// `console::compose::on-changed`). Each handler captures the live runtime
+/// state without re-parsing the YAML.
 pub fn register_all(
     iii: &Arc<IIIClient>,
     port: PortCell,
@@ -42,9 +44,7 @@ pub fn register_all(
     register_status(iii, port, engine_url);
     register_ui_manifest(iii, ui);
     working_directory::register(iii);
-    if let Err(error) = working_directory::bind(iii) {
-        tracing::warn!(%error, "failed to bind Harness working-directory proposal context");
-    }
+    working_directory::observe_hooks(iii);
     crate::onboarding::register(iii, workspace.clone());
     crate::context_tracking::register(iii, workspace.clone());
     workspace::register(iii, workspace);
@@ -53,7 +53,7 @@ pub fn register_all(
     crate::compose::register(iii);
     mentions::register(iii);
     tracing::info!(
-        "registered console::status, console::ui-manifest, console::subscribe, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}, console::conversations::*, console::onboarding::{{scan,get,set,prompts}}, console::compose::*, console::mentions::trace::{{search,get}}, and the console::workspace::changed and console::compose::changed trigger types"
+        "registered console::status, console::ui-manifest, console::subscribe, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}, console::conversations::*, console::onboarding::{{scan,get,set,prompts}}, console::compose::*, console::mentions::trace::{{search,get}}, console::workspace::on-changed and console::compose::on-changed"
     );
 }
 
@@ -62,8 +62,9 @@ pub struct UiManifestInput {}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct UiManifestOutput {
-    /// `true` when the `injectable_ui` kill switch is off — the trigger
-    /// types are unregistered and `/ui` + `/vendor` are not served.
+    /// `true` when the `injectable_ui` kill switch is off — the
+    /// `console::ui::*` functions are not hosted and `/ui` + `/vendor` are
+    /// not served.
     pub disabled: bool,
     /// The loadable set: assets of per-worker-disabled workers are held but
     /// excluded here (and from tab syncs) until re-enabled.
@@ -75,7 +76,7 @@ pub struct UiManifestOutput {
 
 /// `console::ui-manifest` — the authoritative *loadable* asset set (only
 /// the console knows fetch results and hashes). Debug surface; the SPA
-/// loader itself is fed by `console:assets` pushes, never this.
+/// loader itself is fed by `console::ui::on-assets-changed`, never this.
 fn register_ui_manifest(iii: &Arc<IIIClient>, ui: Option<Arc<UiRegistry>>) {
     iii.register_function(
         "console::ui-manifest",

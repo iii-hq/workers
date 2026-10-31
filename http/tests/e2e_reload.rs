@@ -2,8 +2,8 @@
 //! worker.
 //!
 //! Skips (early-return) when no engine is reachable. Boots one worker with a
-//! permissive config (no middleware), wires the `configuration:updated` reload
-//! trigger, then flips a hot field — the global `middleware` chain — via
+//! permissive config (no middleware), observes `configuration::on-updated` for
+//! reloads, then flips a hot field — the global `middleware` chain — via
 //! `configuration::set` and asserts the running server picks it up WITHOUT a
 //! restart: requests return 200 before the reload and 403 after.
 
@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use common::{backend, engine, worker};
 use iii_http::configuration;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use serde_json::json;
 use serial_test::serial;
 
@@ -44,7 +44,7 @@ async fn wait_for_cors(config: &configuration::ConfigCell) {
 #[tokio::test]
 #[serial]
 async fn global_middleware_added_via_config_set_blocks_without_restart() {
-    // A dedicated client, closed at the end: a 0.25 engine keeps
+    // A dedicated client, closed at the end: the engine keeps
     // `http::on-config-change` owned by a live connection, so the other reload
     // tests could not register it while a shared client still holds it.
     let Some(iii) = engine::connect_fresh().await else {
@@ -58,19 +58,18 @@ async fn global_middleware_added_via_config_set_blocks_without_restart() {
     backend::register_echo_backend(&iii, "/reload", "GET").await;
     common::wait_for_route(&boot.routes, "GET", "/reload").await;
 
-    // Register the schema (required before `configuration::set`) and wire the
-    // reload trigger to this worker's live config cell.
+    // Register the schema (required before `configuration::set`) and observe
+    // its updates with this worker's live config cell.
     configuration::register_config(&iii, None)
         .await
         .expect("register http configuration schema");
-    configuration::register_config_trigger(
+    let _reload = configuration::register_config_observer(
         &iii,
         boot.config.clone(),
         boot.hot_router.clone(),
         boot.control.clone(),
         boot.apply_lock.clone(),
-    )
-    .expect("bind configuration trigger");
+    );
 
     let url = format!("http://{}/reload", boot.local_addr);
     let client = reqwest::Client::new();
@@ -87,7 +86,7 @@ async fn global_middleware_added_via_config_set_blocks_without_restart() {
             { "function_id": "test.block", "phase": "preHandler", "priority": 0 }
         ]
     });
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "configuration::set".to_string(),
         payload: json!({ "id": configuration::config_id(), "value": new_value }),
         action: None,
@@ -96,8 +95,8 @@ async fn global_middleware_added_via_config_set_blocks_without_restart() {
     .await
     .expect("configuration::set");
 
-    // Wait for the `configuration:updated` event to flow through the reload
-    // trigger and swap the cell.
+    // Wait for the `configuration:updated` event to reach the reload function
+    // and swap the cell.
     wait_for_middleware(&boot.config).await;
 
     // After reload: global middleware short-circuits every route → 403.
@@ -134,14 +133,13 @@ async fn cors_restricted_via_config_set_applies_without_restart() {
     configuration::register_config(&iii, None)
         .await
         .expect("register http configuration schema");
-    configuration::register_config_trigger(
+    let _reload = configuration::register_config_observer(
         &iii,
         boot.config.clone(),
         boot.hot_router.clone(),
         boot.control.clone(),
         boot.apply_lock.clone(),
-    )
-    .expect("bind configuration trigger");
+    );
 
     let url = format!("http://{}/cors-reload", boot.local_addr);
     let client = reqwest::Client::new();
@@ -168,7 +166,7 @@ async fn cors_restricted_via_config_set_applies_without_restart() {
         "port": 0,
         "cors": { "allowed_origins": ["http://allowed.com"], "allowed_methods": [] }
     });
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "configuration::set".to_string(),
         payload: json!({ "id": configuration::config_id(), "value": new_value }),
         action: None,
@@ -301,14 +299,13 @@ async fn host_port_change_rebinds_listener_without_restart() {
     configuration::register_config(&iii, None)
         .await
         .expect("register http configuration schema");
-    configuration::register_config_trigger(
+    let _reload = configuration::register_config_observer(
         &iii,
         boot.config.clone(),
         boot.hot_router.clone(),
         boot.control.clone(),
         boot.apply_lock.clone(),
-    )
-    .expect("bind configuration trigger");
+    );
 
     let url_p1 = format!("http://127.0.0.1:{p1}/rebind");
     let url_p2 = format!("http://127.0.0.1:{p2}/rebind");
@@ -319,9 +316,9 @@ async fn host_port_change_rebinds_listener_without_restart() {
         "expected P1 ({p1}) to serve before the rebind"
     );
 
-    // Flip the port to P2 (same host) → triggers a live rebind.
+    // Flip the port to P2 (same host) → a live rebind.
     let new_value = json!({ "host": "127.0.0.1", "port": p2 });
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "configuration::set".to_string(),
         payload: json!({ "id": configuration::config_id(), "value": new_value }),
         action: None,

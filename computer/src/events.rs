@@ -1,30 +1,31 @@
-//! The session trigger types this worker emits, and the fan-out behind
-//! them. Consumers bind handlers with the standard two-step pattern; the
-//! engine routes each registration to our [`TriggerHandler`]. Delivery is
-//! fire-and-forget (`TriggerAction::Void`) and at-least-once; the optional
-//! per-binding `session_id` filter is evaluated here by the emitting worker,
-//! and malformed configs are rejected at registration time.
+//! The session events this worker provides, as observable functions. Each
+//! is private (only this worker calls it), and its handler returns the event
+//! it is called with: that event is what observers observe. None takes
+//! args; observers select a session with a filter on `input.session_id`.
+//! Calls are fire-and-forget (`CallAction::Void`), iii delivers them, and an
+//! event nobody observes is never built.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::driver::Screen;
 
-pub const SESSION_STARTED: &str = "computer::session-started";
-pub const SESSION_STOPPED: &str = "computer::session-stopped";
-pub const ACTIVITY: &str = "computer::activity";
+pub const ON_SESSION_STARTED_FN: &str = "computer::on-session-started";
+pub const ON_SESSION_STOPPED_FN: &str = "computer::on-session-stopped";
+pub const ON_ACTIVITY_FN: &str = "computer::on-activity";
+pub const SESSION_STARTED_DESC: &str =
+    "A desktop session connected and is ready to drive. No args; filter on input.session_id.";
+pub const SESSION_STOPPED_DESC: &str =
+    "A desktop session ended (stopped or idle). No args; filter on input.session_id.";
 pub const ACTIVITY_DESC: &str =
     "A caller drove a desktop session (computer::act or computer::run); the console's live \
-     preview shows that session.";
+     preview shows that session. No args; filter on input.session_id.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -34,11 +35,19 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub fn trigger_type(&self) -> &'static str {
+    pub fn function_id(&self) -> &'static str {
         match self {
-            EventKind::SessionStarted => SESSION_STARTED,
-            EventKind::SessionStopped => SESSION_STOPPED,
-            EventKind::Activity => ACTIVITY,
+            EventKind::SessionStarted => ON_SESSION_STARTED_FN,
+            EventKind::SessionStopped => ON_SESSION_STOPPED_FN,
+            EventKind::Activity => ON_ACTIVITY_FN,
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            EventKind::SessionStarted => SESSION_STARTED_DESC,
+            EventKind::SessionStopped => SESSION_STOPPED_DESC,
+            EventKind::Activity => ACTIVITY_DESC,
         }
     }
 
@@ -51,30 +60,12 @@ impl EventKind {
     }
 }
 
-/// Config accepted by every `computer::*` trigger binding. The only filter is
-/// an optional session-id equality match; unknown fields fail at registration
-/// so a misspelled filter key fails loudly instead of silently receiving
-/// nothing.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BindingConfig {
-    /// Only deliver events for this computer session.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-}
-
-pub fn binding_matches(filter: &BindingConfig, session_id: &str) -> bool {
-    match &filter.session_id {
-        Some(want) => want == session_id,
-        None => true,
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Event payloads (what subscribers receive)
+// Events (what the functions return, and observers observe)
 // ---------------------------------------------------------------------------
 
-/// `computer::session-started` — a desktop session is connected and ready.
+/// What `computer::on-session-started` returns: a desktop session is
+/// connected and ready.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStartedEvent {
     pub session_id: String,
@@ -86,9 +77,9 @@ pub struct SessionStartedEvent {
     pub timestamp: i64,
 }
 
-/// `computer::activity` — a caller drove a session: fired when a
-/// `computer::act` call reaches it, or a `computer::run` passed its checks and
-/// holds it.
+/// What `computer::on-activity` returns: a caller drove a session. Called
+/// when a `computer::act` call reaches it, or a `computer::run` passed its
+/// checks and holds it.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ActivityEvent {
     pub session_id: String,
@@ -97,7 +88,8 @@ pub struct ActivityEvent {
     pub timestamp: i64,
 }
 
-/// `computer::session-stopped` — a session ended; see `reason`.
+/// What `computer::on-session-stopped` returns: a session ended; see
+/// `reason`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStoppedEvent {
     pub session_id: String,
@@ -107,323 +99,184 @@ pub struct SessionStoppedEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Subscriber registry + trigger type registration
+// Registration
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub struct Binding {
-    pub id: String,
-    pub function_id: String,
-    pub filter: BindingConfig,
-}
-
-/// Thread-safe subscriber registry for one trigger type.
-#[derive(Clone)]
-pub struct SubscriberSet {
-    kind: EventKind,
-    inner: Arc<Mutex<HashMap<String, Binding>>>,
-}
-
-impl SubscriberSet {
-    pub fn new(kind: EventKind) -> Self {
-        Self {
-            kind,
-            inner: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    /// Parse + insert a binding. Rejects malformed configs at registration.
-    pub fn add(&self, config: TriggerConfig) -> Result<(), String> {
-        let raw = if config.config.is_null() {
-            Value::Object(serde_json::Map::new())
-        } else {
-            config.config.clone()
-        };
-        let filter: BindingConfig = serde_json::from_value(raw)
-            .map_err(|e| format!("invalid {} config: {e}", self.kind.trigger_type()))?;
-        let binding = Binding {
-            id: config.id.clone(),
-            function_id: config.function_id,
-            filter,
-        };
-        self.lock().insert(config.id, binding);
-        Ok(())
-    }
-
-    pub fn remove(&self, id: &str) {
-        self.lock().remove(id);
-    }
-
-    /// Snapshot so the mutex is never held across awaits.
-    pub fn snapshot(&self) -> Vec<Binding> {
-        self.lock().values().cloned().collect()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Binding>> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-/// The two subscriber sets, one per trigger type.
-#[derive(Clone)]
-pub struct TriggerSets {
-    inner: HashMap<&'static str, SubscriberSet>,
-}
-
-impl TriggerSets {
-    pub fn new() -> Self {
-        let mut inner = HashMap::new();
-        for kind in EventKind::all() {
-            inner.insert(kind.trigger_type(), SubscriberSet::new(kind));
-        }
-        Self { inner }
-    }
-
-    pub fn for_kind(&self, kind: EventKind) -> &SubscriberSet {
-        self.inner
-            .get(kind.trigger_type())
-            .expect("all kinds are populated at construction")
-    }
-}
-
-impl Default for TriggerSets {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-struct ComputerTriggerHandler {
-    set: SubscriberSet,
-}
-
-#[async_trait]
-impl TriggerHandler for ComputerTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let id = config.id.clone();
-        let function_id = config.function_id.clone();
-        self.set.add(config).map_err(Error::Handler)?;
-        tracing::info!(id = %id, function_id = %function_id, "trigger subscription registered");
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        tracing::info!(id = %config.id, "trigger subscription unregistered");
-        self.set.remove(&config.id);
-        Ok(())
-    }
-}
-
-/// Register the custom trigger types with the engine. Must run before
-/// `functions::register_all` so handlers can capture the subscriber sets.
-pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
-    let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 3] = [
-        (
-            EventKind::SessionStarted,
-            "A desktop session connected and is ready to drive.",
-        ),
-        (
-            EventKind::SessionStopped,
-            "A desktop session ended (stopped or idle).",
-        ),
-        (EventKind::Activity, ACTIVITY_DESC),
-    ];
-    for (kind, description) in descriptions {
-        let _ = iii.register_trigger_type(
-            RegisterTriggerType::new(
-                kind.trigger_type(),
-                description,
-                ComputerTriggerHandler {
-                    set: sets.for_kind(kind).clone(),
-                },
-            )
-            .trigger_request_format::<BindingConfig>(),
-        );
+/// Register the three event functions. Runs before `functions::register_all`
+/// so every emit has its function.
+pub fn register(iii: &IIIClient) {
+    iii.register_function(
+        ON_SESSION_STARTED_FN,
+        RegisterFunction::new(|event: SessionStartedEvent| Ok::<_, Error>(event))
+            .description(SESSION_STARTED_DESC)
+            .private(),
+    );
+    iii.register_function(
+        ON_SESSION_STOPPED_FN,
+        RegisterFunction::new(|event: SessionStoppedEvent| Ok::<_, Error>(event))
+            .description(SESSION_STOPPED_DESC)
+            .private(),
+    );
+    iii.register_function(
+        ON_ACTIVITY_FN,
+        RegisterFunction::new(|event: ActivityEvent| Ok::<_, Error>(event))
+            .description(ACTIVITY_DESC)
+            .private(),
+    );
+    for kind in EventKind::all() {
         tracing::info!(
-            trigger_type = kind.trigger_type(),
-            "registered trigger type"
+            function_id = kind.function_id(),
+            "registered event function"
         );
     }
-    sets
 }
 
 // ---------------------------------------------------------------------------
 // Emission
 // ---------------------------------------------------------------------------
 
-/// How a matched event reaches a subscriber. Production delivers over the bus;
-/// tests record.
+/// Where an event goes. Production calls the function on the bus; tests
+/// record.
 #[async_trait]
-pub trait EventDeliverer: Send + Sync {
-    async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value);
+pub trait EventSink: Send + Sync {
+    /// Whether anything observes `function_id`.
+    fn observed(&self, function_id: &str) -> bool;
+    async fn call(&self, function_id: &str, payload: Value);
 }
 
-/// Fire-and-forget bus delivery so the caller that produced the event is never
-/// blocked on subscriber latency. Failures are logged and swallowed.
-pub struct IiiDeliverer {
+/// A fire-and-forget call of the event function, so the caller that
+/// produced the event is never blocked on observers. Failures are logged
+/// and swallowed.
+pub struct IiiEventSink {
     iii: Arc<IIIClient>,
 }
 
-impl IiiDeliverer {
+impl IiiEventSink {
     pub fn new(iii: Arc<IIIClient>) -> Self {
         Self { iii }
     }
 }
 
 #[async_trait]
-impl EventDeliverer for IiiDeliverer {
-    async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value) {
-        let iii = self.iii.clone();
-        let trigger_type = trigger_type.to_string();
-        let function_id = function_id.to_string();
-        tokio::spawn(async move {
-            let res = iii
-                .trigger(TriggerRequest {
-                    function_id: function_id.clone(),
-                    payload,
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                })
-                .await;
-            if let Err(e) = res {
-                tracing::warn!(trigger_type, function_id, error = %e, "event fan-out failed");
-            }
-        });
+impl EventSink for IiiEventSink {
+    fn observed(&self, function_id: &str) -> bool {
+        self.iii.is_observed(function_id)
+    }
+
+    async fn call(&self, function_id: &str, payload: Value) {
+        let request = CallRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: Some(CallAction::Void),
+            timeout_ms: None,
+        };
+        if let Err(e) = self.iii.call(request).await {
+            tracing::warn!(function_id, error = %e, "event call failed");
+        }
     }
 }
 
-/// Evaluates each binding's session filter against each event and delivers the
-/// payload to every match.
+/// Builds and sends each event, only while its function is observed.
 pub struct Emitter {
-    sets: TriggerSets,
-    deliverer: Arc<dyn EventDeliverer>,
+    sink: Arc<dyn EventSink>,
 }
 
 impl Emitter {
-    pub fn new(sets: TriggerSets, deliverer: Arc<dyn EventDeliverer>) -> Self {
-        Self { sets, deliverer }
+    pub fn new(sink: Arc<dyn EventSink>) -> Self {
+        Self { sink }
     }
 
-    pub async fn emit<T: Serialize>(&self, kind: EventKind, session_id: &str, payload: &T) {
-        let bindings = self.sets.for_kind(kind).snapshot();
-        let mut matched = bindings
-            .into_iter()
-            .filter(|b| binding_matches(&b.filter, session_id))
-            .peekable();
-        if matched.peek().is_none() {
+    pub async fn emit<T: Serialize>(&self, kind: EventKind, event: &T) {
+        let function_id = kind.function_id();
+        if !self.sink.observed(function_id) {
             return;
         }
-        let payload = match serde_json::to_value(payload) {
+        let payload = match serde_json::to_value(event) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, "event payload failed to serialize");
+                tracing::warn!(error = %e, "event failed to serialize");
                 return;
             }
         };
-        for binding in matched {
-            self.deliverer
-                .deliver(kind.trigger_type(), &binding.function_id, payload.clone())
-                .await;
-        }
+        self.sink.call(function_id, payload).await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use std::sync::Mutex;
 
-    fn trigger_config(config: Value) -> TriggerConfig {
-        TriggerConfig {
-            id: "t1".to_string(),
-            function_id: "console::on-event".to_string(),
-            config,
-            metadata: None,
-            namespace: None,
+    /// Records calls; observes only the function ids it was given.
+    struct Recorder {
+        observed: Vec<&'static str>,
+        calls: Mutex<Vec<(String, Value)>>,
+    }
+
+    #[async_trait]
+    impl EventSink for Recorder {
+        fn observed(&self, function_id: &str) -> bool {
+            self.observed.contains(&function_id)
+        }
+
+        async fn call(&self, function_id: &str, payload: Value) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((function_id.to_string(), payload));
+        }
+    }
+
+    fn stopped(session_id: &str) -> SessionStoppedEvent {
+        SessionStoppedEvent {
+            session_id: session_id.to_string(),
+            reason: "stopped".to_string(),
+            timestamp: 0,
         }
     }
 
     #[test]
-    fn empty_filter_matches_everything() {
-        assert!(binding_matches(&BindingConfig::default(), "c1"));
-    }
-
-    #[test]
-    fn session_filter_is_equality() {
-        let filter = BindingConfig {
-            session_id: Some("c1".to_string()),
-        };
-        assert!(binding_matches(&filter, "c1"));
-        assert!(!binding_matches(&filter, "c2"));
-    }
-
-    #[test]
-    fn add_rejects_unknown_filter_keys() {
-        let set = SubscriberSet::new(EventKind::SessionStarted);
-        let err = set
-            .add(trigger_config(json!({ "sesion_id": "c1" })))
-            .unwrap_err();
-        assert!(err.contains("computer::session-started"), "{err}");
-    }
-
-    #[test]
-    fn add_accepts_null_config() {
-        let set = SubscriberSet::new(EventKind::SessionStopped);
-        set.add(trigger_config(Value::Null)).unwrap();
-        assert_eq!(set.snapshot().len(), 1);
+    fn every_kind_names_its_function() {
+        let ids: Vec<&str> = EventKind::all()
+            .iter()
+            .map(EventKind::function_id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![ON_SESSION_STARTED_FN, ON_SESSION_STOPPED_FN, ON_ACTIVITY_FN]
+        );
+        for kind in EventKind::all() {
+            assert!(kind.function_id().starts_with("computer::on-"));
+            assert!(kind.description().contains("input.session_id"));
+        }
     }
 
     #[tokio::test]
-    async fn emit_delivers_only_to_matching_bindings() {
-        struct Recorder(Mutex<Vec<(String, String)>>);
-
-        #[async_trait]
-        impl EventDeliverer for Recorder {
-            async fn deliver(&self, trigger_type: &str, function_id: &str, _payload: Value) {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push((trigger_type.to_string(), function_id.to_string()));
-            }
-        }
-
-        let sets = TriggerSets::new();
-        let set = sets.for_kind(EventKind::SessionStopped);
-        set.add(TriggerConfig {
-            id: "match".to_string(),
-            function_id: "fn::match".to_string(),
-            config: json!({ "session_id": "c1" }),
-            metadata: None,
-            namespace: None,
-        })
-        .unwrap();
-        set.add(TriggerConfig {
-            id: "other".to_string(),
-            function_id: "fn::other".to_string(),
-            config: json!({ "session_id": "c2" }),
-            metadata: None,
-            namespace: None,
-        })
-        .unwrap();
-
-        let recorder = Arc::new(Recorder(Mutex::new(Vec::new())));
-        let emitter = Emitter::new(sets, recorder.clone());
+    async fn emit_calls_the_function_only_while_it_is_observed() {
+        let recorder = Arc::new(Recorder {
+            observed: vec![ON_SESSION_STOPPED_FN],
+            calls: Mutex::new(Vec::new()),
+        });
+        let emitter = Emitter::new(recorder.clone());
+        emitter
+            .emit(EventKind::SessionStopped, &stopped("c1"))
+            .await;
         emitter
             .emit(
-                EventKind::SessionStopped,
-                "c1",
-                &SessionStoppedEvent {
+                EventKind::Activity,
+                &ActivityEvent {
                     session_id: "c1".to_string(),
-                    reason: "stopped".to_string(),
+                    function: "computer::act".to_string(),
                     timestamp: 0,
                 },
             )
             .await;
 
-        let seen = recorder.0.lock().unwrap().clone();
-        assert_eq!(
-            seen,
-            vec![(SESSION_STOPPED.to_string(), "fn::match".to_string())]
-        );
+        let calls = recorder.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "computer::on-activity is not observed");
+        let (function_id, payload) = &calls[0];
+        assert_eq!(function_id, ON_SESSION_STOPPED_FN);
+        assert_eq!(payload["session_id"], "c1");
+        assert_eq!(payload["reason"], "stopped");
     }
 }

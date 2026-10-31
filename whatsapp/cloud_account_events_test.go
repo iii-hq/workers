@@ -6,26 +6,23 @@ import (
 	"testing"
 )
 
-func TestCloudAccountWebhookRequiresOptInAndDeduplicates(t *testing.T) {
+func TestCloudAccountWebhookIsFilterableAndDeduplicates(t *testing.T) {
 	payload := cloudTestPayload(map[string]any{"field": "message_template_status_update", "value": map[string]any{"event": "APPROVED", "message_template_id": "999", "message_template_name": "report"}})
 	payload["entry"].([]any)[0].(map[string]any)["time"] = float64(1790870400)
 	batch := cloudTestParse(t, payload)
 	if len(batch.events) != 1 || len(batch.messages) != 0 {
 		t.Fatalf("expected one administrative event, got %+v", batch)
 	}
-	defaults, err := parseCloudEventFilter(json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatal(err)
+	if filterSelects(t, map[string]any{"input.kind": map[string]any{"$eq": "message.received"}}, batch.events[0]) {
+		t.Fatal("an observer of incoming messages received an administrative event")
 	}
-	if defaults.matches(batch.events[0]) {
-		t.Fatal("existing default subscription received administrative event")
+	filters := map[string]any{
+		"input.kind":  map[string]any{"$eq": "webhook.received"},
+		"input.field": map[string]any{"$eq": "message_template_status_update"},
+		"input.event": map[string]any{"$eq": "APPROVED"},
 	}
-	filter, err := parseCloudEventFilter(json.RawMessage(`{"kinds":["webhook.received"],"fields":["message_template_status_update"],"events":["APPROVED"]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !filter.matches(batch.events[0]) {
-		t.Fatal("explicit filter did not match")
+	if !filterSelects(t, filters, batch.events[0]) {
+		t.Fatal("administrative filters did not match")
 	}
 	inbox := inboxTestOpen(t, 100)
 	first, err := inbox.RecordCloudDelivery(nil, nil, batch.events)

@@ -25,7 +25,7 @@ def test_collects_functions_by_worker_name_with_workers_baseline() -> None:
     functions_json = {
         "functions": [
             {
-                "function_id": "harness::trigger",
+                "function_id": "harness::send",
                 "worker_name": "harness",
                 "description": "kickoff",
             },
@@ -50,7 +50,7 @@ def test_collects_functions_by_worker_name_with_workers_baseline() -> None:
     )
 
     names = {fn["name"] for fn in interface["functions"]}
-    assert names == {"harness::trigger", "run::start"}
+    assert names == {"harness::send", "run::start"}
 
 
 def test_surfaces_typed_schemas_from_info_enriched_rows() -> None:
@@ -96,101 +96,98 @@ def test_surfaces_typed_schemas_from_info_enriched_rows() -> None:
             "description": "abort",
             "request_schema": req,
             "response_schema": resp,
+            "args_format": None,
+            "private": False,
+            "observable": True,
             "metadata": {},
         }
     ]
 
 
-def _session_manager_args(trigger_types_json):
-    """Minimal workers/functions JSON so a session-manager trigger payload
-    resolves; the assertion under test is the triggers mapping."""
-    return {
-        "worker_name": "session-manager",
-        "workers_json": {
-            "workers": [{"id": "session-manager", "name": "session-manager", "runtime": "rust"}]
-        },
-        "functions_json": {
-            "functions": [
-                {
-                    "function_id": "session::append",
-                    "worker_name": "session-manager",
-                    "description": "append",
-                }
-            ]
-        },
-        "trigger_types_json": trigger_types_json,
-    }
-
-
-def test_surfaces_trigger_schemas_from_info_enriched_rows() -> None:
-    """`engine::triggers::list` rows carry no schemas — only `engine::triggers::info`
-    does, under `configuration_schema`/`request_schema`. Once the collector
-    enriches each row from `::info`, normalize must surface those typed schemas
-    (not the empty `{}` it produced when reading the never-present
-    `trigger_request_format`/`call_request_format` keys)."""
-    cfg = {
+def test_surfaces_an_event_source_observe_fields() -> None:
+    """An event source is a private function whose handler returns the event:
+    `request_schema` and `response_schema` describe the event, and
+    `args_format` (from `engine::functions::list|info`) describes what its
+    observers pass. The engine leaves `private: false` and `observable: true`
+    out of its rows; the interface states both."""
+    event = {
         "type": "object",
-        "title": "CreatedBindingConfig",
+        "title": "SessionCreatedEvent",
         "properties": {"session_id": {"type": "string"}},
     }
-    req = {
+    args_format = {
         "type": "object",
-        "title": "SessionEvent",
-        "properties": {"entry_id": {"type": "string"}},
+        "properties": {"expression": {"type": "string"}},
+        "required": ["expression"],
     }
     interface = normalize_worker_interface(
-        **_session_manager_args(
-            {
-                "triggers": [
-                    {
-                        "id": "session::created",
-                        "worker_name": "session-manager",
-                        "description": "A new session exists.",
-                        "configuration_schema": cfg,
-                        "request_schema": req,
-                    }
-                ]
-            }
-        )
+        worker_name="session-manager",
+        workers_json={
+            "workers": [{"id": "session-manager", "name": "session-manager", "runtime": "rust"}]
+        },
+        functions_json={
+            "functions": [
+                {
+                    "function_id": "session::on-created",
+                    "worker_name": "session-manager",
+                    "description": "A new session exists.",
+                    "request_schema": event,
+                    "response_schema": event,
+                    "private": True,
+                    "observer_count": 2,
+                },
+                {
+                    "function_id": "session::on-tick",
+                    "worker_name": "session-manager",
+                    "description": "A tick.",
+                    "request_schema": event,
+                    "response_schema": event,
+                    "args_format": args_format,
+                    "private": True,
+                    "observer_count": 0,
+                },
+                {
+                    "function_id": "session::resolve",
+                    "worker_name": "session-manager",
+                    "description": "Carries a credential.",
+                    "observable": False,
+                    "observer_count": 0,
+                },
+            ]
+        },
     )
 
-    assert interface["triggers"] == [
+    assert interface["functions"] == [
         {
-            "name": "session::created",
+            "name": "session::on-created",
             "description": "A new session exists.",
-            "invocation_schema": cfg,
-            "return_schema": req,
+            "request_schema": event,
+            "response_schema": event,
+            "args_format": None,
+            "private": True,
+            "observable": True,
             "metadata": {},
-        }
-    ]
-
-
-def test_untyped_trigger_surfaces_empty_schema() -> None:
-    """A trigger type registered without a binding config (e.g. iii-directory's
-    `directory::*::on-change`) has no schema in `::info` — normalize emits an
-    empty `{}`, which the publish step warns (not errors) about."""
-    interface = normalize_worker_interface(
-        **_session_manager_args(
-            {
-                "triggers": [
-                    {
-                        "id": "session::created",
-                        "worker_name": "session-manager",
-                        "description": "A new session exists.",
-                    }
-                ]
-            }
-        )
-    )
-
-    assert interface["triggers"] == [
+        },
         {
-            "name": "session::created",
-            "description": "A new session exists.",
-            "invocation_schema": {},
-            "return_schema": {},
+            "name": "session::on-tick",
+            "description": "A tick.",
+            "request_schema": event,
+            "response_schema": event,
+            "args_format": args_format,
+            "private": True,
+            "observable": True,
             "metadata": {},
-        }
+        },
+        {
+            "name": "session::resolve",
+            "description": "Carries a credential.",
+            "request_schema": {},
+            "response_schema": {},
+            "args_format": None,
+            "private": False,
+            "observable": False,
+            "metadata": {},
+        },
     ]
 
 
@@ -220,6 +217,9 @@ def test_collects_single_worker_without_baseline() -> None:
             "description": "run command",
             "request_schema": {},
             "response_schema": {},
+            "args_format": None,
+            "private": False,
+            "observable": True,
             "metadata": {},
         }
     ]

@@ -3,10 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { callsOf, cards, FakeKanban, HOUR, HUE, keysOf, sample, shown, start, T, VARIANT } from './fake'
 
 describe('the board', () => {
-  it('binds kanban:change, then reads the board with a first page per column', async () => {
+  it('observes kanban::on-change, then reads the board with a first page per column', async () => {
     const { host } = await start()
     const subs = [...host.subscriptions.values()]
-    expect(subs).toEqual([{ trigger: 'kanban:change', config: { ticket: 'summary' } }])
+    expect(subs).toEqual([{ fn: 'kanban::on-change', args: { ticket: 'summary' }, filters: {} }])
     expect(callsOf(host, 'board::get')).toEqual([{ limit: 50 }])
     expect(host.tree()?.props).toMatchObject({ title: 'Kanban', subtitle: '5 tickets' })
     const lanes = host.lanes('lanes')

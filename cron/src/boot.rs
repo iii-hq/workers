@@ -1,182 +1,60 @@
-//! Boot sequence: builtin guard, lock backend, scheduler, trigger type and
-//! `cron::on-tick`.
+//! Boot sequence: the scheduler, `cron::on-tick` (whose observers retain the
+//! scheduler's jobs, see [`crate::on_tick`]) and the console UI.
 
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterTriggerType};
+use iii_sdk::runtime::FunctionRef;
+use iii_sdk::IIIClient;
 
-use crate::config::CronConfig;
-use crate::locks;
-use crate::scheduler::{Invoker, Scheduler};
-use crate::trigger::{CronTriggerHandler, CronTriggerSpec};
-use crate::TRIGGER_TYPE;
+use crate::on_tick::{self, OnTickCaller};
+use crate::scheduler::Scheduler;
 
-const LIST_WORKERS_FUNCTION_ID: &str = "engine::workers::list";
-const BUILTIN_III_CRON_WORKER_ID: &str = "iii-cron";
-
-pub type SchedulerCell = Arc<tokio::sync::RwLock<Arc<Scheduler>>>;
-pub type ApplyLock = Arc<tokio::sync::Mutex<()>>;
-pub type ConfigCell = Arc<tokio::sync::RwLock<CronConfig>>;
-
-#[derive(Clone)]
-pub struct BootParts {
-    pub scheduler: SchedulerCell,
-    pub config: ConfigCell,
-    pub apply_lock: ApplyLock,
-}
-
+/// A running worker: the scheduler its observers retain jobs in, and
+/// `cron::on-tick`.
 pub struct BootHandle {
-    pub scheduler: SchedulerCell,
-    pub config: ConfigCell,
-    pub apply_lock: ApplyLock,
-}
-
-impl BootHandle {
-    pub fn parts(&self) -> BootParts {
-        BootParts {
-            scheduler: self.scheduler.clone(),
-            config: self.config.clone(),
-            apply_lock: self.apply_lock.clone(),
-        }
-    }
-
-    pub async fn shutdown(&self) {
-        self.scheduler.read().await.shutdown().await;
-    }
-}
-
-struct SdkInvoker {
+    pub scheduler: Arc<Scheduler>,
+    /// `cron::on-tick`; each of its observers retains a job in `scheduler`.
+    pub on_tick: FunctionRef,
     iii: Arc<IIIClient>,
 }
 
-impl SdkInvoker {
-    pub fn new(iii: Arc<IIIClient>) -> Self {
-        Self { iii }
+impl BootHandle {
+    /// Unregisters `cron::on-tick`, clears its hooks and stops every job.
+    /// The engine holds the function's observers until it is registered
+    /// again, by a restarted worker or a standby instance.
+    pub async fn shutdown(&self) {
+        self.on_tick.unregister();
+        on_tick::clear_hooks(&self.iii);
+        self.scheduler.shutdown().await;
     }
 }
 
-#[async_trait::async_trait]
-impl Invoker for SdkInvoker {
-    async fn call(
-        &self,
-        function_id: &str,
-        payload: serde_json::Value,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Option<serde_json::Value>, String> {
-        let request = TriggerRequest {
-            function_id: function_id.to_string(),
-            payload,
-            action: None,
-            timeout_ms: None,
-        };
-        match metadata {
-            Some(m) => self.iii.trigger(request.metadata(m)).await,
-            None => self.iii.trigger(request).await,
+/// Resolves with the error that stopped `iii` for good: the engine refused
+/// this worker's registration. The engine admits one live worker per worker
+/// name and namespace, so a second instance under the same name gets
+/// `WORKER_NAMESPACE_CONFLICT` and never registers `cron::on-tick`; a standby
+/// instance connects under its own name (`III_WORKER_NAME`). The SDK does not
+/// reconnect after this error, so the process should exit.
+pub async fn refused(iii: &IIIClient) -> iii_sdk::Error {
+    loop {
+        if let Some(err) = iii.fatal_error() {
+            return err;
         }
-        .map(Some)
-        .map_err(|e| e.to_string())
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
 }
 
-pub fn sdk_invoker(iii: Arc<IIIClient>) -> Arc<dyn Invoker> {
-    Arc::new(SdkInvoker::new(iii))
-}
-
-pub async fn start(iii: Arc<IIIClient>, config: CronConfig) -> anyhow::Result<BootHandle> {
-    guard_against_builtin_cron(&iii).await?;
-
-    let lock = locks::build_lock(&config).await?;
-    let scheduler = Arc::new(Scheduler::new(lock, sdk_invoker(iii.clone())));
-    let scheduler_cell: SchedulerCell = Arc::new(tokio::sync::RwLock::new(scheduler.clone()));
-    let handler = CronTriggerHandler::new(scheduler_cell.clone());
-
-    // Kept until the trigger type is retired; old consumers bind it on 0.24
-    // and 0.25 engines.
-    #[allow(deprecated)]
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(TRIGGER_TYPE, "Cron-based scheduled triggers", handler)
-            .trigger_request_format::<CronTriggerSpec>(),
-    );
-    // The observable function next to it, on the same scheduler. On an engine
-    // without observe it registers as a plain function and its hooks never
-    // run.
-    crate::on_tick::register(&iii, scheduler_cell.clone());
+/// Registers this worker's function ([`on_tick::ON_TICK_FN`]) over a fresh
+/// scheduler, and its console UI.
+pub fn start(iii: Arc<IIIClient>) -> BootHandle {
+    let scheduler = Arc::new(Scheduler::new(Arc::new(OnTickCaller::new(iii.clone()))));
+    let on_tick = on_tick::register(&iii, scheduler.clone());
 
     crate::ui::register(&iii);
 
-    Ok(BootHandle {
-        scheduler: scheduler_cell,
-        config: Arc::new(tokio::sync::RwLock::new(config.normalized())),
-        apply_lock: Arc::new(tokio::sync::Mutex::new(())),
-    })
-}
-
-async fn guard_against_builtin_cron(iii: &Arc<IIIClient>) -> anyhow::Result<()> {
-    let workers_list = iii
-        .trigger(TriggerRequest {
-            function_id: LIST_WORKERS_FUNCTION_ID.to_string(),
-            payload: serde_json::json!({}),
-            action: None,
-            timeout_ms: Some(5000),
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to query {LIST_WORKERS_FUNCTION_ID}: {e}"))?;
-
-    if builtin_iii_cron_active(&workers_list) {
-        anyhow::bail!(
-            "cannot start the cron worker: the built-in iii-cron worker is active and owns the \
-             'cron' trigger type. Remove iii-cron from the engine config (a config.yaml that \
-             doesn't list it won't run it), then start this worker."
-        );
-    }
-    Ok(())
-}
-
-fn builtin_iii_cron_active(workers_list: &serde_json::Value) -> bool {
-    workers_list
-        .get("workers")
-        .and_then(|w| w.as_array())
-        .is_some_and(|workers| {
-            workers.iter().any(|worker| {
-                worker.get("id").and_then(|v| v.as_str()) == Some(BUILTIN_III_CRON_WORKER_ID)
-                    || worker.get("name").and_then(|v| v.as_str())
-                        == Some(BUILTIN_III_CRON_WORKER_ID)
-            })
-        })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detects_builtin_by_id() {
-        let v = serde_json::json!({"workers": [{"id": "iii-cron"}]});
-        assert!(builtin_iii_cron_active(&v));
-    }
-
-    #[test]
-    fn detects_builtin_by_name() {
-        let v = serde_json::json!({"workers": [{"id": "x", "name": "iii-cron"}]});
-        assert!(builtin_iii_cron_active(&v));
-    }
-
-    #[test]
-    fn absent_builtin_passes() {
-        let v = serde_json::json!({"workers": [{"id": "iii-http"}]});
-        assert!(!builtin_iii_cron_active(&v));
-    }
-
-    #[test]
-    fn empty_list_passes() {
-        assert!(!builtin_iii_cron_active(
-            &serde_json::json!({"workers": []})
-        ));
-    }
-
-    #[test]
-    fn missing_key_passes() {
-        assert!(!builtin_iii_cron_active(&serde_json::json!({})));
+    BootHandle {
+        scheduler,
+        on_tick,
+        iii,
     }
 }

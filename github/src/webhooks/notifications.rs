@@ -159,7 +159,8 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-/// The trigger keeps the legacy schema as one branch and adds compact delivery.
+/// What a `github::pr::on-event` target receives: the full event (profile
+/// `all`), or a compact event or digest.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum NotificationEvent {

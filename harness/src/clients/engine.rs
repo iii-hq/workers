@@ -1,11 +1,11 @@
 //! iii engine client: function registry reads (`engine::functions::list` /
 //! `engine::functions::info`) for runtime discovery post-filtering and native
-//! exposure, and generic function dispatch (`iii.trigger`) for the target of
-//! an `agent_trigger` call.
+//! exposure, and generic function dispatch (`iii.call`) for the target of
+//! an `agent_call` call.
 
 use std::sync::Arc;
 
-use iii_sdk::protocol::{TriggerRequest, TriggerRequestWithMetadata};
+use iii_sdk::protocol::{CallRequest, CallRequestWithMetadata};
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -46,7 +46,7 @@ const OUTCOME_UNKNOWN_REMOTE_CODES: &[&str] = &[
     "engine_restart",
 ];
 
-/// Whether a failed `iii.trigger` leaves the target's execution unknown, so
+/// Whether a failed `iii.call` leaves the target's execution unknown, so
 /// it must be treated as possibly still running. Decided from the structured
 /// SDK error (iii-sdk 0.23) BEFORE any string conversion; the match is
 /// exhaustive, so a new SDK variant must be classified here.
@@ -63,7 +63,7 @@ const OUTCOME_UNKNOWN_REMOTE_CODES: &[&str] = &[
 ///   target's own completed failure.
 /// - `Handler`: raised on the caller side by request validation before
 ///   anything is sent (a target's handler error arrives as `Remote`).
-/// - `Serde`: the caller-side trigger path yields it only for a local
+/// - `Serde`: the caller-side call path yields it only for a local
 ///   (de)serialization failure; a target's serde failure arrives as
 ///   `Remote { code: "invocation_failed" }`.
 /// - `RegistrationRejected`: a fatal registration state, not an invocation.
@@ -104,7 +104,7 @@ impl EngineClient {
     }
 
     /// Dispatch an arbitrary iii function and return its raw result. This is
-    /// the target invocation of an unwrapped `agent_trigger` call.
+    /// the target invocation of an unwrapped `agent_call` call.
     ///
     /// An engine restart while the call is in flight fails the dispatch with
     /// `engine_restart` instead of waiting out the full timeout: the engine's
@@ -126,7 +126,7 @@ impl EngineClient {
         // the wait still wakes it.
         let changes = crate::engine_events::subscribe_changes();
         let baseline = engine_epoch_ms(&self.iii).await;
-        let mut request: TriggerRequestWithMetadata = TriggerRequest {
+        let mut request: CallRequestWithMetadata = CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,
@@ -136,7 +136,7 @@ impl EngineClient {
         if let Some(namespace) = target_namespace {
             request = request.namespace(namespace);
         }
-        let call = self.iii.trigger(request);
+        let call = self.iii.call(request);
         let result = match baseline {
             Some(baseline) => {
                 tokio::select! {
@@ -171,7 +171,7 @@ impl EngineClient {
     async fn list(&self, payload: Value) -> Option<Value> {
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::functions::list".into(),
                 payload: payload.clone(),
                 action: None,
@@ -208,7 +208,7 @@ impl EngineClient {
     pub async fn functions_info(&self, function_id: &str) -> Option<FunctionDescriptor> {
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::functions::info".into(),
                 payload: json!({ "function_id": function_id }),
                 action: None,
@@ -234,7 +234,7 @@ impl EngineClient {
     ) -> Option<Vec<FunctionDescriptor>> {
         let resp = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::functions::info".into(),
                 payload: json!({ "function_ids": function_ids }),
                 action: None,
@@ -343,7 +343,7 @@ const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
 /// shape is unrecognized.
 async fn engine_epoch_ms(iii: &IIIClient) -> Option<u64> {
     let response = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::workers::list".to_string(),
             payload: json!({}),
             action: None,
@@ -376,7 +376,7 @@ fn parse_engine_epoch(response: &Value) -> Option<u64> {
 ///
 /// Sampled once per engine worker change, never on a timer: a restarted
 /// engine is reconnected to by every worker, this one included — its SDK
-/// replays the `engine::workers-available` binding before announcing, so its
+/// replays its `engine::on-workers-changed` observer before announcing, so its
 /// own announce reaches [`crate::engine_events`] on the new engine.
 async fn engine_link_interrupted(
     iii: &IIIClient,

@@ -3,11 +3,10 @@
  * the `worktree` worker's registry, plus the parsers and view helpers the
  * graph and detail panel use.
  *
- * Ported from the console's `lib/worktrees.ts`: the function ids, the six
- * lifecycle trigger types, the payload shapes, and the tolerant zod parsing
- * are verbatim; only the transport changed — `listWorktrees` now takes the
- * tab's `host` and routes through `host.iii.trigger(...)` instead of a
- * console-internal iii client. Only the page's read surface travels here;
+ * Ported from the console's `lib/worktrees.ts`: the function ids, the
+ * payload shapes, and the tolerant zod parsing are verbatim. `listWorktrees`
+ * takes the tab's `host` and calls through `host.iii.call(...)`, and the page
+ * observes the six `worktree::on-*` lifecycle functions. Only the page's read surface travels here;
  * the mutating wrappers (claim / release / validate) stay in the console's
  * chat features, which keep their own copy.
  */
@@ -17,21 +16,21 @@ import { z } from 'zod'
 
 export const WORKTREE_LIST_FUNCTION_ID = 'worktree::list'
 
-export const WORKTREE_CREATED_TRIGGER = 'worktree::created'
-export const WORKTREE_CLAIMED_TRIGGER = 'worktree::claimed'
-export const WORKTREE_RELEASED_TRIGGER = 'worktree::released'
-export const WORKTREE_REMOVED_TRIGGER = 'worktree::removed'
-export const WORKTREE_LANDED_TRIGGER = 'worktree::landed'
-export const WORKTREE_LAND_BLOCKED_TRIGGER = 'worktree::land-blocked'
+export const WORKTREE_ON_CREATED_FN = 'worktree::on-created'
+export const WORKTREE_ON_CLAIMED_FN = 'worktree::on-claimed'
+export const WORKTREE_ON_RELEASED_FN = 'worktree::on-released'
+export const WORKTREE_ON_REMOVED_FN = 'worktree::on-removed'
+export const WORKTREE_ON_LANDED_FN = 'worktree::on-landed'
+export const WORKTREE_ON_LAND_BLOCKED_FN = 'worktree::on-land-blocked'
 
-/** Every lifecycle trigger type the worker emits, in emission order. */
-export const WORKTREE_LIFECYCLE_TRIGGERS = [
-  WORKTREE_CREATED_TRIGGER,
-  WORKTREE_CLAIMED_TRIGGER,
-  WORKTREE_RELEASED_TRIGGER,
-  WORKTREE_REMOVED_TRIGGER,
-  WORKTREE_LANDED_TRIGGER,
-  WORKTREE_LAND_BLOCKED_TRIGGER,
+/** Every lifecycle function the worker calls, in emission order. */
+export const WORKTREE_LIFECYCLE_FUNCTIONS = [
+  WORKTREE_ON_CREATED_FN,
+  WORKTREE_ON_CLAIMED_FN,
+  WORKTREE_ON_RELEASED_FN,
+  WORKTREE_ON_REMOVED_FN,
+  WORKTREE_ON_LANDED_FN,
+  WORKTREE_ON_LAND_BLOCKED_FN,
 ] as const
 
 export const WORKTREE_LIFECYCLES = [
@@ -162,7 +161,7 @@ export function cn(...parts: Array<string | false | null | undefined>): string {
  * whole graph.
  */
 export async function listWorktrees(host: Host): Promise<WorktreeInfo[]> {
-  const res = await host.iii.trigger<unknown>(WORKTREE_LIST_FUNCTION_ID, {
+  const res = await host.iii.call<unknown>(WORKTREE_LIST_FUNCTION_ID, {
     include_status: true,
   })
   const parsed = listResultSchema.safeParse(res)

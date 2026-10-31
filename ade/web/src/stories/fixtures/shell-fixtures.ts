@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionCallMessage } from '@/types/chat'
 import { wrapHarness } from './sandbox-fixtures'
 
 const now = Date.now()
@@ -10,11 +10,11 @@ function base(
   functionId: string,
   input: unknown,
   output?: unknown,
-  extra?: Partial<FunctionTriggerMessage>,
-): FunctionTriggerMessage {
+  extra?: Partial<FunctionCallMessage>,
+): FunctionCallMessage {
   return {
     id,
-    role: 'function-trigger',
+    role: 'function-call',
     functionId,
     input,
     output,
@@ -428,18 +428,18 @@ export const shellStatusGateError = base(
   {
     error: {
       kind: 'function_error',
-      message: 'trigger_failed: IIIInvocationError: invocation_failed',
+      message: 'call_failed: IIIInvocationError: invocation_failed',
       details: {
         schema_version: 1,
         status: 'denied',
         denied_by: 'gate_unavailable',
         function_id: 'shell::status',
-        reason: 'trigger_failed: IIIInvocationError: S211: no such job: job-x',
+        reason: 'call_failed: IIIInvocationError: S211: no such job: job-x',
       },
       content: [
         {
           type: 'text',
-          text: 'trigger_failed: IIIInvocationError: S211: no such job: job-x',
+          text: 'call_failed: IIIInvocationError: S211: no such job: job-x',
         },
       ],
     },

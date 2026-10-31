@@ -23,7 +23,7 @@ pub struct CatalogModel {
 
 pub async fn list(context: &E2eContext, provider: Option<&str>) -> Result<Vec<CatalogModel>> {
     let mut response: ModelsListResponse = context
-        .trigger("router::models::list", ModelsListRequest { provider })
+        .call("router::models::list", ModelsListRequest { provider })
         .await
         .context("list models from the running stack")?;
     response.models.sort_unstable_by(|left, right| {

@@ -41,7 +41,7 @@ export async function getRemovalPreview(
   }
 
   const client = await getIiiClient()
-  const tree = await client.trigger<{
+  const tree = await client.call<{
     root_session_id: string
     sessions: { session_id: string }[]
     complete: boolean

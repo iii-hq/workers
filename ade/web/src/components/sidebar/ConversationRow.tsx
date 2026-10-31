@@ -19,8 +19,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu'
 import { Hint } from '@/components/ui/Hint'
+import { ObserverIcon } from '@/components/ui/ObserverIcon'
 import { StatusDot } from '@/components/ui/StatusDot'
-import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { CONVERSATION_KIND_TAGS } from '@/lib/conversation-view'
 import { cn } from '@/lib/utils'
 import type {
@@ -91,7 +91,7 @@ interface RowGlyph {
  * it, so phases run on one profile stay apart (the harness already falls
  * back to the profile's icon when the spawn named none); otherwise a
  * selected agent profile owns the glyph at every depth; a spawned child
- * shows its origin (trigger bolt or the spawning agent's appearance); a
+ * shows its origin (observer bolt or the spawning agent's appearance); a
  * plain chat has no mark at all, so its title starts at the row's edge and
  * the list reads as a list of names.
  */
@@ -119,8 +119,8 @@ function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
       title: profile.name,
     }
   }
-  if (depth > 0 && conversation.spawnedBy === 'trigger') {
-    return { Icon: TriggerIcon, title: 'spawned by a trigger' }
+  if (depth > 0 && conversation.spawnedBy === 'observer') {
+    return { Icon: ObserverIcon, title: 'spawned by an observer' }
   }
   if (depth > 0 && conversation.spawnedBy === 'agent') {
     return {

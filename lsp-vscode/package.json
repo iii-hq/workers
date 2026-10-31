@@ -1,7 +1,7 @@
 {
   "name": "iii-lsp",
   "displayName": "iii Language Server",
-  "description": "Autocompletion and hover for iii engine functions and triggers",
+  "description": "Autocompletion, hover and diagnostics for iii engine function calls and observers",
   "version": "0.2.7",
   "publisher": "iii-hq",
   "engines": {

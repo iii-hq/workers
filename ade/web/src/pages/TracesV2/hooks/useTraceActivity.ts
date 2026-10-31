@@ -1,8 +1,8 @@
 /**
- * Per-trace liveness for the timeline strip, fed by the engine's `trace`
- * trigger (`startTraceActivityFeed`).
+ * Per-trace liveness for the timeline strip, fed by the engine's
+ * `observability::on-span` source (`startTraceActivityFeed`).
  *
- * The trace LIST only ever carries ROOT spans, so for a queue-triggered
+ * The trace LIST only ever carries ROOT spans, so for a queue-driven
  * trace the row is the instant "publish" moment and says nothing about the
  * seconds of child work that follow. This hook records, per trace id, the
  * wall-clock time of the most recent span activity. The strip combines that

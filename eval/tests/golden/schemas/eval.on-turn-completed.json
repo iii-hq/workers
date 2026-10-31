@@ -2,7 +2,7 @@
   "function_id": "eval::on-turn-completed",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "`harness::turn-completed`; extra fields are tolerated.",
+    "description": "The `harness::on-turn-completed` event; extra fields are tolerated.",
     "properties": {
       "parent": {
         "default": null

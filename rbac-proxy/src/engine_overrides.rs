@@ -2,46 +2,43 @@
 //!
 //! An engine RBAC listener gates *invocation* but only partially filters
 //! *discovery*: a gated worker that can reach the discovery functions can still
-//! enumerate functions, workers, and triggers it can never call. `rbac-proxy`
-//! closes that gap by **result-filtering the eight discovery functions** to the
+//! enumerate functions, workers, and observers it can never call. `rbac-proxy`
+//! closes that gap by **result-filtering the six discovery functions** to the
 //! caller's boundaries, using the **same** vendored [`rbac::access_allowed`]
 //! predicate as the invocation path — so the discovery surface and the
 //! invocation surface can never disagree.
 //!
-//! Two of the eight cannot be filtered from their own response alone (a trigger
-//! *type* carries no function binding; `engine::workers::list` carries only a
-//! `function_count`, no ids), so this module also maintains two small TTL
-//! caches over the proxy's **control connection**: a function catalog
-//! (`function_id → { worker_name, metadata }`) and a binding index
-//! (`trigger_type → [function_id]`).
+//! `engine::workers::list` cannot be filtered from its own response alone (it
+//! carries only a `function_count`, no ids), and observer rows carry no
+//! function metadata, so this module also keeps a small TTL cache of the
+//! function catalog (`function_id → { worker_name, metadata }`) over the
+//! proxy's **control connection**.
 //!
 //! Results are rewritten as [`serde_json::Value`] so unknown fields survive —
 //! the proxy only removes/edits the keys it must.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::WorkerConfig;
 use crate::rbac::{self, ProxySession, DEFAULT_NAMESPACE};
 
-/// The eight discovery functions whose results are rewritten. The ninth
-/// `EngineFunctions` id (`engine::workers::register`) is a carve-out write,
-/// not a discovery surface, and is never rewritten.
+/// The six discovery functions whose results are rewritten.
+/// `engine::workers::register` is a carve-out write, not a discovery surface,
+/// and is never rewritten; `engine::observers::dispose` is gated by the
+/// interceptor (only observers the connection created).
 pub const DISCOVERY_FUNCTIONS: &[&str] = &[
     "engine::functions::list",
     "engine::functions::info",
     "engine::workers::list",
     "engine::workers::info",
-    "engine::triggers::list",
-    "engine::triggers::info",
-    "engine::registered-triggers::list",
-    "engine::registered-triggers::info",
+    "engine::observers::list",
+    "engine::observers::get",
 ];
 
 pub fn is_discovery(function_id: &str) -> bool {
@@ -78,10 +75,19 @@ impl OverrideOutcome {
             message: message.to_string(),
         }
     }
+
+    /// Engine parity: `engine::observers::get` answers an observer the caller
+    /// may not see as if it did not exist.
+    fn observer_not_found(id: &str) -> Self {
+        OverrideOutcome::Error {
+            code: "OBSERVER_NOT_FOUND".to_string(),
+            message: format!("no observer `{id}`"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Catalog & binding caches
+// Catalog cache
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -99,29 +105,19 @@ struct FnState {
     fetched_at: Option<Instant>,
 }
 
-#[derive(Default)]
-struct BindState {
-    /// `trigger_type → [target function_id]`.
-    by_type: HashMap<String, Vec<String>>,
-    fetched_at: Option<Instant>,
-}
-
 /// Short TTL — the discovery surface tolerates seconds of staleness, and a
 /// metadata-gated function is briefly invisible (fail closed) until refresh.
-/// Kept even though `engine::functions-available` invalidates the cache: that
-/// trigger never signals binding changes (the `bindings` index), and older
-/// engines poll on an id-only hash, so they miss metadata-only changes and
-/// lag by up to 5s.
+/// `engine::on-functions-changed` invalidates the cache sooner; the TTL bounds
+/// staleness for whatever that event misses.
 const CACHE_TTL: Duration = Duration::from_secs(5);
 
-/// TTL caches over the control connection. Keyed by the **engine** id
-/// (prefixed where applicable, since that is what discovery results carry),
-/// and for functions by `(namespace, function_id)`: the same id may be
+/// TTL cache over the control connection. Keyed by the **engine** id
+/// (prefixed where applicable, since that is what discovery results carry)
+/// and by namespace, `(namespace, function_id)`: the same id may be
 /// registered once per namespace.
 pub struct CatalogCache {
     iii: Arc<IIIClient>,
     functions: RwLock<FnState>,
-    bindings: RwLock<BindState>,
     /// Serializes refreshes so a cold cache does not stampede the engine.
     refresh: Mutex<()>,
 }
@@ -131,18 +127,15 @@ impl CatalogCache {
         Self {
             iii,
             functions: RwLock::new(FnState::default()),
-            bindings: RwLock::new(BindState::default()),
             refresh: Mutex::new(()),
         }
     }
 
     /// Force a refresh on the next access. Called from the
-    /// `engine::functions-available` handler; that event covers function
-    /// changes only, and older engines skip metadata-only re-registrations, so
-    /// `CACHE_TTL` still bounds staleness for whatever it misses.
+    /// `rbac-proxy::on-functions-changed` handler; `CACHE_TTL` still bounds
+    /// staleness for whatever that event misses.
     pub async fn invalidate(&self) {
         self.functions.write().await.fetched_at = None;
-        self.bindings.write().await.fetched_at = None;
     }
 
     fn fresh(at: Option<Instant>) -> bool {
@@ -169,35 +162,10 @@ impl CatalogCache {
         }
     }
 
-    async fn ensure_bindings(&self) {
-        if Self::fresh(self.bindings.read().await.fetched_at) {
-            return;
-        }
-        let _guard = self.refresh.lock().await;
-        if Self::fresh(self.bindings.read().await.fetched_at) {
-            return;
-        }
-        match self.fetch_bindings().await {
-            Ok(by_type) => {
-                let mut st = self.bindings.write().await;
-                st.by_type = by_type;
-                st.fetched_at = Some(Instant::now());
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "binding refresh (engine::registered-triggers::list) failed; serving stale/empty index")
-            }
-        }
-    }
-
     async fn fetch_functions(&self) -> Result<HashMap<FnKey, FnEntry>, String> {
         let resp = self
             .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::functions::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: None,
-            })
+            .call(CallRequest::new("engine::functions::list", json!({})))
             .await
             .map_err(|e| e.to_string())?;
         let mut out = HashMap::new();
@@ -220,35 +188,6 @@ impl CatalogCache {
             }
         }
         Ok(out)
-    }
-
-    async fn fetch_bindings(&self) -> Result<HashMap<String, Vec<String>>, String> {
-        let resp = self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::registered-triggers::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: None,
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut by_type: HashMap<String, Vec<String>> = HashMap::new();
-        if let Some(arr) = resp.get("registered_triggers").and_then(Value::as_array) {
-            for t in arr {
-                let (Some(tt), Some(fid)) = (
-                    t.get("trigger_type").and_then(Value::as_str),
-                    t.get("function_id").and_then(Value::as_str),
-                ) else {
-                    continue;
-                };
-                by_type
-                    .entry(tt.to_string())
-                    .or_default()
-                    .push(fid.to_string());
-            }
-        }
-        Ok(by_type)
     }
 
     /// The registered metadata of `function_id` in `namespace` (None on a cold
@@ -277,18 +216,6 @@ impl CatalogCache {
             .collect()
     }
 
-    /// All target function ids bound to `trigger_type`.
-    async fn functions_for_trigger_type(&self, trigger_type: &str) -> Vec<String> {
-        self.ensure_bindings().await;
-        self.bindings
-            .read()
-            .await
-            .by_type
-            .get(trigger_type)
-            .cloned()
-            .unwrap_or_default()
-    }
-
     /// Seed `(function_id, worker_name, metadata)` entries in `default`.
     #[cfg(test)]
     pub async fn seed_functions(&self, entries: &[(&str, &str, Option<Value>)]) {
@@ -307,16 +234,6 @@ impl CatalogCache {
             .collect();
         st.fetched_at = Some(Instant::now());
     }
-
-    #[cfg(test)]
-    pub async fn seed_bindings(&self, by_type: &[(&str, &[&str])]) {
-        let mut st = self.bindings.write().await;
-        st.by_type = by_type
-            .iter()
-            .map(|(tt, fids)| (tt.to_string(), fids.iter().map(|s| s.to_string()).collect()))
-            .collect();
-        st.fetched_at = Some(Instant::now());
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -325,33 +242,33 @@ impl CatalogCache {
 
 /// Filter a discovery result to the caller's boundaries. `function_id` is the
 /// discovery function being answered; `result` is the engine's full,
-/// unfiltered result.
+/// unfiltered result. `own_observers` are the ids of the observers this
+/// connection created, which it always sees.
 pub async fn filter_result(
     function_id: &str,
     result: Value,
     session: &ProxySession,
     cfg: &WorkerConfig,
     catalog: &CatalogCache,
+    own_observers: &HashSet<String>,
 ) -> OverrideOutcome {
     match function_id {
         "engine::functions::list" => functions_list(result, session, cfg),
         "engine::functions::info" => functions_info(result, session, cfg),
         "engine::workers::list" => workers_list(result, session, cfg, catalog).await,
-        "engine::workers::info" => workers_info(result, session, cfg, catalog).await,
-        "engine::triggers::list" => OverrideOutcome::Result(result), // capability metadata; pass through
-        "engine::triggers::info" => triggers_info(result, session, cfg, catalog).await,
-        "engine::registered-triggers::list" => {
-            registered_triggers_list(result, session, cfg, catalog).await
+        "engine::workers::info" => workers_info(result, session, cfg),
+        "engine::observers::list" => {
+            observers_list(result, session, cfg, catalog, own_observers).await
         }
-        "engine::registered-triggers::info" => {
-            registered_triggers_info(result, session, cfg, catalog).await
+        "engine::observers::get" => {
+            observers_get(result, session, cfg, catalog, own_observers).await
         }
         _ => OverrideOutcome::Result(result),
     }
 }
 
 /// The namespace a discovery entry names, `default` for engines that predate
-/// namespaces (and for entries that carry none, such as registered triggers).
+/// namespaces (and for entries that carry none).
 fn entry_namespace(entry: &Value) -> &str {
     entry
         .get("namespace")
@@ -386,14 +303,10 @@ fn entry_allowed(cfg: &WorkerConfig, session: &ProxySession, entry: &Value) -> b
     )
 }
 
-/// `A(id)` for an id whose metadata is not in the result (registered-triggers,
-/// trigger-type bindings). Consults the catalog **only** when a metadata filter
-/// is configured — wildcard-only configs need no round trip and a cold cache
-/// must not fail them closed.
-///
-/// Registered-trigger rows do not say which namespace their target resolves
-/// in; they are checked in `default`, where a trigger's target lands unless
-/// it names another.
+/// `A(namespace, id)` for an id whose metadata is not in the result (the
+/// observed function and the target of an observer row). Consults the
+/// catalog **only** when a metadata filter is configured — wildcard-only
+/// configs need no round trip and a cold cache must not fail them closed.
 async fn allowed_via_cache(
     cfg: &WorkerConfig,
     session: &ProxySession,
@@ -505,8 +418,8 @@ fn functions_info(
         strip_str_field(obj, "function_id", session);
         strip_str_field(obj, "worker_name", session);
     }
-    // The function's `registered_triggers` all target this (allowed) function,
-    // so there is nothing to drop; the ref carries no foreign function id.
+    // The row names no other function (`observer_count` is a count), so
+    // there is nothing more to drop.
     OverrideOutcome::Result(result)
 }
 
@@ -545,21 +458,9 @@ async fn workers_list(
     OverrideOutcome::Result(result)
 }
 
-async fn workers_info(
-    mut result: Value,
-    session: &ProxySession,
-    cfg: &WorkerConfig,
-    catalog: &CatalogCache,
-) -> OverrideOutcome {
-    // Extract the arrays as owned values up front so the async filtering below
-    // does not hold a borrow of `result` across the later mutable access.
+fn workers_info(mut result: Value, session: &ProxySession, cfg: &WorkerConfig) -> OverrideOutcome {
     let funcs_in = result
         .get("functions")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let regs_in = result
-        .get("registered_triggers")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
@@ -581,14 +482,11 @@ async fn workers_info(
         return OverrideOutcome::not_found("worker not found");
     }
 
-    // registered_triggers[]: carry function_id → drop denied, strip prefix.
-    let regs: Vec<Value> = filter_registered_triggers(&regs_in, session, cfg, catalog).await;
-
     let count = funcs.len();
     if let Some(obj) = result.as_object_mut() {
         obj.insert("functions".to_string(), Value::Array(funcs));
-        obj.insert("registered_triggers".to_string(), Value::Array(regs));
-        // trigger_types[] are capability metadata (no function binding) → kept.
+        // `observers[]` are the ids of the observers the worker created:
+        // opaque, and `engine::observers::get` filters each one.
         if let Some(worker) = obj.get_mut("worker").and_then(Value::as_object_mut) {
             worker.insert("function_count".to_string(), json!(count));
             strip_worker_detail_internals(worker, cfg);
@@ -597,111 +495,79 @@ async fn workers_info(
     OverrideOutcome::Result(result)
 }
 
-async fn triggers_info(
-    mut result: Value,
+/// An observer row (`ObserverInfo`) the caller may see: one it created, or
+/// one whose observed function and target it may both invoke.
+async fn observer_visible(
+    row: &Value,
     session: &ProxySession,
     cfg: &WorkerConfig,
     catalog: &CatalogCache,
-) -> OverrideOutcome {
-    // Recompute instance_count to the accessible subset so it cannot leak how
-    // many *hidden* functions use the type. Schemas are kept.
-    let type_id = result
+    own_observers: &HashSet<String>,
+) -> bool {
+    if row
         .get("id")
         .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let targets = catalog.functions_for_trigger_type(&type_id).await;
-    let mut accessible = 0usize;
-    for fid in &targets {
-        if allowed_via_cache(cfg, session, DEFAULT_NAMESPACE, fid, catalog).await {
-            accessible += 1;
-        }
+        .is_some_and(|id| own_observers.contains(id))
+    {
+        return true;
     }
-    // Only override the count when we actually have binding data; otherwise
-    // leave the engine's value (cold cache) rather than wrongly zeroing it.
-    if !targets.is_empty() {
-        result["instance_count"] = json!(accessible);
-    }
-    OverrideOutcome::Result(result)
+    let function_id = row.get("function_id").and_then(Value::as_str).unwrap_or("");
+    let target = row.get("target").unwrap_or(&Value::Null);
+    let target_id = target
+        .get("function_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    allowed_via_cache(cfg, session, entry_namespace(row), function_id, catalog).await
+        && allowed_via_cache(cfg, session, entry_namespace(target), target_id, catalog).await
 }
 
-async fn registered_triggers_list(
+/// Strip the session prefix from an observer row's function and target ids.
+fn strip_observer_row(row: &mut Value, session: &ProxySession) {
+    if let Some(obj) = row.as_object_mut() {
+        strip_str_field(obj, "function_id", session);
+        if let Some(target) = obj.get_mut("target").and_then(Value::as_object_mut) {
+            strip_str_field(target, "function_id", session);
+        }
+    }
+}
+
+async fn observers_list(
     mut result: Value,
     session: &ProxySession,
     cfg: &WorkerConfig,
     catalog: &CatalogCache,
+    own_observers: &HashSet<String>,
 ) -> OverrideOutcome {
-    let arr = result
-        .get("registered_triggers")
+    let rows = result
+        .get("observers")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let kept = filter_registered_triggers(&arr, session, cfg, catalog).await;
-    result["registered_triggers"] = Value::Array(kept);
+    let mut kept = Vec::new();
+    for mut row in rows {
+        if !observer_visible(&row, session, cfg, catalog, own_observers).await {
+            continue;
+        }
+        strip_observer_row(&mut row, session);
+        kept.push(row);
+    }
+    result["observers"] = Value::Array(kept);
     OverrideOutcome::Result(result)
 }
 
-async fn registered_triggers_info(
+async fn observers_get(
     mut result: Value,
     session: &ProxySession,
     cfg: &WorkerConfig,
     catalog: &CatalogCache,
+    own_observers: &HashSet<String>,
 ) -> OverrideOutcome {
-    let fid = result
-        .get("function_id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    // The nested `function` detail, when present, names the namespace the
-    // target resolved in.
-    let namespace = result
-        .get("function")
-        .filter(|f| !f.is_null())
-        .map(entry_namespace)
-        .unwrap_or(DEFAULT_NAMESPACE)
-        .to_string();
-    if !allowed_via_cache(cfg, session, &namespace, &fid, catalog).await {
-        return OverrideOutcome::forbidden(&fid);
+    if !observer_visible(&result, session, cfg, catalog, own_observers).await {
+        let id = result.get("id").and_then(Value::as_str).unwrap_or("");
+        return OverrideOutcome::observer_not_found(id);
     }
-    if let Some(obj) = result.as_object_mut() {
-        strip_str_field(obj, "function_id", session);
-        // Null out the nested `function` envelope if it somehow references a
-        // denied function (defensive — it references this allowed function).
-        if let Some(func) = obj.get("function") {
-            if !func.is_null() {
-                if !entry_allowed(cfg, session, func) {
-                    obj.insert("function".to_string(), Value::Null);
-                } else if let Some(f) = obj.get_mut("function").and_then(Value::as_object_mut) {
-                    strip_str_field(f, "function_id", session);
-                    strip_str_field(f, "worker_name", session);
-                }
-            }
-        }
-    }
+    strip_observer_row(&mut result, session);
     OverrideOutcome::Result(result)
-}
-
-/// Drop registered-trigger entries whose target function fails `A`, and strip
-/// the session prefix from the surviving `function_id`s.
-async fn filter_registered_triggers(
-    arr: &[Value],
-    session: &ProxySession,
-    cfg: &WorkerConfig,
-    catalog: &CatalogCache,
-) -> Vec<Value> {
-    let mut out = Vec::new();
-    for t in arr {
-        let fid = t.get("function_id").and_then(Value::as_str).unwrap_or("");
-        if !allowed_via_cache(cfg, session, entry_namespace(t), fid, catalog).await {
-            continue;
-        }
-        let mut t = t.clone();
-        if let Some(obj) = t.as_object_mut() {
-            strip_str_field(obj, "function_id", session);
-        }
-        out.push(t);
-    }
-    out
 }
 
 /// `WorkerSummary` (engine::workers::list) carries only `ip_address` and
@@ -760,19 +626,30 @@ mod tests {
         }
     }
 
+    /// `filter_result` for a connection that created no observers.
+    async fn filter(
+        function_id: &str,
+        result: Value,
+        session: &ProxySession,
+        cfg: &WorkerConfig,
+        catalog: &CatalogCache,
+    ) -> OverrideOutcome {
+        filter_result(function_id, result, session, cfg, catalog, &HashSet::new()).await
+    }
+
     #[tokio::test]
     async fn functions_list_keeps_only_allowed_and_strips_prefix() {
         let result = json!({
             "functions": [
-                { "function_id": "api::users::list", "worker_name": "api", "metadata": null },
-                { "function_id": "secret::do", "worker_name": "sec" },
-                { "function_id": "tenant1::foo", "worker_name": "w" }
+                { "function_id": "api::users::list", "worker_name": "api", "metadata": null, "observer_count": 0 },
+                { "function_id": "secret::do", "worker_name": "sec", "observer_count": 2 },
+                { "function_id": "tenant1::foo", "worker_name": "w", "observer_count": 0 }
             ]
         });
         // expose api::* and the caller's own tenant1::* (so its prefixed fn
         // survives and is stripped to bare).
         let c = cfg(&["api::*", "tenant1::*"], false);
-        let out = filter_result(
+        let out = filter(
             "engine::functions::list",
             result,
             &session(Some("tenant1")),
@@ -795,8 +672,8 @@ mod tests {
     #[tokio::test]
     async fn functions_info_forbidden_when_denied() {
         let result =
-            json!({ "function_id": "secret::do", "worker_name": "sec", "registered_triggers": [] });
-        let out = filter_result(
+            json!({ "function_id": "secret::do", "worker_name": "sec", "observer_count": 0 });
+        let out = filter(
             "engine::functions::info",
             result,
             &session(None),
@@ -816,9 +693,14 @@ mod tests {
 
     #[tokio::test]
     async fn functions_info_allows_and_strips() {
-        let result =
-            json!({ "function_id": "tenant1::foo", "worker_name": "w", "registered_triggers": [] });
-        let out = filter_result(
+        let result = json!({
+            "function_id": "tenant1::foo",
+            "worker_name": "w",
+            "private": true,
+            "args_format": { "type": "object" },
+            "observer_count": 1
+        });
+        let out = filter(
             "engine::functions::info",
             result,
             &session(Some("tenant1")),
@@ -830,6 +712,8 @@ mod tests {
             panic!("expected result");
         };
         assert_eq!(v["function_id"], "foo");
+        assert_eq!(v["private"], true);
+        assert_eq!(v["observer_count"], 1);
     }
 
     #[tokio::test]
@@ -848,7 +732,7 @@ mod tests {
                 { "name": "secret-worker", "id": "2", "status": "connected", "function_count": 1, "connected_at_ms": 0, "active_invocations": 0, "ip_address": "10.0.0.8" }
             ]
         });
-        let out = filter_result(
+        let out = filter(
             "engine::workers::list",
             result,
             &session(None),
@@ -876,7 +760,7 @@ mod tests {
         let result = json!({
             "workers": [ { "name": "api-worker", "id": "1", "status": "connected", "function_count": 1, "connected_at_ms": 0, "active_invocations": 0, "ip_address": "10.0.0.9", "isolation": "vm" } ]
         });
-        let out = filter_result(
+        let out = filter(
             "engine::workers::list",
             result,
             &session(None),
@@ -896,16 +780,12 @@ mod tests {
         let result = json!({
             "worker": { "name": "api-worker", "id": "1", "status": "connected", "function_count": 2, "connected_at_ms": 0, "active_invocations": 0, "ip_address": "10.0.0.1", "isolation": "vm", "pid": 42, "internal": false, "latest_metrics": { "timestamp_ms": 1, "runtime": "rust" } },
             "functions": [
-                { "function_id": "api::a", "worker_name": "api-worker" },
-                { "function_id": "secret::z", "worker_name": "api-worker" }
+                { "function_id": "api::a", "worker_name": "api-worker", "observer_count": 0 },
+                { "function_id": "secret::z", "worker_name": "api-worker", "observer_count": 1 }
             ],
-            "trigger_types": [ { "id": "cron", "worker_name": "api-worker", "description": "d" } ],
-            "registered_triggers": [
-                { "id": "t1", "trigger_type": "cron", "function_id": "api::a", "worker_name": "api-worker", "config": {}, "config_summary": "" },
-                { "id": "t2", "trigger_type": "cron", "function_id": "secret::z", "worker_name": "api-worker", "config": {}, "config_summary": "" }
-            ]
+            "observers": ["5b0c3e1a-8f2d-4c6b-9a7e-1d2f3a4b5c6d"]
         });
-        let out = filter_result(
+        let out = filter(
             "engine::workers::info",
             result,
             &session(None),
@@ -918,7 +798,10 @@ mod tests {
         };
         assert_eq!(v["functions"].as_array().unwrap().len(), 1);
         assert_eq!(v["functions"][0]["function_id"], "api::a");
-        assert_eq!(v["registered_triggers"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            v["observers"],
+            json!(["5b0c3e1a-8f2d-4c6b-9a7e-1d2f3a4b5c6d"])
+        );
         assert_eq!(v["worker"]["function_count"], 1);
         assert!(v["worker"].get("pid").is_none());
         assert!(v["worker"].get("ip_address").is_none());
@@ -931,10 +814,9 @@ mod tests {
         let result = json!({
             "worker": { "name": "secret-worker", "id": "1", "status": "connected", "function_count": 1, "connected_at_ms": 0, "active_invocations": 0 },
             "functions": [ { "function_id": "secret::z", "worker_name": "secret-worker" } ],
-            "trigger_types": [],
-            "registered_triggers": []
+            "observers": []
         });
-        let out = filter_result(
+        let out = filter(
             "engine::workers::info",
             result,
             &session(None),
@@ -945,69 +827,131 @@ mod tests {
         assert!(matches!(out, OverrideOutcome::Error { code, .. } if code == "NOT_FOUND"));
     }
 
+    /// An `ObserverInfo` row as `engine::observers::list` reports it.
+    fn observer_row(id: &str, function_id: &str, target: &str) -> Value {
+        json!({
+            "id": id,
+            "function_id": function_id,
+            "namespace": "default",
+            "args": {},
+            "filters": {},
+            "target": { "function_id": target, "namespace": "default" },
+            "capture": ["input", "output", "caller"],
+            "on": "success",
+            "deliver": "envelope",
+            "worker": { "worker_id": "7c1e0b52-93d4-4f0e-8a3b-6d2f1c9e4a70", "worker_name": "w" },
+            "state": "active",
+            "fires": 0,
+            "dropped": {},
+            "activation_failures": {},
+            "max_in_flight": 64,
+            "created_at_ms": 0
+        })
+    }
+
     #[tokio::test]
-    async fn registered_triggers_list_drops_denied_and_strips() {
+    async fn observers_list_keeps_rows_whose_function_and_target_are_allowed() {
         let result = json!({
-            "registered_triggers": [
-                { "id": "t1", "trigger_type": "cron", "function_id": "api::a", "worker_name": "w", "config": {}, "config_summary": "" },
-                { "id": "t2", "trigger_type": "cron", "function_id": "secret::z", "worker_name": "w", "config": {}, "config_summary": "" },
-                { "id": "t3", "trigger_type": "cron", "function_id": "tenant1::foo", "worker_name": "w", "config": {}, "config_summary": "" }
+            "observers": [
+                observer_row("o-1", "api::orders", "api::sink"),
+                observer_row("o-2", "secret::z", "api::sink"),
+                observer_row("o-3", "api::orders", "secret::sink"),
+                observer_row("o-4", "api::orders", "tenant1::handler"),
             ]
         });
-        let out = filter_result(
-            "engine::registered-triggers::list",
+        let OverrideOutcome::Result(v) = filter(
+            "engine::observers::list",
             result,
             &session(Some("tenant1")),
             &cfg(&["api::*", "tenant1::*"], false),
             &CatalogCache::new(iii()),
         )
-        .await;
-        let OverrideOutcome::Result(v) = out else {
+        .await
+        else {
             panic!("expected result");
         };
-        let arr = v["registered_triggers"].as_array().unwrap();
-        let fids: Vec<&str> = arr
+        let rows: Vec<(&str, &str)> = v["observers"]
+            .as_array()
+            .unwrap()
             .iter()
-            .map(|t| t["function_id"].as_str().unwrap())
+            .map(|o| {
+                (
+                    o["id"].as_str().unwrap(),
+                    o["target"]["function_id"].as_str().unwrap(),
+                )
+            })
             .collect();
-        assert_eq!(fids, vec!["api::a", "foo"]); // secret::z dropped, tenant1::foo → foo
+        // o-2 observes a hidden function and o-3 targets one; o-4's own
+        // target is stripped to the bare id the session registered.
+        assert_eq!(rows, vec![("o-1", "api::sink"), ("o-4", "handler")]);
     }
 
     #[tokio::test]
-    async fn triggers_info_recomputes_instance_count_to_accessible() {
-        let cache = CatalogCache::new(iii());
-        cache
-            .seed_bindings(&[("cron", &["api::a", "secret::z", "api::b"])])
-            .await;
+    async fn a_connection_sees_the_observers_it_created() {
         let result =
-            json!({ "id": "cron", "worker_name": "w", "description": "d", "instance_count": 3 });
-        let out = filter_result(
-            "engine::triggers::info",
+            json!({ "observers": [observer_row("mine", "secret::z", "tenant1::handler")] });
+        let own: HashSet<String> = ["mine".to_string()].into_iter().collect();
+        let OverrideOutcome::Result(v) = filter_result(
+            "engine::observers::list",
             result,
-            &session(None),
-            &cfg(&["api::*"], false),
-            &cache,
+            &session(Some("tenant1")),
+            &cfg(&[], false),
+            &CatalogCache::new(iii()),
+            &own,
         )
-        .await;
-        let OverrideOutcome::Result(v) = out else {
+        .await
+        else {
             panic!("expected result");
         };
-        assert_eq!(v["instance_count"], 2, "only api::a and api::b accessible");
+        assert_eq!(v["observers"][0]["id"], "mine");
+        assert_eq!(v["observers"][0]["target"]["function_id"], "handler");
     }
 
     #[tokio::test]
-    async fn triggers_list_passes_through() {
-        let result =
-            json!({ "triggers": [ { "id": "cron", "worker_name": "w", "description": "d" } ] });
-        let out = filter_result(
-            "engine::triggers::list",
-            result.clone(),
+    async fn observers_get_hides_an_observer_the_caller_may_not_see() {
+        let out = filter(
+            "engine::observers::get",
+            observer_row("o-2", "secret::z", "api::sink"),
             &session(None),
             &cfg(&["api::*"], false),
             &CatalogCache::new(iii()),
         )
         .await;
-        assert_eq!(out, OverrideOutcome::Result(result));
+        assert_eq!(
+            out,
+            OverrideOutcome::Error {
+                code: "OBSERVER_NOT_FOUND".to_string(),
+                message: "no observer `o-2`".to_string()
+            }
+        );
+
+        let OverrideOutcome::Result(v) = filter(
+            "engine::observers::get",
+            observer_row("o-1", "api::orders", "api::sink"),
+            &session(None),
+            &cfg(&["api::*"], false),
+            &CatalogCache::new(iii()),
+        )
+        .await
+        else {
+            panic!("expected result");
+        };
+        assert_eq!(v["id"], "o-1");
+    }
+
+    #[tokio::test]
+    async fn an_observer_row_is_checked_in_its_namespaces() {
+        let mut row = observer_row("o-1", "api::orders", "api::sink");
+        row["target"]["namespace"] = json!("orders");
+        let out = filter(
+            "engine::observers::get",
+            row,
+            &session(None),
+            &cfg(&["api::*"], false),
+            &CatalogCache::new(iii()),
+        )
+        .await;
+        assert!(matches!(out, OverrideOutcome::Error { code, .. } if code == "OBSERVER_NOT_FOUND"));
     }
 
     #[tokio::test]
@@ -1025,7 +969,7 @@ mod tests {
         c.rbac
             .expose_functions
             .push(FunctionFilter::match_pattern("billing::*").in_namespace("billing"));
-        let OverrideOutcome::Result(v) = filter_result(
+        let OverrideOutcome::Result(v) = filter(
             "engine::functions::list",
             result,
             &session(None),
@@ -1053,7 +997,7 @@ mod tests {
     #[tokio::test]
     async fn functions_info_denies_a_function_outside_the_rule_namespace() {
         let result = json!({ "function_id": "api::a", "namespace": "orders", "worker_name": "w" });
-        let out = filter_result(
+        let out = filter(
             "engine::functions::info",
             result,
             &session(None),
@@ -1068,12 +1012,12 @@ mod tests {
     async fn functions_info_batch_marks_denied_entries_forbidden() {
         let result = json!({
             "functions": [
-                { "function_id": "api::a", "namespace": "default", "worker_name": "w", "registered_triggers": [] },
-                { "function_id": "secret::z", "namespace": "default", "worker_name": "w", "registered_triggers": [] },
+                { "function_id": "api::a", "namespace": "default", "worker_name": "w", "observer_count": 0 },
+                { "function_id": "secret::z", "namespace": "default", "worker_name": "w", "observer_count": 0 },
                 { "function_id": "gone::x", "error": "not_found" }
             ]
         });
-        let OverrideOutcome::Result(v) = filter_result(
+        let OverrideOutcome::Result(v) = filter(
             "engine::functions::info",
             result,
             &session(None),

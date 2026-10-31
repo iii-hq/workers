@@ -14,7 +14,7 @@
 //!   while it runs (unless a live turn owns the status line);
 //! - it ends with one row: the `compaction` record, or a `notice` saying why
 //!   there is none;
-//! - `harness::compaction` fires on start and on completion;
+//! - `harness::on-compaction` fires on start and on completion;
 //! - the `harness_context` snapshot is rewritten for the compacted window, so
 //!   the `context` chip and `harness::status` stop showing the old one.
 //!
@@ -162,7 +162,7 @@ pub enum Status {
     Failed,
 }
 
-/// How an explicit compaction ended — also what `harness::compaction`
+/// How an explicit compaction ended — also what `harness::on-compaction`
 /// carries on completion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Outcome {
@@ -624,7 +624,7 @@ fn origin(compaction_id: &str) -> Value {
     json!({ "compaction_id": compaction_id })
 }
 
-/// The `harness::compaction` payload for `phase` (`started` / `completed`).
+/// The `harness::on-compaction` payload for `phase` (`started` / `completed`).
 pub fn event_payload(phase: &str, outcome: &Outcome) -> Value {
     let mut payload = json!({
         "session_id": outcome.session_id,

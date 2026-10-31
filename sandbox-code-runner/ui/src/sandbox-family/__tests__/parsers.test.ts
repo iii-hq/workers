@@ -40,7 +40,7 @@ import {
 const SB = '00000000-0000-0000-0000-000000000000'
 
 /** Build a `{ content, details, terminate }` envelope identical to
-    what `harness/src/turn-orchestrator/agent-trigger.ts` produces. */
+    what the harness's agent call wrapper (`agent_call`) produces. */
 function wrap<T>(details: T) {
   return {
     content: [{ type: 'text', text: JSON.stringify(details) }],
@@ -161,15 +161,15 @@ describe('parseSandboxErrorDisplay', () => {
     const out = parseSandboxErrorDisplay({
       error: {
         kind: 'function_error',
-        message: 'trigger_failed: IIIInvocationError: invocation_failed: handler error',
+        message: 'call_failed: IIIInvocationError: invocation_failed: handler error',
         details: {
           schema_version: 1,
           status: 'denied',
           denied_by: 'gate_unavailable',
           function_id: 'sandbox::fs::write',
-          reason: 'trigger_failed: policy unreachable',
+          reason: 'call_failed: policy unreachable',
         },
-        content: [{ type: 'text', text: 'trigger_failed: policy unreachable' }],
+        content: [{ type: 'text', text: 'call_failed: policy unreachable' }],
       },
     })
     expect(out?.variant).toBe('invocation')
@@ -177,7 +177,7 @@ describe('parseSandboxErrorDisplay', () => {
       expect(out.error.deniedBy).toBe('gate_unavailable')
       expect(out.error.functionId).toBe('sandbox::fs::write')
       expect(out.error.title).toBe('Gate unavailable')
-      expect(out.error.message).toBe('trigger_failed: policy unreachable')
+      expect(out.error.message).toBe('call_failed: policy unreachable')
     }
   })
 
@@ -216,13 +216,13 @@ describe('parseSandboxErrorDisplay', () => {
     const out = parseSandboxErrorDisplay({
       error: {
         kind: 'function_error',
-        message: `trigger_failed: handler error: ${JSON.stringify(envelope)}`,
+        message: `call_failed: handler error: ${JSON.stringify(envelope)}`,
         details: {
           schema_version: 1,
           status: 'denied',
           denied_by: 'gate_unavailable',
           function_id: 'sandbox::fs::write',
-          reason: `trigger_failed: ${JSON.stringify(envelope)}`,
+          reason: `call_failed: ${JSON.stringify(envelope)}`,
         },
         content: [],
       },
@@ -278,7 +278,7 @@ describe('parseDispatchDenial', () => {
 describe('extractFirstJsonObject', () => {
   it('pulls the first balanced object from noisy text', () => {
     const embedded = extractFirstJsonObject(
-      'trigger_failed: handler error: {"code":"S210","type":"filesystem","message":"bad path"} tail',
+      'call_failed: handler error: {"code":"S210","type":"filesystem","message":"bad path"} tail',
     )
     expect(embedded).toMatchObject({ code: 'S210', message: 'bad path' })
   })

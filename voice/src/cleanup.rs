@@ -13,7 +13,7 @@
 //! (an answer, a summary, a refusal) is dropped the same way.
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -69,7 +69,7 @@ pub async fn polish(iii: &IIIClient, cfg: &WorkerConfig, raw: &str) -> Result<Po
         .checked_sub(started.elapsed())
         .ok_or_else(|| "clean-up timed out resolving a model".to_string())?;
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::complete".into(),
             payload: json!({
                 "model": model,
@@ -184,7 +184,7 @@ async fn resolve_model(iii: &IIIClient, configured: &str) -> Result<String, Stri
         return Ok(pinned.to_string());
     }
     let reply = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::provider::list".into(),
             payload: json!({}),
             action: None,

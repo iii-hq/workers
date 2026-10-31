@@ -268,15 +268,15 @@ export function formatStamp(iso: string, today: Date = new Date()): string {
 }
 
 /**
- * What a trigger binding is filtered to, for the chat row. Every filter given must match, so they read as one line;
- * `release_id` filters `kanban:change` only.
+ * What an observer of `kanban::on-change` or `kanban::on-comment` selects with its args, for the chat row. Every
+ * arg given must match, so they read as one line; `release_id` is an arg of `kanban::on-change` only.
  */
-export function triggerScope(triggerType: string, config: Record<string, unknown>): string {
-  const given = (name: string) => (typeof config[name] === 'string' ? (config[name] as string).trim() : '')
+export function observerScope(functionId: string, args: Record<string, unknown>): string {
+  const given = (name: string) => (typeof args[name] === 'string' ? (args[name] as string).trim() : '')
   const parts = [
     given('ticket_id'),
     given('parent_id') && `${given('parent_id')} and its subtasks`,
-    triggerType.endsWith(':change') && given('release_id') && `tickets in ${given('release_id')}`,
+    functionId === 'kanban::on-change' && given('release_id') && `tickets in ${given('release_id')}`,
   ].filter(Boolean)
   return parts.length > 0 ? parts.join(' · ') : 'any ticket'
 }

@@ -11,6 +11,7 @@ pub mod items;
 pub mod ops;
 pub mod preview;
 pub mod recall;
+pub mod rest;
 pub mod rules;
 
 use std::future::Future;
@@ -21,7 +22,7 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::deps::Deps;
 use crate::error::MemoryError;
@@ -72,7 +73,7 @@ pub const SUPERSEDE_DESC: &str =
     "Retire one memory in favor of another: tombstone with a superseded_by pointer, never a \
      plain delete. The consolidation seam; pinned memories cannot be superseded. reinforce \
      makes it a merge (the non-pinned survivor absorbs the retired record's observations); \
-     reason is carried on the item-changed events.";
+     reason is carried on the memory::on-item-changed events.";
 
 pub const TAGS_ID: &str = "memory::tags";
 pub const TAGS_DESC: &str =
@@ -262,6 +263,52 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     );
 
     tracing::info!("all memory::* functions registered");
+}
+
+/// Run the public function `function_id` on a JSON input, as its
+/// registration does: the input is decoded into the function's request
+/// type (a mismatch is `invalid_input`) and the result encoded as JSON.
+/// `None` when no public function has that id.
+pub async fn call_json(
+    deps: &Deps,
+    function_id: &str,
+    input: Value,
+) -> Option<Result<Value, MemoryError>> {
+    let result = match function_id {
+        BANK_CREATE_ID => json_call(input, |r| banks::create(deps, r)).await,
+        BANK_LIST_ID => json_call(input, |r| banks::list(deps, r)).await,
+        BANK_DELETE_ID => json_call(input, |r| banks::delete(deps, r)).await,
+        SAVE_ID => json_call(input, |r| items::save(deps, r)).await,
+        GET_ID => json_call(input, |r| items::get(deps, r)).await,
+        LIST_ID => json_call(input, |r| items::list(deps, r)).await,
+        UPDATE_ID => json_call(input, |r| items::update(deps, r)).await,
+        DELETE_ID => json_call(input, |r| items::delete(deps, r)).await,
+        PIN_ID => json_call(input, |r| items::pin(deps, r)).await,
+        SUPERSEDE_ID => json_call(input, |r| items::supersede(deps, r)).await,
+        TAGS_ID => json_call(input, |r| items::tags(deps, r)).await,
+        PREVIEW_ID => json_call(input, |r| preview::preview(deps, r)).await,
+        RECALL_ID => json_call(input, |r| recall::recall(deps, r)).await,
+        RULE_LIST_ID => json_call(input, |r| rules::list(deps, r)).await,
+        RULE_SET_ID => json_call(input, |r| rules::set(deps, r)).await,
+        DOCTOR_ID => json_call(input, |r| ops::doctor(deps, r)).await,
+        RELOAD_ID => json_call(input, |r| ops::reload(deps, r)).await,
+        _ => return None,
+    };
+    Some(result)
+}
+
+async fn json_call<Req, Resp, F, Fut>(input: Value, handler: F) -> Result<Value, MemoryError>
+where
+    Req: DeserializeOwned,
+    Resp: Serialize,
+    F: FnOnce(Req) -> Fut,
+    Fut: Future<Output = Result<Resp, MemoryError>>,
+{
+    let request =
+        serde_json::from_value(input).map_err(|e| MemoryError::InvalidInput(e.to_string()))?;
+    let response = handler(request).await?;
+    serde_json::to_value(response)
+        .map_err(|e| MemoryError::Storage(format!("the response did not serialize: {e}")))
 }
 
 /// One function's complete agent-facing wire surface: id, registration

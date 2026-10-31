@@ -7,8 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use mention_contract::MentionProvider;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
@@ -73,7 +72,7 @@ impl ProviderRegistry {
             return cached.providers.clone();
         }
         match iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: FUNCTIONS_LIST_ID.into(),
                 payload: json!({ "include_internal": true }),
                 action: None,

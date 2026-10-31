@@ -226,9 +226,9 @@ def test_build_workflow_only_builds_and_uploads_immutable_bytes():
     text = body(BUILD)
     workflow = yaml.safe_load(text)
     assert set(workflow[True]) == {"workflow_dispatch", "workflow_call"}
-    for trigger in ("workflow_dispatch", "workflow_call"):
-        inputs = workflow[True][trigger]["inputs"]
-        assert set(inputs) == {"worker", "source_sha", "descriptor_run_id", "correlation_id"}, trigger
+    for event in ("workflow_dispatch", "workflow_call"):
+        inputs = workflow[True][event]["inputs"]
+        assert set(inputs) == {"worker", "source_sha", "descriptor_run_id", "correlation_id"}, event
         assert inputs["correlation_id"]["required"] is False
     # No Release Control identity, authorization or result reporting.
     assert "deployment_control_contract.py" not in text

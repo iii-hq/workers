@@ -41,12 +41,16 @@ use crate::functions::run::{RunRequest, RunResponse};
 use crate::functions::teardown::{TeardownRequest, TeardownResponse};
 use crate::runner::Lang;
 
-/// Trigger timeout for `sandbox::create` — a cold image pull can take tens
+/// Call timeout for `sandbox::create` — a cold image pull can take tens
 /// of seconds; the daemon docs recommend 300s.
 const CREATE_TIMEOUT_MS: u64 = 300_000;
-/// Trigger timeout for `sandbox::fs::*` and `sandbox::stop` — local to the
+/// Call timeout for `sandbox::fs::*` and `sandbox::stop` — local to the
 /// daemon, no meaningful timeout pressure.
 const FS_TIMEOUT_MS: u64 = 30_000;
+/// The Python SDK a Python runtime installs for its `iii` global: the same
+/// release line as the Node bundle (`ui/package.json`), so guests in both
+/// languages have `iii.call` and `iii.observe`.
+const GUEST_PYTHON_SDK: &str = "iii-sdk>=0.26.0";
 /// In-guest deadline for `create`'s `pip install iii-sdk` step — a cold
 /// PyPI fetch of pydantic-core and friends can take a while on a slow
 /// link, and killing it just corrupts a partial site-packages.
@@ -193,7 +197,7 @@ pub struct RuntimeManager {
     /// Guards a single process only — `engine::functions::info` is what
     /// covers a collision across two sandbox-code-runner processes on one bus.
     claims: Mutex<HashMap<String, String>>,
-    /// `sandbox-code-runner::event` emitter, wired once by `main` via
+    /// `sandbox-code-runner::on-event` emitter, wired once by `main` via
     /// [`Self::set_events`]. Unset in unit tests that don't observe
     /// emissions — every emit is then a no-op.
     events: OnceLock<Emitter>,
@@ -244,16 +248,15 @@ impl RuntimeManager {
         })
     }
 
-    /// Wire the `sandbox-code-runner::event` emitter — once, from `main`,
+    /// Wire the `sandbox-code-runner::on-event` emitter — once, from `main`,
     /// before any caller-facing function is invoked. A second call is
     /// ignored.
     pub fn set_events(&self, events: Emitter) {
         let _ = self.events.set(events);
     }
 
-    /// Fire a lifecycle event when an emitter is wired. Fan-out inside the
-    /// emitter is fire-and-forget — this never blocks or fails the calling
-    /// handler.
+    /// Fire a lifecycle event when an emitter is wired. The emitter's call is
+    /// fire-and-forget — this never blocks or fails the calling handler.
     fn emit(&self, event: Event) {
         if let Some(events) = self.events.get() {
             events.emit(event);
@@ -396,7 +399,7 @@ impl RuntimeManager {
     /// record. Idempotent — a second Gone for the same id finds nothing. Does
     /// NOT call `sandbox::stop` — the whole premise is that the daemon
     /// already reaped or lost the VM, so there is nothing left to stop.
-    /// Emits the same `teardown` event a real teardown does: subscribers
+    /// Emits the same `teardown` event a real teardown does: observers
     /// must learn about reaper-driven removal too.
     pub(crate) fn expire(&self, runtime_id: &str) {
         let record = self.runtimes.lock().unwrap().remove(runtime_id);
@@ -522,7 +525,7 @@ impl RuntimeManager {
                         "args": [
                             "-m", "pip", "install",
                             "--quiet", "--disable-pip-version-check",
-                            "iii-sdk",
+                            GUEST_PYTHON_SDK,
                         ],
                         "timeout_ms": SDK_INSTALL_TIMEOUT_MS,
                     }),
@@ -1513,7 +1516,7 @@ mod tests {
             assert_eq!(payload["cmd"], "python3");
             if args[0] == "-m" {
                 assert_eq!(args[1], "pip");
-                assert!(args.iter().any(|a| a == "iii-sdk"), "{args:?}");
+                assert!(args.iter().any(|a| a == GUEST_PYTHON_SDK), "{args:?}");
             } else {
                 assert_eq!(args[0], "/opt/sandbox-code-runner/run.py");
             }
@@ -2316,7 +2319,7 @@ mod tests {
         assert_eq!(m.runtimes.lock().unwrap().len(), 1);
     }
 
-    /// The full trigger path: the proxy execs the runner with the payload on
+    /// The full call path: the proxy execs the runner with the payload on
     /// stdin and a per-call sentinel, and returns the JSON after the
     /// sentinel.
     #[tokio::test]
@@ -3023,7 +3026,7 @@ mod tests {
     // events: lifecycle emissions.
     // ---------------------------------------------------------------
 
-    use crate::events::{EventDeliverer, SubscriberSet};
+    use crate::events::EventDeliverer;
 
     #[derive(Default)]
     struct RecordingDeliverer {
@@ -3031,18 +3034,20 @@ mod tests {
     }
 
     impl EventDeliverer for RecordingDeliverer {
+        fn is_observed(&self, _function_id: &str) -> bool {
+            true
+        }
+
         fn deliver(&self, _function_id: &str, payload: Value) {
             self.seen.lock().unwrap().push(payload);
         }
     }
 
-    /// Wire a recording emitter with one subscriber, so every emission is
-    /// captured synchronously — no spawn, no bus.
+    /// Wire a recording emitter whose event function counts as observed, so
+    /// every emission is captured synchronously — no spawn, no bus.
     fn record_events(m: &RuntimeManager) -> Arc<RecordingDeliverer> {
-        let subscribers = SubscriberSet::new();
-        subscribers.insert("t1".to_string(), "console::recv".to_string());
         let recorder = Arc::new(RecordingDeliverer::default());
-        m.set_events(Emitter::new(subscribers, recorder.clone()));
+        m.set_events(Emitter::new(recorder.clone()));
         recorder
     }
 

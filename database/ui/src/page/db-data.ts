@@ -259,7 +259,7 @@ export function isReadOnlySql(sql: string): boolean {
  * Run a statement from the editor: reads through `database::query`, writes
  * through `database::execute`. Both are the worker's own functions, so an
  * engine policy that narrows an agent to reads narrows this panel the same
- * way, and writes land in the `database::row-changed` feed like any other.
+ * way, and writes reach `database::on-row-changed` observers like any other.
  */
 export async function runAdhocSql(
   host: Host,

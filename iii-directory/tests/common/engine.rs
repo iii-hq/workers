@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::json;
 use tokio::sync::OnceCell;
@@ -28,7 +28,7 @@ pub async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(250)).await;
         let probe = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::workers::list".to_string(),
                 payload: json!({}),
                 action: None,

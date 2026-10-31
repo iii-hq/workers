@@ -1,5 +1,5 @@
 //! `ios-simulator` binary entry: connect, register configuration + fetch the
-//! authoritative value, register the trigger types and functions, start the
+//! authoritative value, register the event sources and functions, start the
 //! device watcher and sweep, then sleep until Ctrl+C / SIGTERM.
 
 use std::sync::Arc;
@@ -109,7 +109,7 @@ async fn main() -> Result<()> {
     );
     let shared = cfg.into_shared();
 
-    // Trigger types before functions, so every emit has its binding tables.
+    // Observable functions before the functions that emit them.
     let events = Events::register(&iii);
     let sim = Sim::new(
         shared.clone(),
@@ -123,8 +123,7 @@ async fn main() -> Result<()> {
         "ios-simulator",
         configuration::config_id(),
     );
-    configuration::register_config_trigger(&iii, shared)
-        .context("registering configuration change trigger")?;
+    configuration::observe_config_changes(&iii, shared);
     ui::register(&iii);
 
     let watcher = tokio::spawn(sim.clone().watch_loop());

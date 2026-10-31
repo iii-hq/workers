@@ -1,10 +1,10 @@
 //! sentinel — the error monitor for an iii engine.
 //!
-//! It subscribes to the engine's `trace` and `log` triggers, groups failures
-//! by a deterministic fingerprint, freezes the evidence before the in-memory
-//! span ring discards it, and opens assisted harness investigations beside
-//! the console page. Resolving and ignoring are human decisions; regression
-//! is detected automatically.
+//! It observes the engine's `observability::on-span` and
+//! `observability::on-log`, groups failures by a deterministic fingerprint,
+//! freezes the evidence before the in-memory span ring discards it, and
+//! opens assisted harness investigations beside the console page. Resolving
+//! and ignoring are human decisions; regression is detected automatically.
 
 /// The name this worker registers under. Its own traces are recognised by it,
 /// so it is a constant rather than a string spelled out per call site.
@@ -27,6 +27,7 @@ pub mod investigation;
 pub mod lifecycle;
 pub mod manifest;
 pub mod normalize;
+pub mod observers;
 pub mod offload;
 pub mod redact;
 pub mod registry;
@@ -35,7 +36,6 @@ pub mod service;
 mod status;
 pub mod store;
 pub mod triage;
-pub mod triggers;
 pub mod ui;
 
 pub use adapters::ErrorEvent;
@@ -50,19 +50,19 @@ pub use contract::{
     DiagnosisEvidenceV1, DiagnosisRecordRequestV1, DiagnosisRecordResponseV1, DiagnosisRecordV1,
     DiagnosisSourceV1, DiagnosisV1, DoorbellResponseV1, EngineStatusV1, ErrorSourceV1,
     EvidenceGetRequestV1, EvidenceGetResponseV1, EvidenceKindV1, GroupActionRequestV1,
-    GroupChangeReasonV1, GroupChangedConfigV1, GroupChangedEventV1, GroupChangedOpV1,
-    GroupCountsV1, GroupGetRequestV1, GroupGetResponseV1, GroupHistoryRequestV1,
-    GroupHistoryResponseV1, GroupStateResponseV1, GroupStatusV1, GroupSummaryV1, GroupTransitionV1,
-    GroupTriageV1, GroupsListRequestV1, GroupsListResponseV1, IgnoreBaselineV1, IgnoreRequestV1,
-    IgnoreRuleV1, IngestStatusV1, InvestigateRequestV1, InvestigateResponseV1,
-    InvestigationCancelRequestV1, InvestigationChangedEventV1, InvestigationChangedOpV1,
-    InvestigationCountsV1, InvestigationGetRequestV1, InvestigationGetResponseV1,
-    InvestigationModeV1, InvestigationStatusV1, InvestigationSummaryV1,
-    InvestigationsListRequestV1, InvestigationsListResponseV1, LogsListRequestV1,
-    LogsListResponseV1, OccurrenceSummaryV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
-    ProposedFixV1, RelevanceV1, RepositoryStatusV1, ResolveRequestV1, RiskV1, RootCauseV1,
-    SourcesStatusV1, StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1,
-    TraceStoreStateV1, TriageKindV1, TriageSourceV1, TurnCompletedEventV1,
+    GroupChangeReasonV1, GroupChangedEventV1, GroupChangedOpV1, GroupCountsV1, GroupGetRequestV1,
+    GroupGetResponseV1, GroupHistoryRequestV1, GroupHistoryResponseV1, GroupStateResponseV1,
+    GroupStatusV1, GroupSummaryV1, GroupTransitionV1, GroupTriageV1, GroupsListRequestV1,
+    GroupsListResponseV1, IgnoreBaselineV1, IgnoreRequestV1, IgnoreRuleV1, IngestStatusV1,
+    InvestigateRequestV1, InvestigateResponseV1, InvestigationCancelRequestV1,
+    InvestigationChangedEventV1, InvestigationChangedOpV1, InvestigationCountsV1,
+    InvestigationGetRequestV1, InvestigationGetResponseV1, InvestigationModeV1,
+    InvestigationStatusV1, InvestigationSummaryV1, InvestigationsListRequestV1,
+    InvestigationsListResponseV1, LogsListRequestV1, LogsListResponseV1, OccurrenceSummaryV1,
+    OccurrencesListRequestV1, OccurrencesListResponseV1, ProposedFixV1, RelevanceV1,
+    RepositoryStatusV1, ResolveRequestV1, RiskV1, RootCauseV1, SourcesStatusV1, StatusRequestV1,
+    StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1, TraceStoreStateV1, TriageKindV1,
+    TriageSourceV1, TurnCompletedEventV1,
 };
 pub use error::SentinelError;
 pub use events::Emitter;

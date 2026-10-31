@@ -106,19 +106,19 @@ export type BuildEvent = BuildStatus & { at: string }
 export type Selection = { project: string; id: string; state: string | null }
 
 export const api = {
-  workspaces: (iii: ExtensionIii) => iii.trigger<{ workspaces: Workspace[] }>('stories::workspaces', {}),
+  workspaces: (iii: ExtensionIii) => iii.call<{ workspaces: Workspace[] }>('stories::workspaces', {}),
   tree: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<FsTree>('stories::tree::fs', payload, { timeoutMs: 150_000 }),
+    iii.call<FsTree>('stories::tree::fs', payload, { timeoutMs: 150_000 }),
   get: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<GetOutput>('stories::components::get', payload, { timeoutMs: 150_000 }),
+    iii.call<GetOutput>('stories::components::get', payload, { timeoutMs: 150_000 }),
   compare: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<CompareOutput>('stories::compare', payload, { timeoutMs: 150_000 }),
+    iii.call<CompareOutput>('stories::compare', payload, { timeoutMs: 150_000 }),
   diffFile: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<{ path: string; identical: boolean; diff: string }>('stories::diff::file', payload, {
+    iii.call<{ path: string; identical: boolean; diff: string }>('stories::diff::file', payload, {
       timeoutMs: 150_000,
     }),
   build: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<BuildStatus>('stories::builds::create', payload),
+    iii.call<BuildStatus>('stories::builds::create', payload),
 }
 
 export function b64url(value: unknown): string {

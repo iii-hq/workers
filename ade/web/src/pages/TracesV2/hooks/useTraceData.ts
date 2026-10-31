@@ -239,7 +239,7 @@ export function useTraceData({
         }),
       )
     },
-    // This query is the SEED read, re-run on demand: the `trace` trigger's
+    // This query is the SEED read, re-run on demand: the span source's
     // coalesced `{trace_ids}` tick invalidates it (notify-then-query, see
     // the effect below) — no polling interval. Reconnect / tab-visible
     // re-seed once to recover anything missed while away.
@@ -358,9 +358,9 @@ export function useTraceData({
     }
   }, [tracesData, hiddenKey, scopeKey])
 
-  // ── Trigger-driven refetch (notify-then-query) ──────────────────────────
-  // The engine coalesces span activity into one `{ trace_ids }` tick per
-  // ~300ms window on the `trace` trigger; each tick re-runs the seeded,
+  // ── Event-driven refetch (notify-then-query) ────────────────────────────
+  // The engine coalesces span activity into one `{ trace_ids }` call of
+  // `observability::on-span` per ~300ms window; each tick re-runs the seeded,
   // FILTERED queries — the engine stays the single owner of filter and tag
   // semantics, an idle engine produces zero traffic, and there is no
   // client-side append/merge to drift from the server's view. Pause /

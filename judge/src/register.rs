@@ -6,7 +6,7 @@
 //! ownership semantics, and enforces the shared response contract on whatever
 //! the provider returns.
 use crate::configuration::SharedConfig;
-use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient, RegisterFunction};
+use iii_sdk::{errors::Error, CallRequest, IIIClient, RegisterFunction};
 use judge_contract::{
     provider_function_id, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse,
     ModelsRequest, ModelsResponse, Stats, CANCEL_FUNCTION_ID, FUNCTION_ID,
@@ -207,13 +207,13 @@ async fn forward(
     if let Some(scoped) = scoped {
         fields.insert("request_id".into(), Value::String(scoped));
     }
-    let request = TriggerRequest {
+    let request = CallRequest {
         function_id: provider_function_id(&provider, public_id),
         payload,
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    match iii.trigger(request).await {
+    match iii.call(request).await {
         Ok(reply) => Ok(Ok(reply)),
         Err(Error::Remote { code, .. }) if code.eq_ignore_ascii_case("function_not_found") => {
             Ok(Err(ErrorCode::ProviderUnavailable))

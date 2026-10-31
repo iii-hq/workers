@@ -47,18 +47,19 @@
 //! `directory::system-prompts::{create,delete}` and
 //! `directory::agents::{create,delete}` manage skill/system-prompt/agent-profile
 //! files (never touching the read-only `agents_skills_folder`). After
-//! every successful write the worker fires the matching family's
+//! every successful write the worker calls the matching family's
 //! `directory::*::on-change` (skills / system-prompts /
-//! agent profiles) so subscribers can forward change notifications to their
-//! clients.
+//! agent profiles; see [`events`]) so its observers can forward change
+//! notifications to their clients.
 //!
 //! The worker also ships an injectable console UI (see [`ui`]): a
 //! skills and agent-profiles browser/editor page, a `directory::*`
-//! function-trigger renderer, and a custom configuration form.
+//! function-call renderer, and a custom configuration form.
 
 pub mod bundled;
 pub mod config;
 pub mod configuration;
+pub mod events;
 pub mod fs_source;
 pub mod functions;
 pub mod hook;
@@ -66,6 +67,5 @@ pub mod kits;
 pub mod manifest;
 pub mod sources;
 pub mod surface;
-pub mod trigger_types;
 pub mod ui;
 pub mod watch;

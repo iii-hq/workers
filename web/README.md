@@ -12,16 +12,25 @@ implementation — same request fields and success/error/image envelopes, so
 existing callers and the harness consumer are unaffected.
 
 While connected (and unless turned off) it also injects a usage section into
-the agent system prompt via the harness `pre-generate` hook
-(`web::inject-guidance`). `inject_guidance` in the `web` configuration entry
-is ON by default; turning it off (the Console's global Settings modal, or
-`configuration::set`) hot-applies with no restart, and the harness's
-`# Granted functions` catalog still advertises `web::fetch`. The guidance
-is presence-gated: no web worker, no prompt text. The binding is one-shot at
-startup and relies on the engine's recoverable triggers (iii #1962, engine ≥
-0.21.8): bound before the harness is up, it parks as a pending intent and
-activates when the harness registers the trigger type. On older engines the
-bind is silently dropped.
+the agent system prompt: `web::inject-guidance` observes the harness hook
+point `harness::hook::on-pre-generate` with args
+`{ on_error: "fail_open", inject_prompt }`, and the harness appends
+`inject_prompt` to the system prompt. `inject_guidance` in the `web`
+configuration entry is ON by default; turning it off (the Console's global
+Settings modal, or `configuration::set`) disposes the observer with no
+restart, and the harness's `# Granted functions` catalog still advertises
+`web::fetch`. The guidance is presence-gated: no web worker, no prompt text.
+The worker observes once at startup; while the harness is not running the
+observer stays `pending`, and it becomes active when the harness registers
+`harness::hook::on-pre-generate`.
+
+```rust
+iii.observe(
+    Source::function("harness::hook::on-pre-generate")
+        .args(json!({ "on_error": "fail_open", "inject_prompt": WEB_GUIDANCE })),
+    "web::inject-guidance",
+);
+```
 
 ## Table of contents
 
@@ -38,10 +47,10 @@ bind is silently dropped.
 ## Install
 
 ```bash
-iii trigger compose::add worker=web
+iii call compose::add worker=web
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ---
@@ -50,8 +59,9 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 The worker reads its operational ceilings from the `configuration` worker
 under the `web` key. It registers a schema + seed on boot, fetches the
-authoritative value, and hot-reloads on change. All keys are optional and
-fall back to the defaults below.
+authoritative value, and hot-reloads on change (it observes
+`configuration::on-updated` for its entry). All keys are optional and fall
+back to the defaults below.
 
 ```yaml
 web:
@@ -75,7 +85,7 @@ Minimal call — a URL is the only required field; everything else has a
 default:
 
 ```jsonc
-// agent_trigger { function: "web::fetch", payload: { "url": "https://api.github.com/zen" } }
+// agent_call { function: "web::fetch", payload: { "url": "https://api.github.com/zen" } }
 // → { "ok": true, "status": 200, "body": "Design for failure.", ... }
 ```
 

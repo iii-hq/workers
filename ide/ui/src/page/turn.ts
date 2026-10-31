@@ -5,8 +5,8 @@ import { activeTurnFromStatus, canActivateHarnessTurn } from './turn-status'
 const TURN_STARTED_FN = 'iii::shell-ui::turn-started'
 const TURN_COMPLETED_FN = 'iii::shell-ui::turn-completed'
 const TURNS_CHANGED_FN = 'iii::shell-ui::turns-changed'
-/** `shell::turns::changed` already folds a burst into one event per 200 ms;
-    this folds the few left into one list read. */
+/** `shell::turns::on-changed` already folds a burst into one event per
+    200 ms; this folds the few left into one list read. */
 export const TURNS_CHANGED_DEBOUNCE_MS = 150
 
 interface TurnStartedEvent {
@@ -31,9 +31,10 @@ export interface HarnessTurnState {
 }
 
 /** Exact Harness turn identity for the active chat. The status read closes
-    the small bind race and restores an already-running turn after mount.
-    `scope` (the pane's function-id segment) keeps two panes beside the
-    same chat on separate functions, so neither hears the other's binding. */
+    the small race before the observers are active and restores an
+    already-running turn after mount. `scope` (the pane's function-id
+    segment) keeps two panes beside the same chat on separate functions, so
+    neither hears the other's observer. */
 export function useHarnessTurn(
   host: Host,
   conversationId: string | null | undefined,
@@ -63,11 +64,11 @@ export function useHarnessTurn(
       lifecycleGeneration += 1
       setState({ turnId: event.turn_id, active: true, completedAtMs: null })
     })
-    const offTrigger = host.iii.registerTrigger({
-      type: 'harness::turn-started',
-      function_id: `${startedFn}::${host.iii.browserId}`,
-      config: { session_id: conversationId },
-    })
+    const sessionFilter = { 'input.session_id': { $eq: conversationId } }
+    const offObserver = host.iii.observe(
+      { function_id: 'harness::on-turn-started', filters: sessionFilter },
+      `${startedFn}::${host.iii.browserId}`,
+    )
     const offCompletedHandler = host.iii.on<TurnCompletedEvent>(completedFn, (event) => {
       if (
         event?.session_id !== conversationId ||
@@ -85,15 +86,14 @@ export function useHarnessTurn(
           : { turnId: event.turn_id, active: false, completedAtMs },
       )
     })
-    const offCompletedTrigger = host.iii.registerTrigger({
-      type: 'harness::turn-completed',
-      function_id: `${completedFn}::${host.iii.browserId}`,
-      config: { session_id: conversationId },
-    })
+    const offCompletedObserver = host.iii.observe(
+      { function_id: 'harness::on-turn-completed', filters: sessionFilter },
+      `${completedFn}::${host.iii.browserId}`,
+    )
 
     const statusGeneration = lifecycleGeneration
     void host.iii
-      .trigger<HarnessStatus>('harness::status', { session_id: conversationId })
+      .call<HarnessStatus>('harness::status', { session_id: conversationId })
       .then((status) => {
         if (cancelled) return
         const turnId = activeTurnFromStatus(
@@ -106,18 +106,18 @@ export function useHarnessTurn(
         if (turnId !== null) setState({ turnId, active: true, completedAtMs: null })
       })
       .catch(() => {
-        // Harness may be restarting; the live trigger remains authoritative.
+        // Harness may be restarting; the live observers remain authoritative.
       })
 
     return () => {
       cancelled = true
       try {
-        offTrigger()
+        offObserver()
       } finally {
         offHandler()
       }
       try {
-        offCompletedTrigger()
+        offCompletedObserver()
       } finally {
         offCompletedHandler()
       }
@@ -128,7 +128,7 @@ export function useHarnessTurn(
 }
 
 /** Calls `onChange` when the ide worker stores a new record of the chat's
-    change history (`shell::turns::changed`): a turn opened or closed, a
+    change history (`shell::turns::on-changed`): a turn opened or closed, a
     file change recorded. Debounced; nothing is read on a timer. `scope`
     keeps two panes beside one chat on separate functions. */
 export function useTurnsChanged(
@@ -150,20 +150,22 @@ export function useTurnsChanged(
         onChangeRef.current()
       }, TURNS_CHANGED_DEBOUNCE_MS)
     })
-    let offTrigger: () => void = () => {}
+    let offObserver: () => void = () => {}
     try {
-      offTrigger = host.iii.registerTrigger({
-        type: 'shell::turns::changed',
-        function_id: `${functionId}::${host.iii.browserId}`,
-        config: { session_id: conversationId },
-      })
+      offObserver = host.iii.observe(
+        {
+          function_id: 'shell::turns::on-changed',
+          filters: { 'input.session_id': { $eq: conversationId } },
+        },
+        `${functionId}::${host.iii.browserId}`,
+      )
     } catch {
-      // No ide worker: the list still follows turn boundaries.
+      // No engine to observe through: the list still follows turn boundaries.
     }
     return () => {
       if (timer !== null) clearTimeout(timer)
       try {
-        offTrigger()
+        offObserver()
       } finally {
         offHandler()
       }

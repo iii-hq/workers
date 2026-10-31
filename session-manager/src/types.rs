@@ -13,8 +13,8 @@ use serde_json::Value;
 /// JSON object used for app-defined metadata / origin correlation.
 pub type JsonMap = serde_json::Map<String, Value>;
 
-/// Subset-equality metadata match used by `session::list` and every
-/// trigger config: every key in `want` must equal (deep JSON equality)
+/// Subset-equality metadata match used by `session::list`: every key in
+/// `want` must equal (deep JSON equality)
 /// the value stored under the same key in `have`. An empty `want`
 /// matches everything; a non-empty `want` never matches a missing map.
 pub fn metadata_matches(want: &JsonMap, have: Option<&JsonMap>) -> bool {
@@ -499,7 +499,8 @@ pub struct SessionMeta {
     #[serde(default)]
     pub kind: SessionKind,
     /// App-defined; the tenancy hook (e.g. `{ "owner": "u_1" }`) that
-    /// `session::list` and every trigger config can filter on.
+    /// `session::list` filters on and every session event carries as
+    /// `session_metadata`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<JsonMap>,
     /// Source session id when created by `session::fork`.

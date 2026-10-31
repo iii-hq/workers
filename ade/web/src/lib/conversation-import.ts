@@ -269,7 +269,7 @@ export async function discoverConversations(input: {
   cursor?: string
   query?: string
 }) {
-  return (await getIiiClient()).trigger<Discovery>(
+  return (await getIiiClient()).call<Discovery>(
     'console::conversations::discover',
     input,
   )
@@ -278,7 +278,7 @@ export async function previewConversation(
   source: ConversationSource,
   id: string,
 ) {
-  return (await getIiiClient()).trigger<ConversationPreview>(
+  return (await getIiiClient()).call<ConversationPreview>(
     'console::conversations::preview',
     { source, id },
   )
@@ -288,13 +288,13 @@ export async function importConversation(
   id: string,
 ) {
   try {
-    // The client's own trigger timeout applies: an import runs batch after batch server-side.
-    return await (await getIiiClient()).trigger<ImportResult>(
+    // The client's own call timeout applies: an import runs batch after batch server-side.
+    return await (await getIiiClient()).call<ImportResult>(
       'console::conversations::import',
       { source, id },
     )
   } catch (error) {
-    // A trigger that times out only stops waiting: the import can still finish, and importing
+    // A call that times out only stops waiting: the import can still finish, and importing
     // again would make a second copy.
     if (
       error instanceof Error &&

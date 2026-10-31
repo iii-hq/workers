@@ -38,7 +38,7 @@ chosen device is logged at start as `selected inference device`.
 ## Install
 
 ```bash
-iii trigger compose::add worker=judge-decider
+iii call compose::add worker=judge-decider
 ```
 
 The functions register at start; the model loads on demand. While decider is
@@ -63,7 +63,7 @@ rank-1 revision.
 Make it the hub's default, then call the hub:
 
 ```bash
-iii trigger judge::evaluate --timeout-ms 65000 --json '{
+iii call judge::evaluate --timeout-ms 65000 --json '{
   "timeout_ms": 60000, "provider": "decider",
   "evaluations": [{
     "id": "ticket-4411",

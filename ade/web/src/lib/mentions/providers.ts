@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useSyncExternalStore } from 'react'
-import { useWorkerLifecycle } from '@/hooks/use-worker-lifecycle'
+import { useWorkersChanged } from '@/hooks/use-workers-changed'
 import {
   getMentionRuntime,
   mentionRuntimeGeneration,
@@ -126,12 +126,10 @@ export function useMentionProviders(): MentionProvidersSnapshot {
  * leaving, so a freshly added worker's `@name` shows up without a refresh.
  */
 export function useMentionProviderRefresh(enabled: boolean): void {
-  useWorkerLifecycle({
+  useWorkersChanged({
     enabled,
-    fnId: 'ui::mentions::worker-lifecycle',
-    operations: ['add', 'remove'],
-    stages: ['done'],
-    onEvent: () => {
+    fnId: 'ui::mentions::workers-changed',
+    onChange: () => {
       void loadMentionProviders({ force: true })
     },
   })

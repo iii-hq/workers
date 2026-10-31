@@ -8,8 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -18,6 +17,9 @@ use serde_json::{json, Value};
 pub const APPROVAL_GATE_WORKER_NAME: &str = "approval-gate";
 
 const WATCH_FN_ID: &str = "telegram-bot::__on-approval-gate-worker";
+
+/// The engine's worker lifecycle source.
+const ON_WORKERS_CHANGED_FN: &str = "engine::on-workers-changed";
 
 /// Whether the `approval-gate` worker is currently connected.
 pub struct ApprovalGateStatus {
@@ -42,7 +44,7 @@ impl ApprovalGateStatus {
     }
 
     /// Whether the approval-gate's `approval::*` functions are registered and
-    /// safe to trigger. False during the initial presence probe and while the
+    /// safe to call. False during the initial presence probe and while the
     /// gate is absent.
     pub fn is_available(&self) -> bool {
         is_approval_gate_available(self)
@@ -56,7 +58,7 @@ impl Default for ApprovalGateStatus {
 }
 
 /// Whether the approval-gate's `approval::*` functions are registered and safe
-/// to trigger. False during the initial presence probe and while the gate is
+/// to call. False during the initial presence probe and while the gate is
 /// absent.
 pub fn is_approval_gate_available(status: &ApprovalGateStatus) -> bool {
     status.present.load(Ordering::Relaxed) && !status.loading.load(Ordering::Relaxed)
@@ -65,9 +67,7 @@ pub fn is_approval_gate_available(status: &ApprovalGateStatus) -> bool {
 /// One-time presence probe via `engine::workers::list`.
 pub async fn probe_presence(iii: &IIIClient) -> bool {
     match list_workers(iii).await {
-        Ok(workers) => workers
-            .iter()
-            .any(|w| w.name.as_deref() == Some(APPROVAL_GATE_WORKER_NAME)),
+        Ok(workers) => has_approval_gate(&workers),
         Err(e) => {
             tracing::warn!(error = %e, "approval-gate presence probe failed");
             false
@@ -75,16 +75,16 @@ pub async fn probe_presence(iii: &IIIClient) -> bool {
     }
 }
 
+/// An `engine::on-workers-changed` event. It names the worker by id only, so
+/// the handler re-reads `engine::workers::list` for names.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
-struct WorkerLifecycleEvent {
+struct WorkersChangedEvent {
     #[serde(default)]
-    operation: Option<String>,
+    #[allow(dead_code)]
+    event: Option<String>,
     #[serde(default)]
-    stage: Option<String>,
-    #[serde(default)]
-    worker: Option<String>,
-    #[serde(default)]
-    source: Option<Value>,
+    #[allow(dead_code)]
+    worker_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, JsonSchema)]
@@ -92,98 +92,77 @@ struct WorkerLifecycleAck {
     ok: bool,
 }
 
-/// Subscribe to engine `worker` lifecycle events so add/remove of
-/// `approval-gate` flips presence and invokes `on_present` when the gate
-/// connects.
-pub fn start_watch(
-    iii: Arc<IIIClient>,
-    status: Arc<ApprovalGateStatus>,
-    on_present: Arc<dyn Fn() + Send + Sync>,
-) {
+/// The worker changes that can add or remove a worker name: a connection, its
+/// metadata and a disconnection. The engine emits `worker_connected` before
+/// the worker announces its name with `engine::workers::register`, so the
+/// re-read that finds approval-gate by name follows `worker_metadata_updated`.
+fn lifecycle_filters() -> Value {
+    json!({
+        "input.event": {
+            "$in": ["worker_connected", "worker_metadata_updated", "worker_disconnected"]
+        }
+    })
+}
+
+/// Observe `engine::on-workers-changed` so a connecting or disconnecting
+/// `approval-gate` flips presence. The approval observers themselves are
+/// created once at boot and stay `pending` while the gate is absent.
+pub fn start_watch(iii: Arc<IIIClient>, status: Arc<ApprovalGateStatus>) {
+    let engine = iii.clone();
     iii.register_function(
         WATCH_FN_ID,
-        RegisterFunction::new_async(move |event: WorkerLifecycleEvent| {
+        RegisterFunction::new_async(move |_event: WorkersChangedEvent| {
             let status = status.clone();
-            let on_present = on_present.clone();
+            let engine = engine.clone();
             async move {
-                handle_worker_event(&status, &on_present, &event);
+                refresh_presence(&engine, &status).await;
                 Ok::<_, Error>(WorkerLifecycleAck { ok: true })
             }
         })
-        .description("Internal: track approval-gate worker add/remove."),
+        .description("Internal: track approval-gate worker connect/disconnect."),
     );
 
-    tokio::spawn(async move {
-        for attempt in 1..=5 {
-            match iii.register_trigger(RegisterTriggerInput::new(
-                "worker".to_string(),
-                WATCH_FN_ID.to_string(),
-                json!({
-                    "operations": ["add", "remove"],
-                    "stages": ["done"]
-                }),
-            )) {
-                Ok(_) => {
-                    tracing::info!("subscribed to worker trigger for approval-gate presence");
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        attempt,
-                        error = %e,
-                        "failed to subscribe to worker trigger for approval-gate; retrying"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(attempt * 2)).await;
-                }
-            }
-        }
-        tracing::warn!(
-            "exhausted retries subscribing to worker trigger; \
-             approval-gate presence will not update at runtime"
-        );
-    });
+    // The observer lives as long as the worker's connection; dropping the
+    // handle does not dispose it.
+    iii.observe(
+        Source::function(ON_WORKERS_CHANGED_FN)
+            .filters(lifecycle_filters())
+            .deliver(Deliver::Output),
+        WATCH_FN_ID,
+    );
 }
 
-fn handle_worker_event(
-    status: &ApprovalGateStatus,
-    on_present: &Arc<dyn Fn() + Send + Sync>,
-    event: &WorkerLifecycleEvent,
-) {
-    if !is_approval_gate_event(event) || event.stage.as_deref() != Some("done") {
-        return;
-    }
-    match event.operation.as_deref() {
-        Some("add") => {
-            status.set_present(true);
-            tracing::info!("approval-gate connected");
-            on_present();
+/// Re-read the worker list and record whether the gate is in it. A failed
+/// read keeps the last known presence.
+async fn refresh_presence(iii: &IIIClient, status: &ApprovalGateStatus) {
+    match list_workers(iii).await {
+        Ok(workers) => {
+            apply_presence(status, has_approval_gate(&workers));
         }
-        Some("remove") => {
-            status.set_present(false);
-            tracing::info!("approval-gate disconnected — approval prompts disabled");
+        Err(e) => {
+            tracing::warn!(error = %e, "approval-gate presence refresh failed; keeping last state")
         }
-        _ => {}
     }
 }
 
-fn is_approval_gate_event(event: &WorkerLifecycleEvent) -> bool {
-    if let Some(w) = event.worker.as_deref() {
-        let lower = w.to_ascii_lowercase();
-        if lower == APPROVAL_GATE_WORKER_NAME || lower.contains(APPROVAL_GATE_WORKER_NAME) {
-            return true;
-        }
+/// Record `present`; returns whether it changed.
+fn apply_presence(status: &ApprovalGateStatus, present: bool) -> bool {
+    let was = status.present.swap(present, Ordering::Relaxed);
+    if was == present {
+        return false;
     }
-    if let Some(source) = &event.source {
-        if let Ok(text) = serde_json::to_string(source) {
-            if text
-                .to_ascii_lowercase()
-                .contains(APPROVAL_GATE_WORKER_NAME)
-            {
-                return true;
-            }
-        }
+    if present {
+        tracing::info!("approval-gate connected");
+    } else {
+        tracing::info!("approval-gate disconnected — approval prompts disabled");
     }
-    false
+    true
+}
+
+fn has_approval_gate(workers: &[EngineWorker]) -> bool {
+    workers
+        .iter()
+        .any(|w| w.name.as_deref() == Some(APPROVAL_GATE_WORKER_NAME))
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,7 +173,7 @@ struct EngineWorker {
 
 async fn list_workers(iii: &IIIClient) -> Result<Vec<EngineWorker>, Error> {
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::workers::list".into(),
             payload: json!({}),
             action: None,
@@ -220,6 +199,12 @@ mod tests {
         s
     }
 
+    fn worker(name: &str) -> EngineWorker {
+        EngineWorker {
+            name: Some(name.into()),
+        }
+    }
+
     #[test]
     fn is_available_requires_present_and_not_loading() {
         assert!(!is_approval_gate_available(&status_with(false, false)));
@@ -229,38 +214,38 @@ mod tests {
     }
 
     #[test]
-    fn matches_approval_gate_worker_name() {
-        let evt = WorkerLifecycleEvent {
-            worker: Some("approval-gate".into()),
-            ..Default::default()
-        };
-        assert!(is_approval_gate_event(&evt));
+    fn finds_the_approval_gate_by_name() {
+        assert!(has_approval_gate(&[
+            worker("harness"),
+            worker("approval-gate")
+        ]));
     }
 
     #[test]
-    fn matches_approval_gate_in_worker_substring() {
-        let evt = WorkerLifecycleEvent {
-            worker: Some("path/approval-gate".into()),
-            ..Default::default()
-        };
-        assert!(is_approval_gate_event(&evt));
+    fn ignores_unrelated_workers() {
+        assert!(!has_approval_gate(&[worker("harness")]));
+        assert!(!has_approval_gate(&[EngineWorker { name: None }]));
     }
 
     #[test]
-    fn ignores_unrelated_worker() {
-        let evt = WorkerLifecycleEvent {
-            worker: Some("harness".into()),
-            ..Default::default()
-        };
-        assert!(!is_approval_gate_event(&evt));
+    fn presence_changes_are_reported_once() {
+        let status = status_with(false, false);
+        assert!(apply_presence(&status, true));
+        assert!(status.is_available());
+        assert!(!apply_presence(&status, true));
+        assert!(apply_presence(&status, false));
+        assert!(!status.is_available());
     }
 
     #[test]
-    fn matches_approval_gate_in_source_json() {
-        let evt = WorkerLifecycleEvent {
-            source: Some(json!({ "name": "approval-gate" })),
-            ..Default::default()
-        };
-        assert!(is_approval_gate_event(&evt));
+    fn watch_selects_connections_metadata_and_disconnections() {
+        assert_eq!(
+            lifecycle_filters(),
+            json!({
+                "input.event": {
+                    "$in": ["worker_connected", "worker_metadata_updated", "worker_disconnected"]
+                }
+            })
+        );
     }
 }

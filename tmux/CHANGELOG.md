@@ -4,12 +4,11 @@
 
 ### Changed
 
-- **iii-sdk 0.25.0.** The worker builds against the 0.25 SDK. Console terminal calls
-  (`tmux::terminal::*`) take their caller from the invocation context the engine stamps
-  (`caller.worker_id`); the payload's `_caller_worker_id` is read only on an engine
-  without observe (0.24). A call from an observer activation is refused.
-  `tmux::changed` is still a trigger type, registered the 0.24 way, so existing
-  consumers see no change on either engine.
+- **iii-sdk 0.26.0.** The worker builds against the observe v2 SDK and invokes functions
+  with `call`. Console terminal calls (`tmux::terminal::*`) take their caller from the
+  invocation context the engine stamps (`caller.worker_id`); the payload's
+  `_caller_worker_id` is read only on an engine without observe (0.24). A call from an
+  observer activation is refused.
 
 ### Added
 
@@ -52,8 +51,8 @@
 - **Agent session titles.** An agent's `title` is the pane title it set (Claude Code's
   conversation topic) without the status glyph in front, or null when the pane still
   shows tmux's default title, the host name.
-- **Live feed.** The `tmux::changed` trigger type pushes the whole overview when bound
-  and whenever it changes.
+- **Live feed.** `tmux::on-changed`, a private function observed with `iii.observe`,
+  sends the whole overview to each new observer and is called again whenever it changes.
 - **Console page.** A sessions/windows tree with agent and compose badges, a Ports view,
   dialogs to create and rename, and a terminal that is a real tmux client: keystrokes go
   straight to tmux and the screen updates as tmux draws it.

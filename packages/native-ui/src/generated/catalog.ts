@@ -118,7 +118,7 @@ export const IN = {
   mount: 6,
   unmount: 7,
   response: 8,
-  trigger: 9,
+  observed: 9,
 } as const
 
 /** Request methods (design §5.4). */

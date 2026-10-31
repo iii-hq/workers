@@ -27,7 +27,7 @@ import {
   usePage,
 } from '@iii-dev/native-ui'
 import { displayUrl, tabTitle } from '../address'
-import { browser, listen, type Navigated, TRIGGER, type Visit } from '../api'
+import { browser, EVENT, forSession, listen, type Navigated, type Visit } from '../api'
 import { clock, readable } from '../format'
 import { sessionOf } from '../state'
 import { copyMenu } from './console'
@@ -92,7 +92,7 @@ export function HistoryPage(props: { params: JsonObject }) {
   // A navigation of the tab adds a visit.
   createEffect(() => {
     if (!iii.env.visible) return
-    const off = listen<Navigated>(TRIGGER.navigated, { session_id: session }, (p) => {
+    const off = listen<Navigated>(EVENT.navigated, forSession(session), (p) => {
       if (p.session_id === session) void load(untrack(query))
     })
     onCleanup(off)

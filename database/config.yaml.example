@@ -16,12 +16,12 @@ databases:
       max: 10
       idle_timeout_ms: 30000
       acquire_timeout_ms: 5000
-  # Native change capture: `database::row-changed` fires for committed writes
-  # from ANY client (psql, other processes), not just this worker. Bindings
+  # Native change capture: `database::on-row-changed` reports committed writes
+  # from ANY client (psql, other processes), not just this worker. Observers
   # must name a table. Default (`capture: statements`) only reports writes
   # made through this worker.
-  #   - postgres: triggers + LISTEN/NOTIFY (role needs DDL on watched tables)
-  #   - sqlite (file-backed only): triggers + changelog, fs-watch wake-up
+  #   - postgres: database triggers + LISTEN/NOTIFY (role needs DDL on watched tables)
+  #   - sqlite (file-backed only): database triggers + changelog, fs-watch wake-up
   #   - mysql: binlog replication stream; nothing installed, but the user
   #     needs: GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.*
   # analytics:
