@@ -9,7 +9,10 @@
 //! whose metadata argument is the observer's, and resolves to its result; a
 //! call through an observer that names metadata is refused before anything
 //! is sent, and `metadata: null` is no metadata on every call; the removed
-//! hook runs on dispose, and never for the rejected observer.
+//! hook runs on dispose, and never for the rejected observer. A guest's
+//! observe the engine refuses (another connection holds its id) is that
+//! observer's final answer: its dispose resolves at once, and the guest's
+//! next observe under the id is the one calls reach.
 //!
 //! The engine is `III_ENGINE_WS_URL` when set; otherwise `III_ENGINE_BIN`
 //! (or an `iii` 0.26+ on PATH) is spawned with an engine-only config on
@@ -410,6 +413,66 @@ async fn guest_hooks_see_accept_reject_and_call_through_observers() {
             .contains(accepted.id()),
         "{refused_call}"
     );
+
+    // The guest observes an id another connection holds: the engine refuses
+    // it with `OBSERVER_ID_CONFLICT`, and that refusal is the observer's
+    // final answer, so its dispose waits on nothing. Once the holder lets
+    // the id go, the guest's next observe under it is the observer the
+    // source's calls reach.
+    const HELD: &str = "probe::held";
+    consumer.register_function(
+        "test::held-source",
+        RegisterFunction::new(|payload: Value| Ok::<_, iii_sdk::Error>(payload)),
+    );
+    let held = consumer.observe_with(
+        Source::function("test::held-source"),
+        "test::target",
+        ObserverOptions::default().id(HELD),
+    );
+    timeout(Duration::from_secs(15), held.ready())
+        .await
+        .expect("the holder's observer never became active")
+        .expect("the holder's observer was refused");
+    let observe_held = format!(
+        "globalThis.held = await iii.observe('test::held-source', 'test::target', \
+         {{ id: '{HELD}' }}); return globalThis.held.id"
+    );
+    assert_eq!(eval(&node, &runtime_id, &observe_held).await, json!(HELD));
+    sleep(Duration::from_millis(500)).await;
+    let elapsed = eval(
+        &node,
+        &runtime_id,
+        "const started = Date.now(); await globalThis.held.dispose(); \
+         return Date.now() - started",
+    )
+    .await;
+    let elapsed = elapsed.as_u64().expect("milliseconds");
+    assert!(
+        elapsed < 1_000,
+        "the refused observer's dispose took {elapsed} ms"
+    );
+    held.dispose().await.expect("dispose the holder's observer");
+    assert_eq!(eval(&node, &runtime_id, &observe_held).await, json!(HELD));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        consumer
+            .call(CallRequest {
+                function_id: "test::held-source".into(),
+                payload: json!({ "n": 4 }),
+                action: None,
+                timeout_ms: Some(5_000),
+            })
+            .await
+            .expect("call the source");
+        if let Ok(Some((envelope, _))) = timeout(Duration::from_millis(500), reached.recv()).await {
+            assert_eq!(envelope["observer_id"], HELD, "{envelope}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no call of the source reached the guest's second observer"
+        );
+    }
 
     node.teardown_runtime(&runtime_id)
         .await
