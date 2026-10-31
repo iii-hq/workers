@@ -57,7 +57,7 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         for frontend in worker["artifact"].get("frontends", [])
     ]
     assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 53
-    assert len(frontends) == 57
+    assert len(frontends) == 59
     for frontend in frontends:
         assert set(frontend) == {
             "workspace_root", "source_path", "runtime", "package_manager", "lockfile",
@@ -73,9 +73,7 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
 
 
 def test_rust_release_declares_every_frontend_its_build_compiles():
-    # PR CI finds ui/ and web/ bundles on disk and installs pnpm for them; the
-    # release build installs pnpm only for declared frontends. An undeclared
-    # bundle passes every PR and then panics in build.rs at release time.
+    # Release builds reuse only declared frontend outputs with SKIP_UI_BUILD.
     def build_crates(crate: Path, seen: set[Path]) -> set[Path]:
         if crate not in seen:
             seen.add(crate)
@@ -95,7 +93,7 @@ def test_rust_release_declares_every_frontend_its_build_compiles():
         compiled = {
             (crate / bundle).relative_to(ROOT).as_posix()
             for crate in build_crates((ROOT / worker["source"]["path"]).resolve(), set())
-            for bundle in ("ui", "web")
+            for bundle in ("ui", "web", "native-ui")
             if (crate / bundle / "package.json").is_file()
         }
         declared = {frontend["source_path"] for frontend in artifact.get("frontends", [])}
