@@ -1341,7 +1341,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llm-router"
-version = "1.4.41"
+version = "1.4.42"
 dependencies = [
  "async-trait",
  "clap",
