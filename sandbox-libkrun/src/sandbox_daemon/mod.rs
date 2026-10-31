@@ -84,10 +84,12 @@ Errors return JSON inside error.message, which may follow a prefix such as
   const detail = JSON.parse(err.message.slice(err.message.indexOf("{")));
   // detail.code, detail.type, detail.message, detail.docs_url
   // detail.fix       ready-to-send next-call payload (null if not auto-fixable)
-  // detail.fix_note  one-liner explaining why fix is null
+  // detail.fix_note  when present, how to use fix or why it is null
   // detail.retryable bool
 
-If detail.fix is non-null, your next call is fn(detail.fix).
+If detail.fix is non-null, merge its fields into your original request and
+resubmit; do not call fn(detail.fix) on its own. Filesystem errors other than a
+missing parent carry no fix and no fix_note: the message names the path.
 
 # S-code map
 
