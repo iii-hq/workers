@@ -8,8 +8,8 @@ use std::sync::Arc;
 use storage::config::{redact_url, WorkerConfig};
 use storage::configuration;
 use storage::handlers::{
-    buckets, delete_object, get_object, head_object, list_buckets, list_objects, parse_request,
-    presign_post, presign_url, put_object, schema_of, test_bucket, AppState,
+    buckets, delete_object, get_object, head_object, list_buckets, list_objects, multipart,
+    parse_request, presign_post, presign_url, put_object, schema_of, test_bucket, AppState,
 };
 use storage::triggers::dispatcher::EngineDispatcher;
 use storage::triggers::handler::{ObjectCreatedHandler, ObjectDeletedHandler};
@@ -303,6 +303,77 @@ async fn main() -> Result<()> {
             .description(
                 "Fetch object metadata (size, ETag, content-type, last-modified) without downloading the body.",
             ),
+        );
+    }
+
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::createMultipartUpload",
+            RegisterFunction::new_async(move |req: serde_json::Value| {
+                let st = st.clone();
+                async move {
+                    let req: multipart::CreateReq = parse_request(req)?;
+                    multipart::create(&st, req).await.map_err(Error::Handler)
+                }
+            })
+            .request_format(schema_of::<multipart::CreateReq>()),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::presignUploadPart",
+            RegisterFunction::new_async(move |req: serde_json::Value| {
+                let st = st.clone();
+                async move {
+                    let req: multipart::PresignReq = parse_request(req)?;
+                    multipart::presign(&st, req).await.map_err(Error::Handler)
+                }
+            })
+            .request_format(schema_of::<multipart::PresignReq>()),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::listMultipartParts",
+            RegisterFunction::new_async(move |req: serde_json::Value| {
+                let st = st.clone();
+                async move {
+                    let req: multipart::Identity = parse_request(req)?;
+                    multipart::list(&st, req).await.map_err(Error::Handler)
+                }
+            })
+            .request_format(schema_of::<multipart::Identity>()),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::completeMultipartUpload",
+            RegisterFunction::new_async(move |req: serde_json::Value| {
+                let st = st.clone();
+                async move {
+                    let req: multipart::CompleteReq = parse_request(req)?;
+                    multipart::complete(&st, req).await.map_err(Error::Handler)
+                }
+            })
+            .request_format(schema_of::<multipart::CompleteReq>()),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::abortMultipartUpload",
+            RegisterFunction::new_async(move |req: serde_json::Value| {
+                let st = st.clone();
+                async move {
+                    let req: multipart::Identity = parse_request(req)?;
+                    multipart::abort(&st, req).await.map_err(Error::Handler)
+                }
+            })
+            .request_format(schema_of::<multipart::Identity>()),
         );
     }
 
