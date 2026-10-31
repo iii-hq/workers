@@ -229,7 +229,10 @@ The @engine scenarios register their own session-manager surface on the engine
 they reach (`III_ENGINE_WS_URL`, default `ws://127.0.0.1:49134`), so they skip
 an engine that already runs session-manager, or whose workers or functions
 cannot be listed, rather than write into its store: point them at a bare engine
-on a free port.
+on a free port. The check is repeated before every @engine scenario (a
+session-manager that takes the ids after an engine restart skips the rest of the
+run); a takeover in the middle of a scenario can still reach the rest of that
+scenario.
 
 The BDD suite under [`tests/features/`](tests/features) is the
 behavioural contract: @pure scenarios drive the production handlers

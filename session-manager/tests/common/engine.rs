@@ -10,17 +10,20 @@
 //! into its real store.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::runtime::{IIIConnectionState, WorkerMetadata};
+use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions, WorkerIdentityMode};
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
-use super::engine_guard::{harness_worker_name, skip_after_registering, skip_before_registering};
+use super::engine_guard::{
+    harness_worker_name, skip_after_probe, skip_after_registering, skip_before_registering,
+};
+use super::workers::{wait_until_routable, LAST_REGISTERED};
 
 /// iii's default port: `cargo test` finds a developer's bare `iii`
 /// without configuration. That is also where an everyday engine runs
@@ -46,7 +49,7 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
         &url,
         InitOptions {
             metadata: Some(WorkerMetadata {
-                name: harness_worker_name(std::process::id()),
+                name: harness(),
                 ..WorkerMetadata::default()
             }),
             identity: WorkerIdentityMode::Explicit,
@@ -62,33 +65,25 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
             break;
         }
     }
-    // Never connected: no engine there. Connected but unable to list its
-    // workers: an engine that cannot be inspected (the guard skips it).
-    if workers.is_err() && iii.get_connection_state() != IIIConnectionState::Connected {
-        return skip(
-            iii,
-            format!(
-                "iii engine not reachable at {url}; \
-                 set III_ENGINE_WS_URL or start `iii` to enable engine-bound BDD scenarios"
-            ),
-        )
-        .await;
+    let workers = workers.map_err(|e| e.to_string());
+    if let Some(why) = skip_after_probe(&url, iii.get_connection_state(), &workers) {
+        return skip(&iii, why);
     }
 
     // Nothing is registered yet: decide before `register_all` puts a
     // second session::* surface next to a real one.
-    let workers = workers.map_err(|e| e.to_string());
     let functions = list_functions(&iii).await;
     if let Some(why) = skip_before_registering(&url, &workers, &functions) {
-        return skip(iii, why).await;
+        return skip(&iii, why);
     }
     Some(iii)
 }
 
-/// Report why the @engine scenarios soft-skip and drop the connection.
-async fn skip(iii: Arc<IIIClient>, why: String) -> Option<Arc<IIIClient>> {
+/// Report why the @engine scenarios soft-skip and close the connection
+/// (joined, so the harness's registrations are gone when this returns).
+fn skip(iii: &IIIClient, why: String) -> Option<Arc<IIIClient>> {
     eprintln!("[skip] {why}");
-    iii.shutdown_async().await;
+    iii.shutdown();
     None
 }
 
@@ -127,6 +122,27 @@ async fn list_functions(iii: &IIIClient) -> Result<Value, String> {
     outcome
 }
 
+/// The engine listing once `function_id` appears in it (registered by
+/// anyone), or why it did not within 10 s.
+async fn wait_until_listed(iii: &IIIClient, function_id: &str) -> Result<Value, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let outcome = list_functions(iii).await;
+        let listed = outcome.as_ref().is_ok_and(|listing| {
+            listing["functions"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|f| f["function_id"] == function_id))
+        });
+        if listed {
+            return outcome;
+        }
+        if std::time::Instant::now() >= deadline {
+            return outcome.and_then(|_| Err(format!("{function_id} was not listed within 10 s")));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Get-or-init the shared engine handle, registering the production
 /// session-manager surface in-process on first success.
 pub async fn get_or_init() -> Option<Arc<IIIClient>> {
@@ -134,18 +150,52 @@ pub async fn get_or_init() -> Option<Arc<IIIClient>> {
         .get_or_init(|| async {
             let iii = try_connect_raw().await?;
             super::workers::register_all(&iii).await;
-            // Again, now that the surface is in: a session-manager that
-            // (re)connected since the first check owns the ids it got to
-            // first, and the engine refuses ours without failing the run.
-            let harness = harness_worker_name(std::process::id());
-            let functions = list_functions(&iii).await;
-            if let Some(why) = skip_after_registering(&ws_url(), &harness, &functions) {
-                return skip(iii, why).await;
+            // Again, now that the surface is in, and before any session::*
+            // call: a session-manager that (re)connected since the first
+            // check owns the ids it got to first, and the engine refuses
+            // ours without failing the run.
+            let functions = wait_until_listed(&iii, LAST_REGISTERED).await;
+            if let Some(why) = skip_after_registering(&ws_url(), &harness(), &functions) {
+                return skip(&iii, why);
+            }
+            if let Err(why) = wait_until_routable(&iii, LAST_REGISTERED).await {
+                return skip(&iii, why);
             }
             Some(iii)
         })
         .await
         .clone()
+}
+
+/// Set once a check before a scenario found `session::*` functions that
+/// are not the harness's: the engine is withdrawn for the rest of the run.
+static WITHDRAWN: OnceLock<()> = OnceLock::new();
+
+/// The engine handle for one scenario. For an @engine scenario the
+/// ownership check runs again first: an engine restart makes the SDK
+/// replay the harness's registrations, a fresh race a real session-manager
+/// can win (the engine then refuses ours, and the SDK only logs it). On a
+/// failed check every later scenario gets `None` (soft skip). A takeover
+/// in the middle of a scenario still reaches the rest of that scenario.
+pub async fn for_scenario(engine_scenario: bool) -> Option<Arc<IIIClient>> {
+    let iii = get_or_init().await?;
+    if WITHDRAWN.get().is_some() {
+        return None;
+    }
+    if engine_scenario {
+        let functions = list_functions(&iii).await;
+        if let Some(why) = skip_after_registering(&ws_url(), &harness(), &functions) {
+            if WITHDRAWN.set(()).is_ok() {
+                skip(&iii, why);
+            }
+            return None;
+        }
+    }
+    Some(iii)
+}
+
+fn harness() -> String {
+    harness_worker_name(std::process::id())
 }
 
 /// Register an engine-side recorder function that stashes every payload

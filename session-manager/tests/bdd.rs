@@ -18,10 +18,17 @@ async fn main() {
 
     SessionWorld::cucumber()
         .max_concurrent_scenarios(1)
-        .before(|_feature, _rule, _scenario, world| {
+        .before(|feature, rule, scenario, world| {
+            // Tags are stored without the `@`.
+            let engine_scenario = feature
+                .tags
+                .iter()
+                .chain(rule.iter().flat_map(|r| &r.tags))
+                .chain(&scenario.tags)
+                .any(|tag| tag == "engine");
             Box::pin(async move {
                 world.reset_pure();
-                world.engine = common::engine::get_or_init().await;
+                world.engine = common::engine::for_scenario(engine_scenario).await;
             })
         })
         .run_and_exit("tests/features")

@@ -11,15 +11,18 @@
 //! only if the engine says so plainly: a listing that fails or comes back
 //! in another shape skips them too (fail closed).
 //!
-//! The decision is taken twice: before the harness registers anything,
-//! and again once it has, when every `session::*` function must be the
-//! harness's own (a session-manager that reconnected in between, e.g.
-//! across a compose restart, would own the ids instead).
+//! The decision is taken before the harness registers anything, again
+//! once it has, and before every @engine scenario: each time after the
+//! first, every `session::*` function must be the harness's own (a
+//! session-manager that (re)connected in between, e.g. across an engine
+//! restart that makes the harness replay its registrations, would own the
+//! ids instead).
 //!
 //! Kept pure (engine listings in, a verdict out) so it is unit-tested
 //! without an engine, in `tests/engine_guard.rs`: the cucumber binary has
 //! no test harness and never runs `#[test]`s.
 
+use iii_sdk::runtime::IIIConnectionState;
 use serde_json::Value;
 
 /// The name session-manager connects with (`worker_metadata` in
@@ -42,6 +45,33 @@ pub fn harness_worker_name(pid: u32) -> String {
     format!("session-manager-bdd:{pid}")
 }
 
+/// After the reachability probe (`engine::workers::list`, retried while
+/// the client connects): why to skip now, or `None` to go on. A client
+/// that is connected, or that the engine refused (`Failed`), reached an
+/// engine it cannot inspect; any other state means no engine answered.
+pub fn skip_after_probe(
+    url: &str,
+    state: IIIConnectionState,
+    workers: &Result<Value, String>,
+) -> Option<String> {
+    let Err(e) = workers else {
+        return None;
+    };
+    Some(match state {
+        IIIConnectionState::Connected => {
+            cannot_tell(url, &format!("engine::workers::list failed ({e})"))
+        }
+        IIIConnectionState::Failed => cannot_tell(
+            url,
+            &format!("the engine refused the harness's connection ({e})"),
+        ),
+        _ => format!(
+            "iii engine not reachable at {url}; \
+             set III_ENGINE_WS_URL or start `iii` to enable engine-bound BDD scenarios"
+        ),
+    })
+}
+
 /// Before the harness registers anything: why the @engine scenarios must
 /// skip on the engine at `url`, or `None` to run them. `workers` and
 /// `functions` are the outcomes of `engine::workers::list` and
@@ -53,11 +83,16 @@ pub fn skip_before_registering(
     workers: &Result<Value, String>,
     functions: &Result<Value, String>,
 ) -> Option<String> {
-    let workers = match listing(workers, "engine::workers::list", "workers") {
+    let workers = match listing(workers, "engine::workers::list", "workers", "name") {
         Ok(list) => list,
         Err(why) => return Some(cannot_tell(url, &why)),
     };
-    let functions = match listing(functions, "engine::functions::list", "functions") {
+    let functions = match listing(
+        functions,
+        "engine::functions::list",
+        "functions",
+        "function_id",
+    ) {
         Ok(list) => list,
         Err(why) => return Some(cannot_tell(url, &why)),
     };
@@ -84,39 +119,54 @@ pub fn skip_before_registering(
     })
 }
 
-/// After the harness registered its surface as worker `harness`: why the
-/// @engine scenarios must skip, or `None` when every `session::*` function
-/// on the engine is the harness's own.
+/// Once the harness registered its surface as worker `harness` (and again
+/// before every @engine scenario): why the @engine scenarios must skip
+/// from here on, or `None` when every `session::*` function on the engine
+/// is the harness's own.
 pub fn skip_after_registering(
     url: &str,
     harness: &str,
     functions: &Result<Value, String>,
 ) -> Option<String> {
-    let functions = match listing(functions, "engine::functions::list", "functions") {
+    let functions = match listing(
+        functions,
+        "engine::functions::list",
+        "functions",
+        "function_id",
+    ) {
         Ok(list) => list,
         Err(why) => return Some(cannot_tell(url, &why)),
     };
     let foreign = session_functions(functions, |worker| worker != Some(harness));
     describe(&foreign).map(|served| {
         format!(
-            "a session-manager registered on the iii engine at {url} while the BDD harness was \
-             starting ({served}), so the scenarios' calls would reach it and write into its real \
-             store: every @engine scenario is skipped. {RUN_THEM}"
+            "another worker serves session::* functions on the iii engine at {url} next to the \
+             BDD harness ({served}): a session-manager (re)connected after the harness's first \
+             check, so the scenarios' calls could reach it and write into its real store. Every \
+             @engine scenario from here on is skipped. {RUN_THEM}"
         )
     })
 }
 
-/// The array under `key`, or why the listing cannot be trusted.
+/// The array under `key`, every row of it carrying a string `field`, or
+/// why the listing cannot be trusted.
 fn listing<'a>(
     outcome: &'a Result<Value, String>,
     function: &str,
     key: &str,
+    field: &str,
 ) -> Result<&'a Vec<Value>, String> {
-    match outcome {
-        Err(e) => Err(format!("{function} failed ({e})")),
-        Ok(value) => value[key]
-            .as_array()
-            .ok_or_else(|| format!("{function} answered without a `{key}` list")),
+    let value = outcome
+        .as_ref()
+        .map_err(|e| format!("{function} failed ({e})"))?;
+    let rows = value[key]
+        .as_array()
+        .ok_or_else(|| format!("{function} answered without a `{key}` list"))?;
+    match rows.iter().find(|row| !row[field].is_string()) {
+        Some(row) => Err(format!(
+            "{function} listed an entry without a string `{field}`: {row}"
+        )),
+        None => Ok(rows),
     }
 }
 
