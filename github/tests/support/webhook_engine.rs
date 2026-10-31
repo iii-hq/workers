@@ -13,14 +13,17 @@
 //! new one. An id another live connection holds is refused with
 //! `OBSERVER_ID_CONFLICT`, and keeps nothing for the refused connection: an
 //! `unobserve` from any connection but the observing one is ignored.
-//! iii's delivery of a call: the host reports the observers it matched in
-//! `invocationresult.observed`, and each active one's target is called with
-//! what the observer's `deliver` names (the output, the input, or the
-//! envelope), as [`Engine::activations`] records.
+//! iii's delivery of a routed call, evaluated here as the engine does: the
+//! active observers of the function (those the host's match hook named in
+//! `invocationresult.matched`, when it sends one; none when the host's
+//! deliver hook delivered the call, `invocationresult.delivered`) whose `on`
+//! accepts the outcome and whose filters match the call; each one's target
+//! is called with what the observer's `deliver` names (the output, the
+//! input, or the envelope), as [`Engine::activations`] records.
 //! Registered function handlers and observer hooks run on their real SDK
 //! connections.
 use futures::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, Doc, Filter, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -66,6 +69,8 @@ struct Observer {
     state: &'static str,
     /// Whether `observeradded` went to the function's host.
     announced: bool,
+    /// Creation order: the order iii's delivery evaluates observers in.
+    seq: u64,
 }
 /// An invocation forwarded to a host, until it answers.
 struct Pending {
@@ -82,6 +87,8 @@ struct State {
     functions: Mutex<HashMap<Key, Host>>,
     observers: Mutex<HashMap<String, Observer>>,
     revision: AtomicU64,
+    /// The next observer's `seq`.
+    observer_seq: AtomicU64,
     pending: Mutex<HashMap<String, Pending>>,
     /// Every activation of an observer by iii's delivery, with its answer.
     activations: Mutex<Vec<Value>>,
@@ -494,11 +501,57 @@ fn observed_value(mut value: Value) -> Value {
     value
 }
 
-/// iii's delivery of the call `call`, answered with `answer`: each observer
-/// its host matched (`observed`) that is active gets an activation, which
-/// calls its target with the observer's metadata and what its `deliver`
-/// names: the call's output, its input, or the envelope.
-fn activate(state: &State, call: &Pending, answer: &Value, observed: &[String]) {
+/// The active observers of `call`'s function that its delivery activates, in
+/// creation order: none when the host's deliver hook delivered the call;
+/// among those the host's match hook matched (`matched`), or among all of
+/// them, the ones whose `on` accepts the outcome and whose filters match
+/// `doc`.
+fn evaluate(
+    state: &State,
+    call: &Pending,
+    matched: Option<&[String]>,
+    delivered: bool,
+    success: bool,
+    doc: &Doc<'_>,
+) -> Vec<String> {
+    if delivered {
+        return Vec::new();
+    }
+    let observers = state.observers.lock().unwrap();
+    let mut selected: Vec<(u64, String)> = observers
+        .iter()
+        .filter(|(id, o)| {
+            o.function == call.function
+                && o.state == "active"
+                && matched.is_none_or(|ids| ids.iter().any(|m| m == *id))
+        })
+        .filter(|(_, o)| match o.view["on"].as_str().unwrap_or("success") {
+            "success" => success,
+            "error" => !success,
+            "complete" => true,
+            _ => false,
+        })
+        .filter(|(_, o)| match &o.view["filters"] {
+            Value::Null => true,
+            filters => Filter::parse(filters).is_ok_and(|filter| filter.matches(doc)),
+        })
+        .map(|(id, o)| (o.seq, id.clone()))
+        .collect();
+    selected.sort();
+    selected.into_iter().map(|(_, id)| id).collect()
+}
+
+/// iii's delivery of the call `call`, answered with `answer` (with its
+/// `matched` and `delivered`): each observer [`evaluate`] selects gets an
+/// activation, which calls its target with the observer's metadata and what
+/// its `deliver` names: the call's output, its input, or the envelope.
+fn activate(
+    state: &State,
+    call: &Pending,
+    answer: &Value,
+    matched: Option<&[String]>,
+    delivered: bool,
+) {
     let input = observed_value(call.input.clone());
     let error = answer.get("error").filter(|e| !e.is_null()).cloned();
     let output = answer
@@ -506,7 +559,14 @@ fn activate(state: &State, call: &Pending, answer: &Value, observed: &[String]) 
         .filter(|_| error.is_none())
         .cloned()
         .map(observed_value);
-    for id in observed {
+    let doc = Doc {
+        input: Some(&input),
+        output: output.as_ref(),
+        error: error.as_ref(),
+        ..Doc::default()
+    };
+    let observed = evaluate(state, call, matched, delivered, error.is_none(), &doc);
+    for id in &observed {
         let observer = state.observers.lock().unwrap().get(id).and_then(|o| {
             (o.state == "active").then(|| {
                 (
@@ -648,6 +708,7 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                     observing: tx.clone(),
                     state: "pending",
                     announced: false,
+                    seq: state.observer_seq.fetch_add(1, Ordering::SeqCst),
                 },
             );
             let _ = tx.send(json!({"type":"observeresult", "id":id, "state":"pending"}));
@@ -683,12 +744,18 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
             let Some(call) = state.pending.lock().unwrap().remove(&invocation_id) else {
                 return;
             };
-            // The engine activates `observed` itself and strips it.
+            // The engine evaluates the call's observers itself and strips
+            // `matched` and `delivered`.
             let mut frame = frame;
-            let observed: Vec<String> = frame
-                .as_object_mut()
-                .and_then(|result| result.remove("observed"))
-                .and_then(|observed| serde_json::from_value(observed).ok())
+            let fields = frame.as_object_mut();
+            let (matched, delivered) = fields
+                .map(|result| {
+                    let matched: Option<Vec<String>> = result
+                        .remove("matched")
+                        .and_then(|matched| serde_json::from_value(matched).ok());
+                    let delivered = result.remove("delivered") == Some(Value::Bool(true));
+                    (matched, delivered)
+                })
                 .unwrap_or_default();
             match &call.caller {
                 Some(caller) => {
@@ -706,7 +773,7 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                     }
                 }
             }
-            activate(state, &call, &frame, &observed);
+            activate(state, &call, &frame, matched.as_deref(), delivered);
         }
         "invokefunction" => {
             let builtin = match text("function_id").as_str() {

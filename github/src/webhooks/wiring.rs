@@ -516,13 +516,14 @@ pub(super) fn observed_sources(
 /// as long each time up to [`REOBSERVE_MAX_SECS`]; once the observer is
 /// active, the error it recorded is cleared.
 ///
-/// The SDK replays a refused observer until it is disposed or another
-/// observe under its id takes its place. An observer its function's host
+/// The SDK replays a refused observer until it is disposed, and its handle
+/// holds the observer's id until `dispose` is called, so every refused
+/// observer is disposed before the wait. An observer its function's host
 /// refused (`HTTP_ROUTE_CONFLICT`) stays with the engine, which confirms its
-/// disposal at once, so it is disposed before the wait. The engine keeps
-/// nothing for an id it refused itself ([`ID_HELD_BY_ANOTHER_CONNECTION`])
-/// and never confirms an `unobserve` of it, so that observer is not
-/// disposed: the next observe uses its id and takes its place.
+/// disposal at once. The engine keeps nothing for an id it refused itself
+/// ([`ID_HELD_BY_ANOTHER_CONNECTION`]) and never confirms an `unobserve` of
+/// it: that disposal runs on a task of its own through its 5 s wait, and the
+/// next observe uses the same id, which is free once `dispose` starts.
 async fn keep_observed(
     s: Arc<Service>,
     source: Source,
@@ -583,11 +584,13 @@ async fn keep_observed(
             return;
         }
         if code == ID_HELD_BY_ANOTHER_CONNECTION {
-            // Its `dispose` would wait 5 s for a confirmation the engine
-            // never sends. The next observe, under the same id, replaces it
-            // in the SDK; with no disposal of it pending, nothing forgets
-            // that id after the new observer has it.
+            // Its `dispose` waits 5 s for a confirmation the engine never
+            // sends; the id is free as soon as it starts, well within the
+            // wait below, and the next observe uses that id.
             options = options.id(handle.id());
+            tokio::spawn(async move {
+                let _ = handle.dispose().await;
+            });
         } else {
             let _ = handle.dispose().await;
         }
