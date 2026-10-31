@@ -142,4 +142,21 @@ settings action or with `configuration::set`.
 | `tmux::changed` | Once when bound, then whenever sessions, windows, panes, agent states, compose stacks or listening ports change | `{ sessions, ports }` — the same shapes `tmux::sessions::list` and `tmux::ports::list` return |
 
 Bind it with `config: {}`. The worker only polls tmux while at least one
-binding exists.
+binding or observer exists.
+
+## Observable functions (iii 0.25)
+
+| Function | Observe with args | Each observer receives |
+|---|---|---|
+| `tmux::on-changed` | `{}` (the `tmux::changed` config: no options) | The same `{ sessions, ports }` overview a `tmux::changed` binding gets: once right after the observer is added, then whenever it changes |
+
+```ts
+await iii.observe({ function_id: 'tmux::on-changed', args: {} }, 'my-worker::on-tmux')
+```
+
+Observers and `tmux::changed` bindings share one subscriber set and one poll
+loop, so both see every change. Changes come only from the worker: invoking
+`tmux::on-changed` directly is refused with `FORBIDDEN`. On a 0.24 engine the
+function is a plain function and the trigger type carries everything;
+`tmux::changed` stays registered on 0.24 and 0.25 engines, so existing
+bindings keep working unchanged.

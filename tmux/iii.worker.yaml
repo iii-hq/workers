@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: tmux
 tags: [tmux, terminal, multiplexer, sessions, agents, ports, console]
-description: tmux as an iii worker — list, create, rename and kill sessions and windows, see which pane runs Claude Code or Codex (working, waiting for you, idle), which runs `iii compose` and every listening port by process and pane, plus a Console page whose terminal is a live tmux client.
+description: tmux as an iii worker — list, create, rename and kill sessions and windows, see which pane runs Claude Code or Codex (working, waiting for you, idle), which runs `iii compose` and every listening port by process and pane, plus a Console page whose terminal is a live tmux client; observe tmux::on-changed (or bind tmux::changed) for the live overview.
 
 # tmux is POSIX-only; the PTY and the process/port scanners are Unix code.
 targets:
