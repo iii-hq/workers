@@ -146,7 +146,11 @@ connection with no RBAC session, so the proxy gates every observe frame:
   prefix; a call through that observer reaches the target with the payload
   as the host sent it. A refusal of an `observe` under an id whose earlier
   `observe` waits for the engine's answer goes out right after that answer,
-  so the worker hears the answers in the order it sent the observes.
+  so the worker hears the answers in the order it sent the observes. Each
+  `observeresult` answers the oldest unanswered `observe` under its id, and a
+  refusal is that `observe`'s final answer. An observer is the connection's
+  once the engine accepts it, unless the connection's `unobserve` of the id
+  followed its `observe`.
 - **Hosting.** `functionregistered`, `observeradded`, `observerremoved`,
   `observerack`, `invocationsobserved` and `localinvocationstats` pass for the
   functions the connection registered, with the session prefix removed toward

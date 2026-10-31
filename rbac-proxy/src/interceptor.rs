@@ -197,7 +197,9 @@ struct ObserverBook {
     /// each, in the order it reads them, and the SDK gives each answer to the
     /// oldest observe under the id with none: a worker that disposes an
     /// observer observes again under its id at once, so an id can have
-    /// several.
+    /// several. An answer ends its entry, a refusal included: the engine
+    /// stores nothing for a refused observe, and the next answer under the id
+    /// is the next entry's.
     requested: HashMap<String, VecDeque<Requested>>,
     /// Observers this connection created and the engine accepted, with the
     /// same value.
@@ -206,9 +208,16 @@ struct ObserverBook {
 
 /// An `observe` of this connection that has no answer yet.
 enum Requested {
-    /// Forwarded to the engine: whether its activations carry the `Observed`
-    /// envelope.
-    Forwarded(bool),
+    /// Forwarded to the engine.
+    Forwarded {
+        /// Whether its activations carry the `Observed` envelope.
+        envelope: bool,
+        /// An `unobserve` of the id followed it to the engine. The engine
+        /// reads that `unobserve` after this `observe`, so it disposes the
+        /// observer this `observe` creates (or ignores it, for a refused
+        /// one): an acceptance makes nothing this connection's.
+        unobserved: bool,
+    },
     /// Refused by the proxy while an earlier observe under the id waits for
     /// the engine's answer: the refusal, which goes out right after that
     /// answer, so the worker hears the answers in the order it sent the
@@ -501,10 +510,20 @@ impl Interceptor {
             }
             "observe" => self.on_observe(v).await,
             "unobserve" => {
-                // The engine disposes only an observer this connection owns.
-                // It still answers every observe sent before this frame.
+                // The engine disposes only an observer this connection owns,
+                // and ignores an id it does not hold (a refused observe's).
+                // It still answers every observe sent before this frame; an
+                // acceptance among those answers is disposed by this frame.
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
-                    self.observers.lock().await.created.remove(id);
+                    let mut book = self.observers.lock().await;
+                    book.created.remove(id);
+                    if let Some(queue) = book.requested.get_mut(id) {
+                        for requested in queue.iter_mut() {
+                            if let Requested::Forwarded { unobserved, .. } = requested {
+                                *unobserved = true;
+                            }
+                        }
+                    }
                 }
                 DownstreamAction::Forward(v.to_string())
             }
@@ -713,7 +732,10 @@ impl Interceptor {
             .requested
             .entry(id)
             .or_default()
-            .push_back(Requested::Forwarded(envelope));
+            .push_back(Requested::Forwarded {
+                envelope,
+                unobserved: false,
+            });
         DownstreamAction::Forward(v.to_string())
     }
 
@@ -1289,7 +1311,9 @@ impl Interceptor {
                 self.strip_field(&mut v, "function_id");
                 UpstreamAction::Forward(v.to_string())
             }
-            // The engine's answer to this connection's `observe`.
+            // The engine's answer to this connection's oldest unanswered
+            // `observe` under the id. It ends that entry: a refusal is that
+            // observe's final answer.
             "observeresult" => {
                 let mut refusals = Vec::new();
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
@@ -1310,7 +1334,14 @@ impl Interceptor {
                             book.requested.remove(id);
                         }
                     }
-                    if let (Some(Requested::Forwarded(envelope)), false) = (answered, ended) {
+                    if let (
+                        Some(Requested::Forwarded {
+                            envelope,
+                            unobserved: false,
+                        }),
+                        false,
+                    ) = (answered, ended)
+                    {
                         book.created.insert(id.to_string(), envelope);
                     }
                     if v.get("state").and_then(Value::as_str) == Some("disposed") {
@@ -2481,6 +2512,103 @@ mod tests {
         forwarded_up(i.handle_upstream(&refused.to_string()).await);
         let r = reply(i.handle_downstream(&dispose(OBSERVER_ID)).await);
         assert_eq!(r["error"]["code"], "FORBIDDEN");
+    }
+
+    fn engine_refusal() -> String {
+        json!({
+            "type": "observeresult",
+            "id": OBSERVER_ID,
+            "state": "error",
+            "error": { "code": "OBSERVER_ID_CONFLICT", "message": "owned by another connection" }
+        })
+        .to_string()
+    }
+
+    /// The engine's refusal is its observe's final answer: it ends that
+    /// observe's entry, and the next answer under the id is the next
+    /// observe's.
+    #[tokio::test]
+    async fn a_refusal_ends_its_observe_and_the_next_answer_is_the_next_observes() {
+        let i = interceptor(
+            config_with(expose(&["api::*", "engine::observers::*"]), None),
+            session(None),
+        );
+        let observe = observe("api::orders", "api::sink").to_string();
+        forwarded(i.handle_downstream(&observe).await);
+        forwarded_up(i.handle_upstream(&engine_refusal()).await);
+        assert!(!i.observers.lock().await.requested.contains_key(OBSERVER_ID));
+
+        forwarded(i.handle_downstream(&observe).await);
+        let r = reply(i.handle_downstream(&dispose(OBSERVER_ID)).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+        let accepted = json!({ "type": "observeresult", "id": OBSERVER_ID, "state": "active" });
+        forwarded_up(i.handle_upstream(&accepted.to_string()).await);
+        forwarded(i.handle_downstream(&dispose(OBSERVER_ID)).await);
+    }
+
+    /// A worker disposes an observer before the engine refuses it, and
+    /// observes again under the id. The refusal is the first observe's, the
+    /// `unobserve` between them disposes nothing (the engine holds nothing
+    /// for a refused observe), and the second observe is the connection's
+    /// once its own answer arrives, with its own `deliver`.
+    #[tokio::test]
+    async fn a_refusal_after_an_unobserve_leaves_the_next_answer_to_the_next_observe() {
+        let i = interceptor(
+            config_with(expose(&["api::*", "engine::observers::*"]), None),
+            session(None),
+        );
+        let first = observe("api::orders", "api::sink");
+        let mut second = first.clone();
+        second["source"]["deliver"] = json!("input");
+        let unobserve = json!({ "type": "unobserve", "id": OBSERVER_ID }).to_string();
+        forwarded(i.handle_downstream(&first.to_string()).await);
+        forwarded(i.handle_downstream(&unobserve).await);
+        forwarded(i.handle_downstream(&second.to_string()).await);
+
+        forwarded_up(i.handle_upstream(&engine_refusal()).await);
+        let r = reply(i.handle_downstream(&dispose(OBSERVER_ID)).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+
+        let accepted = json!({ "type": "observeresult", "id": OBSERVER_ID, "state": "active" });
+        forwarded_up(i.handle_upstream(&accepted.to_string()).await);
+        {
+            let book = i.observers.lock().await;
+            assert_eq!(book.created.get(OBSERVER_ID), Some(&false));
+            assert!(!book.requested.contains_key(OBSERVER_ID));
+        }
+        forwarded(i.handle_downstream(&dispose(OBSERVER_ID)).await);
+    }
+
+    /// An `unobserve` that follows an `observe` to the engine disposes the
+    /// observer that `observe` creates: its acceptance makes nothing this
+    /// connection's, whether the engine's `disposed` for it arrives before or
+    /// after it.
+    #[tokio::test]
+    async fn an_observe_unobserved_before_its_answer_is_not_created() {
+        let accepted = json!({ "type": "observeresult", "id": OBSERVER_ID, "state": "active" });
+        let disposed = json!({ "type": "observerstatechanged", "id": OBSERVER_ID, "state": "disposed", "fires": 0 });
+        let unobserve = json!({ "type": "unobserve", "id": OBSERVER_ID }).to_string();
+        for disposed_first in [true, false] {
+            let i = interceptor(
+                config_with(expose(&["api::*", "engine::observers::*"]), None),
+                session(None),
+            );
+            forwarded(
+                i.handle_downstream(&observe("api::orders", "api::sink").to_string())
+                    .await,
+            );
+            forwarded(i.handle_downstream(&unobserve).await);
+            if disposed_first {
+                forwarded_up(i.handle_upstream(&disposed.to_string()).await);
+            }
+            forwarded_up(i.handle_upstream(&accepted.to_string()).await);
+            let r = reply(i.handle_downstream(&dispose(OBSERVER_ID)).await);
+            assert_eq!(
+                r["error"]["code"], "FORBIDDEN",
+                "disposed first: {disposed_first}"
+            );
+            assert!(i.observers.lock().await.created.is_empty());
+        }
     }
 
     #[tokio::test]

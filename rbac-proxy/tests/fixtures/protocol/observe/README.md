@@ -1,7 +1,7 @@
 # observe wire fixtures (vendored)
 
 Copied verbatim from the iii repo's `sdk/fixtures/protocol/observe/` (branch
-`observe-v2`, at `703dc4fa1`): the golden JSON for every message and field
+`observe-v2`, at `ce3f77412`): the golden JSON for every message and field
 observe adds to the worker protocol, through observe v2. The engine and every
 SDK round-trip these files, so they are the shapes a peer actually sends.
 
