@@ -279,7 +279,7 @@ mod tests {
         // last fleet must not stay on screen.
         let (emitter, recorder) = harness();
         let (state, _) = step(&Reported::Nothing, Ok(fleet_of(&["a"])), &emitter);
-        let s301 = r#"remote error (invocation_failed): {"code":"S301","message":"adapter sandbox-libkrun not connected in namespace default; compose::add iii-sandbox in that project installs it","retryable":true,"type":"transient"}"#;
+        let s301 = r#"remote error (invocation_failed): {"code":"S301","message":"adapter sandbox-libkrun not connected in namespace default; compose::add iii-sandbox installs it in the Compose project there, or, if none runs, declare a container with worker: package://sandbox-libkrun in a worker-compose.yaml for default","retryable":true,"type":"transient"}"#;
         let (state, delay) = step(&state, Err(s301.into()), &emitter);
         assert!(state == Reported::Absent);
         assert_eq!(delay, ABSENT_RECHECK);
