@@ -168,14 +168,16 @@ def test_kanban_rust_binary_builds_its_ui_with_the_workspace_pnpm_policy():
     artifact = descriptor["artifact"]
     assert artifact["kind"] == "rust-binary"
     assert artifact["binary"] == "kanban"
-    (frontend,) = artifact["frontends"]
-    assert frontend["source_path"] == "kanban/ui"
-    assert frontend["workspace_root"] == "."
-    assert frontend["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
-    assert frontend["build_command"] == ["pnpm", "run", "build"]
-    assert frontend["outputs"] == ["dist"]
-    workspace = deployment_compiler.read_yaml(ROOT / frontend["workspace_root"] / "pnpm-workspace.yaml")
-    assert "kanban/ui" in workspace["packages"]
+    assert {frontend["source_path"] for frontend in artifact["frontends"]} == {
+        "kanban/ui", "kanban/native-ui",
+    }
+    workspace = deployment_compiler.read_yaml(ROOT / "pnpm-workspace.yaml")
+    for frontend in artifact["frontends"]:
+        assert frontend["workspace_root"] == "."
+        assert frontend["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
+        assert frontend["build_command"] == ["pnpm", "run", "build"]
+        assert frontend["outputs"] == ["dist"]
+        assert frontend["source_path"] in workspace["packages"]
     assert workspace["allowBuilds"] == {"core-js": False, "esbuild": True, "protobufjs": False}
 
 

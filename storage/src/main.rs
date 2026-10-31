@@ -375,6 +375,22 @@ async fn main() -> Result<()> {
         );
     }
 
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::multipartCapabilities",
+            RegisterFunction::new_async(move |req: serde_json::Value| {
+                let st = st.clone();
+                async move {
+                    let req: multipart::CapabilitiesReq = parse_request(req)?;
+                    multipart::capabilities(&st, req).await.map_err(Error::Handler)
+                }
+            })
+            .request_format(schema_of::<multipart::CapabilitiesReq>())
+            .description("Read the configured bucket's multipart wire contract after a successful bucket HEAD; no object bodies or writes."),
+        );
+    }
+
     // storage::on-object-created / storage::on-object-deleted: private,
     // observed per bucket, called by the notifications sources.
     storage::events::source::register(&iii, wired_buckets.clone(), state.reconfigure_gate.clone());

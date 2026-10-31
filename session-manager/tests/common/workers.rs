@@ -57,12 +57,8 @@ pub async fn register_all(iii: &Arc<IIIClient>) -> Arc<Shared> {
 
             store_protocol::register_store_protocol(iii, state.clone());
             functions::register_all(iii, &state);
-
-            // Block until the engine can route to the surface registered
-            // above: registrations flow over one connection in boot
-            // order, so the *last* one being routable means the batch
-            // landed. No fixed sleep — slow runners just poll longer.
-            wait_until_routable(iii, "session::set-active-leaf").await;
+            // The caller (`engine::get_or_init`) waits for the batch to
+            // land, checks who owns the ids, and only then probes them.
 
             Arc::new(Shared { data_dir })
         })
@@ -74,10 +70,15 @@ pub fn shared() -> Option<Arc<Shared>> {
     SHARED.get().cloned()
 }
 
-/// Poll the engine until `function_id` is routable, panicking after a
-/// deadline. An `Err` carrying a `session/` code also counts as
-/// routable — it proves the call reached the production handler.
-async fn wait_until_routable(iii: &Arc<IIIClient>, function_id: &str) {
+/// The last function `register_all` registers: registrations flow over
+/// one connection in boot order, so this one landing means the batch did.
+pub const LAST_REGISTERED: &str = "session::set-active-leaf";
+
+/// Poll the engine until `function_id` answers, or say why it did not
+/// within 10 s. An `Err` carrying a `session/` code also counts — it
+/// proves the call reached the production handler. Only call this once
+/// the ids are known to be the harness's own: the probe is a real call.
+pub async fn wait_until_routable(iii: &IIIClient, function_id: &str) -> Result<(), String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         let res = iii
@@ -92,15 +93,14 @@ async fn wait_until_routable(iii: &Arc<IIIClient>, function_id: &str) {
             })
             .await;
         match res {
-            Ok(_) => return,
-            Err(e) if e.to_string().contains("session/") => return,
-            Err(e) => {
-                assert!(
-                    std::time::Instant::now() < deadline,
+            Ok(_) => return Ok(()),
+            Err(e) if e.to_string().contains("session/") => return Ok(()),
+            Err(e) if std::time::Instant::now() >= deadline => {
+                return Err(format!(
                     "{function_id} did not become routable within 10s: {e}"
-                );
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                ));
             }
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     }
 }

@@ -52,8 +52,16 @@ pub struct Part {
     pub checksum_sha256: String,
 }
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ListedPart {
+    pub part_number: u32,
+    pub size: u64,
+    pub etag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checksum_sha256: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ListResp {
-    pub parts: Vec<Part>,
+    pub parts: Vec<ListedPart>,
 }
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -100,6 +108,12 @@ fn part(p: &Part) -> bool {
         && text(&p.etag)
         && valid_checksum(&p.checksum_sha256)
 }
+fn listed_part(p: &ListedPart) -> bool {
+    (1..=10000).contains(&p.part_number)
+        && p.size > 0
+        && text(&p.etag)
+        && p.checksum_sha256.as_deref().is_none_or(valid_checksum)
+}
 fn map_error(e: BackendError, provider: &str, bucket: &str, key: &str) -> String {
     err_to_str(backend_error_to_storage(e, provider, bucket, key))
 }
@@ -140,7 +154,7 @@ pub async fn list(state: &AppState, req: Identity) -> Result<ListResp, String> {
         .multipart_list(&req)
         .await
         .map_err(|e| map_error(e, b.provider(), &req.bucket, &req.key))?;
-    if result.parts.iter().any(|p| !part(p))
+    if result.parts.iter().any(|p| !listed_part(p))
         || result
             .parts
             .windows(2)
@@ -187,9 +201,150 @@ pub async fn abort(state: &AppState, req: Identity) -> Result<AbortResp, String>
         .map_err(|e| map_error(e, b.provider(), &req.bucket, &req.key))?;
     Ok(AbortResp { aborted: true })
 }
+/// Identifies the wire semantics, not a package version or a provider certification.
+pub const CONTRACT: &str = "sha256-composite-v2-list-optional";
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilitiesReq {
+    pub bucket: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CapabilitiesResp {
+    pub provider: &'static str,
+    pub contract: Option<&'static str>,
+}
+
+/// Proves the configured bucket exists/is accessible via HEAD; no object bodies or writes.
+pub async fn capabilities(
+    state: &AppState,
+    req: CapabilitiesReq,
+) -> Result<CapabilitiesResp, String> {
+    let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
+    let provider = backend.provider();
+    if matches!(provider, "s3" | "r2") {
+        backend
+            .head_bucket()
+            .await
+            .map_err(|e| map_error(e, provider, &req.bucket, ""))?;
+    }
+    Ok(CapabilitiesResp {
+        provider,
+        contract: matches!(provider, "s3" | "r2").then_some(CONTRACT),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn multipart_capabilities_are_bucket_scoped_and_metadata_only() {
+        use crate::backend::{
+            mock::MockBackend,
+            s3::{S3Backend, S3BackendOpts, S3StaticCreds},
+            Backend,
+        };
+        use std::{collections::HashMap, sync::Arc};
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        for provider in ["s3", "r2"] {
+            for status in [404, 403, 0, 200] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let server = tokio::spawn(async move {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut bytes = Vec::new();
+                    loop {
+                        let mut buf = [0; 4096];
+                        let size = stream.read(&mut buf).await.unwrap();
+                        assert!(size > 0);
+                        bytes.extend_from_slice(&buf[..size]);
+                        if bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let request = String::from_utf8(bytes).unwrap();
+                    assert!(request.starts_with("HEAD /private"), "{request}");
+                    assert!(!request.contains("list-type") && !request.contains("uploadId"));
+                    if status != 0 {
+                        stream.write_all(format!("HTTP/1.1 {status} Response\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                    }
+                });
+                let backend = S3Backend::build(
+                    S3BackendOpts {
+                        region: "us-east-1",
+                        credentials: Some(S3StaticCreds {
+                            access_key_id: "test".into(),
+                            secret_access_key: "test".into(),
+                            session_token: None,
+                        }),
+                        endpoint_url: Some(format!("http://{address}")),
+                        force_path_style: true,
+                        provider_tag: provider,
+                        fast_fail: true,
+                    },
+                    "private".into(),
+                )
+                .await
+                .unwrap();
+                let state = AppState::new(HashMap::from([(
+                    "files".into(),
+                    Arc::new(backend) as Arc<dyn Backend>,
+                )]));
+                let result = capabilities(
+                    &state,
+                    CapabilitiesReq {
+                        bucket: "files".into(),
+                    },
+                )
+                .await;
+                if status == 200 {
+                    assert_eq!(
+                        serde_json::to_value(result.unwrap()).unwrap(),
+                        serde_json::json!({ "contract": "sha256-composite-v2-list-optional", "provider": provider })
+                    );
+                } else {
+                    assert!(
+                        result.is_err(),
+                        "bucket response {status} must not advertise readiness: {result:?}"
+                    );
+                }
+                server.await.unwrap();
+                assert!(capabilities(
+                    &state,
+                    CapabilitiesReq {
+                        bucket: "missing".into()
+                    }
+                )
+                .await
+                .unwrap_err()
+                .contains("UNKNOWN_BUCKET"));
+            }
+        }
+        let mock = Arc::new(MockBackend::default());
+        let state = AppState::new(HashMap::from([(
+            "files".into(),
+            mock.clone() as Arc<dyn Backend>,
+        )]));
+        let response = capabilities(
+            &state,
+            CapabilitiesReq {
+                bucket: "files".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.contract, None);
+        assert!(mock.calls.lock().unwrap().is_empty());
+        assert!(super::super::parse_request::<CapabilitiesReq>(
+            serde_json::json!({"bucket":"files", "key":"forbidden"})
+        )
+        .is_err());
+    }
+
     #[test]
     fn multipart_validation_rejects_invalid_checksum() {
         assert!(!valid_checksum("bad"));
@@ -204,6 +359,63 @@ mod tests {
             checksum_sha256: STANDARD.encode([0; 32]),
         };
         assert!(!part(&p));
+    }
+    #[test]
+    fn multipart_complete_requires_checksum_on_each_part() {
+        let request = serde_json::json!({
+            "bucket": "bucket", "key": "key", "upload_id": "id",
+            "parts": [{ "part_number": 1, "size": 1, "etag": "opaque" }]
+        });
+        assert!(serde_json::from_value::<CompleteReq>(request).is_err());
+        let p = Part {
+            part_number: 1,
+            size: 1,
+            etag: "opaque".into(),
+            checksum_sha256: "".into(),
+        };
+        assert!(!part(&p));
+    }
+    #[test]
+    fn multipart_listing_allows_absence_but_validates_present_evidence() {
+        let valid = ListedPart {
+            part_number: 1,
+            size: 1,
+            etag: "opaque".into(),
+            checksum_sha256: None,
+        };
+        assert!(listed_part(&valid));
+        assert!(listed_part(&ListedPart {
+            checksum_sha256: Some(STANDARD.encode([0; 32])),
+            ..valid.clone()
+        }));
+        for invalid in [
+            ListedPart {
+                part_number: 0,
+                ..valid.clone()
+            },
+            ListedPart {
+                part_number: 10001,
+                ..valid.clone()
+            },
+            ListedPart {
+                size: 0,
+                ..valid.clone()
+            },
+            ListedPart {
+                etag: "".into(),
+                ..valid.clone()
+            },
+            ListedPart {
+                etag: "bad\n".into(),
+                ..valid.clone()
+            },
+            ListedPart {
+                checksum_sha256: Some("bad".into()),
+                ..valid
+            },
+        ] {
+            assert!(!listed_part(&invalid));
+        }
     }
     #[tokio::test]
     async fn multipart_rejects_invalid_input_before_backend() {

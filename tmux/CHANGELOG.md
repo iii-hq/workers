@@ -2,8 +2,23 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Kill session names its windows again.** The Console's confirm dialog lost its
+  `details` list in the ADE redesign (#1528), which also broke the page's type-check and
+  with it the worker's build. The Kill session confirmation now names the windows that
+  end in its sentence, each with its agent, `iii compose` or command, past six as `N more`
+  (`0:editor (vim), 1:dev (npm) and 2:logs (tail) end with every process in them…`).
+
 ### Changed
 
+- **The Console page follows the ADE redesign (#1528).** Interface text is set in Inter
+  and code, ports and the terminal in Geist Mono, as on the ide page; the sessions pane
+  sits on the canvas surface (in the light theme it showed the page's grey hairline
+  colour, and a narrow pane's drawer was see-through); the session tree takes the
+  sidebar's rhythm (36px rounded rows, 14px labels). A sub-agent's own messages no
+  longer indent their whole step, and the Ports tables centre each row on its tmux
+  location.
 - **iii-sdk 0.26.0.** The worker builds against the observe v2 SDK and invokes functions
   with `call`. Console terminal calls (`tmux::terminal::*`) take their caller from the
   invocation context the engine stamps (`caller.worker_id`); the payload's

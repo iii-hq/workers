@@ -11,6 +11,9 @@ fn binary_name_matches_manifest() {
 #[test]
 fn multipart_wire_schemas_are_closed_and_typed() {
     use storage::handlers::{multipart, schema_of};
+    let capabilities = schema_of::<multipart::CapabilitiesReq>();
+    assert_eq!(capabilities["additionalProperties"], false);
+    assert_eq!(capabilities["required"], serde_json::json!(["bucket"]));
     let schema = schema_of::<multipart::PresignReq>();
     assert_eq!(schema["additionalProperties"], false);
     for field in [
@@ -27,6 +30,23 @@ fn multipart_wire_schemas_are_closed_and_typed() {
             .unwrap()
             .iter()
             .any(|v| v == field));
+    }
+    let completion_part = schema_of::<multipart::Part>();
+    let listed_part = schema_of::<multipart::ListedPart>();
+    for field in ["part_number", "size", "etag", "checksum_sha256"] {
+        assert!(completion_part["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == field));
+        assert_eq!(
+            listed_part["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == field),
+            field != "checksum_sha256"
+        );
     }
     assert!(serde_json::from_value::<multipart::Identity>(
         serde_json::json!({"bucket":"b","key":"k","upload_id":"id","extra":true})

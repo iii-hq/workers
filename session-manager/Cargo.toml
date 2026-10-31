@@ -56,7 +56,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signa
 # `@engine`, ...) let you filter to a subset:
 #
 #   cargo test --test bdd                  # everything (engine scenarios
-#                                          # soft-skip without an engine)
+#                                          # soft-skip without an engine, or
+#                                          # on one running session-manager)
 #   cargo test --test bdd -- --tags @pure  # no engine required
 [[test]]
 name = "bdd"
