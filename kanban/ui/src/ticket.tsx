@@ -728,12 +728,12 @@ export function TicketScreen({
 
   const { confirm, dialog: confirmDialog } = useConfirm()
   const detachFromParent = async () => {
-    const parent = ticketRef.current?.parent
-    if (!parent) return
+    const current = ticketRef.current
+    const parent = current?.parent
+    if (!current || !parent) return
     const yes = await confirm({
       title: `Detach from ${parent.key}?`,
-      description: 'It stays on the board as a ticket of its own, with its own project and release.',
-      details: [`${ticketRef.current?.key} — ${ticketRef.current?.title}`],
+      description: `${current.key} stays on the board as a ticket of its own, with its own project and release.`,
       confirmLabel: 'Detach',
     })
     if (yes) void patch({ parent: null })
@@ -1617,10 +1617,9 @@ export function TicketScreen({
         confirmLabel={deleted ? 'Restore' : 'Delete'}
         description={
           deleted
-            ? 'The ticket returns to its column on the board.'
-            : 'It disappears from the board but stays in the board file, and its comments are kept.'
+            ? `${ticket.key} returns to its column on the board.`
+            : `${ticket.key} disappears from the board but stays in the board file, and its comments are kept.`
         }
-        details={[`${ticket.key} — ${ticket.title}`]}
         onCancel={() => setConfirming(false)}
         onConfirm={() => void toggleDeleted()}
         onOpenChange={setConfirming}

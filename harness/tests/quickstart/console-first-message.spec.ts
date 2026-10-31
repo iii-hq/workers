@@ -3,9 +3,9 @@ import path from 'node:path'
 import { expect, type Locator, type Page, test } from '@playwright/test'
 
 const ANTHROPIC_MODEL_ID = 'claude-sonnet-5-5'
-const ANTHROPIC_MODEL_LABEL = /^claude[\s-]+sonnet[\s-]+5\.5$/i
+const ANTHROPIC_MODEL_LABEL = /^sonnet[\s-]+5\.5(?:\s+default)?$/i
 const OPENAI_MODEL_ID = 'gpt-5.6-luna'
-const OPENAI_MODEL_LABEL = /gpt[\s-]*5\.6[\s-]*luna/i
+const OPENAI_MODEL_LABEL = /^gpt[\s-]*5\.6[\s-]*luna(?:\s+default)?$/i
 
 const ANTHROPIC_PROMPT =
   'Reply with exactly QUICKSTART_ANTHROPIC_OK and nothing else.'
@@ -25,7 +25,7 @@ function required(name: string): string {
 
 async function selectModel(
   page: Page,
-  provider: 'anthropic' | 'openai',
+  filter: string,
   modelLabel: RegExp,
   pickerLabel: RegExp,
 ) {
@@ -34,24 +34,10 @@ async function selectModel(
   await modelPicker.click()
 
   const modelMenu = page.getByRole('menu', { name: /^model:/i })
-  const providerGroup = modelMenu.getByRole('region', {
-    name: new RegExp(`^${provider}$`, 'i'),
-  })
-  await expect(providerGroup).toBeVisible()
-
-  const model = providerGroup.getByRole('button', { name: modelLabel })
+  await modelMenu.getByRole('combobox', { name: 'filter models' }).fill(filter)
+  const model = modelMenu.getByRole('button', { name: modelLabel })
   await expect(model).toHaveCount(1)
   await model.click()
-
-  const defaultEffort = page.getByRole('menuitemradio', {
-    name: 'default',
-    exact: true,
-  })
-  if (await defaultEffort.isVisible().catch(() => false)) {
-    await defaultEffort.click()
-  } else {
-    await page.keyboard.press('Escape')
-  }
   await expect(modelPicker).toHaveAccessibleName(pickerLabel)
 }
 
@@ -103,7 +89,7 @@ test('switches from Sonnet 5.5 to Luna and starts a new Luna chat', async ({
 
   await selectModel(
     page,
-    'anthropic',
+    'Sonnet 5.5',
     ANTHROPIC_MODEL_LABEL,
     /^model:\s*claude[\s-]+sonnet[\s-]+5\.5,/i,
   )
@@ -123,7 +109,7 @@ test('switches from Sonnet 5.5 to Luna and starts a new Luna chat', async ({
 
   await selectModel(
     page,
-    'openai',
+    'GPT-5.6 Luna',
     OPENAI_MODEL_LABEL,
     /^model:\s*gpt[\s-]*5\.6[\s-]*luna,/i,
   )
@@ -148,7 +134,7 @@ test('switches from Sonnet 5.5 to Luna and starts a new Luna chat', async ({
 
   await selectModel(
     page,
-    'openai',
+    'GPT-5.6 Luna',
     OPENAI_MODEL_LABEL,
     /^model:\s*gpt[\s-]*5\.6[\s-]*luna,/i,
   )

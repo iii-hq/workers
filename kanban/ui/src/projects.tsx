@@ -492,14 +492,11 @@ function ProjectDetail({
       const open = notDone(project)
       const ok = await confirm({
         title: `Archive ${project.name}?`,
-        description: `${project.name} moves to Archived. Nothing is deleted.`,
-        details: [
-          ...(open > 0
-            ? [`${plural(open, 'open ticket')} keep${open === 1 ? 's' : ''} the project and stay on the board`]
-            : []),
-          'Archived projects take no new tickets',
-          'You can restore it from Projects › Archived',
-        ],
+        description: `${project.name} moves to Archived and takes no new tickets${
+          open > 0
+            ? `; its ${plural(open, 'open ticket')} ${open === 1 ? 'keeps the project and stays' : 'keep the project and stay'} on the board`
+            : ''
+        }. Nothing is deleted: you can restore it from Projects › Archived.`,
         confirmLabel: 'Archive',
       })
       if (!ok) return

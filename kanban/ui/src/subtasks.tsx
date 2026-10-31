@@ -296,10 +296,14 @@ async function eachChild(children: Brief[], work: (child: Brief) => Promise<unkn
   }
 }
 
-const listed = (children: Brief[], max = 8): string[] => [
-  ...children.slice(0, max).map((child) => `${child.key} — ${child.title}`),
-  ...(children.length > max ? [`…and ${children.length - max} more`] : []),
-]
+/** `KAN-2, KAN-3 and 4 more`: the subtasks a confirm names, at most eight. */
+const listed = (children: Brief[], max = 8): string => {
+  const parts = [
+    ...children.slice(0, max).map((child) => child.key),
+    ...(children.length > max ? [`${children.length - max} more`] : []),
+  ]
+  return parts.length < 2 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+}
 
 /* ── Done with open subtasks ─────────────────────────────────────────── */
 
@@ -320,6 +324,7 @@ export function DoneWarning({ host, ticket, columns, doneStatus, canceledStatus,
   const { open, back } = warning
   const doneLabel = statusLabel(columns, doneStatus)
   const count = open.length
+  const one = count === 1
   const total = ticket.progress.total
 
   const moveBack = () =>
@@ -331,8 +336,7 @@ export function DoneWarning({ host, ticket, columns, doneStatus, canceledStatus,
   const closeAll = async () => {
     const yes = await confirm({
       title: `Close ${plural(count, 'subtask')}?`,
-      description: `They move to ${doneLabel}. ${ticket.key} stays where it is.`,
-      details: listed(open),
+      description: `${listed(open)} ${one ? 'moves' : 'move'} to ${doneLabel}. ${ticket.key} stays where it is.`,
       confirmLabel: `Close ${plural(count, 'subtask')}`,
     })
     if (!yes) return
@@ -346,8 +350,9 @@ export function DoneWarning({ host, ticket, columns, doneStatus, canceledStatus,
   const detachAll = async () => {
     const yes = await confirm({
       title: `Detach ${plural(count, 'subtask')}?`,
-      description: `They stop being subtasks of ${ticket.key} and stay on the board as tickets of their own.`,
-      details: listed(open),
+      description: one
+        ? `${listed(open)} stops being a subtask of ${ticket.key} and stays on the board as a ticket of its own.`
+        : `${listed(open)} stop being subtasks of ${ticket.key} and stay on the board as tickets of their own.`,
       confirmLabel: `Detach ${plural(count, 'subtask')}`,
     })
     if (!yes) return

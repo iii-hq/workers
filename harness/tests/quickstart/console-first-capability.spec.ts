@@ -3,7 +3,7 @@ import path from 'node:path'
 import { expect, type Page, test } from '@playwright/test'
 
 const MODEL_ID = 'claude-sonnet-5-5'
-const MODEL_LABEL = /^claude[\s-]+sonnet[\s-]+5\.5$/i
+const MODEL_LABEL = /^sonnet[\s-]+5\.5(?:\s+default)?$/i
 const CAPABILITY_FUNCTION = 'shell::exec'
 const CAPABILITY_OUTPUT_MARKER = 'HARNESS_FIRST_CAPABILITY_OUTPUT'
 const RESPONSE_MARKER = 'HARNESS_FIRST_CAPABILITY_OK'
@@ -24,22 +24,10 @@ async function selectSonnet(page: Page) {
   await modelPicker.click()
 
   const modelMenu = page.getByRole('menu', { name: /^model:/i })
-  const anthropicGroup = modelMenu.getByRole('region', { name: /^anthropic$/i })
-  await expect(anthropicGroup).toBeVisible()
-
-  const sonnet = anthropicGroup.getByRole('button', { name: MODEL_LABEL })
+  await modelMenu.getByRole('combobox', { name: 'filter models' }).fill('Sonnet 5.5')
+  const sonnet = modelMenu.getByRole('button', { name: MODEL_LABEL })
   await expect(sonnet).toHaveCount(1)
   await sonnet.click()
-
-  const defaultEffort = page.getByRole('menuitemradio', {
-    name: 'default',
-    exact: true,
-  })
-  if (await defaultEffort.isVisible().catch(() => false)) {
-    await defaultEffort.click()
-  } else {
-    await page.keyboard.press('Escape')
-  }
   await expect(modelPicker).toHaveAccessibleName(/^model:\s*claude[\s-]+sonnet[\s-]+5\.5,/i)
 }
 
