@@ -147,6 +147,19 @@ describe('ConfirmDialog with an action that takes time', () => {
     expect(dialog()).toBeNull()
   })
 
+  it('scrolls a long text and keeps the actions on screen', () => {
+    mountDialog(async () => {})
+    const body = dialog()
+    expect(body?.className).toContain('max-h-[85vh]')
+    expect(body?.className).toContain('flex-col')
+    const text = body?.querySelector('h2')?.parentElement
+    expect(text?.className).toContain('overflow-y-auto')
+    expect(text?.className).toContain('min-h-0')
+    const actions = button('Cancel')?.parentElement
+    expect(actions?.className).toContain('shrink-0')
+    expect(text?.contains(actions ?? null)).toBe(false)
+  })
+
   it('has a title, a description and the actions, nothing else', () => {
     mountDialog(async () => {})
     const body = dialog()

@@ -97,13 +97,15 @@ export function ConfirmDialog({
       <DialogContent
         role="alertdialog"
         aria-busy={busy || undefined}
-        className="w-[calc(100%-24px)] max-w-[440px] overflow-hidden rounded-2xl p-0 font-inter"
+        className="flex w-[calc(100%-24px)] max-w-[440px] flex-col overflow-hidden rounded-2xl p-0 font-inter"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           cancelRef.current?.focus()
         }}
       >
-        <div className="px-6 pt-6 pb-5">
+        {/* The text scrolls when it is taller than the dialog (at most 85vh), so
+            the actions below always stay on screen. */}
+        <div className="min-h-0 overflow-y-auto px-6 pt-6 pb-5">
           <DialogTitle className="pr-8 font-inter text-[16px] leading-6 font-semibold break-words">
             {title}
           </DialogTitle>
@@ -122,7 +124,7 @@ export function ConfirmDialog({
           ) : null}
         </div>
         {/* The actions sit on their own band, one surface step down. */}
-        <div className="flex flex-col-reverse justify-end gap-2 bg-surface px-6 py-4 sm:flex-row">
+        <div className="flex shrink-0 flex-col-reverse justify-end gap-2 bg-surface px-6 py-4 sm:flex-row">
           <Button
             ref={cancelRef}
             type="button"
