@@ -72,8 +72,18 @@ if developerDir.isEmpty { fail("--developer-dir is required (xcode-select -p)") 
 
 guard dlopen("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator", RTLD_NOW) != nil
 else { fail("CoreSimulator.framework not found; install Xcode") }
-guard let simKit = dlopen(developerDir + "/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit", RTLD_NOW)
-else { fail("SimulatorKit.framework not found under \(developerDir)") }
+// SimulatorKit lives in Contents/Developer/Library/PrivateFrameworks on older
+// Xcode; Xcode 27+ moved it to Contents/SharedFrameworks. developerDir is
+// Xcode.app/Contents/Developer, so its parent is Contents.
+let simKitCandidates = [
+  developerDir + "/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit",
+  ((developerDir as NSString).standardizingPath as NSString).deletingLastPathComponent
+    + "/SharedFrameworks/SimulatorKit.framework/SimulatorKit",
+]
+guard let simKit = simKitCandidates.lazy.compactMap({ dlopen($0, RTLD_NOW) }).first
+else {
+  fail("SimulatorKit.framework not found under \(developerDir) (tried: \(simKitCandidates.joined(separator: ", ")))")
+}
 
 func sym<T>(_ name: String, _: T.Type) -> T {
   guard let p = dlsym(simKit, name) else { fail("SimulatorKit lacks \(name); unsupported Xcode") }
