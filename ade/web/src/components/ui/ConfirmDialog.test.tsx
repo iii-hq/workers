@@ -138,9 +138,14 @@ describe('ConfirmDialog with an action that takes time', () => {
       if (attempts === 1) throw new Error('the session is gone')
     })
     await act(async () => button('Delete')?.click())
-    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
-      'the session is gone',
-    )
+    const alert = dialog()?.querySelector('[role="alert"]')
+    expect(alert?.textContent).toBe('the session is gone')
+    // Outside the scrolling text, so it shows however far that is scrolled.
+    expect(
+      dialog()
+        ?.querySelector('h2')
+        ?.parentElement?.contains(alert ?? null),
+    ).toBe(false)
     expect(button('Close')).toBeDefined()
     await act(async () => button('Retry delete')?.click())
     expect(attempts).toBe(2)

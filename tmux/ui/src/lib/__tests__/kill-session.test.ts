@@ -77,6 +77,12 @@ describe('clip', () => {
     expect(clip('ab 🚀🚀', 4)).toBe('ab…')
     expect(clip('🚀🚀🚀🚀', 3)).toBe('🚀🚀…')
   })
+
+  it('counts what a reader sees: a joined emoji, a flag and an accent stay whole', () => {
+    expect(clip('ab👨‍👩‍👧‍👦xyz', 4)).toBe('ab👨‍👩‍👧‍👦…')
+    expect(clip('ab🇧🇷cd', 4)).toBe('ab🇧🇷…')
+    expect(clip('cafe\u0301 au lait', 5)).toBe('cafe\u0301…')
+  })
 })
 
 describe('the description stays bounded', () => {

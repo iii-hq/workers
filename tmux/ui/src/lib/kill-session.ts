@@ -13,15 +13,22 @@ export const MAX_NAMED_WINDOWS = 6
 
 /**
  * Characters one window may take in the sentence; a longer part ends in `…`.
- * With the cap on windows, it bounds the whole description, so the dialog
- * (no scroll of its own, at most 85vh) keeps its actions on a phone.
+ * With the cap on windows, it keeps the description to a few lines. The
+ * console's dialog scrolls a longer text, but an older console clips it.
  */
 export const MAX_PART_CHARS = 48
 
-/** `text` cut to `max` characters (code points, never half an emoji), the last one `…`. */
+/** What a reader counts as characters: graphemes, so an emoji, a flag or an accent stays whole. */
+function graphemes(text: string): string[] {
+  if (typeof Intl === 'undefined' || !('Segmenter' in Intl)) return Array.from(text)
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+  return Array.from(segmenter.segment(text), (part) => part.segment)
+}
+
+/** `text` cut to `max` characters (graphemes), the last one `…`. */
 export function clip(text: string, max = MAX_PART_CHARS): string {
-  const chars = Array.from(text)
-  return chars.length <= max ? text : `${chars.slice(0, max - 1).join('').trimEnd()}…`
+  const chars = graphemes(text)
+  return chars.length <= max ? text : `${chars.slice(0, Math.max(max - 1, 0)).join('').trimEnd()}…`
 }
 
 /** The parts of a window row the sentence reads. */

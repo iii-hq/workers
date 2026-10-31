@@ -114,15 +114,17 @@ export function ConfirmDialog({
               {description}
             </DialogDescription>
           ) : null}
-          {error ? (
-            <p
-              role="alert"
-              className="mt-3 font-inter text-[14px] leading-[22px] break-words text-alert"
-            >
-              {error}
-            </p>
-          ) : null}
         </div>
+        {/* Why the action failed stays in sight, above the actions, however
+            far the text above is scrolled. */}
+        {error ? (
+          <p
+            role="alert"
+            className="max-h-[30vh] shrink-0 overflow-y-auto px-6 pb-5 font-inter text-[14px] leading-[22px] break-words text-alert"
+          >
+            {error}
+          </p>
+        ) : null}
         {/* The actions sit on their own band, one surface step down. */}
         <div className="flex shrink-0 flex-col-reverse justify-end gap-2 bg-surface px-6 py-4 sm:flex-row">
           <Button
