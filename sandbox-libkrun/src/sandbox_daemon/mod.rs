@@ -84,10 +84,12 @@ Errors return JSON inside error.message, which may follow a prefix such as
   const detail = JSON.parse(err.message.slice(err.message.indexOf("{")));
   // detail.code, detail.type, detail.message, detail.docs_url
   // detail.fix       ready-to-send next-call payload (null if not auto-fixable)
-  // detail.fix_note  one-liner explaining why fix is null
+  // detail.fix_note  when present, how to use fix or why it is null
   // detail.retryable bool
 
-If detail.fix is non-null, your next call is fn(detail.fix).
+If detail.fix is non-null, merge its fields into your original request and
+resubmit; do not call fn(detail.fix) on its own. Filesystem errors other than a
+missing parent carry no fix and no fix_note: the message names the path.
 
 # S-code map
 
@@ -109,7 +111,7 @@ use iii_sdk::runtime::{FunctionRef, IIIConnectionState, WorkerMetadata};
 use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker_from_env};
 
 use crate::sandbox_daemon::config::{SandboxConfig, parse_config};
-use crate::sandbox_daemon::errors::SandboxErrorWire;
+use crate::sandbox_daemon::errors::{Payload, SandboxErrorWire};
 use crate::wire::{
     AdapterInfo, AdapterInfoRequest, ContractVersion, WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE,
     WORKER_START, WORKER_STATUS, WORKER_STOP,
@@ -314,7 +316,8 @@ pub fn register_all(
     refs.push(
         iii.register_function(
             "sandbox-libkrun::adapter::info",
-            RegisterFunction::new_async(|_: AdapterInfoRequest| async {
+            RegisterFunction::new_async(|req: Payload<AdapterInfoRequest>| async move {
+                req.decode()?;
                 Ok::<_, iii_sdk::Error>(adapter_info())
             })
             .description(
@@ -352,10 +355,11 @@ where
     let id = format!("{ADAPTER_NAME}::{suffix}");
     iii.register_function(
         id.clone(),
-        RegisterFunction::new_async(move |req: Req| {
-            let call = op(vms.clone(), req);
+        RegisterFunction::new_async(move |req: Payload<Req>| {
+            let call = req.decode().map(|req| op(vms.clone(), req));
             let id = id.clone();
             async move {
+                let call = call?;
                 let start = std::time::Instant::now();
                 let result = call.await;
                 log_handler_result(&id, None, &result, start.elapsed().as_millis() as u64);
@@ -374,11 +378,12 @@ fn register_sandbox_create(
 ) -> FunctionRef {
     iii.register_function(
         "sandbox-libkrun::create",
-        RegisterFunction::new_async(move |req: crate::sandbox_daemon::create::CreateRequest| {
+        RegisterFunction::new_async(move |req: Payload<create::CreateRequest>| {
             let registry = registry.clone();
             let cfg = cfg.clone();
             let launcher = launcher.clone();
             async move {
+                let req = req.decode()?;
                 let start = std::time::Instant::now();
                 let result = crate::sandbox_daemon::create::handle_create(
                     req,
@@ -420,10 +425,11 @@ fn register_sandbox_exec(
 ) -> FunctionRef {
     iii.register_function(
         "sandbox-libkrun::exec",
-        RegisterFunction::new_async(move |req: crate::sandbox_daemon::exec::ExecRequest| {
+        RegisterFunction::new_async(move |req: Payload<exec::ExecRequest>| {
             let registry = registry.clone();
             let runner = runner.clone();
             async move {
+                let req = req.decode()?;
                 let sid = req.sandbox_id.clone();
                 let start = std::time::Instant::now();
                 let result =
@@ -456,10 +462,11 @@ fn register_sandbox_stop(
 ) -> FunctionRef {
     iii.register_function(
         "sandbox-libkrun::stop",
-        RegisterFunction::new_async(move |req: crate::sandbox_daemon::stop::StopRequest| {
+        RegisterFunction::new_async(move |req: Payload<stop::StopRequest>| {
             let registry = registry.clone();
             let stopper = stopper.clone();
             async move {
+                let req = req.decode()?;
                 let sid = req.sandbox_id.clone();
                 let start = std::time::Instant::now();
                 let result =
@@ -494,9 +501,10 @@ fn register_sandbox_list(
     // the unit `ListRequest`.
     iii.register_function(
         "sandbox-libkrun::list",
-        RegisterFunction::new_async(move |req: crate::sandbox_daemon::list::ListRequest| {
+        RegisterFunction::new_async(move |req: Payload<list::ListRequest>| {
             let registry = registry.clone();
             async move {
+                let req = req.decode()?;
                 let start = std::time::Instant::now();
                 let response = crate::sandbox_daemon::list::handle_list(req, &registry).await;
                 // handle_list is infallible; manufacture an Ok-typed Result so
@@ -522,24 +530,22 @@ fn register_sandbox_catalog_list(
 ) -> FunctionRef {
     iii.register_function(
         "sandbox-libkrun::catalog::list",
-        RegisterFunction::new_async(
-            move |req: crate::sandbox_daemon::catalog::CatalogListRequest| {
-                let cfg = cfg.clone();
-                async move {
-                    let start = std::time::Instant::now();
-                    let response = crate::sandbox_daemon::catalog::handle_catalog_list(req, &cfg);
-                    let result: Result<_, crate::sandbox_daemon::errors::SandboxError> =
-                        Ok(&response);
-                    log_handler_result(
-                        "sandbox-libkrun::catalog::list",
-                        None,
-                        &result,
-                        start.elapsed().as_millis() as u64,
-                    );
-                    Ok::<_, iii_sdk::Error>(response)
-                }
-            },
-        )
+        RegisterFunction::new_async(move |req: Payload<catalog::CatalogListRequest>| {
+            let cfg = cfg.clone();
+            async move {
+                let req = req.decode()?;
+                let start = std::time::Instant::now();
+                let response = crate::sandbox_daemon::catalog::handle_catalog_list(req, &cfg);
+                let result: Result<_, crate::sandbox_daemon::errors::SandboxError> = Ok(&response);
+                log_handler_result(
+                    "sandbox-libkrun::catalog::list",
+                    None,
+                    &result,
+                    start.elapsed().as_millis() as u64,
+                );
+                Ok::<_, iii_sdk::Error>(response)
+            }
+        })
         .description(
             "List bootable images: bundled presets plus operator-registered custom_images. \
              Call this before sandbox::create when you don't know what's available.",
