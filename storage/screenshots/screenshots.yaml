@@ -1,0 +1,18 @@
+# Store screenshots of the storage worker, in display order (the registry CLI's
+# `registry publish --screenshots` list). Captured from the iii app with demo data.
+
+- file: android-folder.webp
+  platform: android
+  caption: "A bucket's folder, with image thumbnails"
+- file: android-viewer.webp
+  platform: android
+  caption: "Open images full screen"
+- file: android-file-details.webp
+  platform: android
+  caption: "A file's details, ready to download or share"
+- file: android-buckets.webp
+  platform: android
+  caption: "Every bucket on the engine"
+- file: android-columns.webp
+  platform: android
+  caption: "Size, date and kind in columns"
