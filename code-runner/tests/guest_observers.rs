@@ -11,7 +11,8 @@
 //! is sent, and `metadata: null` is no metadata on every call; the removed
 //! hook runs on dispose, and never for the rejected observer. A guest's
 //! observe the engine refuses (another connection holds its id) is that
-//! observer's final answer: its dispose resolves at once, and the guest's
+//! observer's final answer: the engine keeps the holder's observer and
+//! nothing for the guest's, the guest's dispose resolves at once, and its
 //! next observe under the id is the one calls reach.
 //!
 //! The engine is `III_ENGINE_WS_URL` when set; otherwise `III_ENGINE_BIN`
@@ -171,6 +172,19 @@ fn unstamped(mut value: Value) -> Value {
         object.remove("_caller_worker_id");
     }
     value
+}
+
+/// The answer of the engine function `function_id` called by `client`.
+async fn engine_call(client: &IIIClient, function_id: &str, payload: Value) -> Value {
+    client
+        .call(CallRequest {
+            function_id: function_id.into(),
+            payload,
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{function_id} failed: {e}"))
 }
 
 /// Evaluate `code` in the kept runtime `runtime_id` and return its result.
@@ -438,7 +452,56 @@ async fn guest_hooks_see_accept_reject_and_call_through_observers() {
          {{ id: '{HELD}' }}); return globalThis.held.id"
     );
     assert_eq!(eval(&node, &runtime_id, &observe_held).await, json!(HELD));
-    sleep(Duration::from_millis(500)).await;
+    // The engine reads a connection's observes in order, so once the guest's
+    // next observe is in place it has answered the one under the held id:
+    // the id is still the holder's, active, and the guest's connection holds
+    // nothing under it.
+    const AFTER_HELD: &str = "probe::after-held";
+    let observe_after = format!(
+        "globalThis.after = await iii.observe('test::held-source', 'test::target', \
+         {{ id: '{AFTER_HELD}' }}); return globalThis.after.id"
+    );
+    assert_eq!(
+        eval(&node, &runtime_id, &observe_after).await,
+        json!(AFTER_HELD)
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let listed = engine_call(
+            &consumer,
+            "engine::observers::list",
+            json!({ "worker": "code-runner" }),
+        )
+        .await;
+        let ids: Vec<&str> = listed["observers"]
+            .as_array()
+            .map(|observers| observers.iter().filter_map(|o| o["id"].as_str()).collect())
+            .unwrap_or_default();
+        if ids.contains(&AFTER_HELD) {
+            assert!(
+                !ids.contains(&HELD),
+                "the engine kept the guest's observe under the held id: {listed}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the guest's observe after the held id never reached the engine: {listed}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+    let holder = engine_call(&consumer, "engine::observers::get", json!({ "id": HELD })).await;
+    assert_eq!(
+        holder["worker"]["worker_name"], "code-runner-test-consumer",
+        "{holder}"
+    );
+    assert_eq!(holder["state"], "active", "{holder}");
+    eval(
+        &node,
+        &runtime_id,
+        "await globalThis.after.dispose(); return null",
+    )
+    .await;
     let elapsed = eval(
         &node,
         &runtime_id,
