@@ -377,6 +377,22 @@ async fn main() -> Result<()> {
         );
     }
 
+    {
+        let st = state.clone();
+        iii.register_function(
+            "storage::multipartCapabilities",
+            RegisterFunction::new_async(move |req: serde_json::Value| {
+                let st = st.clone();
+                async move {
+                    let req: multipart::CapabilitiesReq = parse_request(req)?;
+                    multipart::capabilities(&st, req).await.map_err(Error::Handler)
+                }
+            })
+            .request_format(schema_of::<multipart::CapabilitiesReq>())
+            .description("Read the configured bucket's multipart wire contract; does not probe or write provider objects."),
+        );
+    }
+
     // Deprecated in iii-sdk 0.25. Kept until the object trigger types are
     // retired; old consumers bind them on 0.24 and 0.25 engines.
     #[allow(deprecated)]

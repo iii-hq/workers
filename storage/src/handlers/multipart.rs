@@ -201,9 +201,111 @@ pub async fn abort(state: &AppState, req: Identity) -> Result<AbortResp, String>
         .map_err(|e| map_error(e, b.provider(), &req.bucket, &req.key))?;
     Ok(AbortResp { aborted: true })
 }
+/// Identifies the wire semantics, not a package version or a provider certification.
+pub const CONTRACT: &str = "sha256-composite-v2-list-optional";
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilitiesReq {
+    pub bucket: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CapabilitiesResp {
+    pub provider: &'static str,
+    pub contract: Option<&'static str>,
+}
+
+/// Only reads the live configured backend; no objects, uploads or credentials are returned.
+pub async fn capabilities(
+    state: &AppState,
+    req: CapabilitiesReq,
+) -> Result<CapabilitiesResp, String> {
+    let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
+    let provider = backend.provider();
+    Ok(CapabilitiesResp {
+        provider,
+        contract: matches!(provider, "s3" | "r2").then_some(CONTRACT),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn multipart_capabilities_are_bucket_scoped_and_metadata_only() {
+        use crate::backend::{
+            mock::MockBackend,
+            s3::{S3Backend, S3BackendOpts, S3StaticCreds},
+            Backend,
+        };
+        use std::{collections::HashMap, sync::Arc};
+        for provider in ["s3", "r2"] {
+            let backend = S3Backend::build(
+                S3BackendOpts {
+                    region: "us-east-1",
+                    credentials: Some(S3StaticCreds {
+                        access_key_id: "test".into(),
+                        secret_access_key: "test".into(),
+                        session_token: None,
+                    }),
+                    endpoint_url: Some("http://127.0.0.1:1".into()),
+                    force_path_style: true,
+                    provider_tag: provider,
+                    fast_fail: true,
+                },
+                "private".into(),
+            )
+            .await
+            .unwrap();
+            let state = AppState::new(HashMap::from([(
+                "files".into(),
+                Arc::new(backend) as Arc<dyn Backend>,
+            )]));
+            let response = capabilities(
+                &state,
+                CapabilitiesReq {
+                    bucket: "files".into(),
+                },
+            )
+            .await
+            .unwrap();
+            let json = serde_json::to_value(response).unwrap();
+            assert_eq!(
+                json,
+                serde_json::json!({ "contract": "sha256-composite-v2-list-optional", "provider": provider })
+            );
+            assert!(capabilities(
+                &state,
+                CapabilitiesReq {
+                    bucket: "missing".into()
+                }
+            )
+            .await
+            .unwrap_err()
+            .contains("UNKNOWN_BUCKET"));
+        }
+        let mock = Arc::new(MockBackend::default());
+        let state = AppState::new(HashMap::from([(
+            "files".into(),
+            mock.clone() as Arc<dyn Backend>,
+        )]));
+        let response = capabilities(
+            &state,
+            CapabilitiesReq {
+                bucket: "files".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.contract, None);
+        assert!(mock.calls.lock().unwrap().is_empty());
+        assert!(super::super::parse_request::<CapabilitiesReq>(
+            serde_json::json!({"bucket":"files", "key":"forbidden"})
+        )
+        .is_err());
+    }
+
     #[test]
     fn multipart_validation_rejects_invalid_checksum() {
         assert!(!valid_checksum("bad"));

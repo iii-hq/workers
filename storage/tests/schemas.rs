@@ -11,6 +11,9 @@ fn binary_name_matches_manifest() {
 #[test]
 fn multipart_wire_schemas_are_closed_and_typed() {
     use storage::handlers::{multipart, schema_of};
+    let capabilities = schema_of::<multipart::CapabilitiesReq>();
+    assert_eq!(capabilities["additionalProperties"], false);
+    assert_eq!(capabilities["required"], serde_json::json!(["bucket"]));
     let schema = schema_of::<multipart::PresignReq>();
     assert_eq!(schema["additionalProperties"], false);
     for field in [
