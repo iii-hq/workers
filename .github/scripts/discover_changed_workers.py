@@ -34,6 +34,9 @@ METADATA_GLOBS = (
     "AGENTS-*.md",
     "Cargo.lock",
     "Cargo.toml",
+    # Store screenshots and their list (worker_screenshots.py): published with
+    # the next version, never part of what the worker builds or runs.
+    "screenshots/*",
 )
 
 # Top-level dirs we never treat as workers, regardless of contents.

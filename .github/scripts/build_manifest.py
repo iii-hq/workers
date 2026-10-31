@@ -7,6 +7,12 @@ published OCI index digest, and embeds the descriptor, the captured interface
 and the evidence inventory so Release Control can assemble the Registry publish
 payload later (see build_publish_payload.build_payload) without re-running
 anything in a runner.
+
+When the descriptor lists screenshots, the manifest carries them too, as
+`screenshots`: each image is a release asset `<worker>-screenshot-<name>` that
+Release Control registers on the version's Registry release and lists in
+`POST /publish` under `<name>`. The field is absent exactly when the descriptor
+has none (the version inherits the previous version's) and `[]` clears them.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import deployment_train
+import worker_screenshots
 
 SCHEMA = "workers-build-manifest/1"
 SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -40,6 +47,16 @@ def asset_name(worker: str, name: str) -> str:
     return f"{worker}-{name}"
 
 
+def screenshot_asset_name(worker: str, name: str) -> str:
+    """The release asset of one screenshot. `build-<sha>` is shared by every worker of the SHA."""
+    return f"{worker}-screenshot-{name}"
+
+
+def screenshot_prepared_name(name: str) -> str:
+    """Where the prepared directory carries a screenshot, relative to it."""
+    return f"{deployment_train.PREPARED_SCREENSHOTS}/{name}"
+
+
 def asset_url(repository: str, source_sha: str, asset: str) -> str:
     return f"https://github.com/{repository}/releases/download/{release_tag(source_sha)}/{asset}"
 
@@ -57,24 +74,43 @@ def _check_identity(document: dict[str, Any], expected: dict[str, Any], label: s
 
 
 def plan(args: argparse.Namespace) -> int:
-    """Print `prepared name, release asset name, sha256, size` rows for the upload job."""
+    """Print `prepared name, release asset name, sha256, size` rows for the upload job.
+
+    One row per prepared artifact, then one per descriptor screenshot (its
+    prepared name is `screenshots/<name>`), so both go up the same way.
+    """
+    descriptor = deployment_train.verify_descriptor(_read_object(args.descriptor, "deployment descriptor"))
+    if descriptor["worker"] != args.worker:
+        raise SystemExit("deployment descriptor belongs to another worker")
     prepared = _read_object(args.prepared, "prepared artifact inventory")
-    for artifact in prepared["artifacts"]:
-        name = str(artifact["name"])
-        print("\t".join([name, asset_name(args.worker, name), str(artifact["sha256"]), str(artifact["size"])]))
+    rows = [
+        (str(artifact["name"]), asset_name(args.worker, str(artifact["name"])), artifact["sha256"], artifact["size"])
+        for artifact in prepared["artifacts"]
+    ]
+    rows.extend(
+        (screenshot_prepared_name(entry["name"]), screenshot_asset_name(args.worker, entry["name"]), entry["sha256"], entry["size"])
+        for entry in descriptor.get("screenshots") or []
+    )
+    for row in rows:
+        print("\t".join(str(value) for value in row))
     return 0
 
 
-def _artifacts(
-    descriptor: dict[str, Any], prepared: dict[str, Any], prepared_dir: Path,
-    receipt: dict[str, Any], repository: str,
-) -> list[dict[str, Any]]:
-    targets = {str(unit["id"]): unit.get("target") or unit.get("platform") for unit in descriptor["build_units"]}
+def _uploaded(receipt: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The receipt's rows by prepared name."""
     uploaded: dict[str, dict[str, Any]] = {}
     for row in receipt.get("assets", []):
         if not isinstance(row, dict) or not isinstance(row.get("name"), str) or row["name"] in uploaded:
             raise SystemExit("upload receipt assets must be objects with unique prepared names")
         uploaded[row["name"]] = row
+    return uploaded
+
+
+def _artifacts(
+    descriptor: dict[str, Any], prepared: dict[str, Any], prepared_dir: Path,
+    uploaded: dict[str, dict[str, Any]], repository: str,
+) -> list[dict[str, Any]]:
+    targets = {str(unit["id"]): unit.get("target") or unit.get("platform") for unit in descriptor["build_units"]}
     worker = str(descriptor["worker"])
     result: list[dict[str, Any]] = []
     for artifact in prepared["artifacts"]:
@@ -101,6 +137,42 @@ def _artifacts(
             "url": asset_url(repository, str(descriptor["source_sha"]), asset),
             "upload_state": row.get("state"),
         })
+    return result
+
+
+def _screenshots(
+    descriptor: dict[str, Any], prepared_dir: Path, uploaded: dict[str, dict[str, Any]], repository: str,
+) -> list[dict[str, Any]] | None:
+    """The manifest's `screenshots`, or None when the descriptor has none (inherit).
+
+    The prepared bytes are checked against the descriptor again, and the
+    receipt must show each uploaded as its namespaced asset with those bytes.
+    """
+    if "screenshots" not in descriptor:
+        return None
+    worker = str(descriptor["worker"])
+    result: list[dict[str, Any]] = []
+    for entry in descriptor["screenshots"]:
+        name = str(entry["name"])
+        prepared_name = screenshot_prepared_name(name)
+        try:
+            worker_screenshots.verify_file(prepared_dir / prepared_name, entry)
+        except worker_screenshots.ScreenshotError as error:
+            raise SystemExit(f"prepared screenshot bytes differ from the deployment descriptor: {error}") from None
+        asset = screenshot_asset_name(worker, name)
+        row = uploaded.get(prepared_name)
+        if row is None:
+            raise SystemExit(f"upload receipt has no entry for screenshot {name}")
+        if row.get("asset") != asset or row.get("sha256") != entry["sha256"] or row.get("size") != entry["size"]:
+            raise SystemExit(f"upload receipt for screenshot {name} differs from the deployment descriptor")
+        shot: dict[str, Any] = {"name": name, "release_asset": asset, "platform": entry["platform"]}
+        if "caption" in entry:
+            shot["caption"] = entry["caption"]
+        shot.update(
+            sha256=entry["sha256"], size=entry["size"], width=entry["width"], height=entry["height"],
+            url=asset_url(repository, str(descriptor["source_sha"]), asset),
+        )
+        result.append(shot)
     return result
 
 
@@ -183,7 +255,13 @@ def write(args: argparse.Namespace) -> int:
     if not isinstance(release, dict) or release.get("tag") != tag:
         raise SystemExit(f"upload receipt release tag differs from {tag}")
 
-    artifacts = _artifacts(descriptor, prepared, prepared_dir, receipt, args.repository)
+    uploaded = _uploaded(receipt)
+    artifacts = _artifacts(descriptor, prepared, prepared_dir, uploaded, args.repository)
+    screenshots = _screenshots(descriptor, prepared_dir, uploaded, args.repository)
+    claimed = {artifact["prepared_name"] for artifact in artifacts}
+    claimed.update(screenshot_prepared_name(shot["name"]) for shot in screenshots or [])
+    if set(uploaded) != claimed:
+        raise SystemExit(f"upload receipt names assets the prepared release does not have: {sorted(set(uploaded) - claimed)}")
     image = _image(descriptor, receipt)
     kind = str(descriptor["artifact"]["kind"])
     manifest = {
@@ -208,6 +286,8 @@ def write(args: argparse.Namespace) -> int:
         "evidence": evidence,
         "descriptor": descriptor,
     }
+    if screenshots is not None:
+        manifest["screenshots"] = screenshots
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     summary = {key: value for key, value in manifest.items() if key not in {"descriptor", "evidence", "interface"}}
@@ -221,6 +301,7 @@ def make_parser() -> argparse.ArgumentParser:
     plan_parser = sub.add_parser("plan")
     plan_parser.set_defaults(handler=plan)
     plan_parser.add_argument("--worker", required=True)
+    plan_parser.add_argument("--descriptor", type=Path, required=True)
     plan_parser.add_argument("--prepared", type=Path, required=True)
     write_parser = sub.add_parser("write")
     write_parser.set_defaults(handler=write)

@@ -8,6 +8,8 @@ import pytest
 
 import build_manifest
 import deployment_train
+import worker_screenshots
+from _screenshot_images import jpeg, png, webp
 from build_publish_payload import build_payload
 
 SOURCE_SHA = "a" * 40
@@ -72,11 +74,21 @@ def descriptor(worker: str, kind: str, *, interface_capture: str = "required") -
     return seal(base)
 
 
-def prepared_release(tmp_path: Path, selected: dict, files: dict[str, tuple[str, str]]) -> Path:
-    """Write a deploy-prepared directory; `files` maps prepared name -> (unit, role)."""
+def prepared_release(
+    tmp_path: Path, selected: dict, files: dict[str, tuple[str, str]], images: dict[str, bytes] | None = None,
+) -> Path:
+    """Write a deploy-prepared directory; `files` maps prepared name -> (unit, role).
+
+    `images` are the descriptor's screenshots by name, written to `screenshots/`
+    the way `deployment_train.py assemble` copies them.
+    """
     root = tmp_path / "deploy-prepared"
     root.mkdir()
     (root / "deployment-descriptor.json").write_text(json.dumps(selected), encoding="utf-8")
+    if images:
+        (root / "screenshots").mkdir()
+        for name, data in images.items():
+            (root / "screenshots" / name).write_bytes(data)
     entries = []
     for name, (unit, role) in files.items():
         path = root / name
@@ -97,7 +109,9 @@ def prepared_release(tmp_path: Path, selected: dict, files: dict[str, tuple[str,
 
 
 def receipt(root: Path, worker: str, image: dict | None = None, **overrides) -> Path:
+    """The upload job's receipt: one row per row of `build_manifest.py plan`."""
     prepared = json.loads((root / "prepared-artifacts.json").read_text(encoding="utf-8"))
+    selected = json.loads((root / "deployment-descriptor.json").read_text(encoding="utf-8"))
     document = {
         "contract": "build-upload-receipt",
         "worker": worker,
@@ -106,6 +120,9 @@ def receipt(root: Path, worker: str, image: dict | None = None, **overrides) -> 
         "assets": [
             {"name": a["name"], "asset": build_manifest.asset_name(worker, a["name"]), "sha256": a["sha256"], "size": a["size"], "state": "uploaded"}
             for a in prepared["artifacts"]
+        ] + [
+            {"name": f"screenshots/{shot['name']}", "asset": f"{worker}-screenshot-{shot['name']}", "sha256": shot["sha256"], "size": shot["size"], "state": "uploaded"}
+            for shot in selected.get("screenshots") or []
         ],
         "image": image,
     }
@@ -155,9 +172,15 @@ def test_release_tag_is_content_addressed_by_source_sha() -> None:
         build_manifest.release_tag("A" * 40)
 
 
+def plan_args(root: Path, worker: str = "web") -> argparse.Namespace:
+    return argparse.Namespace(
+        worker=worker, descriptor=root / "deployment-descriptor.json", prepared=root / "prepared-artifacts.json",
+    )
+
+
 def test_plan_prints_one_row_per_prepared_artifact(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = prepared_release(tmp_path, descriptor("web", "rust-binary"), RUST_FILES)
-    assert build_manifest.plan(argparse.Namespace(worker="web", prepared=root / "prepared-artifacts.json")) == 0
+    assert build_manifest.plan(plan_args(root)) == 0
     rows = [line.split("\t") for line in capsys.readouterr().out.splitlines()]
     assert len(rows) == 4
     assert rows[0][0] == "tool-aarch64-apple-darwin.sha256"
@@ -332,3 +355,118 @@ def test_manifest_rejects_tampered_prepared_bytes_and_identity_drift(tmp_path: P
     (root / "tool-aarch64-apple-darwin.tar.gz").write_bytes(b"tampered")
     with pytest.raises(SystemExit, match="bytes differ from inventory"):
         build_manifest.write(write_args(root, receipt_path, "web"))
+
+
+IMAGES = {"android-board.webp": webp(1080, 2424, 1), "iphone-board.png": png(1320, 2868, 2), "mac-board.jpg": jpeg(2880, 1800, 3)}
+
+
+def with_screenshots(tmp_path: Path, selected: dict) -> tuple[dict, dict[str, bytes]]:
+    """`selected` with the screenshots its worker's list compiles to, and their bytes by name."""
+    folder = tmp_path / "source" / selected["worker"] / "screenshots"
+    folder.mkdir(parents=True)
+    for name, data in IMAGES.items():
+        (folder / name).write_bytes(data)
+    (folder / "screenshots.yaml").write_text(
+        "- file: android-board.webp\n  platform: android\n  caption: The board, one lane at a time\n"
+        "- file: iphone-board.png\n  platform: iphone\n"
+        "- file: mac-board.jpg\n  platform: mac\n  caption: The board on a Mac\n",
+        encoding="utf-8",
+    )
+    entries = worker_screenshots.collect(
+        folder.parent, root=tmp_path / "source", kind=selected["artifact"]["kind"],
+    )
+    by_name = {entry["name"]: (folder / Path(entry["path"]).name).read_bytes() for entry in entries}
+    return seal({**selected, "screenshots": entries}), by_name
+
+
+def test_plan_uploads_each_screenshot_under_its_worker_namespaced_asset(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    selected, images = with_screenshots(tmp_path, descriptor("web", "rust-binary"))
+    root = prepared_release(tmp_path, selected, RUST_FILES, images)
+    assert build_manifest.plan(plan_args(root)) == 0
+    rows = [line.split("\t") for line in capsys.readouterr().out.splitlines()]
+    assert len(rows) == 7
+    assert rows[4:] == [
+        ["screenshots/android-1.webp", "web-screenshot-android-1.webp", selected["screenshots"][0]["sha256"], str(len(images["android-1.webp"]))],
+        ["screenshots/iphone-1.png", "web-screenshot-iphone-1.png", selected["screenshots"][1]["sha256"], str(len(images["iphone-1.png"]))],
+        ["screenshots/mac-1.jpg", "web-screenshot-mac-1.jpg", selected["screenshots"][2]["sha256"], str(len(images["mac-1.jpg"]))],
+    ]
+    # Every row names a file the upload loop reads from deploy-prepared/.
+    assert all((root / row[0]).is_file() for row in rows)
+    with pytest.raises(SystemExit, match="another worker"):
+        build_manifest.plan(plan_args(root, worker="other"))
+
+
+def test_manifest_carries_the_descriptor_screenshots_as_release_assets(tmp_path: Path) -> None:
+    selected, images = with_screenshots(tmp_path, descriptor("web", "rust-binary"))
+    root = prepared_release(tmp_path, selected, RUST_FILES, images)
+    manifest = written(write_args(root, receipt(root, "web"), "web"))
+
+    def url(asset: str) -> str:
+        return f"https://github.com/{REPOSITORY}/releases/download/{TAG}/{asset}"
+
+    shots = selected["screenshots"]
+    assert manifest["screenshots"] == [
+        {
+            "name": "android-1.webp", "release_asset": "web-screenshot-android-1.webp", "platform": "android",
+            "caption": "The board, one lane at a time", "sha256": shots[0]["sha256"], "size": shots[0]["size"],
+            "width": 1080, "height": 2424, "url": url("web-screenshot-android-1.webp"),
+        },
+        {
+            "name": "iphone-1.png", "release_asset": "web-screenshot-iphone-1.png", "platform": "iphone",
+            "sha256": shots[1]["sha256"], "size": shots[1]["size"], "width": 1320, "height": 2868,
+            "url": url("web-screenshot-iphone-1.png"),
+        },
+        {
+            "name": "mac-1.jpg", "release_asset": "web-screenshot-mac-1.jpg", "platform": "mac",
+            "caption": "The board on a Mac", "sha256": shots[2]["sha256"], "size": shots[2]["size"],
+            "width": 2880, "height": 1800, "url": url("web-screenshot-mac-1.jpg"),
+        },
+    ]
+    for shot in manifest["screenshots"]:
+        assert hashlib.sha256(images[shot["name"]]).hexdigest() == shot["sha256"]
+    # Screenshots are not artifacts: Release Control hosts every non-checksum artifact as one.
+    assert all("screenshot" not in artifact["name"] for artifact in manifest["artifacts"])
+    assert set(manifest["registry_artifacts"]["binaries"]) == {"x86_64-unknown-linux-gnu", "aarch64-apple-darwin"}
+    assert "screenshots" not in manifest["descriptor"]["registry_projection"]
+    assert manifest["descriptor"] == selected
+
+
+def test_manifest_screenshots_are_present_exactly_when_the_descriptor_has_them(tmp_path: Path) -> None:
+    for name in ("absent", "cleared", "image"):
+        (tmp_path / name).mkdir()
+    absent = prepared_release(tmp_path / "absent", descriptor("smoke", "javascript-bundle"),
+                              {"smoke.tar.gz": ("bundle", "bundle"), "smoke.sha256": ("bundle", "checksum")})
+    assert "screenshots" not in written(write_args(absent, receipt(absent, "smoke"), "smoke"))
+
+    cleared = prepared_release(tmp_path / "cleared", seal({**descriptor("smoke", "javascript-bundle"), "screenshots": []}),
+                               {"smoke.tar.gz": ("bundle", "bundle"), "smoke.sha256": ("bundle", "checksum")})
+    assert written(write_args(cleared, receipt(cleared, "smoke"), "smoke"))["screenshots"] == []
+
+    # An image worker may clear its screenshots; it can never list any.
+    image = prepared_release(tmp_path / "image", seal({**descriptor("img", "oci-image"), "screenshots": []}), OCI_FILES)
+    assert written(write_args(image, receipt(image, "img", image=IMAGE), "img"))["screenshots"] == []
+
+
+def test_manifest_rejects_screenshots_that_differ_from_the_descriptor(tmp_path: Path) -> None:
+    selected, images = with_screenshots(tmp_path, descriptor("web", "rust-binary"))
+    root = prepared_release(tmp_path, selected, RUST_FILES, images)
+    good = json.loads(receipt(root, "web").read_text(encoding="utf-8"))
+    path = root.parent / "upload-receipt.json"
+
+    def refused(document: dict, message: str) -> None:
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(SystemExit, match=message):
+            build_manifest.write(write_args(root, path, "web"))
+
+    shots = [row for row in good["assets"] if row["name"].startswith("screenshots/")]
+    others = [row for row in good["assets"] if not row["name"].startswith("screenshots/")]
+    refused({**good, "assets": others + shots[1:]}, "no entry for screenshot android-1.webp")
+    refused({**good, "assets": others + [{**shots[0], "sha256": "f" * 64}] + shots[1:]}, "screenshot android-1.webp differs")
+    refused({**good, "assets": others + [{**shots[0], "asset": "android-1.webp"}] + shots[1:]}, "screenshot android-1.webp differs")
+    stray = {"name": "screenshots/web-1.png", "asset": "web-screenshot-web-1.png", "sha256": "e" * 64, "size": 1, "state": "uploaded"}
+    refused({**good, "assets": good["assets"] + [stray]}, "names assets the prepared release does not have")
+
+    path.write_text(json.dumps(good), encoding="utf-8")
+    (root / "screenshots" / "mac-1.jpg").write_bytes(jpeg(2880, 1800, 4))
+    with pytest.raises(SystemExit, match="prepared screenshot bytes differ from the deployment descriptor"):
+        build_manifest.write(write_args(root, path, "web"))

@@ -111,6 +111,26 @@ def test_go_catalog_and_pr_validation_accept_adjacent_go_tests(tmp_path, monkeyp
     assert validate_worker.main(["--worker", "smoke", "--base-ref", "HEAD", "--source-changed", '["smoke"]']) == 0
 
 
+def test_pr_validation_refuses_a_screenshots_list_the_registry_would_refuse(tmp_path, monkeypatch, capsys):
+    entry = go_worker(tmp_path)
+    (tmp_path / "smoke/README.md").write_text("# Smoke\n")
+    (tmp_path / "smoke/main_test.go").write_text("package main\n")
+    (tmp_path / "smoke/screenshots").mkdir()
+    (tmp_path / "smoke/screenshots/screenshots.yaml").write_text("- file: board.gif\n  platform: android\n")
+    (tmp_path / ".deploy").mkdir()
+    catalog = tmp_path / ".deploy/workers.yaml"
+    catalog.write_text(yaml.safe_dump({"workers": {"smoke": entry}}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_lib, "worker_catalog_path", lambda: catalog)
+    assert validate_worker.main(["--worker", "smoke", "--base-ref", "HEAD", "--source-changed", "[]"]) == 1
+    assert (
+        "::error::smoke/screenshots/screenshots.yaml: 1 problem(s), the registry would refuse it:"
+        in capsys.readouterr().out
+    )
+    (tmp_path / "smoke/screenshots/screenshots.yaml").write_text("[]\n")
+    assert validate_worker.main(["--worker", "smoke", "--base-ref", "HEAD", "--source-changed", "[]"]) == 0
+
+
 def test_discovery_routes_go_changes_to_go_job(tmp_path, monkeypatch, capsys):
     entry = go_worker(tmp_path)
     (tmp_path / ".deploy").mkdir()

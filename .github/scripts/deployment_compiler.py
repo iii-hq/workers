@@ -19,6 +19,7 @@ from typing import Any
 
 import build_skills_payload
 import deployment_targets
+import worker_screenshots
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -134,6 +135,9 @@ def compiler_digest(script: Path, schema: Path) -> str:
     digest.update(Path(build_skills_payload.__file__).read_bytes())
     digest.update(b"\0deployment-target-policy\0")
     digest.update(Path(deployment_targets.__file__).read_bytes())
+    # The screenshot collector shapes the descriptor's top-level screenshots.
+    digest.update(b"\0screenshot-policy\0")
+    digest.update(Path(worker_screenshots.__file__).read_bytes())
     return digest.hexdigest()
 
 
@@ -510,6 +514,10 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
             if not isinstance(manifest.get(field), str) or not manifest[field].strip():
                 fail(f"{public_path}: {field} is required for Registry publication")
     artifact = validate_artifact(root, worker, worker_dir, value["artifact"], manifest)
+    # `<worker>/screenshots/screenshots.yaml`, read and checked against the
+    # Registry's limits. None (no list) lets the version inherit the previous
+    # version's; [] clears them.
+    screenshots = worker_screenshots.collect(worker_dir, root=root, kind=str(artifact["kind"]))
     package_manifest_version = read_version(package_manifest)
     try:
         skills = build_skills_payload.collect_skills(worker_dir)
@@ -550,6 +558,11 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         "build_units": build_units(worker, artifact),
         "registry_projection": projection,
     }
+    if screenshots is not None:
+        # Top level, never in registry_projection: Release Control spreads the
+        # projection into POST /publish, and the list names release assets it
+        # registers first. Present only when the worker has a list.
+        descriptor["screenshots"] = screenshots
     descriptor["descriptor_sha256"] = json_sha256(descriptor)
     return descriptor
 

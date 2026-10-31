@@ -22,6 +22,8 @@ from deployment_train import (
 )
 
 from _test_helpers import GIT_HERMETIC_ENV
+from _screenshot_images import png, webp
+import worker_screenshots
 
 
 def seal_descriptor(value: dict) -> dict:
@@ -571,3 +573,113 @@ def test_matrix_schedules_intel_and_arm_macos_on_native_runners(tmp_path: Path, 
         "x86_64-apple-darwin": "macos-15-intel",
     }
     assert {row["unit"] for row in rows} == {f"state-{target}" for target in targets}
+
+
+def screenshot_source(root: Path) -> list[dict]:
+    """A source checkout `root` with `smoke/screenshots/` and the descriptor entries it compiles to."""
+    folder = root / "smoke" / "screenshots"
+    folder.mkdir(parents=True)
+    (folder / "board.png").write_bytes(png(400, 800, 1))
+    (folder / "ticket.webp").write_bytes(webp(1080, 2424, 2))
+    (folder / "screenshots.yaml").write_text(
+        "- file: board.png\n  platform: iphone\n  caption: The board\n- file: ticket.webp\n  platform: android\n"
+    )
+    return worker_screenshots.collect(root / "smoke", root=root, kind="javascript-bundle")
+
+
+def assemble_bundle(tmp_path: Path, selected: dict, source_root: Path) -> Path:
+    """Run `assemble` over one built bundle unit; returns the prepared directory."""
+    unit = tmp_path / "release-builds" / "release-build-smoke-bundle"
+    unit.mkdir(parents=True)
+    archive = unit / "smoke.tar.gz"
+    archive.write_bytes(b"bundle bytes")
+    checksum = deployment_train.checksum_sidecar(archive)
+    (unit / "build-result.json").write_text(json.dumps({
+        "contract": "release-build-result", "worker": "smoke", "source_sha": "a" * 40,
+        "descriptor_sha256": selected["descriptor_sha256"], "unit": "bundle",
+        "artifacts": [
+            {"name": path.name, "role": role, "sha256": deployment_train.sha256(path), "size": path.stat().st_size}
+            for path, role in ((archive, "bundle"), (checksum, "checksum"))
+        ],
+    }))
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected))
+    out = tmp_path / "deploy-prepared"
+    assert deployment_train.assemble(argparse.Namespace(
+        descriptor=descriptor_path, artifacts_dir=tmp_path / "release-builds", source_root=source_root, out=out,
+    )) == 0
+    return out
+
+
+def verify(prepared: Path) -> int:
+    return verify_prepared(argparse.Namespace(
+        descriptor=prepared / "deployment-descriptor.json", prepared=prepared / "prepared-artifacts.json",
+    ))
+
+
+def test_assemble_carries_the_descriptor_screenshots_checked_byte_for_byte(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    selected = descriptor("smoke", "a" * 40, "0.1.0")
+    selected["screenshots"] = screenshot_source(source)
+    selected = seal_descriptor(selected)
+
+    prepared = assemble_bundle(tmp_path, selected, source)
+
+    folder = prepared / "screenshots"
+    assert sorted(path.name for path in folder.iterdir()) == ["android-1.webp", "iphone-1.png"]
+    assert (folder / "iphone-1.png").read_bytes() == (source / "smoke/screenshots/board.png").read_bytes()
+    assert (folder / "android-1.webp").read_bytes() == (source / "smoke/screenshots/ticket.webp").read_bytes()
+    # The artifact inventory is unchanged: screenshots are the descriptor's, not artifacts.
+    inventory = json.loads((prepared / "prepared-artifacts.json").read_text())
+    assert [artifact["name"] for artifact in inventory["artifacts"]] == ["smoke.sha256", "smoke.tar.gz"]
+    assert verify(prepared) == 0
+
+    (folder / "stray.png").write_bytes(png(400, 400, 7))
+    with pytest.raises(SystemExit, match=r"unknown=\['stray.png'\]"):
+        verify(prepared)
+    (folder / "stray.png").unlink()
+    (folder / "iphone-1.png").write_bytes(png(400, 800, 3))
+    with pytest.raises(SystemExit, match="prepared screenshot bytes differ from the deployment descriptor"):
+        verify(prepared)
+    (folder / "iphone-1.png").unlink()
+    with pytest.raises(SystemExit, match=r"missing=\['iphone-1.png'\]"):
+        verify(prepared)
+
+
+def test_assemble_refuses_a_source_image_that_is_not_the_compiled_one(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    selected = descriptor("smoke", "a" * 40, "0.1.0")
+    selected["screenshots"] = screenshot_source(source)
+    selected = seal_descriptor(selected)
+    (source / "smoke/screenshots/ticket.webp").write_bytes(webp(1080, 2424, 3))
+    with pytest.raises(SystemExit, match="screenshot android-1.webp differs from the deployment descriptor"):
+        assemble_bundle(tmp_path, selected, source)
+
+
+def test_a_prepared_release_without_listed_screenshots_carries_none(tmp_path: Path) -> None:
+    for name, extra in (("absent", {}), ("cleared", {"screenshots": []})):
+        selected = seal_descriptor({**descriptor("smoke", "a" * 40, "0.1.0"), **extra})
+        prepared = assemble_bundle(tmp_path / name, selected, tmp_path / name)
+        assert not (prepared / "screenshots").exists()
+        assert verify(prepared) == 0
+        (prepared / "screenshots").mkdir()
+        with pytest.raises(SystemExit, match="carries screenshots the deployment descriptor does not list"):
+            verify(prepared)
+
+
+def test_verify_descriptor_accepts_screenshots_only_in_their_compiled_shape(tmp_path: Path) -> None:
+    entries = screenshot_source(tmp_path)
+    selected = seal_descriptor({**descriptor("smoke", "a" * 40, "0.1.0"), "screenshots": entries})
+    assert deployment_train.verify_descriptor(selected) == selected
+    assert deployment_train.verify_descriptor(seal_descriptor({**selected, "screenshots": []}))["screenshots"] == []
+
+    with pytest.raises(SystemExit, match=r"unknown=\['screenshot'\]"):
+        deployment_train.verify_descriptor(seal_descriptor({**descriptor("smoke", "a" * 40, "0.1.0"), "screenshot": []}))
+    escaped = [{**entries[0], "path": "other/screenshots/board.png"}, entries[1]]
+    with pytest.raises(SystemExit, match="deployment descriptor screenshots: screenshots\\[0\\].path"):
+        deployment_train.verify_descriptor(seal_descriptor({**selected, "screenshots": escaped}))
+    image = descriptor("smoke", "a" * 40, "0.1.0")
+    image["artifact"] = {"kind": "oci-image", "context": ".", "dockerfile": "Dockerfile", "platforms": ["linux/amd64"]}
+    with pytest.raises(SystemExit, match="oci-image releases cannot carry screenshots"):
+        deployment_train.verify_descriptor(seal_descriptor({**image, "screenshots": entries}))
+    assert deployment_train.verify_descriptor(seal_descriptor({**image, "screenshots": []}))["screenshots"] == []

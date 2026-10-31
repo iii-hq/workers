@@ -272,6 +272,21 @@ def test_build_workflow_only_builds_and_uploads_immutable_bytes():
     assert "build_manifest.py write" in text
 
 
+def test_build_uploads_screenshots_through_the_same_asset_plan():
+    text = body(BUILD)
+    # The plan reads the descriptor's screenshots; the upload loop and its
+    # identical-bytes rule then treat them like every other asset.
+    assert "--worker \"$WORKER\" --descriptor deploy-prepared/deployment-descriptor.json" in text
+    assert text.count("build_manifest.py plan") == 1
+    assert text.count("gh release upload") == 1
+    # assemble runs the source SHA's own deployment_train.py: an option an
+    # older source does not know would fail every rebuild of it.
+    assemble = yaml.safe_load(text)["jobs"]["assemble"]["steps"]
+    step = next(step for step in assemble if step.get("name") == "Assemble immutable release")
+    assert "--source-root" not in step["run"]
+    assert "python3 .github/scripts/deployment_train.py assemble" in step["run"]
+
+
 def test_build_workflow_checks_out_the_exact_source_sha_without_credentials():
     workflow = yaml.safe_load(body(BUILD))
     for job_name, job in workflow["jobs"].items():
