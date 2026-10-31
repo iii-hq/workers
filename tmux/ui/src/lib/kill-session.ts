@@ -37,22 +37,43 @@ export type NamedWindow = Pick<WindowRow, 'label' | 'command' | 'compose'> & {
   agents: readonly Pick<AgentBadge, 'label'>[]
 }
 
+/** Of a part's characters, at most this many go to what runs in the window, so a long window name never hides it. */
+export const MAX_RUNNING_CHARS = 17
+
 /**
- * `0:claude (Claude Code)`: the window and what runs in it — its agent, an
- * `iii compose` stack (whose process title is `iii:c:<namespace>`), or the
- * foreground command. Just `2:vim` when that is the window's own name. A
- * blank agent label falls through to the command.
+ * `0:claude (Claude Code)`: the window and what runs in it — its first
+ * agent with a label, an `iii compose` stack (whose process title is
+ * `iii:c:<namespace>`), or the foreground command. Just `2:vim` when that is
+ * the window's own name. At most `MAX_PART_CHARS`: the window and what runs
+ * in it are clipped apart, so neither pushes the other out.
  */
 export function windowPart(row: NamedWindow): string {
-  const running = row.agents[0]?.label.trim() || (row.compose ? 'iii compose' : row.command.trim())
-  return running && running !== row.window.name ? `${row.label} (${running})` : row.label
+  const agent = row.agents.map((badge) => badge.label.trim()).find((label) => label !== '')
+  const running = agent || (row.compose ? 'iii compose' : row.command.trim())
+  if (!running || running === row.window.name) return clip(row.label)
+  const shown = clip(running, MAX_RUNNING_CHARS)
+  // ` (` and `)` take the other three.
+  return `${clip(row.label, MAX_PART_CHARS - graphemes(shown).length - 3)} (${shown})`
 }
 
-/** `a, b and c`, each clipped, with the windows past the cap as `N more`. */
+/**
+ * `text` cut in the middle to `max` characters (graphemes), keeping both
+ * ends: names that share a long beginning (`acme-api-staging-…`) usually
+ * differ at the end.
+ */
+export function clipMiddle(text: string, max = MAX_PART_CHARS): string {
+  const chars = graphemes(text)
+  if (chars.length <= max) return text
+  const head = Math.ceil((max - 1) / 2)
+  const tail = max - 1 - head
+  return `${chars.slice(0, head).join('').trimEnd()}…${chars.slice(chars.length - tail).join('').trimStart()}`
+}
+
+/** `a, b and c`, with the windows past the cap as `N more`. */
 export function windowList(windows: readonly NamedWindow[]): string {
   const listed = windows.length > MAX_NAMED_WINDOWS + 1 ? MAX_NAMED_WINDOWS : windows.length
   const parts = [
-    ...windows.slice(0, listed).map((row) => clip(windowPart(row))),
+    ...windows.slice(0, listed).map(windowPart),
     ...(listed < windows.length ? [`${windows.length - listed} more`] : []),
   ]
   return parts.length < 2 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`

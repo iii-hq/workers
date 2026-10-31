@@ -50,6 +50,7 @@ export function ConfirmDialog({
   error: outsideError = null,
 }: ConfirmDialogProps) {
   const cancelRef = React.useRef<HTMLButtonElement>(null)
+  const titleId = React.useId()
   const [busy, setBusy] = React.useState(false)
   const [ownError, setError] = React.useState<string | null>(null)
   const error = ownError ?? outsideError
@@ -104,9 +105,18 @@ export function ConfirmDialog({
         }}
       >
         {/* The text scrolls when it is taller than the dialog (at most 85vh), so
-            the actions below always stay on screen. */}
-        <div className="min-h-0 overflow-y-auto px-6 pt-6 pb-5">
-          <DialogTitle className="pr-8 font-inter text-[16px] leading-6 font-semibold break-words">
+            the actions below always stay on screen. Its tab stop lets a
+            keyboard scroll it (Safari focuses no scroll container itself). */}
+        <section
+          aria-labelledby={titleId}
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: the scrolling region must be reachable by keyboard
+          tabIndex={0}
+          className="min-h-0 overflow-y-auto px-6 pt-6 pb-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-inset"
+        >
+          <DialogTitle
+            id={titleId}
+            className="pr-8 font-inter text-[16px] leading-6 font-semibold break-words"
+          >
             {title}
           </DialogTitle>
           {description ? (
@@ -114,13 +124,16 @@ export function ConfirmDialog({
               {description}
             </DialogDescription>
           ) : null}
-        </div>
+        </section>
         {/* Why the action failed stays in sight, above the actions, however
-            far the text above is scrolled. */}
+            far the text above is scrolled; on a very short screen it shrinks
+            and scrolls before the actions do. */}
         {error ? (
           <p
             role="alert"
-            className="max-h-[30vh] shrink-0 overflow-y-auto px-6 pb-5 font-inter text-[14px] leading-[22px] break-words text-alert"
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: the error scrolls when long and must be reachable by keyboard
+            tabIndex={0}
+            className="max-h-[30vh] min-h-0 overflow-y-auto px-6 pb-5 font-inter text-[14px] leading-[22px] break-words text-alert focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-inset"
           >
             {error}
           </p>

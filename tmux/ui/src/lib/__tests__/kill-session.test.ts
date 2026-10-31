@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   clip,
+  clipMiddle,
   killSessionDescription,
   MAX_NAMED_WINDOWS,
   MAX_PART_CHARS,
+  MAX_RUNNING_CHARS,
   type NamedWindow,
   windowList,
   windowPart,
@@ -36,6 +38,26 @@ describe('windowPart', () => {
 
   it('falls through a blank agent label to the command', () => {
     expect(windowPart(named(5, 'agent', 'node', { agents: [{ label: ' ' }] }))).toBe('5:agent (node)')
+  })
+
+  it('names the first agent with a label, past a blank one', () => {
+    expect(windowPart(named(6, 'pair', 'node', { agents: [{ label: '' }, { label: 'Codex' }] }))).toBe('6:pair (Codex)')
+  })
+
+  it('keeps what runs in the window when its name is long', () => {
+    const part = windowPart(named(7, 'x'.repeat(80), 'node', { agents: [{ label: 'Claude Code' }] }))
+    expect(part.endsWith(' (Claude Code)')).toBe(true)
+    expect(Array.from(part)).toHaveLength(MAX_PART_CHARS)
+  })
+
+  it('clips a long command too, and the window keeps the rest', () => {
+    const part = windowPart(named(8, 'build', 'c'.repeat(60)))
+    expect(part).toBe(`8:build (${'c'.repeat(MAX_RUNNING_CHARS - 1)}…)`)
+  })
+
+  it('clips a long window that runs its own name', () => {
+    const name = 'v'.repeat(80)
+    expect(Array.from(windowPart(named(9, name, name)))).toHaveLength(MAX_PART_CHARS)
   })
 })
 
@@ -82,6 +104,25 @@ describe('clip', () => {
     expect(clip('ab👨‍👩‍👧‍👦xyz', 4)).toBe('ab👨‍👩‍👧‍👦…')
     expect(clip('ab🇧🇷cd', 4)).toBe('ab🇧🇷…')
     expect(clip('cafe\u0301 au lait', 5)).toBe('cafe\u0301…')
+  })
+})
+
+describe('clipMiddle', () => {
+  it('keeps a name that fits', () => {
+    expect(clipMiddle('acme-api')).toBe('acme-api')
+  })
+
+  it('keeps both ends of a long name', () => {
+    const cut = clipMiddle(`acme-api-staging-${'x'.repeat(60)}-eu-west`)
+    expect(Array.from(cut)).toHaveLength(MAX_PART_CHARS)
+    expect(cut.startsWith('acme-api-staging-')).toBe(true)
+    expect(cut.endsWith('-eu-west')).toBe(true)
+    expect(cut).toContain('…')
+  })
+
+  it('tells apart two names that share a long beginning', () => {
+    const base = `acme-${'shared-'.repeat(10)}`
+    expect(clipMiddle(`${base}api`)).not.toBe(clipMiddle(`${base}web`))
   })
 })
 
