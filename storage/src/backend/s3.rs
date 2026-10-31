@@ -516,17 +516,14 @@ impl Backend for S3Backend {
                     .size()
                     .and_then(|n| u64::try_from(n).ok())
                     .ok_or_else(|| multipart_invalid("missing part size"))?;
-                parts.push(crate::handlers::multipart::Part {
+                parts.push(crate::handlers::multipart::ListedPart {
                     part_number,
                     size,
                     etag: p
                         .e_tag()
                         .ok_or_else(|| multipart_invalid("missing ETag"))?
                         .into(),
-                    checksum_sha256: p
-                        .checksum_sha256()
-                        .ok_or_else(|| multipart_invalid("missing checksum"))?
-                        .into(),
+                    checksum_sha256: p.checksum_sha256().map(str::to_owned),
                 });
             }
             if !r.is_truncated().unwrap_or(false) {
@@ -967,7 +964,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multipart_list_consumes_all_pages() {
+    async fn multipart_list_consumes_all_pages_with_optional_checksums() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -988,7 +985,7 @@ mod tests {
                 if number == 2 {
                     assert!(request.contains("part-number-marker=1"));
                 }
-                let body = format!("<ListPartsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><IsTruncated>{}</IsTruncated>{}<Part><PartNumber>{}</PartNumber><ETag>\"opaque{}\"</ETag><Size>1</Size><ChecksumSHA256>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</ChecksumSHA256></Part></ListPartsResult>", number == 1, if number == 1 { "<NextPartNumberMarker>1</NextPartNumberMarker>" } else { "" }, number, number);
+                let body = format!("<ListPartsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><IsTruncated>{}</IsTruncated>{}<Part><PartNumber>{}</PartNumber><ETag>\"opaque{}\"</ETag><Size>1</Size>{}</Part></ListPartsResult>", number == 1, if number == 1 { "<NextPartNumberMarker>1</NextPartNumberMarker>" } else { "" }, number, number, if number == 1 { "<ChecksumSHA256>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</ChecksumSHA256>" } else { "" });
                 stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
             }
         });
@@ -1021,6 +1018,12 @@ mod tests {
         assert_eq!(result.parts.len(), 2);
         assert_eq!(result.parts[0].etag, "\"opaque1\"");
         assert_eq!(result.parts[1].part_number, 2);
+        let wire = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            wire["parts"][0]["checksum_sha256"],
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        );
+        assert!(wire["parts"][1].get("checksum_sha256").is_none());
     }
 
     #[tokio::test]

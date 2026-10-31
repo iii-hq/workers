@@ -52,8 +52,16 @@ pub struct Part {
     pub checksum_sha256: String,
 }
 #[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ListedPart {
+    pub part_number: u32,
+    pub size: u64,
+    pub etag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checksum_sha256: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ListResp {
-    pub parts: Vec<Part>,
+    pub parts: Vec<ListedPart>,
 }
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -100,6 +108,12 @@ fn part(p: &Part) -> bool {
         && text(&p.etag)
         && valid_checksum(&p.checksum_sha256)
 }
+fn listed_part(p: &ListedPart) -> bool {
+    (1..=10000).contains(&p.part_number)
+        && p.size > 0
+        && text(&p.etag)
+        && p.checksum_sha256.as_deref().is_none_or(valid_checksum)
+}
 fn map_error(e: BackendError, provider: &str, bucket: &str, key: &str) -> String {
     err_to_str(backend_error_to_storage(e, provider, bucket, key))
 }
@@ -140,7 +154,7 @@ pub async fn list(state: &AppState, req: Identity) -> Result<ListResp, String> {
         .multipart_list(&req)
         .await
         .map_err(|e| map_error(e, b.provider(), &req.bucket, &req.key))?;
-    if result.parts.iter().any(|p| !part(p))
+    if result.parts.iter().any(|p| !listed_part(p))
         || result
             .parts
             .windows(2)
@@ -204,6 +218,63 @@ mod tests {
             checksum_sha256: STANDARD.encode([0; 32]),
         };
         assert!(!part(&p));
+    }
+    #[test]
+    fn multipart_complete_requires_checksum_on_each_part() {
+        let request = serde_json::json!({
+            "bucket": "bucket", "key": "key", "upload_id": "id",
+            "parts": [{ "part_number": 1, "size": 1, "etag": "opaque" }]
+        });
+        assert!(serde_json::from_value::<CompleteReq>(request).is_err());
+        let p = Part {
+            part_number: 1,
+            size: 1,
+            etag: "opaque".into(),
+            checksum_sha256: "".into(),
+        };
+        assert!(!part(&p));
+    }
+    #[test]
+    fn multipart_listing_allows_absence_but_validates_present_evidence() {
+        let valid = ListedPart {
+            part_number: 1,
+            size: 1,
+            etag: "opaque".into(),
+            checksum_sha256: None,
+        };
+        assert!(listed_part(&valid));
+        assert!(listed_part(&ListedPart {
+            checksum_sha256: Some(STANDARD.encode([0; 32])),
+            ..valid.clone()
+        }));
+        for invalid in [
+            ListedPart {
+                part_number: 0,
+                ..valid.clone()
+            },
+            ListedPart {
+                part_number: 10001,
+                ..valid.clone()
+            },
+            ListedPart {
+                size: 0,
+                ..valid.clone()
+            },
+            ListedPart {
+                etag: "".into(),
+                ..valid.clone()
+            },
+            ListedPart {
+                etag: "bad\n".into(),
+                ..valid.clone()
+            },
+            ListedPart {
+                checksum_sha256: Some("bad".into()),
+                ..valid
+            },
+        ] {
+            assert!(!listed_part(&invalid));
+        }
     }
     #[tokio::test]
     async fn multipart_rejects_invalid_input_before_backend() {

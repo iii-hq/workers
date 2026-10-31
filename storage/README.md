@@ -15,6 +15,14 @@ Other backends return unsupported for these operations. Browser part bytes trave
 directly to storage; the caller owns authorization, session lifecycle and cleanup.
 Configure an incomplete-multipart lifecycle rule or an approved equivalent.
 
+ListParts returns each part's number, size and opaque ETag; `checksum_sha256` is
+optional and is omitted when the provider does not report it. A present checksum
+must be valid SHA-256. This does not relax UploadPart signing or Complete:
+completion parts still require their authorized SHA-256 checksums. Callers must
+compare listed identity, size and ETag (and checksum when present) against the
+closed manifest, then require the exact checksum-enabled SHA256 COMPOSITE HEAD
+before publishing, including recovery after a lost completion response.
+
 Worker release versions are selected and published by Release Control from a
 verified source SHA and build manifest; see [deployment operations](../docs/sops/release.md).
 The version in Cargo.toml is source metadata, not proof that this code is published.
