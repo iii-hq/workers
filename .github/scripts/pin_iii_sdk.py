@@ -4,10 +4,11 @@
 Run it through `scripts/pin-iii-sdk.sh`, whose header lists the order of the
 last mile of an iii release. Subcommands:
 
-    pin VERSION [--dry-run] [--only GROUPS] [--project DIR] [--no-relock]
-                [--no-preflight] [--cargo-config FILE]
+    pin VERSION [--dry-run] [--only GROUPS] [--no-relock] [--no-preflight]
+                [--cargo-config FILE]
         Write VERSION (semver, e.g. 0.26.0-rc.1) into every SDK pin, then
-        re-lock each project that resolves an iii SDK package.
+        re-lock each project that resolves an iii SDK package. Pins already
+        at VERSION (from an earlier `--only` run) stay; the rest move.
     kit [--dry-run] [--no-fetch] [--remote NAME] [WORKER=VERSION ...]
         Set the deepwork kit's worker ranges to the first release of each
         worker whose manifest pins the current iii-sdk version.
@@ -39,6 +40,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from itertools import zip_longest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -167,7 +169,7 @@ class Edit:
 
     def lines(self) -> list[tuple[int, str, str]]:
         old, new = self.before.splitlines(), self.after.splitlines()
-        return [(i + 1, a, b) for i, (a, b) in enumerate(zip(old, new, strict=False)) if a != b]
+        return [(i + 1, a, b) for i, (a, b) in enumerate(zip_longest(old, new, fillvalue="")) if a != b]
 
 
 def git_files(root: Path, *patterns: str) -> list[str]:
@@ -547,23 +549,19 @@ def cmd_pin(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
     files = git_files(root)
-    projects = [p.rstrip("/") for p in args.project]
-
-    def in_scope(path: str) -> bool:
-        return not projects or any(path == p or path.startswith(p + "/") for p in projects)
-
 
     bad = unsupported_forms(root, files)
     if bad:
         print("error: SDK pins in a form this script does not rewrite:\n  " + "\n  ".join(bad), file=sys.stderr)
         return 1
     pinned = current_versions(root, files)
-    if len(pinned) > 1:
+    # Pins at the target come from an earlier `--only` run; the run moves the rest.
+    current = set(pinned) - {target.semver} or set(pinned)
+    if len(current) > 1:
         print("error: the repository pins more than one SDK version:", file=sys.stderr)
         for version, where in sorted(pinned.items()):
             print(f"  {version}: {', '.join(sorted(where)[:6])}{' ...' if len(where) > 6 else ''}", file=sys.stderr)
         return 1
-    current = set(pinned)
     engine_tag = f"iii/v{target.semver}"
 
     digests: dict[str, str] | None = None
@@ -579,7 +577,7 @@ def cmd_pin(args: argparse.Namespace) -> int:
             return f"<sha256 of {asset} in {engine_tag}>"
         return digests[asset]
 
-    edits = [e for e in plan_edits(root, files, target, current, groups, digest) if in_scope(e.path)]
+    edits = plan_edits(root, files, target, current, groups, digest)
     verb = "would edit" if args.dry_run else "edits"
     print(f"iii SDK pins {', '.join(sorted(current)) or '(none)'} -> {target.semver} "
           f"(PyPI {target.pep440}, Go v{target.semver}, engine {engine_tag})")
@@ -599,7 +597,6 @@ def cmd_pin(args: argparse.Namespace) -> int:
             steps += python_steps(root, target)
         if "go" in groups:
             steps += go_steps(root, target)
-        steps = [s for s in steps if in_scope(s.project)]
     print(f"\n{'would re-lock' if args.dry_run else 're-locks'} {len(steps)} projects:")
     for step in steps:
         print(f"  {step.group:<6} {step.project}: {show_command(step)}")
@@ -649,8 +646,8 @@ def cmd_pin(args: argparse.Namespace) -> int:
             print(f"  re-locked {group}: {sum(s.status == 'ok' for s in mine)}/{len(mine)}")
     for step in failed:
         print(f"  FAILED {step.group} {step.project}: {step.detail.splitlines()[0] if step.detail else ''}")
-    print("\nnext: review `git diff`, commit, push the branch, then publish the worker releases "
-          "through Release Control.")
+    print("\nnext: review `git diff`, commit and push the branch, merge it into main once CI passes, "
+          "then publish the worker releases through Release Control.")
     return 1 if failed else 0
 
 
@@ -800,8 +797,6 @@ def main(argv: list[str] | None = None) -> int:
     pin.add_argument("version", help="the iii release, e.g. 0.26.0-rc.1 or 0.26.0")
     pin.add_argument("--dry-run", action="store_true", help="print the edits and re-lock commands only")
     pin.add_argument("--only", help=f"comma-separated groups: {', '.join(GROUPS)}")
-    pin.add_argument("--project", action="append", default=[], metavar="DIR",
-                     help="limit edits and re-locks to this directory (repeatable)")
     pin.add_argument("--no-relock", action="store_true", help="write the edits without re-locking")
     pin.add_argument("--no-preflight", action="store_true", help="skip the check that the registries serve the release")
     pin.add_argument("--cargo-config", action="append", default=[], metavar="FILE",

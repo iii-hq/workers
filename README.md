@@ -180,7 +180,11 @@ The last mile of an iii release, in order:
 
 3. Review `git diff`, commit and push the branch. CI builds and tests every
    worker on the published SDKs and engine.
-4. Publish the worker releases through Release Control.
+4. Merge the pull request into `main` once CI passes. Release Control builds
+   commits on `main`: it reads the descriptor index that
+   [`deploy-descriptor-index.yml`](.github/workflows/deploy-descriptor-index.yml)
+   compiles on each push to `main`.
+5. Publish the worker releases through Release Control.
 
 The stable release takes the same steps with `0.26.0`. Once the workers built
 on it are published:
@@ -188,13 +192,15 @@ on it are published:
 ```bash
 scripts/pin-iii-sdk.sh kit                            # deepwork kit ranges
 scripts/pin-iii-sdk.sh template export <templates>    # synced template files into a checkout of iii-hq/templates
+# commit and push that checkout of iii-hq/templates
 scripts/pin-iii-sdk.sh template record <commit>       # that templates commit, in template/upstream/sync.json
 ```
 
 `kit` sets each worker range in `kits/deepwork/iii.kit.yaml` to the first
 release of that worker whose `Cargo.toml` pins the SDK version this repository
 pins. `template record` writes the commit only when it carries every synced file
-byte for byte.
+byte for byte. Commit `kits/deepwork/iii.kit.yaml` and
+`template/upstream/sync.json` on a branch, push it and merge it into `main`.
 
 ## Build
 

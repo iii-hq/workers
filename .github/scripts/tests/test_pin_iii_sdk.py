@@ -110,6 +110,26 @@ def test_mixed_pins_stop_the_run(repo: Path, capsys: pytest.CaptureFixture[str])
     assert "more than one SDK version" in capsys.readouterr().err
 
 
+def test_a_run_after_an_only_run_moves_the_rest(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    digests = {f"iii-{t}.tar.gz": d * 64 for t, d in (("x86_64-unknown-linux-gnu", "1"),
+                                                     ("aarch64-unknown-linux-gnu", "2"))}
+    monkeypatch.setattr(pin, "release_digests", lambda tag: digests)
+    run = ["--root", str(repo), "0.26.0-rc.1", "--no-relock", "--no-preflight"]
+    assert pin.main([*run, "--only", "rust"]) == 0
+    assert set(pin.current_versions(repo, pin.git_files(repo))) == {"0.26.0", "0.26.0-rc.1"}
+    assert pin.main(run) == 0
+    assert set(pin.current_versions(repo, pin.git_files(repo))) == {"0.26.0-rc.1"}
+    assert "III_RELEASE_TAG: 'iii/v0.26.0-rc.1'" in (repo / ".github/workflows/ci.yml").read_text()
+    assert '\\"iii-sdk\\": \\"^0.26.0-rc.1\\"' in (repo / "g/src/lib.rs").read_text()
+
+
+def test_mixed_pins_besides_the_target_stop_the_run(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (repo / "go/go.mod").write_text(FIXTURE["go/go.mod"].replace("v0.26.0", "v0.25.0"))
+    (repo / "w/Cargo.toml").write_text(FIXTURE["w/Cargo.toml"].replace("=0.26.0", "=0.26.0-rc.1"))
+    assert pin.main(["--root", str(repo), "0.26.0-rc.1", "--dry-run"]) == 1
+    assert "more than one SDK version" in capsys.readouterr().err
+
+
 def test_dry_run_writes_nothing(repo: Path) -> None:
     before = {p: (repo / p).read_text() for p in FIXTURE}
     assert pin.main(["--root", str(repo), "0.26.0-rc.1", "--dry-run", "--only", "rust,node,python,go"]) == 0

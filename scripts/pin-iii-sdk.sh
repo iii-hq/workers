@@ -15,11 +15,17 @@
 #      writing anything while a registry does not serve the release yet.
 #   3. Review `git diff`, commit and push the branch. CI then builds and tests every
 #      worker against the published SDKs and the iii/v<version> engine.
-#   4. Publish the worker releases through Release Control.
-#   5. After the stable release (0.26.0), with the workers built on it published:
+#   4. Merge the pull request into main once CI passes. Release Control builds
+#      commits on main: it reads the descriptor index that
+#      deploy-descriptor-index.yml compiles on each push to main.
+#   5. Publish the worker releases through Release Control.
+#   6. After the stable release (0.26.0), with the workers built on it published:
 #        scripts/pin-iii-sdk.sh kit                       # deepwork kit ranges
 #        scripts/pin-iii-sdk.sh template export <checkout of iii-hq/templates>
+#        (commit and push that checkout)
 #        scripts/pin-iii-sdk.sh template record <its commit>
+#      Commit kits/deepwork/iii.kit.yaml and template/upstream/sync.json on a
+#      branch, push it and merge it into main.
 #
 # What `pin` rewrites (VERSION in its spelling for each ecosystem):
 #   rust    iii-sdk, iii-helpers, iii-observability, iii-filter and function-macros in
@@ -39,10 +45,12 @@
 #           URL and its amd64/arm64 sha256 in hermes/Dockerfile (read from the
 #           release), and the tests that assert them
 #
-# Options: --only rust,node,python,go,engine  --project DIR  --no-relock
-#          --no-preflight  --cargo-config FILE (a [patch] overlay, for example)
+# Options: --only rust,node,python,go,engine  --no-relock  --no-preflight
+#          --cargo-config FILE (a [patch] overlay, for example)
+# A run after an `--only` run leaves the pins already at VERSION and moves the rest.
 # Requires Python 3.9+, git, and the tools of the groups it re-locks: cargo, node
-# with npx and npm, uv, go. `gh` or GITHUB_TOKEN reads the release.
+# with npx and npm, uv, go. `gh` or GITHUB_TOKEN reads the release. `kit` also
+# needs PyYAML.
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
