@@ -5,6 +5,20 @@ filesystem backend. Streamed uploads, signed downloads, and observable
 object-created / object-deleted events — all behind one `bucket:` name
 regardless of the cloud underneath.
 
+## S3 multipart controls
+
+The S3 backend supports multipart create, checksum-bound part signing, list,
+complete and abort, plus checksum-enabled object HEAD. These controls require a
+provider that implements the matching SHA-256 composite checksum contract;
+validate against the actual provider and version before enabling an application.
+Other backends return unsupported for these operations. Browser part bytes travel
+directly to storage; the caller owns authorization, session lifecycle and cleanup.
+Configure an incomplete-multipart lifecycle rule or an approved equivalent.
+
+Worker release versions are selected and published by Release Control from a
+verified source SHA and build manifest; see [deployment operations](../docs/sops/release.md).
+The version in Cargo.toml is source metadata, not proof that this code is published.
+
 ## Install
 
 ```bash
@@ -708,3 +722,28 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ./target/debug/storage --manifest | jq .
 ```
+
+### S3 multipart provider contract (opt-in)
+
+This check is for an **isolated test bucket**, never a production bucket. Set
+`S3_TEST_ENDPOINT`, `S3_TEST_BUCKET`, `S3_TEST_REGION`, `AWS_ACCESS_KEY_ID`,
+and `AWS_SECRET_ACCESS_KEY` in your environment (and `AWS_SESSION_TOKEN` if
+needed), then run:
+
+```sh
+cargo test --manifest-path storage/Cargo.toml --test schemas e2e::multipart::multipart_contract -- --ignored --exact
+```
+
+Add `--nocapture` after `--exact` to display the conditional probe result.
+
+The endpoint uses path-style addressing. The test creates a unique
+`qa/multipart/<uuid>/` prefix, checks SHA256/COMPOSITE multipart uploads,
+incorrect checksums, ETags, abort, metadata and ranged reads, and attempts to
+remove only its own uploads and objects. A missing required variable fails the
+explicit run. The conditional-completion probe reports whether an existing
+object was rejected with `PreconditionFailed`, explicitly reports `NotImplemented`,
+or reports that the precondition was ignored. Other errors fail the test.
+A successful SDK test does not establish browser CORS, exposed ETag, signed
+Content-Length enforcement, lifecycle cleanup, or provider/version compatibility:
+verify those separately against the actual product before enabling uploads.
+Never record credentials or signed URLs in test evidence.

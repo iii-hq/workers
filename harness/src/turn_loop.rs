@@ -442,6 +442,9 @@ struct GeneratedStep {
     outcome: crate::clients::router::ChatOutcome,
     durable_abort: bool,
     guard: tokio::sync::OwnedMutexGuard<()>,
+    /// The stored reply of a redelivered step, not a new generation: it was
+    /// counted when it generated.
+    replayed: bool,
 }
 
 pub async fn run_step(
@@ -503,6 +506,31 @@ async fn generate_step(
             .map(PreparedStep::Finished);
     }
     crate::state::hydrate(&deps.iii, &mut record, cfg.session_timeout_ms).await?;
+
+    // A redelivered step whose reply already dispatched a call that never
+    // returned finishes with that reply instead of regenerating: a new
+    // generation names its calls anew, so the `Dispatched` checkpoint would
+    // never match and the target would run again, and the step would be billed
+    // twice. The call closes with `interrupted_result` (at most once).
+    if let Some(message) = dispatched_reply(&session, &record, payload.step).await? {
+        let strategy = crate::contract::OutputStrategy::resolve(deps, &record).await;
+        return Ok(PreparedStep::Generated(Box::new(GeneratedStep {
+            payload,
+            cfg,
+            session,
+            record,
+            strategy,
+            outcome: crate::clients::router::ChatOutcome {
+                stop_reason: Some(message.stop_reason),
+                message,
+                ok: true,
+                error: None,
+            },
+            durable_abort: false,
+            guard: _guard,
+            replayed: true,
+        })));
+    }
 
     // Deliver messages queued while the previous step streamed: append them in
     // arrival order before the context load, so this generation sees them all
@@ -1107,16 +1135,49 @@ async fn generate_step(
     let assistant_id = ids::assistant_entry_id(&record.turn_id, payload.step);
     let provider = record.options.provider.clone().unwrap_or_default();
     let empty = empty_assistant(&provider, &record.options.model);
-    if let Err(error) = session
-        .append(
-            &record.session_id,
-            &AgentMessage::Assistant(empty),
-            Some(&assistant_id),
-            None,
-            Some(&assistant_origin),
-        )
-        .await
-    {
+    // A redelivered step regenerating over a reply that was already billed
+    // keeps that generation's usage first, so metrics still see the spend.
+    let superseded = superseded_generation(&entries, &record.turn_id, payload.step);
+    let appended = async {
+        if let Some(data) = superseded {
+            // Named by the reply's revision: a delivery that dies before the
+            // clear below keeps it again under the same id (append is
+            // idempotent), and the clear moves the revision, so the next
+            // generation is kept under a new id even when it bills the same.
+            let revision = session.revision(&record.session_id, &assistant_id).await?;
+            let prefix = ids::superseded_generation_entry_prefix(&record.turn_id, payload.step);
+            session
+                .append_custom(
+                    &record.session_id,
+                    SUPERSEDED_GENERATION,
+                    data,
+                    &format!("{prefix}{revision}"),
+                    Some(&origin(&record.turn_id)),
+                )
+                .await?;
+            session
+                .update_message(
+                    &record.session_id,
+                    &assistant_id,
+                    &[],
+                    Some(&crate::types::event::Usage::default()),
+                    None,
+                    Some(&assistant_origin),
+                )
+                .await?;
+        }
+        session
+            .append(
+                &record.session_id,
+                &AgentMessage::Assistant(empty),
+                Some(&assistant_id),
+                None,
+                Some(&assistant_origin),
+            )
+            .await
+    }
+    .await;
+    if let Err(error) = appended {
         if let Some(reservation) = budget_reservation.as_ref() {
             crate::budget::release(deps, reservation).await?;
         }
@@ -1441,7 +1502,71 @@ async fn generate_step(
         outcome,
         durable_abort,
         guard: _guard,
+        replayed: false,
     })))
+}
+
+/// Custom entry keeping the usage of a generation a regenerated step
+/// overwrote; `harness::metrics` adds it to tokens and cost, not to steps.
+pub(crate) const SUPERSEDED_GENERATION: &str = "superseded_generation";
+
+/// The usage to keep when a redelivered step is about to regenerate over its
+/// billed reply: `update_message` overwrites the reply's usage, while the
+/// running `session_cost_usd` already counted it. `None` when the stored reply
+/// has no usage, or only the empty one a previous keep cleared it to.
+fn superseded_generation(entries: &[LoadedEntry], turn_id: &str, step: u64) -> Option<Value> {
+    let own = ids::assistant_entry_id(turn_id, step);
+    let Some(AgentMessage::Assistant(reply)) =
+        entries.iter().find(|e| e.entry_id == own)?.message.as_ref()
+    else {
+        return None;
+    };
+    let usage = reply
+        .usage
+        .as_ref()
+        .filter(|usage| **usage != crate::types::event::Usage::default())?;
+    Some(json!({
+        "usage": usage,
+        "model": reply.model,
+        "provider": reply.provider,
+        // A fork's baseline counts the kept generations it copied by this.
+        "timestamp": reply.timestamp,
+    }))
+}
+
+/// This step's stored reply when one of its calls was dispatched and never
+/// returned (checkpoint still `Dispatched`). Calls are dispatched only after
+/// the final reply is written, so a partially streamed reply never matches:
+/// nothing of it ran, and the step regenerates as before.
+async fn dispatched_reply(
+    session: &SessionClient,
+    record: &TurnRecord,
+    step: u64,
+) -> Result<Option<AssistantMessage>, HarnessError> {
+    let dispatched = |id: &str| {
+        record
+            .calls
+            .get(id)
+            .is_some_and(|c| c.state == CallState::Dispatched)
+    };
+    // Spares every ordinary step the transcript read.
+    if !record.calls.keys().any(|id| dispatched(id)) {
+        return Ok(None);
+    }
+    let own = ids::assistant_entry_id(&record.turn_id, step);
+    let entries = session.messages(&record.session_id, false).await?;
+    Ok(entries
+        .into_iter()
+        .find(|entry| entry.entry_id == own)
+        .and_then(|entry| match entry.message {
+            Some(AgentMessage::Assistant(message)) => Some(message),
+            _ => None,
+        })
+        .filter(|message| {
+            message.content.iter().any(
+                |block| matches!(block, ContentBlock::FunctionCall { id, .. } if dispatched(id)),
+            )
+        }))
 }
 
 /// Finish a generated step while the caller holds the session lock.
@@ -1466,8 +1591,11 @@ async fn finish_step(
         outcome,
         durable_abort,
         guard: _guard,
+        replayed,
     } = *generated;
-    record.turn_count += 1;
+    if !replayed {
+        record.turn_count += 1;
+    }
 
     // Cancellation during generation finalises the partial as cancelled.
     if cancel_requested(record.abort, durable_abort, outcome.message.stop_reason) {
@@ -4371,6 +4499,36 @@ mod stack_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_regenerated_step_keeps_the_billed_generation_it_overwrites() {
+        let entries = |values: serde_json::Value| -> Vec<crate::clients::LoadedEntry> {
+            serde_json::from_value(values).unwrap()
+        };
+        let reply = serde_json::json!({"entry_id": "e_t1_2_assistant", "message": {
+            "role": "assistant", "stop_reason": "end", "model": "m", "provider": "p",
+            "timestamp": 1, "content": [{"type": "text", "text": "hi"}],
+            "usage": {"input": 10, "output": 4, "cost_usd": 0.25}}});
+        assert_eq!(
+            super::superseded_generation(&entries(serde_json::json!([reply])), "t1", 2),
+            Some(serde_json::json!({
+                "usage": {"input": 10, "output": 4, "cost_usd": 0.25}, "model": "m",
+                "provider": "p", "timestamp": 1
+            }))
+        );
+
+        // Nothing billed to keep: a first delivery, a reply cut before usage,
+        // or one a previous keep cleared.
+        assert_eq!(super::superseded_generation(&[], "t1", 2), None);
+        for usage in [serde_json::Value::Null, serde_json::json!({})] {
+            let mut unbilled = reply.clone();
+            unbilled["message"]["usage"] = usage;
+            assert_eq!(
+                super::superseded_generation(&entries(serde_json::json!([unbilled])), "t1", 2),
+                None
+            );
+        }
+    }
+
     #[test]
     fn an_assistant_step_carries_its_build_and_a_fingerprint_of_the_request() {
         let tools = vec![super::AgentFunction {

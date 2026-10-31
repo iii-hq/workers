@@ -48,6 +48,16 @@
           "null"
         ]
       },
+      "custom_types": {
+        "description": "With `include_custom`, only the custom entries of these `custom_type`s (e.g. a usage reader skipping compaction summaries). Absent keeps every type.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
       "from_entry_id": {
         "description": "Treat this entry as the leaf: return its parent chain, root -> entry, oldest first (branch view).",
         "type": [

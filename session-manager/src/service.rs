@@ -891,7 +891,14 @@ impl SessionService {
                 },
                 // A `roles` filter is an explicit narrowing to message
                 // roles, so it also drops custom entries.
-                SessionEntry::Custom { .. } => include_custom && req.roles.is_none(),
+                SessionEntry::Custom { custom_type, .. } => {
+                    include_custom
+                        && req.roles.is_none()
+                        && req
+                            .custom_types
+                            .as_ref()
+                            .is_none_or(|types| types.contains(custom_type))
+                }
             })
             .collect();
 

@@ -891,8 +891,16 @@ impl Backend for LocalBackend {
 
     async fn head(&self, req: HeadReq) -> Result<HeadResp, BackendError> {
         reject_version(req.version_id.as_deref())?;
+        if req.checksum_mode {
+            return Err(BackendError::PresignUnsupported(
+                "checksum-enabled HEAD is unsupported".into(),
+            ));
+        }
         let metadata = self.metadata(&req.key).await?;
         Ok(HeadResp {
+            metadata: (!metadata.metadata.is_empty()).then_some(metadata.metadata),
+            checksum_sha256: None,
+            checksum_type: None,
             content_type: metadata.content_type,
             etag: metadata.etag,
             last_modified: metadata.last_modified,
@@ -1521,6 +1529,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn head_rejects_checksum_mode_but_preserves_plain_metadata() {
+        let (_temp, backend, _prepared) = backend(false).await;
+        let put = backend
+            .put(PutReq {
+                key: "key".into(),
+                body: b"hello".to_vec(),
+                content_type: "text/plain".into(),
+                cache_control: None,
+                metadata: HashMap::from([("source".into(), "test".into())]),
+            })
+            .await
+            .unwrap();
+        let head = backend
+            .head(HeadReq {
+                key: "key".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(head.size, 5);
+        assert_eq!(head.content_type, "text/plain");
+        assert_eq!(head.etag, put.etag);
+        assert_eq!(head.metadata.unwrap()["source"], "test");
+        assert!(head.checksum_sha256.is_none() && head.checksum_type.is_none());
+        for key in ["key", "missing"] {
+            assert!(matches!(
+                backend
+                    .head(HeadReq {
+                        key: key.into(),
+                        checksum_mode: true,
+                        ..Default::default()
+                    })
+                    .await,
+                Err(BackendError::PresignUnsupported(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn round_trip_and_directory_listing() {
         let (_temp, backend, _prepared) = backend(false).await;
         backend
@@ -1911,6 +1958,7 @@ mod tests {
                 .head(HeadReq {
                     key: "limited.bin".into(),
                     version_id: None,
+                    checksum_mode: false,
                 })
                 .await,
             Err(BackendError::NotFound)
