@@ -11,16 +11,24 @@ use crate::common::world::SessionWorld;
 #[tokio::main]
 async fn main() {
     // Bring up the shared engine connection + in-process registration
-    // exactly once. On a host without an engine this returns None and
-    // every `@engine` scenario short-circuits into a soft skip.
+    // exactly once. On a host without an engine, or on an engine that
+    // already runs session-manager, this returns None and every `@engine`
+    // scenario short-circuits into a soft skip.
     let _ = common::engine::get_or_init().await;
 
     SessionWorld::cucumber()
         .max_concurrent_scenarios(1)
-        .before(|_feature, _rule, _scenario, world| {
+        .before(|feature, rule, scenario, world| {
+            // Tags are stored without the `@`.
+            let engine_scenario = feature
+                .tags
+                .iter()
+                .chain(rule.iter().flat_map(|r| &r.tags))
+                .chain(&scenario.tags)
+                .any(|tag| tag == "engine");
             Box::pin(async move {
                 world.reset_pure();
-                world.engine = common::engine::get_or_init().await;
+                world.engine = common::engine::for_scenario(engine_scenario).await;
             })
         })
         .run_and_exit("tests/features")
