@@ -1,0 +1,18 @@
+# Store screenshots of the ide worker, in display order (the registry CLI's
+# `registry publish --screenshots` list). Captured from the iii app with demo data.
+
+- file: android-editor-terminal.webp
+  platform: android
+  caption: "Edit code and run its tests in a terminal"
+- file: android-diff.webp
+  platform: android
+  caption: "Review a change as a diff, line by line"
+- file: android-git-log.webp
+  platform: android
+  caption: "The git history beside the open file"
+- file: android-palette.webp
+  platform: android
+  caption: "The command palette, with keyboard shortcuts"
+- file: android-panes.webp
+  platform: android
+  caption: "Files, editor and terminal side by side"
