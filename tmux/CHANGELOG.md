@@ -12,6 +12,13 @@
 
 ### Changed
 
+- **The Console page follows the ADE redesign (#1528).** Interface text is set in Inter
+  and code, ports and the terminal in Geist Mono, as on the ide page; the sessions pane
+  sits on the canvas surface (in the light theme it showed the page's grey hairline
+  colour, and a narrow pane's drawer was see-through); the session tree takes the
+  sidebar's rhythm (36px rounded rows, 14px labels). A sub-agent's own messages no
+  longer indent their whole step, and the Ports tables centre each row on its tmux
+  location.
 - **iii-sdk 0.25.0.** The worker builds against the 0.25 SDK. Console terminal calls
   (`tmux::terminal::*`) take their caller from the invocation context the engine stamps
   (`caller.worker_id`); the payload's `_caller_worker_id` is read only on an engine
