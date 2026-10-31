@@ -23,7 +23,10 @@ FIXTURE = {
         "name": "w",
         "dependencies": {"iii-sdk": "0.26.0", "@iii-dev/console-ui": "workspace:*", "@iii-dev/helpers": "^0.26.0"},
     }, indent=2) + "\n",
-    "pnpm-workspace.yaml": "minimumReleaseAgeExclude:\n  - '@pierre/trees@1.0.0-beta.6'\n  - 'iii-sdk@0.26.0'\n  - iii-browser-sdk@0.26.0\n",
+    "pnpm-workspace.yaml": (
+        "minimumReleaseAgeExclude:\n  - '@pierre/trees@1.0.0-beta.6'\n  - 'iii-sdk@0.26.0'\n  - iii-browser-sdk@0.26.0\n"
+        "  - '@iii-dev/helpers@0.26.0-rc.1 || 0.26.0'\n"
+    ),
     "py/pyproject.toml": '[project]\nname = "py"\ndependencies = [\n    "iii-sdk>=0.26.0",\n    "iii-helpers[otel]==0.26.0",\n]\n',
     "go/go.mod": "module example.com/go\n\ngo 1.25.0\n\nrequire github.com/iii-hq/iii/sdk/packages/go/iii v0.26.0\n",
     ".github/workflows/ci.yml": (
@@ -77,6 +80,7 @@ def test_every_pin_form_moves_to_the_release(repo: Path) -> None:
     assert "'@pierre/trees@1.0.0-beta.6'" in after["pnpm-workspace.yaml"]
     assert "'iii-sdk@0.26.0-rc.1'" in after["pnpm-workspace.yaml"]
     assert "- iii-browser-sdk@0.26.0-rc.1\n" in after["pnpm-workspace.yaml"]
+    assert "- '@iii-dev/helpers@0.26.0-rc.1'\n" in after["pnpm-workspace.yaml"]  # pnpm writes `a || b` itself
     assert '"iii-sdk>=0.26.0rc1"' in after["py/pyproject.toml"]
     assert '"iii-helpers[otel]==0.26.0rc1"' in after["py/pyproject.toml"]
     assert "iii v0.26.0-rc.1\n" in after["go/go.mod"]

@@ -109,6 +109,7 @@ class Rule:
     pattern: str
     spelling: str = "semver"  # semver | pep440 | digest
     current_only: bool = False
+    pin: bool = True  # a dependency pin, read to find the version pinned today
 
 
 def under(*globs: str) -> Callable[[str], bool]:
@@ -128,7 +129,8 @@ RULES = (
     Rule("node", "package.json dependency", named("package.json"),
          rf'(?P<pre>"(?:{NODE})"[ \t]*:[ \t]*"(?:\^|~|>=|=)?)(?P<ver>{SEMVER})(?P<post>")'),
     Rule("node", "pnpm minimumReleaseAgeExclude", named("pnpm-workspace.yaml"),
-         rf"(?m)^(?P<pre>[ \t]*-[ \t]*['\"]?(?:{NODE})@)(?P<ver>{SEMVER})(?P<post>['\"]?[ \t]*)$"),
+         rf"(?m)^(?P<pre>[ \t]*-[ \t]*['\"]?(?:{NODE})@)(?P<ver>{SEMVER}(?:[ \t]*\|\|[ \t]*{SEMVER})*)"
+         r"(?P<post>['\"]?[ \t]*)$", pin=False),
     Rule("node", "generated worker package.json", under("*.rs"),
          r'(?P<pre>\\"iii-sdk\\": \\"\^)(?P<ver>{current})(?P<post>\\")', current_only=True),
     Rule("node", "SDK release test", under(".github/scripts/tests/test_released_worker_sdk_runtime.py"),
@@ -177,7 +179,7 @@ def current_versions(root: Path, files: list[str]) -> dict[str, set[str]]:
     """Every SDK version pinned today, keyed by semver spelling, with the files that pin it."""
     found: dict[str, set[str]] = {}
     for rule in RULES:
-        if rule.current_only or rule.spelling == "digest" or rule.group == "engine":
+        if not rule.pin or rule.current_only or rule.group == "engine":
             continue
         for path in filter(rule.matches, files):
             for m in re.finditer(rule.pattern, (root / path).read_text()):
