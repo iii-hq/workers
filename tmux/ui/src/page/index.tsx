@@ -14,8 +14,8 @@ import {
   Button,
   type Host,
   IconButton,
-  LiveRegion,
   type LiveAnnouncement,
+  LiveRegion,
   PageBody,
   PageHeader,
   PageMain,
@@ -130,7 +130,9 @@ export function TmuxPage({
     (sessionId: string, windowId: string) => {
       showTerminal()
       if (terminal.status === 'ready' && terminal.sessionId === sessionId) {
-        api.selectWindow(sessionId, windowId).then(overview.refresh, (error) => fail('Could not select the window', error))
+        api
+          .selectWindow(sessionId, windowId)
+          .then(overview.refresh, (error) => fail('Could not select the window', error))
         return
       }
       terminal.moveTo({ session: sessionId, window: windowId })
@@ -272,6 +274,7 @@ export function TmuxPage({
       />
       <PageBody side={panelSide}>
         <PageSidebar
+          className="tmux-sidebar"
           label="tmux sessions"
           side={panelSide}
           collapsible
