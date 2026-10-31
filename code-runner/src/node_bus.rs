@@ -129,8 +129,11 @@ impl IIIEngine {
         crate::agent_dispatch::validate_observe(&guest.source.function_id, &guest.target)?;
         let (source, target, options) = sdk_observe(guest);
         let handle = self.iii.observe_with(source, target, options);
-        // The SDK refuses a malformed observer (an invalid filter) before
-        // anything is sent, and never tracks it: there is nothing to dispose.
+        // The SDK refuses a malformed observer (an invalid filter), and one
+        // under an id another handle of this client holds
+        // (`OBSERVER_ID_CONFLICT`), before anything is sent, and never
+        // tracks it: the holder is untouched, and there is nothing to
+        // dispose.
         if handle.state() == ObserverState::Error {
             return Err(handle
                 .reason()
@@ -458,6 +461,28 @@ mod tests {
             .unwrap_err();
         assert!(!err.is_empty());
         assert!(engine.handles.lock().unwrap().is_empty());
+    }
+
+    /// A second observe under an id the guest's first observer holds is
+    /// refused before anything is sent; the first keeps the id and stays
+    /// disposable.
+    #[tokio::test]
+    async fn an_observe_under_a_held_id_is_refused_and_the_holder_kept() {
+        let engine = engine();
+        let observe = || {
+            engine.observe(json!({
+                "source": { "function_id": "state::on-changed" },
+                "target": "app::react",
+                "options": { "id": "app::held" },
+            }))
+        };
+        assert_eq!(observe().await.unwrap(), "app::held");
+        let err = observe().await.unwrap_err();
+        assert!(
+            err.contains("observer id already in use: app::held"),
+            "got {err}"
+        );
+        engine.dispose_observer("app::held".into()).await.unwrap();
     }
 
     /// A call through an observer this engine never saw arrive fails with

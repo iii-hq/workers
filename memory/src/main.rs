@@ -207,9 +207,9 @@ async fn keep_observed(
         };
         // The SDK keeps a refused observer and replays it until disposed;
         // the engine holds one the queue worker refused, and disposes it
-        // here. The dispose runs during the wait, and the next observe under
-        // the id goes out once both are over: the SDK tracks an observer by
-        // its id, and a dispose still waiting would drop the new one.
+        // here. Its handle holds the id until `dispose` is called, so the
+        // dispose runs during the wait, and the next observe under the id
+        // goes out once both are over.
         let ((), ()) = tokio::join!(
             async {
                 let _ = observer.dispose().await;
