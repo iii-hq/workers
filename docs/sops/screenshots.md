@@ -36,7 +36,12 @@ version's archives.
 ```
 
 Each entry has `file` (a path inside `screenshots/`: no absolute path, no
-`..`), `platform` and an optional `caption`. Nothing else is accepted.
+`..`), `platform` and an optional `caption`. Nothing else is accepted: an
+unknown field, a field written twice and a YAML merge key (`<<`) are refused.
+The list must be named exactly `screenshots.yaml`: a `screenshots.yml` (or any
+other spelling) is refused rather than ignored, because an ignored list would
+let the version silently keep the previous one's. A `screenshots/` folder
+without a list is fine (it may hold a README's images).
 
 The list is its own file, not a key of `iii.worker.yaml` (the iii engine reads
 that file too and refuses keys it does not know) nor of `.deploy/workers.yaml`
@@ -86,7 +91,9 @@ kanban/screenshots/screenshots.yaml: 2 problem(s), the registry would refuse it:
 **Image workers** (`artifact.kind: oci-image`) cannot carry screenshots: the
 Registry hosts a version's screenshots on that version's release, and an image
 version is published without one. Their list may only be `[]`, which clears
-what a version would inherit.
+what a version would inherit. The same holds for a worker the Registry
+**hides** (`iii`; `GET /w/iii` answers 404): its screenshots could never be
+shown nor read back.
 
 Screenshots are public as soon as a version is published: check them for
 hostnames, e-mail addresses, tokens and any other private data first. Prefer

@@ -73,6 +73,9 @@ The field's absence lets a version inherit the previous version's list, and
 | `javascript-bundle`, `python-bundle` | yes (Registry release type `bundle`) |
 | `oci-image` | only `[]`: an image version has no Registry release to host them |
 
+Whatever its kind, a worker the Registry hides (`iii`: `GET /w/iii` answers
+404) may only list `[]`, since its screenshots could never be read back.
+
 Version publication never assigns a channel implicitly. Publish proves the
 exact version first and then moves the requested channel with the plan's CAS
 precondition through current Registry read surfaces.

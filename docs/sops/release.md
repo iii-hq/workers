@@ -67,8 +67,8 @@ all match. Versions, channels and retries are decided there, never here.
 
 Screenshots travel with the version: when the manifest has `screenshots`,
 Release Control registers each image on the version's Registry release, lists
-them in `POST /publish`, and reads the version's list back. `[]` publishes the
-version without screenshots; no field lets it keep the previous version's.
+them in `POST /publish`, and reads the version's list back. An absent field
+lets the version keep the previous version's list; `[]` clears them.
 Versions already published keep theirs, so a new or changed list ships with
 the next version.
 
