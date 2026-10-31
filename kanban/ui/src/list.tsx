@@ -114,10 +114,19 @@ const MAX_LISTED = 8
 /** Parent candidates rendered at once: the search narrows the rest. */
 const MAX_PARENTS = 50
 
-/** `KAN-1, KAN-2, 3 more`: the keys capped like the delete dialog's. */
-function keyList(keys: string[]): string {
+/** The keys a dialog or note names, capped: `KAN-1`, `KAN-2`, `3 more`. */
+function keyParts(keys: string[]): string[] {
   const listed = keys.length > MAX_LISTED + 1 ? MAX_LISTED : keys.length
-  return [...keys.slice(0, listed), ...(listed < keys.length ? [`${keys.length - listed} more`] : [])].join(', ')
+  return [...keys.slice(0, listed), ...(listed < keys.length ? [`${keys.length - listed} more`] : [])]
+}
+
+/** `KAN-1, KAN-2, 3 more`: the keys a note names. */
+const keyList = (keys: string[]): string => keyParts(keys).join(', ')
+
+/** `KAN-1, KAN-2 and 3 more`: the keys a confirm names in its sentence. */
+function keySentence(keys: string[]): string {
+  const parts = keyParts(keys)
+  return parts.length < 2 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
 }
 
 const RELEASE_HINT = 'Released releases are not listed.'
@@ -367,11 +376,9 @@ export function TicketList({
   const remove = async () => {
     const keys = picked.map((ticket) => ticket.key)
     const one = keys.length === 1
-    const listed = keys.length > MAX_LISTED + 1 ? MAX_LISTED : keys.length
     const ok = await confirm({
       title: `Delete ${one ? '1 ticket' : `${keys.length} tickets`}?`,
-      description: `${one ? 'It disappears' : 'They disappear'} from the board but ${one ? 'stays' : 'stay'} in the board file.`,
-      details: [...keys.slice(0, listed), ...(listed < keys.length ? [`and ${keys.length - listed} more`] : [])],
+      description: `${keySentence(keys)} ${one ? 'disappears' : 'disappear'} from the board but ${one ? 'stays' : 'stay'} in the board file.`,
       confirmLabel: 'Delete',
       tone: 'danger',
     })
