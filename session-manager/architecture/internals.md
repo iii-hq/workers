@@ -399,11 +399,15 @@ is one specific composition of those; the BDD world is another.
   engine (connect-or-skip `OnceCell` in `tests/common/engine.rs`,
   `III_ENGINE_WS_URL` override, default iii's `ws://127.0.0.1:49134`), and
   also on an engine that already runs session-manager (a worker named
-  `session-manager` or any `session::*` function registered; the pure check
-  is `tests/common/engine_guard.rs`, unit-tested by `tests/engine_guard.rs`):
-  the in-process surface would collide with it and the scenarios would write
-  into its real store. Run them against a dedicated engine with no
-  session-manager.
+  `session-manager` or any `session::*` function registered) or whose
+  workers or functions cannot be listed: the in-process surface would
+  collide with it and the scenarios would write into its real store. The
+  check runs again after registration (every `session::*` function must be
+  the harness's own), and the harness connects as
+  `session-manager-bdd:<pid>` with an explicit identity (`III_WORKER_NAME` /
+  `III_NAMESPACE` ignored). Pure check: `tests/common/engine_guard.rs`,
+  unit-tested by `tests/engine_guard.rs`. Run the scenarios against a
+  dedicated engine with no session-manager.
 - **@pure stack** (`tests/common/world.rs`): per-scenario production stack —
   real handlers/service/emitter — over a real `FsStore` in a tempdir, with
   `SeqIds` + `FakeClock` and a recording deliverer. Feature files assert

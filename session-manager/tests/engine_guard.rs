@@ -5,8 +5,11 @@
 #[path = "common/engine_guard.rs"]
 mod engine_guard;
 
-use engine_guard::session_manager_on_engine;
+use engine_guard::{harness_worker_name, skip_after_registering, skip_before_registering};
 use serde_json::{json, Value};
+
+const URL: &str = "ws://127.0.0.1:49611";
+const HARNESS: &str = "session-manager-bdd:4242";
 
 /// `engine::workers::list` of a bare engine (`iii --config` with only
 /// `iii-worker-manager`), trimmed to the fields the guard reads.
@@ -42,12 +45,17 @@ fn with_functions(mut functions: Value, worker: &str, ids: &[&str]) -> Value {
     functions
 }
 
+fn before(workers: Value, functions: Value) -> Option<String> {
+    skip_before_registering(URL, &Ok(workers), &Ok(functions))
+}
+
+fn after(functions: Result<Value, String>) -> Option<String> {
+    skip_after_registering(URL, HARNESS, &functions)
+}
+
 #[test]
 fn a_bare_engine_runs_the_scenarios() {
-    assert_eq!(
-        session_manager_on_engine(&bare_workers(), &bare_functions()),
-        None
-    );
+    assert_eq!(before(bare_workers(), bare_functions()), None);
 }
 
 #[test]
@@ -62,12 +70,14 @@ fn an_engine_running_session_manager_skips_them() {
             "session::store::get-entry",
         ],
     );
-    let evidence = session_manager_on_engine(&workers, &functions).expect("must skip");
-    assert_eq!(
-        evidence,
-        "a worker named `session-manager` is connected; worker `session-manager` \
-         already serves `session::create` and 2 more `session::*` function(s)"
-    );
+    let why = before(workers, functions).expect("must skip");
+    assert!(why.starts_with(
+        "iii engine at ws://127.0.0.1:49611 already runs session-manager (a worker named \
+         `session-manager` is connected; worker `session-manager` already serves \
+         `session::create` and 2 more `session::*` function(s))."
+    ));
+    assert!(why
+        .ends_with("with no session-manager (e.g. a bare `iii --config <file>` on a free port)."));
 }
 
 // A session-manager under another name (III_WORKER_NAME, a compose
@@ -76,30 +86,23 @@ fn an_engine_running_session_manager_skips_them() {
 fn session_functions_under_another_worker_name_skip_them() {
     let workers = with_worker(bare_workers(), "sessions-prod");
     let functions = with_functions(bare_functions(), "sessions-prod", &["session::create"]);
-    let evidence = session_manager_on_engine(&workers, &functions).expect("must skip");
-    assert_eq!(
-        evidence,
-        "worker `sessions-prod` already serves `session::create`"
-    );
+    let why = before(workers, functions).expect("must skip");
+    assert!(why.contains("(worker `sessions-prod` already serves `session::create`)"));
 }
 
-// An engine that ignores `include_internal` still lists the public
-// reads (`session::list`, `session::get`).
+// An engine that ignores `include_internal` still lists the public reads.
 #[test]
 fn public_session_functions_alone_skip_them() {
     let functions = with_functions(bare_functions(), "session-manager", &["session::list"]);
-    assert!(session_manager_on_engine(&bare_workers(), &functions).is_some());
+    assert!(before(bare_workers(), functions).is_some());
 }
 
-// A session-manager that has connected but not registered yet (it is
-// booting, or restarting under the engine).
+// A session-manager that has connected but not registered yet.
 #[test]
 fn a_connected_session_manager_without_functions_skips_them() {
     let workers = with_worker(bare_workers(), "session-manager");
-    assert_eq!(
-        session_manager_on_engine(&workers, &bare_functions()).as_deref(),
-        Some("a worker named `session-manager` is connected")
-    );
+    let why = before(workers, bare_functions()).expect("must skip");
+    assert!(why.contains("(a worker named `session-manager` is connected)"));
 }
 
 #[test]
@@ -114,16 +117,83 @@ fn look_alike_names_do_not_skip_them() {
             "session-manager::ping",
         ],
     );
-    assert_eq!(session_manager_on_engine(&workers, &functions), None);
+    assert_eq!(before(workers, functions), None);
+}
+
+// Fail closed: a listing in another shape (an RBAC proxy filtering the
+// answer, an engine version that renamed the key) proves nothing.
+#[test]
+fn a_listing_without_its_array_skips_them() {
+    let why = before(json!({}), bare_functions()).expect("must skip");
+    assert!(why.contains("engine::workers::list answered without a `workers` list"));
+    let why = before(bare_workers(), json!({ "functions": "?" })).expect("must skip");
+    assert!(why.contains("engine::functions::list answered without a `functions` list"));
+    assert!(before(Value::Null, json!([])).is_some());
 }
 
 #[test]
-fn empty_or_unexpected_listings_do_not_panic() {
-    assert_eq!(session_manager_on_engine(&json!({}), &json!({})), None);
-    assert_eq!(session_manager_on_engine(&Value::Null, &json!([])), None);
-    let odd = json!({ "functions": [{ "function_id": 7 }, { "worker_name": "x" }] });
-    assert_eq!(
-        session_manager_on_engine(&json!({ "workers": "?" }), &odd),
-        None
+fn a_listing_that_failed_skips_them() {
+    let why = skip_before_registering(URL, &Err("timeout".into()), &Ok(bare_functions()))
+        .expect("must skip");
+    assert!(why.starts_with(
+        "cannot tell whether the iii engine at ws://127.0.0.1:49611 runs session-manager: \
+         engine::workers::list failed (timeout). Every @engine scenario is skipped."
+    ));
+    let why = skip_before_registering(URL, &Ok(bare_workers()), &Err("forbidden".into()))
+        .expect("must skip");
+    assert!(why.contains("engine::functions::list failed (forbidden)"));
+}
+
+#[test]
+fn odd_entries_inside_a_list_do_not_panic() {
+    let odd = json!({ "functions": [{ "function_id": 7 }, { "worker_name": "x" }, null] });
+    assert_eq!(before(json!({ "workers": [null, 3] }), odd), None);
+}
+
+#[test]
+fn after_registering_the_harness_own_surface_runs_them() {
+    let functions = with_functions(
+        bare_functions(),
+        HARNESS,
+        &["session::create", "session::store::get-entry"],
     );
+    assert_eq!(after(Ok(functions)), None);
+}
+
+// A session-manager that came back (a compose restart) between the first
+// check and the registrations got some ids first.
+#[test]
+fn after_registering_a_foreign_session_function_skips_them() {
+    let functions = with_functions(bare_functions(), HARNESS, &["session::list"]);
+    let functions = with_functions(functions, "session-manager", &["session::create"]);
+    let why = after(Ok(functions)).expect("must skip");
+    assert!(why.contains(
+        "a session-manager registered on the iii engine at ws://127.0.0.1:49611 while the BDD \
+         harness was starting (worker `session-manager` already serves `session::create`)"
+    ));
+}
+
+#[test]
+fn after_registering_a_session_function_without_a_worker_skips_them() {
+    let functions = json!({ "functions": [{ "function_id": "session::create" }] });
+    let why = after(Ok(functions)).expect("must skip");
+    assert!(why.contains("worker `<unnamed>` already serves `session::create`"));
+}
+
+#[test]
+fn after_registering_an_unreadable_listing_skips_them() {
+    assert!(after(Err("timeout".into()))
+        .expect("must skip")
+        .contains("engine::functions::list failed (timeout)"));
+    assert!(after(Ok(json!({ "functions": null })))
+        .expect("must skip")
+        .contains("answered without a `functions` list"));
+}
+
+#[test]
+fn the_harness_never_looks_like_session_manager() {
+    let name = harness_worker_name(4242);
+    assert_eq!(name, HARNESS);
+    assert_ne!(name, "session-manager");
+    assert_ne!(harness_worker_name(1), harness_worker_name(2));
 }

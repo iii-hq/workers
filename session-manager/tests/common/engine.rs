@@ -5,8 +5,9 @@
 //! overhead. On success the production surface (trigger types +
 //! functions) is registered in-process so @engine scenarios drive the
 //! exact code the binary would run. An engine that already runs
-//! session-manager is refused like an unreachable one (see
-//! `engine_guard`): the scenarios would write into its real store.
+//! session-manager, or one that cannot show it does not, is refused like
+//! an unreachable one (see `engine_guard`): the scenarios would write
+//! into its real store.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -14,11 +15,12 @@ use std::time::Duration;
 
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::runtime::{IIIConnectionState, WorkerMetadata};
+use iii_sdk::{register_worker, IIIClient, InitOptions, WorkerIdentityMode};
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
-use super::engine_guard::session_manager_on_engine;
+use super::engine_guard::{harness_worker_name, skip_after_registering, skip_before_registering};
 
 /// iii's default port: `cargo test` finds a developer's bare `iii`
 /// without configuration. That is also where an everyday engine runs
@@ -35,23 +37,34 @@ pub fn ws_url() -> String {
     std::env::var("III_ENGINE_WS_URL").unwrap_or_else(|_| DEFAULT_WS_URL.to_string())
 }
 
-/// How to run the @engine scenarios when they skip.
-const RUN_THEM: &str = "To run them, set III_ENGINE_WS_URL to a dedicated engine with no \
-                        session-manager (e.g. a bare `iii --config <file>` on a free port).";
-
 async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     let url = ws_url();
-    let iii = Arc::new(register_worker(&url, InitOptions::default()));
+    // An explicit identity: in the default (managed) mode the SDK takes
+    // III_WORKER_NAME / III_NAMESPACE from the environment, and a run
+    // under III_WORKER_NAME=session-manager would look like the real one.
+    let iii = Arc::new(register_worker(
+        &url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: harness_worker_name(std::process::id()),
+                ..WorkerMetadata::default()
+            }),
+            identity: WorkerIdentityMode::Explicit,
+            ..InitOptions::default()
+        },
+    ));
 
-    let mut workers = None;
+    let mut workers = Err(Error::NotConnected);
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(250)).await;
-        if let Ok(listing) = list(&iii, "engine::workers::list", json!({})).await {
-            workers = Some(listing);
+        workers = list(&iii, "engine::workers::list", json!({}), 800).await;
+        if workers.is_ok() {
             break;
         }
     }
-    let Some(workers) = workers else {
+    // Never connected: no engine there. Connected but unable to list its
+    // workers: an engine that cannot be inspected (the guard skips it).
+    if workers.is_err() && iii.get_connection_state() != IIIConnectionState::Connected {
         return skip(
             iii,
             format!(
@@ -60,41 +73,14 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
             ),
         )
         .await;
-    };
+    }
 
     // Nothing is registered yet: decide before `register_all` puts a
-    // second session::* surface next to a real one. Fail closed: an
-    // engine whose functions cannot be listed may be a live one.
-    let functions = match list(
-        &iii,
-        "engine::functions::list",
-        json!({ "include_internal": true }),
-    )
-    .await
-    {
-        Ok(functions) => functions,
-        Err(e) => {
-            return skip(
-                iii,
-                format!(
-                    "could not list the functions of the iii engine at {url} ({e}), so it may \
-                     run session-manager: every @engine scenario is skipped. {RUN_THEM}"
-                ),
-            )
-            .await
-        }
-    };
-    if let Some(evidence) = session_manager_on_engine(&workers, &functions) {
-        return skip(
-            iii,
-            format!(
-                "iii engine at {url} already runs session-manager ({evidence}). The \
-                 engine-bound BDD scenarios register their own session::* surface, so their \
-                 calls would reach that worker and write into its real store: every @engine \
-                 scenario is skipped. {RUN_THEM}"
-            ),
-        )
-        .await;
+    // second session::* surface next to a real one.
+    let workers = workers.map_err(|e| e.to_string());
+    let functions = list_functions(&iii).await;
+    if let Some(why) = skip_before_registering(&url, &workers, &functions) {
+        return skip(iii, why).await;
     }
     Some(iii)
 }
@@ -106,15 +92,39 @@ async fn skip(iii: Arc<IIIClient>, why: String) -> Option<Arc<IIIClient>> {
     None
 }
 
-/// One `engine::*::list` call; the reachability probe retries it.
-async fn list(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
+async fn list(
+    iii: &IIIClient,
+    function_id: &str,
+    payload: Value,
+    timeout_ms: u64,
+) -> Result<Value, Error> {
     iii.trigger(TriggerRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,
-        timeout_ms: Some(800),
+        timeout_ms: Some(timeout_ms),
     })
     .await
+}
+
+/// Every function on the engine, internal ones included (session-manager
+/// registers its mutating functions as internal). A few patient tries, so
+/// a busy engine does not read as one that cannot be inspected.
+async fn list_functions(iii: &IIIClient) -> Result<Value, String> {
+    let payload = json!({ "include_internal": true });
+    let mut outcome = Err(String::new());
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        outcome = list(iii, "engine::functions::list", payload.clone(), 5_000)
+            .await
+            .map_err(|e| e.to_string());
+        if outcome.is_ok() {
+            break;
+        }
+    }
+    outcome
 }
 
 /// Get-or-init the shared engine handle, registering the production
@@ -124,6 +134,14 @@ pub async fn get_or_init() -> Option<Arc<IIIClient>> {
         .get_or_init(|| async {
             let iii = try_connect_raw().await?;
             super::workers::register_all(&iii).await;
+            // Again, now that the surface is in: a session-manager that
+            // (re)connected since the first check owns the ids it got to
+            // first, and the engine refuses ours without failing the run.
+            let harness = harness_worker_name(std::process::id());
+            let functions = list_functions(&iii).await;
+            if let Some(why) = skip_after_registering(&ws_url(), &harness, &functions) {
+                return skip(iii, why).await;
+            }
             Some(iii)
         })
         .await
