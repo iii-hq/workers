@@ -79,7 +79,9 @@ function Item({ item, agentLabel }: { item: TranscriptItem; agentLabel: string }
   const mono = item.kind === 'tool_call' || item.kind === 'tool_result'
   const time = clock(item.at_ms)
   return (
-    <li className={`tmux-step tmux-step-${item.kind}${item.error ? ' tmux-step-error' : ''}`}>
+    // The kind is an attribute, not a `tmux-step-<kind>` class: `tmux-step-text`
+    // is the body's class, and a `text` item would indent its whole row.
+    <li className="tmux-step" data-kind={item.kind} data-error={item.error ? '' : undefined}>
       <div className="tmux-step-head">
         <Icon className="tmux-meta-icon" aria-hidden />
         <span className="tmux-step-label">{transcriptItemLabel(item, agentLabel)}</span>

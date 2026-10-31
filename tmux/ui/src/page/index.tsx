@@ -14,8 +14,8 @@ import {
   Button,
   type Host,
   IconButton,
-  LiveRegion,
   type LiveAnnouncement,
+  LiveRegion,
   PageBody,
   PageHeader,
   PageMain,
@@ -34,6 +34,7 @@ import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
 import { Bot, Network, Plus, RefreshCw, SquareTerminal } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createApi } from '../lib/api'
+import { clip, clipMiddle, killSessionDescription } from '../lib/kill-session'
 import { useTmuxOverview } from '../lib/live'
 import {
   activeWindow,
@@ -129,7 +130,9 @@ export function TmuxPage({
     (sessionId: string, windowId: string) => {
       showTerminal()
       if (terminal.status === 'ready' && terminal.sessionId === sessionId) {
-        api.selectWindow(sessionId, windowId).then(overview.refresh, (error) => fail('Could not select the window', error))
+        api
+          .selectWindow(sessionId, windowId)
+          .then(overview.refresh, (error) => fail('Could not select the window', error))
         return
       }
       terminal.moveTo({ session: sessionId, window: windowId })
@@ -172,10 +175,8 @@ export function TmuxPage({
   const killSession = useCallback(
     async (row: SessionRow) => {
       const ok = await confirm({
-        title: `Kill session ${row.session.name}?`,
-        description:
-          'Every window and process in it ends, and every terminal attached to it — yours included — detaches.',
-        details: row.windows.map((w) => `${w.label} — ${w.agents[0]?.label ?? w.command}`),
+        title: `Kill session ${clipMiddle(row.session.name)}?`,
+        description: killSessionDescription(row.windows),
         confirmLabel: 'Kill session',
         tone: 'danger',
       })
@@ -194,8 +195,8 @@ export function TmuxPage({
   const killWindow = useCallback(
     async (session: SessionRow, row: WindowRow) => {
       const ok = await confirm({
-        title: `Kill window ${row.label}?`,
-        description: `Every process in ${session.session.name}:${row.label} ends.`,
+        title: `Kill window ${clip(row.label)}?`,
+        description: `Every process in window ${clip(row.label, 32)} of session ${clipMiddle(session.session.name)} ends.`,
         confirmLabel: 'Kill window',
         tone: 'danger',
       })
@@ -273,6 +274,7 @@ export function TmuxPage({
       />
       <PageBody side={panelSide}>
         <PageSidebar
+          className="tmux-sidebar"
           label="tmux sessions"
           side={panelSide}
           collapsible
