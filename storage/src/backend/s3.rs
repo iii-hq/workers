@@ -339,6 +339,16 @@ where
 
 #[async_trait]
 impl Backend for S3Backend {
+    async fn head_bucket(&self) -> Result<(), BackendError> {
+        self.client
+            .head_bucket()
+            .bucket(&self.bucket)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(map_s3_error)
+    }
+
     async fn put(&self, req: PutReq) -> Result<PutResp, BackendError> {
         let body = ByteStream::from(req.body.clone());
         let size = req.body.len() as u64;

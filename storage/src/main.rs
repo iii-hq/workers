@@ -389,7 +389,7 @@ async fn main() -> Result<()> {
                 }
             })
             .request_format(schema_of::<multipart::CapabilitiesReq>())
-            .description("Read the configured bucket's multipart wire contract; does not probe or write provider objects."),
+            .description("Read the configured bucket's multipart wire contract after a successful bucket HEAD; no object bodies or writes."),
         );
     }
 

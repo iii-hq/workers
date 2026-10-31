@@ -216,13 +216,19 @@ pub struct CapabilitiesResp {
     pub contract: Option<&'static str>,
 }
 
-/// Only reads the live configured backend; no objects, uploads or credentials are returned.
+/// Proves the configured bucket exists/is accessible via HEAD; no object bodies or writes.
 pub async fn capabilities(
     state: &AppState,
     req: CapabilitiesReq,
 ) -> Result<CapabilitiesResp, String> {
     let backend = state.backend(&req.bucket).await.map_err(err_to_str)?;
     let provider = backend.provider();
+    if matches!(provider, "s3" | "r2") {
+        backend
+            .head_bucket()
+            .await
+            .map_err(|e| map_error(e, provider, &req.bucket, ""))?;
+    }
     Ok(CapabilitiesResp {
         provider,
         contract: matches!(provider, "s3" | "r2").then_some(CONTRACT),
@@ -240,50 +246,83 @@ mod tests {
             Backend,
         };
         use std::{collections::HashMap, sync::Arc};
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
         for provider in ["s3", "r2"] {
-            let backend = S3Backend::build(
-                S3BackendOpts {
-                    region: "us-east-1",
-                    credentials: Some(S3StaticCreds {
-                        access_key_id: "test".into(),
-                        secret_access_key: "test".into(),
-                        session_token: None,
-                    }),
-                    endpoint_url: Some("http://127.0.0.1:1".into()),
-                    force_path_style: true,
-                    provider_tag: provider,
-                    fast_fail: true,
-                },
-                "private".into(),
-            )
-            .await
-            .unwrap();
-            let state = AppState::new(HashMap::from([(
-                "files".into(),
-                Arc::new(backend) as Arc<dyn Backend>,
-            )]));
-            let response = capabilities(
-                &state,
-                CapabilitiesReq {
-                    bucket: "files".into(),
-                },
-            )
-            .await
-            .unwrap();
-            let json = serde_json::to_value(response).unwrap();
-            assert_eq!(
-                json,
-                serde_json::json!({ "contract": "sha256-composite-v2-list-optional", "provider": provider })
-            );
-            assert!(capabilities(
-                &state,
-                CapabilitiesReq {
-                    bucket: "missing".into()
+            for status in [404, 403, 0, 200] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let server = tokio::spawn(async move {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut bytes = Vec::new();
+                    loop {
+                        let mut buf = [0; 4096];
+                        let size = stream.read(&mut buf).await.unwrap();
+                        assert!(size > 0);
+                        bytes.extend_from_slice(&buf[..size]);
+                        if bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let request = String::from_utf8(bytes).unwrap();
+                    assert!(request.starts_with("HEAD /private"), "{request}");
+                    assert!(!request.contains("list-type") && !request.contains("uploadId"));
+                    if status != 0 {
+                        stream.write_all(format!("HTTP/1.1 {status} Response\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                    }
+                });
+                let backend = S3Backend::build(
+                    S3BackendOpts {
+                        region: "us-east-1",
+                        credentials: Some(S3StaticCreds {
+                            access_key_id: "test".into(),
+                            secret_access_key: "test".into(),
+                            session_token: None,
+                        }),
+                        endpoint_url: Some(format!("http://{address}")),
+                        force_path_style: true,
+                        provider_tag: provider,
+                        fast_fail: true,
+                    },
+                    "private".into(),
+                )
+                .await
+                .unwrap();
+                let state = AppState::new(HashMap::from([(
+                    "files".into(),
+                    Arc::new(backend) as Arc<dyn Backend>,
+                )]));
+                let result = capabilities(
+                    &state,
+                    CapabilitiesReq {
+                        bucket: "files".into(),
+                    },
+                )
+                .await;
+                if status == 200 {
+                    assert_eq!(
+                        serde_json::to_value(result.unwrap()).unwrap(),
+                        serde_json::json!({ "contract": "sha256-composite-v2-list-optional", "provider": provider })
+                    );
+                } else {
+                    assert!(
+                        result.is_err(),
+                        "bucket response {status} must not advertise readiness: {result:?}"
+                    );
                 }
-            )
-            .await
-            .unwrap_err()
-            .contains("UNKNOWN_BUCKET"));
+                server.await.unwrap();
+                assert!(capabilities(
+                    &state,
+                    CapabilitiesReq {
+                        bucket: "missing".into()
+                    }
+                )
+                .await
+                .unwrap_err()
+                .contains("UNKNOWN_BUCKET"));
+            }
         }
         let mock = Arc::new(MockBackend::default());
         let state = AppState::new(HashMap::from([(

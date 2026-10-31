@@ -10,13 +10,17 @@ the cloud underneath.
 `storage::multipartCapabilities` takes only `{ "bucket": "<configured name>" }`
 and returns `{ "provider": "s3", "contract": "sha256-composite-v2-list-optional" }`
 for the S3/R2 backend, or `contract: null` for unsupported backends. Unknown or
-unavailable buckets fail normally. This metadata-only operation reads the live
-configured backend, makes no provider request and returns no credentials.
+unavailable buckets fail normally. Before returning a supported contract, this
+metadata-only operation sends `HeadBucket` using the live configured backend:
+404, denied credentials and a disconnected provider fail the call. It requires
+bucket-scoped `s3:ListBucket` permission for HEAD, not account-wide ListBuckets.
+It neither lists object contents nor creates uploads/objects, and returns no
+credentials.
 The contract identifies checksum-bound signing, optional listing checksums,
 mandatory checksums on every Complete part and SHA256/COMPOSITE HEAD support.
 It is independent of the package version and does not certify a provider's
-implementation, permissions or reachability. Consumers must also probe provider
-metadata and validate the actual provider's multipart contract before rollout.
+multipart implementation or write/checksum permissions. Consumers must still
+validate the actual provider's complete multipart contract before rollout.
 
 
 The S3 backend supports multipart create, checksum-bound part signing, list,
