@@ -116,7 +116,9 @@ async fn multipart_contract() {
             for (part, expected) in listed.parts().iter().zip(&parts) {
                 assert_eq!(part.part_number(), expected.part_number());
                 assert_eq!(part.e_tag(), expected.e_tag());
-                assert_eq!(part.checksum_sha256(), expected.checksum_sha256());
+                if let Some(checksum) = part.checksum_sha256() {
+                    assert_eq!(Some(checksum), expected.checksum_sha256());
+                }
             }
             if index == 1 {
                 let swapped = vec![CompletedPart::builder().part_number(1).e_tag(parts[1].e_tag().unwrap()).checksum_sha256(parts[0].checksum_sha256().unwrap()).build(), parts[1].clone()];

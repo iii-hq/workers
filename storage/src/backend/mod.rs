@@ -17,6 +17,12 @@ pub mod s3;
 
 #[async_trait]
 pub trait Backend: Send + Sync {
+    /// Verify bucket existence/access without creating it or listing object metadata.
+    async fn head_bucket(&self) -> Result<(), BackendError> {
+        Err(BackendError::PresignUnsupported(
+            "bucket HEAD unsupported".into(),
+        ))
+    }
     async fn multipart_create(
         &self,
         _req: &crate::handlers::multipart::CreateReq,

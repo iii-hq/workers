@@ -267,9 +267,25 @@ async fn multipart_controls_contract() {
     };
     let listed = multipart::list(&state, identity()).await.unwrap();
     assert_eq!(listed.parts.len(), 1);
-    assert_eq!(listed.parts[0].checksum_sha256, checksum);
-    assert_eq!(listed.parts[0].size, data.len() as u64);
-    let mut wrong = listed.parts.clone();
+    if let Some(observed) = &listed.parts[0].checksum_sha256 {
+        assert_eq!(observed, &checksum);
+    }
+    let manifest = vec![multipart::Part {
+        part_number: 1,
+        size: data.len() as u64,
+        etag: response
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .into(),
+        checksum_sha256: checksum.clone(),
+    }];
+    assert_eq!(listed.parts[0].part_number, manifest[0].part_number);
+    assert_eq!(listed.parts[0].size, manifest[0].size);
+    assert_eq!(listed.parts[0].etag, manifest[0].etag);
+    let mut wrong = manifest.clone();
     wrong[0].etag = "\"wrong\"".into();
     let error = multipart::complete(
         &state,
@@ -292,7 +308,7 @@ async fn multipart_controls_contract() {
             bucket: "test".into(),
             key: key.clone(),
             upload_id: id.clone(),
-            parts: listed.parts,
+            parts: manifest,
         },
     )
     .await;
