@@ -144,6 +144,58 @@ Workers target the `iii-sdk` package on each ecosystem:
 Each module pins its exact version in its own manifest (`Cargo.toml`,
 `package.json`, or `pyproject.toml`).
 
+### Moving to an iii release
+
+[`scripts/pin-iii-sdk.sh`](scripts/pin-iii-sdk.sh) writes one iii release into
+every SDK pin in this repository and re-locks each project that resolves an
+SDK package:
+
+- Rust: `iii-sdk`, `iii-helpers`, `iii-observability`, `iii-filter` in every
+  `Cargo.toml` and `Cargo.lock`.
+- Node: `iii-sdk`, `iii-browser-sdk`, `@iii-dev/helpers`,
+  `@iii-dev/observability` in every `package.json`, the pnpm and npm
+  lockfiles, and the pnpm `minimumReleaseAgeExclude` entries.
+- Python: the same packages in `pyproject.toml` and `uv.lock`, in their PEP 440
+  spelling (`0.26.0rc1`).
+- Go: `github.com/iii-hq/iii/sdk/packages/go/iii` in `go.mod` and `go.sum`.
+- Engine: the release CI installs (`III_RELEASE_TAG`), and the iii archive and
+  its sha256 in `hermes/Dockerfile`.
+
+It writes nothing until crates.io, npm, PyPI, the Go proxy and the GitHub
+release all serve that version. `--dry-run` prints the edits and the re-lock
+commands.
+
+The last mile of an iii release, in order:
+
+1. iii publishes the release. `Create Tag` in `iii-hq/iii` pushes
+   `iii/v<version>`, and its release workflow publishes the SDK packages, the Go
+   module tag and the engine archives. A release candidate from an unmerged
+   branch uses `prerelease: rc` with `version_override: 0.26.0-rc.1`.
+2. Run the script with that version on the workers branch:
+
+   ```bash
+   scripts/pin-iii-sdk.sh 0.26.0-rc.1 --dry-run
+   scripts/pin-iii-sdk.sh 0.26.0-rc.1
+   ```
+
+3. Review `git diff`, commit and push the branch. CI builds and tests every
+   worker on the published SDKs and engine.
+4. Publish the worker releases through Release Control.
+
+The stable release takes the same steps with `0.26.0`. Once the workers built
+on it are published:
+
+```bash
+scripts/pin-iii-sdk.sh kit                            # deepwork kit ranges
+scripts/pin-iii-sdk.sh template export <templates>    # synced template files into a checkout of iii-hq/templates
+scripts/pin-iii-sdk.sh template record <commit>       # that templates commit, in template/upstream/sync.json
+```
+
+`kit` sets each worker range in `kits/deepwork/iii.kit.yaml` to the first
+release of that worker whose `Cargo.toml` pins the SDK version this repository
+pins. `template record` writes the commit only when it carries every synced file
+byte for byte.
+
 ## Build
 
 Rust workers:
