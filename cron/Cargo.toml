@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-cron"
-version = "0.21.27"
+version = "0.21.28"
 edition = "2021"
 description = "Cron scheduler worker for iii - hosts cron::on-tick, observed once per fire of a cron expression"
 license = "Apache-2.0"

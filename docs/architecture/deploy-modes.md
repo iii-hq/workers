@@ -53,6 +53,28 @@ binary worker the request has this shape:
 }
 ```
 
+## Screenshots
+
+Binary and bundle workers can ship store screenshots from
+`<worker>/screenshots/screenshots.yaml` (see
+[`../sops/screenshots.md`](../sops/screenshots.md)). The compiler checks them
+against the Registry's limits and writes the descriptor's top-level
+`screenshots` (never in `registry_projection`); the build uploads each image to
+`build-<source_sha>` as `<worker>-screenshot-<name>` and lists it in the build
+manifest's `screenshots`; Release Control registers them as `kind: screenshot`
+assets of the version's Registry release and names them in `POST /publish`.
+The field's absence lets a version inherit the previous version's list, and
+`[]` clears it.
+
+| `artifact.kind` | Screenshots |
+|---|---|
+| `rust-binary`, `go-binary` | yes (Registry release type `binary`) |
+| `javascript-bundle`, `python-bundle` | yes (Registry release type `bundle`) |
+| `oci-image` | only `[]`: an image version has no Registry release to host them |
+
+Whatever its kind, a worker the Registry hides (`iii`: `GET /w/iii` answers
+404) may only list `[]`, since its screenshots could never be read back.
+
 Version publication never assigns a channel implicitly. Publish proves the
 exact version first and then moves the requested channel with the plan's CAS
 precondition through current Registry read surfaces.

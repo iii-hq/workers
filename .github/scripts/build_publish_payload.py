@@ -7,6 +7,7 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _lib  # noqa: E402
+import worker_screenshots  # noqa: E402
 
 def normalize_dependencies(raw_deps: Any) -> list[dict[str, Any]]:
     if raw_deps in (None, ""):
@@ -263,6 +264,33 @@ def normalize_worker_interface(
     return {"functions": functions}
 
 
+def publish_screenshots(screenshots: Any, *, deploy: str, worker_name: str) -> list[dict[str, Any]]:
+    """`POST /publish`'s `screenshots` from the build manifest's (or the descriptor's).
+
+    Each image by the asset name it is registered under on the version's
+    release, in display order, with its platform and caption. A worker the
+    registry gives no release (an image) or no page (a hidden one) can only
+    clear them with `[]`.
+    """
+    if not isinstance(screenshots, list):
+        raise ValueError("screenshots must be an array")
+    if screenshots and deploy == "image":
+        raise ValueError("an image version has no release to host screenshots on; only [] clears them")
+    if screenshots and worker_name in worker_screenshots.HIDDEN_WORKERS:
+        raise ValueError(f"the registry hides {worker_name}: its screenshots could never be read back; only []")
+    listed: list[dict[str, Any]] = []
+    for entry in screenshots:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        platform = entry.get("platform") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not isinstance(platform, str):
+            raise ValueError("every screenshot needs a name and a platform")
+        shot: dict[str, Any] = {"asset": name, "platform": platform}
+        if "caption" in entry:
+            shot["caption"] = entry["caption"]
+        listed.append(shot)
+    return listed
+
+
 def build_payload(
     *,
     registry_projection: dict[str, Any],
@@ -272,8 +300,14 @@ def build_payload(
     interface_capture: str,
     artifacts: dict[str, Any],
     readme: str | None = None,
+    screenshots: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Merge the immutable compiler projection with current Registry fields."""
+    """Merge the immutable compiler projection with current Registry fields.
+
+    `screenshots` is the build manifest's: given (`[]` included), the payload
+    lists them; None leaves the field out, and the version inherits the
+    previous version's.
+    """
     required = {
         "worker_name", "type", "description", "license", "tags",
         "dependencies", "config", "experimental", "readme",
@@ -336,6 +370,10 @@ def build_payload(
         payload["image_tag"] = image_tag
     if readme is not None and readme != payload["readme"]:
         raise ValueError("external readme differs from the compiled Registry projection")
+    if screenshots is not None:
+        payload["screenshots"] = publish_screenshots(
+            screenshots, deploy=deploy, worker_name=str(registry_projection["worker_name"])
+        )
     return payload
 
 
@@ -363,6 +401,8 @@ def main() -> int:
         interface_capture=descriptor["interface_capture"],
         artifacts=artifacts,
         readme=readme,
+        # Present exactly when the worker has a list; the manifest's is the same.
+        screenshots=descriptor.get("screenshots"),
     )
     pathlib.Path(args.out).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in payload.items() if k != "readme"}, indent=2))

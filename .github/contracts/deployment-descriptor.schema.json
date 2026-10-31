@@ -67,6 +67,12 @@
         }
       }
     },
+    "screenshots": {
+      "description": "Present only when <worker>/screenshots/screenshots.yaml exists: the version's screenshots in display order ([] clears them). Absent: the version keeps the previous version's.",
+      "type": "array",
+      "maxItems": 50,
+      "items": {"$ref": "#/$defs/screenshot"}
+    },
     "registry_projection": {
       "type": "object",
       "additionalProperties": false,
@@ -99,6 +105,21 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "screenshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "path", "platform", "sha256", "size", "width", "height"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^(iphone|ipad|mac|android|web)-[1-9][0-9]*\\.(png|jpg|webp)$"},
+        "path": {"type": "string", "minLength": 1},
+        "platform": {"enum": ["iphone", "ipad", "mac", "android", "web"]},
+        "caption": {"type": "string", "minLength": 1, "maxLength": 200},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size": {"type": "integer", "minimum": 1, "maximum": 8388608},
+        "width": {"type": "integer", "minimum": 320, "maximum": 8192},
+        "height": {"type": "integer", "minimum": 320, "maximum": 8192}
+      }
+    },
     "identityVersion": {
       "type": "object",
       "additionalProperties": false,

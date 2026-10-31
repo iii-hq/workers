@@ -6,6 +6,9 @@ import pytest
 import build_skills_payload
 import deployment_compiler
 import deployment_targets
+import deployment_train
+import worker_screenshots
+from _screenshot_images import jpeg, png, webp
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -310,3 +313,162 @@ def test_sandbox_libkrun_build_extras_are_validated_and_reach_the_schema():
         entry = json.loads(json.dumps(catalog["sandbox-libkrun"])); entry["artifact"][field] = broken
         with pytest.raises(ValueError, match=field):
             deployment_compiler.compile_worker(ROOT, "sandbox-libkrun", entry, "a" * 40, "b" * 64)
+
+
+def descriptor_schema() -> dict:
+    return json.loads((ROOT / ".github" / "contracts" / "deployment-descriptor.schema.json").read_text(encoding="utf-8"))
+
+
+def rust_worker(root: Path, name: str = "smoke") -> dict:
+    worker = root / name
+    worker.mkdir(parents=True)
+    (worker / "Cargo.toml").write_text(f'[package]\nname = "{name}"\nversion = "1.4.0"\nedition = "2021"\n')
+    (worker / "README.md").write_text("# Smoke\n")
+    (worker / "iii.worker.yaml").write_text(
+        f"iii: v1\nname: {name}\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n"
+        "license: Apache-2.0\ndescription: Smoke worker\ntags: [smoke]\n"
+    )
+    return {
+        "source": {"path": name, "package_manifest": "Cargo.toml"},
+        "artifact": {
+            "kind": "rust-binary", "binary": name,
+            "toolchain": {"name": "rust", "version": "1.97.1"},
+            "targets": ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"],
+            "windows_exception": "This fixture only supports Unix.",
+        },
+        "publish": True,
+    }
+
+
+def write_screenshots(worker: Path, listing: str, files: dict[str, bytes]) -> None:
+    folder = worker / "screenshots"
+    folder.mkdir(exist_ok=True)
+    for name, data in files.items():
+        (folder / name).write_bytes(data)
+    (folder / "screenshots.yaml").write_text(listing, encoding="utf-8")
+
+
+SHOTS = {"android-board.webp": webp(1080, 2424, 1), "iphone-board.png": png(1320, 2868, 2), "mac-board.jpg": jpeg(2880, 1800, 3)}
+LISTING = (
+    "- file: android-board.webp\n  platform: android\n  caption: The board, one lane at a time\n"
+    "- file: iphone-board.png\n  platform: iphone\n"
+    "- file: mac-board.jpg\n  platform: mac\n  caption: The board on a Mac\n"
+)
+
+
+def test_screenshots_are_a_top_level_descriptor_field_only_when_listed(tmp_path: Path) -> None:
+    value = rust_worker(tmp_path)
+    absent = deployment_compiler.compile_worker(tmp_path, "smoke", value, "a" * 40, "b" * 64)
+    assert "screenshots" not in absent
+
+    write_screenshots(tmp_path / "smoke", "[]\n", {})
+    cleared = deployment_compiler.compile_worker(tmp_path, "smoke", value, "a" * 40, "b" * 64)
+    assert cleared["screenshots"] == []
+
+    write_screenshots(tmp_path / "smoke", LISTING, SHOTS)
+    listed = deployment_compiler.compile_worker(tmp_path, "smoke", value, "a" * 40, "b" * 64)
+    assert [(shot["name"], shot["path"], shot["platform"], shot.get("caption")) for shot in listed["screenshots"]] == [
+        ("android-1.webp", "smoke/screenshots/android-board.webp", "android", "The board, one lane at a time"),
+        ("iphone-1.png", "smoke/screenshots/iphone-board.png", "iphone", None),
+        ("mac-1.jpg", "smoke/screenshots/mac-board.jpg", "mac", "The board on a Mac"),
+    ]
+    assert listed["screenshots"] == worker_screenshots.collect(tmp_path / "smoke", root=tmp_path, kind="rust-binary", worker="smoke")
+
+    # Never part of what Release Control spreads into POST /publish.
+    for descriptor in (absent, cleared, listed):
+        assert "screenshots" not in descriptor["registry_projection"]
+        assert descriptor["registry_projection_sha256"] == absent["registry_projection_sha256"]
+        assert deployment_train.verify_descriptor(json.loads(json.dumps(descriptor))) == descriptor
+    assert len({absent["descriptor_sha256"], cleared["descriptor_sha256"], listed["descriptor_sha256"]}) == 3
+
+
+def test_descriptor_schema_validates_the_screenshots(tmp_path: Path) -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+    validator = jsonschema.Draft202012Validator(descriptor_schema())
+    value = rust_worker(tmp_path)
+    validator.validate(deployment_compiler.compile_worker(tmp_path, "smoke", value, "a" * 40, "b" * 64))
+    write_screenshots(tmp_path / "smoke", "[]\n", {})
+    validator.validate(deployment_compiler.compile_worker(tmp_path, "smoke", value, "a" * 40, "b" * 64))
+    write_screenshots(tmp_path / "smoke", LISTING, SHOTS)
+    listed = deployment_compiler.compile_worker(tmp_path, "smoke", value, "a" * 40, "b" * 64)
+    validator.validate(listed)
+    broken = json.loads(json.dumps(listed))
+    broken["screenshots"][0]["caption"] = "x" * 201
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(broken)
+
+
+def test_the_descriptor_digest_follows_the_image_bytes(tmp_path: Path) -> None:
+    value = rust_worker(tmp_path)
+    write_screenshots(tmp_path / "smoke", LISTING, SHOTS)
+    before = deployment_compiler.compile_worker(tmp_path, "smoke", value, "a" * 40, "b" * 64)
+    (tmp_path / "smoke" / "screenshots" / "iphone-board.png").write_bytes(png(1320, 2868, 9))
+    after = deployment_compiler.compile_worker(tmp_path, "smoke", value, "a" * 40, "b" * 64)
+
+    assert after["descriptor_sha256"] != before["descriptor_sha256"]
+    assert after["screenshots"][1]["sha256"] != before["screenshots"][1]["sha256"]
+    assert after["screenshots"][0] == before["screenshots"][0]
+    for unchanged in ("registry_projection_sha256", "public_manifest_sha256", "deployment_spec_sha256", "registry_projection"):
+        assert after[unchanged] == before[unchanged], unchanged
+
+
+def test_a_list_the_registry_would_refuse_fails_the_compile_naming_its_entry(tmp_path: Path) -> None:
+    value = rust_worker(tmp_path)
+    write_screenshots(tmp_path / "smoke", LISTING + "- file: tiny.png\n  platform: web\n", {**SHOTS, "tiny.png": png(100, 100)})
+    with pytest.raises(ValueError, match=r"smoke/screenshots/screenshots.yaml: 1 problem\(s\)[^\n]*\n  \[3\] tiny.png: 100x100 pixels"):
+        deployment_compiler.compile_worker(tmp_path, "smoke", value, "a" * 40, "b" * 64)
+
+
+def test_image_workers_cannot_carry_screenshots(tmp_path: Path) -> None:
+    worker = tmp_path / "img"
+    worker.mkdir()
+    (worker / "pyproject.toml").write_text('[project]\nname = "img"\nversion = "0.1.0"\n')
+    (worker / "Dockerfile").write_text("FROM scratch\n")
+    (worker / "iii.worker.yaml").write_text(
+        "iii: v1\nname: img\nlanguage: python\ndeploy: image\nmanifest: pyproject.toml\n"
+        "license: Apache-2.0\ndescription: Image worker\n"
+    )
+    value = {
+        "source": {"path": "img", "package_manifest": "pyproject.toml"},
+        "artifact": {"kind": "oci-image", "context": ".", "dockerfile": "Dockerfile", "platforms": ["linux/amd64", "linux/arm64"]},
+        "publish": True,
+    }
+    assert "screenshots" not in deployment_compiler.compile_worker(tmp_path, "img", value, "a" * 40, "b" * 64)
+    # `[]` clears what the version would inherit; the registry takes it without a release.
+    write_screenshots(worker, "[]\n", {})
+    assert deployment_compiler.compile_worker(tmp_path, "img", value, "a" * 40, "b" * 64)["screenshots"] == []
+    write_screenshots(worker, "- file: board.png\n  platform: web\n", {"board.png": png(400, 400)})
+    with pytest.raises(ValueError, match="oci-image workers cannot carry screenshots"):
+        deployment_compiler.compile_worker(tmp_path, "img", value, "a" * 40, "b" * 64)
+
+
+def test_the_worker_the_registry_hides_cannot_carry_screenshots(tmp_path: Path) -> None:
+    # GET /w/iii answers 404, so Release Control could never read its screenshots back.
+    value = rust_worker(tmp_path, "iii")
+    write_screenshots(tmp_path / "iii", "[]\n", {})
+    assert deployment_compiler.compile_worker(tmp_path, "iii", value, "a" * 40, "b" * 64)["screenshots"] == []
+    write_screenshots(tmp_path / "iii", LISTING, SHOTS)
+    with pytest.raises(ValueError, match=r"the registry hides the iii worker \(GET /w/iii answers 404\)"):
+        deployment_compiler.compile_worker(tmp_path, "iii", value, "a" * 40, "b" * 64)
+
+
+def test_compiler_digest_covers_the_screenshot_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    policy = tmp_path / "worker_screenshots.py"
+    policy.write_text("MAX_PER_PLATFORM = 10\n")
+    monkeypatch.setattr(worker_screenshots, "__file__", str(policy))
+    script = ROOT / ".github/scripts/deployment_compiler.py"
+    schema = ROOT / ".github/contracts/deployment-descriptor.schema.json"
+    before = deployment_compiler.compiler_digest(script, schema)
+    policy.write_text("MAX_PER_PLATFORM = 11\n")
+    assert deployment_compiler.compiler_digest(script, schema) != before
+
+
+def test_every_catalog_worker_carries_screenshots_exactly_when_it_lists_them() -> None:
+    catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
+    for worker, value in catalog.items():
+        if value.get("publish") is not True:
+            continue
+        descriptor = deployment_compiler.compile_worker(ROOT, worker, value, "a" * 40, "b" * 64)
+        listed = (ROOT / value["source"]["path"] / "screenshots" / "screenshots.yaml").is_file()
+        assert ("screenshots" in descriptor) == listed, worker
+        assert "screenshots" not in descriptor["registry_projection"], worker
