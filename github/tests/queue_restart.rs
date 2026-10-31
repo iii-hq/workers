@@ -349,9 +349,10 @@ async fn a_restarted_worker_keeps_its_queue_observer_id_and_gets_its_unacked_job
 }
 
 /// Another worker holds the queue observer's id: the engine refuses the
-/// github worker's observe with `OBSERVER_ID_CONFLICT`, keeps nothing for it
-/// and ignores an `unobserve` of it. The worker observes again after 1 s,
-/// then 2 s, then 4 s, and its observer is active once the id is free.
+/// github worker's observe with `OBSERVER_ID_CONFLICT` and keeps nothing for
+/// it; disposing the refused handle sends nothing and resolves at once. The
+/// worker observes again after 1 s, then 2 s, then 4 s, and its observer is
+/// active once the id is free.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_id_another_worker_holds_is_observed_again_after_1_then_2_s() {
     let Some(engine) = RealEngine::start().await else {
@@ -399,8 +400,8 @@ async fn an_id_another_worker_holds_is_observed_again_after_1_then_2_s() {
     let refused = tokio::time::Instant::now();
     tokio::time::sleep_until(refused + Duration::from_millis(4_500)).await;
     let again = refusals() - 1;
-    // At 1 s and at 3 s: neither the 5 s an unconfirmed disposal would wait,
-    // nor a constant 1 s.
+    // At 1 s and at 3 s: each refused handle's dispose resolves at once, and
+    // the wait doubles.
     assert!(
         (1..=2).contains(&again),
         "observed again {again} times within 4.5 s of the refusal\ngithub log:\n{}",

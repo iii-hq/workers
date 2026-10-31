@@ -8,7 +8,7 @@
 //!   worker hands the new process the backlog;
 //! - while another worker holds the id, the worker observes again until the
 //!   id is free, 5 s after its first refusal and 10 s after its second (the
-//!   refused observer's dispose, which the SDK waits 5 s on for an id the
+//!   refused observer's dispose, which resolves at once for an observe the
 //!   engine refused, runs during the wait).
 //!
 //! Runs the `memory` binary against `III_ENGINE_WS_URL` (default
@@ -602,8 +602,7 @@ async fn the_consumer_observes_again_on_its_schedule_until_another_worker_lets_i
         memory.log()
     );
     // Each wait is the schedule's, from the refusal to the next observe: the
-    // refused observer's dispose (5 s in the SDK for an id the engine
-    // refused) runs during it and adds nothing.
+    // refused observer's dispose runs during it and adds nothing.
     for (refusal, wait_ms) in [(1, 5_000), (3, 10_000)] {
         let waited = (events[refusal + 1].1 - events[refusal].1).num_milliseconds();
         assert!(

@@ -60,8 +60,9 @@ pub fn queue_observer_id(namespace: Option<&str>, worker_name: &str, queue: &str
 const HELD_BY_ANOTHER_OBSERVER: &[&str] = &["HTTP_ROUTE_CONFLICT", ID_HELD_BY_ANOTHER_CONNECTION];
 
 /// The refusal the engine answers itself when another connection holds the
-/// observer's id. The engine keeps nothing under the id for the refused
-/// connection, so it never confirms an `unobserve` of the refused observer.
+/// observer's id. It is the observe's final answer: the engine keeps nothing
+/// under the id for the refused connection, and the handle's `dispose` sends
+/// nothing and resolves at once.
 const ID_HELD_BY_ANOTHER_CONNECTION: &str = "OBSERVER_ID_CONFLICT";
 
 /// First wait before observing a refused source again; it doubles up to
@@ -516,14 +517,13 @@ pub(super) fn observed_sources(
 /// as long each time up to [`REOBSERVE_MAX_SECS`]; once the observer is
 /// active, the error it recorded is cleared.
 ///
-/// The SDK replays a refused observer until it is disposed, and its handle
-/// holds the observer's id until `dispose` is called, so every refused
-/// observer is disposed before the wait. An observer its function's host
-/// refused (`HTTP_ROUTE_CONFLICT`) stays with the engine, which confirms its
-/// disposal at once. The engine keeps nothing for an id it refused itself
-/// ([`ID_HELD_BY_ANOTHER_CONNECTION`]) and never confirms an `unobserve` of
-/// it: that disposal runs on a task of its own through its 5 s wait, and the
-/// next observe uses the same id, which is free once `dispose` starts.
+/// A refused observer's handle holds the observer's id until `dispose` is
+/// called, so every refused observer is disposed before the wait. An
+/// observer its function's host refused (`HTTP_ROUTE_CONFLICT`) stays with
+/// the engine, which confirms its disposal at once. The engine's own refusal
+/// ([`ID_HELD_BY_ANOTHER_CONNECTION`]) is the observe's final answer: the
+/// engine keeps nothing for it, its `dispose` sends nothing and resolves at
+/// once, and the next observe uses the same id.
 async fn keep_observed(
     s: Arc<Service>,
     source: Source,
@@ -584,16 +584,9 @@ async fn keep_observed(
             return;
         }
         if code == ID_HELD_BY_ANOTHER_CONNECTION {
-            // Its `dispose` waits 5 s for a confirmation the engine never
-            // sends; the id is free as soon as it starts, well within the
-            // wait below, and the next observe uses that id.
             options = options.id(handle.id());
-            tokio::spawn(async move {
-                let _ = handle.dispose().await;
-            });
-        } else {
-            let _ = handle.dispose().await;
         }
+        let _ = handle.dispose().await;
         tokio::time::sleep(retry).await;
         retry = (retry * 2).min(std::time::Duration::from_secs(REOBSERVE_MAX_SECS));
     }

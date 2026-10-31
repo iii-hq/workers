@@ -81,9 +81,10 @@ const HTTP_ON_REQUEST_FN: &str = "http::on-request";
 
 /// First wait, from a refusal with `OBSERVER_ID_CONFLICT`, before observing
 /// a seam again; it doubles up to [`REOBSERVE_MAX_SECS`]. The refused
-/// observer's dispose runs during the wait and resolves within the SDK's 5 s
-/// (at the engine's confirmation, or at 5 s for an id the engine refused,
-/// whose `unobserve` it does not answer), so every wait is the one given here.
+/// observer's dispose runs during the wait and resolves within it: at the
+/// engine's confirmation for an observer the queue worker refused, and at
+/// once for an observe the engine refused (that refusal is the observe's
+/// final answer), so every wait is the one given here.
 const REOBSERVE_FIRST_SECS: u64 = 5;
 const REOBSERVE_MAX_SECS: u64 = 30;
 
@@ -205,9 +206,11 @@ async fn keep_observed(
         let Some(wait) = wait else {
             return;
         };
-        // The SDK keeps a refused observer and replays it until disposed;
-        // the engine holds one the queue worker refused, and disposes it
-        // here. Its handle holds the id until `dispose` is called, so the
+        // A refused observer's handle holds the id until `dispose` is
+        // called. The engine's own refusal (another connection holds the id)
+        // is the observe's final answer: the engine keeps nothing for it,
+        // and its dispose sends nothing and resolves at once. One the queue
+        // worker refused stays with the engine, which disposes it here. The
         // dispose runs during the wait, and the next observe under the id
         // goes out once both are over.
         let ((), ()) = tokio::join!(

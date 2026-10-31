@@ -861,9 +861,11 @@ async fn a_restarted_worker_gets_its_route_and_its_queue_backlog_back() {
 }
 
 /// Another connection holds the queue observer's id: the engine refuses the
-/// github worker's observe with `OBSERVER_ID_CONFLICT`, keeps nothing for it
-/// and ignores its `unobserve`. The worker observes again after 1 s, then 2 s,
-/// then 4 s, and its observer is active once the id is free.
+/// github worker's observe with `OBSERVER_ID_CONFLICT` and keeps nothing for
+/// it. The refusal is the observe's final answer, so disposing the refused
+/// handle sends nothing and resolves at once. The worker observes again
+/// after 1 s, then 2 s, then 4 s, and its observer is active once the id is
+/// free.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_observer_id_another_connection_holds_is_observed_again_after_1_then_2_s() {
     let dir = tempfile::tempdir().unwrap();
@@ -911,12 +913,18 @@ async fn an_observer_id_another_connection_holds_is_observed_again_after_1_then_
     let refused = tokio::time::Instant::now();
     tokio::time::sleep_until(refused + Duration::from_millis(4_500)).await;
     let again = observes() - 2;
-    // At 1 s and at 3 s: neither the 5 s an unconfirmed disposal would wait,
-    // nor a constant 1 s.
+    // At 1 s and at 3 s: each refused handle's dispose resolves at once, and
+    // the wait doubles.
     assert!(
         (1..=2).contains(&again),
         "observed again {again} times within 4.5 s of the refusal"
     );
+    let unobserves = engine
+        .frames()
+        .iter()
+        .filter(|f| f["type"] == "unobserve" && f["id"] == id.as_str())
+        .count();
+    assert_eq!(unobserves, 0, "a refused handle's dispose sends nothing");
 
     held.dispose().await.unwrap();
     engine
