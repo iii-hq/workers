@@ -10,7 +10,7 @@ import build_manifest
 import deployment_train
 import worker_screenshots
 from _screenshot_images import jpeg, png, webp
-from build_publish_payload import build_payload
+from build_publish_payload import build_payload, publish_screenshots
 
 SOURCE_SHA = "a" * 40
 TAG = f"build-{SOURCE_SHA}"
@@ -229,20 +229,28 @@ def test_rust_manifest_maps_every_target_to_a_release_asset_url(tmp_path: Path) 
     }
 
 
-def test_release_control_can_build_the_registry_payload_from_the_manifest_alone(tmp_path: Path) -> None:
-    root = prepared_release(tmp_path, descriptor("web", "rust-binary"), RUST_FILES)
-    manifest = written(write_args(root, receipt(root, "web"), "web"))
-    payload = build_payload(
+def payload_of(manifest: dict) -> dict:
+    """The registry publish document, from the manifest alone, the way Release Control assembles it."""
+    return build_payload(
         registry_projection=manifest["descriptor"]["registry_projection"],
         published_version="1.4.0-rc.1",
         repo_url=f"https://github.com/{manifest['repository']}",
         interface=manifest["interface"],
         interface_capture=manifest["interface_capture"],
         artifacts=manifest["registry_artifacts"],
+        screenshots=manifest.get("screenshots"),
     )
+
+
+def test_release_control_can_build_the_registry_payload_from_the_manifest_alone(tmp_path: Path) -> None:
+    root = prepared_release(tmp_path, descriptor("web", "rust-binary"), RUST_FILES)
+    manifest = written(write_args(root, receipt(root, "web"), "web"))
+    payload = payload_of(manifest)
     assert payload["version"] == "1.4.0-rc.1"
     assert payload["binaries"] == manifest["registry_artifacts"]["binaries"]
     assert payload["functions"][0]["name"] == "smoke::run"
+    # No `screenshots` in the manifest: none in the payload, and the version inherits.
+    assert "screenshots" not in payload
 
 
 def test_bundle_manifest_exposes_archive_url_and_sha256(tmp_path: Path) -> None:
@@ -373,7 +381,7 @@ def with_screenshots(tmp_path: Path, selected: dict) -> tuple[dict, dict[str, by
         encoding="utf-8",
     )
     entries = worker_screenshots.collect(
-        folder.parent, root=tmp_path / "source", kind=selected["artifact"]["kind"],
+        folder.parent, root=tmp_path / "source", kind=selected["artifact"]["kind"], worker=selected["worker"],
     )
     by_name = {entry["name"]: (folder / Path(entry["path"]).name).read_bytes() for entry in entries}
     return seal({**selected, "screenshots": entries}), by_name
@@ -429,6 +437,25 @@ def test_manifest_carries_the_descriptor_screenshots_as_release_assets(tmp_path:
     assert set(manifest["registry_artifacts"]["binaries"]) == {"x86_64-unknown-linux-gnu", "aarch64-apple-darwin"}
     assert "screenshots" not in manifest["descriptor"]["registry_projection"]
     assert manifest["descriptor"] == selected
+
+
+def test_the_registry_payload_names_the_manifest_screenshots_by_asset_exactly_when_present(tmp_path: Path) -> None:
+    selected, images = with_screenshots(tmp_path, descriptor("web", "rust-binary"))
+    root = prepared_release(tmp_path, selected, RUST_FILES, images)
+    manifest = written(write_args(root, receipt(root, "web"), "web"))
+    listed = [
+        {"asset": "android-1.webp", "platform": "android", "caption": "The board, one lane at a time"},
+        {"asset": "iphone-1.png", "platform": "iphone"},
+        {"asset": "mac-1.jpg", "platform": "mac", "caption": "The board on a Mac"},
+    ]
+    assert payload_of(manifest)["screenshots"] == listed
+    assert payload_of({**manifest, "screenshots": []})["screenshots"] == []
+    # An image version has no release to host them on; the registry hides `iii`. Both may only clear.
+    with pytest.raises(ValueError, match="an image version has no release"):
+        publish_screenshots(manifest["screenshots"], deploy="image", worker_name="img")
+    with pytest.raises(ValueError, match="the registry hides iii"):
+        publish_screenshots(manifest["screenshots"], deploy="binary", worker_name="iii")
+    assert publish_screenshots([], deploy="image", worker_name="iii") == []
 
 
 def test_manifest_screenshots_are_present_exactly_when_the_descriptor_has_them(tmp_path: Path) -> None:

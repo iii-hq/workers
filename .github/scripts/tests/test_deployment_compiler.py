@@ -372,7 +372,7 @@ def test_screenshots_are_a_top_level_descriptor_field_only_when_listed(tmp_path:
         ("iphone-1.png", "smoke/screenshots/iphone-board.png", "iphone", None),
         ("mac-1.jpg", "smoke/screenshots/mac-board.jpg", "mac", "The board on a Mac"),
     ]
-    assert listed["screenshots"] == worker_screenshots.collect(tmp_path / "smoke", root=tmp_path, kind="rust-binary")
+    assert listed["screenshots"] == worker_screenshots.collect(tmp_path / "smoke", root=tmp_path, kind="rust-binary", worker="smoke")
 
     # Never part of what Release Control spreads into POST /publish.
     for descriptor in (absent, cleared, listed):
@@ -440,6 +440,16 @@ def test_image_workers_cannot_carry_screenshots(tmp_path: Path) -> None:
     write_screenshots(worker, "- file: board.png\n  platform: web\n", {"board.png": png(400, 400)})
     with pytest.raises(ValueError, match="oci-image workers cannot carry screenshots"):
         deployment_compiler.compile_worker(tmp_path, "img", value, "a" * 40, "b" * 64)
+
+
+def test_the_worker_the_registry_hides_cannot_carry_screenshots(tmp_path: Path) -> None:
+    # GET /w/iii answers 404, so Release Control could never read its screenshots back.
+    value = rust_worker(tmp_path, "iii")
+    write_screenshots(tmp_path / "iii", "[]\n", {})
+    assert deployment_compiler.compile_worker(tmp_path, "iii", value, "a" * 40, "b" * 64)["screenshots"] == []
+    write_screenshots(tmp_path / "iii", LISTING, SHOTS)
+    with pytest.raises(ValueError, match=r"the registry hides the iii worker \(GET /w/iii answers 404\)"):
+        deployment_compiler.compile_worker(tmp_path, "iii", value, "a" * 40, "b" * 64)
 
 
 def test_compiler_digest_covers_the_screenshot_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

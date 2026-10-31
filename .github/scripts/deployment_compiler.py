@@ -517,7 +517,7 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
     # `<worker>/screenshots/screenshots.yaml`, read and checked against the
     # Registry's limits. None (no list) lets the version inherit the previous
     # version's; [] clears them.
-    screenshots = worker_screenshots.collect(worker_dir, root=root, kind=str(artifact["kind"]))
+    screenshots = worker_screenshots.collect(worker_dir, root=root, kind=str(artifact["kind"]), worker=worker)
     package_manifest_version = read_version(package_manifest)
     try:
         skills = build_skills_payload.collect_skills(worker_dir)

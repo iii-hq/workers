@@ -11,8 +11,9 @@ anything in a runner.
 When the descriptor lists screenshots, the manifest carries them too, as
 `screenshots`: each image is a release asset `<worker>-screenshot-<name>` that
 Release Control registers on the version's Registry release and lists in
-`POST /publish` under `<name>`. The field is absent exactly when the descriptor
-has none (the version inherits the previous version's) and `[]` clears them.
+`POST /publish` under `<name>` (build_publish_payload.publish_screenshots). The
+field is absent exactly when the descriptor has no `screenshots` (the version
+inherits the previous version's), and `[]` clears them.
 """
 
 from __future__ import annotations
@@ -88,7 +89,12 @@ def plan(args: argparse.Namespace) -> int:
         for artifact in prepared["artifacts"]
     ]
     rows.extend(
-        (screenshot_prepared_name(entry["name"]), screenshot_asset_name(args.worker, entry["name"]), entry["sha256"], entry["size"])
+        (
+            screenshot_prepared_name(entry["name"]),
+            screenshot_asset_name(args.worker, entry["name"]),
+            entry["sha256"],
+            entry["size"],
+        )
         for entry in descriptor.get("screenshots") or []
     )
     for row in rows:
@@ -261,7 +267,8 @@ def write(args: argparse.Namespace) -> int:
     claimed = {artifact["prepared_name"] for artifact in artifacts}
     claimed.update(screenshot_prepared_name(shot["name"]) for shot in screenshots or [])
     if set(uploaded) != claimed:
-        raise SystemExit(f"upload receipt names assets the prepared release does not have: {sorted(set(uploaded) - claimed)}")
+        stray = sorted(set(uploaded) - claimed)
+        raise SystemExit(f"upload receipt names assets the prepared release does not have: {stray}")
     image = _image(descriptor, receipt)
     kind = str(descriptor["artifact"]["kind"])
     manifest = {

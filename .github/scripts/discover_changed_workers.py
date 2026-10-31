@@ -35,7 +35,9 @@ METADATA_GLOBS = (
     "Cargo.lock",
     "Cargo.toml",
     # Store screenshots and their list (worker_screenshots.py): published with
-    # the next version, never part of what the worker builds or runs.
+    # the next version. No worker builds them in today; one whose build read
+    # them (an image whose Dockerfile copied the folder, say) would need its
+    # own rule here.
     "screenshots/*",
 )
 

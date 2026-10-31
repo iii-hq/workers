@@ -91,6 +91,8 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
             worker_screenshots.check_descriptor_entries(
                 descriptor["screenshots"],
                 kind=str(descriptor["artifact"].get("kind")),
+                # The slug the registry publishes the worker under.
+                worker=str(descriptor["registry_projection"].get("worker_name", descriptor["worker"])),
                 source_path=str(descriptor["source"].get("path", "")),
             )
         except worker_screenshots.ScreenshotError as error:

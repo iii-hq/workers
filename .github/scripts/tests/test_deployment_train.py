@@ -584,7 +584,7 @@ def screenshot_source(root: Path) -> list[dict]:
     (folder / "screenshots.yaml").write_text(
         "- file: board.png\n  platform: iphone\n  caption: The board\n- file: ticket.webp\n  platform: android\n"
     )
-    return worker_screenshots.collect(root / "smoke", root=root, kind="javascript-bundle")
+    return worker_screenshots.collect(root / "smoke", root=root, kind="javascript-bundle", worker="smoke")
 
 
 def assemble_bundle(tmp_path: Path, selected: dict, source_root: Path) -> Path:
@@ -683,3 +683,8 @@ def test_verify_descriptor_accepts_screenshots_only_in_their_compiled_shape(tmp_
     with pytest.raises(SystemExit, match="oci-image releases cannot carry screenshots"):
         deployment_train.verify_descriptor(seal_descriptor({**image, "screenshots": entries}))
     assert deployment_train.verify_descriptor(seal_descriptor({**image, "screenshots": []}))["screenshots"] == []
+    # The registry hides `iii` (GET /w/iii answers 404): only `[]`.
+    hidden = descriptor("iii", "a" * 40, "0.1.0")
+    with pytest.raises(SystemExit, match="the registry hides the iii worker"):
+        deployment_train.verify_descriptor(seal_descriptor({**hidden, "screenshots": entries}))
+    assert deployment_train.verify_descriptor(seal_descriptor({**hidden, "screenshots": []}))["screenshots"] == []

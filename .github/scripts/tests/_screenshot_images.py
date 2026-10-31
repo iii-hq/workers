@@ -7,6 +7,7 @@ each (every 8x8 block is two zero bits), and a lossless WebP whose five prefix
 codes have one symbol each (every pixel costs no bits). A 1080x2424 image is
 a few hundred bytes to a few KiB, so no binary fixture is committed.
 """
+
 from __future__ import annotations
 
 import struct
@@ -30,6 +31,7 @@ def png(width: int, height: int, seed: int = 0) -> bytes:
 
 def jpeg(width: int, height: int, seed: int = 0, *, progressive_marker: bool = False) -> bytes:
     """A baseline JPEG; `progressive_marker` labels the frame SOF2 (header tests only)."""
+
     def segment(marker: int, data: bytes) -> bytes:
         return bytes((0xFF, marker)) + struct.pack(">H", len(data) + 2) + data
 
@@ -78,4 +80,12 @@ def webp_extended_header(width: int, height: int) -> bytes:
     """The first bytes of an extended (VP8X) WebP: enough for the header, not a picture."""
     canvas = (width - 1).to_bytes(3, "little") + (height - 1).to_bytes(3, "little")
     data = b"\x10\x00\x00\x00" + canvas
-    return b"RIFF" + struct.pack("<I", 4 + 8 + len(data) + 4) + b"WEBP" + b"VP8X" + struct.pack("<I", len(data)) + data + bytes(4)
+    return (
+        b"RIFF"
+        + struct.pack("<I", 4 + 8 + len(data) + 4)
+        + b"WEBP"
+        + b"VP8X"
+        + struct.pack("<I", len(data))
+        + data
+        + bytes(4)
+    )

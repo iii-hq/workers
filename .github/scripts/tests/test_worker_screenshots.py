@@ -1,4 +1,5 @@
 """The screenshots list a worker keeps in <worker>/screenshots/, read the way the Registry checks it."""
+
 from __future__ import annotations
 
 import hashlib
@@ -6,7 +7,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 import worker_screenshots as screenshots
 from _screenshot_images import jpeg, png, webp, webp_extended_header, webp_lossy_header
 
@@ -23,14 +23,18 @@ def worker(root: Path, listing: str | None, files: dict[str, bytes] | None = Non
     return root / "smoke"
 
 
-def collect(worker_dir: Path, kind: str = "rust-binary"):
-    return screenshots.collect(worker_dir, root=worker_dir.parent, kind=kind)
+def collect(worker_dir: Path, kind: str = "rust-binary", name: str = "smoke"):
+    return screenshots.collect(worker_dir, root=worker_dir.parent, kind=kind, worker=name)
 
 
-def problems(worker_dir: Path, kind: str = "rust-binary") -> str:
+def problems(worker_dir: Path, kind: str = "rust-binary", name: str = "smoke") -> str:
     with pytest.raises(screenshots.ScreenshotError) as error:
-        collect(worker_dir, kind)
+        collect(worker_dir, kind, name)
     return str(error.value)
+
+
+def check(entries: object, kind: str = "rust-binary", name: str = "smoke") -> object:
+    return screenshots.check_descriptor_entries(entries, kind=kind, worker=name, source_path="smoke")
 
 
 def test_headers_give_the_format_and_the_stored_pixel_size() -> None:
@@ -40,9 +44,15 @@ def test_headers_give_the_format_and_the_stored_pixel_size() -> None:
     assert screenshots.image_info(webp(1080, 2424, 1)) == ("webp", 1080, 2424)
     assert screenshots.image_info(webp_lossy_header(1600, 900)) == ("webp", 1600, 900)
     assert screenshots.image_info(webp_extended_header(8192, 320)) == ("webp", 8192, 320)
-    # A fill byte and a DHT (C4, inside the SOF range) before the frame header are skipped.
+    # A fill byte before the frame header is skipped.
     filled = jpeg(640, 480)[:2] + b"\xff" + jpeg(640, 480)[2:]
     assert screenshots.image_info(filled) == ("jpeg", 640, 480)
+    # So are a DHT (C4), a JPG (C8) and a DAC (CC): inside the SOF range, they carry no frame size.
+    one_code = b"\x00" + bytes((1,) + (0,) * 15) + b"\x00"
+    for marker in (0xC4, 0xC8, 0xCC):
+        segment = bytes((0xFF, marker)) + (len(one_code) + 2).to_bytes(2, "big") + one_code
+        early = jpeg(640, 480)[:2] + segment + jpeg(640, 480)[2:]
+        assert screenshots.image_info(early) == ("jpeg", 640, 480), hex(marker)
 
 
 def test_other_and_truncated_files_have_no_header() -> None:
@@ -62,13 +72,17 @@ def test_a_list_becomes_descriptor_entries_named_per_platform_in_display_order(t
         "shots/Mac Board.JPEG": jpeg(2880, 1800, 3),
         "iphone-ticket.png": png(1320, 2868, 4),
     }
-    worker_dir = worker(tmp_path, (
-        "# display order\n"
-        "- file: android-board.webp\n  platform: android\n  caption: '  The board, one lane at a time  '\n"
-        "- file: ./iphone-board.png\n  platform: iphone\n  caption: The board\n"
-        "- file: shots/Mac Board.JPEG\n  platform: mac\n"
-        "- file: iphone-ticket.png\n  platform: iphone\n  caption: '   '\n"
-    ), images)
+    worker_dir = worker(
+        tmp_path,
+        (
+            "# display order\n"
+            "- file: android-board.webp\n  platform: android\n  caption: '  The board, one lane at a time  '\n"
+            "- file: ./iphone-board.png\n  platform: iphone\n  caption: The board\n"
+            "- file: shots/Mac Board.JPEG\n  platform: mac\n"
+            "- file: iphone-ticket.png\n  platform: iphone\n  caption: '   '\n"
+        ),
+        images,
+    )
 
     shots = collect(worker_dir)
 
@@ -88,7 +102,7 @@ def test_a_list_becomes_descriptor_entries_named_per_platform_in_display_order(t
     assert (shots[2]["width"], shots[2]["height"]) == (2880, 1800)
     assert "caption" not in shots[2]
     assert "caption" not in shots[3], "a blank caption is none"
-    assert screenshots.check_descriptor_entries(shots, kind="rust-binary", source_path="smoke") == shots
+    assert check(shots) == shots
 
 
 def test_no_list_inherits_and_an_empty_list_clears(tmp_path: Path) -> None:
@@ -101,41 +115,93 @@ def test_no_list_inherits_and_an_empty_list_clears(tmp_path: Path) -> None:
     assert collect(no_folder) is None
 
 
+@pytest.mark.parametrize("name", ["screenshots.yml", "Screenshots.yaml", "screenshots.YML"])
+def test_a_list_under_another_name_is_refused_never_ignored(tmp_path: Path, name: str) -> None:
+    # Ignoring it would let the version silently keep the previous version's screenshots.
+    alone = worker(tmp_path / "alone", None, {name: b"[]\n"})
+    assert f"smoke/screenshots/{name} is not read: the list must be named exactly screenshots.yaml" in problems(alone)
+    beside = worker(tmp_path / "beside", "[]\n", {name: b"[]\n"})
+    assert "the list must be named exactly screenshots.yaml" in problems(beside)
+
+
+def test_screenshots_must_be_a_folder(tmp_path: Path) -> None:
+    worker_dir = tmp_path / "smoke"
+    worker_dir.mkdir()
+    (worker_dir / "screenshots").write_text("- file: a.png\n  platform: web\n", encoding="utf-8")
+    assert "smoke/screenshots must be a folder holding screenshots.yaml and its images" in problems(worker_dir)
+
+
 def test_an_empty_file_and_a_mapping_are_refused(tmp_path: Path) -> None:
     assert "lists no screenshots: write `[]`" in problems(worker(tmp_path / "a", "# nothing yet\n"))
     assert "must be a list of `- file: <image>` entries" in problems(worker(tmp_path / "b", "file: a.png\n"))
     assert "is not valid YAML" in problems(worker(tmp_path / "c", "- file: [unclosed\n"))
 
 
+def test_a_field_written_twice_and_a_merge_key_are_refused(tmp_path: Path) -> None:
+    # PyYAML would keep the last value (and apply the merge) without a word.
+    files = {"a.png": png(400, 400, 1), "b.png": png(400, 400, 2)}
+    twice = problems(worker(tmp_path / "twice", "- file: a.png\n  platform: web\n  platform: iphone\n", files))
+    assert "is not valid YAML" in twice and "found duplicate key 'platform'" in twice
+    merged = problems(
+        worker(tmp_path / "merged", ("- &first\n  file: a.png\n  platform: web\n- <<: *first\n  file: b.png\n"), files)
+    )
+    assert "merge keys (`<<`) are not accepted" in merged
+    # Anchors and aliases of plain values stay fine.
+    aliased = worker(tmp_path / "aliased", "- file: a.png\n  platform: &p web\n- file: b.png\n  platform: *p\n", files)
+    assert [shot["name"] for shot in collect(aliased)] == ["web-1.png", "web-2.png"]
+
+
+def test_a_nul_in_a_file_name_is_reported_with_its_entry(tmp_path: Path) -> None:
+    worker_dir = worker(
+        tmp_path,
+        '- file: "a\\0.png"\n  platform: web\n- file: ok.png\n  platform: web\n',
+        {
+            "ok.png": png(400, 400, 1),
+        },
+    )
+    message = problems(worker_dir)
+    assert message.startswith("smoke/screenshots/screenshots.yaml: 1 problem(s)"), message
+    assert "[0] 'a\\x00.png': must not contain a NUL character" in message
+    assert "\0" not in message
+    with pytest.raises(screenshots.ScreenshotError, match="could not be read"):
+        screenshots.read_regular(tmp_path / "a\0.png")
+    with pytest.raises(screenshots.ScreenshotError, match="could not be read"):
+        screenshots.verify_file(tmp_path / "a\0.png", {"size": 1})
+
+
 def test_every_problem_is_reported_at_once_with_the_index_of_its_entry(tmp_path: Path) -> None:
     listing = (
-        "- file: watch.png\n  platform: watch\n"           # 0
-        "- file: anim.gif\n  platform: web\n"              # 1
-        "- file: missing.png\n  platform: web\n"           # 2
-        "- file: fake.png\n  platform: web\n"              # 3 a JPEG
-        "- file: small.png\n  platform: web\n"             # 4
-        "- file: ok.png\n  platform: android\n"            # 5
-        "- file: ok.png\n  platform: ipad\n"               # 6 the same bytes again
+        "- file: watch.png\n  platform: watch\n"  # 0
+        "- file: anim.gif\n  platform: web\n"  # 1
+        "- file: missing.png\n  platform: web\n"  # 2
+        "- file: fake.png\n  platform: web\n"  # 3 a JPEG
+        "- file: small.png\n  platform: web\n"  # 4
+        "- file: ok.png\n  platform: android\n"  # 5
+        "- file: ok.png\n  platform: ipad\n"  # 6 the same bytes again
         f"- file: long.png\n  platform: web\n  caption: {'x' * 201}\n"  # 7
-        "- file: typo.png\n  platfrom: web\n"              # 8
-        "- file: number.png\n  platform: web\n  caption: 2024\n"       # 9
-        "- file: noplatform.png\n"                         # 10
-        "- file: huge-side.webp\n  platform: web\n"        # 11
-        "- just a string\n"                                # 12
-        "- file: ''\n  platform: web\n"                    # 13
+        "- file: typo.png\n  platfrom: web\n"  # 8
+        "- file: number.png\n  platform: web\n  caption: 2024\n"  # 9
+        "- file: noplatform.png\n"  # 10
+        "- file: huge-side.webp\n  platform: web\n"  # 11
+        "- just a string\n"  # 12
+        "- file: ''\n  platform: web\n"  # 13
     )
-    worker_dir = worker(tmp_path, listing, {
-        "watch.png": png(400, 400, 1),
-        "anim.gif": b"GIF89a",
-        "fake.png": jpeg(400, 400),
-        "small.png": png(319, 400, 2),
-        "ok.png": png(400, 400, 3),
-        "long.png": png(400, 400, 4),
-        "typo.png": png(400, 400, 5),
-        "number.png": png(400, 400, 6),
-        "noplatform.png": png(400, 400, 7),
-        "huge-side.webp": webp_extended_header(8193, 400),
-    })
+    worker_dir = worker(
+        tmp_path,
+        listing,
+        {
+            "watch.png": png(400, 400, 1),
+            "anim.gif": b"GIF89a",
+            "fake.png": jpeg(400, 400),
+            "small.png": png(319, 400, 2),
+            "ok.png": png(400, 400, 3),
+            "long.png": png(400, 400, 4),
+            "typo.png": png(400, 400, 5),
+            "number.png": png(400, 400, 6),
+            "noplatform.png": png(400, 400, 7),
+            "huge-side.webp": webp_extended_header(8193, 400),
+        },
+    )
 
     message = problems(worker_dir)
 
@@ -163,17 +229,21 @@ def test_files_stay_inside_the_folder_and_are_read_only_when_small_and_regular(t
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.png").write_bytes(png(400, 400, 9))
-    worker_dir = worker(tmp_path / "repo", (
-        "- file: ../outside.png\n  platform: web\n"
-        "- file: /etc/passwd.png\n  platform: web\n"
-        "- file: folder.png\n  platform: web\n"
-        "- file: huge.png\n  platform: web\n"
-        "- file: zero.png\n  platform: web\n"
-        "- file: link.png\n  platform: web\n"
-        "- file: escape/secret.png\n  platform: web\n"
-        "- file: 'back\\slash.png'\n  platform: web\n"
-        "- file: ok.png\n  platform: web\n"
-    ), {"ok.png": png(400, 400, 1)})
+    worker_dir = worker(
+        tmp_path / "repo",
+        (
+            "- file: ../outside.png\n  platform: web\n"
+            "- file: /etc/passwd.png\n  platform: web\n"
+            "- file: folder.png\n  platform: web\n"
+            "- file: huge.png\n  platform: web\n"
+            "- file: zero.png\n  platform: web\n"
+            "- file: link.png\n  platform: web\n"
+            "- file: escape/secret.png\n  platform: web\n"
+            "- file: 'back\\slash.png'\n  platform: web\n"
+            "- file: ok.png\n  platform: web\n"
+        ),
+        {"ok.png": png(400, 400, 1)},
+    )
     folder = worker_dir / "screenshots"
     (folder / "folder.png").mkdir()
     # Sparse: 9 MiB on paper, refused from its metadata without being read.
@@ -218,7 +288,9 @@ def test_at_most_ten_per_platform_and_fifty_per_version(tmp_path: Path) -> None:
     assert "[10] 10.png: more than 10 screenshots for android" in message
     assert message.startswith("smoke/screenshots/screenshots.yaml: 1 problem(s)"), message
 
-    full = "".join(f"- file: {i}.png\n  platform: {platform}\n" for platform in screenshots.PLATFORMS for i in range(10))
+    full = "".join(
+        f"- file: {i}.png\n  platform: {platform}\n" for platform in screenshots.PLATFORMS for i in range(10)
+    )
     many = {f"{i}.png": png(320, 320, i) for i in range(10)}
     assert "lists 51 screenshots; at most 50 per version" in problems(
         worker(tmp_path / "version", full + "- file: 0.png\n  platform: web\n", many)
@@ -237,15 +309,21 @@ def test_all_the_images_of_a_version_are_capped_together(tmp_path: Path, monkeyp
 
 def test_captions_count_code_points_and_are_trimmed_like_the_registry_trims_them(tmp_path: Path) -> None:
     emoji = "\N{CAMERA}" * 200
-    worker_dir = worker(tmp_path / "ok", (
-        f"- file: a.png\n  platform: web\n  caption: \"{emoji}\"\n"
-        # JavaScript's trim removes U+FEFF and keeps U+0085 (NEL); the registry trims with it.
-        "- file: b.png\n  platform: web\n  caption: \"\\ufeff\\u3000Board\\u0085\"\n"
-    ), {"a.png": png(400, 400, 1), "b.png": png(400, 400, 2)})
+    worker_dir = worker(
+        tmp_path / "ok",
+        (
+            f'- file: a.png\n  platform: web\n  caption: "{emoji}"\n'
+            # JavaScript's trim removes U+FEFF and keeps U+0085 (NEL); the registry trims with it.
+            '- file: b.png\n  platform: web\n  caption: "\\ufeff\\u3000Board\\u0085"\n'
+        ),
+        {"a.png": png(400, 400, 1), "b.png": png(400, 400, 2)},
+    )
     first, second = collect(worker_dir)
     assert first["caption"] == emoji
     assert second["caption"] == "Board\u0085"
-    too_long = worker(tmp_path / "long", f"- file: a.png\n  platform: web\n  caption: \"{emoji}x\"\n", {"a.png": png(400, 400)})
+    too_long = worker(
+        tmp_path / "long", f'- file: a.png\n  platform: web\n  caption: "{emoji}x"\n', {"a.png": png(400, 400)}
+    )
     assert "the caption has 201 characters; at most 200" in problems(too_long)
 
 
@@ -260,47 +338,92 @@ def test_image_workers_cannot_carry_screenshots_but_may_clear_them(tmp_path: Pat
         assert collect(worker(tmp_path / kind, "[]\n"), kind) == []
 
 
+def test_a_worker_the_registry_hides_cannot_carry_screenshots_but_may_clear_them(tmp_path: Path) -> None:
+    listed = worker(tmp_path / "listed", "- file: a.png\n  platform: web\n", {"a.png": png(400, 400)})
+    message = problems(listed, name="iii")
+    assert "the registry hides the iii worker (GET /w/iii answers 404)" in message
+    assert collect(worker(tmp_path / "cleared", "[]\n"), name="iii") == []
+    entries = compiled(tmp_path)
+    with pytest.raises(screenshots.ScreenshotError, match="the registry hides the iii worker"):
+        check(entries, name="iii")
+    assert check([], name="iii") == []
+
+
 def compiled(tmp_path: Path) -> list[dict]:
-    worker_dir = worker(tmp_path / "compiled", (
-        "- file: a.png\n  platform: iphone\n  caption: Board\n- file: b.webp\n  platform: android\n"
-    ), {"a.png": png(400, 800, 1), "b.webp": webp(1080, 2424, 2)})
+    worker_dir = worker(
+        tmp_path / "compiled",
+        ("- file: a.png\n  platform: iphone\n  caption: Board\n- file: b.webp\n  platform: android\n"),
+        {"a.png": png(400, 800, 1), "b.webp": webp(1080, 2424, 2)},
+    )
     return collect(worker_dir)
 
 
-@pytest.mark.parametrize(("field", "value", "message"), [
-    ("name", "iphone-1.gif", "name must be a unique"),
-    ("name", "android-1.png", "name must be a unique"),
-    ("path", "other/screenshots/a.png", "path must be a normalized path inside smoke/screenshots/"),
-    ("path", "smoke/screenshots/../../etc/a.png", "path must be a normalized path"),
-    ("path", "smoke/screenshots", "path must be a normalized path"),
-    ("caption", " Board", "caption must be trimmed text"),
-    ("caption", "", "caption must be trimmed text"),
-    ("sha256", "A" * 64, "sha256 must be a unique lowercase SHA-256"),
-    ("size", True, "size must be 1 to"),
-    ("size", screenshots.MAX_BYTES + 1, "size must be 1 to"),
-    ("width", 319, "each side must be"),
-    ("height", 8192.0, "each side must be"),
-    ("extra", 1, "fields differ from the compiler contract"),
-])
-def test_a_descriptor_cannot_carry_entries_the_registry_would_refuse(tmp_path: Path, field: str, value, message: str) -> None:
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("name", "iphone-1.gif", "name must be iphone-1"),
+        ("name", "android-1.png", "name must be iphone-1"),
+        ("platform", "watch", "platform must be one of"),
+        ("path", "other/screenshots/a.png", "path must be a normalized path inside smoke/screenshots/"),
+        ("path", "smoke/screenshots/../../etc/a.png", "path must be a normalized path"),
+        ("path", "smoke/screenshots", "path must be a normalized path"),
+        ("path", "smoke/screenshots/a\0.png", "path must be a normalized path"),
+        ("caption", " Board", "caption must be trimmed text"),
+        ("caption", "", "caption must be trimmed text"),
+        ("sha256", "A" * 64, "sha256 must be a unique lowercase SHA-256"),
+        ("size", True, "size must be 1 to"),
+        ("size", screenshots.MAX_BYTES + 1, "size must be 1 to"),
+        ("width", 319, "each side must be"),
+        ("height", 8192.0, "each side must be"),
+        ("extra", 1, "fields differ from the compiler contract"),
+    ],
+)
+def test_a_descriptor_cannot_carry_entries_the_registry_would_refuse(
+    tmp_path: Path, field: str, value, message: str
+) -> None:
     entries = compiled(tmp_path)
     entries[0][field] = value
     with pytest.raises(screenshots.ScreenshotError, match=message):
-        screenshots.check_descriptor_entries(entries, kind="rust-binary", source_path="smoke")
+        check(entries)
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ["android-2.webp"],
+        ["android-1.webp", "android-3.webp"],
+        ["android-2.webp", "android-1.webp"],
+    ],
+)
+def test_a_descriptor_numbers_each_platform_from_one_in_display_order(tmp_path: Path, names: list[str]) -> None:
+    android = compiled(tmp_path)[1]
+    entries = [{**android, "name": name, "sha256": f"{i:x}" * 64} for i, name in enumerate(names, start=1)]
+    with pytest.raises(screenshots.ScreenshotError, match="numbered from 1 per platform in display order"):
+        check(entries)
+
+
+def test_a_descriptor_numbers_platforms_independently(tmp_path: Path) -> None:
+    iphone, android = compiled(tmp_path)
+    entries = [
+        {**android, "name": "android-1.webp", "sha256": "1" * 64},
+        iphone,
+        {**android, "name": "android-2.jpg", "sha256": "2" * 64},
+    ]
+    assert check(entries) == entries
 
 
 def test_a_descriptor_entry_list_is_checked_as_a_whole(tmp_path: Path) -> None:
     entries = compiled(tmp_path)
     with pytest.raises(screenshots.ScreenshotError, match="oci-image releases cannot carry screenshots"):
-        screenshots.check_descriptor_entries(entries, kind="oci-image", source_path="smoke")
-    assert screenshots.check_descriptor_entries([], kind="oci-image", source_path="smoke") == []
+        check(entries, kind="oci-image")
+    assert check([], kind="oci-image") == []
     with pytest.raises(screenshots.ScreenshotError, match="sha256 must be a unique"):
-        screenshots.check_descriptor_entries([entries[0], {**entries[1], "sha256": entries[0]["sha256"]}], kind="go-binary", source_path="smoke")
-    with pytest.raises(screenshots.ScreenshotError, match="name must be a unique"):
-        screenshots.check_descriptor_entries([entries[0], entries[0]], kind="go-binary", source_path="smoke")
+        check([entries[0], {**entries[1], "sha256": entries[0]["sha256"]}], kind="go-binary")
+    with pytest.raises(screenshots.ScreenshotError, match="name must be iphone-2"):
+        check([entries[0], entries[0]], kind="go-binary")
     with pytest.raises(screenshots.ScreenshotError, match="at most 50 entries"):
-        screenshots.check_descriptor_entries({"not": "a list"}, kind="go-binary", source_path="smoke")
-    assert screenshots.check_descriptor_entries([], kind="python-bundle", source_path="smoke") == []
+        check({"not": "a list"}, kind="go-binary")
+    assert check([], kind="python-bundle") == []
 
 
 def test_verify_file_accepts_only_the_exact_bytes_a_descriptor_entry_names(tmp_path: Path) -> None:

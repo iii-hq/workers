@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         # The descriptor compiler runs these same checks on main; a list the
         # Registry would refuse fails the whole descriptor index there.
         try:
-            worker_screenshots.collect(spec.path, root=spec.path.parent, kind=spec.artifact_kind)
+            worker_screenshots.collect(spec.path, root=spec.path.parent, kind=spec.artifact_kind, worker=worker)
         except worker_screenshots.ScreenshotError as error:
             hard(str(error))
         readme = spec.path / "README.md"

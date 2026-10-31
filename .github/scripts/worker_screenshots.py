@@ -27,6 +27,7 @@ release runners that have no PyYAML (``collect`` imports it when it runs).
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import os
 import re
@@ -60,6 +61,12 @@ LIST_FILE = "screenshots.yaml"
 # worker may only clear them with `[]`.
 KINDS = frozenset({"rust-binary", "go-binary", "javascript-bundle", "python-bundle"})
 
+# Workers the registry hides from every page (iii-hq/registry
+# `api/src/lib/hidden-workers.ts`, `HIDDEN_WORKER_SLUGS`): `GET /w/{worker}`
+# answers 404, so their screenshots could never be shown nor read back, and
+# Release Control refuses a list for them. They may only clear with `[]`.
+HIDDEN_WORKERS = frozenset({"iii"})
+
 ENTRY_FIELDS = frozenset({"file", "platform", "caption"})
 DESCRIPTOR_FIELDS = frozenset({"name", "path", "platform", "caption", "sha256", "size", "width", "height"})
 DESCRIPTOR_REQUIRED = DESCRIPTOR_FIELDS - {"caption"}
@@ -77,8 +84,9 @@ PUBLISHED_EXTENSION = {"png": "png", "jpeg": "jpg", "webp": "webp"}
 # with it (and stores the result), so the descriptor carries the caption exactly
 # as the registry will answer it.
 _JS_WHITESPACE = (
-    "\t\n\v\f\r              "
-    "    　﻿"
+    "\t\n\v\f\r \u00a0\u1680"
+    + "".join(map(chr, range(0x2000, 0x200B)))  # U+2000-U+200A
+    + "\u2028\u2029\u202f\u205f\u3000\ufeff"
 )
 
 
@@ -192,6 +200,8 @@ def read_regular(path: Path, *, limit: int = MAX_BYTES) -> bytes:
         raise ScreenshotError("does not exist") from None
     except OSError as error:
         raise ScreenshotError(f"could not be read: {error.strerror or error}") from None
+    except ValueError as error:  # e.g. an embedded NUL
+        raise ScreenshotError(f"could not be read: {error}") from None
     if not stat.S_ISREG(status.st_mode):
         raise ScreenshotError("is not a regular file (a symbolic link, a folder or a device is refused)")
     if status.st_size > limit:
@@ -213,6 +223,8 @@ def verify_file(path: Path, entry: dict[str, Any]) -> bytes:
         status = path.lstat()
     except FileNotFoundError:
         raise ScreenshotError(f"{path} does not exist") from None
+    except (OSError, ValueError) as error:
+        raise ScreenshotError(f"{path} could not be read: {error}") from None
     if not stat.S_ISREG(status.st_mode):
         raise ScreenshotError(f"{path} is not a regular file")
     if status.st_size != entry["size"]:
@@ -229,6 +241,8 @@ def verify_file(path: Path, entry: dict[str, Any]) -> bytes:
 
 def _inside(folder: Path, file: str) -> tuple[Path, PurePosixPath]:
     """`file` as a path inside the folder of the list: no absolute path, no `..`."""
+    if "\0" in file:
+        raise ScreenshotError("must not contain a NUL character")
     if "\\" in file:
         raise ScreenshotError("must use `/` to separate folders")
     pure = PurePosixPath(file)
@@ -244,19 +258,75 @@ def list_path(worker_dir: Path) -> Path:
     return worker_dir / FOLDER / LIST_FILE
 
 
-def collect(worker_dir: Path, *, root: Path, kind: str) -> list[dict[str, Any]] | None:
+def _strict_loader(yaml: Any) -> type:
+    """A SafeLoader that refuses a duplicate key and a merge key (`<<`) in a mapping.
+
+    PyYAML keeps the last of two equal keys and applies `<<` merges silently;
+    an entry is three plain fields, so either is a mistake to report. (The
+    registry CLI also refuses `<<`, as an unknown field.)
+    """
+
+    class StrictLoader(yaml.SafeLoader):
+        pass
+
+    def mapping(loader: Any, node: Any, deep: bool = False) -> Any:
+        seen: list[Any] = []
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "merge keys (`<<`) are not accepted",
+                    key_node.start_mark,
+                )
+            key = loader.construct_object(key_node, deep=True)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            seen.append(key)
+        return loader.construct_mapping(node, deep=deep)
+
+    StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+    return StrictLoader
+
+
+def _shown(file: str) -> str:
+    """`file` for a message: as written, or quoted when it holds control characters."""
+    return file if file.isprintable() else repr(file)
+
+
+def collect(worker_dir: Path, *, root: Path, kind: str, worker: str) -> list[dict[str, Any]] | None:
     """The descriptor's `screenshots` for one worker, or None when it has no list.
 
     Every problem is reported at once, each with the index of its entry, in
     one `ScreenshotError`. Entries are named `<platform>-<n>.<ext>` like the
     registry CLI names them; `path` is relative to the repository root.
+    `screenshots/` without a list may hold other images (a README's, say);
+    a list under another name (`screenshots.yml`) is refused, never ignored,
+    because ignoring it would let the version silently inherit.
     """
     root = root.resolve()
     folder = worker_dir.resolve() / FOLDER
     listing = folder / LIST_FILE
     label = listing.relative_to(root).as_posix()
+    shown_folder = folder.relative_to(root).as_posix()
     if folder.is_symlink():
-        raise ScreenshotError(f"{folder.relative_to(root).as_posix()} must be a folder, not a symbolic link")
+        raise ScreenshotError(f"{shown_folder} must be a folder, not a symbolic link")
+    if not os.path.lexists(folder):
+        return None
+    if not folder.is_dir():
+        raise ScreenshotError(f"{shown_folder} must be a folder holding {LIST_FILE} and its images")
+    misnamed = sorted(
+        path.name
+        for path in folder.iterdir()
+        if path.name != LIST_FILE and fnmatch.fnmatchcase(path.name.lower(), "screenshots.y*ml")
+    )
+    if misnamed:
+        raise ScreenshotError(f"{shown_folder}/{misnamed[0]} is not read: the list must be named exactly {LIST_FILE}")
     if not os.path.lexists(listing):
         return None
     if listing.is_symlink() or not listing.is_file():
@@ -266,7 +336,7 @@ def collect(worker_dir: Path, *, root: Path, kind: str) -> list[dict[str, Any]] 
     except ImportError as error:  # pragma: no cover - the compiler requires PyYAML
         raise ScreenshotError("PyYAML is required to read screenshots.yaml") from error
     try:
-        document = yaml.safe_load(listing.read_text(encoding="utf-8"))
+        document = yaml.load(listing.read_text(encoding="utf-8"), Loader=_strict_loader(yaml))
     except (yaml.YAMLError, UnicodeDecodeError) as error:
         raise ScreenshotError(f"{label} is not valid YAML: {error}") from None
     if document is None:
@@ -285,6 +355,11 @@ def collect(worker_dir: Path, *, root: Path, kind: str) -> list[dict[str, Any]] 
             "on its release, and an image version is published without one; write `[]` to clear the ones "
             "a version would inherit, or remove the list"
         )
+    if document and worker in HIDDEN_WORKERS:
+        raise ScreenshotError(
+            f"{label}: the registry hides the {worker} worker (GET /w/{worker} answers 404), so its "
+            "screenshots could never be shown nor read back; write `[]`, or remove the list"
+        )
     if len(document) > MAX_PER_VERSION:
         raise ScreenshotError(f"{label} lists {len(document)} screenshots; at most {MAX_PER_VERSION} per version")
 
@@ -301,13 +376,16 @@ def collect(worker_dir: Path, *, root: Path, kind: str) -> list[dict[str, Any]] 
             continue
         unknown = sorted(str(key) for key in entry if key not in ENTRY_FIELDS)
         if unknown:
-            problems.append(f"{at}: unknown field(s) {', '.join(unknown)} (an entry is `file`, `platform` and an optional `caption`)")
+            problems.append(
+                f"{at}: unknown field(s) {', '.join(unknown)} "
+                "(an entry is `file`, `platform` and an optional `caption`)"
+            )
             continue
         file = entry.get("file")
         if not isinstance(file, str) or not file:
             problems.append(f"{at}: `file` must be the path of an image")
             continue
-        at = f"[{index}] {file}"
+        at = f"[{index}] {_shown(file)}"
         try:
             shot = _check(folder, base, entry, file, per_platform)
         except ScreenshotError as error:
@@ -323,7 +401,9 @@ def collect(worker_dir: Path, *, root: Path, kind: str) -> list[dict[str, Any]] 
     if total > MAX_TOTAL_BYTES:
         problems.append(f"the screenshots total {total} bytes; at most {MAX_TOTAL_BYTES} (128 MiB) in all")
     if problems:
-        raise ScreenshotError(f"{label}: {len(problems)} problem(s), the registry would refuse it:\n  " + "\n  ".join(problems))
+        raise ScreenshotError(
+            f"{label}: {len(problems)} problem(s), the registry would refuse it:\n  " + "\n  ".join(problems)
+        )
     return shots
 
 
@@ -355,7 +435,9 @@ def _check(
         raise ScreenshotError(f"not a {FORMAT_LABEL[declared]} image (its header is not one)")
     actual, width, height = info
     if actual != declared:
-        raise ScreenshotError(f"a {FORMAT_LABEL[actual]} image with a {FORMAT_LABEL[declared]} name; rename it or convert it")
+        raise ScreenshotError(
+            f"a {FORMAT_LABEL[actual]} image with a {FORMAT_LABEL[declared]} name; rename it or convert it"
+        )
     if min(width, height) < MIN_SIDE or max(width, height) > MAX_SIDE:
         raise ScreenshotError(f"{width}x{height} pixels; each side must be between {MIN_SIDE} and {MAX_SIDE}")
     count = per_platform.get(platform, 0) + 1
@@ -380,7 +462,7 @@ def _whole(value: object, low: int, high: int) -> bool:
     return type(value) is int and low <= value <= high
 
 
-def check_descriptor_entries(value: object, *, kind: str, source_path: str) -> list[dict[str, Any]]:
+def check_descriptor_entries(value: object, *, kind: str, worker: str, source_path: str) -> list[dict[str, Any]]:
     """The shape of a compiled descriptor's `screenshots`, without reading any file.
 
     The release train runs this on every descriptor it accepts, so a hand-made
@@ -392,7 +474,8 @@ def check_descriptor_entries(value: object, *, kind: str, source_path: str) -> l
         raise ScreenshotError(f"must be an array of at most {MAX_PER_VERSION} entries")
     if value and kind not in KINDS:
         raise ScreenshotError(f"{kind} releases cannot carry screenshots (only `[]`, which clears them)")
-    names: set[str] = set()
+    if value and worker in HIDDEN_WORKERS:
+        raise ScreenshotError(f"the registry hides the {worker} worker: it cannot carry screenshots (only `[]`)")
     digests: set[str] = set()
     per_platform: dict[str, int] = {}
     total = 0
@@ -401,18 +484,28 @@ def check_descriptor_entries(value: object, *, kind: str, source_path: str) -> l
         if not isinstance(entry, dict) or not DESCRIPTOR_REQUIRED <= set(entry) <= DESCRIPTOR_FIELDS:
             raise ScreenshotError(f"{at} fields differ from the compiler contract")
         name, platform = entry["name"], entry["platform"]
+        if platform not in PLATFORMS:
+            raise ScreenshotError(f"{at}.platform must be one of {', '.join(PLATFORMS)}")
+        # `n` counts from 1 per platform in display order, as the CLI numbers
+        # them and Release Control requires; it also makes every name unique.
+        count = per_platform.get(platform, 0) + 1
+        per_platform[platform] = count
         match = NAME_RE.fullmatch(name) if isinstance(name, str) else None
-        if match is None or match.group(1) != platform or name in names:
-            raise ScreenshotError(f"{at}.name must be a unique `<platform>-<n>.<png|jpg|webp>` of its platform")
-        names.add(name)
-        per_platform[platform] = per_platform.get(platform, 0) + 1
-        if per_platform[platform] > MAX_PER_PLATFORM:
+        if match is None or match.group(1) != platform or int(match.group(2)) != count:
+            raise ScreenshotError(
+                f"{at}.name must be {platform}-{count}.<png|jpg|webp>: numbered from 1 per platform in display order"
+            )
+        if count > MAX_PER_PLATFORM:
             raise ScreenshotError(f"{at}: more than {MAX_PER_PLATFORM} screenshots for {platform}")
         path = entry["path"]
-        pure = PurePosixPath(path) if isinstance(path, str) and path and "\\" not in path else None
+        pure = PurePosixPath(path) if isinstance(path, str) and path and "\\" not in path and "\0" not in path else None
         if (
-            pure is None or pure.is_absolute() or ".." in pure.parts or pure.as_posix() != path
-            or not pure.is_relative_to(folder) or pure == folder
+            pure is None
+            or pure.is_absolute()
+            or ".." in pure.parts
+            or pure.as_posix() != path
+            or not pure.is_relative_to(folder)
+            or pure == folder
         ):
             raise ScreenshotError(f"{at}.path must be a normalized path inside {folder.as_posix()}/")
         if "caption" in entry:
