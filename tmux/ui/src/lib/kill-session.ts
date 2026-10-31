@@ -11,6 +11,19 @@ import type { AgentBadge, WindowRow } from './model'
 /** Windows a confirm names before the rest fold into `N more`; one over the cap is named too. */
 export const MAX_NAMED_WINDOWS = 6
 
+/**
+ * Characters one window may take in the sentence; a longer part ends in `…`.
+ * With the cap on windows, it bounds the whole description, so the dialog
+ * (no scroll of its own, at most 85vh) keeps its actions on a phone.
+ */
+export const MAX_PART_CHARS = 48
+
+/** `text` cut to `max` characters (code points, never half an emoji), the last one `…`. */
+export function clip(text: string, max = MAX_PART_CHARS): string {
+  const chars = Array.from(text)
+  return chars.length <= max ? text : `${chars.slice(0, max - 1).join('').trimEnd()}…`
+}
+
 /** The parts of a window row the sentence reads. */
 export type NamedWindow = Pick<WindowRow, 'label' | 'command' | 'compose'> & {
   window: Pick<WindowRow['window'], 'name'>
@@ -28,11 +41,11 @@ export function windowPart(row: NamedWindow): string {
   return running && running !== row.window.name ? `${row.label} (${running})` : row.label
 }
 
-/** `a, b and c`, with the windows past the cap as `N more`. */
+/** `a, b and c`, each clipped, with the windows past the cap as `N more`. */
 export function windowList(windows: readonly NamedWindow[]): string {
   const listed = windows.length > MAX_NAMED_WINDOWS + 1 ? MAX_NAMED_WINDOWS : windows.length
   const parts = [
-    ...windows.slice(0, listed).map(windowPart),
+    ...windows.slice(0, listed).map((row) => clip(windowPart(row))),
     ...(listed < windows.length ? [`${windows.length - listed} more`] : []),
   ]
   return parts.length < 2 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`

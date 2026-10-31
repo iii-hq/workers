@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { killSessionDescription, MAX_NAMED_WINDOWS, type NamedWindow, windowList, windowPart } from '../kill-session'
+import {
+  clip,
+  killSessionDescription,
+  MAX_NAMED_WINDOWS,
+  MAX_PART_CHARS,
+  type NamedWindow,
+  windowList,
+  windowPart,
+} from '../kill-session'
 import { buildSessionTree } from '../model'
 import type { Pane, Session, Window } from '../types'
 
@@ -50,6 +58,38 @@ describe('windowList', () => {
 
   it('folds the windows past the cap into a count', () => {
     expect(windowList(many(MAX_NAMED_WINDOWS + 4))).toBe('0:w0, 1:w1, 2:w2, 3:w3, 4:w4, 5:w5 and 4 more')
+  })
+})
+
+describe('clip', () => {
+  it('keeps a part that fits', () => {
+    expect(clip('0:claude (Claude Code)')).toBe('0:claude (Claude Code)')
+    expect(clip('x'.repeat(MAX_PART_CHARS))).toBe('x'.repeat(MAX_PART_CHARS))
+  })
+
+  it('cuts a longer part to the limit, ending in an ellipsis', () => {
+    const cut = clip('y'.repeat(MAX_PART_CHARS + 30))
+    expect(Array.from(cut)).toHaveLength(MAX_PART_CHARS)
+    expect(cut.endsWith('…')).toBe(true)
+  })
+
+  it('never splits an emoji and drops the space before the ellipsis', () => {
+    expect(clip('ab 🚀🚀', 4)).toBe('ab…')
+    expect(clip('🚀🚀🚀🚀', 3)).toBe('🚀🚀…')
+  })
+})
+
+describe('the description stays bounded', () => {
+  it('clips every long window name and command, whatever the count', () => {
+    const long = 'a-very-long-window-name-that-keeps-going-and-going'
+    const windows = Array.from({ length: 40 }, (_, i) => named(i, `${long}-${i}`, `${long}-command`))
+    const text = killSessionDescription(windows)
+    const tail = ' and 34 more end with every process in them, and every terminal attached to the session — yours included — detaches.'
+    expect(text.endsWith(tail)).toBe(true)
+    const parts = text.slice(0, -tail.length).split(', ')
+    expect(parts).toHaveLength(MAX_NAMED_WINDOWS)
+    for (const part of parts) expect(Array.from(part).length).toBeLessThanOrEqual(MAX_PART_CHARS)
+    expect(Array.from(text).length).toBeLessThanOrEqual(MAX_NAMED_WINDOWS * (MAX_PART_CHARS + 2) + tail.length)
   })
 })
 
