@@ -42,7 +42,7 @@
 //! tuning changes apply to the *next* connection; an in-flight connection
 //! keeps the boundaries it was admitted under (spec: *Hot reload*).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
@@ -173,6 +173,10 @@ pub enum DownstreamAction {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpstreamAction {
     Forward(String),
+    /// Forward these frames, in order: an `observeresult`, then the
+    /// refusals of the observes under its id that the connection sent after
+    /// it ([`Requested::Refused`]).
+    ForwardAll(Vec<String>),
     /// A frame type the proxy does not forward.
     Drop,
 }
@@ -188,12 +192,28 @@ struct ObserverBook {
     /// `observerremoved`): observer id → the observed function. The
     /// connection may call through these.
     hosted: HashMap<String, FnKey>,
-    /// Observers this connection asked for, until the engine answers:
-    /// observer id → whether its activations carry the `Observed` envelope.
-    requested: HashMap<String, bool>,
+    /// The observes this connection sent under each id that have no answer
+    /// yet, oldest first. The engine answers a connection's observes one
+    /// each, in the order it reads them, and the SDK gives each answer to the
+    /// oldest observe under the id with none: a worker that disposes an
+    /// observer observes again under its id at once, so an id can have
+    /// several.
+    requested: HashMap<String, VecDeque<Requested>>,
     /// Observers this connection created and the engine accepted, with the
     /// same value.
     created: HashMap<String, bool>,
+}
+
+/// An `observe` of this connection that has no answer yet.
+enum Requested {
+    /// Forwarded to the engine: whether its activations carry the `Observed`
+    /// envelope.
+    Forwarded(bool),
+    /// Refused by the proxy while an earlier observe under the id waits for
+    /// the engine's answer: the refusal, which goes out right after that
+    /// answer, so the worker hears the answers in the order it sent the
+    /// observes.
+    Refused(String),
 }
 
 /// A call the engine routed to this connection, until the connection answers
@@ -471,7 +491,9 @@ impl Interceptor {
             "invocationresult" => {
                 // The answer to a call routed here: its caller stops being
                 // one a later frame may name. Correlation is by
-                // invocation_id, and `observed` is checked by the engine.
+                // invocation_id. `matched` and `delivered` pass through: the
+                // engine evaluates the observers of the call, among the
+                // active observers of the function this connection hosts.
                 if let Some(id) = v.get("invocation_id").and_then(Value::as_str) {
                     self.inbound.lock().await.remove(id);
                 }
@@ -480,10 +502,9 @@ impl Interceptor {
             "observe" => self.on_observe(v).await,
             "unobserve" => {
                 // The engine disposes only an observer this connection owns.
+                // It still answers every observe sent before this frame.
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
-                    let mut book = self.observers.lock().await;
-                    book.requested.remove(id);
-                    book.created.remove(id);
+                    self.observers.lock().await.created.remove(id);
                 }
                 DownstreamAction::Forward(v.to_string())
             }
@@ -570,21 +591,25 @@ impl Interceptor {
                 .and_then(Value::as_str)
                 .map(str::to_string),
         ) else {
-            return refuse_observe(
-                &id,
-                INVALID_ARGS,
-                "`source.function_id` and `target.function_id` must be strings",
-            );
+            return self
+                .refuse_observe(
+                    &id,
+                    INVALID_ARGS,
+                    "`source.function_id` and `target.function_id` must be strings",
+                )
+                .await;
         };
         let (Some(source_ns), Some(target_ns)) = (
             requested_namespace(&v["source"]),
             requested_namespace(&v["target"]),
         ) else {
-            return refuse_observe(
-                &id,
-                INVALID_ARGS,
-                "`source.namespace` and `target.namespace` must be strings",
-            );
+            return self
+                .refuse_observe(
+                    &id,
+                    INVALID_ARGS,
+                    "`source.namespace` and `target.namespace` must be strings",
+                )
+                .await;
         };
 
         // The observer registration hook (bare ids), with the engine's input;
@@ -606,11 +631,13 @@ impl Interceptor {
                 "context": self.session.context,
             });
             let Some(answer) = self.call_hook(hook_id, input).await else {
-                return refuse_observe(
-                    &id,
-                    "FORBIDDEN",
-                    "observer registration denied by the registration hook",
-                );
+                return self
+                    .refuse_observe(
+                        &id,
+                        "FORBIDDEN",
+                        "observer registration denied by the registration hook",
+                    )
+                    .await;
             };
             if let Some(s) = answer.get("function_id").and_then(Value::as_str) {
                 source_id = s.to_string();
@@ -640,18 +667,24 @@ impl Interceptor {
         // An observer's activations run its target with no session behind
         // them: an engine function would run unrestricted.
         if target.starts_with("engine::") {
-            return refuse_observe(
-                &id,
-                "FORBIDDEN",
-                &format!("function '{target}' cannot be an observer's target through rbac-proxy"),
-            );
+            return self
+                .refuse_observe(
+                    &id,
+                    "FORBIDDEN",
+                    &format!(
+                        "function '{target}' cannot be an observer's target through rbac-proxy"
+                    ),
+                )
+                .await;
         }
         if !observable_through_proxy(&source) {
-            return refuse_observe(
-                &id,
-                "FORBIDDEN",
-                &format!("function '{source}' cannot be observed through rbac-proxy"),
-            );
+            return self
+                .refuse_observe(
+                    &id,
+                    "FORBIDDEN",
+                    &format!("function '{source}' cannot be observed through rbac-proxy"),
+                )
+                .await;
         }
         // Observing a function reads every call of it, so it takes what
         // calling it takes, in the namespace each one is reached in.
@@ -660,11 +693,13 @@ impl Interceptor {
                 self.is_own(namespace, engine_id).await || self.allowed(namespace, engine_id).await;
             if !permitted {
                 let remediation = rbac::remediation(&self.session, engine_id);
-                return refuse_observe(
-                    &id,
-                    "FORBIDDEN",
-                    &rbac::forbidden_message(engine_id, remediation),
-                );
+                return self
+                    .refuse_observe(
+                        &id,
+                        "FORBIDDEN",
+                        &rbac::forbidden_message(engine_id, remediation),
+                    )
+                    .await;
             }
         }
 
@@ -672,8 +707,29 @@ impl Interceptor {
         v["target"]["function_id"] = Value::String(target);
         let envelope = matches!(v.pointer("/source/deliver"), None | Some(Value::Null))
             || v.pointer("/source/deliver").and_then(Value::as_str) == Some("envelope");
-        self.observers.lock().await.requested.insert(id, envelope);
+        self.observers
+            .lock()
+            .await
+            .requested
+            .entry(id)
+            .or_default()
+            .push_back(Requested::Forwarded(envelope));
         DownstreamAction::Forward(v.to_string())
+    }
+
+    /// The engine's answer to a refused `observe`, `observeresult { state:
+    /// error }`: at once, or, while an earlier observe under the id waits for
+    /// the engine's answer, right after that answer.
+    async fn refuse_observe(&self, id: &str, code: &str, message: &str) -> DownstreamAction {
+        let refusal = observe_refusal(id, code, message);
+        let mut book = self.observers.lock().await;
+        match book.requested.get_mut(id) {
+            Some(queue) => {
+                queue.push_back(Requested::Refused(refusal));
+                DownstreamAction::Drop
+            }
+            None => DownstreamAction::ReplyToClient(refusal),
+        }
     }
 
     /// `observerack`: a host accepts or rejects an observer of one of its
@@ -697,9 +753,9 @@ impl Interceptor {
     /// `invocationsobserved`: the host's reports of its local calls and the
     /// observers they matched. Each item is kept only for a function this
     /// connection registered, under its engine id, with a `caller` the proxy
-    /// vouches for: the context the call was made in. A routed call's matches
-    /// travel on its answer (`invocationresult.observed`), and the engine
-    /// drops an item for a call it routed to the connection.
+    /// vouches for: the context the call was made in. The engine evaluates
+    /// the observers of the calls it routes, and drops an item for a call it
+    /// routed to the connection.
     async fn on_invocations_observed(&self, mut v: Value) -> DownstreamAction {
         let Some(items) = v
             .get_mut("items")
@@ -1235,22 +1291,38 @@ impl Interceptor {
             }
             // The engine's answer to this connection's `observe`.
             "observeresult" => {
+                let mut refusals = Vec::new();
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
                     let ended = matches!(
                         v.get("state").and_then(Value::as_str),
                         Some("error" | "disposed")
                     );
                     let mut book = self.observers.lock().await;
-                    if let Some(envelope) = book.requested.remove(id) {
-                        if !ended {
-                            book.created.insert(id.to_string(), envelope);
+                    let mut answered = None;
+                    if let Some(queue) = book.requested.get_mut(id) {
+                        answered = queue.pop_front();
+                        while let Some(Requested::Refused(_)) = queue.front() {
+                            if let Some(Requested::Refused(refusal)) = queue.pop_front() {
+                                refusals.push(refusal);
+                            }
                         }
+                        if queue.is_empty() {
+                            book.requested.remove(id);
+                        }
+                    }
+                    if let (Some(Requested::Forwarded(envelope)), false) = (answered, ended) {
+                        book.created.insert(id.to_string(), envelope);
                     }
                     if v.get("state").and_then(Value::as_str) == Some("disposed") {
                         book.created.remove(id);
                     }
                 }
-                UpstreamAction::Forward(v.to_string())
+                if refusals.is_empty() {
+                    UpstreamAction::Forward(v.to_string())
+                } else {
+                    refusals.insert(0, v.to_string());
+                    UpstreamAction::ForwardAll(refusals)
+                }
             }
             "observerstatechanged" => {
                 if v.get("state").and_then(Value::as_str) == Some("disposed") {
@@ -1418,17 +1490,15 @@ impl Interceptor {
 
 /// The engine's answer to an `observe` it refuses: `observeresult { state:
 /// "error", error: { code, message } }`.
-fn refuse_observe(id: &str, code: &str, message: &str) -> DownstreamAction {
+fn observe_refusal(id: &str, code: &str, message: &str) -> String {
     tracing::debug!(observer_id = %id, code, message, "refusing observe");
-    DownstreamAction::ReplyToClient(
-        json!({
-            "type": "observeresult",
-            "id": id,
-            "state": "error",
-            "error": { "code": code, "message": message },
-        })
-        .to_string(),
-    )
+    json!({
+        "type": "observeresult",
+        "id": id,
+        "state": "error",
+        "error": { "code": code, "message": message },
+    })
+    .to_string()
 }
 
 /// Whether `engine_id` may be an observer's source through the proxy. The
@@ -2328,6 +2398,70 @@ mod tests {
         assert_eq!(r["error"]["code"], "FORBIDDEN");
     }
 
+    /// A worker that disposes its observer observes again under the id at
+    /// once. The engine answers both observes in order; the first answer and
+    /// its disposal are the first observer's, and the second observer is the
+    /// connection's once its own answer arrives.
+    #[tokio::test]
+    async fn an_id_observed_again_before_the_first_answer_belongs_to_the_second() {
+        let i = interceptor(
+            config_with(expose(&["api::*", "engine::observers::*"]), None),
+            session(None),
+        );
+        let observe = observe("api::orders", "api::sink").to_string();
+        let unobserve = json!({ "type": "unobserve", "id": OBSERVER_ID }).to_string();
+        forwarded(i.handle_downstream(&observe).await);
+        forwarded(i.handle_downstream(&unobserve).await);
+        forwarded(i.handle_downstream(&observe).await);
+
+        let answer = json!({ "type": "observeresult", "id": OBSERVER_ID, "state": "pending" });
+        forwarded_up(i.handle_upstream(&answer.to_string()).await);
+        let disposed = json!({ "type": "observerstatechanged", "id": OBSERVER_ID, "state": "disposed", "fires": 0 });
+        forwarded_up(i.handle_upstream(&disposed.to_string()).await);
+        let r = reply(i.handle_downstream(&dispose(OBSERVER_ID)).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+
+        forwarded_up(i.handle_upstream(&answer.to_string()).await);
+        forwarded(i.handle_downstream(&dispose(OBSERVER_ID)).await);
+    }
+
+    /// An observe the proxy refuses while an earlier observe under its id
+    /// waits for the engine's answer: the refusal goes out right after that
+    /// answer, in the order the worker sent the observes.
+    #[tokio::test]
+    async fn a_refusal_follows_the_answer_to_an_earlier_observe_under_its_id() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        let refused = observe("api::orders", "engine::functions::list").to_string();
+        forwarded(
+            i.handle_downstream(&observe("api::orders", "api::sink").to_string())
+                .await,
+        );
+        forwarded(
+            i.handle_downstream(&json!({ "type": "unobserve", "id": OBSERVER_ID }).to_string())
+                .await,
+        );
+        assert_eq!(i.handle_downstream(&refused).await, DownstreamAction::Drop);
+
+        let answer = json!({ "type": "observeresult", "id": OBSERVER_ID, "state": "pending" });
+        let UpstreamAction::ForwardAll(frames) = i.handle_upstream(&answer.to_string()).await
+        else {
+            panic!("expected the answer and the refusal");
+        };
+        let frames: Vec<Value> = frames
+            .iter()
+            .map(|f| serde_json::from_str(f).unwrap())
+            .collect();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0], answer);
+        assert_eq!(frames[1]["id"], OBSERVER_ID);
+        assert_eq!(frames[1]["state"], "error");
+        assert_eq!(frames[1]["error"]["code"], "FORBIDDEN");
+
+        // Nothing waits under the id: a refusal goes out at once.
+        let r = reply(i.handle_downstream(&refused).await);
+        assert_eq!(r["error"]["code"], "FORBIDDEN");
+    }
+
     #[tokio::test]
     async fn a_refused_observer_is_not_created() {
         let i = interceptor(
@@ -2683,10 +2817,10 @@ mod tests {
             "invocation_id": "b414a098-c011-4e9e-8e65-e45bbe4e645a",
             "function_id": "orders::submit",
             "result": { "ok": true },
-            "observed": ["c6ccda45-4a35-461a-a9c4-a318eec7c36a"]
+            "matched": ["c6ccda45-4a35-461a-a9c4-a318eec7c36a"]
         });
         let o = forwarded(i.handle_downstream(&answer.to_string()).await);
-        assert_eq!(o["observed"], answer["observed"]);
+        assert_eq!(o["matched"], answer["matched"]);
         let o = forwarded(
             i.handle_downstream(&call(json!({
                 "function_id": "orders::submit",

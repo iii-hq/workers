@@ -148,11 +148,13 @@ fn case(file: &str) -> Case {
             Setup::Register(&["database::execute", "database::on-row-changed"]),
             Setup::UpstreamFixture("invokefunction-caller.json"),
         ]),
-        // The host's answers to routed calls: `observed` passes through, the
-        // engine checks every id.
-        "invocationresult-observed.json" | "invocationresult-observed-error.json" => {
-            forward_down(vec![])
-        }
+        // The host's answers to routed calls: `matched` and `delivered` pass
+        // through, and the engine evaluates the observers of the call.
+        "invocationresult-routed.json"
+        | "invocationresult-matched.json"
+        | "invocationresult-matched-none.json"
+        | "invocationresult-matched-error.json"
+        | "invocationresult-delivered.json" => forward_down(vec![]),
         "registerfunction.json"
         | "registerfunction-private.json"
         | "registerfunction-not-observable.json"

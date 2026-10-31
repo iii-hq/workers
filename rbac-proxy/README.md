@@ -144,15 +144,17 @@ connection with no RBAC session, so the proxy gates every observe frame:
   `engine::on-observers-changed`). The `Observed` envelope iii delivers for
   an observer the connection created names the observed function without the
   prefix; a call through that observer reaches the target with the payload
-  as the host sent it.
+  as the host sent it. A refusal of an `observe` under an id whose earlier
+  `observe` waits for the engine's answer goes out right after that answer,
+  so the worker hears the answers in the order it sent the observes.
 - **Hosting.** `functionregistered`, `observeradded`, `observerremoved`,
   `observerack`, `invocationsobserved` and `localinvocationstats` pass for the
   functions the connection registered, with the session prefix removed toward
   the worker and applied toward the engine. A call through an observer
   (`iii.call({ observer, payload })`) passes for an observer the engine
   announced to the connection as the host of its function; any other gets
-  `NOT_FUNCTION_OWNER`. `invocationresult.observed` and `output_is_input`
-  pass as sent, and the engine checks them.
+  `NOT_FUNCTION_OWNER`. `invocationresult.matched` and `delivered`, and
+  `output_is_input`, pass as sent, and the engine checks them.
 - **Registrations.** `private`, `observable` and `args_format` on
   `registerfunction` pass to the engine. The connection's calls of its own
   private functions skip the middleware, which runs on the proxy's control

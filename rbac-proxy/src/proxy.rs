@@ -224,6 +224,18 @@ async fn handle_connection(
                             break;
                         }
                     }
+                    UpstreamAction::ForwardAll(frames) => {
+                        let mut sent = true;
+                        for out in frames {
+                            if b_client_out.send(AxumMessage::Text(out)).await.is_err() {
+                                sent = false;
+                                break;
+                            }
+                        }
+                        if !sent {
+                            break;
+                        }
+                    }
                     UpstreamAction::Drop => {}
                 },
                 other => {
