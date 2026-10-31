@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Kill session names its windows again.** The Console's confirm dialog lost its
+  `details` list in the ADE redesign (#1528), which also broke the page's type-check and
+  with it the worker's build. The Kill session confirmation now names the windows that
+  end in its sentence, each with its agent, `iii compose` or command, past six as `N more`
+  (`0:editor (vim), 1:dev (npm) and 2:logs (tail) end with every process in them…`).
+
 ### Changed
 
 - **iii-sdk 0.25.0.** The worker builds against the 0.25 SDK. Console terminal calls

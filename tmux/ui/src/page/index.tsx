@@ -34,6 +34,7 @@ import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
 import { Bot, Network, Plus, RefreshCw, SquareTerminal } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createApi } from '../lib/api'
+import { killSessionDescription } from '../lib/kill-session'
 import { useTmuxOverview } from '../lib/live'
 import {
   activeWindow,
@@ -173,9 +174,7 @@ export function TmuxPage({
     async (row: SessionRow) => {
       const ok = await confirm({
         title: `Kill session ${row.session.name}?`,
-        description:
-          'Every window and process in it ends, and every terminal attached to it — yours included — detaches.',
-        details: row.windows.map((w) => `${w.label} — ${w.agents[0]?.label ?? w.command}`),
+        description: killSessionDescription(row.windows),
         confirmLabel: 'Kill session',
         tone: 'danger',
       })
