@@ -637,20 +637,22 @@ impl ProxySession {
     /// The worker name the engine knows this session's connection by, for
     /// the name it declared on `engine::workers::register`:
     /// `rbac-proxy:<prefix>::<declared>` under a `function_registration_prefix`,
-    /// `rbac-proxy:<declared>` without one. The engine admits one live worker
-    /// per name and namespace, and an `observe` from a connection under the
-    /// same name and namespace replaces that worker's suspended observer
-    /// (decision 51). The prefix scopes a worker's name as it scopes the
-    /// worker's function ids: sessions under one prefix share their workers'
+    /// `rbac-proxy:<session id>:<declared>` without one. The engine admits one
+    /// live worker per name and namespace, and an `observe` from a connection
+    /// under the same name and namespace replaces that worker's suspended
+    /// observer (decision 51); the proxy's connections all reach it as one
+    /// principal. The prefix scopes a worker's name as it scopes the worker's
+    /// function ids: sessions under one prefix share their workers'
     /// identities, and a session under another prefix declaring the same
-    /// name is another worker. A session without a prefix is scoped no more
-    /// than its function ids are (a declared `tenant1::queue` is tenant1's
-    /// `queue`). The `rbac-proxy:` start keeps proxied workers off the names
-    /// of workers connected to the engine directly.
+    /// name is another worker. Nothing else tells two unprefixed sessions
+    /// apart, so each one's connection is a worker of its own: another
+    /// session declaring the same name neither shuts it out nor takes its
+    /// suspended observers. The `rbac-proxy:` start keeps proxied workers off
+    /// the names of workers connected to the engine directly.
     pub fn proxied_worker_name(&self, declared: &str) -> String {
         match &self.function_registration_prefix {
             Some(prefix) => format!("{WORKER_NAME_PREFIX}{prefix}::{declared}"),
-            None => format!("{WORKER_NAME_PREFIX}{declared}"),
+            None => format!("{WORKER_NAME_PREFIX}{}:{declared}", self.session_id),
         }
     }
 }

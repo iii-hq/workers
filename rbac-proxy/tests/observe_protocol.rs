@@ -30,8 +30,9 @@ enum Expect {
     /// Worker → engine, answered by the proxy with a frame equal to this
     /// fixture.
     RepliedDownstream(&'static str),
-    /// Worker → engine, forwarded as `rewrite` turns the fixture.
-    ForwardedDownstream(fn(&mut Value)),
+    /// Worker → engine, forwarded as `rewrite` turns the fixture for the
+    /// connection's session.
+    ForwardedDownstream(fn(&mut Value, &ProxySession)),
     /// Engine → worker, forwarded as `rewrite` turns the fixture.
     ForwardedUpstream(fn(&mut Value)),
 }
@@ -55,10 +56,10 @@ fn unchanged(_: &mut Value) {}
 
 /// The register call as the engine gets it: the features the proxy enforces,
 /// and the name behind the proxy's `rbac-proxy:` prefix.
-fn registered_through_proxy(v: &mut Value) {
+fn registered_through_proxy(v: &mut Value, session: &ProxySession) {
     v["data"]["features"] = json!(["observe.v1", "observe.v2", "local-dispatch.v1"]);
     let name = v["data"]["name"].as_str().unwrap();
-    v["data"]["name"] = json!(format!("rbac-proxy:{name}"));
+    v["data"]["name"] = json!(session.proxied_worker_name(name));
 }
 
 /// A call routed to this connection: what a `caller` is checked against.
@@ -101,7 +102,7 @@ fn hosting(function_id: &'static str, observer_id: &str, target: &str) -> Vec<Se
 fn forward_down(setup: Vec<Setup>) -> Case {
     Case {
         setup,
-        expect: Expect::ForwardedDownstream(unchanged),
+        expect: Expect::ForwardedDownstream(|_, _| {}),
     }
 }
 
@@ -346,7 +347,7 @@ async fn every_observe_fixture_is_gated() {
                     panic!("{file}: expected a forward, got {action:?}");
                 };
                 let mut expected = fixture_value.clone();
-                rewrite(&mut expected);
+                rewrite(&mut expected, &i.session);
                 assert_eq!(
                     serde_json::from_str::<Value>(&out).unwrap(),
                     expected,

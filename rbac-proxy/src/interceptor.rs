@@ -1874,17 +1874,30 @@ mod tests {
         assert_eq!(r["error"]["code"], "FORBIDDEN");
     }
 
+    /// Two sessions without a prefix declaring one name are two workers to
+    /// the engine: neither shuts the other out, nor takes its suspended
+    /// observers (decision 51).
     #[tokio::test]
-    async fn declared_worker_name_is_prefixed() {
-        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+    async fn declared_worker_name_is_prefixed_and_unprefixed_sessions_are_apart() {
         let frame = json!({
             "type": "invokefunction",
             "function_id": "engine::workers::register",
             "data": { "name": "queue", "runtime": "browser" },
             "action": { "type": "void" }
-        });
-        let v = forwarded(i.handle_downstream(&frame.to_string()).await);
-        assert_eq!(v["data"]["name"], "rbac-proxy:queue");
+        })
+        .to_string();
+        let mut names = Vec::new();
+        for _ in 0..2 {
+            let sess = session(None);
+            let i = interceptor(config_with(expose(&["api::*"]), None), sess.clone());
+            let v = forwarded(i.handle_downstream(&frame).await);
+            assert_eq!(
+                v["data"]["name"],
+                format!("rbac-proxy:{}:queue", sess.session_id)
+            );
+            names.push(v["data"]["name"].clone());
+        }
+        assert_ne!(names[0], names[1]);
     }
 
     /// Decision 51 replaces a suspended observer from a connection under the
@@ -2205,7 +2218,8 @@ mod tests {
 
     #[tokio::test]
     async fn observe_features_pass_and_local_dispatch_without_middleware() {
-        let i = interceptor(config_with(expose(&[]), None), session(None));
+        let sess = session(None);
+        let i = interceptor(config_with(expose(&[]), None), sess.clone());
         let o = forwarded(
             i.handle_downstream(&register_with_features(&[
                 "observe.v1",
@@ -2219,7 +2233,10 @@ mod tests {
             o["data"]["features"],
             json!(["observe.v1", "observe.v2", "local-dispatch.v1"])
         );
-        assert_eq!(o["data"]["name"], "rbac-proxy:w");
+        assert_eq!(
+            o["data"]["name"],
+            format!("rbac-proxy:{}:w", sess.session_id)
+        );
 
         let o = forwarded_up(
             i.handle_upstream(&registered_with_features(&[

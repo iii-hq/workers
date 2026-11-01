@@ -533,6 +533,26 @@ async fn end_to_end_rbac_through_proxy() {
         let _ = narrow.close(None).await;
     }
 
+    // (j) Two sessions without a prefix declaring one name are two workers:
+    //     the second is not refused as the name's second live worker.
+    {
+        let register = json!({
+            "type": "invokefunction",
+            "invocation_id": "22222222-2222-4222-8222-222222222222",
+            "function_id": "engine::workers::register",
+            "data": { "runtime": "rust", "name": "rbac-proxy-itest-same-name" }
+        });
+        let answered = |v: &Value| v["type"] == "invocationresult";
+        let mut first = raw_client().await;
+        let mut second = raw_client().await;
+        let a = request(&mut first, register.clone(), answered).await;
+        let b = request(&mut second, register, answered).await;
+        assert_eq!(a["result"]["success"], true, "got {a}");
+        assert_eq!(b["result"]["success"], true, "got {b}");
+        let _ = first.close(None).await;
+        let _ = second.close(None).await;
+    }
+
     let _ = std::fs::remove_file(&seed_path);
 }
 

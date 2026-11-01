@@ -21,8 +21,9 @@ listener, while at the boundary it:
 - **rewrites the results of the six `engine::*` discovery functions** so a
   caller only ever sees the surface it is allowed to invoke,
 - **pins identities**: a proxied worker registers as
-  `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<declared name>` for a
-  session without `function_registration_prefix`), and an `engine::*` call is
+  `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<session id>:<declared
+  name>` for a session without `function_registration_prefix`), and an
+  `engine::*` call is
   forwarded only as a direct call (a queued one is refused), so a session
   never runs anything as a trusted worker or as another prefix's worker, and
 - **forwards only the frame types it knows, and only text frames from the
@@ -177,9 +178,12 @@ connection with no RBAC session, so the proxy gates every observe frame:
   worker under the same prefix takes its observers back (a queue consumer
   keeps its backlog), and an `observe` of the id from a session under another
   prefix gets `OBSERVER_ID_CONFLICT` until the grace period ends. A session
-  without a prefix declares `rbac-proxy:<declared name>`: as with its
-  function ids, nothing scopes its names (a declared `tenant1::queue` names
-  tenant1's `queue`).
+  without a prefix declares `rbac-proxy:<session id>:<declared name>`, with
+  the id the proxy gives each connection: nothing else tells two such
+  sessions apart, so a session declaring another's name neither shuts it out
+  (one live worker per name) nor takes its suspended observers. Its own
+  reconnect keeps them by `Reattach`; an `observe` under its id from a new
+  session is another worker's.
 - **Call chains.** A `caller` a worker sets on a call or a report is kept only
   when it names a call the engine routed to that connection and the
   connection has not answered yet; the proxy writes it from that call, so a

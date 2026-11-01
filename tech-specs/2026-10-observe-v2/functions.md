@@ -1069,14 +1069,16 @@ What other workers and operators depend on:
   `activation.observer_id`) are allowed only for observers of functions the
   connection hosts; the engine checks the rest (decision 13).
 - **Worker identity.** A proxied connection is declared to the engine as
-  `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<declared name>` for a
-  session without `function_registration_prefix`), so decision 51's
-  replacement of a suspended observer, like the engine's one live worker per
-  name and namespace, stays within the sessions of one prefix: a restarted
-  worker under the same prefix observes under its stable ids and keeps its
-  observers (a queue consumer its backlog), and a session under another
-  prefix gets `OBSERVER_ID_CONFLICT` until the grace period ends. Discovery
-  shows these names as the engine reports them.
+  `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<session id>:<declared
+  name>` for a session without `function_registration_prefix`, the id the
+  proxy gives each connection), so decision 51's replacement of a suspended
+  observer, like the engine's one live worker per name and namespace, stays
+  within the sessions of one prefix: a restarted worker under the same prefix
+  observes under its stable ids and keeps its observers (a queue consumer its
+  backlog), and a session under another prefix gets `OBSERVER_ID_CONFLICT`
+  until the grace period ends. Each unprefixed session is a worker of its
+  own: it keeps its observers across a reconnect by `Reattach` only.
+  Discovery shows these names as the engine reports them.
 - **Removed trigger frames** (`registertriggertype`,
   `unregistertriggertype`, `registertrigger`, `unregistertrigger`,
   `triggerregistrationresult`) are dropped with one `warn` per connection
