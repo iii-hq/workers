@@ -49,7 +49,9 @@ iii call sandbox-code-runner::run lang=python code='print(2+2)'
 
 Pass `keep=true` to leave the VM running instead. The response's
 `runtime_id` then addresses it — treat it as a secret — and is the
-capability `sandbox-code-runner::teardown` needs to stop it:
+capability `sandbox-code-runner::teardown` needs to stop it. `run` and
+`teardown` are registered `observable: false`, so no observer reads another
+caller's `runtime_id`:
 
 ```bash
 iii call sandbox-code-runner::run lang=python code='print(2+2)' keep=true

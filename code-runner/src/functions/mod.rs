@@ -85,7 +85,9 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
             let m = m.clone();
             async move { m.run(req).await.map_err(iii_sdk::errors::Error::from) }
         })
-        .description(RUN_DESC),
+        .description(RUN_DESC)
+        // `runtime_id` is a capability: an observer would read every caller's.
+        .observable(false),
     );
 
     let m = manager.clone();
@@ -96,7 +98,9 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
             let m = m.clone();
             async move { m.teardown(req).await.map_err(iii_sdk::errors::Error::from) }
         })
-        .description(TEARDOWN_DESC),
+        .description(TEARDOWN_DESC)
+        // `runtime_id` is a capability: an observer would read every caller's.
+        .observable(false),
     );
 
     let m = manager.clone();

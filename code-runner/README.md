@@ -31,7 +31,8 @@ returns, and destroys it. Nothing persists, and the response carries no
 
 Pass `keep: true` to leave it running. The response's `runtime_id` then
 addresses it on later calls — same globals, same scratch directory — and is
-the capability `teardown` needs.
+the capability `teardown` needs. `run` and `teardown` are registered
+`observable: false`, so no observer reads another caller's `runtime_id`.
 
 **A failing script is a response, not an error.** `stdout`, `stderr` and
 `exit_code` come back verbatim; a thrown exception is `exit_code: 1` with the
