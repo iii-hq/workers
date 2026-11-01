@@ -401,6 +401,9 @@ fn agent_call_forbidden(function_id: &str) -> bool {
         // already holds: an agent calling it for its own session deadlocks,
         // and recursive pipeline invocation is never an agent need.
         || function_id == crate::functions::FUNCTION_CALL_ID
+        // The target of every binding's observer: a direct call names its
+        // binding in the payload, so it could deliver into another session.
+        || function_id == crate::functions::observer_deliver::DELIVER_ID
         || [
             "harness::state::",
             "provider::openai-codex::login::",
@@ -787,6 +790,14 @@ async fn handle(
         return observe_post_turn(deps, req, session_id, policy).await;
     }
     reject_forbidden_source(&req.function_id)?;
+    // An observer reads every call of its source: what no agent may call
+    // (credential and private state accessors), no agent observes.
+    if agent_call_forbidden(&req.function_id) {
+        return Err(HarnessError::InvalidRequest(format!(
+            "`{}` is not available to agents, including as an observed function",
+            req.function_id
+        )));
+    }
 
     validate_lifecycle(req.lifecycle.as_ref())?;
     validate_event_action(req.action.as_deref())?;
@@ -2565,6 +2576,8 @@ pub(crate) mod tests {
         // the session lock the running step holds across tool execution.
         crate::functions::FUNCTION_CALL_ID,
         "provider-openai-codex::state::future-operation",
+        // Its payload names a binding: a direct call would deliver into it.
+        crate::functions::observer_deliver::DELIVER_ID,
     ];
 
     pub(crate) fn disconnected_deps() -> Deps {
@@ -2611,6 +2624,29 @@ pub(crate) mod tests {
             assert!(result.is_error, "{id} must be denied");
             assert_eq!(result.details["error"], "policy_denied", "{id}");
             assert_eq!(result.details["function_id"], id);
+
+            // Nor observed: an observer would read every call of it.
+            let observed = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                invoke(
+                    &deps,
+                    &engine,
+                    &policy,
+                    OBSERVE_ID,
+                    &json!({ "function_id": id }),
+                    "owner",
+                    false,
+                    None,
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("observing {id} escaped the agent guard"));
+            let error = observed.details["error"].as_str().unwrap_or_default();
+            assert!(
+                error.contains("not available to agents")
+                    || error.contains("cannot observe harness function"),
+                "{id} must not be observable by agents: {error}"
+            );
         }
     }
 
