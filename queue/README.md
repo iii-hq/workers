@@ -294,6 +294,13 @@ A subscriber's queue stays declared and bound to its topic when its observer
 is removed, so it keeps receiving the topic for a later observer with the same
 id, whatever `subscriber_retention_ms`.
 
+> **Known gap.** Nothing deletes such a queue. A consumer outside a group that
+> observes under a fresh id (the default, a UUID) leaves one queue per
+> restart on the broker, bound to its topic and collecting every message
+> published to it. Observe under a stable `id`, derived from the worker's name
+> and what it consumes, or in a `group`, so a restart finds the same queue;
+> delete a queue you no longer need from the broker.
+
 RabbitMQ's `x-max-priority` queue argument is immutable. An existing named
 queue cannot change `max_priority` in place; delete and recreate its broker
 topology first.
