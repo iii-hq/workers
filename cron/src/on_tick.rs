@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::runtime::FunctionRef;
+use iii_sdk::runtime::{FunctionRef, IIIConnectionState};
 use iii_sdk::{
     AddedHook, CallAction, CallRequest, IIIClient, Match, ObserveRejection, Observer,
     RegisterFunction, RemovedHook,
@@ -169,7 +169,12 @@ impl OnTickCaller {
 
 impl Ticker for OnTickCaller {
     fn tick(&self, tick: CronTick) {
-        if !self.iii.is_observed(ON_TICK_FN) {
+        // A tick while the connection is down would wait in the SDK's report
+        // buffer and reach its observers with every other one at reconnect:
+        // it is skipped, like a fire while the worker is stopped.
+        if !self.iii.is_observed(ON_TICK_FN)
+            || self.iii.get_connection_state() != IIIConnectionState::Connected
+        {
             return;
         }
         let input = match serde_json::to_value(&tick) {

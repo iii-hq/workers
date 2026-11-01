@@ -113,8 +113,8 @@ The event, the function's input and what its observers observe:
   Filters compare strings by code point, so a time bound is written in the
   form the worker emits: RFC 3339 with `+00:00`.
 - **Metadata.** The observer's `metadata` arrives as each delivery's sidecar.
-- **Missed fires.** Fires while the worker is stopped are skipped; there is no
-  catch-up replay.
+- **Missed fires.** Fires while the worker is stopped, or disconnected from
+  the engine, are skipped; there is no catch-up replay.
 - **Day of week.** Write it as a name (`Mon` ... `Sun`). Numerically the crate
   counts Sunday as 1, so `0 0 9 * * 1` fires on Sunday, not Monday.
 - **Private.** Only this worker calls `cron::on-tick`; a call from another
