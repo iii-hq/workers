@@ -207,12 +207,13 @@ impl Service<Request<Body>> for HotRouter {
         let router_arc = self.inner.clone();
         let state = self.state.clone();
         Box::pin(async move {
-            // The CORS layer answers every OPTIONS request. On the restricted
-            // listener only a path with a public route gets that answer: the
-            // others are refused here, before CORS. Every other request
-            // reaches dynamic_handler, whose call of `http::on-request`
-            // matches it against the public routes.
-            if state.public_webhooks_only && req.method() == Method::OPTIONS {
+            // The restricted listener faces the internet: a request no
+            // public route matches is refused here, before CORS (which
+            // answers every OPTIONS request) and before its body is read.
+            // The others reach dynamic_handler, whose call of
+            // `http::on-request` matches them against the public routes
+            // again (routes may change meanwhile).
+            if state.public_webhooks_only {
                 let table = state.routes.read().await;
                 if table
                     .match_route_for_listener(req.method().as_str(), req.uri().path(), true)

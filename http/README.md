@@ -149,7 +149,8 @@ iii.observe_with(
 ```
 
 The server calls `http::on-request` once for every request it receives (its
-CORS layer answers `OPTIONS` requests). The call's input is the request as the
+CORS layer answers `OPTIONS` requests, and the restricted listener refuses
+the ones no public route matches). The call's input is the request as the
 server received it:
 
 ```jsonc
@@ -282,9 +283,10 @@ Only that opted-in route is eligible on 3112; it remains available on 3111.
 Do not expose 3111 through a public proxy/tunnel. The restricted listener
 mounts no Console, engine, or admin endpoints. Its private paths return 404
 (including OPTIONS); methods not opted in for an eligible path return 405
-with only public methods in `Allow`. The listener admits an OPTIONS request
-before CORS; every other request is a call of `http::on-request`, whose
-deliver hook matches it against the public routes only. Matching performs
+with only public methods in `Allow`. The listener answers both before CORS
+and before it reads the body, so only a request a public route matches is a
+call of `http::on-request`, whose deliver hook matches it against the public
+routes again. Matching performs
 no URL decoding, repeated/trailing-slash normalization, HEAD-to-GET aliasing,
 or method-override handling. Parameter routes are still supported: opting
 one in deliberately exposes every value matched by its parameter segments,

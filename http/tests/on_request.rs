@@ -607,7 +607,17 @@ async fn the_restricted_listener_serves_only_public_webhook_observers() {
         }
     };
     assert_eq!(status("/new/public", restricted).await, 201);
+    let calls = engine.calls_of(ON_REQUEST_FN).len();
     assert_eq!(status("/new/private", restricted).await, 404);
+    // Refused before its body is read: no call of http::on-request.
+    let large = http
+        .post(format!("http://{restricted}/new/nowhere"))
+        .body(vec![b'['; 8 * 1024 * 1024])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(large.status(), 404);
+    assert_eq!(engine.calls_of(ON_REQUEST_FN).len(), calls);
     assert_eq!(status("/new/private", boot.local_addr).await, 201);
 
     boot.shutdown().await;
