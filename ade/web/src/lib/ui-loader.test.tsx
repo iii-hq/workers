@@ -112,9 +112,11 @@ function createHarness({
       handler = nextHandler
       return offHandler
     }),
-    observe: vi.fn((source, target) => {
+    observe: vi.fn((source, target, options) => {
       expect(source).toBe(ON_ASSETS_CHANGED_FN)
       expect(target).toBe(`${UI_ASSETS_FN}::test-browser`)
+      // One event at a time, in the order the asset queue sends them.
+      expect(options).toEqual({ max_in_flight: 1 })
       return offObserver
     }),
   } as unknown as IiiClient

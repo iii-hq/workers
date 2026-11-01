@@ -42,9 +42,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::{
-    Call, CallAction, CallRequest, IIIClient, ObserveRejection, Observer, RegisterFunction,
-};
+use iii_sdk::{Call, CallRequest, IIIClient, ObserveRejection, Observer, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -443,12 +441,9 @@ impl UiBus for SdkBus {
             return;
         }
         let payload = serde_json::to_value(event).expect("UiAssetsEvent serializes");
-        let request = CallRequest {
-            function_id: ON_ASSETS_CHANGED_FN.to_string(),
-            payload,
-            action: Some(CallAction::Void),
-            timeout_ms: None,
-        };
+        // Awaited with no action, so the queue's calls reach iii's delivery
+        // in the order it makes them (a `Void` call runs as a task of its own).
+        let request = CallRequest::new(ON_ASSETS_CHANGED_FN, payload);
         if let Err(e) = self.iii.call(request).await {
             tracing::debug!(error = %e, "ui-assets publish failed");
         }

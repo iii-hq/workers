@@ -682,9 +682,12 @@ export function startUiLoader(
     })
   })
 
+  // One event at a time, in the order the ADE's asset queue sends them: a
+  // `sync` applied after a newer `set` would dispose that asset.
   const offObserver = client.observe(
     ON_ASSETS_CHANGED_FN,
     `${UI_ASSETS_FN}::${client.browserId}`,
+    { max_in_flight: 1 },
   )
 
   // With injectable UI disabled, the console intentionally does not host
