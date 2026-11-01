@@ -21,7 +21,7 @@ export const tokenNames = Object.freeze([
   '--color-ink',
   '--color-ink-faint',
   '--color-muted-foreground',
-  '--color-trigger-running',
+  '--color-call-running',
   '--color-ink-ghost',
   '--color-ink-disabled',
   '--color-rule',

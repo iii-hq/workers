@@ -1,5 +1,15 @@
 /** Each button exercises one capability; the outcome goes to the "out" Text. */
-import { Button, Column, createSignal, defineApp, IiiError, iii, Page, Text } from '@iii-dev/native-ui'
+import {
+  Button,
+  Column,
+  createSignal,
+  defineApp,
+  IiiError,
+  iii,
+  type ObserveSource,
+  Page,
+  Text,
+} from '@iii-dev/native-ui'
 
 function Root() {
   const [out, setOut] = createSignal('')
@@ -8,10 +18,10 @@ function Root() {
       (v) => setOut(`ok ${JSON.stringify(v ?? null)}`),
       (e: IiiError) => setOut(`error ${e instanceof IiiError ? e.code : 'other'}: ${e.message}`),
     )
-  const bind = (type: string) => {
+  const observe = (fn: string, source: ObserveSource = {}) => {
     try {
-      const off = iii.on(type, {}, () => {})
-      off.ready.then(() => setOut(`bound ${type}`))
+      const off = iii.on(fn, source, () => {})
+      off.ready.then(() => setOut(`observing ${fn}`))
     } catch (e) {
       setOut(`threw ${(e as IiiError).code}: ${(e as Error).message}`)
     }
@@ -24,11 +34,13 @@ function Root() {
     'call-slow': () => show(iii.call('demo::slow', {}, { timeoutMs: 1000 })),
     'call-other': () => show(iii.call('state::get', {})),
     'call-engine': () => show(iii.call('engine::functions::list', {})),
-    'bind-other': () => bind('state::changed'),
-    'bind-engine': () => bind('engine::functions-changed'),
-    'bind-longer-ns': () => bind('demos:changed'),
-    'bind-colon': () => bind('demo:ticket-changed'),
-    'bind-double-colon': () => bind('demo::changed'),
+    'observe-other': () => observe('state::on-changed'),
+    'observe-engine': () => observe('engine::on-functions-changed'),
+    'observe-longer-ns': () => observe('demos::on-changed'),
+    'observe-colon': () => observe('demo:ticket-changed'),
+    'observe-own': () => observe('demo::on-changed'),
+    'observe-args': () =>
+      observe('demo::on-ticket-changed', { args: { board: 'b1' }, filters: { 'input.op': { $eq: 'moved' } } }),
     'call-colon': () => show(iii.call('demo:echo', {})),
     toast: () => iii.ui.toast('Saved', 'success'),
     confirm: () => show(iii.ui.confirm({ title: 'Clear?', confirm: 'Clear', destructive: true })),

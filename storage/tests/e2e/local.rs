@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use storage::backend::{GetReq, ListReq, PresignMethod, PresignReq, PutReq};
 use storage::config::{LocalHttpConfig, LocalProviderConfig};
-use storage::triggers::dispatcher::EventDispatcher;
-use storage::triggers::normalize::ObjectEventNormalized;
+use storage::events::dispatcher::EventDispatcher;
+use storage::events::normalize::ObjectEventNormalized;
 
 struct Ack;
 

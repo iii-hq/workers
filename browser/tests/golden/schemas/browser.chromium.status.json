@@ -81,7 +81,7 @@
     },
     "definitions": {
       "InstallProgress": {
-        "description": "`browser::chromium-install-progress` — one install job moved: a new phase, or about 1 % more bytes (at most every 250 ms). Also the `job` field of `browser::chromium::status`.",
+        "description": "`browser::on-chromium-install-progress` — one install job moved: a new phase, or about 1 % more bytes (at most every 250 ms). Also the `job` field of `browser::chromium::status`.",
         "type": "object",
         "required": [
           "bytes_done",

@@ -6,7 +6,7 @@ import { z } from 'zod'
  * Control plane for the `browser` worker's own injected UI: typed wrappers
  * over its session surface (start / list / stop / navigate / screenshot / act
  * / console / network / pick) plus parsers and formatting helpers for the
- * page, the chat function-trigger views, and the pick-to-clipboard flow.
+ * page, the chat function-call views, and the pick-to-clipboard flow.
  *
  * Every call goes through the tab's `host.iii` client (an `ExtensionIii`),
  * passed in by the page — there is no module-level singleton in injected UI.
@@ -31,24 +31,28 @@ export const BROWSER_SCREENCAST_START_FUNCTION_ID = 'browser::screencast::start'
 export const BROWSER_SCREENCAST_STOP_FUNCTION_ID = 'browser::screencast::stop'
 export const BROWSER_FRAME_FUNCTION_ID = 'browser::frame'
 
-export const BROWSER_SESSION_STARTED_TRIGGER = 'browser::session-started'
-export const BROWSER_SESSION_STOPPED_TRIGGER = 'browser::session-stopped'
-export const BROWSER_SESSION_UPDATED_TRIGGER = 'browser::session-updated'
-export const BROWSER_NAVIGATED_TRIGGER = 'browser::navigated'
-export const BROWSER_CONSOLE_EVENT_TRIGGER = 'browser::console-event'
-export const BROWSER_NETWORK_EVENT_TRIGGER = 'browser::network-event'
-export const BROWSER_PICKED_TRIGGER = 'browser::picked'
-/** Live viewport frames of a watched tab (bind with a `session_id` filter);
- * `browser::frame` seeds the first paint. */
-export const BROWSER_FRAME_EVENT_TRIGGER = 'browser::frame-event'
+/* The worker's event functions: each returns the event it is called with,
+ * and the page observes them. Every one but the frame function takes no args;
+ * observers pick a tab with a filter on `input.session_id`. */
+export const BROWSER_ON_SESSION_STARTED_FUNCTION_ID = 'browser::on-session-started'
+export const BROWSER_ON_SESSION_STOPPED_FUNCTION_ID = 'browser::on-session-stopped'
+export const BROWSER_ON_SESSION_UPDATED_FUNCTION_ID = 'browser::on-session-updated'
+export const BROWSER_ON_NAVIGATED_FUNCTION_ID = 'browser::on-navigated'
+export const BROWSER_ON_CONSOLE_EVENT_FUNCTION_ID = 'browser::on-console-event'
+export const BROWSER_ON_NETWORK_EVENT_FUNCTION_ID = 'browser::on-network-event'
+export const BROWSER_ON_PICKED_FUNCTION_ID = 'browser::on-picked'
+/** Live viewport frames of a watched tab: observed with `{ session_id }`
+ * args, which reach that tab's viewers only; `browser::frame` seeds the first
+ * paint. */
+export const BROWSER_ON_FRAME_EVENT_FUNCTION_ID = 'browser::on-frame-event'
 
-/** Tab lifecycle trigger types the tab strip re-reads on: opened, closed,
+/** The tab lifecycle functions the tab strip re-reads on: opened, closed,
  * slept/woke, navigated. */
-export const BROWSER_LIFECYCLE_TRIGGERS = [
-  BROWSER_SESSION_STARTED_TRIGGER,
-  BROWSER_SESSION_STOPPED_TRIGGER,
-  BROWSER_SESSION_UPDATED_TRIGGER,
-  BROWSER_NAVIGATED_TRIGGER,
+export const BROWSER_LIFECYCLE_FUNCTION_IDS = [
+  BROWSER_ON_SESSION_STARTED_FUNCTION_ID,
+  BROWSER_ON_SESSION_STOPPED_FUNCTION_ID,
+  BROWSER_ON_SESSION_UPDATED_FUNCTION_ID,
+  BROWSER_ON_NAVIGATED_FUNCTION_ID,
 ] as const
 
 /** Every `browser::*` bus function belongs to this family. */
@@ -345,7 +349,7 @@ export function decodeBrowserResult(output: unknown): unknown {
 }
 
 /**
- * Session id carried by a `browser::*` function trigger, wherever the worker
+ * Session id carried by a `browser::*` function call, wherever the worker
  * put it: the result (`sessions::start`), the harness result envelope
  * around it, or the request payload (everything else).
  */
@@ -377,7 +381,7 @@ export function formatAgo(input: number): string {
 }
 
 /** 24-hour clock for a console/network entry timestamp. Shared by the live
- * panels and the chat function-trigger views. */
+ * panels and the chat function-call views. */
 export function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString(undefined, { hour12: false })
 }
@@ -441,7 +445,7 @@ const ROOT_TAGS = new Set(['html', 'body', 'head'])
 export async function listBrowserSessions(
   iii: ExtensionIii,
 ): Promise<BrowserSessionInfo[]> {
-  const res = await iii.trigger<unknown>(BROWSER_SESSIONS_LIST_FUNCTION_ID, {})
+  const res = await iii.call<unknown>(BROWSER_SESSIONS_LIST_FUNCTION_ID, {})
   const parsed = sessionListSchema.safeParse(res)
   if (!parsed.success) return []
   return (parsed.data.sessions ?? [])
@@ -456,7 +460,7 @@ export async function startBrowserSession(
   iii: ExtensionIii,
   options: { url?: string; incognito?: boolean; preview?: boolean } = {},
 ): Promise<BrowserSessionStart | null> {
-  const res = await iii.trigger<unknown>(BROWSER_SESSIONS_START_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_SESSIONS_START_FUNCTION_ID, {
     ...(options.url ? { url: options.url } : {}),
     ...(options.incognito ? { incognito: true } : {}),
     // A tab a surface opens on purpose (the page's new-tab button, "Open
@@ -471,7 +475,7 @@ export async function stopBrowserSession(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<void> {
-  await iii.trigger(BROWSER_SESSIONS_STOP_FUNCTION_ID, {
+  await iii.call(BROWSER_SESSIONS_STOP_FUNCTION_ID, {
     session_id: sessionId,
   })
 }
@@ -489,7 +493,7 @@ export async function navigateBrowser(
   sessionId: string,
   url: string,
 ): Promise<{ url: string; error?: string } | null> {
-  const res = await iii.trigger<unknown>(BROWSER_NAVIGATE_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_NAVIGATE_FUNCTION_ID, {
     session_id: sessionId,
     url,
   })
@@ -502,7 +506,7 @@ export async function controlBrowserHistory(
   sessionId: string,
   action: 'back' | 'forward' | 'reload',
 ): Promise<BrowserHistoryResult | null> {
-  const res = await iii.trigger<unknown>(BROWSER_HISTORY_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_HISTORY_FUNCTION_ID, {
     session_id: sessionId,
     action,
   })
@@ -513,7 +517,7 @@ export async function controlBrowserHistory(
 export async function readBrowserDoctor(
   iii: ExtensionIii,
 ): Promise<BrowserDoctorInfo | null> {
-  const res = await iii.trigger<unknown>(BROWSER_DOCTOR_FUNCTION_ID, {})
+  const res = await iii.call<unknown>(BROWSER_DOCTOR_FUNCTION_ID, {})
   const parsed = doctorSchema.safeParse(res)
   return parsed.success ? parsed.data : null
 }
@@ -522,7 +526,7 @@ export async function takeBrowserScreenshot(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<BrowserScreenshot | null> {
-  const res = await iii.trigger<unknown>(BROWSER_SCREENSHOT_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_SCREENSHOT_FUNCTION_ID, {
     session_id: sessionId,
   })
   return parseScreenshotOutput(res)
@@ -540,7 +544,7 @@ export async function clickBrowserAt(
   y: number,
   options: BrowserClickOptions = {},
 ): Promise<void> {
-  await iii.trigger(BROWSER_ACT_FUNCTION_ID, {
+  await iii.call(BROWSER_ACT_FUNCTION_ID, {
     session_id: sessionId,
     action: 'click',
     x,
@@ -557,7 +561,7 @@ export async function scrollBrowserAt(
   y: number,
   deltaY: number,
 ): Promise<void> {
-  await iii.trigger(BROWSER_ACT_FUNCTION_ID, {
+  await iii.call(BROWSER_ACT_FUNCTION_ID, {
     session_id: sessionId,
     action: 'scroll',
     x,
@@ -571,7 +575,7 @@ export async function typeBrowserText(
   sessionId: string,
   text: string,
 ): Promise<void> {
-  await iii.trigger(BROWSER_ACT_FUNCTION_ID, {
+  await iii.call(BROWSER_ACT_FUNCTION_ID, {
     session_id: sessionId,
     action: 'type',
     text,
@@ -583,7 +587,7 @@ export async function pressBrowserKey(
   sessionId: string,
   key: string,
 ): Promise<void> {
-  await iii.trigger(BROWSER_ACT_FUNCTION_ID, {
+  await iii.call(BROWSER_ACT_FUNCTION_ID, {
     session_id: sessionId,
     action: 'press',
     key,
@@ -596,7 +600,7 @@ export async function hintBrowserPick(
   x: number,
   y: number,
 ): Promise<BrowserPickHint | null> {
-  const res = await iii.trigger<unknown>(BROWSER_PICK_HINT_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_PICK_HINT_FUNCTION_ID, {
     session_id: sessionId,
     x,
     y,
@@ -636,7 +640,7 @@ export async function startBrowserScreencast(
    * start with the same id only renews the lease. */
   viewer?: ScreencastViewer,
 ): Promise<void> {
-  await iii.trigger(BROWSER_SCREENCAST_START_FUNCTION_ID, {
+  await iii.call(BROWSER_SCREENCAST_START_FUNCTION_ID, {
     session_id: sessionId,
     ...(preview ? { preview: true } : {}),
     ...(viewer
@@ -653,7 +657,7 @@ export async function stopBrowserScreencast(
   /** The named viewer to release; omitted, one anonymous viewer. */
   viewerId?: string,
 ): Promise<void> {
-  await iii.trigger(BROWSER_SCREENCAST_STOP_FUNCTION_ID, {
+  await iii.call(BROWSER_SCREENCAST_STOP_FUNCTION_ID, {
     session_id: sessionId,
     ...(preview ? { preview: true } : {}),
     ...(viewerId ? { viewer_id: viewerId } : {}),
@@ -669,7 +673,7 @@ export async function readBrowserFrame(
   sessionId: string,
   sinceFrame?: number,
 ): Promise<BrowserFrame | null> {
-  const res = await iii.trigger<unknown>(BROWSER_FRAME_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_FRAME_FUNCTION_ID, {
     session_id: sessionId,
     ...(sinceFrame != null ? { since_frame: sinceFrame } : {}),
   })
@@ -689,7 +693,7 @@ export async function readBrowserConsole(
   sessionId: string,
   options: BrowserConsoleReadOptions = {},
 ): Promise<BrowserConsoleRead | null> {
-  const res = await iii.trigger<unknown>(BROWSER_CONSOLE_READ_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_CONSOLE_READ_FUNCTION_ID, {
     session_id: sessionId,
     ...(options.pattern ? { pattern: options.pattern } : {}),
     ...(options.level ? { level: options.level } : {}),
@@ -712,7 +716,7 @@ export async function readBrowserNetwork(
   sessionId: string,
   options: BrowserNetworkReadOptions = {},
 ): Promise<BrowserNetworkRead | null> {
-  const res = await iii.trigger<unknown>(BROWSER_NETWORK_READ_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_NETWORK_READ_FUNCTION_ID, {
     session_id: sessionId,
     ...(options.pattern ? { pattern: options.pattern } : {}),
     ...(options.failedOnly ? { failed_only: true } : {}),
@@ -727,12 +731,12 @@ export async function startBrowserPick(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<void> {
-  await iii.trigger(BROWSER_PICK_START_FUNCTION_ID, {
+  await iii.call(BROWSER_PICK_START_FUNCTION_ID, {
     session_id: sessionId,
   })
 }
 
-/** Resolve the element at a clicked point; the worker emits browser::picked.
+/** Resolve the element at a clicked point; the worker emits browser::on-picked.
  * Deterministic (same getNodeForLocation hit-test as the hover hint), unlike
  * a synthesized click through DevTools inspect mode. */
 export async function resolveBrowserPick(
@@ -741,7 +745,7 @@ export async function resolveBrowserPick(
   x: number,
   y: number,
 ): Promise<void> {
-  await iii.trigger(BROWSER_PICK_RESOLVE_FUNCTION_ID, {
+  await iii.call(BROWSER_PICK_RESOLVE_FUNCTION_ID, {
     session_id: sessionId,
     x,
     y,
@@ -752,7 +756,7 @@ export async function stopBrowserPick(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<void> {
-  await iii.trigger(BROWSER_PICK_STOP_FUNCTION_ID, {
+  await iii.call(BROWSER_PICK_STOP_FUNCTION_ID, {
     session_id: sessionId,
   })
 }
@@ -777,7 +781,7 @@ export async function findInBrowserPage(
   action: BrowserFindAction = 'search',
   caseSensitive = false,
 ): Promise<BrowserFindResult> {
-  const res = await iii.trigger<unknown>(BROWSER_FIND_IN_PAGE_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_FIND_IN_PAGE_FUNCTION_ID, {
     session_id: sessionId,
     query,
     action,
@@ -801,7 +805,7 @@ export async function zoomBrowserPage(
   action: BrowserZoomAction,
   level?: number,
 ): Promise<number> {
-  const res = await iii.trigger<unknown>(BROWSER_ZOOM_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_ZOOM_FUNCTION_ID, {
     session_id: sessionId,
     action,
     ...(level !== undefined ? { level } : {}),
@@ -824,7 +828,7 @@ export async function printBrowserPageToPdf(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<BrowserPdf> {
-  const res = await iii.trigger<unknown>(BROWSER_PDF_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_PDF_FUNCTION_ID, {
     session_id: sessionId,
   })
   const parsed = pdfSchema.safeParse(res)
@@ -871,7 +875,7 @@ export const BROWSER_CLEAR_BROWSER_DATA_FUNCTION_ID = 'browser::clear-browser-da
 export const BROWSER_DOWNLOADS_LIST_FUNCTION_ID = 'browser::downloads::list'
 export const BROWSER_DOWNLOAD_FUNCTION_ID = 'browser::download'
 export const BROWSER_DOWNLOAD_REMOVE_FUNCTION_ID = 'browser::download::remove'
-export const BROWSER_DOWNLOAD_CHANGED_TRIGGER = 'browser::download-changed'
+export const BROWSER_ON_DOWNLOAD_CHANGED_FUNCTION_ID = 'browser::on-download-changed'
 
 const historyVisitSchema = z.object({
   url: z.string(),
@@ -886,7 +890,7 @@ export async function listBrowserHistory(
   sessionId: string,
   query?: string,
 ): Promise<BrowserHistoryVisit[]> {
-  const res = await iii.trigger<unknown>(BROWSER_HISTORY_LIST_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_HISTORY_LIST_FUNCTION_ID, {
     session_id: sessionId,
     ...(query ? { query } : {}),
   })
@@ -904,7 +908,7 @@ export async function clearBrowserData(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<string[]> {
-  const res = await iii.trigger<unknown>(BROWSER_CLEAR_DATA_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_CLEAR_DATA_FUNCTION_ID, {
     session_id: sessionId,
   })
   return clearDataSchema.safeParse(res).success
@@ -923,7 +927,7 @@ const clearBrowserDataSchema = z.object({
 export async function clearAllBrowserData(
   iii: ExtensionIii,
 ): Promise<{ closedPages: number; profileDir: string }> {
-  const res = await iii.trigger<unknown>(BROWSER_CLEAR_BROWSER_DATA_FUNCTION_ID, {})
+  const res = await iii.call<unknown>(BROWSER_CLEAR_BROWSER_DATA_FUNCTION_ID, {})
   const parsed = clearBrowserDataSchema.safeParse(res)
   if (!parsed.success) throw new Error('clear browser data returned an unexpected shape')
   return { closedPages: parsed.data.closed_pages, profileDir: parsed.data.profile_dir }
@@ -947,7 +951,7 @@ export async function listBrowserDownloads(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<BrowserDownload[]> {
-  const res = await iii.trigger<unknown>(BROWSER_DOWNLOADS_LIST_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_DOWNLOADS_LIST_FUNCTION_ID, {
     session_id: sessionId,
   })
   return downloadsListSchema.safeParse(res).success
@@ -967,7 +971,7 @@ export async function readBrowserDownload(
   sessionId: string,
   guid: string,
 ): Promise<{ file: File } | null> {
-  const res = await iii.trigger<unknown>(BROWSER_DOWNLOAD_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_DOWNLOAD_FUNCTION_ID, {
     session_id: sessionId,
     guid,
   })
@@ -991,7 +995,7 @@ export async function removeBrowserDownload(
   sessionId: string,
   guid: string,
 ): Promise<void> {
-  await iii.trigger(BROWSER_DOWNLOAD_REMOVE_FUNCTION_ID, {
+  await iii.call(BROWSER_DOWNLOAD_REMOVE_FUNCTION_ID, {
     session_id: sessionId,
     guid,
   })
@@ -1013,7 +1017,7 @@ export async function resizeBrowser(
   height: number,
   options: { deviceScaleFactor?: number; mobile?: boolean; fit?: boolean } = {},
 ): Promise<{ width: number; height: number } | null> {
-  const res = await iii.trigger<unknown>(BROWSER_RESIZE_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_RESIZE_FUNCTION_ID, {
     session_id: sessionId,
     width: Math.round(width),
     height: Math.round(height),
@@ -1050,7 +1054,7 @@ export async function listBrowserCookies(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<BrowserCookie[]> {
-  const res = await iii.trigger<unknown>(BROWSER_COOKIES_LIST_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_COOKIES_LIST_FUNCTION_ID, {
     session_id: sessionId,
   })
   return cookiesListSchema.safeParse(res).success
@@ -1063,7 +1067,7 @@ export async function setBrowserCookies(
   sessionId: string,
   cookies: BrowserCookie[],
 ): Promise<number> {
-  const res = await iii.trigger<unknown>(BROWSER_COOKIES_SET_FUNCTION_ID, {
+  const res = await iii.call<unknown>(BROWSER_COOKIES_SET_FUNCTION_ID, {
     session_id: sessionId,
     cookies,
   })
@@ -1075,7 +1079,7 @@ export async function clearBrowserCookies(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<void> {
-  await iii.trigger(BROWSER_COOKIES_CLEAR_FUNCTION_ID, {
+  await iii.call(BROWSER_COOKIES_CLEAR_FUNCTION_ID, {
     session_id: sessionId,
   })
 }
@@ -1170,8 +1174,8 @@ function bool(v: unknown): boolean | undefined {
   return typeof v === 'boolean' ? v : undefined
 }
 
-export const BROWSER_HANDOFF_REQUESTED_TRIGGER = 'browser::handoff-requested'
-export const BROWSER_HANDOFF_RESOLVED_TRIGGER = 'browser::handoff-resolved'
+export const BROWSER_ON_HANDOFF_REQUESTED_FUNCTION_ID = 'browser::on-handoff-requested'
+export const BROWSER_ON_HANDOFF_RESOLVED_FUNCTION_ID = 'browser::on-handoff-resolved'
 export const BROWSER_HANDOFF_CONFIRM_FUNCTION_ID = 'browser::handoff::confirm'
 
 const handoffEventSchema = z.object({
@@ -1209,7 +1213,7 @@ export async function confirmBrowserHandoff(
   sessionId: string,
   handoffId: string,
 ): Promise<void> {
-  await iii.trigger(BROWSER_HANDOFF_CONFIRM_FUNCTION_ID, {
+  await iii.call(BROWSER_HANDOFF_CONFIRM_FUNCTION_ID, {
     session_id: sessionId,
     handoff_id: handoffId,
   })

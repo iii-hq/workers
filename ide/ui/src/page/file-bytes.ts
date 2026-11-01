@@ -50,7 +50,7 @@ export function chunkRanges(size: number, chunk: number): { offset: number; leng
 }
 
 function readChunk(host: Host, path: string, offset: number, length: number): Promise<ReadBytesChunk> {
-  return host.iii.trigger<ReadBytesChunk>('shell::workspace::read-bytes', {
+  return host.iii.call<ReadBytesChunk>('shell::workspace::read-bytes', {
     path,
     offset,
     length,

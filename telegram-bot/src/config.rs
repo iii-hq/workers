@@ -165,7 +165,7 @@ pub struct ModelRef {
 pub enum UpdatesAdapter {
     /// Long-poll `getUpdates` in a background task (default; no public URL needed).
     Polling(PollingConfig),
-    /// Telegram POSTs updates to the engine HTTP trigger.
+    /// Telegram POSTs updates to the worker's `http::on-request` route.
     Webhook(WebhookConfig),
 }
 
@@ -192,10 +192,10 @@ impl Default for PollingConfig {
     }
 }
 
-/// Engine HTTP `api_path` the webhook ingress route is registered under, and
-/// the suffix appended to the operator-supplied iii root to build the Telegram
-/// webhook URL. Single source of truth for both the trigger registration
-/// (see [`crate::functions::register_webhook_trigger`]) and URL derivation
+/// HTTP path of the webhook ingress route (an `http::on-request` observer),
+/// and the suffix appended to the operator-supplied iii root to build the
+/// Telegram webhook URL. Single source of truth for both the route
+/// (see [`crate::functions::observe_webhook_route`]) and URL derivation
 /// (see [`WebhookConfig::endpoint_url`]).
 pub const WEBHOOK_API_PATH: &str = "telegram-bot/webhook";
 

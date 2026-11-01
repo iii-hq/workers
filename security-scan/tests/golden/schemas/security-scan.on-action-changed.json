@@ -1,0 +1,94 @@
+{
+  "description": "Called after a finding action (issue or fix) was created or changed. Event { action_id, run_id, repository, status, updated_at }; re-read security-scan::action-read. No args; filter on input.repository or input.run_id.",
+  "function_id": "security-scan::on-action-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SecurityActionStatusV1": {
+        "enum": [
+          "queued",
+          "preparing",
+          "awaiting_approval",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`security-scan::on-action-changed` event.",
+    "properties": {
+      "action_id": {
+        "type": "string"
+      },
+      "repository": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/SecurityActionStatusV1"
+      },
+      "updated_at": {
+        "description": "Revision hint: set on every committed write (ms).",
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "action_id",
+      "repository",
+      "run_id",
+      "status",
+      "updated_at"
+    ],
+    "title": "ActionChangedEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SecurityActionStatusV1": {
+        "enum": [
+          "queued",
+          "preparing",
+          "awaiting_approval",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`security-scan::on-action-changed` event.",
+    "properties": {
+      "action_id": {
+        "type": "string"
+      },
+      "repository": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/SecurityActionStatusV1"
+      },
+      "updated_at": {
+        "description": "Revision hint: set on every committed write (ms).",
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "action_id",
+      "repository",
+      "run_id",
+      "status",
+      "updated_at"
+    ],
+    "title": "ActionChangedEventV1",
+    "type": "object"
+  }
+}

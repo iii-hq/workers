@@ -1,22 +1,22 @@
-//! Trigger bindings — the durable record behind every agent-registered
-//! subscription (architecture/trigger-bindings.md).
+//! Observer bindings — the durable record behind every agent-created
+//! observer (architecture/observer-bindings.md).
 //!
-//! The engine's `Trigger` holds `{trigger_type, function_id, config,
-//! worker_id, metadata}` and nothing else: no owner, no lifecycle, no
-//! capability. Everything the harness needs at fire time therefore lives
-//! HERE, keyed by a binding id, and the engine-side metadata carries only
-//! `{"__binding": "<id>"}` — a pointer, not a payload. Nothing an agent can
-//! smuggle into metadata is read back.
+//! The engine's observer holds what is observed, the target, and a metadata
+//! sidecar; nothing about an owner, a lifecycle the harness counts, or a
+//! frozen capability. Everything the harness needs at fire time therefore
+//! lives HERE, keyed by the binding id, which is also the observer's id. The
+//! observer's metadata carries only `{"__binding": "<id>"}` — a pointer, not
+//! a payload. Nothing an agent can smuggle into metadata is read back.
 //!
 //! The record is durable (state worker, `harness_binding` scope) because the
-//! registry it replaces was an in-memory map wiped on every restart: spawn
-//! bindings kept firing with no owner bookkeeping, notify bindings stopped
-//! delivering entirely, and a startup reconciler existed only to GC the
-//! wreckage.
+//! engine's observers are not: they belong to the harness connection, so a
+//! harness or engine restart loses them, and the boot pass re-creates every
+//! surviving binding's observer from this store.
 
 pub mod compose;
 pub mod expiry;
 pub mod gc;
+pub mod migrate;
 mod store;
 
 pub use store::{
@@ -25,46 +25,148 @@ pub use store::{
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{ObserverHandle, ObserverOptions, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::deps::Deps;
 use crate::types::turn::FunctionPolicy;
 
-/// Live SDK handles for delivery triggers registered over the worker channel,
-/// keyed by the synthetic trigger id stored on the binding
-/// (`sdk:<binding-id>`). The SDK never exposes the engine-side row id, only an
-/// unregister closure — and unregistering must go THROUGH the SDK so its
-/// reconnect replay list forgets the trigger too; an engine-side delete alone
-/// would be resurrected on the next reconnect.
-#[derive(Clone, Default)]
-pub struct TriggerHandles(Arc<Mutex<HashMap<String, iii_sdk::trigger::Trigger>>>);
+/// Added to a binding's remaining lifetime when it becomes the observer's
+/// `expires_in` backstop: the harness's own deadline timer retires the
+/// binding first and tells the owner; the engine's expiry only catches an
+/// observer the harness lost track of.
+const EXPIRY_BACKSTOP_GRACE: Duration = Duration::from_secs(60);
 
-impl TriggerHandles {
-    pub fn insert(&self, trigger_id: String, handle: iii_sdk::trigger::Trigger) {
+/// Live observer handles of this process's bindings, keyed by binding id
+/// (which is also the observer id). Disposing goes THROUGH the handle so the
+/// SDK's reconnect replay forgets the observer too.
+#[derive(Clone, Default)]
+pub struct ObserverHandles(Arc<Mutex<HashMap<String, ObserverHandle>>>);
+
+impl ObserverHandles {
+    pub fn insert(&self, binding_id: String, handle: ObserverHandle) {
         self.0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(trigger_id, handle);
+            .insert(binding_id, handle);
     }
 
-    /// Remove and unregister. `false` when this process holds no handle for
-    /// the id (a record from before the last restart, or a legacy engine id).
-    pub fn unregister(&self, trigger_id: &str) -> bool {
-        let handle = self
-            .0
+    pub fn remove(&self, binding_id: &str) -> Option<ObserverHandle> {
+        self.0
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(trigger_id);
-        match handle {
-            Some(handle) => {
-                handle.unregister();
-                true
-            }
-            None => false,
+            .remove(binding_id)
+    }
+
+    pub fn contains(&self, binding_id: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(binding_id)
+    }
+}
+
+/// Create the binding's observer: its source, the delivery hop as target, the
+/// binding id as observer id and `__binding` sidecar, and the lifecycle
+/// deadline as a backstop. The handle is kept in [`Deps::observer_handles`].
+/// `None` for a binding without a source.
+pub fn observe_binding(deps: &Deps, binding: &Binding) -> Option<ObserverHandle> {
+    let source = binding.source.as_ref()?;
+    let mut options = ObserverOptions::default()
+        .id(binding.id.clone())
+        .metadata(json!({ "__binding": binding.id }));
+    if let Some(at) = binding.lifecycle.expires_at {
+        let remaining = at - crate::types::message::AgentMessage::now_ms();
+        if remaining > 0 {
+            options =
+                options.expires_in(Duration::from_millis(remaining as u64) + EXPIRY_BACKSTOP_GRACE);
         }
+    }
+    let handle = deps.iii.observe_with(
+        source.to_source(),
+        crate::functions::observer_deliver::DELIVER_ID,
+        options,
+    );
+    deps.observer_handles
+        .insert(binding.id.clone(), handle.clone());
+    Some(handle)
+}
+
+/// Dispose a binding's observer; `true` when it is gone. Through this
+/// process's handle when it holds one, else through
+/// `engine::observers::dispose` (an observer created before the last restart
+/// that the boot pass has not re-created yet).
+pub async fn dispose_observer(deps: &Deps, binding_id: &str) -> bool {
+    if let Some(handle) = deps.observer_handles.remove(binding_id) {
+        return match handle.dispose().await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(binding = %binding_id, %error, "observer dispose failed");
+                false
+            }
+        };
+    }
+    let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
+    match deps
+        .iii
+        .call(CallRequest {
+            function_id: OBSERVERS_DISPOSE_ID.to_string(),
+            payload: json!({ "id": binding_id }),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await
+    {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::warn!(binding = %binding_id, %error, "engine observer dispose failed");
+            false
+        }
+    }
+}
+
+/// The engine builtin that disposes an observer by id.
+pub const OBSERVERS_DISPOSE_ID: &str = "engine::observers::dispose";
+
+/// What a binding observes: the source half of its observer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SourceSpec {
+    /// The observed function.
+    pub function_id: String,
+    /// Where the observed function is hosted; unset resolves like a call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// Args for the worker that hosts the function.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Value>,
+    /// Which calls reach the binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Value>,
+}
+
+impl SourceSpec {
+    pub fn to_source(&self) -> Source {
+        let mut source = Source::function(self.function_id.clone());
+        if let Some(namespace) = &self.namespace {
+            source = source.namespace(namespace.clone());
+        }
+        if let Some(args) = &self.args {
+            source = source.args(args.clone());
+        }
+        if let Some(filters) = &self.filters {
+            source = source.filters(filters.clone());
+        }
+        source
+    }
+
+    /// The `$eq` value of a top-level filter on `path` (`input.scope`).
+    pub fn filter_eq(&self, path: &str) -> Option<&Value> {
+        self.filters.as_ref()?.get(path)?.get("$eq")
     }
 }
 
@@ -107,13 +209,15 @@ pub async fn session_expects_wake(deps: &Deps, session_id: &str) -> bool {
 /// instead of showing a session that just looks quietly done.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ArmedWake {
-    pub subscription_id: String,
-    /// The registered trigger's type/config, read from the canonicalised
-    /// registration request. Absent on records that predate it.
+    pub observer_id: String,
+    /// The observed function and the observer's args and filters. Absent on
+    /// records without a source.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_type: Option<String>,
+    pub function_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<Value>,
+    pub args: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Value>,
     pub created_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
@@ -134,15 +238,13 @@ pub async fn armed_wakes(deps: &Deps, session_id: &str) -> Option<Vec<ArmedWake>
         bindings
             .iter()
             .filter(|b| is_armed_wake(b, now))
-            .map(|b| {
-                let watch = b.trigger_watch();
-                ArmedWake {
-                    subscription_id: b.id.clone(),
-                    trigger_type: watch.map(|(t, _)| t.to_string()),
-                    config: watch.map(|(_, c)| c.clone()),
-                    created_at: b.created_at,
-                    expires_at: b.lifecycle.expires_at,
-                }
+            .map(|b| ArmedWake {
+                observer_id: b.id.clone(),
+                function_id: b.source.as_ref().map(|s| s.function_id.clone()),
+                args: b.source.as_ref().and_then(|s| s.args.clone()),
+                filters: b.source.as_ref().and_then(|s| s.filters.clone()),
+                created_at: b.created_at,
+                expires_at: b.lifecycle.expires_at,
             })
             .collect(),
     )
@@ -157,12 +259,16 @@ pub struct OwnerScope {
     pub root_session_id: Option<String>,
 }
 
-/// What a fire dispatches. `function_id` is any iii function — `harness::send`
-/// for a wake or a sub-agent, anything else for a mechanical reaction.
+/// What a delivery dispatches. `function_id` is any iii function —
+/// `harness::send` for a wake, anything else for a mechanical reaction.
+/// Strict: an unknown key (sub-agent fields such as `task`) is refused when
+/// the agent observes, never silently dropped.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BindingTarget {
     pub function_id: String,
-    /// Payload template; the fired event is injected into it at `event_into`.
+    /// Payload template; the delivered event is injected into it at
+    /// `event_into`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<Value>,
     /// JSON pointer where the event lands inside the payload (default
@@ -212,24 +318,19 @@ pub struct Lifecycle {
     pub expires_at: Option<i64>,
 }
 
-/// Loop-safety inputs, stamped at registration and never caller-supplied.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Causation {
-    /// The reactive depth of the turn that registered this binding. A fire
-    /// starts its reaction one level deeper.
-    #[serde(default)]
-    pub depth: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub registered_by_turn: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Binding {
+    /// The binding id, which is also its observer's id.
     pub id: String,
-    /// The engine's own binding id, once registration returns it. `None` for
-    /// the window between the local insert and the engine's answer.
+    /// The observer's id once this process created it. `None` for the window
+    /// between the local insert and the observe call. Records written before
+    /// 0.26 name it `trigger_id`; the boot pass rewrites them.
+    #[serde(default, alias = "trigger_id", skip_serializing_if = "Option::is_none")]
+    pub observer_id: Option<String>,
+    /// What the binding observes. Absent only on records the boot pass has
+    /// not translated yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger_id: Option<String>,
+    pub source: Option<SourceSpec>,
     pub owner: OwnerScope,
     pub target: BindingTarget,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -242,8 +343,6 @@ pub struct Binding {
     /// owner did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability: Option<FunctionPolicy>,
-    #[serde(default)]
-    pub causation: Causation,
     /// Canonicalised registration request; a same-session re-registration with
     /// an equal key returns the standing binding instead of wiring a twin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -256,12 +355,11 @@ pub struct Binding {
 impl Binding {
     /// User-facing event text declared at registration time. It lives in the
     /// canonical request so active rows, retirement records, and fires all
-    /// describe the same event without interpreting source-specific config.
+    /// describe the same event without interpreting source-specific args.
     pub fn event_action(&self) -> Option<&str> {
         self.dedup_key
             .as_ref()
-            .and_then(|key| key.get("metadata"))
-            .and_then(|metadata| metadata.get("action"))
+            .and_then(|key| key.get("action"))
             .and_then(Value::as_str)
             .filter(|action| !action.trim().is_empty())
     }
@@ -273,7 +371,7 @@ impl Binding {
 
     /// Whether DELIVERED fires used up the fire budget (`once` consumed, or
     /// `max_fires` reached). The delivery that claimed the last slot owns
-    /// retiring the binding and its one `trigger_fired` record; any other
+    /// retiring the binding and its one `observer_fired` record; any other
     /// attempt that finds it spent is a duplicate (the same event arriving
     /// by a second path), never a user-visible outcome of its own.
     pub fn is_spent(&self) -> bool {
@@ -293,15 +391,34 @@ impl Binding {
         matches!(self.lifecycle.max_fires, Some(max) if fires_after >= max)
     }
 
-    /// The registered trigger's `(type, config)`, read from the canonicalised
-    /// registration request stored as the dedup key. `None` for records that
-    /// predate the key.
-    pub fn trigger_watch(&self) -> Option<(&str, &Value)> {
-        let key = self.dedup_key.as_ref()?;
-        let trigger_type = key.get("trigger_type")?.as_str()?;
-        Some((trigger_type, key.get("config").unwrap_or(&Value::Null)))
+    /// The `(scope, key)` a `state::on-changed` binding watches, from its
+    /// `$eq` filters on `input.scope` / `input.key`.
+    pub fn state_watch(&self) -> (Option<&str>, Option<&str>) {
+        match self.source.as_ref() {
+            Some(source) if source.function_id == STATE_ON_CHANGED_FN => (
+                source.filter_eq("input.scope").and_then(Value::as_str),
+                source.filter_eq("input.key").and_then(Value::as_str),
+            ),
+            _ => (None, None),
+        }
+    }
+
+    /// `function_id` with its args and filters, for owner-facing text.
+    pub fn source_text(&self) -> Option<String> {
+        let source = self.source.as_ref()?;
+        let mut text = format!("`{}`", source.function_id);
+        if let Some(args) = &source.args {
+            text.push_str(&format!(" args {args}"));
+        }
+        if let Some(filters) = &source.filters {
+            text.push_str(&format!(" filters {filters}"));
+        }
+        Some(text)
     }
 }
+
+/// The state worker's change event.
+pub const STATE_ON_CHANGED_FN: &str = "state::on-changed";
 
 #[cfg(test)]
 mod tests {
@@ -311,7 +428,8 @@ mod tests {
     fn binding() -> Binding {
         Binding {
             id: "sub_1".into(),
-            trigger_id: None,
+            observer_id: None,
+            source: None,
             owner: OwnerScope {
                 session_id: "s1".into(),
                 root_session_id: None,
@@ -320,7 +438,6 @@ mod tests {
             conditions: vec![],
             lifecycle: Lifecycle::default(),
             capability: None,
-            causation: Causation::default(),
             dedup_key: None,
             fires: 0,
             created_at: 0,
@@ -336,15 +453,14 @@ mod tests {
     }
 
     #[test]
-    fn event_action_reads_registration_metadata() {
+    fn event_action_reads_the_registration_request() {
         let mut b = binding();
         b.dedup_key = Some(json!({
-            "trigger_type": "on-message",
-            "config": { "scope": "explorer" },
-            "metadata": { "action": "new Explorer message received" }
+            "function_id": "explorer::on-message",
+            "action": "new Explorer message received"
         }));
         assert_eq!(b.event_action(), Some("new Explorer message received"));
-        b.dedup_key.as_mut().unwrap()["metadata"]["action"] = json!(7);
+        b.dedup_key.as_mut().unwrap()["action"] = json!(7);
         assert_eq!(b.event_action(), None);
     }
 
@@ -415,16 +531,41 @@ mod tests {
     }
 
     #[test]
-    fn trigger_watch_reads_the_dedup_key() {
+    fn state_watch_reads_the_eq_filters_of_a_state_source() {
         let mut b = binding();
-        assert!(b.trigger_watch().is_none(), "no key, no watch");
-        b.dedup_key = Some(json!({
-            "trigger_type": "state",
-            "config": { "scope": "run", "key": "go" },
-        }));
-        let (ttype, config) = b.trigger_watch().unwrap();
-        assert_eq!(ttype, "state");
-        assert_eq!(config["scope"], json!("run"));
+        assert_eq!(b.state_watch(), (None, None), "no source, no watch");
+        b.source = Some(SourceSpec {
+            function_id: STATE_ON_CHANGED_FN.into(),
+            namespace: None,
+            args: None,
+            filters: Some(json!({
+                "input.scope": { "$eq": "run" },
+                "input.key": { "$eq": "go" },
+            })),
+        });
+        assert_eq!(b.state_watch(), (Some("run"), Some("go")));
+        b.source.as_mut().unwrap().function_id = "database::on-row-changed".into();
+        assert_eq!(
+            b.state_watch(),
+            (None, None),
+            "only a state source watches a key"
+        );
+    }
+
+    #[test]
+    fn records_written_before_observers_still_read() {
+        let stored = json!({
+            "id": "sub_1",
+            "trigger_id": "sdk:sub_1",
+            "owner": { "session_id": "s1" },
+            "target": { "function_id": "harness::send" },
+            "causation": { "depth": 0 },
+            "dedup_key": { "trigger_type": "state", "config": { "scope": "run" } },
+            "created_at": 0
+        });
+        let b: Binding = serde_json::from_value(stored).unwrap();
+        assert_eq!(b.observer_id.as_deref(), Some("sdk:sub_1"));
+        assert!(b.source.is_none(), "the boot pass translates the source");
     }
 
     #[test]

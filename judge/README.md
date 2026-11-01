@@ -10,11 +10,11 @@ by registering the same three functions under their own `judge-<provider>` id.
 ## Install
 
 ```bash
-iii trigger compose::add worker=judge
+iii call compose::add worker=judge
 ```
 
 Compose starts the hub with its `judge-typesafe` dependency, which in turn needs
-`configuration`. Use engine **`iii/v0.24.0-rc.2`**, the verified release used by
+`configuration`. Use engine **`iii/v0.26.0`**, the verified release used by
 this repository's CI. Wait for `judge::evaluate` to register before calling it.
 
 ## Quickstart
@@ -25,7 +25,7 @@ or supply `TYPESAFE_API_KEY` in that worker's environment (see the
 a support ticket needs urgent attention:
 
 ```bash
-iii trigger judge::evaluate --timeout-ms 65000 --json '{
+iii call judge::evaluate --timeout-ms 65000 --json '{
   "timeout_ms": 60000,
   "evaluations": [{
     "id": "ticket-42",
@@ -107,7 +107,9 @@ Because the harness always runs the judge, the judge also delivers chat
 mentions to agents: a user's `@kanban(id="…")` (or any worker-defined
 mention) reaches the agent with a one-line summary of the item and a
 pre-verified call for its full details, and agents learn which mention names
-they may write in replies. See [Chat mentions](reference.md#chat-mentions);
+they may write in replies: `judge::mentions::pre-generate` observes the
+harness's `harness::hook::on-pre-generate` hook point with `on_error:
+fail_open`. See [Chat mentions](reference.md#chat-mentions);
 `JUDGE_MENTIONS=false` turns it off.
 
 The hub holds no credentials; its configuration entry (`judge`, or

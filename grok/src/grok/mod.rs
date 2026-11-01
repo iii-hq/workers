@@ -1,6 +1,6 @@
 //! The Grok turn: spawn `grok --single <prompt> --output-format streaming-json`,
 //! parse the streaming-json event stream, deliver it verbatim on
-//! `grok::raw-event`, translate it onto `grok::agent-event`, and persist the
+//! `grok::on-raw-event`, translate it onto `grok::on-agent-event`, and persist the
 //! session record.
 
 pub mod args;
@@ -220,23 +220,21 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     let _ = save_session(&iii, &record).await;
 
     // turn_end + agent_end on the translated feed.
-    let final_msg = assistant_message(
-        vec![ContentBlock::Text {
-            text: outcome.result_text.clone(),
-        }],
-        &record.model,
-        &outcome.stop_reason,
-    );
-    emit_agent_event(
-        &iii,
-        &session_id,
-        json!({ "type": "turn_end", "message": final_msg, "function_results": [] }),
-    )
+    emit_agent_event(&iii, &session_id, || {
+        let final_msg = assistant_message(
+            vec![ContentBlock::Text {
+                text: outcome.result_text.clone(),
+            }],
+            &record.model,
+            &outcome.stop_reason,
+        );
+        json!({ "type": "turn_end", "message": final_msg, "function_results": [] })
+    })
     .await;
     emit_agent_event(
         &iii,
         &session_id,
-        json!({ "type": "agent_end", "messages": [] }),
+        || json!({ "type": "agent_end", "messages": [] }),
     )
     .await;
 
@@ -310,8 +308,8 @@ async fn stream_turn(
                 continue;
             }
         };
-        // verbatim onto the raw feed
-        emit_raw_event(iii, session_id, raw.clone()).await;
+        // verbatim onto the raw feed, copied only when the session is observed
+        emit_raw_event(iii, session_id, || raw.clone()).await;
 
         let event: GrokEvent = match serde_json::from_value(raw) {
             Ok(e) => e,
@@ -327,7 +325,7 @@ async fn stream_turn(
             }
         }
         for frame in frames {
-            emit_agent_event(iii, session_id, frame).await;
+            emit_agent_event(iii, session_id, || frame).await;
         }
     }
 

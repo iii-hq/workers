@@ -3,16 +3,16 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `computer/page.js` (`console:script`) — the `computer` page
+//! - `computer/page.js` (a `script` asset) — the `computer` page
 //!   (session rail, screencast-fed live desktop that forwards clicks, scroll
-//!   and typing back as `computer::act`) AND the function-trigger renderer for
+//!   and typing back as `computer::act`) AND the function-call renderer for
 //!   every `computer::*` call in chat and the traces span tab.
-//! - `computer/styles.css` (`console:style`) — the stylesheet, every rule
+//! - `computer/styles.css` (a `style` asset) — the stylesheet, every rule
 //!   scoped under `[data-iii-ui="computer"]`; the console mounts it as a
 //!   `<link>` and link-swaps it on change, styles-before-scripts on boot.
 //!
 //! The registration machinery (content function `computer::ui-content`, one
-//! Message-path trigger per asset, `III_COMPUTER_UI_WATCH` hot-reload watcher)
+//! `console::ui::asset` observer per asset, `III_COMPUTER_UI_WATCH` hot-reload watcher)
 //! lives in the shared `iii-console-ui` crate; this module only names the
 //! assets and embeds their bytes.
 //!

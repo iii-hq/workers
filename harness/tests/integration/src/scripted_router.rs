@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
@@ -452,9 +452,10 @@ async fn wait_for_gate_state(
 
 /// Drop the harness's advisory messages from the MATCHED view of a request:
 /// iii-directory's `<discovery_assist>` hint, the harness registry-changed
-/// notice, and its skills-changed notice (the directory's boot reconcile
-/// downloads worker skills from the registry whenever the network answers,
-/// firing `directory::skills::on-change` mid-session). All first ride as
+/// notice, and its skills-changed notices (the directory downloads worker
+/// skills from the registry whenever the network answers, at its boot
+/// reconcile and when a worker such as the Console connects, firing
+/// `directory::skills::on-change` mid-session). All first ride as
 /// tail user messages whose presence
 /// depends on the booted stack (inject_hint config, worker count, per-turn
 /// gates, registration timing while the stack settles), so no fixture can pin
@@ -481,6 +482,14 @@ const SKILLS_CHANGED_NOTICE: &str = "The available skills have changed. This lis
 const SKILLS_REMOVED_NOTICE: &str =
     "Skill guidance is no longer available. Do not use any previously listed skill.";
 
+/// The harness's one-line skills notice (skills.rs `change_notice`), which
+/// names the ids that joined or left once the session has seen skill ids:
+/// matched by its fixed opening and closing, so user text that merely
+/// mentions skills is never filtered.
+const SKILLS_DELTA_NOTICE_START: &str = "Available skills changed: ";
+const SKILLS_DELTA_NOTICE_END: &str =
+    ". Load one with `directory::skills::get` only if the task needs it.";
+
 /// True for the hint / registry / runtime-context notice user messages the
 /// harness appends to a generation. They are persisted as `model_notice`
 /// entries and replayed where they were first sent, so every later request
@@ -500,6 +509,8 @@ pub fn is_advisory_message(message: &Value) -> bool {
                     || text.starts_with(RUNTIME_CONTEXT_NOTICE)
                     || text.starts_with(SKILLS_CHANGED_NOTICE)
                     || text == SKILLS_REMOVED_NOTICE
+                    || (text.starts_with(SKILLS_DELTA_NOTICE_START)
+                        && text.ends_with(SKILLS_DELTA_NOTICE_END))
             })
 }
 
@@ -705,7 +716,7 @@ async fn perform_serve_effect(client: &IIIClient, effect: &ServeEffectV1) -> Res
     let outer = std::time::Duration::from_millis(DEFAULT_CALL_TIMEOUT_MS + 5_000);
     match tokio::time::timeout(
         outer,
-        client.trigger(TriggerRequest {
+        client.call(CallRequest {
             function_id: "harness::send".to_string(),
             payload: json!({
                 "session_id": steer.session_id,
@@ -904,9 +915,14 @@ mod tests {
             { "role": "user", "content": [{ "type": "text",
                 "text": format!("{SKILLS_CHANGED_NOTICE}<available_skills>\n</available_skills>") }] },
             { "role": "user", "content": [{ "type": "text", "text": SKILLS_REMOVED_NOTICE }] },
+            { "role": "user", "content": [{ "type": "text",
+                "text": format!("{SKILLS_DELTA_NOTICE_START}added iii, index{SKILLS_DELTA_NOTICE_END}") }] },
             // A user message merely QUOTING an advisory mid-text stays.
             { "role": "user", "content": [{ "type": "text",
                 "text": "what does NOTE: the function registry changed mean?" }] },
+            // So does one that opens like the one-line skills notice.
+            { "role": "user", "content": [{ "type": "text",
+                "text": "Available skills changed: which ones?" }] },
         ]});
         let matched = super::without_advisory_tail_messages(&input);
         let texts: Vec<&str> = matched["messages"]
@@ -916,10 +932,11 @@ mod tests {
             .map(|m| m["content"][0]["text"].as_str().unwrap())
             .collect();
         // Every advisory is stripped; real user messages stay.
-        assert_eq!(texts.len(), 2);
+        assert_eq!(texts.len(), 3);
         assert!(texts[0].starts_with("do the task"));
         assert!(texts[1].starts_with("what does NOTE:"));
+        assert_eq!(texts[2], "Available skills changed: which ones?");
         // The raw input is untouched (call evidence keeps advisories).
-        assert_eq!(input["messages"].as_array().unwrap().len(), 6);
+        assert_eq!(input["messages"].as_array().unwrap().len(), 8);
     }
 }

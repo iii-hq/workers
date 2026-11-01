@@ -18,15 +18,14 @@ func TestCloudGroupWebhookUsesGroupConversationAndParticipant(t *testing.T) {
 	if value["group_id"] != group || value["chat_id"] != "group:"+group {
 		t.Fatal("group event identity lost")
 	}
-	filter, err := parseCloudEventFilter(json.RawMessage(`{"group_ids":["` + group + `"]}`))
-	if err != nil || !filter.matches(batch.events[0]) {
-		t.Fatalf("group filter: %v", err)
+	if !filterSelects(t, map[string]any{"input.group_id": map[string]any{"$eq": group}}, batch.events[0]) {
+		t.Fatal("group filter did not match")
 	}
 	if err := compileCloudEventSchema(t, cloudEventPayloadSchema).Validate(value); err != nil {
 		t.Fatal(err)
 	}
 	inbox := inboxTestOpen(t, 100)
-	if _, err = inbox.RecordCloudDelivery(batch.messages, nil, batch.events); err != nil {
+	if _, err := inbox.RecordCloudDelivery(batch.messages, nil, batch.events); err != nil {
 		t.Fatal(err)
 	}
 	page, err := inbox.ListChats("", "", 10)
@@ -67,9 +66,9 @@ func TestCloudGroupParticipantReceiptsRemainDistinct(t *testing.T) {
 	if err != nil || len(fresh) != 2 {
 		t.Fatalf("participants collapsed: %v %+v", err, fresh)
 	}
-	filter, err := parseCloudEventFilter(json.RawMessage(`{"kinds":["message.status"],"participant_ids":["15551234568"]}`))
-	if err != nil || filter.matches(fresh[0]) || !filter.matches(fresh[1]) {
-		t.Fatalf("participant filter: %v", err)
+	filters := map[string]any{"input.kind": map[string]any{"$eq": "message.status"}, "input.participant_id": map[string]any{"$eq": "+15551234568"}}
+	if filterSelects(t, filters, fresh[0]) || !filterSelects(t, filters, fresh[1]) {
+		t.Fatal("participant filter selected the wrong receipt")
 	}
 }
 
@@ -82,8 +81,12 @@ func TestCloudGroupMetadataSplitsAndFiltersGroups(t *testing.T) {
 	if len(batch.events) != 2 {
 		t.Fatal("group metadata was not split")
 	}
-	filter, err := parseCloudEventFilter(json.RawMessage(`{"kinds":["webhook.received"],"group_ids":["GroupTwo"],"events":["group_create"]}`))
-	if err != nil || filter.matches(batch.events[0]) || !filter.matches(batch.events[1]) {
-		t.Fatalf("metadata filter: %v", err)
+	filters := map[string]any{
+		"input.kind":     map[string]any{"$eq": "webhook.received"},
+		"input.group_id": map[string]any{"$eq": "GroupTwo"},
+		"input.event":    map[string]any{"$eq": "group_create"},
+	}
+	if filterSelects(t, filters, batch.events[0]) || !filterSelects(t, filters, batch.events[1]) {
+		t.Fatal("metadata filter selected the wrong group")
 	}
 }

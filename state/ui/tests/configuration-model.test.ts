@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { persistenceModeFor, withPersistenceMode } from '../src/configuration/model.ts'
+import {
+  eventsEnabledFor,
+  persistenceModeFor,
+  withEventsEnabled,
+  withPersistenceMode,
+} from '../src/configuration/model.ts'
 
 describe('state persistence configuration', () => {
   it('treats an omitted store method as file based', () => {
@@ -24,6 +29,16 @@ describe('state persistence configuration', () => {
     assert.deepEqual(original, {
       file_path: '/tmp/state',
       extension: { enabled: true },
+    })
+  })
+
+  it('reads and writes the events knob, enabled unless set to false', () => {
+    assert.equal(eventsEnabledFor({}), true)
+    assert.equal(eventsEnabledFor({ events_enabled: true }), true)
+    assert.equal(eventsEnabledFor({ events_enabled: false }), false)
+    assert.deepEqual(withEventsEnabled({ events_enabled: false, max_value_bytes: 10 }, true), {
+      max_value_bytes: 10,
+      events_enabled: true,
     })
   })
 })

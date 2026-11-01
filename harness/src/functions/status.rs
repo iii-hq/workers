@@ -44,7 +44,7 @@ pub struct StatusReport {
     /// The session owns an armed wake (a one-shot notify subscription): a
     /// completed turn here is NOT the run's outcome — a later turn in this
     /// session carries it. Mirrors the `terminal` flag on
-    /// `harness::turn-completed` (`expects_wake == !terminal`). Pollers
+    /// `harness::on-turn-completed` (`expects_wake == !terminal`). Pollers
     /// (e.g. workflow reconcile) must treat `completed && expects_wake` as
     /// still running.
     #[serde(default)]
@@ -423,9 +423,9 @@ mod tests {
             }],
             "expects_wake": true,
             "armed_wakes": [{
-                "subscription_id": "sub_1",
-                "trigger_type": "state:change",
-                "config": { "scope": "work" },
+                "observer_id": "sub_1",
+                "function_id": "state::on-changed",
+                "filters": { "input.scope": { "$eq": "work" } },
                 "created_at": 10,
                 "expires_at": 20
             }],

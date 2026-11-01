@@ -1,0 +1,30 @@
+{
+  "args_format": null,
+  "description": "A caller drove a desktop session (computer::act or computer::run); the console's live preview shows that session. No args; filter on input.session_id.",
+  "event_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "What `computer::on-activity` returns: a caller drove a session. Called when a `computer::act` call reaches it, or a `computer::run` passed its checks and holds it.",
+    "properties": {
+      "function": {
+        "description": "The function called: `computer::act` or `computer::run`.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "function",
+      "session_id",
+      "timestamp"
+    ],
+    "title": "ActivityEvent",
+    "type": "object"
+  },
+  "function_id": "computer::on-activity",
+  "private": true
+}

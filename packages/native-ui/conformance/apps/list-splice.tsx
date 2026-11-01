@@ -1,7 +1,7 @@
 /**
  * A List with two templates chosen by `kind` (rows and section headers), a
- * header, an empty state and a footer; a trigger replaces its items, and
- * createList().set sends only the splices that changed.
+ * header, an empty state and a footer; an observed event replaces its
+ * items, and createList().set sends only the splices that changed.
  */
 import {
   createList,
@@ -12,7 +12,7 @@ import {
   ListRow,
   Page,
   Text,
-  useTrigger,
+  useObserve,
 } from '@iii-dev/native-ui'
 
 interface Row {
@@ -25,8 +25,8 @@ interface Row {
 const rows = createList<Row>({ key: 'key', kind: 'kind' })
 
 function Tabs() {
-  useTrigger<{ rows: Row[] }>(
-    'demo::tabs-changed',
+  useObserve<{ rows: Row[] }>(
+    'demo::on-tabs-changed',
     () => ({}),
     (payload) => rows.set(payload.rows),
   )

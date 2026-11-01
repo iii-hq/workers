@@ -3,7 +3,7 @@
 //! the resolver was hitting `router::models::budget` on every non-inline
 //! assemble/compact/count call. The decorator bounds that to one bus round
 //! trip per (provider, id) per TTL window, and [`CachingModelResolver::flush`]
-//! empties it eagerly when the router announces `router::models::changed`.
+//! empties it eagerly on every call of the router's `router::models::on-changed`.
 //!
 //! TTLs: known budgets are safe to hold for a minute (staleness only skews
 //! an estimate reserve); an unknown model (`Ok(None)`) is held briefly so a
@@ -14,8 +14,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -23,6 +22,8 @@ use crate::ports::{Clock, ModelBudget, ModelResolver, TurnKnobs};
 use crate::types::{AgentFunction, AgentMessage};
 
 const MODELS_CHANGED_FN_ID: &str = "context::on-models-changed";
+/// The router's catalog-change event.
+const ROUTER_MODELS_ON_CHANGED_FN: &str = "router::models::on-changed";
 
 const HIT_TTL_MS: i64 = 60_000;
 const NEGATIVE_TTL_MS: i64 = 5_000;
@@ -47,7 +48,7 @@ impl CachingModelResolver {
         }
     }
 
-    /// Drop every cached budget (bound to `router::models::changed`).
+    /// Drop every cached budget (on every `router::models::on-changed` call).
     pub fn flush(&self) {
         self.entries
             .write()
@@ -114,7 +115,7 @@ impl ModelResolver for CachingModelResolver {
     }
 }
 
-/// `router::models::changed` payload — `{ provider, count }`. The handler
+/// The `router::models::on-changed` event — `{ provider, count }`. The handler
 /// flushes everything regardless, so the fields are advisory only.
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 struct OnModelsChangedEvent {
@@ -129,11 +130,11 @@ struct OnModelsChangedResponse {
     ok: bool,
 }
 
-/// Best-effort flush binding: when the router announces a catalog change
-/// (`router::models::changed`), drop every cached budget so the next call
-/// re-resolves. A failed registration (router absent at boot, older router
-/// without the trigger type) only costs TTL-bounded staleness — never boot.
-pub fn register_models_changed_flush(iii: &IIIClient, cache: Arc<CachingModelResolver>) {
+/// Flush on catalog changes: observe `router::models::on-changed`, so every
+/// catalog change drops every cached budget and the next call re-resolves.
+/// The observer stays `pending` while the router is absent; until it is
+/// active, invalidation is TTL-only — never a boot failure.
+pub fn observe_models_changed_flush(iii: &IIIClient, cache: Arc<CachingModelResolver>) {
     iii.register_function(
         MODELS_CHANGED_FN_ID,
         RegisterFunction::new_async(move |_event: OnModelsChangedEvent| {
@@ -149,16 +150,11 @@ pub fn register_models_changed_flush(iii: &IIIClient, cache: Arc<CachingModelRes
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
-    if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
-        "router::models::changed".to_string(),
-        MODELS_CHANGED_FN_ID.to_string(),
-        json!({}),
-    )) {
-        tracing::warn!(
-            error = %e,
-            "could not bind router::models::changed; model-budget cache degrades to TTL-only invalidation"
-        );
-    }
+    // The observer lives as long as the worker's connection.
+    iii.observe(
+        Source::function(ROUTER_MODELS_ON_CHANGED_FN).deliver(Deliver::Output),
+        MODELS_CHANGED_FN_ID,
+    );
 }
 
 #[cfg(test)]

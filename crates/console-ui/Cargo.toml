@@ -4,7 +4,7 @@
 name = "iii-console-ui"
 version = "0.1.0"
 edition = "2024"
-description = "Worker-side helper for the injectable console UI — registers the content function, one console:script/console:style trigger per asset, and the dev-loop hot-reload watcher"
+description = "Worker-side helper for the injectable console UI — registers the content function, one console::ui::asset observer per asset, and the dev-loop hot-reload watcher"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
 # Deliberately unpublished: workers in this repo link it by path
@@ -13,13 +13,9 @@ repository = "https://github.com/iii-hq/workers"
 publish = false
 
 [dependencies]
-# Range, not an exact pin: workers carry their own exact SDK pins and Cargo
-# must be able to unify the stable 0.24.5, 0.24.6 and 0.25 releases. No 0.25
-# release candidate fits: Cargo only admits a prerelease when a comparator
-# names one on the same major.minor.patch.
-# Path-linking this crate must never drag a worker onto a different SDK build
-# or block one that has not migrated yet.
-iii-sdk = ">=0.24.5, <0.26.0"
+# The same exact pin as every worker: one iii-sdk per build graph, so the
+# `IIIClient` a worker passes in is the type this crate takes.
+iii-sdk = "=0.26.0-rc.1"
 tokio = { version = "1", features = ["rt", "sync", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

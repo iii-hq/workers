@@ -1,7 +1,6 @@
 //! Engine-backed integration suite — real engine, real router, real provider,
 //! stubbed upstream. Self-skips when no engine is available.
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient};
+use iii_sdk::{register_worker, CallRequest, IIIClient};
 use llm_router::register::register_router;
 use parking_lot::Mutex;
 use provider_opencode_go::register::register_provider;
@@ -20,7 +19,7 @@ async fn call(
     function_id: &str,
     payload: Value,
 ) -> Result<Value, iii_sdk::errors::Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,
@@ -231,7 +230,7 @@ async fn chat_streams_end_to_end() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -268,7 +267,7 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
     let consumer = register_worker(&engine.url, test_init_options());
     let (writer_ref, frames, pump) = consumer_channel(&consumer).await;
     let res = consumer
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "router::chat".into(),
             payload: json!({
                 "writer_ref": writer_ref,
@@ -310,7 +309,7 @@ async fn abort_lands_mid_stream_and_cancels_the_upstream() {
         let consumer = consumer.clone();
         async move {
             consumer
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "router::chat".into(),
                     payload: json!({
                         "writer_ref": writer_ref,
@@ -426,7 +425,7 @@ async fn provider_redeclares_on_router_ready() {
     register_router(router2.clone())
         .await
         .expect("router reboots");
-    // router::ready trigger → provider re-declares with its persisted token
+    // router::on-ready → provider re-declares with its persisted token
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let list = call(&router2, "router::provider::list", json!({}))

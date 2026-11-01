@@ -360,7 +360,7 @@ export const FS_SANDBOX_CASES: TestCase[] = [
           channel.writer.stream.end(() => resolve());
         });
       });
-      const triggerPromise = ctx.call('shell::fs::write', {
+      const callPromise = ctx.call('shell::fs::write', {
         target: { kind: 'sandbox', sandbox_id: SANDBOX_ID },
         path: '/sb/x',
         mode: '0644',
@@ -369,7 +369,7 @@ export const FS_SANDBOX_CASES: TestCase[] = [
       });
       await writePromise;
       channel.writer.close();
-      const r = await triggerPromise;
+      const r = await callPromise;
       expectEqual(r.bytes_written, 13, 'bytes_written round-trips');
       expectEqual(r.path, '/sb/x', 'path forwarded');
       expectEqual(captured.length, 1, 'mock invoked exactly once');

@@ -1,4 +1,4 @@
-//! Deferred trigger (harness.md § Deferred trigger): a pending call parks the
+//! Deferred calls (harness.md, deferred calls): a pending call parks the
 //! turn — an approval/hook hold, or a legacy pre-fire-and-forget child spawn.
 //! `harness::function::resolve` settles it (delivering a result or releasing a
 //! hook-held call) and resumes the parked turn; a cron sweep expires
@@ -24,7 +24,7 @@ fn apply_deferred_contract_updates_after_append(
     call_id: &str,
     updates: Vec<(String, FunctionContractLedgerEntry)>,
 ) {
-    crate::trigger::apply_contract_updates_after_append(ledger, call_id, updates);
+    crate::call::apply_contract_updates_after_append(ledger, call_id, updates);
 }
 
 /// Settle a pending call and resume the parked turn.
@@ -65,8 +65,8 @@ pub async fn resolve(
             let entry_id = ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
             // The resolver's payload comes straight off the wire and bypasses
             // `normalized_result`, so it gets the same capture-time cap.
-            let mut delivered = crate::trigger::cap_result(
-                crate::trigger::ResultData {
+            let mut delivered = crate::call::cap_result(
+                crate::call::ResultData {
                     content: req
                         .content
                         .clone()
@@ -120,10 +120,10 @@ pub async fn resolve(
             })
         }
         "execute" => {
-            // `execute` releases a `pre_trigger` hook-held call: resume the
-            // pre_trigger chain AFTER the holding hook (earlier hooks and the
+            // `execute` releases a `pre_call` hook-held call: resume the
+            // pre_call chain AFTER the holding hook (earlier hooks and the
             // holder's own decision already ran — harness.md §
-            // `function::resolve`), invoke the target, run the post_trigger
+            // `function::resolve`), invoke the target, run the post_call
             // chain, append the result, and resume the turn.
             let Some(held_by) = checkpoint.held_by.clone() else {
                 return Ok(not_resolved());
@@ -141,7 +141,7 @@ pub async fn resolve(
             };
             let (arguments, pre_annotations) = match deps
                 .hooks
-                .run_pre_trigger(
+                .run_pre_call(
                     &record,
                     record.step,
                     &req.function_call_id,
@@ -151,12 +151,12 @@ pub async fn resolve(
                 )
                 .await
             {
-                crate::hooks::runner::PreTriggerOutcome::Continue {
+                crate::hooks::runner::PreCallOutcome::Continue {
                     arguments,
                     annotations,
                 } => (arguments, annotations),
-                crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
-                    let mut data = crate::trigger::ResultData {
+                crate::hooks::runner::PreCallOutcome::Deny(reason) => {
+                    let mut data = crate::call::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
                         is_error: true,
                         details: json!({ "error": "hook_denied", "message": reason }),
@@ -207,7 +207,7 @@ pub async fn resolve(
                         turn_resumed,
                     });
                 }
-                crate::hooks::runner::PreTriggerOutcome::Hold {
+                crate::hooks::runner::PreCallOutcome::Hold {
                     held_by,
                     arguments,
                     annotations: _,
@@ -232,14 +232,14 @@ pub async fn resolve(
             // turn loop — depth/fan-out guards, policy subsetting, ParentLink
             // — never the generic dispatcher (which would seed a parentless,
             // unguarded child). Fire-and-forget: the result is the child ids;
-            // post_trigger is skipped, mirroring the loop's spawn branch.
+            // post_call is skipped, mirroring the loop's spawn branch.
             if function_id == crate::functions::SPAWN_ID {
-                // Triggered + persist BEFORE the spawn (mirrors the non-spawn
+                // Dispatched + persist BEFORE the spawn (mirrors the non-spawn
                 // path below): a crash or redelivered resolve between a
                 // successful spawn and the Done persist would otherwise still
                 // see Pending and seed a SECOND child for the same call.
                 if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
-                    cp.state = CallState::Triggered;
+                    cp.state = CallState::Dispatched;
                 }
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
@@ -337,7 +337,7 @@ pub async fn resolve(
                 ),
             );
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
-                cp.state = CallState::Triggered;
+                cp.state = CallState::Dispatched;
             }
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
@@ -346,7 +346,7 @@ pub async fn resolve(
             // Held calls resume outside the inline loop, so use the same
             // invocation chokepoint to keep subscription session injection/owner
             // checks.
-            let raw = crate::functions::subscribe::invoke(
+            let raw = crate::functions::observe::invoke(
                 deps,
                 &engine,
                 &policy,
@@ -354,7 +354,7 @@ pub async fn resolve(
                 &arguments,
                 &record.session_id,
                 true, // resolve holds this session's lock
-                Some(crate::functions::subscribe::CallerModel::from_options(
+                Some(crate::functions::observe::CallerModel::from_options(
                     &record.options,
                 )),
             )
@@ -362,7 +362,7 @@ pub async fn resolve(
             let info_raw = (function_id == "engine::functions::info").then(|| raw.clone());
             let post_outcome = deps
                 .hooks
-                .run_post_trigger(
+                .run_post_call(
                     &record,
                     record.step,
                     &req.function_call_id,
@@ -372,11 +372,11 @@ pub async fn resolve(
                 )
                 .await;
             let (data, annotations) = match post_outcome {
-                crate::hooks::runner::PostTriggerOutcome::Result {
+                crate::hooks::runner::PostCallOutcome::Result {
                     result,
                     annotations,
                 } => (result, annotations),
-                crate::hooks::runner::PostTriggerOutcome::Hold {
+                crate::hooks::runner::PostCallOutcome::Hold {
                     held_by,
                     annotations: _,
                 } => {
@@ -396,7 +396,7 @@ pub async fn resolve(
                 }
             };
             let (mut data, contract_updates) = match info_raw {
-                Some(raw) => crate::trigger::prepare_info_result(
+                Some(raw) => crate::call::prepare_info_result(
                     &req.function_call_id,
                     &arguments,
                     &data,
@@ -517,7 +517,7 @@ async fn find_call_arguments(
         .functions
         .as_ref()
         .map(|f| f.expose)
-        .unwrap_or(crate::types::turn::ExposeMode::AgentTrigger);
+        .unwrap_or(crate::types::turn::ExposeMode::AgentCall);
     for entry in entries.into_iter().rev() {
         if let Some(AgentMessage::Assistant(a)) = entry.message {
             for planned in crate::policy::plan_calls(&a, expose) {
@@ -767,7 +767,7 @@ mod tests {
             "request_schema": { "type": "object" },
             "response_schema": { "type": "object" }
         });
-        let data = crate::trigger::ResultData {
+        let data = crate::call::ResultData {
             content: vec![ContentBlock::text(details.to_string())],
             is_error: false,
             details,
@@ -776,15 +776,15 @@ mod tests {
         let mut ledger = BTreeMap::new();
 
         let (first, updates) =
-            crate::trigger::prepare_info_result("held-1", &arguments, &data, &ledger, true);
+            crate::call::prepare_info_result("held-1", &arguments, &data, &ledger, true);
         apply_deferred_contract_updates_after_append(&mut ledger, "held-1", updates);
 
         let (second, updates) =
-            crate::trigger::prepare_info_result("held-2", &arguments, &data, &ledger, true);
+            crate::call::prepare_info_result("held-2", &arguments, &data, &ledger, true);
         assert_eq!(second.content, first.content, "a sibling result stays full");
         apply_deferred_contract_updates_after_append(&mut ledger, "held-2", updates);
 
-        crate::trigger::retain_visible_contract_sources(
+        crate::call::retain_visible_contract_sources(
             &mut ledger,
             &[json!({
                 "role": "function_result",
@@ -794,7 +794,7 @@ mod tests {
             })],
         );
         let (third, updates) =
-            crate::trigger::prepare_info_result("held-3", &arguments, &data, &ledger, true);
+            crate::call::prepare_info_result("held-3", &arguments, &data, &ledger, true);
 
         assert_eq!(
             third.content,
@@ -813,15 +813,9 @@ mod tests {
         assert_eq!(updates[0].1.repeats, 1);
         assert_eq!(
             first.content,
-            crate::trigger::prepare_info_result(
-                "probe",
-                &arguments,
-                &data,
-                &Default::default(),
-                true
-            )
-            .0
-            .content,
+            crate::call::prepare_info_result("probe", &arguments, &data, &Default::default(), true)
+                .0
+                .content,
             "the first result is the full (response-schema-stripped) rendering"
         );
     }

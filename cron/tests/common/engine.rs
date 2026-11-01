@@ -10,9 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions};
 use serde_json::json;
 use tokio::sync::OnceCell;
 
@@ -51,8 +50,8 @@ async fn try_connect_raw(namespace: Option<&str>, name: Option<&str>) -> Option<
         &url,
         InitOptions {
             namespace: namespace.map(str::to_owned),
-            // 0.25 engines refuse a second live worker with the same name in
-            // a namespace; the default name is per process.
+            // The engine refuses a second live worker with the same name in a
+            // namespace; the default name is per process.
             metadata: name.map(|name| WorkerMetadata {
                 name: name.to_string(),
                 ..WorkerMetadata::default()
@@ -64,7 +63,7 @@ async fn try_connect_raw(namespace: Option<&str>, name: Option<&str>) -> Option<
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(250)).await;
         let probe = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::workers::list".to_string(),
                 payload: json!({}),
                 action: None,

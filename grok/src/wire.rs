@@ -1,4 +1,4 @@
-//! Wire types emitted onto `grok::agent-event` (translated AgentEvent subset) and
+//! Wire types emitted onto `grok::on-agent-event` (translated AgentEvent subset) and
 //! the persisted session record. Mirrors the harness AgentEvent shape so the
 //! console and acp worker render Grok turns like any other agent worker.
 //!

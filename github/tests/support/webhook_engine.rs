@@ -1,12 +1,36 @@
 //! Loopback test transport, based on http/tests/common/fake_engine.rs.
-//! Only engine infrastructure is emulated. Registered function/trigger handlers
-//! are dispatched through their real SDK connections, including namespaces.
+//! Only engine infrastructure is emulated: registration and routing by
+//! namespace, the observer lifecycle (`observe` → `observeradded` →
+//! `observerack` → `observerstatechanged`, and `unobserve`), calls through
+//! an observer, which reach its stored target with its metadata, and a
+//! departed connection: the observers of the functions it hosted go
+//! `pending` until a new host registers them, and the observers it made are
+//! `suspended` and disposed, at once or, after [`Engine::hold_departed`], when
+//! the test ends the grace period with [`Engine::release_departed`]. An
+//! `observe` naming the id of a suspended observer replaces it, as the
+//! engine does for a worker back on a new connection: the function's host
+//! hears `observerremoved` for the suspended one and `observeradded` for the
+//! new one. An id another live connection holds is refused with
+//! `OBSERVER_ID_CONFLICT`, and keeps nothing for the refused connection: an
+//! `unobserve` from any connection but the observing one is ignored.
+//! iii's delivery of a routed call, evaluated here as the engine does: the
+//! active observers of the function (those the host's match hook named in
+//! `invocationresult.matched`, when it sends one; none when the host's
+//! deliver hook delivered the call, `invocationresult.delivered`) whose `on`
+//! accepts the outcome and whose filters match the call; each one's target
+//! is called with what the observer's `deliver` names (the output, the
+//! input, or the envelope), as [`Engine::activations`] records.
+//! Registered function handlers and observer hooks run on their real SDK
+//! connections.
 use futures::{SinkExt, StreamExt};
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, Doc, Filter, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tokio::{
@@ -20,20 +44,66 @@ use tokio_tungstenite::tungstenite::{
 };
 
 type Sender = mpsc::UnboundedSender<Value>;
-type Routes = HashMap<(String, String), Sender>;
+/// `(namespace, function_id)`.
+type Key = (String, String);
 struct Channel {
     tx: mpsc::UnboundedSender<Message>,
     rx: Option<mpsc::UnboundedReceiver<Message>>,
 }
+/// A registered function: the connection that hosts it and its
+/// `registerfunction` frame.
+struct Host {
+    tx: Sender,
+    registration: Value,
+}
+/// One observer, as the engine keeps it.
+struct Observer {
+    function: Key,
+    target: Key,
+    /// What the function's host sees (`observeradded.observer`).
+    view: Value,
+    /// `source.deliver`: `output`, `input`, or the envelope when absent.
+    deliver: Option<String>,
+    metadata: Option<Value>,
+    observing: Sender,
+    state: &'static str,
+    /// Whether `observeradded` went to the function's host.
+    announced: bool,
+    /// Creation order: the order iii's delivery evaluates observers in.
+    seq: u64,
+}
+/// An invocation forwarded to a host, until it answers.
+struct Pending {
+    /// Where the answer goes; `None` for an activation, which the engine
+    /// makes itself.
+    caller: Option<Sender>,
+    /// The function called and its input, for the observers its host
+    /// reports matched.
+    function: Key,
+    input: Value,
+}
 #[derive(Default)]
 struct State {
-    functions: Mutex<Routes>,
-    providers: Mutex<Routes>,
-    pending: Mutex<HashMap<String, Sender>>,
-    registrations: Mutex<HashMap<String, Sender>>,
+    functions: Mutex<HashMap<Key, Host>>,
+    observers: Mutex<HashMap<String, Observer>>,
+    revision: AtomicU64,
+    /// The next observer's `seq`.
+    observer_seq: AtomicU64,
+    pending: Mutex<HashMap<String, Pending>>,
+    /// Every activation of an observer by iii's delivery, with its answer.
+    activations: Mutex<Vec<Value>>,
     channels: Mutex<HashMap<String, Channel>>,
+    /// Every frame a worker sent.
     frames: Mutex<Vec<Value>>,
+    /// Every invocation the engine forwarded to a host.
+    dispatched: Mutex<Vec<Value>>,
     bytes: Mutex<Vec<Vec<u8>>>,
+    /// Keep a departed connection's observers until `release_departed`.
+    hold_departed: AtomicBool,
+    /// Observers of departed connections, kept for their grace period.
+    held: Mutex<Vec<String>>,
+    /// Connections that ended.
+    departures: AtomicUsize,
 }
 
 pub struct Engine {
@@ -87,17 +157,45 @@ impl Engine {
     pub fn frames(&self) -> Vec<Value> {
         self.state.frames.lock().unwrap().clone()
     }
+    pub fn dispatched(&self) -> Vec<Value> {
+        self.state.dispatched.lock().unwrap().clone()
+    }
+    /// Every activation iii's delivery made: `{ observer_id, target, data }`,
+    /// plus `answered` and the target's `result` or `error` once it answered.
+    pub fn activations(&self) -> Vec<Value> {
+        self.state.activations.lock().unwrap().clone()
+    }
     pub fn bytes(&self) -> Vec<Vec<u8>> {
         self.state.bytes.lock().unwrap().clone()
     }
-    pub async fn registered(&self, trigger_type: &str, function: &str) {
+    /// From now on, the observers a departed connection made stay
+    /// `suspended` (the engine's grace period) until [`Self::release_departed`].
+    pub fn hold_departed(&self) {
+        self.state.hold_departed.store(true, Ordering::SeqCst);
+    }
+    /// Ends the grace period: disposes every held observer, and disposes the
+    /// observers of later departures at once.
+    pub fn release_departed(&self) {
+        self.state.hold_departed.store(false, Ordering::SeqCst);
+        let held = std::mem::take(&mut *self.state.held.lock().unwrap());
+        for id in held {
+            dispose(&self.state, &id);
+        }
+    }
+    /// How many connections ended so far.
+    pub fn departures(&self) -> usize {
+        self.state.departures.load(Ordering::SeqCst)
+    }
+    /// Waits until an observer of `function` with target `target` is active:
+    /// its host acked it.
+    pub async fn observed(&self, function: &str, target: &str) {
         wait(|| {
-            self.frames().iter().any(|f| {
-                f["type"] == "triggerregistrationresult"
-                    && f["trigger_type"] == trigger_type
-                    && f["function_id"] == function
-                    && f["error"].is_null()
-            })
+            self.state
+                .observers
+                .lock()
+                .unwrap()
+                .values()
+                .any(|o| o.function.1 == function && o.target.1 == target && o.state == "active")
         })
         .await;
     }
@@ -144,9 +242,17 @@ fn response(frame: &Value, result: Value) -> Value {
     json!({"type":"invocationresult", "invocation_id":frame["invocation_id"],
         "function_id":frame["function_id"], "result":result})
 }
-fn error(frame: &Value, message: &str) -> Value {
-    json!({"type":"invocationresult", "invocation_id":frame["invocation_id"],
-        "function_id":frame["function_id"], "error":{"code":"FUNCTION_NOT_FOUND", "message":message}})
+/// Answers `frame` with an error; a fire-and-forget call gets no answer.
+fn fail(tx: &Sender, frame: &Value, code: &str, message: &str) {
+    if frame["invocation_id"].is_string() {
+        let _ = tx.send(
+            json!({"type":"invocationresult", "invocation_id":frame["invocation_id"],
+            "function_id":frame["function_id"], "error":{"code":code, "message":message}}),
+        );
+    }
+}
+fn state_changed(id: &str, state: &str, reason: Option<Value>) -> Value {
+    json!({"type":"observerstatechanged", "id":id, "state":state, "reason":reason, "fires":0})
 }
 
 #[expect(clippy::result_large_err)]
@@ -203,6 +309,17 @@ async fn connection(stream: TcpStream, state: Arc<State>) {
         }
         return;
     }
+    // An engine with observe v2: the SDK registers private functions, args
+    // formats and deliver hooks only after this hello.
+    let hello = json!({"type":"workerregistered", "worker_id":"test-worker",
+        "features":["observe.v1", "observe.v2"]});
+    if sink
+        .send(Message::Text(hello.to_string().into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     loop {
         tokio::select! {
@@ -225,50 +342,438 @@ async fn connection(stream: TcpStream, state: Arc<State>) {
             }
         }
     }
+    departed(&state, &tx);
 }
+
+/// The connection `tx` ended. Its functions are unregistered and their
+/// observers go `pending` until a new host registers them; the observers it
+/// made are `suspended`, and disposed at once unless departures are held.
+fn departed(state: &State, tx: &Sender) {
+    let gone: Vec<Key> = {
+        let mut functions = state.functions.lock().unwrap();
+        let gone: Vec<Key> = functions
+            .iter()
+            .filter(|(_, host)| host.tx.same_channel(tx))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &gone {
+            functions.remove(key);
+        }
+        gone
+    };
+    let made: Vec<String> = {
+        let mut observers = state.observers.lock().unwrap();
+        for (id, observer) in observers.iter_mut() {
+            if gone.contains(&observer.function) && observer.state != "error" {
+                observer.state = "pending";
+                observer.announced = false;
+                let _ = observer.observing.send(state_changed(id, "pending", None));
+            }
+        }
+        observers
+            .iter_mut()
+            .filter(|(_, observer)| observer.observing.same_channel(tx))
+            .map(|(id, observer)| {
+                observer.state = "suspended";
+                id.clone()
+            })
+            .collect()
+    };
+    if state.hold_departed.load(Ordering::SeqCst) {
+        state.held.lock().unwrap().extend(made);
+    } else {
+        for id in made {
+            dispose(state, &id);
+        }
+    }
+    state.departures.fetch_add(1, Ordering::SeqCst);
+}
+
+/// A new connection observes under the id of the suspended observer `id`:
+/// the suspended one leaves the grace period and is disposed, so the new one
+/// takes its place.
+fn replace_suspended(state: &State, id: &str) {
+    state.held.lock().unwrap().retain(|held| held != id);
+    dispose(state, id);
+}
+
+/// Removes the observer `id`. Its function's host hears `observerremoved` if
+/// it accepted the observer; its observing connection hears `disposed`.
+fn dispose(state: &State, id: &str) {
+    let Some(observer) = state.observers.lock().unwrap().remove(id) else {
+        return;
+    };
+    let host = state
+        .functions
+        .lock()
+        .unwrap()
+        .get(&observer.function)
+        .map(|h| h.tx.clone());
+    if let (true, Some(host)) = (observer.announced && observer.state != "error", host) {
+        let revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = host.send(json!({"type":"observerremoved",
+            "function_id":observer.function.1, "namespace":observer.function.0,
+            "revision":revision, "id":id}));
+    }
+    let reason = json!({"code":"UNOBSERVED", "message":"disposed"});
+    let _ = observer
+        .observing
+        .send(state_changed(id, "disposed", Some(reason)));
+}
+
+/// Sends `observeradded` to the host of `function` for each of its observers
+/// not announced yet. Like the engine, it refuses args to a function that
+/// declares no `args_format` (`INVALID_ARGS`) and a private target
+/// (`FORBIDDEN`).
+fn announce(state: &State, function: &Key) {
+    let (host, private_targets) = {
+        let functions = state.functions.lock().unwrap();
+        let host = functions
+            .get(function)
+            .map(|h| (h.tx.clone(), !h.registration["args_format"].is_null()));
+        let private: Vec<Key> = functions
+            .iter()
+            .filter(|(_, h)| h.registration["private"] == true)
+            .map(|(k, _)| k.clone())
+            .collect();
+        (host, private)
+    };
+    let Some((host, takes_args)) = host else {
+        return;
+    };
+    let mut observers = state.observers.lock().unwrap();
+    for (id, observer) in observers.iter_mut() {
+        if observer.function != *function || observer.announced || observer.state != "pending" {
+            continue;
+        }
+        let has_args = observer.view["args"]
+            .as_object()
+            .is_some_and(|args| !args.is_empty());
+        let refusal = if has_args && !takes_args {
+            Some(("INVALID_ARGS", "the function takes no args"))
+        } else if private_targets.contains(&observer.target) {
+            Some(("FORBIDDEN", "a private function cannot be a target"))
+        } else {
+            None
+        };
+        if let Some((code, message)) = refusal {
+            observer.state = "error";
+            let reason = json!({"code":code, "message":message});
+            let _ = observer
+                .observing
+                .send(state_changed(id, "error", Some(reason)));
+            continue;
+        }
+        observer.announced = true;
+        let revision = state.revision.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = host.send(json!({"type":"observeradded", "function_id":function.1,
+            "namespace":function.0, "revision":revision, "observer":observer.view}));
+    }
+}
+
+/// Forwards an invocation of `function` to `host`, as the engine does:
+/// answers return to `caller`, and the engine's transport metadata is
+/// injected.
+fn forward(state: &State, mut frame: Value, function: Key, caller: &Sender, host: &Sender) {
+    if let Some(data) = frame["data"].as_object_mut() {
+        data.insert("_caller_worker_id".into(), json!("test-worker"));
+    }
+    if let Some(invocation_id) = frame["invocation_id"].as_str() {
+        state.pending.lock().unwrap().insert(
+            invocation_id.to_owned(),
+            Pending {
+                caller: Some(caller.clone()),
+                function,
+                input: frame["data"].clone(),
+            },
+        );
+    }
+    state.dispatched.lock().unwrap().push(frame.clone());
+    let _ = host.send(frame);
+}
+
+/// The value without the engine's transport field (`_caller_worker_id`),
+/// which iii's delivery removes from every observed input and output.
+fn observed_value(mut value: Value) -> Value {
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("_caller_worker_id");
+    }
+    value
+}
+
+/// The active observers of `call`'s function that its delivery activates, in
+/// creation order: none when the host's deliver hook delivered the call;
+/// among those the host's match hook matched (`matched`), or among all of
+/// them, the ones whose `on` accepts the outcome and whose filters match
+/// `doc`.
+fn evaluate(
+    state: &State,
+    call: &Pending,
+    matched: Option<&[String]>,
+    delivered: bool,
+    success: bool,
+    doc: &Doc<'_>,
+) -> Vec<String> {
+    if delivered {
+        return Vec::new();
+    }
+    let observers = state.observers.lock().unwrap();
+    let mut selected: Vec<(u64, String)> = observers
+        .iter()
+        .filter(|(id, o)| {
+            o.function == call.function
+                && o.state == "active"
+                && matched.is_none_or(|ids| ids.iter().any(|m| m == *id))
+        })
+        .filter(|(_, o)| match o.view["on"].as_str().unwrap_or("success") {
+            "success" => success,
+            "error" => !success,
+            "complete" => true,
+            _ => false,
+        })
+        .filter(|(_, o)| match &o.view["filters"] {
+            Value::Null => true,
+            filters => Filter::parse(filters).is_ok_and(|filter| filter.matches(doc)),
+        })
+        .map(|(id, o)| (o.seq, id.clone()))
+        .collect();
+    selected.sort();
+    selected.into_iter().map(|(_, id)| id).collect()
+}
+
+/// iii's delivery of the call `call`, answered with `answer` (with its
+/// `matched` and `delivered`): each observer [`evaluate`] selects gets an
+/// activation, which calls its target with the observer's metadata and what
+/// its `deliver` names: the call's output, its input, or the envelope.
+fn activate(
+    state: &State,
+    call: &Pending,
+    answer: &Value,
+    matched: Option<&[String]>,
+    delivered: bool,
+) {
+    let input = observed_value(call.input.clone());
+    let error = answer.get("error").filter(|e| !e.is_null()).cloned();
+    let output = answer
+        .get("result")
+        .filter(|_| error.is_none())
+        .cloned()
+        .map(observed_value);
+    let doc = Doc {
+        input: Some(&input),
+        output: output.as_ref(),
+        error: error.as_ref(),
+        ..Doc::default()
+    };
+    let observed = evaluate(state, call, matched, delivered, error.is_none(), &doc);
+    for id in &observed {
+        let observer = state.observers.lock().unwrap().get(id).and_then(|o| {
+            (o.state == "active").then(|| {
+                (
+                    o.target.clone(),
+                    o.deliver.clone(),
+                    o.metadata.clone(),
+                    o.view.get("capture").cloned(),
+                )
+            })
+        });
+        let Some((target, deliver, metadata, capture)) = observer else {
+            continue;
+        };
+        let Some(host) = state
+            .functions
+            .lock()
+            .unwrap()
+            .get(&target)
+            .map(|h| h.tx.clone())
+        else {
+            continue;
+        };
+        let activation_id = uuid::Uuid::new_v4().to_string();
+        let invocation_id = uuid::Uuid::new_v4().to_string();
+        let data = match deliver.as_deref() {
+            Some("output") => output.clone().unwrap_or(Value::Null),
+            Some("input") => input.clone(),
+            _ => {
+                // The default capture: input, output and caller.
+                let captures = |part: &str| match &capture {
+                    Some(Value::Array(parts)) => parts.iter().any(|p| p == part),
+                    _ => part != "error" && part != "metadata",
+                };
+                let mut envelope = json!({
+                    "observer_id": id, "activation_id": activation_id,
+                    "function_id": call.function.1, "namespace": call.function.0,
+                    "invocation_id": answer["invocation_id"],
+                    "status": if error.is_some() { "error" } else { "success" },
+                    "started_at_ms": 0, "duration_ms": 0.0,
+                });
+                if captures("input") {
+                    envelope["input"] = input.clone();
+                }
+                if let (true, Some(output)) = (captures("output"), &output) {
+                    envelope["output"] = output.clone();
+                }
+                if let Some(error) = &error {
+                    envelope["error"] = error.clone();
+                }
+                envelope
+            }
+        };
+        state.pending.lock().unwrap().insert(
+            invocation_id.clone(),
+            Pending {
+                caller: None,
+                function: target.clone(),
+                input: data.clone(),
+            },
+        );
+        state.activations.lock().unwrap().push(json!({
+            "observer_id": id, "target": target.1, "invocation_id": invocation_id,
+            "data": data, "answered": false,
+        }));
+        let frame = json!({"type":"invokefunction", "invocation_id": invocation_id,
+            "function_id": target.1, "namespace": target.0, "data": data,
+            "metadata": metadata,
+            "activation": {"observer_id": id, "activation_id": activation_id}});
+        state.dispatched.lock().unwrap().push(frame.clone());
+        let _ = host.send(frame);
+    }
+}
+
 fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
     let text = |field: &str| frame[field].as_str().unwrap_or_default().to_owned();
     match text("type").as_str() {
         "registerfunction" => {
-            state
-                .functions
-                .lock()
-                .unwrap()
-                .insert((namespace.into(), text("id")), tx.clone());
+            let key = (namespace.to_owned(), text("id"));
+            state.functions.lock().unwrap().insert(
+                key.clone(),
+                Host {
+                    tx: tx.clone(),
+                    registration: frame.clone(),
+                },
+            );
+            // Observers of a function are announced once its host registers it.
+            announce(state, &key);
         }
-        "registertriggertype" => {
-            state
-                .providers
+        "observe" => {
+            let source = &frame["source"];
+            let target = &frame["target"];
+            let function = (
+                source["namespace"].as_str().unwrap_or(namespace).to_owned(),
+                source["function_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+            let target = (
+                target["namespace"].as_str().unwrap_or(namespace).to_owned(),
+                target["function_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+            let id = text("id");
+            let existing = state
+                .observers
                 .lock()
                 .unwrap()
-                .insert((namespace.into(), text("id")), tx.clone());
+                .get(&id)
+                .map(|o| (o.observing.same_channel(tx), o.state));
+            match existing {
+                Some((false, "suspended")) => replace_suspended(state, &id),
+                Some((false, _)) => {
+                    let reason = json!({"code":"OBSERVER_ID_CONFLICT",
+                        "message":format!("observer `{id}` is owned by another connection")});
+                    let _ = tx.send(json!({"type":"observeresult", "id":id, "state":"error",
+                        "error":reason}));
+                    return;
+                }
+                _ => {}
+            }
+            let mut view = json!({"id":id, "args":source["args"], "filters":source["filters"],
+                "target":target.1});
+            for field in ["capture", "on"] {
+                if !source[field].is_null() {
+                    view[field] = source[field].clone();
+                }
+            }
+            state.observers.lock().unwrap().insert(
+                id.clone(),
+                Observer {
+                    function: function.clone(),
+                    target,
+                    view,
+                    deliver: source["deliver"].as_str().map(str::to_owned),
+                    metadata: frame.get("metadata").filter(|m| !m.is_null()).cloned(),
+                    observing: tx.clone(),
+                    state: "pending",
+                    announced: false,
+                    seq: state.observer_seq.fetch_add(1, Ordering::SeqCst),
+                },
+            );
+            let _ = tx.send(json!({"type":"observeresult", "id":id, "state":"pending"}));
+            announce(state, &function);
         }
-        "registertrigger" => {
-            let provider_ns = frame["trigger_namespace"].as_str().unwrap_or(namespace);
-            let provider = state
-                .providers
-                .lock()
-                .unwrap()
-                .get(&(provider_ns.into(), text("trigger_type")))
-                .cloned();
-            let provider = provider.expect("trigger provider must register before binding");
-            state
-                .registrations
-                .lock()
-                .unwrap()
-                .insert(text("id"), tx.clone());
-            provider.send(frame).unwrap();
+        "observerack" => {
+            let id = text("id");
+            let mut observers = state.observers.lock().unwrap();
+            if let Some(observer) = observers.get_mut(&id) {
+                let refused = frame.get("error").filter(|e| !e.is_null()).cloned();
+                observer.state = if refused.is_some() { "error" } else { "active" };
+                let _ = observer
+                    .observing
+                    .send(state_changed(&id, observer.state, refused));
+            }
         }
-        "triggerregistrationresult" => {
-            assert!(frame["error"].is_null(), "registration rejected: {frame}");
-            if let Some(target) = state.registrations.lock().unwrap().remove(&text("id")) {
-                let _ = target.send(frame);
+        "unobserve" => {
+            // Only the observing connection disposes its observer this way;
+            // the engine ignores, and does not answer, anyone else's.
+            let id = text("id");
+            let owned = state
+                .observers
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_some_and(|o| o.observing.same_channel(tx));
+            if owned {
+                dispose(state, &id);
             }
         }
         "invocationresult" => {
-            if let Some(target) = state.pending.lock().unwrap().remove(&text("invocation_id")) {
-                let _ = target.send(frame);
+            let invocation_id = text("invocation_id");
+            let Some(call) = state.pending.lock().unwrap().remove(&invocation_id) else {
+                return;
+            };
+            // The engine evaluates the call's observers itself and strips
+            // `matched` and `delivered`.
+            let mut frame = frame;
+            let fields = frame.as_object_mut();
+            let (matched, delivered) = fields
+                .map(|result| {
+                    let matched: Option<Vec<String>> = result
+                        .remove("matched")
+                        .and_then(|matched| serde_json::from_value(matched).ok());
+                    let delivered = result.remove("delivered") == Some(Value::Bool(true));
+                    (matched, delivered)
+                })
+                .unwrap_or_default();
+            match &call.caller {
+                Some(caller) => {
+                    let _ = caller.send(frame.clone());
+                }
+                None => {
+                    let mut activations = state.activations.lock().unwrap();
+                    if let Some(activation) = activations
+                        .iter_mut()
+                        .find(|a| a["invocation_id"] == invocation_id.as_str())
+                    {
+                        activation["answered"] = json!(true);
+                        activation["result"] = frame["result"].clone();
+                        activation["error"] = frame["error"].clone();
+                    }
+                }
             }
+            activate(state, &call, &frame, matched.as_deref(), delivered);
         }
         "invokefunction" => {
             let builtin = match text("function_id").as_str() {
@@ -296,29 +801,73 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                 let _ = tx.send(response(&frame, value));
                 return;
             }
-            let ns = frame["namespace"].as_str().unwrap_or(namespace);
-            let target = state
+            if let Some(observer_id) = frame["activation"]["observer_id"].as_str() {
+                // A call through an observer: only its function's host may make
+                // it, and it reaches the observer's stored target with the
+                // observer's metadata.
+                let observer = state.observers.lock().unwrap().get(observer_id).map(|o| {
+                    (
+                        o.function.clone(),
+                        o.target.clone(),
+                        o.metadata.clone(),
+                        o.state,
+                    )
+                });
+                let Some((function, target, metadata, observer_state)) = observer else {
+                    fail(tx, &frame, "OBSERVER_NOT_FOUND", "no such observer");
+                    return;
+                };
+                if observer_state != "active" {
+                    fail(tx, &frame, "OBSERVER_NOT_ACTIVE", "observer not active");
+                    return;
+                }
+                let (owner, host) = {
+                    let functions = state.functions.lock().unwrap();
+                    (
+                        functions
+                            .get(&function)
+                            .is_some_and(|h| h.tx.same_channel(tx)),
+                        functions.get(&target).map(|h| h.tx.clone()),
+                    )
+                };
+                if !owner {
+                    fail(tx, &frame, "NOT_FUNCTION_OWNER", "not the host");
+                    return;
+                }
+                let Some(host) = host else {
+                    fail(tx, &frame, "TARGET_UNAVAILABLE", "target not registered");
+                    return;
+                };
+                let mut frame = frame.clone();
+                frame["function_id"] = json!(target.1);
+                frame["namespace"] = json!(target.0);
+                frame["metadata"] = metadata.unwrap_or(Value::Null);
+                frame["activation"] = json!({"observer_id":observer_id,
+                    "activation_id":uuid::Uuid::new_v4().to_string()});
+                forward(state, frame, target, tx, &host);
+                return;
+            }
+            let ns = frame["namespace"].as_str().unwrap_or(namespace).to_owned();
+            let function = (ns, text("function_id"));
+            let host = state
                 .functions
                 .lock()
                 .unwrap()
-                .get(&(ns.into(), text("function_id")))
-                .cloned();
-            if let Some(target) = target {
-                if frame["invocation_id"].is_string() {
-                    state
-                        .pending
-                        .lock()
-                        .unwrap()
-                        .insert(text("invocation_id"), tx.clone());
+                .get(&function)
+                .map(|h| (h.tx.clone(), h.registration["private"] == true));
+            match host {
+                Some((host, true)) if !host.same_channel(tx) => {
+                    fail(tx, &frame, "FORBIDDEN", "private function");
                 }
-                // Mirror the engine's transport metadata injection before SDK dispatch.
-                let mut frame = frame;
-                if let Some(data) = frame["data"].as_object_mut() {
-                    data.insert("_caller_worker_id".into(), json!("test-worker"));
+                Some((host, _)) => forward(state, frame.clone(), function, tx, &host),
+                None => {
+                    fail(
+                        tx,
+                        &frame,
+                        "FUNCTION_NOT_FOUND",
+                        "unregistered test function/namespace",
+                    );
                 }
-                let _ = target.send(frame);
-            } else {
-                let _ = tx.send(error(&frame, "unregistered test function/namespace"));
             }
         }
         "ping" => {

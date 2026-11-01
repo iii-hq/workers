@@ -2,8 +2,8 @@
  * Which desktop sessions the live preview shows, in stacking order (last =
  * front), shared between the overlay, its expand control and the computer
  * page (the ios-simulator overlay's store). A card never covers a session the
- * page shows live in this window: the page's own viewport input fires
- * `computer::activity` too, and must not pop a preview of itself.
+ * page shows live in this window: the page's own viewport input calls
+ * `computer::on-activity` too, and must not pop a preview of itself.
  */
 
 import type { Host } from '@iii-dev/console-ui'

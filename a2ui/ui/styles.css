@@ -9,8 +9,8 @@
 }
 
 [data-iii-ui='a2ui'] .a2ui-page *,
-[data-iii-ui='a2ui'] .a2ui-trigger *,
-[data-iii-ui='a2ui'] .a2ui-trigger-display * {
+[data-iii-ui='a2ui'] .a2ui-call *,
+[data-iii-ui='a2ui'] .a2ui-call-display * {
   box-sizing: border-box;
 }
 
@@ -22,7 +22,7 @@
 
 [data-iii-ui='a2ui'] .a2ui-sidebar-head,
 [data-iii-ui='a2ui'] .a2ui-surface-head,
-[data-iii-ui='a2ui'] .a2ui-trigger-head {
+[data-iii-ui='a2ui'] .a2ui-call-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -353,26 +353,26 @@
   font-size: 0.75rem;
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger {
+[data-iii-ui='a2ui'] .a2ui-call {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   color: var(--color-ink);
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger-head {
+[data-iii-ui='a2ui'] .a2ui-call-head {
   justify-content: flex-start;
   flex-wrap: wrap;
   color: var(--color-ink-faint);
   font-size: 0.75rem;
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger-head strong {
+[data-iii-ui='a2ui'] .a2ui-call-head strong {
   color: var(--color-ink);
   font-weight: 600;
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger-open {
+[data-iii-ui='a2ui'] .a2ui-call-open {
   margin-left: auto;
   padding: 0;
   border: 0;
@@ -382,12 +382,12 @@
   cursor: pointer;
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger-skeleton {
+[data-iii-ui='a2ui'] .a2ui-call-skeleton {
   display: block;
   min-height: 5rem;
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger-display {
+[data-iii-ui='a2ui'] .a2ui-call-display {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -395,27 +395,27 @@
   min-width: 0;
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger-display-copy {
+[data-iii-ui='a2ui'] .a2ui-call-display-copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 0.125rem;
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger-display-copy strong,
-[data-iii-ui='a2ui'] .a2ui-trigger-display-copy span {
+[data-iii-ui='a2ui'] .a2ui-call-display-copy strong,
+[data-iii-ui='a2ui'] .a2ui-call-display-copy span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger-display-copy strong {
+[data-iii-ui='a2ui'] .a2ui-call-display-copy strong {
   color: var(--color-ink);
   font-size: 0.875rem;
   font-weight: 600;
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger-display-copy span {
+[data-iii-ui='a2ui'] .a2ui-call-display-copy span {
   color: var(--color-ink-ghost);
   font-family: var(--font-mono);
   font-size: 0.6875rem;

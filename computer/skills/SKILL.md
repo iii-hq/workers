@@ -151,7 +151,8 @@ step is one cheap classification, not a model turn.
   names it). The judge gets the keys, not the values, but a
   typed field that is not a password shows its value in later trees, which the
   judge reads: do not pass other secrets (card numbers, API keys) unless the
-  judge is local.
+  judge is local. `computer::run` cannot be observed, so its `inputs` reach
+  no observer.
 - It only invokes, sets, toggles and selects by ref: no mouse, keyboard,
   scrolling or menus. Approving one run approves every action it takes, so do
   not use it for destructive actions.
@@ -177,27 +178,32 @@ captures fill the context window. Screenshot when you need to see the screen,
 not reflexively after each action; a `computer::act` returns a short confirming
 `detail` on its own. Reuse one session across steps and stop it when done.
 
-## Reactive triggers
+## Observing session events
 
-Bind a `computer::*` trigger when another function should react to session
-activity instead of polling. The types: `computer::session-started` (payload
-carries `endpoint`, `os`, `screen`), `computer::session-stopped` (payload
-carries `reason`) and `computer::activity` (a `computer::act` call reached the
-session, or a `computer::run` started on it; payload carries `function`). All accept an
-optional `session_id` equality filter.
+Observe a `computer::*` event function when another function should react to
+session activity instead of polling. The functions:
+`computer::on-session-started` (the event carries `endpoint`, `os`, `screen`),
+`computer::on-session-stopped` (the event carries `reason`) and
+`computer::on-activity` (a `computer::act` call reached the session, or a
+`computer::run` started on it; the event carries `function`). None takes args;
+select a session with a filter on `input.session_id`.
 
-### How to bind
+### How to observe
 
 1. Register a handler: `registerFunction('mywatcher::on-desktop', handler)`.
-2. Register the trigger:
+2. Observe the function with it:
 
 ```typescript
-iii.registerTrigger({
-  type: 'computer::session-stopped',
-  function_id: 'mywatcher::on-desktop',
-  config: { session_id: 'c1' },
-})
+iii.observe(
+  {
+    function_id: 'computer::on-session-stopped',
+    filters: { 'input.session_id': { $eq: 'c1' } },
+    deliver: 'output',
+  },
+  'mywatcher::on-desktop',
+)
 ```
 
-Omit `session_id` to receive events for all sessions. For event payload shapes,
-call `get function info` on the trigger type.
+Omit `filters` to receive events for all sessions. With `deliver: 'output'`
+the handler receives the event itself; for its shape, call `get function info`
+on the observed function.

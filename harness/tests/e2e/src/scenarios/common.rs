@@ -71,7 +71,7 @@ fn normalize_invocation(block: &Value) -> Option<ObservedFunctionInvocation> {
     let call_id = block.get("id").and_then(Value::as_str).map(str::to_owned);
     let function_id = block.get("function_id")?.as_str()?;
     let arguments = block.get("arguments").cloned().unwrap_or_else(|| json!({}));
-    if function_id == "agent_trigger" {
+    if function_id == "agent_call" {
         return Some(ObservedFunctionInvocation {
             call_id,
             call: ObservedFunctionCall {
@@ -140,12 +140,29 @@ pub fn requested_once(arguments: &Value) -> bool {
             == Some(true)
 }
 
+/// The agent's observe tool.
+pub const OBSERVE: &str = "harness::observe";
+/// The agent's tool that removes an observer it created.
+pub const UNOBSERVE: &str = "harness::unobserve";
+
+/// Whether `call` is a `harness::observe` of `function_id`.
+pub fn observes(call: &ObservedFunctionCall, function_id: &str) -> bool {
+    call.function_id == OBSERVE
+        && call.arguments.get("function_id").and_then(Value::as_str) == Some(function_id)
+}
+
+/// The `$eq` value an observe's `filters` give `path` (`input.scope`).
+pub fn filter_eq<'a>(arguments: &'a Value, path: &str) -> Option<&'a Value> {
+    arguments.get("filters")?.get(path)?.get("$eq")
+}
+
+/// Whether an observe is a wake: no target, so the event notifies the
+/// observing session.
 pub fn is_wake_registration(arguments: &Value) -> bool {
-    arguments.get("function_id").is_none_or(Value::is_null)
-        && arguments.get("target").is_none_or(|target| {
-            target.is_null()
-                || target.get("function_id").and_then(Value::as_str) == Some("harness::send")
-        })
+    arguments.get("target").is_none_or(|target| {
+        target.is_null()
+            || target.get("function_id").and_then(Value::as_str) == Some("harness::send")
+    })
 }
 
 /// Whether ANY text block in the transcript contains `needle` — for spotting
@@ -163,7 +180,7 @@ pub fn transcript_contains(transcript: &Value, needle: &str) -> bool {
 }
 
 /// Validation nudges the harness appended to this transcript — the
-/// re-prompts a `harness::hook::post-turn` validator (or the output
+/// re-prompts a `harness::hook::on-post-turn` validator (or the output
 /// contract) produced. Recognized by the durable entry id
 /// (`e_<turn>_nudge_<n>`) or the `validation` origin flag.
 pub fn validation_nudges(transcript: &Value) -> usize {
@@ -185,26 +202,56 @@ pub fn validation_nudges(transcript: &Value) -> usize {
         .count()
 }
 
-pub fn trigger_fired_records(transcript: &Value) -> Vec<&Value> {
+pub fn observer_fired_records(transcript: &Value) -> Vec<&Value> {
     transcript
         .get("messages")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|entry| entry.get("custom"))
-        .filter(|custom| custom.get("custom_type").and_then(Value::as_str) == Some("trigger_fired"))
+        .filter(|custom| {
+            custom.get("custom_type").and_then(Value::as_str) == Some("observer_fired")
+        })
         .filter_map(|custom| custom.get("data"))
         .collect()
 }
 
+/// Remove every observer `session_id` created.
+pub async fn dispose_session_observers(
+    context: &E2eContext,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    let listed = context
+        .call_value(
+            "harness::observers::list",
+            json!({ "session_id": session_id }),
+        )
+        .await?;
+    for observer_id in listed
+        .get("observers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|observer| observer.get("observer_id").and_then(Value::as_str))
+    {
+        let _: Value = context
+            .call(
+                "harness::observers::dispose",
+                json!({ "session_id": session_id, "observer_id": observer_id }),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 pub async fn active_binding_count(context: &E2eContext, session_id: &str) -> anyhow::Result<usize> {
     Ok(context
-        .trigger_value(
-            "harness::triggers::list",
+        .call_value(
+            "harness::observers::list",
             json!({ "session_id": session_id }),
         )
         .await?
-        .get("subscriptions")
+        .get("observers")
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(usize::MAX))
@@ -253,7 +300,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_agent_trigger_and_native_function_calls() {
+    fn normalizes_agent_call_and_native_function_calls() {
         let transcript = json!({
             "messages": [{
                 "message": {
@@ -262,7 +309,7 @@ mod tests {
                         {
                             "type": "function_call",
                             "id": "call-state",
-                            "function_id": "agent_trigger",
+                            "function_id": "agent_call",
                             "arguments": {
                                 "function": "state::set",
                                 "payload": { "scope": "s", "key": "k", "value": 1 }
@@ -291,7 +338,7 @@ mod tests {
                 {"message": {"role": "assistant", "content": [{
                     "type": "function_call",
                     "id": "call-match",
-                    "function_id": "agent_trigger",
+                    "function_id": "agent_call",
                     "arguments": {
                         "function": "state::set",
                         "payload": { "scope": "s", "key": "k", "value": 1 }

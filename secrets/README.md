@@ -20,7 +20,7 @@ fingerprints, never a value.
 ## Install
 
 ```bash
-iii trigger compose::add worker=secrets
+iii call compose::add worker=secrets
 ```
 
 Compose starts the worker with its `configuration` dependency. `llm-router`
@@ -34,7 +34,7 @@ environment, the project's `.env` and your login shell, and reports where it
 found each name:
 
 ```bash
-iii trigger secrets::detect --json '{"names":["ANTHROPIC_API_KEY"]}'
+iii call secrets::detect --json '{"names":["ANTHROPIC_API_KEY"]}'
 ```
 
 ```json
@@ -48,7 +48,7 @@ Import it and allow the router to read it. The worker re-reads the value from
 the source itself; it never passes through the caller or your shell history:
 
 ```bash
-iii trigger secrets::import --json '{
+iii call secrets::import --json '{
   "name": "ANTHROPIC_API_KEY", "source": "dotenv", "consumers": ["llm-router"]
 }'
 ```
@@ -76,7 +76,7 @@ placeholder) and leaving every other line as it was. A variable already in
 `.env` is shared as it is with `secrets::access`:
 
 ```bash
-iii trigger secrets::access --json '{
+iii call secrets::access --json '{
   "name": "ANTHROPIC_API_KEY", "consumers": ["llm-router"], "store": "env"
 }'
 ```
@@ -129,7 +129,7 @@ The env store reads `.env` each time a variable is resolved, so an edit made
 by hand applies at once. It never polls the file: the operating system
 reports changes to the project directory (inotify, FSEvents or
 ReadDirectoryChangesW), and an event naming `.env` re-reads the shared
-variables and reports what changed on `secrets::changed`. Where the platform
+variables and reports what changed on `secrets::on-changed`. Where the platform
 cannot watch, an edit made by hand still applies on the next resolution but
 is not announced. A value it writes must fit on one line; `.env` is written
 atomically and left owner-only (`0600`).
@@ -139,7 +139,7 @@ atomically and left owner-only (`0600`).
 | Function | Purpose | Agents |
 |---|---|---|
 | `secrets::set` | Create or rotate `{name, value, consumers?, description?, store?}`; omitted `consumers` keep the current list. `store: "env"` writes the value to `.env` | denied |
-| `secrets::compare-and-set` | Worker-only vault update `{name, expected, value, consumers?}`. `expected: null` creates only if absent; otherwise matches the exact current value. The caller must be an authorized consumer; creation requires consumers including that caller. Existing consumers are preserved. Returns only `{swapped}`; successful writes emit `secrets::changed` | denied |
+| `secrets::compare-and-set` | Worker-only vault update `{name, expected, value, consumers?}`. `expected: null` creates only if absent; otherwise matches the exact current value. The caller must be an authorized consumer; creation requires consumers including that caller. Existing consumers are preserved. Returns only `{swapped}`; successful writes call `secrets::on-changed` | denied |
 | `secrets::import` | Store a value from `process_env`, `dotenv` or `login_shell`, re-read by the worker. With `store: "env"`, a value already in `.env` or the worker's environment is shared as it is, and one from the login shell is copied into `.env` | denied |
 | `secrets::access` | Replace a secret's `consumers`; `[]` revokes everyone. With `store: "env"`, shares the variable, whether or not it is set yet | denied |
 | `secrets::delete` | Delete a secret and revoke all access. With `store: "env"`, stops sharing the variable; it stays in `.env` | denied |
@@ -147,6 +147,7 @@ atomically and left owner-only (`0600`).
 | `secrets::get` / `secrets::list` | Metadata: `ref`, `store`, masked `hint`, `fingerprint` (vault), `location` (env), `consumers`, timestamps, last resolver. `get` takes `store` too | allowed |
 | `secrets::status` | Vault path, key source (`env` or `file`) and key path, count, vault format version, the `.env` the env store uses and how many variables it shares | allowed |
 | `secrets::detect` | Where existing values of the given names are, with masked hints and whether each equals the stored value | approval |
+| `secrets::on-changed` | Private: the worker calls it with every change event (below); other workers observe it | denied |
 
 `secrets::resolve` errors with `INVALID_REFERENCE`, `SECRET_NOT_FOUND` or
 `SECRET_FORBIDDEN`. For `env://NAME`, a variable shared with nobody (or not
@@ -154,7 +155,11 @@ with the caller) is `SECRET_FORBIDDEN`, and one that is shared but not set is
 `SECRET_NOT_FOUND`. Other codes are `INVALID_REQUEST`, `SOURCE_NOT_FOUND`
 (import), `KEY_UNAVAILABLE`, `KEY_MISMATCH`, `VAULT_ERROR`, `DECRYPT_FAILED` and
 `CALLER_LOOKUP_FAILED`. No error message contains a value. Schemas are
-available through `iii trigger <function> --help`.
+available through `iii call <function> --help`.
+
+`secrets::set`, `secrets::compare-and-set` and `secrets::resolve` carry a
+value in their input or output, so they are registered with
+`observable: false`: observing one fails with `NOT_OBSERVABLE`.
 
 The "Agents" column is the default in
 [`iii-permissions.yaml`](https://github.com/iii-hq/workers/blob/main/secrets/iii-permissions.yaml).
@@ -184,25 +189,57 @@ A source that is missing, broken or slow contributes nothing; it never fails
 the call. Only the requested names are kept from a source, and only masked
 hints leave the worker. Login-shell detection is Unix-only.
 
-## Custom trigger types
+## Observing changes
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `secrets::changed` | A secret is created, rotated, deleted or its consumers change; for the env store, also when an edit to `.env` sets, changes or removes a shared variable | `{name, ref, action: "created" \| "rotated" \| "deleted" \| "access_changed", fingerprint?, updated_at}` |
+| Function | Args | Delivery | Called when |
+|---|---|---|---|
+| `secrets::on-changed` | none; filter on `input.name` or `input.ref` | iii delivers each call to every observer whose filters match, fire-and-forget | A secret is created, rotated, deleted or its consumers change; for the env store, also when an edit to `.env` sets, changes or removes a shared variable |
 
-`ref` names the store (`secret://NAME` or `env://NAME`); env store events
-carry no `fingerprint`. The binding config `{names?: string[]}` narrows
-delivery to some secrets: a bare name for both stores, a `secret://` or
-`env://` reference for one; omit it for every secret. Delivery is
-fire-and-forget and never carries a value: a subscriber that needs the new
+The function is private: only this worker calls it, and any worker may observe
+it. Its handler returns the event it is called with:
+
+```json
+{ "name": "ANTHROPIC_API_KEY", "ref": "secret://ANTHROPIC_API_KEY",
+  "action": "created", "fingerprint": "9f2c…", "updated_at": "2026-10-29T12:00:00Z" }
+```
+
+`action` is `created`, `rotated`, `deleted` or `access_changed`. `ref` names
+the store (`secret://NAME` or `env://NAME`); env store events carry no
+`fingerprint`. The event never carries a value: a target that needs the new
 value calls `secrets::resolve`.
+
+Select secrets with filters: `input.name` for a name in both stores,
+`input.ref` for one store. Without filters, an observer receives every change.
+
+```rust
+use iii_sdk::{Deliver, Source};
+use serde_json::json;
+
+iii.observe(
+    Source::function("secrets::on-changed")
+        .filters(json!({ "input.ref": { "$eq": "secret://ANTHROPIC_API_KEY" } }))
+        .deliver(Deliver::Output),
+    "my-worker::on-secret-change",
+);
+```
+
+```typescript
+iii.observe(
+  {
+    function_id: 'secrets::on-changed',
+    filters: { 'input.name': { $in: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'] } },
+    deliver: 'output',
+  },
+  'my-worker::on-secret-change',
+)
+```
 
 ## How llm-router uses it
 
 `llm-router` depends on this worker. A provider slice whose `api_key` is
 `secret://NAME` or `env://NAME` makes the router resolve it through
 `secrets::resolve` instead of reading a literal key. Add `llm-router` to that
-secret's consumers. The router caches the value, binds `secrets::changed` to
+secret's consumers. The router caches the value, observes `secrets::on-changed` to
 refetch it and refresh that provider's model list (an edit to `.env` included),
 and reports `credential_source: "secret"` with `credential_ref` (and
 `credential_error` when it cannot resolve) in `router::provider::list`.
@@ -220,7 +257,7 @@ env_file: .env           # the env file env:// references read and the console w
 Every Compose namespace has its own `secrets` entry (`<namespace>-secrets`),
 so each environment or namespace can keep its keys in its own env file. Set it
 in that entry's file, `./config/<namespace>-secrets.yaml` (an edit applies
-without a restart), with `iii trigger configuration::set`, or per container in
+without a restart), with `iii call configuration::set`, or per container in
 `worker-compose.yaml` (the ADE has no settings form for this worker yet):
 
 ```yaml
@@ -236,7 +273,7 @@ containers:
 environment, and the first key saved through the console creates the file
 (owner-only). Pointing `env_file` at another file takes effect at once: the
 worker follows the new file, and every shared variable whose value differs
-there is reported on `secrets::changed`, so consumers stop using the old
+there is reported on `secrets::on-changed`, so consumers stop using the old
 file's values. Keep every env file out of Git (the project template ignores
 `.env` and `.env.*`).
 

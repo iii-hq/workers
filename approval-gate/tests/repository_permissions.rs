@@ -75,9 +75,9 @@ fn configuration_ensure_is_denied() {
     ));
 }
 
-/// `harness::on-session-deleted` is the `session::deleted` cleanup hook, engine
+/// `harness::on-session-deleted` is the `session::on-deleted` cleanup target, engine
 /// plumbing like the other internal harness hooks. Called directly with a live
-/// session id, it would wipe that session's turn record and bindings.
+/// session id, it would wipe that session's turn record and drop its observers.
 #[test]
 fn harness_on_session_deleted_is_denied() {
     assert!(matches!(
@@ -208,6 +208,36 @@ fn kanban_planning_and_ticket_deletion_are_denied() {
                 Decision::Deny { .. }
             ),
             "{id} should be denied"
+        );
+    }
+}
+
+/// opengantry's registration hooks are bus-internal: the engine calls them when
+/// a worker on the governed listener registers a function or creates an
+/// observer, and agents are denied both. gantry::verify and gantry::middleware
+/// match no rule and wait for a person.
+#[test]
+fn gantry_registration_hooks_are_denied() {
+    let permissions = repository_permissions();
+    for id in [
+        "gantry::on-function-registration",
+        "gantry::on-observer-registration",
+    ] {
+        assert!(
+            matches!(
+                permissions.check(id, &json!({}), PermissionMode::Manual),
+                Decision::Deny { .. }
+            ),
+            "{id} should be denied"
+        );
+    }
+    for id in ["gantry::verify", "gantry::middleware"] {
+        assert!(
+            matches!(
+                permissions.check(id, &json!({}), PermissionMode::Manual),
+                Decision::NeedsApproval
+            ),
+            "{id} should wait for a person"
         );
     }
 }

@@ -11,11 +11,11 @@ name = "ide"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
+iii-sdk = "=0.26.0-rc.1"
 iii-worker-paths = { path = "../crates/worker-paths" }
-iii-helpers = "=0.24.6"
+iii-helpers = "=0.26.0-rc.1"
 iii-console-ui = { path = "../crates/console-ui" }
-# Filesystem watch behind the shell::changed trigger type (FSEvents/inotify).
+# Filesystem watch behind shell::on-changed (FSEvents/inotify).
 notify = "8"
 schemars = { version = "0.8", features = ["uuid1"] }
 libc = "0.2"

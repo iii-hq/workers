@@ -39,7 +39,7 @@ describe('translateTurnSource — approvals', () => {
         functionId: 'shell::fs::write',
         input: { path: '/tmp/x' },
         pendingApproval: true,
-        functionTriggerId: 'fc-1',
+        functionCallId: 'fc-1',
         sessionId: 'sess-a',
       },
     ])
@@ -56,7 +56,7 @@ describe('translateTurnSource — approvals', () => {
         functionId: 'shell::fs::write',
         input: {},
         pendingApproval: true,
-        functionTriggerId: 'fc-1',
+        functionCallId: 'fc-1',
         sessionId: 'sess-a',
       },
     ])
@@ -81,7 +81,7 @@ describe('translateTurnSource — approvals', () => {
         functionId: 'shell::fs::read',
         input: { path: '/tmp/x' },
         pendingApproval: true,
-        functionTriggerId: 'fc-1',
+        functionCallId: 'fc-1',
         sessionId: 'sess-a',
         filesystemAccess: {
           requestedRoot: '/abs/existing/dir',
@@ -92,7 +92,7 @@ describe('translateTurnSource — approvals', () => {
     ])
   })
 
-  it('omits filesystemAccess for a plain function-trigger record (kind absent)', () => {
+  it('omits filesystemAccess for a plain function-call record (kind absent)', () => {
     const event: TurnSourceEvent = {
       kind: 'approval-created',
       record: pendingRecord(),
@@ -126,7 +126,7 @@ describe('translateTurnSource — approvals', () => {
     expect(translateTurnSource(event)).toEqual([
       {
         kind: 'fcall-approval-cleared',
-        functionTriggerId: 'fc-1',
+        functionCallId: 'fc-1',
         running: true,
       },
     ])
@@ -148,7 +148,7 @@ describe('translateTurnSource — approvals', () => {
     expect(translateTurnSource(event)).toEqual([
       {
         kind: 'fcall-approval-cleared',
-        functionTriggerId: 'fc-1',
+        functionCallId: 'fc-1',
         running: false,
       },
     ])

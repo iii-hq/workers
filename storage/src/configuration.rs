@@ -15,16 +15,15 @@ use crate::backend::factory::{self, LocalBackendCtx, Purpose};
 use crate::backend::local::LocalRuntime;
 use crate::backend::Backend;
 use crate::config::{BucketConfig, WorkerConfig};
+use crate::events::dispatcher::EngineDispatcher;
+use crate::events::pollers::{cf_queue, pubsub, sqs};
+use crate::events::source::{self, WiredBuckets};
 use crate::handlers::{AppState, Catalog};
 use crate::material::{self, BucketError, Material, Stage};
 use crate::secrets::Refetch;
-use crate::triggers::dispatcher::EngineDispatcher;
-use crate::triggers::handler::WiredBuckets;
-use crate::triggers::pollers::{cf_queue, pubsub, sqs};
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -53,6 +52,8 @@ pub fn config_id() -> &'static str {
     .as_str()
 }
 const CONFIG_FN_ID: &str = "storage::on-config-change";
+/// The configuration worker's change event.
+const CONFIG_UPDATED_FN: &str = "configuration::on-updated";
 const SECRET_FN_ID: &str = "storage::on-secret-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
@@ -93,7 +94,7 @@ impl ConfigStore for EngineStore {
         if raw {
             payload["raw"] = json!(true);
         }
-        match trigger_configuration_with_retry(&self.iii, "configuration::get", payload).await {
+        match call_configuration_with_retry(&self.iii, "configuration::get", payload).await {
             Ok(resp) => Ok(resp.get("value").cloned().unwrap_or(Value::Null)),
             Err(error) if is_not_found(&error) => Ok(Value::Null),
             Err(error) => Err(error),
@@ -104,8 +105,8 @@ impl ConfigStore for EngineStore {
         // One attempt: a rejected value (schema) must surface at once.
         let response = self
             .iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "configuration::set".to_string(),
                     payload: json!({ "id": config_id(), "value": value }),
                     action: None,
@@ -120,8 +121,8 @@ impl ConfigStore for EngineStore {
 }
 
 /// The live resources that configuration can replace: native-local service and
-/// listener, per-bucket backends, cloud notification pollers, and the trigger
-/// registration wiring set. `apply_lock` serializes the complete fetch →
+/// listener, per-bucket backends, cloud notification pollers, and the set of
+/// wired buckets object observers are admitted for. `apply_lock` serializes the complete fetch →
 /// prepare → publish flow so rapid edits cannot land out of order; `saves`
 /// serializes the bucket editor's read-modify-writes.
 pub struct StorageRuntime {
@@ -187,7 +188,7 @@ impl StorageRuntime {
     }
 
     /// Re-fetch and apply the authoritative stored value while holding the
-    /// serialization lock end-to-end. The trigger payload is intentionally not
+    /// serialization lock end-to-end. The event payload is intentionally not
     /// trusted because the function is discoverable on the bus.
     pub async fn reload(&self, state: &AppState) -> Result<(), String> {
         let Some(store) = self.store.clone() else {
@@ -271,7 +272,7 @@ impl StorageRuntime {
 
         // Notification pollers: keep the running ones whose source is
         // unchanged, prepare the new ones; a source that cannot be prepared
-        // leaves its buckets working without object triggers.
+        // leaves its buckets working without object events.
         let specs = poller_specs(&cfg, &materials);
         let running: HashSet<String> = self
             .pollers
@@ -297,7 +298,7 @@ impl StorageRuntime {
                 Err(error) => {
                     for bucket in spec.buckets {
                         if previous.notification_errors.get(&bucket) != Some(&error) {
-                            tracing::warn!(bucket = %bucket, error = %error, "notifications source unavailable; object triggers will not fire");
+                            tracing::warn!(bucket = %bucket, error = %error, "notifications source unavailable; object events will not be called");
                         }
                         notification_errors.insert(bucket, error.clone());
                     }
@@ -305,6 +306,7 @@ impl StorageRuntime {
             }
         }
         let new_wired_buckets = wired_buckets(&cfg, &new_backends, &notification_errors);
+        let sourced = sourced_buckets(&cfg);
 
         // Requests and signed HTTP handlers take the read side only while
         // selecting an Arc-backed generation. Holding the write side here makes
@@ -313,6 +315,8 @@ impl StorageRuntime {
         self.local.commit(local_update).await;
         *state.backends.write().await = new_backends;
         *self.wired_buckets.write().await = new_wired_buckets;
+        // Under the gate: an observer admitted from here on sees the new set.
+        source::revalidate_observers(&self.dispatcher.iii, &sourced);
         {
             let mut pollers = self.pollers.lock().await;
             pollers.retain(|key, handle| {
@@ -369,7 +373,7 @@ impl StorageRuntime {
         self.local.shutdown().await;
     }
 
-    /// A `secrets::changed` delivery for `reference` (canonical). Whatever
+    /// A `secrets::on-changed` event for `reference` (canonical). Whatever
     /// uses it, its cached value is dropped; when a configured bucket uses
     /// it, it is re-read now and the buckets whose resolved values changed
     /// are rebuilt (deleted → those buckets report the error; re-created →
@@ -494,7 +498,7 @@ async fn build_buckets(
     futures_util::future::join_all(builds).await
 }
 
-/// Buckets whose object triggers can fire: a live backend, and a running
+/// Buckets whose object events can be called: a live backend, and a running
 /// notifications source (local buckets dispatch in-process).
 fn wired_buckets(
     cfg: &WorkerConfig,
@@ -514,6 +518,24 @@ fn wired_buckets(
             };
             wired.then(|| name.clone())
         })
+        .collect()
+}
+
+/// Buckets whose configuration names a notifications source (a local bucket
+/// always has one), running or not, and stored entries that are invalid as
+/// they are. Their observers stay through a reconfiguration; observers of any
+/// other bucket are rejected ([`source::revalidate_observers`]).
+fn sourced_buckets(cfg: &WorkerConfig) -> HashSet<String> {
+    cfg.buckets
+        .iter()
+        .filter(|(_, bucket)| match bucket {
+            BucketConfig::S3(value) => value.notifications.is_some(),
+            BucketConfig::Gcs(value) => value.notifications.is_some(),
+            BucketConfig::R2(value) => value.notifications.is_some(),
+            BucketConfig::Local(_) => true,
+        })
+        .map(|(name, _)| name.clone())
+        .chain(cfg.invalid.keys().cloned())
         .collect()
 }
 
@@ -753,7 +775,7 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -780,7 +802,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 
 /// Read the assigned storage entry, preserving failed lookups instead of selecting defaults.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -800,11 +822,12 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-pub fn register_config_trigger(
-    iii: &IIIClient,
-    state: AppState,
-    runtime: Arc<StorageRuntime>,
-) -> Result<(), Error> {
+/// Register the internal `storage::on-config-change` reload handler and
+/// observe `configuration::on-updated` with it: filters on this worker's
+/// entry id and on `configuration:updated`, the event delivered as output.
+/// The observer stays `pending` until the configuration worker registers the
+/// function.
+pub fn observe_config_changes(iii: &IIIClient, state: AppState, runtime: Arc<StorageRuntime>) {
     let state_for_handler = state.clone();
     let runtime_for_handler = runtime.clone();
     iii.register_function(
@@ -832,21 +855,20 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    // Deprecated in iii 0.25 (`configuration::on-updated` is its observable
-    // successor); 0.25 engines still serve the `configuration` trigger type.
-    #[allow(deprecated)]
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    // The observer lives as long as the worker's connection; dropping the
+    // handle does not dispose it.
+    iii.observe(
+        Source::function(CONFIG_UPDATED_FN)
+            .filters(json!({
+                "input.id": { "$eq": config_id() },
+                "input.event_type": { "$eq": "configuration:updated" },
+            }))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
 }
 
-/// Advisory `secrets::changed` delivery (never carries a value).
+/// Advisory `secrets::on-changed` event (never carries a value).
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnSecretChangeEvent {
     #[serde(default)]
@@ -859,12 +881,13 @@ pub struct OnSecretChangeEvent {
     pub action: Option<String>,
 }
 
-/// Register the internal `secrets::changed` handler and bind it. A rotated,
+/// Register the internal secret-change handler and observe
+/// `secrets::on-changed` with it, the event delivered as output. A rotated,
 /// deleted or re-shared secret that a bucket references is re-read, and
 /// only the buckets whose resolved values changed are rebuilt. The payload
 /// is advisory (it never carries a value) and anything unrelated is
 /// ignored, so a direct call can at most cause a re-read.
-pub fn register_secret_trigger(iii: &IIIClient, state: AppState, runtime: Arc<StorageRuntime>) {
+pub fn observe_secret_changes(iii: &IIIClient, state: AppState, runtime: Arc<StorageRuntime>) {
     iii.register_function(
         SECRET_FN_ID,
         RegisterFunction::new_async(move |event: OnSecretChangeEvent| {
@@ -887,20 +910,16 @@ pub fn register_secret_trigger(iii: &IIIClient, state: AppState, runtime: Arc<St
         )
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
-    // `secrets::changed` belongs to the secrets worker: when it is absent the
-    // engine parks this binding and activates it once the type registers.
-    // `register_trigger` is deprecated in 0.25; kept for engines without observe.
-    #[allow(deprecated)]
-    if let Err(error) = iii.register_trigger(RegisterTriggerInput::new(
-        crate::secrets::CHANGED_TRIGGER_TYPE.to_string(),
-        SECRET_FN_ID.to_string(),
-        json!({}),
-    )) {
-        tracing::warn!(error = %error, "binding secrets::changed failed; secret references refresh on their TTL only");
-    }
+    // `secrets::on-changed` belongs to the secrets worker: while it is absent
+    // the observer stays `pending`, and the engine activates it once the
+    // function registers.
+    iii.observe(
+        Source::function(crate::secrets::ON_CHANGED_FN).deliver(Deliver::Output),
+        SECRET_FN_ID,
+    );
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -908,8 +927,8 @@ async fn trigger_configuration_with_retry(
     let mut last_error = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -983,7 +1002,6 @@ mod tests {
 
     use super::*;
     use crate::error::StorageError;
-    use crate::triggers::registry::TriggerRegistry;
     use iii_sdk::IIIClient;
     use tokio::sync::RwLock;
 
@@ -991,6 +1009,32 @@ mod tests {
     fn live_configuration_accepts_zero_buckets() {
         let cfg = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
         assert!(cfg.buckets.is_empty());
+    }
+
+    // Observers stay through a reconfiguration for a bucket whose source is
+    // configured, running or not, and for an entry invalid as stored; any
+    // other bucket's observers are rejected.
+    #[test]
+    fn sourced_buckets_keep_their_observers() {
+        let cfg = WorkerConfig::from_json_isolating(&serde_json::json!({
+            "buckets": {
+                "local": { "provider": "local" },
+                "cold": { "provider": "s3", "region": "us-east-1" },
+                "events": {
+                    "provider": "s3",
+                    "region": "us-east-1",
+                    "notifications": { "sqs_queue_url": "https://sqs.test/q" }
+                },
+                "typo": { "provider": "s3", "region": 7 }
+            }
+        }))
+        .unwrap();
+        assert!(cfg.invalid.contains_key("typo"));
+        let sourced = sourced_buckets(&cfg);
+        assert_eq!(
+            sourced,
+            HashSet::from(["local".into(), "events".into(), "typo".into()])
+        );
     }
 
     #[test]
@@ -1093,10 +1137,7 @@ mod tests {
 
     fn test_runtime(state: &AppState) -> Arc<StorageRuntime> {
         StorageRuntime::new(
-            Arc::new(EngineDispatcher::new(
-                IIIClient::new("ws://127.0.0.1:1"),
-                Arc::new(TriggerRegistry::new()),
-            )),
+            Arc::new(EngineDispatcher::new(IIIClient::new("ws://127.0.0.1:1"))),
             state,
             Arc::new(RwLock::new(HashSet::new())),
         )
@@ -1185,10 +1226,7 @@ mod tests {
         let data_dir = tempfile::tempdir().unwrap();
         let state = AppState::new(HashMap::new());
         let wired = Arc::new(RwLock::new(HashSet::new()));
-        let dispatcher = Arc::new(EngineDispatcher::new(
-            IIIClient::new("ws://127.0.0.1:1"),
-            Arc::new(TriggerRegistry::new()),
-        ));
+        let dispatcher = Arc::new(EngineDispatcher::new(IIIClient::new("ws://127.0.0.1:1")));
         let runtime = StorageRuntime::new(dispatcher, &state, wired.clone());
         let configured = WorkerConfig::from_json(&serde_json::json!({
             "providers": {
@@ -1226,10 +1264,7 @@ mod tests {
         let data_dir = tempfile::tempdir().unwrap();
         let state = AppState::new(HashMap::new());
         let wired = Arc::new(RwLock::new(HashSet::new()));
-        let dispatcher = Arc::new(EngineDispatcher::new(
-            IIIClient::new("ws://127.0.0.1:1"),
-            Arc::new(TriggerRegistry::new()),
-        ));
+        let dispatcher = Arc::new(EngineDispatcher::new(IIIClient::new("ws://127.0.0.1:1")));
         let runtime = StorageRuntime::new(dispatcher, &state, wired);
         let initial = WorkerConfig::from_json(&serde_json::json!({
             "providers": {

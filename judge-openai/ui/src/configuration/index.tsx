@@ -46,7 +46,7 @@ export interface ModelCard {
   release_date: string
 }
 type ModelsReply = { status: 'ok'; models: ModelCard[] } | { status: 'error'; code: string }
-type Engine = Pick<ExtensionIii, 'trigger'> & Partial<Pick<ExtensionIii, 'on' | 'registerTrigger' | 'browserId'>>
+type Engine = Pick<ExtensionIii, 'call'> & Partial<Pick<ExtensionIii, 'on' | 'observe' | 'browserId'>>
 
 /** Lets the worker reload a saved entry before the status asks it again. */
 const SAVE_SETTLE_MS = 300
@@ -54,11 +54,7 @@ let liveSeq = 0
 
 /** The supported models the running worker sees with its saved credentials. */
 export async function listModels(iii: Engine): Promise<ModelCard[]> {
-  const reply = await iii.trigger<ModelsReply>(
-    'judge-openai::models::list',
-    { timeout_ms: 15_000 },
-    { timeoutMs: 20_000 },
-  )
+  const reply = await iii.call<ModelsReply>('judge-openai::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
   if (reply?.status === 'ok' && Array.isArray(reply.models)) return reply.models
   // Typed provider refusals (`missing_key`, `http`, …) surface by code; bus failures by message.
   throw new Error(reply?.status === 'error' && reply.code ? reply.code : 'invalid_response')
@@ -102,10 +98,11 @@ export function OpenAiConfigForm({
 
   // A save (a new key reference included) reloads the worker, so the status
   // asks again; without it the form would report the key it had at mount. The
-  // binding names no id: an id-scoped binding holds the entry.
+  // observer of `configuration::on-updated` selects this entry with an
+  // `input.id` filter.
   const configurationId = props.id
   useEffect(() => {
-    if (!iii.on || !iii.registerTrigger || !iii.browserId) return
+    if (!iii.on || !iii.observe || !iii.browserId) return
     const handler = `iii::judge-openai-ui::configuration-${++liveSeq}`
     let timer: ReturnType<typeof setTimeout> | undefined
     const offHandler = iii.on<{ id?: unknown }>(handler, (event) => {
@@ -113,15 +110,18 @@ export function OpenAiConfigForm({
       clearTimeout(timer)
       timer = setTimeout(refresh, SAVE_SETTLE_MS)
     })
-    let offTrigger = () => {}
+    let offObserver = () => {}
     try {
-      offTrigger = iii.registerTrigger({ type: 'configuration', function_id: `${handler}::${iii.browserId}`, config: {} })
+      offObserver = iii.observe(
+        { function_id: 'configuration::on-updated', filters: { 'input.id': { $eq: configurationId } } },
+        `${handler}::${iii.browserId}`,
+      )
     } catch {
-      // No configuration trigger type on this engine: Refresh still works.
+      // No engine to observe through: Refresh still works.
     }
     return () => {
       clearTimeout(timer)
-      for (const off of [offTrigger, offHandler]) {
+      for (const off of [offObserver, offHandler]) {
         try {
           off()
         } catch {

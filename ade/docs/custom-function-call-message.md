@@ -2,10 +2,10 @@
 
 How to add bespoke UI for `function-call` chat messages in the console, instead of falling back to the default request/response JSON panes.
 
-Trigger registration, firing, and retirement use a separate source-renderer
-contract. See
-[`../web/docs/custom-trigger-components.md`](../web/docs/custom-trigger-components.md)
-and match its normalized `triggerType`, not `engine::register_trigger`.
+Observing, firing, and retirement use a separate source-renderer contract.
+See
+[`../web/docs/custom-observer-components.md`](../web/docs/custom-observer-components.md)
+and match the observed `functionId`, not `harness::observe`.
 
 This is the end-to-end authoring guide: architecture, the message contract, the parser/view layer, how to wire a new family into the host component, and the two Storybook surfaces (fixture galleries + Playground scenarios) every renderer must ship with.
 
@@ -130,7 +130,7 @@ What the Rust/Python handler returns directly, e.g. sandbox `ExecResponse`:
 
 ### 4.2 Harness agent envelope
 
-The harness `agent-trigger.ts` wraps many tool results before relaying them to the agent. The console receives the same shape:
+The harness's `agent_call` dispatch wraps many tool results before relaying them to the agent. The console receives the same shape:
 
 ```json
 {
@@ -172,7 +172,7 @@ What you see when an invocation fails *before* the handler body — e.g. a `gate
 {
   "error": {
     "kind": "function_error",
-    "message": "trigger_failed: ...",
+    "message": "call_failed: ...",
     "details": {
       "status": "denied",
       "denied_by": "gate_unavailable",
@@ -400,7 +400,7 @@ import type { FunctionCallMessage } from '@/types/chat'
 
 const now = Date.now()
 
-/** Harness `{ content, details, terminate }` envelope — use for tools that go through agent-trigger. */
+/** Harness `{ content, details, terminate }` envelope — use for tools that go through agent_call. */
 export function wrapHarness(details: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(details, null, 2) }], details, terminate: true }
 }

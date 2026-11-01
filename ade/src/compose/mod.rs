@@ -1,7 +1,8 @@
 //! The Workers page's reach into the compose project: what the compose file
 //! declares, one container's entry to edit, registry versions and search, a
-//! look at a directory before a worker points at it, and a trigger type that
-//! fires when the daemon writes its state or the compose file changes.
+//! look at a directory before a worker points at it, and
+//! `console::compose::on-changed`, called when the daemon writes its state
+//! or the compose file changes.
 //!
 //! Lifecycle stays the daemon's: the page calls `compose::*` itself. The one
 //! write here, `console::compose::edit`, merges a settings change with the
@@ -17,8 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, RegisterFunction, RegisterTriggerType};
+use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -26,9 +26,10 @@ use declaration::{read_project, ContainerSource, ProjectDeclaration};
 use entry::{container_object, read_entry, EditInput};
 use inspect::{inspect, InspectInput, Inspection};
 use registry::{PackageVersion, RegistryWorker};
-use watch::{compose_status, ChangedEvent, ChangedTriggerHandler, ChangedTriggerSpec};
+use watch::{compose_status, ChangedEvent, StateWatcher};
 
-pub const CHANGED_TRIGGER: &str = "console::compose::changed";
+/// Called when the daemon writes state.json or the compose file changes.
+pub const ON_CHANGED_FN: &str = "console::compose::on-changed";
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct ProjectInput {
@@ -113,16 +114,21 @@ async fn read_compose_file(iii: &IIIClient, file: Option<&str>) -> Result<(Strin
     Ok((file, source))
 }
 
-/// Register the trigger type, then every `console::compose::*` function.
+/// Register `console::compose::on-changed` with the watch hooks, then every
+/// other `console::compose::*` function.
 pub fn register(iii: &Arc<IIIClient>) {
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            CHANGED_TRIGGER,
-            "Fires when the compose daemon writes state.json or the compose file changes. Bind with an empty config.",
-            ChangedTriggerHandler::new(iii.clone()),
-        )
-        .trigger_request_format::<ChangedTriggerSpec>()
-        .call_request_format::<ChangedEvent>(),
+    let watcher = StateWatcher::new(iii.clone());
+    iii.on_observer_added_for(ON_CHANGED_FN, watcher.clone());
+    iii.on_observer_removed_for(ON_CHANGED_FN, watcher);
+    iii.register_function(
+        ON_CHANGED_FN,
+        RegisterFunction::new(|event: ChangedEvent| Ok::<_, Error>(event))
+            .description(
+                "Called when the compose daemon writes state.json (kind: state) or the compose \
+                 file changes (kind: file). Takes no args; filter on input.kind, input.file or \
+                 input.namespace. The first observer starts the watch, the last one closes it.",
+            )
+            .private(),
     );
 
     {
@@ -272,7 +278,7 @@ async fn edit(iii: &IIIClient, input: EditInput) -> Result<EditAccepted, Error> 
         payload["operation_id"] = serde_json::json!(operation_id);
     }
     let accepted = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "compose::add".to_string(),
             payload,
             action: None,

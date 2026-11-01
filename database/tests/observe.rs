@@ -1,36 +1,32 @@
-//! `database::on-row-changed` end to end against a live iii engine (0.25+),
-//! on SQLite.
+//! `database::on-row-changed` end to end against a live iii engine (0.26+,
+//! `observe.v2`), on SQLite.
 //!
 //! Gated like the postgres/mysql tests: set `III_TEST_ENGINE_URL` (for example
 //! `ws://127.0.0.1:49360`) to run them; without it each test returns early.
 //! The zero-wire test also listens on `III_TEST_PROXY_PORT` (default 49365).
-//! The engine-switch test starts engines itself: set `III_TEST_ENGINE_BINS`
-//! to `<engine without observe>,<engine with observe>` (0.24 and 0.25 binaries)
-//! and `III_TEST_SWITCH_PORT` to a free port.
+//! The engine-restart test starts an engine itself: set `III_TEST_ENGINE_BIN`
+//! to an engine binary and `III_TEST_RESTART_PORT` to a free port.
 //!
 //! Each test runs its database worker in-process (the library's handlers and
-//! `triggers::capture::register`, as `main.rs` wires them) and its consumers
-//! as separate connections, in a namespace of its own so tests can run in
-//! parallel against one engine.
+//! `row_changes::capture::register`, as `main.rs` wires them) and its
+//! consumers as separate connections, in a namespace of its own so tests can
+//! run in parallel against one engine.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use database::config::WorkerConfig;
+use database::config::{CaptureMode, WorkerConfig};
 use database::configuration;
 use database::handle::HandleRegistry;
 use database::handlers::{execute, AppState};
+use database::row_changes::{self, NativeCapture, RowChangeBus};
 use database::transaction::TxRegistry;
-use database::triggers::{
-    self, LegacyRowChangedEvent, NativeCapture, RowChangeBus, RowChangedArgs,
-};
 use iii_helpers::observability::Logger;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::runtime::{FunctionRef, TriggerTypeRef, WorkerMetadata};
+use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
 use iii_sdk::{
-    register_worker, Capture, IIIClient, InitOptions, Observed, ObserverOptions, ObserverState,
-    RegisterFunction, Source,
+    register_worker, CallRequest, Capture, IIIClient, InitOptions, Observed, ObserverOptions,
+    ObserverState, RegisterFunction, Source,
 };
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, RwLock};
@@ -84,8 +80,7 @@ struct DatabaseWorker {
     capture: Arc<NativeCapture>,
     row_changed: FunctionRef,
     dir: tempfile::TempDir,
-    _listeners: Arc<triggers::NativeListeners>,
-    _row_changed_type: TriggerTypeRef<RowChangedArgs, LegacyRowChangedEvent>,
+    listeners: Arc<row_changes::NativeListeners>,
 }
 
 impl DatabaseWorker {
@@ -127,7 +122,7 @@ impl DatabaseWorker {
             10_000,
         ));
         let bus = Arc::new(RowChangeBus::with_capture(iii.clone(), capture.clone()));
-        let listeners = Arc::new(triggers::NativeListeners::new(bus.clone()));
+        let listeners = Arc::new(row_changes::NativeListeners::new(bus.clone()));
         listeners.sync(&*config.read().await);
         let state = AppState {
             pools,
@@ -152,29 +147,21 @@ impl DatabaseWorker {
                 }),
             );
         }
-        let row_changed = triggers::capture::register(&iii, &capture);
-        // As `main.rs` does: the old trigger type on every engine.
-        let row_changed_type = triggers::legacy::register_trigger_type(&iii, capture.clone());
+        let row_changed = row_changes::capture::register(&iii, &capture);
         iii.wait_until_registered(WAIT).await.unwrap();
-        eventually("the engine's observe support known", || {
-            iii.engine_supports_observe().is_some()
+        // The engine confirmed the function (functionregistered): its calls
+        // run in-process.
+        eventually("on-row-changed confirmed", || {
+            row_changed.local_dispatch_active()
         })
         .await;
-        if iii.engine_supports_observe() == Some(true) {
-            // The engine confirmed the function (functionregistered): local dispatch on.
-            eventually("on-row-changed confirmed", || {
-                row_changed.local_dispatch_active()
-            })
-            .await;
-        }
         Self {
             iii,
             state,
             capture,
             row_changed,
             dir,
-            _listeners: listeners,
-            _row_changed_type: row_changed_type,
+            listeners,
         }
     }
 
@@ -194,23 +181,6 @@ fn sink(iii: &IIIClient, id: &str) -> mpsc::UnboundedReceiver<Value> {
             let tx = tx.clone();
             async move {
                 let _ = tx.send(payload);
-                Ok::<(), iii_sdk::errors::Error>(())
-            }
-        }),
-    );
-    rx
-}
-
-/// A sink that also records the invocation's metadata sidecar.
-fn sink_with_metadata(iii: &IIIClient, id: &str) -> mpsc::UnboundedReceiver<Value> {
-    let (tx, rx) = mpsc::unbounded_channel();
-    iii.register_function(
-        id,
-        RegisterFunction::new_async(move |payload: Value| {
-            let tx = tx.clone();
-            let metadata = iii_sdk::current_invocation().and_then(|c| c.metadata);
-            async move {
-                let _ = tx.send(json!({ "payload": payload, "metadata": metadata }));
                 Ok::<(), iii_sdk::errors::Error>(())
             }
         }),
@@ -261,7 +231,7 @@ async fn new_consumer_observes_the_statements_path_with_caller_parent() {
             RegisterFunction::new_async(move |sql: String| {
                 let me = me.clone();
                 async move {
-                    me.trigger(TriggerRequest::new(
+                    me.call(CallRequest::new(
                         "database::execute",
                         json!({ "db": "primary", "sql": sql }),
                     ))
@@ -281,7 +251,7 @@ async fn new_consumer_observes_the_statements_path_with_caller_parent() {
     assert_eq!(db.row_changed.observers().len(), 1);
 
     consumer
-        .trigger(TriggerRequest::new(
+        .call(CallRequest::new(
             "billing::close-invoice",
             json!("INSERT INTO Orders (n) VALUES (1) RETURNING id"),
         ))
@@ -295,6 +265,7 @@ async fn new_consumer_observes_the_statements_path_with_caller_parent() {
     assert_eq!(input["op"], "insert");
     assert_eq!(input["affected_rows"], 1);
     assert_eq!(input["returning"][0]["id"], 1);
+    // The call's caller is the invocation that made the write.
     let caller = got.caller.expect("capture caller");
     assert_eq!(caller.function_id.as_deref(), Some("database::execute"));
     let parent = caller.parent.expect("caller.parent on the statements path");
@@ -306,7 +277,7 @@ async fn new_consumer_observes_the_statements_path_with_caller_parent() {
 
     // Routing: an observer on `orders` never receives `payments` events.
     consumer
-        .trigger(TriggerRequest::new(
+        .call(CallRequest::new(
             "billing::close-invoice",
             json!("INSERT INTO payments (n) VALUES (1)"),
         ))
@@ -315,18 +286,19 @@ async fn new_consumer_observes_the_statements_path_with_caller_parent() {
     silent(&mut events, "payments write").await;
 
     observer.dispose().await.unwrap();
-    // The SDK drops the observer from the set before the removal hook runs:
+    // The SDK drops the observer from the set before the removed hook runs:
     // wait for the hook, not just `is_observed()`.
-    eventually("observer removed on the owner", || {
-        !db.row_changed.is_observed() && db.capture.route_count() == 0
+    eventually("observer removed on the host", || {
+        !db.row_changed.is_observed() && db.capture.observer_count() == 0
     })
     .await;
     consumer.shutdown_async().await;
     db.iii.shutdown_async().await;
 }
 
-/// The native path has no invocation context: a write by another client
-/// reaches observers with `caller: { worker_name }` only, no `parent`.
+/// The native path calls the function from a listener task, outside any
+/// invocation: a write by another client reaches observers with
+/// `caller: { worker_name }` only, no `parent`.
 #[tokio::test(flavor = "multi_thread")]
 async fn native_path_events_have_no_caller_parent() {
     let Some(url) = engine_url() else {
@@ -439,8 +411,8 @@ async fn one_of_two_native_observers_leaving_keeps_the_other_hearing() {
     );
 
     leaving.dispose().await.unwrap();
-    eventually("one observer left on the owner", || {
-        db.capture.route_count() == 1
+    eventually("one observer left on the host", || {
+        db.capture.observer_count() == 1
     })
     .await;
     external_insert(file, 2).await;
@@ -454,73 +426,84 @@ async fn one_of_two_native_observers_leaving_keeps_the_other_hearing() {
     db.iii.shutdown_async().await;
 }
 
-/// (2) An old consumer's `register_trigger({ type: 'database::row-changed' })`
-/// is served by the worker's own trigger type on a 0.25 engine too: a
-/// binding, not an observer, its non-canonical table still matching, the
-/// event in its pre-0.25 shape with the trigger's metadata alongside.
+/// A consumer back on a new connection (a restart) observes under the id it
+/// used before. Its first connection's observer is suspended and withdrawn
+/// from the host, which releases its hold on the table's capture; the
+/// engine replaces the suspended observer with the new one (same worker
+/// name, same namespace) and announces it, and the host's added hook admits
+/// it again. The consumer keeps its id and hears each write once.
 #[tokio::test(flavor = "multi_thread")]
-async fn old_consumer_register_trigger_is_served_by_the_trigger_type() {
+async fn a_consumer_back_under_its_observer_id_keeps_hearing() {
     let Some(url) = engine_url() else {
         return eprintln!("skipping: III_TEST_ENGINE_URL not set");
     };
-    let ns = namespace("legacy");
-    let db = DatabaseWorker::start(&url, &ns, &[]).await;
+    let ns = namespace("stable-id");
+    let db = DatabaseWorker::start(&url, &ns, &["native:watched"]).await;
     db.sql(
         "primary",
         "CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)",
     )
     .await;
+    let file = db.dir.path().join("primary.db");
+    // Observer ids are engine-wide, across namespaces: the id carries the
+    // test's namespace, so it is the same across this test's restart and
+    // fresh on every run against the same engine.
+    let id = format!("consumer-orders-{ns}");
+    let observe = |consumer: &IIIClient| {
+        consumer.observe_with(
+            Source::function("database::on-row-changed")
+                .args(json!({ "db": "watched", "table": "orders" }))
+                .deliver(iii_sdk::Deliver::Input),
+            "consumer::orders",
+            ObserverOptions::default().id(id.clone()),
+        )
+    };
 
-    let old = client(&url, &ns, "old-consumer");
-    let mut events = sink_with_metadata(&old, "legacy::on-orders");
-    let mut input = RegisterTriggerInput::new(
-        "database::row-changed",
-        "legacy::on-orders",
-        json!({ "db": "primary", "table": "public.Orders", "ops": ["insert"] }),
-    );
-    input.metadata = Some(json!({ "__binding": "sub_abc" }));
-    #[allow(deprecated)]
-    let trigger = old.register_trigger(input).unwrap();
-    eventually("the binding filed by the trigger type", || {
-        db.capture.route_count() == 1
+    let first = client(&url, &ns, "consumer");
+    let mut before = sink(&first, "consumer::orders");
+    observe(&first).ready().await.unwrap();
+    eventually("the observer on the host", || {
+        db.capture.observer_count() == 1
     })
     .await;
-    assert!(
-        db.row_changed.observers().is_empty(),
-        "no shim observer: the worker's trigger type serves the binding"
+    external_insert(file.clone(), 1).await;
+    assert_eq!(
+        next(&mut before, "before the restart").await["returning"][0]["id"],
+        1
     );
 
-    db.sql("primary", "INSERT INTO orders (n) VALUES (7)").await;
-    let delivery = next(&mut events, "legacy delivery").await;
-    // The trigger's metadata rides along as the sidecar (a harness binding's
-    // `__binding` pointer).
-    assert_eq!(delivery["metadata"]["__binding"], "sub_abc", "{delivery}");
-    let event = delivery["payload"].clone();
-    // The event itself, in the pre-0.25 shape.
-    assert_eq!(event["table"], "orders");
-    assert_eq!(event["op"], "insert");
-    assert!(
-        event.get("schema").is_none(),
-        "legacy shape has no schema: {event}"
-    );
-    assert!(
-        event.get("observer_id").is_none(),
-        "not an envelope: {event}"
-    );
-    // `ops: ["insert"]` still restricts.
-    db.sql("primary", "DELETE FROM orders").await;
-    silent(&mut events, "delete on an insert-only binding").await;
-
-    trigger.unregister();
-    eventually("unregister removes the binding", || {
-        db.capture.route_count() == 0
+    // The consumer's process goes away without disposing its observer.
+    first.shutdown_async().await;
+    eventually("the suspended observer withdrawn from the host", || {
+        db.capture.observer_count() == 0
     })
     .await;
-    old.shutdown_async().await;
+
+    let second = client(&url, &ns, "consumer");
+    let mut after = sink(&second, "consumer::orders");
+    let handle = observe(&second);
+    handle
+        .ready()
+        .await
+        .expect("the same worker replaces its suspended observer");
+    assert_eq!(handle.id(), id);
+    eventually("the observer back on the host", || {
+        db.capture.observer_count() == 1
+    })
+    .await;
+    external_insert(file, 2).await;
+    assert_eq!(
+        next(&mut after, "after the restart").await["returning"][0]["id"],
+        2
+    );
+    silent(&mut after, "one event per write").await;
+    silent(&mut before, "the connection that left").await;
+    handle.dispose().await.unwrap();
+    second.shutdown_async().await;
     db.iii.shutdown_async().await;
 }
 
-/// Engine-side `args_format` and owner-side checks reject bad args at
+/// Engine-side `args_format` and the added hook's checks reject bad args at
 /// creation, so the observer's `ready()` fails with the reason.
 #[tokio::test(flavor = "multi_thread")]
 async fn bad_args_are_rejected_at_creation() {
@@ -595,15 +578,88 @@ async fn config_reload_late_rejects_observers_on_a_removed_database() {
     .await;
     assert_eq!(doomed.reason().unwrap().code, "UNKNOWN_DB");
     assert_eq!(keep.state(), ObserverState::Active);
-    eventually("owner dropped the rejected observer", || {
-        db.capture.route_count() == 1
+    eventually("the host dropped the rejected observer", || {
+        db.capture.observer_count() == 1
     })
     .await;
     consumer.shutdown_async().await;
     db.iii.shutdown_async().await;
 }
 
-/// A transaction's statements arrive in commit order; a rollback emits nothing.
+/// A reload that makes a `statements` database native installs capture for
+/// the observers it already has, and one that moves the native database to
+/// another file installs it there: the observer hears other clients' writes
+/// and the worker's own, each once.
+#[tokio::test(flavor = "multi_thread")]
+async fn config_reload_installs_capture_for_existing_observers() {
+    let Some(url) = engine_url() else {
+        return eprintln!("skipping: III_TEST_ENGINE_URL not set");
+    };
+    let ns = namespace("to-native");
+    let db = DatabaseWorker::start(&url, &ns, &[]).await;
+    db.sql(
+        "primary",
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)",
+    )
+    .await;
+    let consumer = client(&url, &ns, "consumer");
+    let mut events = sink(&consumer, "consumer::sink");
+    let handle = consumer.observe(
+        Source::function("database::on-row-changed")
+            .args(json!({ "db": "primary", "table": "orders" }))
+            .deliver(iii_sdk::Deliver::Input),
+        "consumer::sink",
+    );
+    handle.ready().await.unwrap();
+    db.sql("primary", "INSERT INTO orders (n) VALUES (1)").await;
+    assert_eq!(next(&mut events, "statements write").await["op"], "insert");
+
+    let reload = |cfg: WorkerConfig| {
+        let state = db.state.clone();
+        let listeners = db.listeners.clone();
+        async move {
+            configuration::apply_config(&state, cfg, Some(&listeners))
+                .await
+                .unwrap();
+        }
+    };
+    let mut cfg = db.state.config.read().await.clone();
+    cfg.databases.get_mut("primary").unwrap().capture = CaptureMode::Native;
+    reload(cfg.clone()).await;
+    assert_eq!(handle.state(), ObserverState::Active);
+
+    external_insert(db.dir.path().join("primary.db"), 2).await;
+    assert_eq!(
+        next(&mut events, "another client's write after the reload").await["returning"][0]["id"],
+        2
+    );
+    db.sql("primary", "INSERT INTO orders (n) VALUES (3)").await;
+    assert_eq!(
+        next(&mut events, "the worker's own write after the reload").await["returning"][0]["id"],
+        3
+    );
+    silent(&mut events, "one event per write").await;
+
+    // The native database moves to another file.
+    let moved = db.dir.path().join("moved.db");
+    rusqlite::Connection::open(&moved)
+        .unwrap()
+        .execute_batch("CREATE TABLE orders (id INTEGER PRIMARY KEY, n INT)")
+        .unwrap();
+    cfg.databases.get_mut("primary").unwrap().url = format!("sqlite:{}", moved.display()).into();
+    reload(cfg).await;
+    assert_eq!(handle.state(), ObserverState::Active);
+    external_insert(moved, 7).await;
+    let event = next(&mut events, "a write on the file the database moved to").await;
+    assert_eq!(event["returning"][0]["id"], 1);
+    assert_eq!(event["op"], "insert");
+    silent(&mut events, "one event per write").await;
+    consumer.shutdown_async().await;
+    db.iii.shutdown_async().await;
+}
+
+/// An observer with `max_in_flight: 1` receives a transaction's statements in
+/// commit order; a rollback emits nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn commit_order_and_rollback() {
     let Some(url) = engine_url() else {
@@ -817,9 +873,11 @@ fn data_frames(counts: &HashMap<String, usize>) -> usize {
         .sum()
 }
 
-/// (3) Unobserved writes put zero frames on the wire: `is_observed()` is
-/// false, nothing is serialized or sent. Observed writes send batched
-/// reports; a filter miss sends nothing; after dispose it is zero again.
+/// (2) Unobserved writes put zero frames on the wire: `is_observed()` is
+/// false, nothing is serialized, called or sent. An observer of another
+/// table sends nothing either (the call's keys match no observer). Observed
+/// writes send batched reports; a filter miss sends nothing; after dispose it
+/// is zero again.
 #[tokio::test(flavor = "multi_thread")]
 async fn unobserved_writes_put_zero_frames_on_the_wire() {
     let Some(url) = engine_url() else {
@@ -866,9 +924,28 @@ async fn unobserved_writes_put_zero_frames_on_the_wire() {
     eprintln!("unobserved: {WRITES} writes -> {unobserved:?}");
     assert_eq!(data_frames(&unobserved), 0, "{unobserved:?}");
 
-    // Observed, but the observer's filter matches nothing: still no report.
+    // Observed on another table: the call's keys match no observer, so the
+    // function is not called.
     let consumer = client(&url, &ns, "consumer");
     let mut events = sink(&consumer, "consumer::sink");
+    let elsewhere = consumer.observe(
+        Source::function("database::on-row-changed")
+            .args(json!({ "db": "primary", "table": "payments" })),
+        "consumer::sink",
+    );
+    elsewhere.ready().await.unwrap();
+    eventually("host sees the observer", || db.row_changed.is_observed()).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mark = wire.snapshot();
+    writes(100).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let other_table = wire.since(mark);
+    eprintln!("observed on another table: 100 writes -> {other_table:?}");
+    assert_eq!(data_frames(&other_table), 0, "{other_table:?}");
+    silent(&mut events, "another table").await;
+    elsewhere.dispose().await.unwrap();
+
+    // Observed, but the observer's filter matches nothing: still no report.
     let miss = consumer.observe(
         Source::function("database::on-row-changed")
             .args(json!({ "db": "primary", "table": "orders" }))
@@ -876,7 +953,7 @@ async fn unobserved_writes_put_zero_frames_on_the_wire() {
         "consumer::sink",
     );
     miss.ready().await.unwrap();
-    eventually("owner sees the observer", || db.row_changed.is_observed()).await;
+    eventually("host sees the observer", || db.row_changed.is_observed()).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let mark = wire.snapshot();
     writes(100).await;
@@ -907,7 +984,7 @@ async fn unobserved_writes_put_zero_frames_on_the_wire() {
 
     // Disposed: back to zero.
     hit.dispose().await.unwrap();
-    eventually("observer gone on the owner", || {
+    eventually("observer gone on the host", || {
         !db.row_changed.is_observed()
     })
     .await;
@@ -922,11 +999,10 @@ async fn unobserved_writes_put_zero_frames_on_the_wire() {
     db.iii.shutdown_async().await;
 }
 
-/// The owner restarts (a deploy): its observers wait and are replayed to the
-/// new connection, and the old trigger type's bindings return to it when it
-/// registers the type again; it indexes both.
+/// The host restarts (a deploy): its observers wait and are replayed to the
+/// new connection, whose added hooks run for each of them again.
 #[tokio::test(flavor = "multi_thread")]
-async fn owner_restart_replays_observers_and_bindings() {
+async fn host_restart_replays_observers() {
     let Some(url) = engine_url() else {
         return eprintln!("skipping: III_TEST_ENGINE_URL not set");
     };
@@ -939,29 +1015,28 @@ async fn owner_restart_replays_observers_and_bindings() {
         )
         .await;
     let consumer = client(&url, &ns, "consumer");
-    let mut fresh = sink(&consumer, "consumer::fresh");
-    let mut legacy = sink(&consumer, "consumer::legacy");
+    let mut orders = sink(&consumer, "consumer::orders");
+    let mut inserts = sink(&consumer, "consumer::inserts");
     let handle = consumer.observe(
         Source::function("database::on-row-changed")
             .args(json!({ "db": "primary", "table": "orders" }))
             .deliver(iii_sdk::Deliver::Input),
-        "consumer::fresh",
+        "consumer::orders",
+    );
+    let insert_only = consumer.observe(
+        Source::function("database::on-row-changed")
+            .args(json!({ "db": "primary", "ops": ["insert"] }))
+            .deliver(iii_sdk::Deliver::Input),
+        "consumer::inserts",
     );
     handle.ready().await.unwrap();
-    #[allow(deprecated)]
-    let _trigger = consumer
-        .register_trigger(RegisterTriggerInput::new(
-            "database::row-changed",
-            "consumer::legacy",
-            json!({ "db": "primary", "table": "orders" }),
-        ))
-        .unwrap();
-    eventually("the observer and the binding on the first owner", || {
-        first.capture.route_count() == 2
+    insert_only.ready().await.unwrap();
+    eventually("both observers on the first host", || {
+        first.capture.observer_count() == 2
     })
     .await;
 
-    // The owner goes away; a new process with the same database comes up.
+    // The host goes away; a new process with the same database comes up.
     let dir = first.dir;
     first.iii.shutdown_async().await;
     eventually("observer suspended or pending", || {
@@ -969,26 +1044,32 @@ async fn owner_restart_replays_observers_and_bindings() {
     })
     .await;
     let second = DatabaseWorker::start_on(&url, &ns, dir).await;
-    eventually("the observer and the binding back on the new owner", || {
-        second.capture.route_count() == 2
+    eventually("both observers back on the new host", || {
+        second.capture.observer_count() == 2
     })
     .await;
     handle.ready().await.unwrap();
+    insert_only.ready().await.unwrap();
     second
         .sql("primary", "INSERT INTO orders (n) VALUES (1)")
         .await;
     assert_eq!(
-        next(&mut fresh, "new observer after restart").await["table"],
+        next(&mut orders, "table observer after restart").await["table"],
         "orders"
     );
-    let old = next(&mut legacy, "legacy observer after restart").await;
-    assert!(old.get("schema").is_none(), "{old}");
+    assert_eq!(
+        next(&mut inserts, "ops observer after restart").await["op"],
+        "insert"
+    );
+    second.sql("primary", "DELETE FROM orders").await;
+    assert_eq!(next(&mut orders, "delete").await["op"], "delete");
+    silent(&mut inserts, "a delete on an insert-only observer").await;
     consumer.shutdown_async().await;
     second.iii.shutdown_async().await;
 }
 
-/// Events are routed in-process only: a worker that invokes the function
-/// directly with a forged event is refused, and no observer hears it.
+/// The function is private: a worker that calls it with a forged event is
+/// refused by the engine, and no observer hears it.
 #[tokio::test(flavor = "multi_thread")]
 async fn invoking_the_source_directly_is_refused() {
     let Some(url) = engine_url() else {
@@ -1010,9 +1091,9 @@ async fn invoking_the_source_directly_is_refused() {
         "affected_rows": 999, "at": 1
     });
     let err = attacker
-        .trigger(TriggerRequest::new("database::on-row-changed", forged))
+        .call(CallRequest::new("database::on-row-changed", forged))
         .await
-        .expect_err("a direct invocation is refused");
+        .expect_err("a call from another worker is refused");
     assert!(err.to_string().contains("FORBIDDEN"), "{err}");
     silent(&mut events, "forged event").await;
     attacker.shutdown_async().await;
@@ -1142,31 +1223,27 @@ async fn deliveries_of(rx: &mut mpsc::UnboundedReceiver<Value>, n: i64, expected
     count
 }
 
-/// The engine changes under a running worker: upgraded to one with observe,
-/// rolled back, upgraded again. The old trigger type stays registered on
-/// every engine, so an old consumer's binding hears each write exactly once
-/// throughout, served by the worker (never by the engine's shim); a new
-/// consumer's observer hears each write once whenever the engine has
-/// observe, and nothing while it does not.
+/// The engine restarts under a running worker. The worker registers the
+/// function again and the consumer's SDK replays its observer to the new
+/// engine, which hands it to the host: the added hook runs for it once more.
+/// Each write after a restart is heard exactly once, and the host holds one
+/// observer, not one per engine it has seen.
 #[tokio::test(flavor = "multi_thread")]
-async fn bindings_and_observers_follow_the_engine_across_upgrades_and_rollbacks() {
-    let (Some(bins), Some(port)) = (
-        std::env::var("III_TEST_ENGINE_BINS").ok(),
-        std::env::var("III_TEST_SWITCH_PORT")
+async fn observers_follow_the_engine_across_restarts() {
+    let (Some(bin), Some(port)) = (
+        std::env::var("III_TEST_ENGINE_BIN").ok(),
+        std::env::var("III_TEST_RESTART_PORT")
             .ok()
             .and_then(|p| p.parse::<u16>().ok()),
     ) else {
-        return eprintln!("skipping: III_TEST_ENGINE_BINS / III_TEST_SWITCH_PORT not set");
+        return eprintln!("skipping: III_TEST_ENGINE_BIN / III_TEST_RESTART_PORT not set");
     };
-    let (without_observe, with_observe) = bins
-        .split_once(',')
-        .expect("III_TEST_ENGINE_BINS=<engine without observe>,<engine with observe>");
-    // Reconnects back off: give each switch more time than one delivery.
-    const SWITCH: Duration = Duration::from_secs(30);
+    // Reconnects back off: give each restart more time than one delivery.
+    const SETTLE: Duration = Duration::from_secs(30);
 
     let url = format!("ws://127.0.0.1:{port}");
-    let ns = namespace("switch");
-    let mut engine = Engine::start(without_observe, port).await;
+    let ns = namespace("engine-restart");
+    let mut engine = Engine::start(&bin, port).await;
     let db = DatabaseWorker::start(&url, &ns, &[]).await;
     db.sql(
         "primary",
@@ -1174,62 +1251,36 @@ async fn bindings_and_observers_follow_the_engine_across_upgrades_and_rollbacks(
     )
     .await;
 
-    let old = client(&url, &ns, "old-consumer");
-    let (mut legacy, legacy_log) = logged_sink(&old, "legacy::on-orders");
-    #[allow(deprecated)]
-    let _binding = old
-        .register_trigger(RegisterTriggerInput::new(
-            "database::row-changed",
-            "legacy::on-orders",
-            json!({ "db": "primary", "table": "orders" }),
-        ))
-        .unwrap();
-    let new = client(&url, &ns, "new-consumer");
-    let (mut fresh, fresh_log) = logged_sink(&new, "fresh::on-orders");
-    let observer = new.observe(
+    let consumer = client(&url, &ns, "consumer");
+    let (mut events, log) = logged_sink(&consumer, "consumer::orders");
+    let observer = consumer.observe(
         Source::function("database::on-row-changed")
             .args(json!({ "db": "primary", "table": "orders" }))
             .deliver(iii_sdk::Deliver::Input),
-        "fresh::on-orders",
+        "consumer::orders",
     );
-    let err = observer
-        .ready()
-        .await
-        .expect_err("no observe on this engine");
-    assert!(err.to_string().contains("UNSUPPORTED"), "{err}");
+    observer.ready().await.unwrap();
 
     let mut probe: i64 = 0;
     for (step, n) in [
-        ("0.24", 1i64),
-        ("upgraded to 0.25", 2),
-        ("rolled back to 0.24", 3),
-        ("upgraded again", 4),
+        ("first engine", 1i64),
+        ("restarted", 2),
+        ("restarted again", 3),
     ] {
-        let observes = n % 2 == 0;
         if n > 1 {
             engine.stop().await;
-            engine = Engine::start(
-                if observes {
-                    with_observe
-                } else {
-                    without_observe
-                },
-                port,
-            )
-            .await;
+            engine = Engine::start(&bin, port).await;
         }
-        let deadline = tokio::time::Instant::now() + SWITCH;
-        while db.iii.engine_supports_observe() != Some(observes)
-            || (observes && observer.state() != ObserverState::Active)
-        {
+        let deadline = tokio::time::Instant::now() + SETTLE;
+        while observer.state() != ObserverState::Active || !db.row_changed.is_observed() {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "{step}: the worker and the observer never settled"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        // The consumers reconnect on their own schedule: write probes until
-        // each one that should hear does.
+        // The consumer reconnects on its own schedule: write probes until it
+        // hears one.
         loop {
             probe -= 1;
             db.sql(
@@ -1237,22 +1288,18 @@ async fn bindings_and_observers_follow_the_engine_across_upgrades_and_rollbacks(
                 &format!("INSERT INTO orders (n) VALUES ({probe}) RETURNING n"),
             )
             .await;
-            let old_heard = heard_n(&mut legacy, probe, Duration::from_secs(1)).await;
-            let new_heard = !observes || heard_n(&mut fresh, probe, Duration::from_secs(1)).await;
-            if old_heard && new_heard {
+            if heard_n(&mut events, probe, Duration::from_secs(1)).await {
                 break;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "{step}: the consumers never heard a probe"
+                "{step}: the consumer never heard a probe"
             );
         }
-        assert!(
-            db.row_changed
-                .observers()
-                .iter()
-                .all(|o| o.legacy().is_none()),
-            "{step}: no shim observer, the binding is the trigger type's"
+        assert_eq!(
+            db.capture.observer_count(),
+            1,
+            "{step}: one observer on the host"
         );
 
         db.sql(
@@ -1261,36 +1308,23 @@ async fn bindings_and_observers_follow_the_engine_across_upgrades_and_rollbacks(
         )
         .await;
         assert_eq!(
-            deliveries_of(&mut legacy, n, true).await,
+            deliveries_of(&mut events, n, true).await,
             1,
-            "{step}: the old consumer hears the write exactly once"
-        );
-        assert_eq!(
-            deliveries_of(&mut fresh, n, observes).await,
-            usize::from(observes),
-            "{step}: the new consumer hears it once with observe, never without"
+            "{step}: the consumer hears the write exactly once"
         );
     }
-    // Over the whole run, late deliveries included (an observer the SDK held
-    // across the rollback must not report the write made without observe).
+    // Over the whole run, late deliveries included.
     tokio::time::sleep(SILENCE).await;
-    let count = |log: &Mutex<Vec<Value>>, n: i64| {
-        log.lock()
+    for n in 1..=3 {
+        let heard = log
+            .lock()
             .unwrap()
             .iter()
             .filter(|event| event["returning"][0]["n"] == n)
-            .count()
-    };
-    for n in 1..=4 {
-        assert_eq!(count(&legacy_log, n), 1, "old consumer, write {n}");
-        assert_eq!(
-            count(&fresh_log, n),
-            usize::from(n % 2 == 0),
-            "new consumer, write {n}"
-        );
+            .count();
+        assert_eq!(heard, 1, "write {n}");
     }
-    old.shutdown_async().await;
-    new.shutdown_async().await;
+    consumer.shutdown_async().await;
     db.iii.shutdown_async().await;
     engine.stop().await;
 }

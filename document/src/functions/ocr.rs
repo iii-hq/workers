@@ -284,7 +284,7 @@ pub fn image_mime(bytes: &[u8], file_name: Option<&str>) -> Option<String> {
 /// and refusing it would make the function unusable on a rig that is ahead.
 async fn ensure_vision(bus: &dyn Bus, model: &str, timeout_ms: u64) -> Result<(), String> {
     let seeing = bus
-        .trigger(
+        .call(
             "router::models::list",
             json!({ "capability": "vision" }),
             timeout_ms,
@@ -299,7 +299,7 @@ async fn ensure_vision(bus: &dyn Bus, model: &str, timeout_ms: u64) -> Result<()
     // Not among the models that see. Either it cannot, or the catalog does not
     // know it — and those deserve different answers.
     let everything = bus
-        .trigger("router::models::list", json!({}), timeout_ms)
+        .call("router::models::list", json!({}), timeout_ms)
         .await
         .map_err(|e| describe_bus_failure("router::models::list", &e))?;
 
@@ -369,7 +369,7 @@ async fn render_pdf(
     let pages: Vec<u32> = pages.into_iter().take(cfg.max_ocr_pages).collect();
 
     let started = bus
-        .trigger("browser::sessions::start", json!({}), cfg.ocr_timeout_ms)
+        .call("browser::sessions::start", json!({}), cfg.ocr_timeout_ms)
         .await
         .map_err(|e| describe_bus_failure("browser::sessions::start", &e))?;
     let session_id = started
@@ -383,7 +383,7 @@ async fn render_pdf(
     // Always stop the session, including on the failure path: a leaked Chrome
     // process outlives the call that made it and counts against `max_sessions`.
     let _ = bus
-        .trigger(
+        .call(
             "browser::sessions::stop",
             json!({ "session_id": session_id }),
             cfg.ocr_timeout_ms,
@@ -407,7 +407,7 @@ async fn render_pages(
     let mut out = Vec::new();
     for &page in pages {
         let url = format!("file://{path}#page={page}");
-        bus.trigger(
+        bus.call(
             "browser::navigate",
             json!({ "session_id": session_id, "url": url }),
             cfg.ocr_timeout_ms,
@@ -424,7 +424,7 @@ async fn render_pages(
         }
 
         let shot = bus
-            .trigger(
+            .call(
                 "browser::screenshot",
                 json!({ "session_id": session_id, "full_page": false }),
                 cfg.ocr_timeout_ms,
@@ -509,7 +509,7 @@ async fn transcribe(
     cfg: &WorkerConfig,
 ) -> Result<String, String> {
     let answer = bus
-        .trigger(
+        .call(
             "router::complete",
             json!({
                 "model": model,
@@ -585,7 +585,7 @@ async fn cache_get(bus: &dyn Bus, key: &str, cfg: &WorkerConfig) -> Option<Strin
         return None;
     }
     let answer = bus
-        .trigger(
+        .call(
             "state::get",
             json!({ "scope": OCR_SCOPE, "key": key }),
             cfg.ocr_timeout_ms,
@@ -612,7 +612,7 @@ async fn cache_put(bus: &dyn Bus, key: &str, text: &str, cfg: &WorkerConfig) {
     // Best effort: a cache that cannot be written is slower, not broken, and a
     // rig with no `state` worker still transcribes.
     let _ = bus
-        .trigger(
+        .call(
             "state::set",
             json!({ "scope": OCR_SCOPE, "key": key, "value": text }),
             cfg.ocr_timeout_ms,
@@ -829,7 +829,7 @@ mod tests {
         };
         let err = handle(req, cfg(), bus).await.expect_err("no browser");
         assert!(
-            err.contains("iii trigger compose::add worker=browser"),
+            err.contains("iii call compose::add worker=browser"),
             "{err}"
         );
     }

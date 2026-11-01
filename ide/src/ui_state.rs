@@ -187,7 +187,7 @@ impl UiStateStore {
             dir = %self.dir.display(),
             "explorer pane state moved from the shell-ui configuration entry to the data directory"
         );
-        match crate::configuration::trigger_configuration_with_retry(
+        match crate::configuration::call_configuration_with_retry(
             iii,
             "configuration::set",
             json!({ "id": LEGACY_CONFIG_ID, "value": {} }),
@@ -278,7 +278,7 @@ async fn read_pane(path: &Path) -> Result<Option<Value>, Error> {
 
 /// Write through a sibling temp file and rename it over `path`. The temp
 /// name carries the `.tmp.<32 hex>` shape `events::is_own_temp` filters, so
-/// a `shell::changed` watch over the data directory never reports it.
+/// a `shell::on-changed` watch over the data directory never reports it.
 async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let io = |what: &str, error: std::io::Error| {
         Error::Handler(format!(

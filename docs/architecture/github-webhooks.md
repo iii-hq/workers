@@ -12,7 +12,7 @@ GitHub monitoring uses three independently reusable worker surfaces:
 3. `github` owns repository hooks, signature verification, PR correlation,
    persistent watches, notification delivery, and cleanup.
 
-Worker calls and trigger delivery are routed through the engine. No worker
+Worker calls and observer deliveries are routed through the engine. No worker
 calls another worker directly. The tunnel's HTTP forwarding is transport, not
 an alternative worker RPC surface.
 
@@ -55,13 +55,20 @@ returned `restart_required` flag remains set until the `github` worker is
 restarted with the requested setting active. Disabling follows the same
 restart model.
 
-## Subscription lifecycle
+## Observer lifecycle
 
-A consumer chooses a unique watch ID, binds `github::pr::event` for that ID, and
-then calls `github::pr::watch`. It reads the returned snapshot to cover events
-that happened during setup. The watcher takes a one-time PR, checks and commit-status baseline; it does not
-repeatedly query the PR while idle. Event-triggered correlation and recovery
-queries are allowed and must not be described as periodic monitoring.
+A consumer chooses a unique watch ID, observes `github::pr::on-event` with args
+`{ watch_id }` for that ID, and then calls `github::pr::watch`. It reads the
+returned snapshot to cover events that happened during setup. The watcher takes
+a one-time PR, checks and commit-status baseline; it does not repeatedly query
+the PR while idle. Correlation and recovery queries that a webhook event starts
+are allowed and must not be described as periodic monitoring.
+
+The github worker persists each observer of `github::pr::on-event` as a
+subscriber with its args. Each notification for it is one durable outbox job,
+delivered as a call of `github::pr::on-event` that the function's deliver hook
+hands to that observer's target; the target's result acks the job, and an error
+retries it. A watch stays alive while an observer listens to it.
 
 The provider manages one hook per installation/repository, shared by all
 interested watches. It must not adopt or remove hooks belonging to other tools.
@@ -104,10 +111,10 @@ another worker's public endpoint.
 
 ## Tunnel URL rotation and outages
 
-A recreated Quick Tunnel may receive a new URL. Consumers subscribe to tunnel
-changes before acquiring a lease and read its status once afterward. A generation
-identifies a process incarnation; stale events must not overwrite the current
-endpoint. URL updates preserve the existing hook secret.
+A recreated Quick Tunnel may receive a new URL. Consumers observe
+`quick-tunnel::on-changed` before acquiring a lease and read its status once
+afterward. A generation identifies a process incarnation; stale events must not
+overwrite the current endpoint. URL updates preserve the existing hook secret.
 
 GitHub does **not** automatically retry failed webhook deliveries. Startup,
 reconnection, and manual recovery therefore request available failed-delivery

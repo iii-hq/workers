@@ -1,9 +1,10 @@
 //! Injectable console UI (authoring contract: `ade/skills/injectable-ui.md`).
 //!
-//! - `ios-simulator/page.js` (`console:script`) — the Simulators page (device
-//!   rail, live iPhone with multi-touch, buttons and media), the
-//!   configuration form, and the chat renderer for `ios-simulator::*` calls.
-//! - `ios-simulator/styles.css` (`console:style`) — every rule scoped under
+//! - `ios-simulator/page.js` (a `script` asset of `console::ui::asset`) — the
+//!   Simulators page (device rail, live iPhone with multi-touch, buttons and
+//!   media), the configuration form, and the chat renderer for
+//!   `ios-simulator::*` calls.
+//! - `ios-simulator/styles.css` (a `style` asset) — every rule scoped under
 //!   `[data-iii-ui="ios-simulator"]`.
 //!
 //! Built from `ui/` by `build.rs` and embedded, so the worker stays one

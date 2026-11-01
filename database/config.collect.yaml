@@ -1,8 +1,9 @@
 # Interface-collection config for the registry publish workflow.
 #
 # The CI interface-smoke job boots a throwaway
-# copy of this worker purely to read back the functions and trigger types it
-# registers with the engine — the published "interface". That interface is
+# copy of this worker purely to read back the functions it registers with
+# the engine (their args_format, private and observable included) — the
+# published "interface". That interface is
 # static: it does NOT depend on which databases are configured.
 #
 # The default config seeds a `primary` SQLite pool at `sqlite:./data/iii.db`.

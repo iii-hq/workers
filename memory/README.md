@@ -5,7 +5,7 @@ Durable cross-session agent memory. Named **banks** hold two kinds of content: *
 ## Install
 
 ```
-iii trigger compose::add worker=memory
+iii call compose::add worker=memory
 ```
 
 A session works in the bank of its repository (or directory), named `<name>-<6 hex>`, and reads the default bank `main` under it: your rules there, and your memories about yourself. One with no working directory uses `main` alone, which materializes on first use. No configuration required; without `llm-router` extraction degrades to explicit `memory::save` calls, and without the harness the worker still serves its full RPC surface.
@@ -15,17 +15,17 @@ A session works in the bank of its repository (or directory), named `<name>-<6 h
 Outside a session the CLI works in the default bank `main`, the one every repository's sessions read under their own. Save something about yourself, then see exactly what a turn on that topic would be given:
 
 ```bash
-iii trigger memory::save text="User publishes blog posts on Tuesday mornings" pinned=true 'tags=["blog"]'
-iii trigger memory::recall query="when do I publish articles"
+iii call memory::save text="User publishes blog posts on Tuesday mornings" pinned=true 'tags=["blog"]'
+iii call memory::recall query="when do I publish articles"
 ```
 
 Give the bank a standing instruction — injected into the system prompt of every session using it, or reading it under a repository's bank:
 
 ```bash
-iii trigger memory::rule::set name=style content="# Style\nFormal register. No em-dashes."
+iii call memory::rule::set name=style content="# Style\nFormal register. No em-dashes."
 ```
 
-With the harness running there is nothing else to wire: chat normally and memory captures in the background. Say "never start replies with the word Certainly" in a conversation and it lands in the session bank's auto-managed `learned` rule; state something durable and it appears as a memory after the turn. If memory seems absent, `iii trigger memory::doctor` runs a real save→recall roundtrip and names what is degraded.
+With the harness running there is nothing else to wire: chat normally and memory captures in the background. Say "never start replies with the word Certainly" in a conversation and it lands in the session bank's auto-managed `learned` rule; state something durable and it appears as a memory after the turn. If memory seems absent, `iii call memory::doctor` runs a real save→recall roundtrip and names what is degraded.
 
 ## Configuration
 
@@ -40,7 +40,7 @@ All fields hot-reload through the `configuration` worker and are editable in the
 - **Tags.** Topical labels WITHIN a bank ("iii", "billing") for filtering — organization, not ranking. Set them on save/update, extraction suggests them automatically, and `memory::list`/`memory::recall` take a `tag` filter.
 - **At most 4 LLM calls per turn (one per 24,000 chars of new messages; most turns take one), zero at query time.** Extraction runs in the background after a turn completes. It sees what the bank already holds about the conversation (what recall finds for the excerpt, its slots left over filled by meaning when embeddings are available): a restatement (same text, or a close rewording) never duplicates the known memory, and reinforces it only when the user's own lines say it again (the assistant echoing an injected memory reinforces nothing), and a correction supersedes the memory it corrects (a recoverable tombstone; pinned memories are never touched). In a directory bank it also keeps what the assistant finds out about the project (how to build, test or run it, a pitfall, where something lives), never its plans, advice or own instructions, nor what a web page, an issue or other outside text it relays says. It also reads the user's own instructions for the bank, as the turn reads its rules: every hand-written rule (never `learned`), then the bank's description, redacted, under `max_rule_chars` (the budget reaches the rules first, so a description never pushes a rule out). One that says not to keep something ("never remember anything about my health") outranks what extraction would otherwise keep (an instruction to the extraction model, not a filter); none makes it keep what it never keeps (secrets, pasted or outside text, the assistant's plans). The description bounds what lands in the bank itself (under a directory bank, its project items, not the user facts that go up to `default_bank`), and a rule about anything else (style, tools) changes nothing it keeps. Facts about the person talking are written as "The user …" with the `user` entity, so recall ranks them for a first-person question (what a turn is given from them is narrower: see the pre-generate row below). Recall adds BM25 over the query's content words (English stopwords dropped, each word counted once; a query over 800 bytes keeps its first and last 400) divided by the best score among the banks one ranking merges, to a semantic signal (cosine on an absolute scale, calibrated for text-embedding-3-small and all-MiniLM-L6-v2; any other model inherits text-embedding-3-small's constants) when `router::embed` is available, then scales the sum by entity match, corroboration, pinning and recency: sub-millisecond at this scale.
 - **Rules learn from corrections.** Extraction classifies standing instructions (style directives, workflow corrections) separately from memories and appends them to the bank's auto-managed `learned` rule — correcting the agent in chat reaches every later turn (new sessions in the system prompt, running ones as an appended rules update). Only a rule the user's own lines state (at least half its content words) is kept, so the assistant restating a tool result or web page, or a harness `[notification]` relaying an event or a child's reply, never makes one; text the user pastes still counts as theirs. Extraction is shown the `learned` lines already in force, so a restatement in other words is not appended again and a correction replaces the line it corrects and becomes the newest line, matched by its text (a line edited by hand since then stays, and the correction appends; so does one naming a line it shares no word with). Hand-authored rules are never touched; dedup by content fingerprint; over `max_rule_chars` the `learned` rule loses its oldest lines, never the newest; `rule_learning_enabled` turns it off. Under a directory bank, a rule extraction marks user-scope (reply language, tone, length, formatting) is appended to `default_bank`'s `learned` rule, so it follows the user into every repository; project rules stay in the directory bank's. A line either bank's `learned` already holds is never appended again.
-- **Secrets are redacted, deterministically.** Known key and token shapes (provider API keys, bearer tokens, JWTs, private key blocks, credentialed URLs, `password=`-style assignments) become `[REDACTED:<label>]` before anything is stored — memory text, entities, tags, and rules, on every write path — and before the transcript excerpt reaches the extraction model. The `item-changed` event names what was redacted (`reason`), never the value. A denylist of shapes: an unknown format passes, so the extraction prompt still forbids secrets.
+- **Secrets are redacted, deterministically.** Known key and token shapes (provider API keys, bearer tokens, JWTs, private key blocks, credentialed URLs, `password=`-style assignments) become `[REDACTED:<label>]` before anything is stored — memory text, entities, tags, and rules, on every write path — and before the transcript excerpt reaches the extraction model. The `memory::on-item-changed` event names what was redacted (`reason`), never the value. A denylist of shapes: an unknown format passes, so the extraction prompt still forbids secrets.
 - **Hidden and injected instructions are screened.** Invisible characters (zero-width, bidi marks and overrides, tag characters; a joiner between two non-ASCII characters, as in an emoji or Persian, and a Japanese variation selector stay) are stripped on the same paths, labelled `invisible_unicode`. A memory or rule phrased as a classic prompt injection ("ignore all previous instructions", "act as if you have no restrictions") is refused with `invalid_input` by `memory::save`, `memory::update` and `memory::rule::set` (on the lines it adds), and dropped by extraction; a negated or hedged mention ("never ignore your instructions") passes. The set is small and English-only on purpose: file names, URLs, paths and imperative style pass, and most extracted text is paraphrased anyway, so it mostly catches agent saves and hand edits.
 - **Time-aware.** Extraction reads each message with its own date and writes dated events ("tomorrow", "next Friday") as absolute dates; every injected memory carries the date its fact was last stated (an extracted memory takes its message's date; a pin or tag edit moves nothing), recency ranks by that same date, and the block names the day it was recalled.
 - **Honest health.** `memory::doctor` runs a real save→recall→delete roundtrip in a scratch bank (nothing left in `.trash`), reports sibling reachability (router, session-manager, the state worker that keeps the extraction cursor), probes `router::embed`, and flags extraction passes that keep failing. `memory::recall` names the retrieval mode it ran. Degradation is explicit, never silent.
@@ -49,8 +49,8 @@ All fields hot-reload through the `configuration` worker and are editable in the
 
 | Seam | What happens |
 |---|---|
-| `harness::hook::pre-generate` (fail-open, priority 100) | Injects the session bank's rules into the system prompt once per session (sent verbatim after that; a later rule change arrives as one appended update message, so the prefix stays append-only) and, on each turn's first step, up to `recall_limit` recalled memories as one appended message, or more for a list question (past `recall_limit` only for "what do you remember about me?" or for siblings: lines on the same two or more question words, each leading with its own subject: "which services use Postgres 16?" gets each sibling, while "kotlin?", "is payments-api down?" and "what should I do now?" keep the count, among the best 4 × `recall_limit` candidates, until `recall_budget_tokens`): only memories with evidence (a word of the message, or its meaning; the `user` a pronoun stands for counts only in a question of pronouns alone, "who am I", or of a memory verb asked of "me", "what do you remember about me", "tell me about myself", "do you know who I am?", never "tell me more" or "I know") that stand on their own or with the turn's best match, which counts only in a turn anchored in the bank (two of its words matched, a meaning that stands out, which needs 20 embedded memories in the bank for a z-score (below that, any meaning match anchors the turn, as before), or, without vectors, its best word match: with vectors, "Great, go ahead." gets nothing on its one shared word); one line per fact (the best-ranked of its rewordings); the newer of a stated change, in the older one's place when only the older matched well enough ("now runs at 04:00" over "runs at 02:00"; a pinned memory is never hidden); a newer note on a told line's subject joins right after it, even with no word of the message ("dana left the company" after "dana is on call for payments-api" when the message names payments-api); and nothing when none qualifies; minus any the window already carries from an earlier turn's block, or a rewording of one (a block compaction dropped no longer counts, so its memories can return). Whether an update is due is read from the window the step sends (its newest `<memory update="rules">` message, else the frozen section), so a lost or compacted-away update is sent again and a delivered one never is |
-| `harness::turn-completed` | Queues one background `router::complete` extraction pass over the turn's new user/assistant messages (all of them, one call per 24,000 chars of excerpt; a session's first pass, or a backlog over 4 calls, reads at most `extraction_window` non-empty messages, plus the turn's user message), into the bank the turn was injected with (after a worker restart, the one the hook stamped on the turn's reply); under a directory bank, user-scope items go to `default_bank`; agent-scope items go to that agent's bank (see Bank selection). A failed or cancelled turn is extracted too (its own bank, not the next turn's); a sub-agent's turn never is, nor an automation or e2e session's (session `kind` other than `user`), nor a turn that finished while `extraction_enabled` was off |
+| `harness::hook::on-pre-generate` (args `{ priority: 100, timeout_ms: 3000, on_error: fail_open }`) | Injects the session bank's rules into the system prompt once per session (sent verbatim after that; a later rule change arrives as one appended update message, so the prefix stays append-only) and, on each turn's first step, up to `recall_limit` recalled memories as one appended message, or more for a list question (past `recall_limit` only for "what do you remember about me?" or for siblings: lines on the same two or more question words, each leading with its own subject: "which services use Postgres 16?" gets each sibling, while "kotlin?", "is payments-api down?" and "what should I do now?" keep the count, among the best 4 × `recall_limit` candidates, until `recall_budget_tokens`): only memories with evidence (a word of the message, or its meaning; the `user` a pronoun stands for counts only in a question of pronouns alone, "who am I", or of a memory verb asked of "me", "what do you remember about me", "tell me about myself", "do you know who I am?", never "tell me more" or "I know") that stand on their own or with the turn's best match, which counts only in a turn anchored in the bank (two of its words matched, a meaning that stands out, which needs 20 embedded memories in the bank for a z-score (below that, any meaning match anchors the turn, as before), or, without vectors, its best word match: with vectors, "Great, go ahead." gets nothing on its one shared word); one line per fact (the best-ranked of its rewordings); the newer of a stated change, in the older one's place when only the older matched well enough ("now runs at 04:00" over "runs at 02:00"; a pinned memory is never hidden); a newer note on a told line's subject joins right after it, even with no word of the message ("dana left the company" after "dana is on call for payments-api" when the message names payments-api); and nothing when none qualifies; minus any the window already carries from an earlier turn's block, or a rewording of one (a block compaction dropped no longer counts, so its memories can return). Whether an update is due is read from the window the step sends (its newest `<memory update="rules">` message, else the frozen section), so a lost or compacted-away update is sent again and a delivered one never is |
+| `harness::on-turn-completed` | Queues one background `router::complete` extraction pass over the turn's new user/assistant messages (all of them, one call per 24,000 chars of excerpt; a session's first pass, or a backlog over 4 calls, reads at most `extraction_window` non-empty messages, plus the turn's user message), into the bank the turn was injected with (after a worker restart, the one the hook stamped on the turn's reply); under a directory bank, user-scope items go to `default_bank`; agent-scope items go to that agent's bank (see Bank selection). A failed or cancelled turn is extracted too (its own bank, not the next turn's); a sub-agent's turn never is, nor an automation or e2e session's (session `kind` other than `user`), nor a turn that finished while `extraction_enabled` was off |
 
 What injection does not catch yet:
 
@@ -70,10 +70,11 @@ A session running as an agent profile (`agent_profile` in its session metadata, 
 
 Switching a running session's bank does not rewrite what it already saw: the new bank's section arrives as an appended update that overrides the frozen one, while the earlier bank's section and recalled memories stay visible in the transcript. Start a new session when the two contexts must not mix. Turning `inject_rules` and `inject_memories` both off works the same way: a running session keeps its section and is told once that no memory section applies.
 
-All seam bindings are one-shot at startup and rely on the engine's recoverable
-triggers (iii #1962, engine ≥ 0.21.8): bound before the owning sibling (harness,
-session-manager, queue) is up, they park as pending intents and activate when
-the trigger type registers. On older engines the binds are silently dropped.
+The worker also observes `session::on-deleted` (drops the session's extraction cursor) and `queue::on-message` with args `{ topic: "memory-extraction", max_retries: 3, backoff_ms: 2000 }` (runs the queued extraction jobs; an error retries the job, then dead-letters it), and `configuration::on-updated` for its own entry.
+
+The worker creates every observer at startup, and creates the extraction consumer again each time its id is refused (below). Observed before its owning sibling (harness, session-manager, queue) is up, an observer stays `pending` and becomes active when the sibling registers the function.
+
+The extraction consumer observes under a stable id: the worker name (`memory`, or the `III_WORKER_NAME` its supervisor sets), then `:queue:` and the topic, preceded by `<namespace>/` when the worker has a namespace (`memory:queue:memory-extraction` by default; an id over 128 bytes becomes the worker name, cut to its first 97 bytes, then `:queue:fnv1a64:` and a 64-bit FNV-1a digest of the whole id). The queue worker files a subscriber's durable queue under its observer id. When the worker stops, killed or not, the engine keeps its observers suspended for its grace period (`observers.observer_grace_ms`, 30 s by default) and withdraws them from their functions' workers. A restarted worker, under the same name and namespace, observes the topic under the same id: the engine replaces the suspended observer with the new one, and the queue worker hands the new process every job the previous one left unacked, once. While another observer holds the id (`OBSERVER_ID_CONFLICT`: the engine has not seen the previous process's connection close yet, another worker holds it until its grace period ends, or the queue worker has not let the previous subscriber go yet), the worker logs the refusal, disposes the refused observer, and observes again 5 s after the refusal, then twice as long each time up to 30 s (5 s, 10 s, 20 s, 30 s, 30 s, ...).
 
 ## Functions
 
@@ -90,12 +91,28 @@ the trigger type registers. On older engines the binds are silently dropped.
 | `memory::doctor` | End-to-end self-test (roundtrip, sibling reachability, embeddings, recent extraction failures) |
 | `memory::reload` | Reload every bank from disk after hand-editing files |
 
-## Custom trigger types
+Every function above is also a REST route through the http worker: the worker observes `http::on-request` with args `{ method: "POST", path }` per function, the path being the function id with `::` as `/` (`POST /memory/save`, `POST /memory/bank/create`). Every route targets `memory::rest` (internal), which receives the `HttpRequest`, runs the function with the request's JSON body as its input (an empty body is `{}`), and returns the `HttpResponse`: `200` with the function's result, or `{ error: { code, message } }` with `400` (`invalid_input`, also a body that does not fit the function's input), `404` (`bank_not_found`, `memory_not_found`), `500` (`storage`) or `503` (`sibling_unavailable`).
 
-Bind live views here instead of polling; both are filterable by `bank` in the binding config, delivery is fire-and-forget, at-least-once, unordered.
+```bash
+curl -X POST localhost:3111/memory/save -H 'content-type: application/json' \
+  -d '{"bank":"blog","text":"The blog deploys on Fridays"}'
+```
 
-- `memory::item-changed` — a memory was created / updated / superseded / deleted. Payload: `{event_type, bank, memory, reason?}` (`reason` on consolidation changes).
-- `memory::bank-changed` — a bank was created / trashed, or its rules changed. Payload: `{event_type, bank}`.
+## Change functions
+
+Observe these for live views instead of polling. Both are private (only this worker calls them) and take no args: an observer selects changes with filters on the event. The worker calls each one fire-and-forget when the change happens, and iii delivers the event to every observer whose filters match, unordered.
+
+| Function | Args | Called when | Event |
+|---|---|---|---|
+| `memory::on-item-changed` | none; filter on `input.bank`, `input.event_type` | a memory is created, updated, superseded, or deleted | `{ event_type: created \| updated \| superseded \| deleted, bank, memory, reason? }`: `memory` is the record as stored after the change, `reason` is `memory::supersede`'s reason or `redacted: <labels>` |
+| `memory::on-bank-changed` | none; filter on `input.bank`, `input.event_type` | a bank is created or trashed, or its rules change | `{ event_type: created \| trashed \| rules-changed, bank }` |
+
+```typescript
+iii.observe(
+  { function_id: 'memory::on-item-changed', filters: { 'input.bank': { $eq: 'blog' } }, deliver: 'output' },
+  'blog::on-memory-changed',
+)
+```
 
 ## Storage layout
 
@@ -148,9 +165,23 @@ Run it before and after a prompt change; it needs an engine with a router and a 
 III_URL=ws://127.0.0.1:<port> III_NAMESPACE=<ns> EXTRACTION_MODEL=<id> cargo test -p memory --lib extract::eval -- --ignored --nocapture
 ```
 
+## Engine test
+
+`tests/engine.rs` registers the worker's functions against an engine and checks that `memory::on-item-changed` and `memory::on-bank-changed` register private, with no args and the event as request and response, that a save reaches the observers filtered on its bank (and no others), and that `memory::rest` answers the http worker's request shape. It skips when no engine answers; `III_E2E_REQUIRE=1` makes that a failure.
+
+```bash
+III_ENGINE_WS_URL=ws://127.0.0.1:<port> cargo test --test engine
+```
+
+`tests/queue_restart.rs` runs the `memory` binary against the same engine, with a contract mock of the queue worker's `queue::on-message`: a killed worker, started again, gets the extraction jobs it left unacked, once each, under the same observer id; and while another worker holds the id, the worker observes again until it is free, 5 s after its first refusal and 10 s after its second. It skips and fails like `tests/engine.rs`.
+
+```bash
+III_ENGINE_WS_URL=ws://127.0.0.1:<port> cargo test --test queue_restart
+```
+
 ## Permissions
 
-Suggested defaults ship in [`iii-permissions.yaml`](iii-permissions.yaml): agents get `memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`; the hook/pipeline internals are denied, and bank/rule writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default.
+Suggested defaults ship in [`iii-permissions.yaml`](iii-permissions.yaml): agents get `memory::recall`, `memory::save`, `memory::get`, `memory::list`, `memory::update`, `memory::delete`, `memory::pin`; the hook/pipeline internals and the REST adapter `memory::rest` are denied, and bank/rule writes plus `memory::reload` are human-owned surfaces (console, REST, CLI) by default.
 
 ## The memory family
 
@@ -158,8 +189,8 @@ Like `llm-router` and its provider workers, memory is a family of narrow sibling
 
 | Worker | Role | Status |
 |---|---|---|
-| `memory` (this) | Banks, rules, memories: storage, harness injection, background capture, hybrid recall, live trigger types | shipped |
-| [`memory-consolidate`](https://github.com/iii-hq/workers/tree/main/memory-consolidate) | Background hygiene on a schedule: deterministic dedup of near-duplicate memories, catch-up-on-boot scheduling. Supersede-only through `memory::supersede`, never touches pinned records; every change lands as a `memory::item-changed` event | shipped |
+| `memory` (this) | Banks, rules, memories: storage, harness injection, background capture, hybrid recall, live change functions | shipped |
+| [`memory-consolidate`](https://github.com/iii-hq/workers/tree/main/memory-consolidate) | Background hygiene on a schedule: deterministic dedup of near-duplicate memories, catch-up-on-boot scheduling. Supersede-only through `memory::supersede`, never touches pinned records; every change lands as a `memory::on-item-changed` event | shipped |
 
 The split is the point: consolidation can be installed, stopped, or removed without touching stored memory, and this worker never grows a scheduler.
 

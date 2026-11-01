@@ -178,14 +178,14 @@ export function RemoveLearnIii({
     setError(null)
     try {
       const list = await host.iii
-        .trigger<{ projects?: { file?: string; containers?: { container?: string }[] }[] }>('compose::list', {})
+        .call<{ projects?: { file?: string; containers?: { container?: string }[] }[] }>('compose::list', {})
         .catch(() => null)
       // With several projects loaded, the one running this worker.
       const withFile = (list?.projects ?? []).filter((project) => project.file)
       const file = (
         withFile.find((project) => project.containers?.some((entry) => entry.container === 'onboarding')) ?? withFile[0]
       )?.file
-      await host.iii.trigger('compose::remove', {
+      await host.iii.call('compose::remove', {
         ...(file ? { file } : {}),
         workers: ['onboarding'],
       })
@@ -195,7 +195,7 @@ export function RemoveLearnIii({
       return
     }
     if (onClose) onClose()
-    else await host.iii.trigger('console::workspace::close', { screen: 'ext:learn-iii' }).catch(() => undefined)
+    else await host.iii.call('console::workspace::close', { screen: 'ext:learn-iii' }).catch(() => undefined)
   }, [host, onClose])
   return (
     <>

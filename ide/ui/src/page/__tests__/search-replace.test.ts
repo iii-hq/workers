@@ -104,18 +104,18 @@ describe('helpers', () => {
 
 describe('replaceInFile', () => {
   const hostWith = (read: object, write: object = { success: true, revision: 'r2' }) => {
-    const trigger = vi.fn(async (id: string) => {
+    const call = vi.fn(async (id: string) => {
       if (id === 'coder::read-file') return read
       return { results: [{ path: '/f', bytes_written: 1, ...write }] }
     })
-    return { host: { iii: { trigger } } as unknown as Host, trigger }
+    return { host: { iii: { call } } as unknown as Host, call }
   }
 
   it('writes the rewritten body against the revision it read', async () => {
-    const { host, trigger } = hostWith({ content: 'foo', revision: 'r1', mode: 0o644, is_utf8: true })
+    const { host, call } = hostWith({ content: 'foo', revision: 'r1', mode: 0o644, is_utf8: true })
     const out = await replaceInFile(host, '/f', (text) => replaceAllInText(text, opts({})))
     expect(out).toEqual({ path: '/f', status: 'replaced', count: 1 })
-    expect(trigger).toHaveBeenLastCalledWith('coder::create-file', {
+    expect(call).toHaveBeenLastCalledWith('coder::create-file', {
       files: [{ path: '/f', content: 'bar', overwrite: true, mode: '0644', expected_revision: 'r1' }],
     })
   })
@@ -125,8 +125,8 @@ describe('replaceInFile', () => {
     expect((await replaceInFile(partial.host, '/f', (t) => replaceAllInText(t, opts({})))).status).toBe('skipped')
     const binary = hostWith({ content: '', is_utf8: false })
     expect((await replaceInFile(binary.host, '/f', (t) => replaceAllInText(t, opts({})))).status).toBe('skipped')
-    expect(partial.trigger).toHaveBeenCalledTimes(1)
-    expect(binary.trigger).toHaveBeenCalledTimes(1)
+    expect(partial.call).toHaveBeenCalledTimes(1)
+    expect(binary.call).toHaveBeenCalledTimes(1)
   })
 
   it('reports a revision conflict as skipped', async () => {

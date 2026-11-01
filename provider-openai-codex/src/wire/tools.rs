@@ -26,7 +26,7 @@ mod tests {
     #[test]
     fn maps_flat_function_fields_with_encoded_name() {
         let tools = vec![AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "Invoke an iii function".into(),
             parameters: json!({ "type": "object" }),
             label: None,
@@ -34,7 +34,7 @@ mod tests {
         }];
         let wire = functions_to_wire(&tools);
         assert_eq!(wire[0]["type"], "function");
-        assert_eq!(wire[0]["name"], "agent__trigger");
+        assert_eq!(wire[0]["name"], "agent__call");
         assert_eq!(wire[0]["description"], "Invoke an iii function");
         assert_eq!(wire[0]["parameters"]["type"], "object");
         assert!(

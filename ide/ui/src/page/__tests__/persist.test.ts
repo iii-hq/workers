@@ -8,7 +8,7 @@ function hostWithStates(states: Record<string, unknown>) {
   const calls: Array<{ id: string; payload: Record<string, unknown> }> = []
   const host = {
     iii: {
-      trigger: async (id: string, payload: Record<string, unknown>) => {
+      call: async (id: string, payload: Record<string, unknown>) => {
         calls.push({ id, payload })
         if (id !== UI_STATE_GET_FN) throw new Error(`unexpected ${id}`)
         const key = payload.key as string
@@ -84,7 +84,7 @@ describe('loadTabUiState', () => {
     let attempts = 0
     const host = {
       iii: {
-        trigger: async (id: string) => {
+        call: async (id: string) => {
           calls.push(id)
           attempts += 1
           if (attempts === 1) throw new Error('function_not_found: shell::ui-state::get')
@@ -103,7 +103,7 @@ describe('loadTabUiState', () => {
   })
 
   it('gives up after the retries and boots fresh, but never retries "nothing stored"', async () => {
-    const failing = { iii: { trigger: async () => { throw new Error('engine is starting') } } } as never
+    const failing = { iii: { call: async () => { throw new Error('engine is starting') } } } as never
     const waits: number[] = []
     const wait = async (ms: number) => {
       waits.push(ms)
@@ -191,7 +191,7 @@ describe('createTabUiStateSaver', () => {
       const calls: Array<{ id: string; payload: unknown }> = []
       const host = {
         iii: {
-          trigger: async (id: string, payload: unknown) => {
+          call: async (id: string, payload: unknown) => {
             calls.push({ id, payload })
             return { key: 'tab-1', bytes: 1 }
           },
@@ -226,7 +226,7 @@ describe('createTabUiStateSaver', () => {
       const states: Array<Record<string, unknown>> = []
       const host = {
         iii: {
-          trigger: async (_id: string, payload: { state: Record<string, unknown> }) => {
+          call: async (_id: string, payload: { state: Record<string, unknown> }) => {
             states.push(payload.state)
             return {}
           },
@@ -252,7 +252,7 @@ describe('createTabUiStateSaver', () => {
         let sets = 0
         const host = {
           iii: {
-            trigger: async () => {
+            call: async () => {
               sets += 1
               throw new Error(failure)
             },
@@ -277,7 +277,7 @@ describe('createTabUiStateSaver', () => {
   it('never writes for an empty key', () =>
     withFakeTimers(async () => {
       let sets = 0
-      const host = { iii: { trigger: async () => { sets += 1; return {} } } } as never
+      const host = { iii: { call: async () => { sets += 1; return {} } } } as never
       const saver = createTabUiStateSaver(host, '')
       saver.save({ root: '/repo', open: [], active: null, expanded: [] })
       await vi.advanceTimersByTimeAsync(600)

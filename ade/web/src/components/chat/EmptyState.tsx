@@ -54,7 +54,7 @@ export interface EmptyStateProps {
   worktreePicker?: WorktreePickerOptions
 }
 
-const HARNESS_INSTALL_COMMAND = 'iii trigger compose::add worker=harness'
+const HARNESS_INSTALL_COMMAND = 'iii call compose::add worker=harness'
 
 const HEADING_CLASS =
   'text-balance font-sans text-3xl font-semibold tracking-tight text-ink'
@@ -234,8 +234,8 @@ function InstallingBody({
 }
 
 /**
- * Live install console — `Terminal` chrome over the streamed `worker`
- * lifecycle stages, framed as the equivalent `iii trigger compose::add worker=harness` run.
+ * Live install console — `Terminal` chrome over the add's stages, framed as
+ * the equivalent `iii call compose::add worker=harness` run.
  */
 function InstallConsole({
   stages,

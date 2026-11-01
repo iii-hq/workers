@@ -115,7 +115,7 @@ pub struct SkillFrontmatter {
     /// `directory::skills::list` / `::get` so a calling agent can tell
     /// the SKILL id (`sandbox/skills/sandbox/create`, the on-disk path)
     /// apart from the FUNCTION id (`sandbox::create`, what
-    /// `agent_trigger` actually expects). Missing for index-type and
+    /// `agent_call` actually expects). Missing for index-type and
     /// reference-type skills that aren't 1:1 with a single function.
     #[serde(default)]
     pub function_id: Option<String>,

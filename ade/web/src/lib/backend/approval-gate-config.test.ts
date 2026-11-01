@@ -31,7 +31,7 @@ describe('approval-gate-config', () => {
         'shell::workspace::*',
         'state::set',
       ],
-      expose: 'agent_trigger',
+      expose: 'agent_call',
     })
   })
 

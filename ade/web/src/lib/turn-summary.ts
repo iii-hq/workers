@@ -1,4 +1,4 @@
-import type { FunctionTriggerMessage, Message } from '@/types/chat'
+import type { FunctionCallMessage, Message } from '@/types/chat'
 
 /**
  * What a reply's footer says about the turn behind it: how long it took,
@@ -20,9 +20,7 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 /** A call's arguments, with the iii envelope peeled when one wraps them. */
-function callInput(
-  call: FunctionTriggerMessage,
-): Record<string, unknown> | null {
+function callInput(call: FunctionCallMessage): Record<string, unknown> | null {
   const raw = record(call.input)
   if (!raw) return null
   const details = record(raw.details)
@@ -52,7 +50,7 @@ interface Tally {
  * shell writers and conservative (1/1) for pattern replacements.
  */
 export function changedFilesFromCalls(
-  calls: readonly FunctionTriggerMessage[],
+  calls: readonly FunctionCallMessage[],
 ): ChangedFile[] {
   const byPath = new Map<string, Tally>()
   const bump = (

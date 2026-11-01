@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::json;
 
@@ -45,7 +45,7 @@ impl ShellExecRunner {
     }
 }
 
-const TRIGGER_MARGIN_MS: u64 = 30_000;
+const CALL_MARGIN_MS: u64 = 30_000;
 
 #[async_trait]
 impl TestRunner for ShellExecRunner {
@@ -57,7 +57,7 @@ impl TestRunner for ShellExecRunner {
     ) -> Result<TestOutcome, WError> {
         let result = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "shell::exec".into(),
                 payload: json!({
                     "command": cmd,
@@ -66,7 +66,7 @@ impl TestRunner for ShellExecRunner {
                     "timeout_ms": timeout_ms,
                 }),
                 action: None,
-                timeout_ms: Some(timeout_ms.saturating_add(TRIGGER_MARGIN_MS)),
+                timeout_ms: Some(timeout_ms.saturating_add(CALL_MARGIN_MS)),
             })
             .await;
         match result {

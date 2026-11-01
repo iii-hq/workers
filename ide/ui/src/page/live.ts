@@ -1,12 +1,12 @@
 /**
- * Live workspace updates over this worker's own `shell::changed` trigger
- * type: a system-level directory watch (FSEvents/inotify) the worker runs
- * for each binding, so EVERY change streams — agent calls, `shell::exec`
- * side effects, and edits made outside the engine entirely. The page
- * binds one watch per pane on the browsed root, through a function named
- * after the pane so two panes of one tab never hear each other's folder
- * (the `iii::` prefix keeps per-event invocations span-suppressed; the
- * binding is GC'd with the pane, and re-binds when the root changes). No
+ * Live workspace updates over this worker's own `shell::on-changed`: a
+ * system-level directory watch (FSEvents/inotify) the worker runs for its
+ * observers, so EVERY change streams — agent calls, `shell::exec` side
+ * effects, and edits made outside the engine entirely. The page observes
+ * one watch per pane on the browsed root, through a function named after
+ * the pane so two panes of one tab never hear each other's folder (the
+ * `iii::` prefix keeps per-event invocations span-suppressed; the observer
+ * is disposed with the pane, and made again when the root changes). No
  * polling, and no dependency on any other worker.
  */
 
@@ -16,7 +16,7 @@ import { publishWorktree } from './git-watch'
 
 const EVENTS_FN = 'iii::shell-ui::changed'
 
-/** The slice of `shell::changed` this page acts on. */
+/** The slice of `shell::on-changed`'s event this page acts on. */
 export interface WorkspaceChangedEvent {
   /** Path relative to `root`. */
   path: string
@@ -45,7 +45,7 @@ export function useWorkspaceChanges(
     if (!root) return
     const functionId = `${EVENTS_FN}::${scope}`
     // The branch chips on this folder read their dirty mark again from
-    // these events instead of binding a watch of their own.
+    // these events, with no watch of their own.
     const chips = publishWorktree(host, root)
     const offHandler = host.iii.on<WorkspaceChangedEvent>(
       functionId,
@@ -61,16 +61,18 @@ export function useWorkspaceChanges(
         handlerRef.current(event)
       },
     )
-    const offTrigger = host.iii.registerTrigger({
-      type: 'shell::changed',
-      function_id: `${functionId}::${host.iii.browserId}`,
-      // The workspace view counts ignored churn (build output, engine data)
-      // instead of hiding it, so it opts in; every other subscriber gets
-      // only the changes that matter by default.
-      config: { path: root, include_ignored: true },
-    })
+    const offObserver = host.iii.observe(
+      {
+        function_id: 'shell::on-changed',
+        // The workspace view counts ignored churn (build output, engine
+        // data) and shows it, so it opts in; every other observer gets only
+        // the changes that matter by default.
+        args: { path: root, include_ignored: true },
+      },
+      `${functionId}::${host.iii.browserId}`,
+    )
     return () => {
-      offTrigger()
+      offObserver()
       offHandler()
       chips.off()
     }

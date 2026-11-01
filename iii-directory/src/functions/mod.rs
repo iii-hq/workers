@@ -39,46 +39,19 @@ use std::sync::Arc;
 use iii_sdk::IIIClient;
 
 use crate::config::{SharedConfig, SkillsConfig};
+pub use crate::events::ChangeSources;
 use crate::fs_source::{self, SourceKind};
-use crate::trigger_types::{RegisteredTriggerTypes, SubscriberSet};
 
-/// Subscriber sets passed into the write modules (`download`, `update`,
-/// `agents`) so they can fan out the matching `directory::*::on-change`
-/// after a successful write.
-#[derive(Clone)]
-pub struct Subscribers {
-    pub skills: SubscriberSet,
-    pub system_prompts: SubscriberSet,
-    pub agents: SubscriberSet,
-    pub kits: SubscriberSet,
-}
-
-impl From<&RegisteredTriggerTypes> for Subscribers {
-    fn from(t: &RegisteredTriggerTypes) -> Self {
-        Self {
-            skills: t.skills.clone(),
-            system_prompts: t.system_prompts.clone(),
-            agents: t.agents.clone(),
-            kits: t.kits.clone(),
-        }
-    }
-}
-
-pub fn register_all(
-    iii: &Arc<IIIClient>,
-    cfg: &SharedConfig,
-    trigger_types: &RegisteredTriggerTypes,
-) {
+pub fn register_all(iii: &Arc<IIIClient>, cfg: &SharedConfig, sources: &ChangeSources) {
     let cache = std::sync::Arc::new(skills::RegisteredWorkersCache::new(
         cfg.load().registry_cache_ttl_ms,
     ));
     skills::register_with_cache(iii, cfg, &cache);
     prompts::register(iii, cfg);
-    let subs = Subscribers::from(trigger_types);
-    download::register(iii, cfg, &subs);
-    update::register(iii, cfg, &subs, &cache);
-    agents::register(iii, cfg, &subs, &cache);
-    kits::register(iii, cfg, &subs, &cache);
+    download::register(iii, cfg, sources);
+    update::register(iii, cfg, sources, &cache);
+    agents::register(iii, cfg, sources, &cache);
+    kits::register(iii, cfg, sources, &cache);
     registry::register(iii, cfg);
     engine_fn::register(iii);
 }
@@ -86,17 +59,16 @@ pub fn register_all(
 pub fn register_all_with_cache(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    trigger_types: &RegisteredTriggerTypes,
+    sources: &ChangeSources,
     cache: &std::sync::Arc<skills::RegisteredWorkersCache>,
     registry_cache: registry::RegistryCache,
 ) {
     skills::register_with_cache(iii, cfg, cache);
     prompts::register(iii, cfg);
-    let subs = Subscribers::from(trigger_types);
-    download::register(iii, cfg, &subs);
-    update::register(iii, cfg, &subs, cache);
-    agents::register(iii, cfg, &subs, cache);
-    kits::register(iii, cfg, &subs, cache);
+    download::register(iii, cfg, sources);
+    update::register(iii, cfg, sources, cache);
+    agents::register(iii, cfg, sources, cache);
+    kits::register(iii, cfg, sources, cache);
     registry::register_with_cache(iii, cfg, registry_cache);
     engine_fn::register(iii);
 }

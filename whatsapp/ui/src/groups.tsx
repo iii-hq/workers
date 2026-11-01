@@ -77,7 +77,7 @@ export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, on
     setListLoading(true)
     setListError(null)
     try {
-      const result = await host.iii.trigger<GroupOverview[]>('whatsapp::groups::list', { session_id: sessionId })
+      const result = await host.iii.call<GroupOverview[]>('whatsapp::groups::list', { session_id: sessionId })
       if (!current() || !connectedRef.current) return
       setGroups(result)
       setDetails((previous) => Object.fromEntries(result.flatMap((group) => previous[group.id] ? [[group.id, previous[group.id]]] : [])))
@@ -102,7 +102,7 @@ export function GroupBrowser({ host, sessionId, connected, narrow, panelSide, on
     setDetailLoading(true)
     setDetailError(null)
     try {
-      const result = await host.iii.trigger<GroupDetail>('whatsapp::groups::get', { session_id: sessionId, group_id: groupId })
+      const result = await host.iii.call<GroupDetail>('whatsapp::groups::get', { session_id: sessionId, group_id: groupId })
       if (!current() || !connectedRef.current || selectedRef.current !== groupId) return
       setDetails((previous) => ({ ...previous, [groupId]: result }))
     } catch (cause) {

@@ -44,8 +44,7 @@ function StepFunctionLabel({ functionId }: { functionId: string }) {
 
 /** The numbered step route of a pipe — one row per step: function id,
     optional `into` chip, payload one-liner, and (when receipts exist) the
-    per-step threaded size. Shared between the `fp::pipe` call card and the
-    register-trigger THEN pane (a reaction whose call target is a pipe). */
+    per-step threaded size, for the `fp::pipe` call card. */
 export function PipeStepList({
   through,
   receipts,

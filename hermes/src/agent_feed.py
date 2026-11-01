@@ -1,21 +1,23 @@
-"""Owned event feeds: `hermes::agent-event` and `hermes::raw-event`.
+"""Owned event feeds: `hermes::on-agent-event` and `hermes::on-raw-event`.
 
-The worker registers two trigger types at startup and delivers each frame to
-the functions bound to the frame's session. They replace the old iii-stream
-feeds (`agent::events` / `hermes::events`); the contract is shared by every
+The worker registers two private functions at startup. Each handler returns
+the frame envelope it is called with, which is what observers observe; the
+worker emits a frame by calling the function. The contract is shared by every
 agent worker (P3-1 design, section 2):
 
-- binding config `{session_id, metadata?}`: `session_id` is a required,
-  non-empty string of at most 512 characters, `metadata` an optional object.
-  Unknown keys, a bad `session_id` or non-object `metadata` reject the binding.
-  At most `MAX_BINDINGS` bindings per trigger type; re-registering an existing
-  binding id replaces it.
-- delivery payload `{session_id, event_id, seq, epoch, source, event}`: `event`
-  is the unchanged frame, `seq` is contiguous per (feed, session, epoch) from 0,
+- observer args `{session_id}`: a required, non-empty string of at most 512
+  characters and nothing else (`FEED_ARGS_FORMAT`; the engine refuses other
+  args with `INVALID_ARGS`). At most `MAX_OBSERVERS` observers per function;
+  one more is rejected with `OBSERVER_LIMIT`. Metadata a consumer wants back
+  goes in its observe options and reaches its target as the metadata sidecar.
+- event `{session_id, event_id, seq, epoch, source, event}`: `event` is the
+  unchanged frame, `seq` is contiguous per (feed, session, epoch) from 0,
   `epoch` a per-process uuid, `event_id` = `<session_id>-<epoch>-<seq:08>`.
-- delivery: one fire-and-forget (Void) trigger call per matching binding,
-  sequential, forwarding the binding's namespace and metadata (config metadata
-  wins); a failed delivery is logged and swallowed. No binding, no call.
+- delivery: one fire-and-forget (Void) call of the function per frame. A match
+  hook files each observer under its `session_id` and a frame matches the
+  observers of its own, so iii delivers it only to them. A frame of a session
+  nobody observes is never built, though its `seq` still advances. A failed
+  call is logged and swallowed.
 
 Frames are ephemeral: not stored, not replayed. History lives in the session
 records (`hermes::status`, `hermes::sessions::list`) and the turn result.
@@ -29,28 +31,27 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from iii import TriggerAction
-from iii.triggers import TriggerConfig, TriggerHandler
+from iii import CallAction, ObserveRejection
 
 SOURCE = "hermes"
-AGENT_EVENT_TYPE = "hermes::agent-event"
-RAW_EVENT_TYPE = "hermes::raw-event"
-MAX_BINDINGS = 256
+ON_AGENT_EVENT_FN = "hermes::on-agent-event"
+ON_RAW_EVENT_FN = "hermes::on-raw-event"
+MAX_OBSERVERS = 256
 MAX_SESSION_ID_LEN = 512
-CONFIG_KEYS = frozenset({"session_id", "metadata"})
+OBSERVER_LIMIT = "OBSERVER_LIMIT"
 
 AGENT_EVENT_DESCRIPTION = (
     "Normalized AgentEvent frames of one Hermes session (turn_end, agent_end). "
-    "Config {session_id, metadata?}; payload {session_id, event_id, seq, epoch, source, event}. "
+    "Args {session_id}; event {session_id, event_id, seq, epoch, source, event}. "
     "Ephemeral: order by (epoch, seq), dedup by event_id."
 )
 RAW_EVENT_DESCRIPTION = (
     "Raw Hermes frames of one session: the run `result` frame and inbound gateway deliveries. "
-    "Config {session_id, metadata?}; payload {session_id, event_id, seq, epoch, source, event}. "
+    "Args {session_id}; event {session_id, event_id, seq, epoch, source, event}. "
     "Ephemeral: order by (epoch, seq), dedup by event_id."
 )
 
-FEED_CONFIG_FORMAT = {
+FEED_ARGS_FORMAT = {
     "type": "object",
     "properties": {
         "session_id": {
@@ -59,7 +60,6 @@ FEED_CONFIG_FORMAT = {
             "maxLength": MAX_SESSION_ID_LEN,
             "description": "Only this session's frames are delivered.",
         },
-        "metadata": {"type": "object", "description": "Echoed to the handler; wins over binding metadata."},
     },
     "required": ["session_id"],
     "additionalProperties": False,
@@ -80,92 +80,79 @@ FEED_PAYLOAD_FORMAT = {
 log = logging.getLogger("hermes.agent_feed")
 
 
-def validate_feed_config(type_id: str, raw: Any) -> dict[str, Any]:
-    """Validate a binding config; raise ValueError (rejects the binding)."""
-    if not isinstance(raw, dict):
-        raise ValueError(f"{type_id}: config must be an object with a session_id")
-    unknown = sorted(str(k) for k in raw if k not in CONFIG_KEYS)
-    if unknown:
-        raise ValueError(f"{type_id}: unknown config key(s): {', '.join(unknown)}")
-    session_id = raw.get("session_id")
-    if not isinstance(session_id, str) or not session_id:
-        raise ValueError(f"{type_id}: config.session_id must be a non-empty string")
-    if len(session_id) > MAX_SESSION_ID_LEN:
-        raise ValueError(f"{type_id}: config.session_id exceeds {MAX_SESSION_ID_LEN} characters")
-    config: dict[str, Any] = {"session_id": session_id}
-    metadata = raw.get("metadata")
-    if metadata is not None:
-        if not isinstance(metadata, dict):
-            raise ValueError(f"{type_id}: config.metadata must be an object")
-        config["metadata"] = metadata
-    return config
+def observer_keys(obs: Any) -> tuple[str, ...]:
+    """The session an observer is filed under: its `session_id` arg."""
+    session_id = (obs.args or {}).get("session_id")
+    return (session_id,) if isinstance(session_id, str) else ()
 
 
-@dataclass(frozen=True)
-class _Binding:
-    id: str
-    function_id: str
-    namespace: str | None
-    metadata: Any
-    config: dict[str, Any]
+def call_keys(call: Any) -> tuple[str, ...]:
+    """The session a frame matches: the `session_id` of the call's input."""
+    payload = call.input if isinstance(call.input, dict) else {}
+    session_id = payload.get("session_id")
+    return (session_id,) if isinstance(session_id, str) else ()
 
 
-class AgentFeed(TriggerHandler[dict[str, Any]]):
-    """One owned trigger type: binding table, per-session sequence, delivery."""
+async def _identity(payload: dict[str, Any]) -> dict[str, Any]:
+    """The feed function's handler: observers observe the envelope it returns.
+    Async, so a local call runs on the SDK loop rather than a thread of its own."""
+    return payload
 
-    def __init__(self, iii: Any, *, type_id: str, source: str, description: str) -> None:
+
+class AgentFeed:
+    """One owned feed function: per-session sequence, observer cap, emit."""
+
+    def __init__(self, iii: Any, *, function_id: str, source: str, description: str) -> None:
         self._iii = iii
-        self.type_id = type_id
+        self.function_id = function_id
         self.source = source
         self.description = description
         self.epoch = str(uuid.uuid4())
-        self._bindings: dict[str, _Binding] = {}
+        self._observers: set[str] = set()
         self._seq_by_session: dict[str, int] = {}
-        # Guards the tables only; never held across an await.
+        # Guards the counters and the observer set only; never held across an await.
         self._lock = threading.Lock()
 
     def register(self) -> AgentFeed:
-        self._iii.register_trigger_type(
-            {
-                "id": self.type_id,
-                "description": self.description,
-                "trigger_request_format": FEED_CONFIG_FORMAT,
-                "call_request_format": FEED_PAYLOAD_FORMAT,
-            },
-            self,
+        """Set the hooks by id, then register the private feed function."""
+        self._iii.on_observer_added(self.function_id, self.admit)
+        self._iii.on_observer_removed(self.function_id, self.release)
+        self._iii.on_observer_match(self.function_id, observer=observer_keys, call=call_keys)
+        self._iii.register_function(
+            self.function_id,
+            _identity,
+            description=self.description,
+            request_format=FEED_PAYLOAD_FORMAT,
+            response_format=FEED_PAYLOAD_FORMAT,
+            args_format=FEED_ARGS_FORMAT,
+            private=True,
         )
         return self
 
-    async def register_trigger(self, config: TriggerConfig[dict[str, Any]]) -> None:
-        feed_config = validate_feed_config(self.type_id, config.config)
-        binding = _Binding(
-            id=config.id,
-            function_id=config.function_id,
-            namespace=config.namespace,
-            metadata=config.metadata,
-            config=feed_config,
-        )
+    def admit(self, obs: Any) -> None:
+        """`on_observer_added`: count the observer; past the cap, reject it.
+        An id already counted (the engine re-announcing it) is accepted again."""
         with self._lock:
-            if binding.id not in self._bindings and len(self._bindings) >= MAX_BINDINGS:
-                raise ValueError(f"{self.type_id}: binding limit ({MAX_BINDINGS}) reached")
-            self._bindings[binding.id] = binding
+            if obs.id not in self._observers and len(self._observers) >= MAX_OBSERVERS:
+                raise ObserveRejection(OBSERVER_LIMIT, f"{self.function_id}: observer limit ({MAX_OBSERVERS}) reached")
+            self._observers.add(obs.id)
 
-    async def unregister_trigger(self, config: TriggerConfig[dict[str, Any]]) -> None:
+    def release(self, obs: Any) -> None:
+        """`on_observer_removed`: stop counting the observer."""
         with self._lock:
-            self._bindings.pop(config.id, None)
+            self._observers.discard(obs.id)
 
-    def binding_count(self) -> int:
+    def observer_count(self) -> int:
         with self._lock:
-            return len(self._bindings)
+            return len(self._observers)
 
-    async def emit(self, session_id: str, event: dict[str, Any]) -> int:
-        """Deliver one frame to the session's bindings; return the delivered count."""
+    async def emit(self, session_id: str, event: dict[str, Any]) -> bool:
+        """Emit one frame; True when a call was made and succeeded."""
         with self._lock:
             seq = self._seq_by_session.get(session_id, 0)
             self._seq_by_session[session_id] = seq + 1
-            targets = [b for b in self._bindings.values() if b.config["session_id"] == session_id]
-        if not targets:
-            return 0
+        if not self._iii.is_observed(self.function_id, {"input": {"session_id": session_id}}):
+            return False
         payload = {
             "session_id": session_id,
             "event_id": f"{session_id}-{self.epoch}-{seq:08d}",
@@ -174,24 +161,14 @@ class AgentFeed(TriggerHandler[dict[str, Any]]):
             "source": self.source,
             "event": event,
         }
-        delivered = 0
-        for binding in targets:
-            request: dict[str, Any] = {
-                "function_id": binding.function_id,
-                "payload": payload,
-                "action": TriggerAction.Void(),
-            }
-            if binding.namespace is not None:
-                request["namespace"] = binding.namespace
-            metadata = binding.config.get("metadata", binding.metadata)
-            if metadata is not None:
-                request["metadata"] = metadata
-            try:
-                await self._iii.trigger_async(request)
-                delivered += 1
-            except Exception as exc:  # noqa: BLE001 - a gone consumer never fails the turn
-                log.warning("%s: delivery to %s failed: %s", self.type_id, binding.function_id, exc)
-        return delivered
+        try:
+            await self._iii.call_async(
+                {"function_id": self.function_id, "payload": payload, "action": CallAction.Void()}
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - a gone consumer never fails the turn
+            log.warning("%s: call failed: %s", self.function_id, exc)
+            return False
 
 
 @dataclass(frozen=True)
@@ -201,7 +178,7 @@ class Feeds:
 
 
 def create_feeds(iii: Any) -> Feeds:
-    """Register `hermes::agent-event` and `hermes::raw-event` on `iii`."""
-    agent = AgentFeed(iii, type_id=AGENT_EVENT_TYPE, source=SOURCE, description=AGENT_EVENT_DESCRIPTION)
-    raw = AgentFeed(iii, type_id=RAW_EVENT_TYPE, source=SOURCE, description=RAW_EVENT_DESCRIPTION)
+    """Register `hermes::on-agent-event` and `hermes::on-raw-event` on `iii`."""
+    agent = AgentFeed(iii, function_id=ON_AGENT_EVENT_FN, source=SOURCE, description=AGENT_EVENT_DESCRIPTION)
+    raw = AgentFeed(iii, function_id=ON_RAW_EVENT_FN, source=SOURCE, description=RAW_EVENT_DESCRIPTION)
     return Feeds(agent=agent.register(), raw=raw.register())

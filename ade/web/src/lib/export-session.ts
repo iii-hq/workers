@@ -1,8 +1,8 @@
 /**
- * Renders a `Conversation` as a markdown transcript and triggers a
- * browser download. Designed so the resulting `.md` file can be pasted
- * into another AI for analysis — role-prefixed messages, function triggers
- * as fenced JSON, attachments listed by metadata only (no base64 payload).
+ * Renders a `Conversation` as a markdown transcript and starts a browser
+ * download. Designed so the resulting `.md` file can be pasted into another
+ * AI for analysis — role-prefixed messages, function calls as fenced JSON,
+ * attachments listed by metadata only (no base64 payload).
  */
 
 import { getIiiClient } from '@/lib/iii-client'
@@ -11,7 +11,7 @@ import { transcriptToMessages } from '@/lib/sessions/entry-mapper'
 import type {
   Attachment,
   Conversation,
-  FunctionTriggerMessage,
+  FunctionCallMessage,
   Message,
 } from '@/types/chat'
 
@@ -67,8 +67,8 @@ function renderMessage(message: Message): string {
     case 'thought': {
       return `## Thought\n${message.content || '_(empty)_'}`
     }
-    case 'function-trigger': {
-      return renderFunctionTrigger(message)
+    case 'function-call': {
+      return renderFunctionCall(message)
     }
     case 'system': {
       const tone = message.tone ? ` — ${message.tone}` : ''
@@ -93,14 +93,14 @@ function renderMessage(message: Message): string {
   }
 }
 
-function renderFunctionTrigger(message: FunctionTriggerMessage): string {
+function renderFunctionCall(message: FunctionCallMessage): string {
   const status = message.pendingApproval
     ? ' (pending approval)'
     : message.running
-      ? ' (triggering)'
+      ? ' (calling)'
       : ''
   const parts: string[] = [
-    `## Trigger — ${message.functionId}${status}`,
+    `## Call — ${message.functionId}${status}`,
     '**Input:**',
     '```json',
     formatJson(message.input),
@@ -135,7 +135,7 @@ const WORKERS_LIST_TIMEOUT_MS = 2000
 export async function fetchWorkerVersions(): Promise<WorkerVersion[] | null> {
   try {
     const client = await getIiiClient()
-    const res = await client.trigger<unknown>(
+    const res = await client.call<unknown>(
       WORKERS_LIST_RPC,
       {},
       { timeoutMs: WORKERS_LIST_TIMEOUT_MS },
@@ -237,13 +237,13 @@ export function buildExportFilename(
 }
 
 /**
- * Triggers a browser download of the rendered markdown. Fetches connected
+ * Starts a browser download of the rendered markdown. Fetches connected
  * worker versions first (best-effort, ≤2 s) so the header records the stack.
  * Returns the filename so callers can announce it (e.g. via a live region).
  */
 
 /** Blob + anchor download shared by both export entry points. */
-export function triggerMarkdownDownload(
+export function startMarkdownDownload(
   markdown: string,
   filename: string,
 ): void {
@@ -279,7 +279,7 @@ export async function conversationForExport(
   const partial =
     conversation.history?.hasMore === true ||
     conversation.messages.some(
-      (m) => m.role === 'function-trigger' && m.unloaded === true,
+      (m) => m.role === 'function-call' && m.unloaded === true,
     )
   if (!partial) return conversation
   try {
@@ -304,6 +304,6 @@ export async function downloadConversationAsMarkdown(
     workers,
   )
   const filename = buildExportFilename(conversation)
-  triggerMarkdownDownload(markdown, filename)
+  startMarkdownDownload(markdown, filename)
   return filename
 }

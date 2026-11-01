@@ -551,8 +551,8 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         "source": source,
         "artifact": artifact,
         "runtime": normalize_runtime(worker, worker_dir, manifest, str(artifact["kind"])),
-        # The public flag controls whether Registry functions and trigger types
-        # are collected. No worker function or product behavior is exercised.
+        # The public flag controls whether Registry functions are collected.
+        # No worker function or product behavior is exercised.
         "interface_capture": "required" if registry_interface else "skipped",
         "publish": publish,
         "build_units": build_units(worker, artifact),

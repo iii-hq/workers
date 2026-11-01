@@ -101,23 +101,10 @@ async fn main() -> Result<()> {
         tracing::info!("approval-gate absent — approval prompts disabled");
     }
 
-    functions::bind_triggers(&iii);
-    if approval_gate.is_available() {
-        functions::bind_approval_triggers(&iii);
-    }
-
-    let iii_for_bind = iii.clone();
-    approval_gate::start_watch(
-        iii.clone(),
-        approval_gate.clone(),
-        Arc::new(move || functions::bind_approval_triggers(&iii_for_bind)),
-    );
-
-    functions::bind_http_triggers(&iii);
-
-    configuration::register_config_trigger(&iii, cell, deps.clone())
-        .map_err(anyhow::Error::msg)
-        .context("binding configuration trigger")?;
+    functions::observe_events(&iii);
+    approval_gate::start_watch(iii.clone(), approval_gate.clone());
+    functions::observe_control_routes(&iii);
+    configuration::observe_config_changes(&iii, cell, deps.clone());
 
     ingress::start(&deps).await;
 

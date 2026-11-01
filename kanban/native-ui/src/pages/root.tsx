@@ -96,7 +96,7 @@ export function RootPage() {
     void restore().finally(() => setReady(true))
   })
 
-  // Live only while some page of the app is on screen: bind, then read; visible again binds and reads again.
+  // Live only while some page of the app is on screen: observe, then read; visible again observes and reads again.
   createEffect(() => {
     if (!ready() || !iii.env.visible) return
     onCleanup(goLive())

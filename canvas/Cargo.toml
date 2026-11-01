@@ -18,9 +18,9 @@ name = "canvas"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
-# Worker-side injectable console UI (content function + console:script/style
-# triggers + hot-reload watcher) — direct link, never published.
+iii-sdk = "=0.26.0-rc.1"
+# Worker-side injectable console UI (content function + one console::ui::asset
+# observer per asset + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }

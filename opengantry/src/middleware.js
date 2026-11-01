@@ -2,7 +2,7 @@
  * Hot-path policy on the governed listener.
  *
  * Order: lease (if msn_id + holder_id) → dirty-lineage check → promote
- * verdict (promote-class only) → mission scope → forwardTrigger.
+ * verdict (promote-class only) → mission scope → forwardCall.
  * Throws GantryDenied on any failure. Missing token, corrupt store, or
  * rewritten mission never fall through to the target function.
  */
@@ -83,7 +83,7 @@ export function createMiddlewareHandler(deps) {
         }
       }
 
-      return await deps.forwardTrigger(function_id, payload);
+      return await deps.forwardCall(function_id, payload);
     } finally {
       if (promoteClaimed && msnId) {
         await leases.transition(msnId, LEASE_STATES.promoting, LEASE_STATES.active);

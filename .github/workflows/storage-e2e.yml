@@ -25,7 +25,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # Keep integration on the engine release that provides configuration::ensure.
-  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
+  III_RELEASE_TAG: 'iii/v0.26.0-rc.1'
 
 jobs:
   script-tests:
@@ -145,7 +145,7 @@ jobs:
 
       - name: Run harness (--providers=all)
         working-directory: storage/tests/e2e
-        run: ./run-tests.sh --providers=all --trigger-providers=local,s3 --no-pull
+        run: ./run-tests.sh --providers=all --event-providers=local,s3 --no-pull
 
       - name: Upload reports on failure
         if: failure()

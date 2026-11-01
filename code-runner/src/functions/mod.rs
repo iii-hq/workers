@@ -11,7 +11,7 @@ pub mod teardown;
 
 use std::sync::Arc;
 
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, ObserverState, RegisterFunction, Source};
 
 use crate::manager::Manager;
 
@@ -68,7 +68,7 @@ pub const STATIC_IDS: &[&str] = &[
 pub fn seeded_ids() -> Vec<&'static str> {
     let mut ids = STATIC_IDS.to_vec();
     ids.push(crate::ui::CONTENT_FUNCTION_ID);
-    // Registered by `configuration::register_config_trigger`, after this seed
+    // Registered by `configuration::observe_config_changes`, after this seed
     // exists — same reasoning as `ui-content` above.
     ids.push(crate::configuration::CONFIG_FN_ID);
     ids
@@ -85,7 +85,9 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
             let m = m.clone();
             async move { m.run(req).await.map_err(iii_sdk::errors::Error::from) }
         })
-        .description(RUN_DESC),
+        .description(RUN_DESC)
+        // `runtime_id` is a capability: an observer would read every caller's.
+        .observable(false),
     );
 
     let m = manager.clone();
@@ -96,7 +98,9 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
             let m = m.clone();
             async move { m.teardown(req).await.map_err(iii_sdk::errors::Error::from) }
         })
-        .description(TEARDOWN_DESC),
+        .description(TEARDOWN_DESC)
+        // `runtime_id` is a capability: an observer would read every caller's.
+        .observable(false),
     );
 
     let m = manager.clone();
@@ -133,22 +137,31 @@ pub fn register_all(iii: &Arc<IIIClient>, manager: &Arc<Manager>) {
     tracing::info!("code-runner functions registered");
 }
 
-/// Bind the `pre_generate` hook so the guidance reaches the agent's system
-/// prompt while this worker is connected.
+/// Observe the `pre_generate` hook point so the guidance reaches the agent's
+/// system prompt while this worker is connected. The observer stays
+/// `pending` while the harness is absent.
 ///
 /// `on_error: fail_open` is MANDATORY. `pre_generate` defaults to
 /// fail-CLOSED, so an error or timeout here would abort the agent's turn; a
 /// missing guidance line must never do that.
 pub fn setup_harness_hooks(iii: &Arc<IIIClient>) {
-    match iii.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
-        "harness::hook::pre-generate".to_string(),
-        inject_guidance::GUIDANCE_HOOK_ID.to_string(),
-        serde_json::json!({ "on_error": "fail_open" }),
-    )) {
-        Ok(_) => tracing::info!("code-runner pre-generate hook bound"),
-        Err(e) => tracing::warn!(error = %e, "guidance hook binding failed; continuing without it"),
-    }
+    let hook = iii.observe(
+        Source::function(PRE_GENERATE_FN).args(serde_json::json!({ "on_error": "fail_open" })),
+        inject_guidance::GUIDANCE_HOOK_ID,
+    );
+    hook.on_state_change(|state, reason| {
+        if *state == ObserverState::Error {
+            tracing::warn!(reason = ?reason, "guidance hook observer rejected; continuing without it");
+        }
+    });
+    tracing::info!(
+        observer_id = hook.id(),
+        "code-runner observes {PRE_GENERATE_FN}"
+    );
 }
+
+/// The harness hook point the guidance observes.
+const PRE_GENERATE_FN: &str = "harness::hook::on-pre-generate";
 
 pub struct FunctionSpec {
     pub function_id: &'static str,

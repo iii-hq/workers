@@ -1,7 +1,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BROWSER_SESSION_UPDATED_TRIGGER } from '../lib/browser'
+import { BROWSER_ON_SESSION_UPDATED_FUNCTION_ID } from '../lib/browser'
 import { useBrowserSessionsLive } from './useBrowserSessionsLive'
 
 const live = vi.hoisted(() => ({
@@ -36,15 +36,15 @@ afterEach(() => {
 })
 
 describe('useBrowserSessionsLive', () => {
-  it('re-reads on the lifecycle triggers, session-updated included, with no timer', () => {
+  it('re-reads on the lifecycle functions, on-session-updated included, with no timer', () => {
     const setInterval = vi.spyOn(globalThis, 'setInterval')
     const setTimeout = vi.spyOn(globalThis, 'setTimeout')
     const host = { iii: {} } as unknown as Host
     const html = renderToStaticMarkup(<Probe host={host} />)
     expect(html).toContain('Inbox:true')
-    const options = live.options[0] as { triggers: readonly unknown[]; pollMs?: number }
-    // Titles a page sets after it loaded arrive as session-updated.
-    expect(options.triggers).toContain(BROWSER_SESSION_UPDATED_TRIGGER)
+    const options = live.options[0] as { sources: readonly unknown[]; pollMs?: number }
+    // Titles a page sets after it loaded arrive as calls of on-session-updated.
+    expect(options.sources).toContain(BROWSER_ON_SESSION_UPDATED_FUNCTION_ID)
     expect(options.pollMs).toBeUndefined()
     expect(setInterval).not.toHaveBeenCalled()
     expect(setTimeout).not.toHaveBeenCalled()

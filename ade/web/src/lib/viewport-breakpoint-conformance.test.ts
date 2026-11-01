@@ -57,10 +57,10 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
   'components/chat/ProviderSettingsForm.tsx': { max: 15, reason: TOUCH },
   'components/chat/ReasoningEffortSlider.tsx': { max: 2, reason: TOUCH },
   'components/chat/SessionAddonsPicker.tsx': { max: 1, reason: TOUCH },
-  'components/chat/SessionTriggers.tsx': { max: 3, reason: TOUCH },
+  'components/chat/SessionObservers.tsx': { max: 3, reason: TOUCH },
   'components/chat/SystemNotice.tsx': { max: 29, reason: TOUCH },
   'components/chat/SystemPromptPicker.tsx': { max: 3, reason: TOUCH },
-  'components/chat/engine/RegisterTriggerView.tsx': { max: 10, reason: TOUCH },
+  'components/chat/engine/ObserveView.tsx': { max: 10, reason: TOUCH },
   'components/chat/harness/SpawnView.tsx': { max: 7, reason: TOUCH },
   'components/chat/sandbox/ErrorCard.tsx': { max: 18, reason: TOUCH },
   'components/permissions/FullModeConfirmDialog.tsx': {
@@ -68,11 +68,11 @@ const viewportAllowlist: Record<string, { max: number; reason: string }> = {
     reason: 'phone chrome: stacked 48px buttons in the phone dialog',
   },
   'components/sidebar/ConversationSidebar.tsx': { max: 4, reason: TOUCH },
-  'components/trigger-activity/TriggerActivityCard.tsx': {
+  'components/observer-activity/ObserverActivityCard.tsx': {
     max: 18,
     reason: TOUCH,
   },
-  'components/trigger-activity/TriggerDetails.tsx': { max: 7, reason: TOUCH },
+  'components/observer-activity/ObserverDetails.tsx': { max: 7, reason: TOUCH },
   'components/ui/ActivityMetadata.tsx': { max: 2, reason: TOUCH },
   'components/ui/ActivityStatus.tsx': { max: 2, reason: TOUCH },
   'components/ui/Badge.tsx': { max: 1, reason: TOUCH },

@@ -4,7 +4,7 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/Tooltip'
-import type { SessionTriggerInfo } from '@/lib/backend/triggers'
+import type { SessionObserverInfo } from '@/lib/backend/observers'
 import { resetFoldedGroups } from '@/lib/context-groups'
 import { registerExtContextSection } from '@/lib/ui-slots'
 import type { Conversation, Message } from '@/types/chat'
@@ -17,7 +17,7 @@ import type {
 ).IS_REACT_ACT_ENVIRONMENT = true
 
 const mocks = vi.hoisted(() => ({
-  trigger: vi.fn(),
+  call: vi.fn(),
   requestPanelOpen: vi.fn(),
   askAgent: vi.fn(),
   dismiss: vi.fn(),
@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: () => Promise.resolve({ trigger: mocks.trigger }),
+  getIiiClient: () => Promise.resolve({ call: mocks.call }),
 }))
 vi.mock('@/lib/panel-context', () => ({
   requestPanelOpen: mocks.requestPanelOpen,
@@ -140,13 +140,13 @@ async function render(
     active = true,
     githubAvailable = true,
     kanbanAvailable = false,
-    triggers = [],
+    observers = [],
   }: {
     conversations?: Conversation[]
     active?: boolean
     githubAvailable?: boolean
     kanbanAvailable?: boolean
-    triggers?: SessionTriggerInfo[]
+    observers?: SessionObserverInfo[]
   } = {},
 ) {
   container = document.createElement('div')
@@ -159,8 +159,8 @@ async function render(
           conversation={main}
           conversations={conversations}
           connectionState="connected"
-          triggers={triggers}
-          onUnregisterTrigger={mocks.unregister}
+          observers={observers}
+          onDisposeObserver={mocks.unregister}
           onOpenConversation={() => {}}
           shellAvailable
           githubAvailable={githubAvailable}
@@ -190,8 +190,8 @@ const byText = (text: string) =>
 beforeEach(() => {
   window.localStorage.clear()
   resetFoldedGroups()
-  mocks.trigger.mockReset()
-  mocks.trigger.mockImplementation(respond)
+  mocks.call.mockReset()
+  mocks.call.mockImplementation(respond)
   mocks.requestPanelOpen.mockReset()
   mocks.askAgent.mockReset()
   mocks.dismiss.mockReset()
@@ -296,11 +296,11 @@ describe('ChatContextPanel', () => {
 
   it('reads nothing while the panel is out of sight', async () => {
     await render(chat('main', { workingDir: '/work/repo' }), { active: false })
-    expect(mocks.trigger).not.toHaveBeenCalled()
+    expect(mocks.call).not.toHaveBeenCalled()
   })
 
   it('reads the branch PR with gh when the github worker is absent', async () => {
-    mocks.trigger.mockImplementation(
+    mocks.call.mockImplementation(
       (fn: string, payload: Record<string, unknown> = {}) => {
         if (fn === 'shell::exec' && payload.command === 'gh') {
           return Promise.resolve({
@@ -324,7 +324,7 @@ describe('ChatContextPanel', () => {
     })
     expect(view.textContent).toContain('Via gh')
     expect(
-      mocks.trigger.mock.calls.some(([fn]) => fn.startsWith('github::')),
+      mocks.call.mock.calls.some(([fn]) => fn.startsWith('github::')),
     ).toBe(false)
   })
 
@@ -336,7 +336,7 @@ describe('ChatContextPanel', () => {
       output: unknown = { bytes_written: 5 },
     ): Message => ({
       id,
-      role: 'function-trigger',
+      role: 'function-call',
       functionId,
       input: { path, content: 'hello' },
       output,
@@ -594,7 +594,7 @@ describe('ChatContextPanel', () => {
         el.textContent?.startsWith(name),
       ) as HTMLElement | undefined
     const ghCalls = () =>
-      mocks.trigger.mock.calls
+      mocks.call.mock.calls
         .filter(([fn]) => fn === 'github::exec')
         .map(([, payload]) => (payload.args as string[]).join(' '))
 
@@ -644,7 +644,7 @@ describe('ChatContextPanel', () => {
     })
 
     it('starts auto-fix from where the PR stands, without the github worker', async () => {
-      mocks.trigger.mockImplementation((fn: string, payload) =>
+      mocks.call.mockImplementation((fn: string, payload) =>
         fn === 'shell::exec' && payload.command === 'gh'
           ? respond('github::exec', payload).then(
               (r) => (r as { value: unknown }).value,
@@ -708,7 +708,7 @@ describe('ChatContextPanel', () => {
     })
 
     it('offers to create a PR for a branch with work and none of its own', async () => {
-      mocks.trigger.mockImplementation((fn: string, payload) =>
+      mocks.call.mockImplementation((fn: string, payload) =>
         fn === 'github::exec'
           ? Promise.resolve({
               value: { exit_code: 0, stdout: '[]', stderr: '' },
@@ -728,7 +728,7 @@ describe('ChatContextPanel', () => {
     })
 
     it('offers no PR creation when the branch could not be read', async () => {
-      mocks.trigger.mockImplementation((fn: string, payload) =>
+      mocks.call.mockImplementation((fn: string, payload) =>
         fn === 'github::exec'
           ? Promise.resolve({
               value: { exit_code: 4, stdout: '', stderr: 'gh auth login' },
@@ -749,7 +749,7 @@ describe('ChatContextPanel', () => {
     const worked: Message[] = [
       {
         id: 'f1',
-        role: 'function-trigger',
+        role: 'function-call',
         functionId: 'kanban::ticket::move',
         input: { id: 'KAN-141', status: 'in_review' },
         output: { key: 'KAN-141' },
@@ -799,7 +799,7 @@ describe('ChatContextPanel', () => {
     })
 
     it('holds a skeleton while the board is read, only for a kanban call', async () => {
-      mocks.trigger.mockImplementation((fn: string, payload) =>
+      mocks.call.mockImplementation((fn: string, payload) =>
         fn.startsWith('kanban::')
           ? new Promise(() => {})
           : respond(fn, payload),
@@ -822,7 +822,7 @@ describe('ChatContextPanel', () => {
   it('asks for a folder when the chat has none', async () => {
     const view = await render(chat('main'))
     expect(view.textContent).toContain('No project folder')
-    expect(mocks.trigger).toHaveBeenCalledExactlyOnceWith(
+    expect(mocks.call).toHaveBeenCalledExactlyOnceWith(
       'console::context::list',
       { session_id: 'main' },
     )

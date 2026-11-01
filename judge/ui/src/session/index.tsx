@@ -46,8 +46,29 @@ const PICKER_PAGE = uiClasses.motionPickerPage ?? 'iii-ui-motion-picker-page'
 const PAGE_TRANSITION_MS = 250
 /** A burst of engine changes (a worker registering its functions) reads once. */
 const LIVE_DEBOUNCE_MS = 300
-/** The hub's and every provider's configuration entry. */
-const JUDGE_CONFIGURATION = /^judge(-[a-z0-9-]{1,64})?$/
+/** The hub's configuration entry under its default name. */
+const HUB_CONFIGURATION = 'judge'
+/** Every provider's configuration entry under its default name starts with this. */
+const PROVIDER_CONFIGURATION_PREFIX = 'judge-'
+
+/**
+ * The `configuration::on-updated` filters for the entries this picker reads:
+ * `ids` (the hub's, and each listed judge's under whatever name it uses) and
+ * every `judge-*` entry, so a judge not listed yet is news too.
+ */
+function configurationFilters(ids: readonly string[]): Record<string, unknown> {
+  return {
+    $or: [{ 'input.id': { $in: [...ids] } }, { 'input.id': { $prefix: PROVIDER_CONFIGURATION_PREFIX } }],
+  }
+}
+
+function dispose(off: (() => void) | null) {
+  try {
+    off?.()
+  } catch {
+    // already gone
+  }
+}
 
 /** Unique per mounted picker: two pickers never share a handler. */
 let liveSeq = 0
@@ -157,7 +178,7 @@ export function JudgeSessionPicker({
   const [leaving, setLeaving] = useState<{ run(): void } | null>(null)
   // Consoles without the inline editor open the worker in Settings.
   const [settingsDialog, setSettingsDialog] = useState<string | null>(null)
-  // null = not listed yet; both load on mount, for the trigger's warning.
+  // null = not listed yet; both load on mount, for the menu button's warning.
   const [providers, setProviders] = useState<JudgeProvider[] | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [settings, setSettings] = useState<JudgeSettings | null>(null)
@@ -202,26 +223,35 @@ export function JudgeSessionPicker({
       })
   }, [iii])
 
-  // Configuration entries this picker reads, beyond the `judge-*` names.
-  const watchedIds = useRef(new Set<string>())
-  watchedIds.current = new Set(
-    [settings?.configurationId, ...(providers ?? []).map((entry) => entry.configurationId)].filter(
-      (id): id is string => typeof id === 'string',
-    ),
+  // Configuration entries this picker reads by id: the hub's and each listed
+  // judge's, whatever their names. A stable key, so the observer below
+  // changes only when the set does.
+  const configurationKey = JSON.stringify(
+    [
+      ...new Set(
+        [
+          HUB_CONFIGURATION,
+          settings?.configurationId,
+          ...(providers ?? []).map((entry) => entry.configurationId),
+        ].filter((id): id is string => typeof id === 'string'),
+      ),
+    ].sort(),
   )
+  // One configuration handler per mounted picker; its observer follows
+  // `configurationKey`.
+  const [configurationHandler] = useState(() => `iii::judge-ui::session::configuration-${++liveSeq}`)
+  const configurationObserver = useRef<(() => void) | null>(null)
 
   // The list follows the engine, never a timer, while the picker is on
-  // screen: the trigger warns about a choice that would not be used. A judge
-  // registering or going away (an add landing, late or not) fires
-  // `engine::functions-available`, a settings change the `configuration`
-  // trigger, a key stored as a secret `secrets::changed`. The configuration
-  // binding names no id: an id-scoped binding holds the entry, and dropping
-  // it can start the entry's expiry.
+  // screen: the menu button warns about a choice that would not be used. A
+  // judge registering or going away (an add landing, late or not) is a call
+  // of `engine::on-functions-changed`, a settings change one of
+  // `configuration::on-updated` (observed below, for the entries this picker
+  // reads), a key stored as a secret one of `secrets::on-changed`.
   useEffect(() => {
     refresh()
     const seq = ++liveSeq
     const functionsHandler = `iii::judge-ui::session::functions-${seq}`
-    const configurationHandler = `iii::judge-ui::session::configuration-${seq}`
     const secretsHandler = `iii::judge-ui::session::secrets-${seq}`
     let timer: ReturnType<typeof setTimeout> | null = null
     const schedule = () => {
@@ -233,35 +263,51 @@ export function JudgeSessionPicker({
     }
     const offHandlers = [
       iii.on(functionsHandler, schedule),
-      iii.on<{ id?: unknown }>(configurationHandler, (event) => {
-        const id = typeof event?.id === 'string' ? event.id : null
-        if (id !== null && (JUDGE_CONFIGURATION.test(id) || watchedIds.current.has(id))) schedule()
-      }),
+      iii.on(configurationHandler, schedule),
       iii.on(secretsHandler, schedule),
     ]
-    const offTriggers = [
-      { type: 'engine::functions-available', handler: functionsHandler },
-      { type: 'configuration', handler: configurationHandler },
-      { type: 'secrets::changed', handler: secretsHandler },
-    ].flatMap(({ type, handler }) => {
+    const offObservers = [
+      { source: 'engine::on-functions-changed', handler: functionsHandler },
+      { source: 'secrets::on-changed', handler: secretsHandler },
+    ].flatMap(({ source, handler }) => {
       try {
-        return [iii.registerTrigger({ type, function_id: `${handler}::${iii.browserId}`, config: {} })]
+        return [iii.observe(source, `${handler}::${iii.browserId}`)]
       } catch {
-        // A trigger type missing on this engine: the menu reads on open.
+        // No engine to observe through: the menu reads on open.
         return []
       }
     })
     return () => {
       if (timer !== null) clearTimeout(timer)
-      for (const off of [...offTriggers, ...offHandlers]) {
-        try {
-          off()
-        } catch {
-          // already gone
-        }
-      }
+      for (const off of [...offObservers, ...offHandlers]) dispose(off)
     }
-  }, [iii, refresh])
+  }, [iii, refresh, configurationHandler])
+
+  // The `configuration::on-updated` observer selects the entries this picker
+  // reads with an `input.id` filter. When the set changes (a judge listed
+  // under another name, the hub's id read), the new observer is observed
+  // before the old one is disposed.
+  useEffect(() => {
+    const previous = configurationObserver.current
+    try {
+      configurationObserver.current = iii.observe(
+        { function_id: 'configuration::on-updated', filters: configurationFilters(JSON.parse(configurationKey)) },
+        `${configurationHandler}::${iii.browserId}`,
+      )
+    } catch {
+      // No engine to observe through: the menu reads on open.
+      return
+    }
+    dispose(previous)
+  }, [iii, configurationHandler, configurationKey])
+  // Unmounting disposes the configuration observer.
+  useEffect(
+    () => () => {
+      dispose(configurationObserver.current)
+      configurationObserver.current = null
+    },
+    [],
+  )
 
   // A page that left keeps its content until it has slid out.
   useEffect(() => {
@@ -345,7 +391,7 @@ export function JudgeSessionPicker({
     // A local provider loads its model on first use: start that now, not on
     // the session's next turn, whose short judge calls would time out on it.
     if (value) {
-      iii.trigger('judge::models::list', { provider: value, timeout_ms: 1_000 }, { timeoutMs: 10_000 }).catch(() => {})
+      iii.call('judge::models::list', { provider: value, timeout_ms: 1_000 }, { timeoutMs: 10_000 }).catch(() => {})
     }
   }
 

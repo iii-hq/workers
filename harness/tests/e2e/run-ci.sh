@@ -76,7 +76,7 @@ wait_for_function() {
   local response
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     response=$(
-      "$III_BIN" trigger engine::functions::list \
+      "$III_BIN" call engine::functions::list \
         --port "$iii_port" \
         --json '{"include_internal":true}' 2>/dev/null || true
     )
@@ -91,27 +91,6 @@ wait_for_function() {
   return 1
 }
 
-wait_for_trigger_type() {
-  local trigger_type=$1
-  local attempts=120
-  local response
-  for ((attempt = 1; attempt <= attempts; attempt++)); do
-    response=$(
-      "$III_BIN" trigger engine::triggers::list \
-        --port "$iii_port" \
-        --json '{"include_internal":true}' 2>/dev/null || true
-    )
-    if jq -e --arg id "$trigger_type" \
-      '.triggers[]? | select(.id == $id)' \
-      <<<"$response" >/dev/null; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  echo "timed out waiting for trigger type $trigger_type" >&2
-  return 1
-}
-
 wait_for_model() {
   local provider=$1
   local model=$2
@@ -122,7 +101,7 @@ wait_for_model() {
     '{provider:$provider,id:$id}')
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     response=$(
-      "$III_BIN" trigger router::models::get \
+      "$III_BIN" call router::models::get \
         --port "$iii_port" \
         --json "$request" 2>/dev/null || true
     )
@@ -160,7 +139,7 @@ start_process database \
   --url "$iii_url" \
   --config "$database_config"
 wait_for_function database::query
-wait_for_trigger_type database::row-changed
+wait_for_function database::on-row-changed
 
 start_process state \
   "$repo_root/state/target/release/state" \
@@ -216,7 +195,7 @@ wait_for_function directory::skills::list
 start_process cron \
   "$repo_root/cron/target/release/cron" \
   --url "$iii_url"
-wait_for_trigger_type cron
+wait_for_function cron::on-tick
 
 start_process harness \
   "$harness_root/target/release/harness" \

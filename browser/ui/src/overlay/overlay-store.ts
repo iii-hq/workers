@@ -63,7 +63,7 @@ export function openBrowserPane(host: Host, sessionId: string): void {
 export function openBrowserWindow(host: Host, sessionId: string): void {
   hideBrowserOverlay(sessionId)
   void host.iii
-    .trigger('console::workspace::open', { screen: 'ext:browser', placement: 'new-tab' })
+    .call('console::workspace::open', { screen: 'ext:browser', placement: 'new-tab' })
     .then(() => host.panels?.open({ pageId: 'browser', context: { sessionId } }))
     .catch(() => host.panels?.open({ pageId: 'browser', context: { sessionId } }))
 }

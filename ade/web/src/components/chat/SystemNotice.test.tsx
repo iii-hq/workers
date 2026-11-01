@@ -281,8 +281,8 @@ describe('SystemNotice · turn failure', () => {
       role: 'system',
       kind: 'turn-failure',
       tone: 'error',
-      content: 'response failed: harness::send failed — trigger timed out',
-      failure: { summary: 'harness::send failed — trigger timed out' },
+      content: 'response failed: harness::send failed — call timed out',
+      failure: { summary: 'harness::send failed — call timed out' },
       provisional: true,
       createdAt: 0,
     })
@@ -315,7 +315,7 @@ describe('SystemNotice · one-line notices', () => {
       id: 'n-2',
       role: 'system',
       kind: 'notice',
-      content: 'could not unregister the trigger — subscription not found',
+      content: 'could not remove the observer — observer not found',
       tone: 'error',
       createdAt: 0,
     })

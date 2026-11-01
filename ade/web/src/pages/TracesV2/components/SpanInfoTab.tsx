@@ -2,8 +2,8 @@ import { Check, Copy } from 'lucide-react'
 import { type ReactNode, useMemo } from 'react'
 import {
   rawRedactor,
-  useFunctionTriggerRenderers,
-} from '@/components/function-trigger/renderer-registry'
+  useFunctionCallRenderers,
+} from '@/components/function-call/renderer-registry'
 import {
   FactMeter,
   factLabelClassName,
@@ -12,9 +12,9 @@ import {
 } from '@/components/ui/FactCard'
 import { cn } from '@/lib/utils'
 import {
-  functionTriggerFromSpan,
+  functionCallFromSpan,
   spanFunctionId,
-} from '../lib/functionTriggerFromSpan'
+} from '../lib/functionCallFromSpan'
 import { isLlmCall, llmCallFromSpan } from '../lib/llmCall'
 import { getSpanKindIndicator } from '../lib/spanLabel'
 import { getWorkerColor, SPAN_STATUS_COLORS } from '../lib/traceColors'
@@ -109,23 +109,23 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
   const kind = getSpanKindIndicator(span.kind)
 
   // All spans of the trace, for resolving a nested span's OWNING function
-  // via its ancestor chain (`trigger <fn>` / `call <fn>` invocation spans).
+  // via its ancestor chain (`call <fn>` / `execute <fn>` invocation spans).
   const spansById = useMemo(
     () => new Map((traceData?.spans ?? []).map((s) => [s.span_id, s] as const)),
     [traceData],
   )
 
   // Function-invocation spans render a call view built from the same
-  // `FunctionTriggerMessage` the chat's FunctionTriggerCard consumes — the
+  // `FunctionCallMessage` the chat's FunctionCallCard consumes — the
   // adapter synthesizes it from the span's attributes/events — and apply
   // the SAME redactor the card would (rawRedactor, keyed on the function
   // id) before anything renders or reaches the clipboard. Model calls get
   // the conversation view, every other call the request/response view.
-  const functionTrigger = useMemo(
-    () => functionTriggerFromSpan(span, spansById),
+  const functionCall = useMemo(
+    () => functionCallFromSpan(span, spansById),
     [span, spansById],
   )
-  const renderers = useFunctionTriggerRenderers()
+  const renderers = useFunctionCallRenderers()
   const functionId = useMemo(
     () => spanFunctionId(span, spansById),
     [span, spansById],
@@ -133,12 +133,10 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
   const payloads = useMemo(() => {
     const redact = functionId ? rawRedactor(renderers, functionId) : undefined
     return {
-      input: redact ? redact(functionTrigger?.input) : functionTrigger?.input,
-      output: redact
-        ? redact(functionTrigger?.output)
-        : functionTrigger?.output,
+      input: redact ? redact(functionCall?.input) : functionCall?.input,
+      output: redact ? redact(functionCall?.output) : functionCall?.output,
     }
-  }, [functionId, renderers, functionTrigger])
+  }, [functionId, renderers, functionCall])
   const llm = useMemo(() => {
     const { input, output } = payloads
     if (!isLlmCall(functionId, span.attributes, input)) return null
@@ -175,13 +173,13 @@ export function SpanInfoTab({ span, traceData }: SpanInfoTabProps) {
             error={llm.error}
           />
         </section>
-      ) : functionTrigger ? (
+      ) : functionCall ? (
         <section className="flex flex-col gap-2">
           <h3 className="text-xs font-semibold text-foreground">
             Function call
           </h3>
           <FunctionCallView
-            message={functionTrigger}
+            message={functionCall}
             rawInput={payloads.input}
             rawOutput={payloads.output}
             worker={worker}

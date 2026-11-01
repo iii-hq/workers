@@ -26,7 +26,7 @@ Install and use these ecosystem workers instead of writing custom equivalents:
 | Git land / merge | `worktree::land` (+ `shell` for test gates) | Custom `myapp::deploy` / `::merge` |
 | GitHub operations | `github::*` | Raw `gh` shell from agent code |
 | Public governed port | `rbac-proxy` with `gantry::middleware` | Rolling your own auth middleware |
-| Verify completion events | Subscribe to `gantry::verdict` | Polling verify JSON for side effects |
+| Verify completion events | Observe `gantry::on-verdict` | Polling verify JSON for side effects |
 
 **Canonical pipeline:** `worktree::create` → agent work → `gantry::verify` → `worktree::land` (with `verdict_token` in context). Promote-class suffixes (`::deploy`, `::merge`, `::publish`, `::apply`, `::push`, `::promote`) require a token whose claims match the mission on disk.
 
@@ -41,9 +41,8 @@ Install and use these ecosystem workers instead of writing custom equivalents:
 - `gantry::verify` — run `verifyMission` for the active mission; a pass binds the mission to the lease and mints the verdict token
 - `gantry::middleware` — governed-port gate; promote-class calls need a token whose claims are recomputed at promote time
 - `gantry::on-function-registration` — block `gantry::` / `opengantry::` namespace squatting and reserved suffixes
-- `gantry::on-trigger-registration` — block triggers bound into the `gantry::` namespace
-- `gantry::on-trigger-type-registration` — always denied
-- `gantry::verdict` — trigger type; fires after every verify (pass or fail) for audit/notifications
+- `gantry::on-observer-registration` — block observers on the governed port whose target is in the `gantry::` namespace
+- `gantry::on-verdict` — private event source called after every verify (pass or fail) with `{ status, error_code, repo_root, msn_id, mission_rel_path }`; observe it (no args, filter on `input.*`) for audit/notifications
 
 ## Bootstrap (host only)
 

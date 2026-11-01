@@ -352,7 +352,7 @@ export type FsSedResponse = z.infer<typeof fsSedResponseSchema>
 // ---------------------------------------------------------------------------
 
 /**
- * The harness `agent-trigger.ts` wraps every tool result in a
+ * The harness wraps every tool result in a
  * `{ content: ContentBlock[], details: unknown, terminate: boolean }`
  * envelope before relaying it to the agent. The console receives the
  * same shape via the engine's function_call output stream.
@@ -497,11 +497,9 @@ function denialToInvocation(
           ? 'Denied by user'
           : denial.status === 'denied'
             ? 'Denied'
-            : 'Trigger failed'
+            : 'Call failed'
   const message =
-    denial.reason ??
-    fallbackMessage ??
-    'The sandbox trigger could not complete.'
+    denial.reason ?? fallbackMessage ?? 'The sandbox call could not complete.'
   return {
     title,
     message,
@@ -522,7 +520,7 @@ function invocationFromFunctionError(
     return denialToInvocation(denial, envelope.message, detailText)
   }
   return {
-    title: 'Trigger failed',
+    title: 'Call failed',
     message: envelope.message,
     detailText,
   }

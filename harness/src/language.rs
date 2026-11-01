@@ -2,11 +2,11 @@
 //! `TurnOptions::response_language`).
 //!
 //! Left to pick the language of user-facing text itself, a model guesses: one
-//! labelled every `agent_trigger` call of an English session in Spanish,
+//! labelled every `agent_call` call of an English session in Spanish,
 //! inferred from the username in the working directory. So the harness
 //! detects the language once — from the user's first message with enough
 //! prose — pins it for the session, and names it to the model in the runtime
-//! context ([`runtime_line`]) and the `agent_trigger` schema
+//! context ([`runtime_line`]) and the `agent_call` schema
 //! ([`description_field_text`]). A later explicit "answer in Portuguese" is
 //! the prompt's rule to honor; nothing here re-detects.
 
@@ -104,14 +104,14 @@ pub fn metadata_value(language: &ResponseLanguage) -> Value {
 pub fn runtime_line(language: &ResponseLanguage) -> String {
     format!(
         "Response language: {} (from the user's first message). Write every user-facing text in \
-         it — progress messages, every agent_trigger `description`, harness::ask questions and \
+         it — progress messages, every agent_call `description`, harness::ask questions and \
          the final answer — unless the user explicitly asks for another language. Never infer it \
          from names, paths or the locale.",
         language.name
     )
 }
 
-/// The `agent_trigger` `description` field's schema text for `language`.
+/// The `agent_call` `description` field's schema text for `language`.
 pub fn description_field_text(language: Option<&ResponseLanguage>) -> String {
     let language = match language {
         Some(language) => format!("written in {}", language.name),
@@ -328,7 +328,7 @@ mod tests {
         };
         let line = runtime_line(&english);
         assert!(line.starts_with("Response language: English (from the user's first message)."));
-        assert!(line.contains("every agent_trigger `description`"));
+        assert!(line.contains("every agent_call `description`"));
         assert!(line.contains("unless the user explicitly asks for another language"));
         assert!(line.ends_with("Never infer it from names, paths or the locale."));
 

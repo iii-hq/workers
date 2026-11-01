@@ -24,8 +24,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -115,7 +114,7 @@ impl IndexEntry {
 
 /// Where the key/value calls actually go.
 ///
-/// `Bus` is the production path: every operation is a `state::*` trigger over
+/// `Bus` is the production path: every operation is a `state::*` call over
 /// the engine. `Memory` is the test seam the function unit tests run against —
 /// same semantics (`get` of a missing key is `None`, `delete` returns the old
 /// value), no engine required.
@@ -169,7 +168,7 @@ impl Store {
         function_id: &str,
         payload: Value,
     ) -> Result<Value, String> {
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: function_id.to_string(),
             payload,
             action: None,

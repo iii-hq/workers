@@ -1,51 +1,55 @@
-//! `cron::on-tick`: the observable function next to the `cron` trigger type.
+//! `cron::on-tick`: one call per fire of a cron expression.
 //!
-//! The function is owner-delivered. Each observer passes `{ expression }` as
-//! args; [`OnTickHandler`] files it in the scheduler under that expression,
-//! which runs one job per distinct expression for observers and `cron`
-//! trigger bindings alike. Each fire hands the tick to that expression's
-//! observers with `obs.emit` (the SDK applies their filters) and calls its
-//! bindings as the trigger type always did.
+//! Each observer passes `{ expression }` as args ([`CronArgs`]). The
+//! function's hooks are set by id before it registers:
 //!
-//! Ticks are routed in-process by the scheduler, never by invoking the
-//! function, and its handler refuses every invocation: a caller could
-//! otherwise make this worker emit forged ticks.
+//! - **added** retains the expression's job in the [`Scheduler`], starting it
+//!   for the first observer of that expression, or rejects the observer with
+//!   `INVALID_CRON_EXPRESSION`;
+//! - **removed** releases it; the job stops with its last observer;
+//! - **match** gives each tick to the observers of its expression: an
+//!   observer wants a call when its `args.expression` is the call's
+//!   `input.expression`.
 //!
-//! On an engine without observe the function registers as a plain function,
-//! its hooks never run, and the trigger type carries everything.
+//! Each fire of a job calls the function once ([`OnTickCaller`]); iii
+//! delivers the tick to the matched observers whose filters accept it. The
+//! handler returns the tick it is called with, so observers observe the tick.
+//! The function is private: only this worker calls it. It registers as a
+//! standby, so a second instance takes over its observers when the first
+//! one leaves, and every expression fires once.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::runtime::FunctionRef;
-use iii_sdk::{IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction};
+use iii_sdk::runtime::{FunctionRef, IIIConnectionState};
+use iii_sdk::{
+    AddedHook, CallAction, CallRequest, IIIClient, Match, ObserveRejection, Observer,
+    RegisterFunction, RemovedHook,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use crate::boot::SchedulerCell;
-use crate::scheduler::{Scheduler, TickObserver};
+use crate::scheduler::{Scheduler, Ticker};
 
 pub const ON_TICK_FN: &str = "cron::on-tick";
 
 pub const ON_TICK_DESCRIPTION: &str =
-    "Fires on a cron schedule. Observe it with args { expression } (UTC; 6 fields: sec min \
-     hour day month weekday, a 7th year field is accepted); every observer of an expression \
-     receives { trigger, expression, scheduled_time, actual_time } once per fire. Only the cron \
-     worker fires it: invoking it directly is refused.";
+    "One call per fire of a cron expression. Observe it with args { expression } (UTC; 6 \
+     fields: sec min hour day month weekday, a 7th year field is accepted); every observer of \
+     that expression receives { expression, scheduled_time, actual_time } once per fire. Only \
+     the cron worker calls it.";
 
 /// Rejection codes an observer's `ready()` fails with.
 pub mod codes {
-    /// The expression does not parse (or is empty). The message is the one
-    /// the `cron` trigger type gives for the same config.
+    /// The expression does not parse (or is empty).
     pub const INVALID_CRON_EXPRESSION: &str = "INVALID_CRON_EXPRESSION";
-    pub const FORBIDDEN: &str = "FORBIDDEN";
 }
 
 /// An observer's args. The engine validates them against this schema
 /// (`INVALID_ARGS` for a missing or non-string `expression`, or any other
-/// field): `condition_function_id` is not carried over from the trigger
-/// config; filter on the tick instead.
+/// field).
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CronArgs {
@@ -53,96 +57,143 @@ pub struct CronArgs {
     pub expression: String,
 }
 
-/// What each observer receives per fire. One tick serves every observer of
-/// the expression, so it carries no `job_id`: a target that needs its
-/// observer reads `observer_id` from the envelope.
+/// One fire of an expression: the function's input and what its observers
+/// observe.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub struct CronTick {
-    /// Always `cron`, as in the trigger payload: kept while the trigger type
-    /// is deprecated, so a handler moved over that switches on it still works.
-    pub trigger: String,
-    /// The expression that fired, exactly as the observer passed it in args.
+    /// The expression that fired, exactly as its observers passed it in args.
     pub expression: String,
-    /// RFC 3339, UTC.
+    /// The fire's scheduled time: RFC 3339 in UTC with a `+00:00` offset,
+    /// whole seconds.
     pub scheduled_time: String,
-    /// RFC 3339, UTC.
+    /// When the worker fired it: RFC 3339 in UTC with a `+00:00` offset.
     pub actual_time: String,
 }
 
-/// Registers `cron::on-tick` with [`OnTickHandler`] as its hooks.
-pub fn register(iii: &IIIClient, scheduler: SchedulerCell) -> FunctionRef {
+/// Sets the hooks of [`ON_TICK_FN`] over `scheduler` by id, then registers
+/// it, so the hooks run for every observer.
+pub fn register(iii: &IIIClient, scheduler: Arc<Scheduler>) -> FunctionRef {
+    let hooks = OnTickHooks { scheduler };
+    iii.on_observer_added_for(ON_TICK_FN, hooks.clone());
+    iii.on_observer_removed_for(ON_TICK_FN, hooks);
+    // Each tick goes to the observers of its expression.
+    iii.on_observer_match_for(
+        ON_TICK_FN,
+        Match::predicate(|obs, call| same_expression(obs.args_value(), &call.input)),
+    );
+
     iii.register_function(
         ON_TICK_FN,
-        RegisterFunction::new(refuse_invocation)
+        RegisterFunction::new(on_tick)
             .description(ON_TICK_DESCRIPTION)
-            .observe(
-                Observe::owner()
-                    .args_format::<CronArgs>()
-                    .handler(OnTickHandler { scheduler }),
-            ),
+            .args_format::<CronArgs>()
+            .private()
+            .standby(),
     )
 }
 
-/// The function's handler: ticks only come from the scheduler.
-fn refuse_invocation(_tick: CronTick) -> Result<(), Error> {
-    Err(Error::Remote {
-        code: codes::FORBIDDEN.to_string(),
-        message: format!(
-            "{ON_TICK_FN} is an event source: observe it \
-             (iii.observe({{ function_id: '{ON_TICK_FN}', args: {{ expression }} }}, target)); \
-             only the cron worker fires its ticks"
-        ),
-        stacktrace: None,
-    })
+/// Removes the hooks [`register`] set, once the function is unregistered.
+pub fn clear_hooks(iii: &IIIClient) {
+    iii.clear_observer_added_for(ON_TICK_FN);
+    iii.clear_observer_removed_for(ON_TICK_FN);
+    iii.clear_observer_match_for(ON_TICK_FN);
 }
 
-/// Files each observer of `cron::on-tick` under its expression, and takes it
-/// out again when the engine removes it.
-pub struct OnTickHandler {
-    scheduler: SchedulerCell,
+/// The function's handler: the tick it is called with is what observers
+/// observe.
+fn on_tick(tick: CronTick) -> Result<CronTick, Error> {
+    Ok(tick)
+}
+
+/// The match hook's question: do an observer's args and a call's input name
+/// the same `expression`?
+fn same_expression(args: &Value, input: &Value) -> bool {
+    fn expression(value: &Value) -> Option<&str> {
+        value.get("expression")?.as_str()
+    }
+    expression(args).is_some_and(|wanted| expression(input) == Some(wanted))
+}
+
+/// The hooks of [`ON_TICK_FN`]: one retained job per observer's expression.
+#[derive(Clone)]
+pub struct OnTickHooks {
+    scheduler: Arc<Scheduler>,
 }
 
 #[async_trait]
-impl ObserveHandler for OnTickHandler {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+impl AddedHook for OnTickHooks {
+    async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         // Checked by the engine against args_format.
         let CronArgs { expression } = obs.args()?;
-        // Filed before the ack: the first fire after the engine marks the
-        // observer active reaches it.
-        let scheduler = self.scheduler.read().await;
-        admit(&scheduler, &expression, Arc::new(obs.clone())).await?;
-        drop(scheduler);
+        // Retained before the ack: the first fire after the observer becomes
+        // active reaches it.
+        admit(&self.scheduler, obs.id(), &expression).await?;
         tracing::info!(observer = %obs.id(), target = %obs.target(), expression = %expression, "cron::on-tick observer added");
         Ok(())
     }
+}
 
-    async fn on_observer_removed(&self, obs: &Observer) {
-        self.scheduler.read().await.remove_observer(obs.id()).await;
+#[async_trait]
+impl RemovedHook for OnTickHooks {
+    async fn on_removed(&self, obs: Observer) {
+        self.scheduler.release(obs.id()).await;
         tracing::info!(observer = %obs.id(), "cron::on-tick observer removed");
     }
 }
 
-/// Files `observer` under `expression`, joining its job or starting one.
-/// The expression goes through the parser the trigger type uses, with the
-/// same message; a failure rejects the observer.
+/// Retains the job of `expression` for `observer_id`. An expression that
+/// does not parse rejects the observer.
 async fn admit(
     scheduler: &Scheduler,
+    observer_id: &str,
     expression: &str,
-    observer: Arc<dyn TickObserver>,
 ) -> Result<(), ObserveRejection> {
     scheduler
-        .add_observer(expression, observer)
+        .retain(observer_id, expression)
         .await
         .map_err(|e| ObserveRejection::new(codes::INVALID_CRON_EXPRESSION, e.to_string()))
 }
 
-impl TickObserver for Observer {
-    fn id(&self) -> &str {
-        Observer::id(self)
-    }
+/// The scheduler's [`Ticker`] in the worker: each tick is one fire-and-forget
+/// call of [`ON_TICK_FN`], made only while the function has an active
+/// observer.
+pub struct OnTickCaller {
+    iii: Arc<IIIClient>,
+}
 
-    fn emit(&self, tick: &CronTick) -> Result<bool, String> {
-        Observer::emit(self, tick).map_err(|e| e.to_string())
+impl OnTickCaller {
+    pub fn new(iii: Arc<IIIClient>) -> Self {
+        Self { iii }
+    }
+}
+
+impl Ticker for OnTickCaller {
+    fn tick(&self, tick: CronTick) {
+        // A tick while the connection is down would wait in the SDK's report
+        // buffer and reach its observers with every other one at reconnect:
+        // it is skipped, like a fire while the worker is stopped.
+        if !self.iii.is_observed(ON_TICK_FN)
+            || self.iii.get_connection_state() != IIIConnectionState::Connected
+        {
+            return;
+        }
+        let input = match serde_json::to_value(&tick) {
+            Ok(input) => input,
+            Err(error) => {
+                tracing::error!(expression = %tick.expression, %error, "cron tick did not serialize");
+                return;
+            }
+        };
+        let iii = self.iii.clone();
+        tokio::spawn(async move {
+            let request = CallRequest {
+                action: Some(CallAction::Void),
+                ..CallRequest::new(ON_TICK_FN, input)
+            };
+            if let Err(error) = iii.call(request).await {
+                tracing::warn!(expression = %tick.expression, %error, "cron::on-tick call failed");
+            }
+        });
     }
 }
 
@@ -151,7 +202,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    use crate::scheduler::tests::{counting_scheduler, RecordingObserver};
+    use crate::scheduler::tests::recording_scheduler;
 
     #[test]
     fn args_require_a_string_expression_and_nothing_else() {
@@ -181,78 +232,72 @@ mod tests {
     }
 
     #[test]
-    fn the_tick_has_no_job_id_and_no_condition() {
+    fn the_tick_carries_the_expression_and_both_times() {
         let schema = serde_json::to_value(schemars::schema_for!(CronTick)).unwrap();
         let mut fields: Vec<&String> = schema["properties"].as_object().unwrap().keys().collect();
         fields.sort();
-        assert_eq!(
-            fields,
-            ["actual_time", "expression", "scheduled_time", "trigger"]
-        );
+        assert_eq!(fields, ["actual_time", "expression", "scheduled_time"]);
+    }
+
+    #[test]
+    fn the_handler_returns_the_tick_it_is_called_with() {
+        let tick = CronTick {
+            expression: "* * * * * *".into(),
+            scheduled_time: "2026-10-20T00:00:00+00:00".into(),
+            actual_time: "2026-10-20T00:00:00.004+00:00".into(),
+        };
+        assert_eq!(on_tick(tick.clone()).unwrap(), tick);
+    }
+
+    /// An observer wants the ticks of the expression in its args, and no
+    /// other.
+    #[test]
+    fn an_observer_wants_the_ticks_of_its_expression() {
+        let args = json!({ "expression": "0 0 9 * * Mon-Fri" });
+        let tick = |expression: &str| {
+            serde_json::to_value(CronTick {
+                expression: expression.into(),
+                scheduled_time: "2026-10-20T09:00:00+00:00".into(),
+                actual_time: "2026-10-20T09:00:00+00:00".into(),
+            })
+            .unwrap()
+        };
+        assert!(same_expression(&args, &tick("0 0 9 * * Mon-Fri")));
+        assert!(!same_expression(&args, &tick("0 0 10 * * Mon-Fri")));
+        assert!(!same_expression(&args, &json!({})));
+        assert!(!same_expression(&json!({}), &json!({})));
+        assert!(!same_expression(
+            &json!({ "expression": 5 }),
+            &json!({ "expression": 5 })
+        ));
     }
 
     #[tokio::test]
-    async fn a_bad_expression_is_rejected_with_the_trigger_types_message() {
-        let (scheduler, _invoker) = counting_scheduler();
+    async fn a_bad_expression_is_rejected_with_invalid_cron_expression() {
+        let (scheduler, _ticker) = recording_scheduler();
         for (expression, message) in [
             ("", "Cron expression is required"),
             ("   ", "Cron expression is required"),
             ("not a cron", "invalid cron expression 'not a cron'"),
             ("* * * * *", "invalid cron expression '* * * * *'"),
         ] {
-            let observer = Arc::new(RecordingObserver::new("o1"));
-            let rejection = admit(&scheduler, expression, observer).await.unwrap_err();
+            let rejection = admit(&scheduler, "o1", expression).await.unwrap_err();
             assert_eq!(rejection.code, codes::INVALID_CRON_EXPRESSION);
             assert!(
                 rejection.message.contains(message),
                 "{expression:?}: {}",
                 rejection.message
             );
-            // The trigger type refuses the same config with the same text.
-            let err = scheduler
-                .register(crate::scheduler::JobSpec {
-                    trigger_id: "t1".into(),
-                    expression: expression.into(),
-                    function_id: "app::f".into(),
-                    condition_function_id: None,
-                    metadata: None,
-                })
-                .await
-                .unwrap_err();
-            assert_eq!(err.to_string(), rejection.message);
         }
         assert_eq!(scheduler.job_count().await, 0);
     }
 
     #[tokio::test]
     async fn an_observer_is_admitted_into_its_expressions_job() {
-        let (scheduler, _invoker) = counting_scheduler();
-        admit(
-            &scheduler,
-            "0 0 9 * * Mon-Fri",
-            Arc::new(RecordingObserver::new("o1")),
-        )
-        .await
-        .unwrap();
+        let (scheduler, _ticker) = recording_scheduler();
+        admit(&scheduler, "o1", "0 0 9 * * Mon-Fri").await.unwrap();
+        admit(&scheduler, "o2", "0 0 9 * * Mon-Fri").await.unwrap();
         assert_eq!(scheduler.job_count().await, 1);
         scheduler.shutdown().await;
-    }
-
-    #[test]
-    fn invoking_the_function_directly_is_forbidden() {
-        let err = refuse_invocation(CronTick {
-            trigger: "cron".into(),
-            expression: "* * * * * *".into(),
-            scheduled_time: "2026-10-20T00:00:00+00:00".into(),
-            actual_time: "2026-10-20T00:00:00+00:00".into(),
-        })
-        .unwrap_err();
-        match err {
-            Error::Remote { code, message, .. } => {
-                assert_eq!(code, "FORBIDDEN");
-                assert!(message.contains("observe it"), "{message}");
-            }
-            other => panic!("expected a FORBIDDEN remote error, got {other:?}"),
-        }
     }
 }

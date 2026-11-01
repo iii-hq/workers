@@ -115,7 +115,7 @@ export function SessionDetail({ host, sessionId, refreshList, commands, onDirty,
     setOperation(action)
     setActionError(null)
     try {
-      await host.iii.trigger(`whatsapp::sessions::${action}`, { session_id: sessionId }, { timeoutMs: 730000 })
+      await host.iii.call(`whatsapp::sessions::${action}`, { session_id: sessionId }, { timeoutMs: 730000 })
       if (!current()) return
       setAnnouncement({ seq: Date.now(), text: action === 'start' ? 'Session start requested.' : 'Session stopped; credentials preserved.', urgency: 'polite' })
       refreshList()
@@ -134,7 +134,7 @@ export function SessionDetail({ host, sessionId, refreshList, commands, onDirty,
     setActionError(null)
     setPhonePair(null)
     try {
-      const result = await host.iii.trigger<PairingCode>('whatsapp::sessions::pair_code', { session_id: sessionId, phone_number: number }, { timeoutMs: 610000 })
+      const result = await host.iii.call<PairingCode>('whatsapp::sessions::pair_code', { session_id: sessionId, phone_number: number }, { timeoutMs: 610000 })
       if (current() && samePhone() && result.expires_at_ms > Date.now()) setPhonePair(result)
     } catch (cause) { if (current() && samePhone()) setActionError(errorMessage(cause)) }
     finally { if (current()) { busy.current = false; setOperation(null); refresh() } }

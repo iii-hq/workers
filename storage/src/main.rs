@@ -2,18 +2,16 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::errors::Error;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerType};
+use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use storage::config::{redact_url, WorkerConfig};
 use storage::configuration;
+use storage::events::dispatcher::EngineDispatcher;
 use storage::handlers::{
     buckets, delete_object, get_object, head_object, list_buckets, list_objects, multipart,
     parse_request, presign_post, presign_url, put_object, schema_of, test_bucket, AppState,
 };
-use storage::triggers::dispatcher::EngineDispatcher;
-use storage::triggers::handler::{ObjectCreatedHandler, ObjectDeletedHandler};
-use storage::triggers::registry::TriggerRegistry;
 use tokio::sync::RwLock;
 
 #[derive(Parser, Debug)]
@@ -100,11 +98,7 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("loading storage configuration")?;
 
-    let registry = Arc::new(TriggerRegistry::new());
-    let dispatcher = Arc::new(EngineDispatcher::new(
-        iii.as_ref().clone(),
-        registry.clone(),
-    ));
+    let dispatcher = Arc::new(EngineDispatcher::new(iii.as_ref().clone()));
 
     // `secret://` / `env://` values resolve through the secrets worker; the
     // cache is filled when the configuration is applied below.
@@ -225,6 +219,8 @@ async fn main() -> Result<()> {
                 }
             })
             .request_format(schema_of::<buckets::SaveBucketReq>())
+            // Its input may carry literal credentials.
+            .observable(false)
             .description(
                 "Create, update (previous_name = name) or rename (previous_name = old) a bucket in the storage configuration; \"__redacted__\" keeps a stored value, credentials go as secret:// references or in `credentials`, create_bucket creates an s3/r2 bucket that does not exist. Returns after the runtime reloaded, with the bucket's error if any.",
             ),
@@ -261,6 +257,8 @@ async fn main() -> Result<()> {
                 }
             })
             .request_format(schema_of::<test_bucket::TestBucketReq>())
+            // A candidate entry may carry literal credentials.
+            .observable(false)
             .description(
                 "Test a candidate bucket entry (or a stored one by name) with a throwaway client and freshly resolved secrets: lists one object at the root. Live buckets are untouched; reports ok/provider/latency, the failing stage (config, secrets, endpoint, auth, bucket, list) and bucket_missing; failures are data, not errors.",
             ),
@@ -393,37 +391,19 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Deprecated in iii-sdk 0.25. Kept until the object trigger types are
-    // retired; old consumers bind them on 0.24 and 0.25 engines.
-    #[allow(deprecated)]
-    let _ = iii.register_trigger_type(RegisterTriggerType::new(
-        "storage::object-created",
-        "Fires when an object is written to a configured bucket whose notifications source is wired up.",
-        ObjectCreatedHandler {
-            registry: registry.clone(),
-            wired_buckets: wired_buckets.clone(),
-            reconfigure_gate: state.reconfigure_gate.clone(),
-        },
-    ));
-    #[allow(deprecated)]
-    let _ = iii.register_trigger_type(RegisterTriggerType::new(
-        "storage::object-deleted",
-        "Fires when an object is removed from a configured bucket whose notifications source is wired up.",
-        ObjectDeletedHandler {
-            registry: registry.clone(),
-            wired_buckets: wired_buckets.clone(),
-            reconfigure_gate: state.reconfigure_gate.clone(),
-        },
-    ));
+    // storage::on-object-created / storage::on-object-deleted: private,
+    // observed per bucket, called by the notifications sources.
+    storage::events::source::register(&iii, wired_buckets.clone(), state.reconfigure_gate.clone());
 
-    configuration::register_config_trigger(&iii, state.clone(), runtime.clone())
-        .context("registering configuration change trigger")?;
-    configuration::register_secret_trigger(&iii, state.clone(), runtime.clone());
+    configuration::observe_config_changes(&iii, state.clone(), runtime.clone());
+    configuration::observe_secret_changes(&iii, state.clone(), runtime.clone());
     let _maintenance = runtime.spawn_maintenance(state.clone());
 
     storage::ui::register(&iii);
 
-    tracing::info!("storage registered 12 functions and 2 trigger types, waiting for invocations");
+    tracing::info!(
+        "storage registered 12 functions, storage::on-object-created and storage::on-object-deleted, waiting for invocations"
+    );
     wait_for_shutdown_signal().await?;
     tracing::info!("storage shutting down");
     runtime.shutdown().await;

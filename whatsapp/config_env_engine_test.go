@@ -108,13 +108,13 @@ func TestCloudEnvironmentEngine(t *testing.T) {
 			}
 			smokeProcess(t, dir, namespace, worker, args, childEnvironment...)
 			smokeWait(t, "Cloud environment configuration", func() bool {
-				status, err := smokeTrigger(engine, engineURL, namespace, "whatsapp::config-status", map[string]any{})
+				status, err := smokeCall(engine, engineURL, namespace, "whatsapp::config-status", map[string]any{})
 				return err == nil && status["source"] == source && status["last_outcome"] == "applied"
 			})
 
 			checkRuntime := func(wantSessions int) {
 				t.Helper()
-				status, err := smokeTrigger(engine, engineURL, namespace, "whatsapp::config-status", map[string]any{})
+				status, err := smokeCall(engine, engineURL, namespace, "whatsapp::config-status", map[string]any{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -131,7 +131,7 @@ func TestCloudEnvironmentEngine(t *testing.T) {
 						t.Fatal("active configuration must redact credentials")
 					}
 				}
-				cloudStatus, err := smokeTrigger(engine, engineURL, namespace, "whatsapp::cloud::status", map[string]any{})
+				cloudStatus, err := smokeCall(engine, engineURL, namespace, "whatsapp::cloud::status", map[string]any{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -150,7 +150,7 @@ func TestCloudEnvironmentEngine(t *testing.T) {
 			}
 			checkStored := func(want Config) {
 				t.Helper()
-				raw, err := smokeTrigger(engine, engineURL, "default", "configuration::get", map[string]any{"id": namespace, "raw": true})
+				raw, err := smokeCall(engine, engineURL, "default", "configuration::get", map[string]any{"id": namespace, "raw": true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -162,7 +162,7 @@ func TestCloudEnvironmentEngine(t *testing.T) {
 			}
 			checkRuntime(stored.MaxSessions)
 			if mode == "local" {
-				raw, err := smokeTrigger(engine, engineURL, "default", "configuration::get", map[string]any{"id": namespace, "raw": true})
+				raw, err := smokeCall(engine, engineURL, "default", "configuration::get", map[string]any{"id": namespace, "raw": true})
 				if err == nil && raw["value"] != nil {
 					t.Fatal("local configuration must not publish a central seed")
 				}
@@ -177,7 +177,7 @@ func TestCloudEnvironmentEngine(t *testing.T) {
 				t.Fatal(err)
 			}
 			smokeWait(t, "Cloud environment survives central reload", func() bool {
-				status, err := smokeTrigger(engine, engineURL, namespace, "whatsapp::config-status", map[string]any{})
+				status, err := smokeCall(engine, engineURL, namespace, "whatsapp::config-status", map[string]any{})
 				active, _ := status["active"].(map[string]any)
 				return err == nil && active["max_sessions"] == float64(stored.MaxSessions) && status["last_outcome"] == "applied"
 			})

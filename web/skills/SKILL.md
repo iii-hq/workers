@@ -1,12 +1,12 @@
 ---
 type: index
 title: web
-description: Outbound HTTP(S) client on the iii bus — the single web::fetch trigger. Use instead of shell::exec curl. Authoring guide for an agent calling it: the minimal call, the full request/response envelope, the ok:true-vs-ok:false rule (HTTP 4xx/5xx are ok:true), an error→cause→fix table, the json-vs-body and response_format rules, page-reading mode (format:"markdown" → HTML→Markdown, browser UA, viewable images), and the SSRF guard (blocked ranges, pin-to-IP, per-hop redirect re-check, cross-origin auth stripping). Self-contained — read once via directory::skills::get; do not re-fetch.
+description: Outbound HTTP(S) client on the iii bus — the single web::fetch function. Use instead of shell::exec curl. Authoring guide for an agent calling it: the minimal call, the full request/response envelope, the ok:true-vs-ok:false rule (HTTP 4xx/5xx are ok:true), an error→cause→fix table, the json-vs-body and response_format rules, page-reading mode (format:"markdown" → HTML→Markdown, browser UA, viewable images), and the SSRF guard (blocked ranges, pin-to-IP, per-hop redirect re-check, cross-origin auth stripping). Self-contained — read once via directory::skills::get; do not re-fetch.
 functions:
   - web::fetch
 ---
 
-> **Callable id:** `web::fetch` — pass to `agent_trigger { function: "web::fetch" }` (NOT the `iii://...` skill path; that's docs, not a function id). Use this **instead of** `shell::exec` with `curl`/`wget` for any HTTP request: you get a parsed `{ ok, status, headers, body }` envelope, enforced size/timeout caps, and server-side SSRF protection a shell `curl` doesn't have.
+> **Callable id:** `web::fetch` — pass to `agent_call { function: "web::fetch" }` (NOT the `iii://...` skill path; that's docs, not a function id). Use this **instead of** `shell::exec` with `curl`/`wget` for any HTTP request: you get a parsed `{ ok, status, headers, body }` envelope, enforced size/timeout caps, and server-side SSRF protection a shell `curl` doesn't have.
 
 # Decide fast
 
@@ -23,7 +23,7 @@ functions:
 # Minimal call
 
 ```jsonc
-// agent_trigger { function: "web::fetch", payload: { "url": "https://api.github.com/zen" } }
+// agent_call { function: "web::fetch", payload: { "url": "https://api.github.com/zen" } }
 // → { "ok": true, "status": 200, "body": "Design for failure.", ... }
 ```
 

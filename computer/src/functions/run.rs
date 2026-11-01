@@ -709,7 +709,7 @@ where
 /// still reads as the judge saw it, act once (never retried), read until the
 /// app shows a change. `judge` asks one evaluation within a timeout.
 /// `started` runs once the request passed every check and holds the session
-/// (the console's `computer::activity`): a refused run announces nothing.
+/// (the console's `computer::on-activity`): a refused run announces nothing.
 pub(crate) async fn announced<F, Fut, S>(
     session: &Arc<Session>,
     req: RunInput,

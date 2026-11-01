@@ -16,10 +16,11 @@ permission model — in a chosen working directory, and returns the final
 result, token usage, and cost. The worker is a pure pass-through: named
 payload fields cover the common path, the `options` field forwards any Agent
 SDK option verbatim, and every message Claude Code emits is published untouched
-on the `claude::raw-event` trigger type. A translated AgentEvent view is
-published on `claude::agent-event`, which is what the iii console and the acp
-worker render. Bind either with `{ session_id }`; frames are live only (not
-stored or replayed), ordered by `(epoch, seq)`.
+on `claude::on-raw-event`. A translated AgentEvent view is published on
+`claude::on-agent-event`, which is what the iii console and the acp worker
+render. Observe either with args `{ session_id }`
+(`iii.observe({ function_id: 'claude::on-agent-event', args: { session_id }, deliver: 'output' }, target)`);
+frames are live only (not stored or replayed), ordered by `(epoch, seq)`.
 
 Requires the `claude` CLI on the host with an existing login or
 `ANTHROPIC_API_KEY` in the worker environment. When a turn needs a
@@ -34,13 +35,13 @@ instead of bolting anything onto this one.
 - Continue a conversation across calls: pass the same `session_id` again and
   the worker resumes the underlying Claude Code session with full context.
 - Run long jobs without holding the call open: `claude::start` returns
-  `{session_id, started}` immediately; bind `claude::raw-event` with
-  `{ session_id }` for raw progress or `claude::agent-event` for the rendered
-  view;
+  `{session_id, started}` immediately; observe `claude::on-raw-event` with
+  args `{ session_id }` for raw progress or `claude::on-agent-event` for the
+  rendered view;
   interrupt with `claude::stop`.
 - Act on the whole backend: turns carry the iii runtime context by default,
   so the agent discovers and calls any registered function through the iii
-  CLI (engine::functions::list, `iii trigger <fn> --help`) with the
+  CLI (engine::functions::list, `iii call <fn> --help`) with the
   matching Bash allow rule pre-set; disable per turn with
   `iii_context: false`.
 - Plan before touching anything: `permission_mode: "plan"` runs Claude
@@ -50,7 +51,7 @@ instead of bolting anything onto this one.
 - Reach past the named payload fields: anything the Agent SDK accepts goes
   through `options` unchanged — `{"options": {"forkSession": true,
   "includePartialMessages": true}}` — and `includePartialMessages` puts
-  token-level `stream_event` frames on `claude::raw-event`.
+  token-level `stream_event` frames on `claude::on-raw-event`.
 
 ## Boundaries
 
@@ -63,9 +64,9 @@ instead of bolting anything onto this one.
 - One turn per session at a time: check `claude::status` (`live: true`)
   before sending another `claude::run` for the same `session_id`; parallel
   runs against one session race on the underlying Claude Code resume.
-- `claude::agent-event` carries whole-message frames (`message_complete`,
+- `claude::on-agent-event` carries whole-message frames (`message_complete`,
   `function_execution_start/end`, `turn_end`, `agent_end`); token deltas
-  exist only on `claude::raw-event` and only when `includePartialMessages` is
+  exist only on `claude::on-raw-event` and only when `includePartialMessages` is
   set.
 
 ## Functions
@@ -84,6 +85,9 @@ instead of bolting anything onto this one.
 - `claude::sessions::list` — every session this worker has run.
 - `run::start_and_wait` — alias for `claude::run` under the entrypoint the
   console and acp worker drive, so both run Claude Code with no changes.
+- `claude::on-agent-event`, `claude::on-raw-event` — the event feeds: private
+  functions you observe with args `{ session_id }` (at most 256 observers
+  each); never call them.
 
 ## The terminal half
 
@@ -91,7 +95,7 @@ The same worker also runs Claude Code as a terminal page on the console: it
 installs the CLI on the terminal host (the `shell` worker's), equips a
 workspace with the iii skills and engine notes, and opens Claude in a
 `shell::pty` session. A person opens it; the session's turns are published on
-`claude::agent-event` with the same frames a `claude::run` turn produces, so both
+`claude::on-agent-event` with the same frames a `claude::run` turn produces, so both
 halves render alike. Use it when an operator wants to talk to Claude Code
 interactively — with login handled in the terminal — or wants an agent that
 can scaffold and register new iii workers from inside the engine. `pi`

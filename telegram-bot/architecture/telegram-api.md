@@ -19,7 +19,7 @@ The worker is simultaneously:
   for every outbound action (`sendMessage`, `editMessageText`, `setWebhook`, …); and
 - an **update receiver** — it consumes inbound `Update` objects either by
   long-polling Telegram (`getUpdates`) or by receiving Telegram's HTTP POSTs
-  through an engine route.
+  through an `http::on-request` route.
 
 Both ingress paths converge on a single sink, so the rest of the worker never
 needs to know which adapter delivered an update:
@@ -27,7 +27,7 @@ needs to know which adapter delivered an update:
 ```
 polling:  bg task ─ getUpdates ─┐
                                  ├─► webhook::process_update_with_tracing ─► process_update
-webhook:  engine HTTP route ─────┘
+webhook:  http::on-request route ┘
 ```
 
 ## 2. The HTTP client
@@ -89,9 +89,10 @@ starting anything new. Polling needs **no public URL** — ideal for local dev.
 updates: { name: webhook, config: { base_url: "https://engine.example", secret: "…" } }
 ```
 
-Telegram POSTs each update to the engine route `POST /telegram-bot/webhook`,
-which the engine dispatches to the `telegram-bot::webhook` function. The request
-arrives as an `HttpTriggerRequest { body: Value, headers: Option<Map> }`. The
+Telegram POSTs each update to the route `POST /telegram-bot/webhook`, an
+`http::on-request` observer whose target is the `telegram-bot::webhook`
+function. The request arrives as an `HttpRequest { body: Value, headers:
+Option<Map> }` (the fields of the http worker's request this worker reads). The
 handler:
 
 1. Confirms the active adapter is `webhook` (else rejects — the route may still
@@ -146,7 +147,7 @@ resolved per session (`EffectiveTransport`):
 
 - **Draft** (preferred, Bot API 9.3+): `sendMessageDraft` pushes an ephemeral
   "the bot is composing" preview that updates in place; model thinking streams
-  via `sendRichMessageDraft` as a `<tg-thinking>` block. On `turn-completed` the
+  via `sendRichMessageDraft` as a `<tg-thinking>` block. On `harness::on-turn-completed` the
   draft is **finalized** into a persistent `sendMessage`/`sendRichMessage` and the
   ephemeral draft is cleared.
 - **Edit** (fallback): the first chunk is posted with `sendMessage`, then refined
@@ -174,7 +175,7 @@ freshness, finalize reconciliation, per-chat message ordering).
 - **Typing indicator** — only used with the **edit** transport (drafts already
   show progress). `sendChatAction(typing)` is deferred ~400 ms and re-pinged
   every ~4 s by a cancellable loop guarded by a generation counter; it is
-  **suppressed** on first visible output and at `turn-completed` (Telegram has no
+  **suppressed** on first visible output and at `harness::on-turn-completed` (Telegram has no
   "stop typing" call — each action lasts ~5 s on clients unless a bot message
   arrives).
 

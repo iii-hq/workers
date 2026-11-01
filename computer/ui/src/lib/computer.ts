@@ -5,7 +5,7 @@ import { z } from 'zod'
  * Control plane for the `computer` worker's own injected UI: typed wrappers
  * over its session surface (start / list / stop / screenshot / act) plus the
  * screencast plumbing the live viewport rides on, and parsers for the chat
- * function-trigger views.
+ * function-call views.
  *
  * Every call goes through the tab's `host.iii` client, passed in by the page —
  * there is no module-level singleton in injected UI. Wire source:
@@ -24,31 +24,34 @@ export const SCREENCAST_STOP_FUNCTION_ID = 'computer::screencast::stop'
 export const FRAME_FUNCTION_ID = 'computer::frame'
 export const RUN_FUNCTION_ID = 'computer::run'
 
-export const SESSION_STARTED_TRIGGER = 'computer::session-started'
-export const SESSION_STOPPED_TRIGGER = 'computer::session-stopped'
+/** Observable: each call is a session that connected and is ready. */
+export const ON_SESSION_STARTED_FUNCTION_ID = 'computer::on-session-started'
+/** Observable: each call is a session that ended (`reason`: stopped, idle). */
+export const ON_SESSION_STOPPED_FUNCTION_ID = 'computer::on-session-stopped'
 
 /**
- * A caller drove a session (`{ session_id, function, timestamp }`, function
- * `computer::act` or `computer::run`): the live preview shows it.
+ * Observable: each call is a caller driving a session
+ * (`{ session_id, function, timestamp }`, function `computer::act` or
+ * `computer::run`): the live preview shows it.
  */
-export const ACTIVITY_TRIGGER = 'computer::activity'
+export const ON_ACTIVITY_FUNCTION_ID = 'computer::on-activity'
 
 /** iii-sandbox's catalog: the images a sandbox session can boot. */
 export const SANDBOX_CATALOG_FUNCTION_ID = 'sandbox::catalog::list'
 
-/** Session lifecycle trigger types the rail re-reads on. */
-export const LIFECYCLE_TRIGGERS = [
-  SESSION_STARTED_TRIGGER,
-  SESSION_STOPPED_TRIGGER,
+/** The session lifecycle functions the rail re-reads on. */
+export const LIFECYCLE_FUNCTION_IDS = [
+  ON_SESSION_STARTED_FUNCTION_ID,
+  ON_SESSION_STOPPED_FUNCTION_ID,
 ] as const
 
 /**
- * Worker-owned trigger type fired after each new (or cleared) screencast
- * frame; config `{ session_id }` (required). The payload is a small
- * notification (`{ session_id, epoch, frame_seq, change, ... }`, no image):
- * the page reads the frame with `computer::frame` (notify, then fetch).
+ * Observable: called after each new (or cleared) screencast frame; args
+ * `{ session_id }` (required). The event is a small notification
+ * (`{ session_id, epoch, frame_seq, change, ... }`, no image): the page
+ * reads the frame with `computer::frame` (notify, then fetch).
  */
-export const FRAME_CHANGED_TRIGGER = 'computer::frame-changed'
+export const ON_FRAME_CHANGED_FUNCTION_ID = 'computer::on-frame-changed'
 
 /** Every `computer::*` bus function belongs to this family. */
 export function isComputerFunction(functionId: string): boolean {
@@ -256,7 +259,7 @@ export async function startSession(
   if (input.os) payload.os = input.os
   if (input.monitor != null) payload.monitor = input.monitor
   if (input.native) payload.native = true
-  const res = await iii.trigger<unknown>(SESSIONS_START_FUNCTION_ID, payload, {
+  const res = await iii.call<unknown>(SESSIONS_START_FUNCTION_ID, payload, {
     timeoutMs: 120_000,
   })
   return sessionStartSchema.parse(decodeComputerResult(res))
@@ -265,7 +268,7 @@ export async function startSession(
 export async function listSessions(
   iii: ExtensionIii,
 ): Promise<ComputerSessionInfo[]> {
-  const res = await iii.trigger<unknown>(SESSIONS_LIST_FUNCTION_ID, {})
+  const res = await iii.call<unknown>(SESSIONS_LIST_FUNCTION_ID, {})
   const parsed = sessionListSchema.safeParse(decodeComputerResult(res))
   return parsed.success ? (parsed.data.sessions ?? []) : []
 }
@@ -274,13 +277,13 @@ export async function stopSession(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<void> {
-  await iii.trigger(SESSIONS_STOP_FUNCTION_ID, { session_id: sessionId })
+  await iii.call(SESSIONS_STOP_FUNCTION_ID, { session_id: sessionId })
 }
 
 export async function listDisplays(
   iii: ExtensionIii,
 ): Promise<ComputerDisplay[]> {
-  const res = await iii.trigger<unknown>(DISPLAYS_FUNCTION_ID, {})
+  const res = await iii.call<unknown>(DISPLAYS_FUNCTION_ID, {})
   const parsed = z
     .object({ displays: z.array(displayInfoSchema).optional() })
     .safeParse(decodeComputerResult(res))
@@ -323,7 +326,7 @@ export function sandboxImages(response: unknown): SandboxImage[] {
 export async function listSandboxImages(
   iii: ExtensionIii,
 ): Promise<SandboxImage[]> {
-  const res = await iii.trigger<unknown>(
+  const res = await iii.call<unknown>(
     SANDBOX_CATALOG_FUNCTION_ID,
     {},
     { timeoutMs: 10_000 },
@@ -335,7 +338,7 @@ export async function takeScreenshot(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<ComputerCapture | null> {
-  const res = await iii.trigger<unknown>(SCREENSHOT_FUNCTION_ID, {
+  const res = await iii.call<unknown>(SCREENSHOT_FUNCTION_ID, {
     session_id: sessionId,
   })
   return parseCapture(res)
@@ -349,34 +352,34 @@ export async function act(
   payload: ActPayload,
 ): Promise<void> {
   // Session id last: an action payload cannot retarget another desktop.
-  await iii.trigger(ACT_FUNCTION_ID, { ...payload, session_id: sessionId })
+  await iii.call(ACT_FUNCTION_ID, { ...payload, session_id: sessionId })
 }
 
 export async function startScreencast(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<void> {
-  await iii.trigger(SCREENCAST_START_FUNCTION_ID, { session_id: sessionId })
+  await iii.call(SCREENCAST_START_FUNCTION_ID, { session_id: sessionId })
 }
 
 export async function stopScreencast(
   iii: ExtensionIii,
   sessionId: string,
 ): Promise<void> {
-  await iii.trigger(SCREENCAST_STOP_FUNCTION_ID, { session_id: sessionId })
+  await iii.call(SCREENCAST_STOP_FUNCTION_ID, { session_id: sessionId })
 }
 
 /**
  * Newest stored screencast frame; a memory read on the worker. `frame` is
  * absent while `sinceFrame` is still the newest seq. Read once on open and
- * after each `computer::frame-changed` notification.
+ * after each `computer::on-frame-changed` notification.
  */
 export async function readFrame(
   iii: ExtensionIii,
   sessionId: string,
   sinceFrame?: number,
 ): Promise<ComputerFrame | null> {
-  const res = await iii.trigger<unknown>(FRAME_FUNCTION_ID, {
+  const res = await iii.call<unknown>(FRAME_FUNCTION_ID, {
     session_id: sessionId,
     ...(sinceFrame != null ? { since_frame: sinceFrame } : {}),
   })

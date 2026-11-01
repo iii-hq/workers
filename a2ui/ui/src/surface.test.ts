@@ -36,37 +36,37 @@ describe('A2UI data bindings', () => {
 })
 
 describe('A2UI live subscriptions', () => {
-  it('shares one binding trigger and one durable update across mounted views', async () => {
+  it('shares one binding observer and one durable update across mounted views', async () => {
     vi.useFakeTimers()
     const mock = mockHost()
     const surface = fixtureSurface()
     const binding: LiveBinding = {
       id: 'files',
-      trigger_type: 'shell::changed',
-      config: { path: '/workspace' },
+      function_id: 'shell::on-changed',
+      args: { path: '/workspace' },
       target_path: '/last_change',
     }
     const first = vi.fn()
     const second = vi.fn()
     const offFirst = subscribeLiveBinding(mock.host, surface, binding, first)
     const offSecond = subscribeLiveBinding(mock.host, surface, binding, second)
-    expect(mock.registerTrigger).toHaveBeenCalledTimes(1)
+    expect(mock.observe).toHaveBeenCalledTimes(1)
 
     mock.emit({ path: '/workspace/file.ts' })
     await vi.advanceTimersByTimeAsync(120)
     expect(first).toHaveBeenCalledTimes(1)
     expect(second).toHaveBeenCalledTimes(1)
     expect(first).toHaveBeenCalledWith('/last_change', { path: '/workspace/file.ts' }, 2)
-    expect(mock.trigger).toHaveBeenCalledTimes(1)
-    expect(mock.trigger).toHaveBeenCalledWith(
+    expect(mock.call).toHaveBeenCalledTimes(1)
+    expect(mock.call).toHaveBeenCalledWith(
       'a2ui::binding::apply',
       expect.objectContaining({ binding_id: 'files' }),
     )
 
     offFirst()
-    expect(mock.unregisterTrigger).not.toHaveBeenCalled()
+    expect(mock.dispose).not.toHaveBeenCalled()
     offSecond()
-    expect(mock.unregisterTrigger).toHaveBeenCalledTimes(1)
+    expect(mock.dispose).toHaveBeenCalledTimes(1)
   })
 
   it('shares subscriptions across separately loaded Console bundles', async () => {
@@ -78,17 +78,17 @@ describe('A2UI live subscriptions', () => {
     const surface = fixtureSurface()
     const binding: LiveBinding = {
       id: 'cross-bundle',
-      trigger_type: 'shell::changed',
-      config: { path: '/workspace' },
+      function_id: 'shell::on-changed',
+      args: { path: '/workspace' },
       target_path: '/last_change',
     }
     const offFirst = firstBundle.subscribeLiveBinding(mock.host, surface, binding, vi.fn())
     const offSecond = secondBundle.subscribeLiveBinding(mock.host, surface, binding, vi.fn())
 
-    expect(mock.registerTrigger).toHaveBeenCalledTimes(1)
+    expect(mock.observe).toHaveBeenCalledTimes(1)
     mock.emit({ path: '/workspace/file.ts' })
     await vi.advanceTimersByTimeAsync(120)
-    expect(mock.trigger).toHaveBeenCalledTimes(1)
+    expect(mock.call).toHaveBeenCalledTimes(1)
 
     offFirst()
     offSecond()
@@ -99,14 +99,14 @@ describe('A2UI live subscriptions', () => {
     const surface = fixtureSurface()
     const first = subscribeLiveBinding(mock.host, surface, {
       id: 'status.live',
-      trigger_type: 'shell::changed',
-      config: { path: '/workspace' },
+      function_id: 'shell::on-changed',
+      args: { path: '/workspace' },
       target_path: '/first',
     }, vi.fn())
     const second = subscribeLiveBinding(mock.host, surface, {
       id: 'status-live',
-      trigger_type: 'shell::changed',
-      config: { path: '/workspace' },
+      function_id: 'shell::on-changed',
+      args: { path: '/workspace' },
       target_path: '/second',
     }, vi.fn())
 
@@ -118,12 +118,12 @@ describe('A2UI live subscriptions', () => {
   it('does not publish a live value when durable persistence fails', async () => {
     vi.useFakeTimers()
     const mock = mockHost()
-    mock.trigger.mockRejectedValueOnce(new Error('state unavailable'))
+    mock.call.mockRejectedValueOnce(new Error('state unavailable'))
     const listener = vi.fn()
     const off = subscribeLiveBinding(mock.host, fixtureSurface(), {
       id: 'durable-first',
-      trigger_type: 'shell::changed',
-      config: { path: '/workspace' },
+      function_id: 'shell::on-changed',
+      args: { path: '/workspace' },
       target_path: '/last_change',
     }, listener)
 
@@ -140,7 +140,7 @@ describe('A2UI live subscriptions', () => {
     const second = vi.fn()
     const offFirst = subscribeSurfaceEvents(mock.host, 'session-1', first)
     const offSecond = subscribeSurfaceEvents(mock.host, 'session-1', second)
-    expect(mock.registerTrigger).toHaveBeenCalledTimes(1)
+    expect(mock.observe).toHaveBeenCalledTimes(1)
 
     const event = { type: 'state', scope: 'a2ui', key: 'session-1' }
     mock.emit(event)
@@ -151,7 +151,7 @@ describe('A2UI live subscriptions', () => {
 
     offFirst()
     offSecond()
-    expect(mock.unregisterTrigger).toHaveBeenCalledTimes(1)
+    expect(mock.dispose).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -178,11 +178,11 @@ function fixtureSurface(): SurfaceRecord {
 
 function mockHost() {
   const handlers = new Set<(payload: unknown) => void>()
-  const trigger = vi.fn(async () => ({ revision: 2 }))
-  const registerTrigger = vi.fn(() => {
-    return () => unregisterTrigger()
+  const call = vi.fn(async () => ({ revision: 2 }))
+  const observe = vi.fn(() => {
+    return () => dispose()
   })
-  const unregisterTrigger = vi.fn()
+  const dispose = vi.fn()
   const on = vi.fn((_id: string, handler: (payload: unknown) => void) => {
     handlers.add(handler)
     return () => handlers.delete(handler)
@@ -190,17 +190,17 @@ function mockHost() {
   const host = {
     iii: {
       browserId: 'browser-1',
-      trigger,
+      call,
       on,
-      registerTrigger,
+      observe,
     },
   } as unknown as Host
   return {
     host,
-    trigger,
+    call,
     on,
-    registerTrigger,
-    unregisterTrigger,
+    observe,
+    dispose,
     emit: (payload: unknown) => {
       for (const handler of handlers) handler(payload)
     },

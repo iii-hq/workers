@@ -79,7 +79,7 @@ function FunctionDetailBlock({
   summaryRow,
 }: {
   detail: FunctionDetail
-  /** Single lookups keep the worker/triggers MetaRow above the ƒ line. */
+  /** Single lookups keep the worker/observers MetaRow above the ƒ line. */
   summaryRow: boolean
 }) {
   return (
@@ -91,12 +91,24 @@ function FunctionDetailBlock({
             <span className="iii-ui-eyebrow">worker</span>
             <span className="ml-1 text-ink">{detail.worker_name}</span>
           </Chip>
-          <Chip>
-            <span className="iii-ui-eyebrow">triggers</span>
-            <span className="ml-1 text-ink tabular-nums">
-              {detail.registered_triggers.length}
-            </span>
-          </Chip>
+          {typeof detail.observer_count === 'number' ? (
+            <Chip>
+              <span className="iii-ui-eyebrow">observers</span>
+              <span className="ml-1 text-ink tabular-nums">
+                {detail.observer_count}
+              </span>
+            </Chip>
+          ) : null}
+          {detail.private ? (
+            <Chip>
+              <span className="iii-ui-eyebrow">private</span>
+            </Chip>
+          ) : null}
+          {detail.observable === false ? (
+            <Chip>
+              <span className="iii-ui-eyebrow">not observable</span>
+            </Chip>
+          ) : null}
         </MetaRow>
       ) : null}
       <ActionLine icon={<SquareFunction />} tone="accent">
@@ -123,71 +135,10 @@ function FunctionDetailBlock({
           treatEmptyAsAny={false}
         />
       ) : null}
-      <RegisteredTriggers triggers={detail.registered_triggers} />
+      {detail.args_format !== undefined ? (
+        <SchemaSection label="observer args" schema={detail.args_format} />
+      ) : null}
     </>
-  )
-}
-
-function RegisteredTriggers({
-  triggers,
-}: {
-  triggers: FunctionDetail['registered_triggers']
-}) {
-  if (triggers.length === 0) {
-    return (
-      <div className="px-3 py-2 border-b border-rule-2 font-mono text-[11.5px] text-ink-ghost">
-        · no registered triggers
-      </div>
-    )
-  }
-  return (
-    <div className="border-b border-rule-2">
-      <div className="px-3 py-1.5 bg-paper-2 border-b border-rule-2 iii-ui-eyebrow">
-        registered triggers · {triggers.length}
-      </div>
-      <ul className="divide-y divide-rule-2">
-        {triggers.map((t) => (
-          <li key={t.id} className="px-3 py-2 flex flex-col gap-1">
-            <div className="flex items-baseline gap-2 flex-wrap">
-              <span
-                className="font-mono text-[11px] text-ink-faint break-all"
-                title={t.id}
-              >
-                {shortenId(t.id)}
-              </span>
-              <span className="iii-ui-eyebrow">{t.trigger_type}</span>
-            </div>
-            <TriggerConfig config={t.config} />
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
-function TriggerConfig({ config }: { config: unknown }) {
-  if (config === undefined || config === null) return null
-  if (
-    typeof config === 'object' &&
-    Object.keys(config as object).length === 0
-  ) {
-    return (
-      <div className="font-mono text-[11px] text-ink-ghost">· no config</div>
-    )
-  }
-  let pretty: string
-  try {
-    pretty = JSON.stringify(config, null, 2)
-  } catch {
-    return null
-  }
-  return (
-    <CodeHighlight
-      code={pretty}
-      language="json"
-      wrap
-      className="border border-rule-2 text-[11.5px] leading-[1.5] px-2 py-1.5"
-    />
   )
 }
 
@@ -272,9 +223,4 @@ function tryStringifyJson(value: unknown): string | null {
   } catch {
     return null
   }
-}
-
-function shortenId(id: string): string {
-  if (id.length <= 14) return id
-  return `${id.slice(0, 8)}…${id.slice(-4)}`
 }

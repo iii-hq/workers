@@ -14,7 +14,7 @@ import {
 
 /** Engine worker name for the memory worker. */
 const MEMORY_WORKER_NAME = 'memory'
-/** Base id for the browser-local handler bound to the `worker` trigger. */
+/** Base id for the browser-local handler observing worker joins and leaves. */
 const MEMORY_WATCH_FN = 'console::memory-watch'
 
 export type MemoryStatus = WorkerPresence
@@ -33,7 +33,7 @@ export function useMemoryStatus(enabled: boolean): MemoryStatus {
 }
 
 /**
- * Whether the memory worker's functions are registered and safe to trigger.
+ * Whether the memory worker's functions are registered and safe to call.
  * False during the initial presence probe and while the worker is absent.
  */
 export function isMemoryAvailable(status: MemoryStatus): boolean {

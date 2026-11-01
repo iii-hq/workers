@@ -23,7 +23,7 @@ function conversation(
 }
 
 /* Mirrors the shapes the tree renders: profile-tinted roots, a root with
-   agent- and trigger-spawned children, live/error status, a plain chat, and
+   agent- and observer-spawned children, live/error status, a plain chat, and
    a title long enough to truncate against the caret. */
 const CONVERSATIONS: Conversation[] = [
   conversation({
@@ -94,7 +94,7 @@ const CONVERSATIONS: Conversation[] = [
     parentId: 'documents',
     createdAt: NOW - 6 * HOUR,
     updatedAt: NOW - 6 * HOUR,
-    spawnedBy: 'trigger',
+    spawnedBy: 'observer',
   }),
   conversation({
     id: 'documents-roadmap',

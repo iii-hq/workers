@@ -42,7 +42,7 @@ removes duplicates, and omits the field when no non-empty tags remain.
 `registry_interface: false` compiles to `interface_capture: skipped` in the
 immutable deployment descriptor. Otherwise release prepare boots the prepared
 artifact against an isolated engine only long enough to capture registered
-functions and triggers. It does not invoke worker functions or validate an
+functions. It does not invoke worker functions or validate an
 external backend. Private `publish` controls whether a worker appears in the
 deployment index.
 

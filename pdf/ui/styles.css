@@ -207,31 +207,31 @@
 
 /* The chat and trace renderer for pdf::* calls. */
 
-[data-iii-ui="pdf"] .pdf-trigger {
+[data-iii-ui="pdf"] .pdf-call {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
 }
 
-[data-iii-ui="pdf"] .pdf-trigger__row {
+[data-iii-ui="pdf"] .pdf-call__row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 0.5rem;
 }
 
-[data-iii-ui="pdf"] .pdf-trigger__file {
+[data-iii-ui="pdf"] .pdf-call__file {
   color: var(--color-ink);
   font-size: 0.85rem;
 }
 
-[data-iii-ui="pdf"] .pdf-trigger__meta {
+[data-iii-ui="pdf"] .pdf-call__meta {
   color: var(--color-ink-ghost);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
 
-[data-iii-ui="pdf"] .pdf-trigger__line {
+[data-iii-ui="pdf"] .pdf-call__line {
   color: var(--color-ink-faint);
   font-size: 0.85rem;
   line-height: 1.5;

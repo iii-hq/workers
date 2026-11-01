@@ -5,6 +5,9 @@ use schemars::{schema::RootSchema, JsonSchema};
 use serde_json::json;
 
 use crate::action::{ACTION_COMMIT_ID, ACTION_PUSH_ID};
+use crate::events::{
+    ActionChangedEventV1, ChangeKind, ReconciliationChangedEventV1, RunChangedEventV1,
+};
 use crate::{
     ActionCommitRequestV1, ActionCommitResponseV1, ActionEnqueueRequestV1, ActionExecuteResponseV1,
     ActionPushRequestV1, ActionPushResponseV1, EnqueueRequest, ExecuteResponseV1, IiiRuntime,
@@ -34,10 +37,12 @@ pub const EXECUTE_ID: &str = "security-scan::execute";
 pub const EXECUTE_DESC: &str =
     "Internal durable queue step for target materialization and read-only Harness dispatch.";
 pub const TURN_COMPLETED_ID: &str = "security-scan::on-turn-completed";
+/// The harness's turn-completion event, observed by [`TURN_COMPLETED_ID`].
+pub const HARNESS_ON_TURN_COMPLETED_FN: &str = "harness::on-turn-completed";
 pub const TURN_COMPLETED_DESC: &str =
     "Internal Harness completion doorbell that validates and checkpoints a structured report.";
 pub const ON_SCHEDULE_ID: &str = "security-scan::on-schedule";
-pub const ON_SCHEDULE_DESC: &str = "Internal UTC cron target that uses invocation metadata only to look up an operator-configured repository schedule, resolves its local Git ref at fire time, and queues the exact commit through security-scan::request.";
+pub const ON_SCHEDULE_DESC: &str = "Internal UTC target of one cron::on-tick observer per scheduled repository. It uses the observer's metadata only to look up an operator-configured repository schedule, resolves its local Git ref at fire time, and queues the exact commit through security-scan::request.";
 pub const ACTION_ID: &str = "security-scan::action";
 pub const ACTION_DESC: &str = "Start an approval-gated GitHub issue or draft fix PR for one validated Harness finding. Duplicate run, finding, and action requests return the same action id.";
 pub const ACTION_READ_ID: &str = "security-scan::action-read";
@@ -268,6 +273,18 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<ActionPushRequestV1, ActionPushResponseV1>(
             ACTION_PUSH_ID,
             "Push the current fix action through its checkout-bound capability.",
+        ),
+        spec::<RunChangedEventV1, RunChangedEventV1>(
+            ChangeKind::Run.function_id(),
+            ChangeKind::Run.description(),
+        ),
+        spec::<ReconciliationChangedEventV1, ReconciliationChangedEventV1>(
+            ChangeKind::Reconciliation.function_id(),
+            ChangeKind::Reconciliation.description(),
+        ),
+        spec::<ActionChangedEventV1, ActionChangedEventV1>(
+            ChangeKind::Action.function_id(),
+            ChangeKind::Action.description(),
         ),
     ]
 }

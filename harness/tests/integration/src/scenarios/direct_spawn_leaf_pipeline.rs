@@ -1,17 +1,16 @@
 //! INT-005 — the parent-owned control plane, end to end over the state
-//! medium: the top-level agent registers a barrier-gated wake, DIRECTLY
+//! medium: the top-level agent observes with a barrier-gated wake, DIRECTLY
 //! spawns a leaf worker, and parks; the leaf writes the shared state keys;
 //! the barrier admits the final arrival and ONE notification wakes the
 //! parent, which completes the run.
 //!
-//! This is the replacement topology for the removed trigger→spawn path, and
-//! it pins the three claims that removal makes:
-//!   * no trigger ever creates an agent — the only spawn is the parent's own
+//! It pins the three claims of a parent-owned control plane:
+//!   * no observer ever creates an agent — the only spawn is the parent's own
 //!     direct `harness::spawn` call;
 //!   * child outcomes flow ONLY through the medium — the parent's transcript
 //!     gains exactly one `[notification]` (the barrier payload) and never a
 //!     `[child-failure]` or injected child result;
-//!   * the leaf runs on the shared identity and needs no trigger
+//!   * the leaf runs on the shared identity and needs no observer
 //!     knowledge — its generations are plain task → `state::set` writes.
 //!
 //! The leaf runs in its own session (untracked by the probe), so its turns
@@ -24,7 +23,7 @@ use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
-const REGISTER: &str = "engine::register_trigger";
+const OBSERVE: &str = "harness::observe";
 const SPAWN: &str = "harness::spawn";
 
 pub(super) fn scenario() -> ScenarioFixture {
@@ -38,8 +37,8 @@ pub(super) fn scenario() -> ScenarioFixture {
     // condition is the PARENT's choice, expressed as data — the spec's
     // "barrier, or another explicit aggregate".
     let register_args = json!({
-        "trigger_type": "state",
-        "config": { "scope": "{{run_id}}" },
+        "function_id": "state::on-changed",
+        "filters": { "input.scope": { "$eq": "{{run_id}}" } },
         "label": "pipeline-gate",
         "conditions": [{
             "function_id": "state::barrier",
@@ -48,7 +47,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     });
 
     // The leaf's whole world: one self-contained task naming the destination.
-    // No trigger vocabulary, no parent, no siblings. Its policy is narrowed
+    // No observer vocabulary, no parent, no siblings. Its policy is narrowed
     // to the single function the task needs.
     let spawn_args = json!({
         "task": "Write state scope {{run_id}} key items-1 value {\"item\":1,\"status\":\"done\"}, \
@@ -60,7 +59,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     Scenario::new(
         ID,
         "direct-spawn-leaf-pipeline",
-        "The parent registers a barrier wake, spawns a leaf directly, parks, and is woken \
+        "The parent observes with a barrier wake, spawns a leaf directly, parks, and is woken \
          exactly once by the leaf's state writes.",
         ScenarioDriver::Direct,
         model.clone(),
@@ -68,15 +67,17 @@ pub(super) fn scenario() -> ScenarioFixture {
     .send(
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-005")
-            .allow_id(REGISTER)
+            .allow_id(OBSERVE)
             .allow_id(SPAWN)
             // The barrier is a CONDITION on the wake below, and a binding may
             // only gate itself with functions its registrant could call
             // directly — so the arming session must hold `state::barrier`
-            // itself or `engine::register_trigger` refuses the binding.
+            // itself or `harness::observe` refuses the binding.
             // Declared in sorted order: the harness renders the policy prompt
             // line sorted, while this list is joined in insertion order.
             .allow_id("state::barrier")
+            // An agent observes only what its policy allows.
+            .allow_id("state::on-changed")
             .allow_id("state::set"),
     )
     // Parent and child turns are independently scheduled. Match each request
@@ -86,7 +87,11 @@ pub(super) fn scenario() -> ScenarioFixture {
     // the woken turn is the single terminal one.
     .terminal_turn_statuses(["completed", "completed"])
     .parked_completions(1)
-    .expect_traces(2)
+    // One trace: the leaf's turn is queued from the parent's, the state
+    // worker calls `state::on-changed` inside the leaf's `state::set`, and
+    // iii delivers that call to the wake observer in the same trace, so the
+    // woken parent turn continues the trace its first turn opened.
+    .expect_traces(1)
     .generation(
         Generation::new(1)
             .expect(
@@ -98,7 +103,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             )
             .respond(Response::function_call_raw(
                 "call-arm",
-                REGISTER,
+                OBSERVE,
                 register_args,
                 8,
                 4,
@@ -113,7 +118,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-arm", "function_id": REGISTER }
+                            { "type": "function_call", "id": "call-arm", "function_id": OBSERVE }
                         ] }),
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
@@ -158,7 +163,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-arm", "function_id": REGISTER }
+                            { "type": "function_call", "id": "call-arm", "function_id": OBSERVE }
                         ] }),
                         json!({ "role": "function_result", "function_call_id": "call-arm",
                                 "is_error": false }),
@@ -290,7 +295,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                 item.get("custom")
                     .and_then(|c| c.get("custom_type"))
                     .and_then(Value::as_str)
-                    == Some("trigger_fired")
+                    == Some("observer_fired")
             })
             .collect();
         anyhow::ensure!(
@@ -335,7 +340,7 @@ mod tests {
         fixture.validate().unwrap();
         assert_eq!(fixture.expected_turn_statuses.len(), 2);
         assert_eq!(fixture.expected_terminal_turns, 1);
-        assert_eq!(fixture.expected_traces(), 2);
+        assert_eq!(fixture.expected_traces(), 1);
         assert_eq!(
             fixture.script.dispatch,
             crate::types::script::RouterDispatchV1::MatchAny

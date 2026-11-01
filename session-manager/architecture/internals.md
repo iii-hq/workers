@@ -11,20 +11,20 @@ in-process.
 
 | Path | Responsibility |
 |---|---|
-| [src/main.rs](../src/main.rs) | Boot: CLI (`--config` seed, `--url`, `--manifest`), engine connection, configuration register/fetch (**fatal** on an invalid bridge `config`), builds the initial `SessionRuntime` via `build_runtime` and wraps it in the hot-swappable `AppState`, registration order (store protocol + 14 functions + `configuration` trigger + `session::config-status`), Ctrl+C shutdown (the remote connection too when a bridge runtime is live). |
+| [src/main.rs](../src/main.rs) | Boot: CLI (`--config` seed, `--url`, `--manifest`), engine connection, configuration register/fetch (**fatal** on an invalid bridge `config`), builds the initial `SessionRuntime` via `build_runtime` and wraps it in the hot-swappable `AppState`, registration order (event functions + store protocol + 21 functions + `session::on-config-change` with its `configuration::on-updated` observer + `session::config-status`), Ctrl+C shutdown (the bridge relay's observer and the remote connection too when a bridge runtime is live). |
 | [src/config.rs](../src/config.rs) | `WorkerConfig { adapter, default_list_limit, max_list_limit }` with serde + `schemars::JsonSchema`. `adapter` is an adjacently tagged enum `StorageAdapter` (`name` + `config`, `rename_all = "snake_case"`) → `Fs(FsBackendConfig)` / `Bridge(BridgeBackendConfig)`, each `config` a typed `deny_unknown_fields` struct; `schemars` emits a `oneOf` so the console shows a variant picker plus the selected adapter's fields. `resolve_adapter()` returns the typed selection; bridge `url` is required at parse time. `~/` expansion for `data_dir`; `${VAR}` seed expansion; `json_schema()` / `to_json` / `from_json` / `from_file`; `boot_signature()` = the `adapter` half, compared on reload to decide rebuild-vs-tune. |
-| [src/configuration.rs](../src/configuration.rs) | Integration with the `configuration` worker: `register_config` (schema + seed), `fetch_config`, the hot-swappable `AppState` (live `SessionRuntime` + reload lock + `ReloadStatus`), `apply_runtime` / `reload_serialized` (build a candidate then swap; last-good on failure), `register_config_trigger` (binds `configuration` → `session::on-config-change`), `register_config_status` (`session::config-status`), `ConfigCell` (per-call list-limit snapshot). |
-| [src/runtime.rs](../src/runtime.rs) | `SessionRuntime` (store + service + sink + local emitter + `AdapterMode` + optional bridge remote), `SessionBuildContext`, `build_runtime` (constructs the runtime for an adapter; pure, so the reload path builds a candidate and only swaps on success). |
-| [src/resync.rs](../src/resync.rs) | `resync_triggers`: after an adapter swap, replays the new store's state (`created` + per-entry `message-added` / `message-updated`) through the local emitter and emits `deleted` for vanished sessions, so subscribers stay real-time without a refetch. |
+| [src/configuration.rs](../src/configuration.rs) | Integration with the `configuration` worker: `register_config` (schema + seed), `fetch_config`, the hot-swappable `AppState` (live `SessionRuntime` + reload lock + `ReloadStatus`), `apply_runtime` / `reload_serialized` (build a candidate then swap; last-good on failure), `register_config_observer` (registers `session::on-config-change` and observes `configuration::on-updated` with it, filtered to this entry's `configuration:updated` events), `register_config_status` (`session::config-status`), `ConfigCell` (per-call list-limit snapshot). |
+| [src/runtime.rs](../src/runtime.rs) | `SessionRuntime` (store + service + sink + local emitter + `AdapterMode` + optional bridge remote and relay; `close_bridge` retires both), `SessionBuildContext`, `build_runtime` (constructs the runtime for an adapter; pure, so the reload path builds a candidate and only swaps on success). |
+| [src/resync.rs](../src/resync.rs) | `resync_observers`: after an adapter swap, replays the new store's state (`session::on-created` + per-entry `session::on-message-added` / `session::on-message-updated`) through the local emitter and calls `session::on-deleted` for vanished sessions, so observers stay real-time without a refetch. It builds only the events the emitter wants (`Emitter::wants`), reads entries only while a message event is wanted, and reads nothing when no event is. |
 | [src/manifest.rs](../src/manifest.rs) | `--manifest` JSON for the registry publish pipeline; `default_config` mirrors `WorkerConfig::default()`. |
-| [src/types.rs](../src/types.rs) | Wire contracts: `Role`, `ContentBlock` (5 variants), `AgentMessage` (4 roles), `SessionEntry` (message/custom envelope), `SessionMeta`, `SessionStatus`, `CustomPayload`, `metadata_matches` (subset-equality helper). All serde + `schemars::JsonSchema`; serde tags keep the JSON byte-compatible with the spec's TypeScript. |
-| [src/error.rs](../src/error.rs) | `SessionError` — every variant renders as `code: message` with a stable `session/*` code; `From<SessionError> for IIIError` puts that string on the bus. |
+| [src/types.rs](../src/types.rs) | Wire contracts: `Role`, `ContentBlock` (5 variants), `AgentMessage` (4 roles), `SessionEntry` (message/custom envelope), `SessionMeta`, `SessionStatus`, `CustomPayload`, `metadata_matches` (subset-equality helper for `session::list`). All serde + `schemars::JsonSchema`; serde tags keep the JSON byte-compatible with the spec's TypeScript. |
+| [src/error.rs](../src/error.rs) | `SessionError` — every variant renders as `code: message` with a stable `session/*` code; `From<SessionError> for Error` puts that string on the bus. |
 | [src/store/mod.rs](../src/store/mod.rs) | `SessionStore` trait (11 methods) + `StoreError` (maps to `session/storage`). |
 | [src/store/fs.rs](../src/store/fs.rs) | Filesystem backend (JSONL per session). |
 | [src/store/bridge.rs](../src/store/bridge.rs) | Bridge backend (defers to a main instance's `session::store::*`). |
 | [src/service.rs](../src/service.rs) | **All domain logic.** Per-session locks, id/clock injection, cursors, active-path walks, fork copying. Returns `(response, Vec<EmittableEvent>)` — never emits itself. |
-| [src/events.rs](../src/events.rs) | The six public trigger types, binding-config parsing + filters, `Emitter`, `EventEnvelope`, `EventSink` (`Emitter` / `RemotePublisher`), the internal `session::store::events` feed, `attach_bridge_relay`. |
-| [src/functions/mod.rs](../src/functions/mod.rs) | `Deps { service, sink }` built per call from the live `AppState` runtime (so a hot-reload is picked up without re-registering), generic typed registration helper, `register_all` (14 functions). |
+| [src/events.rs](../src/events.rs) | The six private event functions (`register_event_functions`), their event payloads and `WithSessionMetadata`, `Emitter` (calls a function only while it is observed), `EventDeliverer` / `IiiDeliverer`, `EventEnvelope`, `EventSink` (`Emitter` / `RemotePublisher`), the internal `session::store::on-events` feed, `attach_bridge_relay` / `BridgeRelay`. |
+| [src/functions/mod.rs](../src/functions/mod.rs) | `Deps { service, sink }` built per call from the live `AppState` runtime (so a hot-reload is picked up without re-registering), generic typed registration helper, `register_all` (the 21 `session::*` functions). |
 | [src/functions/<verb>.rs](../src/functions) | One file per function: request/response structs (serde + JsonSchema, doc comments become schema descriptions) and a thin `pub async fn handle(deps, req)` = service call + `sink.publish_all(events)`. |
 | [src/functions/store_protocol.rs](../src/functions/store_protocol.rs) | The internal `session::store::*` protocol (11 raw store functions + `publish_events`). Registered unconditionally but mode-gated per call: served only while in fs mode, so it follows adapter hot-reloads (bridge mode rejects). |
 | [tests/](../tests) | Cucumber BDD (`tests/bdd.rs`, `harness = false`) + `tests/manifest.rs` subprocess test. See §10. |
@@ -104,16 +104,18 @@ one is a regression even if all types still line up):
    `forked_from` set, new active leaf = copy of the fork point. After the
    fork the two sessions share nothing — deleting one never affects the other.
 10. **Delete removes everything** (entries, leaf pointer, meta) and is a
-    `{ deleted: false }` no-op without an event for unknown ids. The
-    `session::deleted` event's metadata filter is evaluated against the meta
-    **as of deletion** (the row is already gone when the event lands).
+    `{ deleted: false }` no-op without an event for unknown ids. A
+    `session::on-deleted` observer's `input.session_metadata.<key>` filter is
+    evaluated against the meta **as of deletion** (the row is already gone
+    when the event lands).
 11. **Reads return null, mutations throw.** `get` / `get_message` return
     `null` for unknown ids; every mutating function and path-read
     (`messages`, `fork`, `set_active_leaf`, ...) rejects with `session/not_found`
     / `session/entry_not_found`.
-12. **Exactly one of `message` / `custom` per append.** Custom-entry appends
-    fire `session::message-added` with a `custom` field instead of `message`,
-    and never match a `roles` filter.
+12. **Exactly one of `message` / `custom` per append.** A custom-entry append
+    calls `session::on-message-added` with a `custom` field and no `message`,
+    so a filter on `input.message.role` (for example
+    `{ "input.message.role": { "$in": ["assistant"] } }`) never matches it.
 
 Cursors (both `list` and `messages`): opaque base64(JSON). The list cursor
 embeds `(order_tag, sort_key, session_id)` and is **bound to the order it was
@@ -201,7 +203,7 @@ Record per line, discriminated by `type`:
 
 Implements the same trait by calling the **main** instance's
 `session::store::*` functions over a dedicated SDK connection
-(the bridge adapter's `config.url`), one `trigger` per trait method with
+(the bridge adapter's `config.url`), one `call` per trait method with
 `config.timeout_ms`. Failures (unreachable main, malformed replies)
 map to `StoreError` → `session/storage`; the bridged mutation fails cleanly.
 The bridged instance never caches — the main's store (and its cache) is the
@@ -221,46 +223,48 @@ deny them to agents.
 
 ## 6. Event pipeline
 
-### 6.1 Types, configs, filters
+### 6.1 Event functions
 
-Six public trigger types, registered **before** the functions (handlers
-capture the subscriber sets): `session::created`, `session::message-added`,
-`session::message-updated`, `session::status-changed`,
-`session::meta-updated`, `session::deleted`.
+Six private event functions, registered first by
+`events::register_event_functions`: `session::on-created`,
+`session::on-message-added`, `session::on-message-updated`,
+`session::on-status-changed`, `session::on-meta-updated`,
+`session::on-deleted`. Each handler returns the event it is called with
+(`WithSessionMetadata<E>`: the event's fields plus `session_metadata`), so
+its observers receive the event, and its request and response schemas are
+the same. `private` means only this worker may call them: a call from
+another worker would be a forged event.
 
-Per-binding config structs are typed and `deny_unknown_fields` — a typo'd
-filter key is rejected at registration, never silently ignored:
+The functions take no args. Observers live in the engine, which hands each
+call to the observers whose filters match. Consumers filter on `input.session_id`, `input.message.role`
+(message events) and `input.session_metadata.<key>`. The payload carries
+`session_metadata` (the session's `SessionMeta.metadata`, omitted when it
+has none) for the tenancy filter: `session::on-meta-updated` carries the
+**post-update** metadata, `session::on-deleted` the **as-of-deletion**
+metadata. A `kind:"custom"` entry's `session::on-message-added` event
+carries `custom` and no `message`, so a role filter never matches it.
 
-| Trigger types | Config struct | Fields |
-|---|---|---|
-| `created` | `CreatedBindingConfig` | `metadata?` |
-| `message-added`, `message-updated` | `MessageBindingConfig` | `session_id?`, `roles?`, `metadata?` |
-| `status-changed`, `meta-updated`, `deleted` | `SessionBindingConfig` | `session_id?`, `metadata?` |
-
-Filter evaluation is the pure function `binding_matches(filter, ctx)`:
-`session_id` equality AND `roles` membership (a `kind:"custom"` entry has no
-role and never matches a roles filter) AND `metadata` subset-equality against
-the session's metadata (deep JSON equality per key; empty filter map is
-vacuous; non-empty filter never matches a session without metadata). The
-`meta-updated` filter sees the **post-update** metadata; the `deleted` filter
-sees the **as-of-deletion** metadata.
+All six carry `trace_hidden` metadata and are called inside an
+`iii.tag.hidden` baggage scope: every mutation (every streaming delta) calls
+one, so trace UIs hide them by default.
 
 ### 6.2 Emitter and sinks
 
 Handlers publish through `EventSink::publish_all(&[EmittableEvent])`, where
-`EmittableEvent = { event: SessionEvent, session_metadata }` (the metadata
-snapshot filters evaluate against — payloads do not carry it).
+`EmittableEvent = { event: SessionEvent, session_metadata }`.
 
-- **fs mode** — the sink is the `Emitter`: for each event, (a) snapshot the
-  type's bindings, evaluate filters, deliver the spec payload to each match
-  via `EventDeliverer` (production: `iii.trigger(function_id, payload,
-  TriggerAction::Void)`, log-and-swallow failures); (b) wrap the event in an
-  `EventEnvelope` and deliver it to every subscriber of the internal
-  `session::store::events` feed (§6.3).
+- **fs mode** — the sink is the `Emitter`: for each event, (a) when the
+  event's function is observed (`EventDeliverer::is_observed`, one atomic
+  load in production), call it with the event plus `session_metadata` via
+  `EventDeliverer::call` (production: `iii.call` with `CallAction::Void`,
+  log-and-swallow failures); (b) when `session::store::on-events` is
+  observed, wrap the event in an `EventEnvelope` and call that function with
+  it once (§6.3). Nothing is serialized for an unobserved function.
 - **bridge mode** — the sink is `RemotePublisher`: serialize the mutation's
   events into envelopes and make **one** `session::store::publish-events`
   call to the main. Log-and-continue on failure (the mutation already
-  succeeded; this is the same best-effort stance as `Void` fan-out — see §11).
+  succeeded; this is the same best-effort stance as the `Void` calls — see
+  §11).
 
 `EventDeliverer` is a trait so tests substitute a recorder for the bus.
 
@@ -270,51 +274,52 @@ snapshot filters evaluate against — payloads do not carry it).
 flowchart LR
   subgraph b1 [bridged instance B1]
     h1[handler] --> s1[service] --> rp1[RemotePublisher]
-    relay1["relay fn session::bridge::recv::&lt;uuid&gt;"] --> em1[local Emitter] --> subs1[B1 subscribers]
+    relay1["relay fn session::bridge::recv::&lt;uuid&gt;"] --> em1[local Emitter] --> obs1[B1 observers]
   end
   subgraph mainI [main instance, fs]
     pubfn[session::store::publish-events] --> emM[main Emitter]
-    emM --> subsM[main subscribers]
-    emM --> feed["session::store::events fan-out"]
+    emM --> obsM[main observers]
+    emM --> feed["session::store::on-events"]
   end
   subgraph b2 [bridged instance B2]
-    relay2[relay fn] --> em2[local Emitter] --> subs2[B2 subscribers]
+    relay2[relay fn] --> em2[local Emitter] --> obs2[B2 observers]
   end
   rp1 -->|envelopes| pubfn
-  feed --> relay1
-  feed --> relay2
+  feed -->|observer| relay1
+  feed -->|observer| relay2
 ```
 
-- The main registers the internal trigger type `session::store::events`
-  (unfiltered subscriber set, `BridgeSubscribers`; payload = envelope). Each
-  bridged instance, at boot (`attach_bridge_relay`), registers a uniquely
-  named relay function on the **main's** bus
-  (`session::bridge::recv::<uuid>` — unique so multiple bridges never
-  collide) and binds it to that feed.
-- `publish_events` ingests envelopes through the main `Emitter` pipeline —
-  so they reach the main's local subscribers **and** every attached bridge,
-  the originator included.
-- The relay handler re-emits each envelope through the bridged instance's
-  **local** `Emitter` only (its bridge set is empty by construction) — it
+- Every instance registers the private function `session::store::on-events`
+  (payload = envelope), and only an fs-mode instance calls it. Each bridged
+  instance, at boot (`attach_bridge_relay`), registers a uniquely named relay
+  function on the **main's** engine (`session::bridge::recv::<uuid>` —
+  unique so multiple bridges never collide) and observes the main's
+  `session::store::on-events` with it (`deliver: output`). The returned
+  `BridgeRelay` keeps the `ObserverHandle`; retiring the runtime disposes it.
+- `publish-events` ingests envelopes through the main `Emitter` — so the
+  main calls its own event functions **and**, once per event,
+  `session::store::on-events`, which the engine delivers to every attached
+  bridge, the originator included.
+- The relay handler emits each envelope through the bridged instance's
+  **local** `Emitter` only (it never calls `session::store::on-events`) — it
   never re-publishes, so there are no echo loops.
 - **Single-path rule:** a bridged instance never emits locally at mutation
-  time. Its own subscribers hear events via main fan-out → relay like every
+  time. Its own observers receive events via the main → relay like every
   other instance. One canonical path, no dedup logic, identical payloads
   everywhere; cost is one extra fire-and-forget hop for the originator.
-- The envelope carries `session_metadata`, so each instance evaluates its own
-  bindings' tenancy filters locally with full fidelity.
+- The envelope carries `session_metadata`, so each instance's engine applies
+  its observers' tenancy filters with full fidelity.
 
 ### 6.4 Restart behaviour
 
-The engine **replays existing trigger registrations to a re-registering
-trigger-type owner**. Consequences: the main's six public subscriber sets and
-its `session::store::events` set rebuild automatically when the main worker
-restarts; a bridged instance's local sets likewise rebuild from its local
-engine. The bridge's own registrations *on the main* (relay function +
-trigger) live in the main engine's registry; if the **main engine** itself
-restarts, re-attachment depends on the SDK reconnect re-registering — treat
-bridge re-attachment after a main-engine restart as best-effort and restart
-bridged instances to force a clean re-attach.
+Observers live in the engine, not in session-manager. When the worker
+restarts, the engine keeps its functions' observers (`pending` while the
+functions are gone) and activates them again when the functions register;
+nothing in session-manager needs rebuilding. A bridged instance's relay
+function and observer are owned by its connection to the main engine: the
+SDK re-registers the function and replays the observer, with the same id,
+after a reconnect, so a bridge re-attaches after a main-engine restart.
+Events emitted while a bridge is detached are not replayed to it.
 
 ## 7. Configuration and boot
 
@@ -348,11 +353,12 @@ Boot rules (see `main.rs` header for the full sequence):
 - **Invalid bridge `config` ⇒ fatal.** A bridge without a `url` fails at parse
   time, so a misconfigured bridge never silently falls back to writing a local
   fs store.
-- Registration order matters: six public trigger types + the internal
-  store-events feed (both registered unconditionally, even in bridge mode, so a
-  later bridge→fs reload has them ready) → `build_runtime` for the boot adapter →
-  the `session::store::*` protocol (mode-gated) → the 14 functions → the
-  `configuration` trigger (`session::on-config-change`) → `session::config-status`.
+- Registration order: the six event functions + the internal
+  `session::store::on-events` feed (both registered unconditionally, even in
+  bridge mode, so a later bridge→fs reload has them ready) → `build_runtime`
+  for the boot adapter → the `session::store::*` protocol (mode-gated) → the
+  21 functions → `session::on-config-change` and its observer of
+  `configuration::on-updated` → `session::config-status`.
   Handlers read the live runtime from `AppState` per call, so registration
   happens once and never needs to repeat across a reload.
 - **Adapter hot-reload (full).** Every field reloads live. On
@@ -364,22 +370,26 @@ Boot rules (see `main.rs` header for the full sequence):
   - **Adapter changed** (fs↔bridge, a new `data_dir`, a bridge url/timeout):
     `build_runtime` constructs a fresh `SessionRuntime`; a failed build keeps the
     previous runtime (last-good) and records `Rejected` for `session::config-status`.
-    On success the runtime is swapped under the write lock, then `resync_triggers`
-    replays the new store's state through the trigger fan-out (and `deleted` for
-    sessions gone across the swap) so subscribers stay real-time. The previous
-    bridge connection, if any, is shut down afterward.
+    On success the runtime is swapped under the write lock, then `resync_observers`
+    replays the new store's state through the event functions (and
+    `session::on-deleted` for sessions gone across the swap) so observers stay
+    real-time. The replay asks the new emitter which events it wants first and
+    builds only those; the pre-swap sessions are listed only while
+    `session::on-deleted` is wanted. The previous bridge relay's observer is
+    disposed and its connection shut down afterward.
 
-  The handler ignores the trigger payload and re-reads via `configuration::get`,
+  The handler ignores the delivered event and re-reads via `configuration::get`,
   so a direct call cannot inject config — it is denied to agents in
   `iii-permissions.yaml`.
 - Shutdown awaits `shutdown_async` on the local connection and, when a bridge
-  runtime is live, the remote one as well.
+  runtime is live, disposes the relay's observer and shuts the remote one
+  down as well.
 
 ## 8. Error model
 
 `SessionError` variants render as `code: message`; the code is the stable
 contract (see [integration.md §6](integration.md)). Mapping happens once, in
-`From<SessionError> for IIIError` (always `IIIError::Handler`). Codes:
+`From<SessionError> for Error` (always `Error::Handler`). Codes:
 `session/not_found`, `session/entry_not_found`, `session/parent_not_found`,
 `session/invalid_entry_kind`, `session/details_not_supported`,
 `session/empty_batch`, `session/invalid_cursor`, `session/invalid_request`,
@@ -415,8 +425,11 @@ is one specific composition of those; the BDD world is another.
   with no session-manager.
 - **@pure stack** (`tests/common/world.rs`): per-scenario production stack —
   real handlers/service/emitter — over a real `FsStore` in a tempdir, with
-  `SeqIds` + `FakeClock` and a recording deliverer. Feature files assert
-  exact ids (`e_001`), timestamps, on-disk files, and deliveries.
+  `SeqIds` + `FakeClock` and a recording deliverer that stands in for iii:
+  scenarios add observers with filters, and it applies them with iii's
+  filter language (`iii_sdk::Filter`) to every call the emitter makes.
+  Feature files assert exact ids (`e_001`), timestamps, on-disk files,
+  calls, and deliveries.
   `reopen_fs()` swaps in a fresh store over the same dir = restart
   simulation.
 - **@engine stack** (`tests/common/workers.rs`): registers the production
@@ -425,12 +438,17 @@ is one specific composition of those; the BDD world is another.
   `tests/common/bridge.rs` builds bridged-instance stacks (BridgeStore +
   RemotePublisher + relay + local emitter-with-recorder) against the same
   engine — that is how `engine_bridge.feature` proves the propagation matrix
-  (B1 mutation → B1/B2/main subscribers exactly once, filters at each edge)
-  on a single engine.
+  (B1 mutation → B1/B2/main observers exactly once, filters at each edge)
+  on a single engine. `tests/common/reload.rs` builds a second fs-mode
+  runtime on the same engine and changes its adapter through
+  `apply_runtime`: that is how `engine_adapter_reload.feature` proves a
+  hot-reload calls `session::on-deleted` for a session the new store lacks.
+  Engine observers and relays are disposed after each scenario.
 - Unit tests live next to what they pin: fs replay/encoding/truncation in
-  `store/fs.rs`, envelope roundtrip + fan-out in `events.rs`, cursor codecs
+  `store/fs.rs`, envelope roundtrip + observation gating in `events.rs`, cursor codecs
   in `service.rs`, config resolution in `config.rs`, unreachable-main mapping
-  in `store/bridge.rs`.
+  in `store/bridge.rs`, the post-reload resync and what it reads per observed
+  event function in `resync.rs` and `configuration.rs`.
 - Conventions: every scenario asserts the full observable contract (response
   + events fired *and not fired* + state readback) and carries a
   `# Prevents:` comment naming the regression it catches. Gherkin gotcha: a
@@ -458,10 +476,11 @@ III_ENGINE_WS_URL=ws://127.0.0.1:<port> cargo test --test bdd -- --tags @engine
   per call. Fine for thousands of sessions; an index is a backend concern if
   it ever isn't.
 - **Best-effort event window in bridge mode:** if the mutation succeeds but
-  `publish_events` fails (main died in between), those events are lost
-  (logged). Same class of guarantee as `Void` fan-out; consumers already must
-  tolerate at-least-once/unordered, so the recovery is a read-back.
-- **Bridge re-attachment after a main-engine restart** is best-effort (§6.4).
+  `publish-events` fails (main died in between), those events are lost
+  (logged). Same class of guarantee as the `Void` calls; consumers already
+  tolerate lost and unordered events, so the recovery is a read-back.
+- **Events emitted while a bridge is detached** (main engine restarting)
+  never reach it (§6.4).
 - **Lock-map growth:** one entry per session touched per process lifetime,
   by design (never freed).
 - **`session::store::*` is a god-mode surface** — raw writes bypass all
@@ -483,8 +502,9 @@ III_ENGINE_WS_URL=ws://127.0.0.1:<port> cargo test --test bdd -- --tags @engine
   *authoritative* (serves the store protocol + events feed, like fs) or
   *deferring* (like bridge). Reuse `persistence.feature`'s restart scenarios as
   the acceptance bar.
-- **New trigger type:** add the const + `EventKind` variant + payload struct
-  + config struct, register it in `register_trigger_types`, extend
-  `EventEnvelope::to_emittable`, and cover the filter matrix in
+- **New event function:** add the `ON_*_FN` const + `EventKind` variant +
+  payload struct, register it in `register_event_functions`, add its
+  `event_spec` to `surface::catalog` (and its golden), extend
+  `EventEnvelope::to_emittable`, and cover its filters in
   `event_filtering.feature`. Remember envelopes must round-trip it
   (`envelope_roundtrip_preserves_event_and_metadata` test).

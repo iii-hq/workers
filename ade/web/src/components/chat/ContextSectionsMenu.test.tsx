@@ -60,7 +60,7 @@ describe('the Sections menu', () => {
       'prs',
       'assets',
       'subagents',
-      'triggers',
+      'observers',
       'links',
       'tracking',
     ])

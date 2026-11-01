@@ -28,7 +28,7 @@ test('Context functions publish typed schemas accepted by the CI interface valid
     })
   }
   const file = info.outputPath('context-interface.json')
-  await writeFile(file, JSON.stringify({ functions, triggers: [] }))
+  await writeFile(file, JSON.stringify({ functions }))
   const script = path.resolve(
     import.meta.dirname,
     '../../../.github/scripts/collect_worker_interface.py',

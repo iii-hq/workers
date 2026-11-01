@@ -17,8 +17,8 @@ path = "src/lib.rs"
 [dependencies]
 harness = { path = "../harness" }
 judge-contract = { path = "../crates/judge-contract" }
-iii-sdk = "=0.24.6"
-iii-helpers = "=0.24.6"
+iii-sdk = "=0.26.0-rc.1"
+iii-helpers = "=0.26.0-rc.1"
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
@@ -28,7 +28,6 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
-async-trait = "0.1"
 schemars = "0.8"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }

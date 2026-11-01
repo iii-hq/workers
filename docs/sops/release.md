@@ -33,7 +33,7 @@ deployment it belongs to:
 2. `build` runs one job per unit through
    [`_deploy-build.yml`](../../.github/workflows/_deploy-build.yml).
 3. `assemble` packages the prepared inventory and captures registered functions
-   and triggers by observing the artifact against an isolated engine. Interface
+   by booting the artifact against an isolated engine. Interface
    capture is a publication-integrity step: it never calls a worker function or
    an external backend, and it is not a smoke test.
 4. `upload` creates the shared `build-<source_sha>` prerelease if it does not

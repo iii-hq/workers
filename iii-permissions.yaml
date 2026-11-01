@@ -13,7 +13,7 @@ rules:
   # Gate, state, auth, routing — agents must not call these directly.
   - '!approval::resolve'
   # Read-only verdict probe. The harness calls it worker-to-worker before
-  # binding a trigger to an ordinary function; an agent probing its own
+  # an observer calls an ordinary function; an agent probing its own
   # approval posture is reconnaissance, not a tool.
   - '!approval::evaluate'
   - '!hook-fanout::publish_collect'
@@ -70,16 +70,16 @@ rules:
   # queue's engine event handler (functions/workers available): wakes waits
   # for a target function and the engine-restart check; engine dispatch only.
   - '!queue::on-engine-change'
-  # judge-typesafe's and judge-openai's own secrets::changed handlers (drop a
-  # rotated key).
+  # judge-typesafe's and judge-openai's own secrets::on-changed observers (drop
+  # a rotated key).
   - '!judge-typesafe::on-secret-change'
   - '!judge-openai::on-secret-change'
   - '!directory::pre-generate'
   - '!directory::on-functions-change'
   - '!directory::hint-preview'
   - directory::search_functions
-  # Internal hot-reload trigger handler — must not be agent-callable; it is
-  # invoked only by the engine's `configuration:updated` trigger dispatch.
+  # Internal hot-reload handlers — must not be agent-callable; each is the
+  # target of its worker's observer of `configuration::on-updated`.
   - '!shell::on-config-change'
   - '!cursor::on-config-change'
   # Operator/automation health signal, not an agent tool: it can surface a
@@ -157,7 +157,7 @@ rules:
   # change cannot inadvertently re-open the injection path.
   - '!storage::on-config-change'
   - '!database::on-config-change'
-  # database: the secrets::changed sink, connection management (rewrites
+  # database: the secrets::on-changed sink, connection management (rewrites
   # servers and credentials, like configuration::set; getConnection exposes
   # the stored entry; testConnection sends referenced credentials to the
   # server a candidate names) and the chat mention provider (console
@@ -184,7 +184,7 @@ rules:
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)
-  # storage: the secrets::changed sink and bucket management (rewrites which
+  # storage: the secrets::on-changed sink and bucket management (rewrites which
   # providers and credentials the worker uses; testBucket sends a candidate's
   # credentials wherever the candidate points; getBucket returns stored
   # entries) are the human's call, made from a bucket editor.
@@ -196,26 +196,30 @@ rules:
   # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
   # send/run let a model start arbitrary turns outside any max_turns guard;
   # compact rewrites a session's history (the console's control plane);
-  # turn is the internal loop step; function::trigger/resolve forge call ids
+  # turn is the internal loop step; function::call/resolve forge call ids
   # and parked results; stop cancels turns. harness::spawn is the only
   # model-reachable way to start new turns and is left at the needs_approval
   # default (the harness self-enforces depth/fan-out and walls spawned
   # children out of the control plane unless the spawn passes
-  # options.orchestrator). The internal config/cron/session-deleted hooks
-  # must never be agent-callable.
+  # options.orchestrator). The internal config/cron/session-deleted handlers
+  # and the observer delivery hop must never be agent-callable.
   - '!harness::send'
   - '!harness::compact'
   - '!harness::run'
   - '!harness::turn'
-  - '!harness::function::trigger'
+  - '!harness::function::call'
   - '!harness::function::resolve'
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
   - '!harness::on-session-deleted'
-  # Engine event handlers (worker connect/disconnect, compose operations) that
-  # drive binding expiry, orphaned-turn recovery and discovery instead of
-  # timers: invoked only by the engine's trigger dispatch.
+  # The target of every agent-created observer: iii delivers to it, agents
+  # never call it. Agents name their real target in harness::observe's
+  # `target`, which is checked against their own policy when they observe.
+  - '!harness::observer::deliver'
+  # The harness's observers of worker connect/disconnect and Compose
+  # operations, which drive binding expiry, orphaned-turn recovery and
+  # discovery: iii delivers to them, agents never call them.
   - '!harness::on-engine-change'
   - '!harness::on-compose-operation'
   # kanban: console asset delivery and the configuration reload sink are
@@ -251,7 +255,7 @@ rules:
   - '!stories::ui-content'
   - '!stories::ui-file'
   - '!stories::on-config-change'
-  # eval: durable orchestration internals are trigger/queue targets only.
+  # eval: durable orchestration internals are observer/queue targets only.
   # Starting, cancelling, and deleting evaluations remain approval-gated by
   # the default. Status/result are read-only and the exact evaluator is pure.
   - '!eval::step'
@@ -263,7 +267,7 @@ rules:
   - '!security-scan::execute'
   - '!security-scan::on-turn-completed'
   - '!security-scan::on-schedule'
-  # sentinel: trigger and queue targets only. The console drives grouping
+  # sentinel: observer and queue targets only. The console drives grouping
   # through the read surface; the investigation session gets the four
   # functions below and nothing else.
   - '!sentinel::ingest'
@@ -277,11 +281,6 @@ rules:
   - 'sentinel::trace::get'
   - 'sentinel::logs::list'
   - 'sentinel::diagnosis::record'
-  # The shaping hop for a trigger bound to an ordinary function: the engine
-  # fires it, agents never call it. Agents name their real target in
-  # engine::register_trigger's `function_id`, which is checked against the
-  # registrant's own policy at registration.
-  - '!harness::trigger-call'
   - '!context::on-config-change'
   - '!approval::on-config-change'
   # browser: console-UI plumbing, never agent-callable. pick::* and hint are
@@ -328,14 +327,14 @@ rules:
   - '!ios-simulator::frame'
   - '!ios-simulator::tenants::list'
   - '!ios-simulator::on-config-change'
-  # rbac-proxy: internal reload + catalog-cache hooks — invoked only by the
-  # engine's trigger dispatch, never agent-callable. The handlers already
+  # rbac-proxy: internal reload + catalog-cache handlers — the targets of the
+  # proxy's own observers, never agent-callable. The handlers already
   # re-fetch/ignore the event payload; these denies are defense-in-depth.
   # The proxy is an enforcement boundary, not a callable API — rbac-proxy::status
   # (read-only) stays at the needs_approval default; deny it on deployments where
   # the engine URL / bound port topology is itself sensitive.
   - '!rbac-proxy::on-config-change'
-  - '!rbac-proxy::on-functions-available'
+  - '!rbac-proxy::on-functions-changed'
   - '!telegram-bot::on-config-change'
   - '!telegram-bot::on-message-added'
   - '!telegram-bot::on-message-updated'
@@ -359,17 +358,18 @@ rules:
   - '!slack::on-turn-completed'
   - '!slack::on-pending-created'
   - '!slack::on-pending-resolved'
-  # github: internal hot-reload hook — invoked only by the engine's
-  # configuration:updated trigger dispatch, never agent-callable.
+  # github: internal hot-reload hook — the target of its observer of
+  # configuration::on-updated, never agent-callable.
   - '!github::on-config-change'
   # Webhook ingress, queue consumers, and tunnel lifecycle callbacks are
   # trusted engine plumbing, never direct agent calls. Starting/stopping a
   # watch or acquiring/releasing a public tunnel stays approval-gated.
   - '!github::webhooks::*'
   - '!quick-tunnel::on-config-change'
-  # openwiki: internal trigger targets. cron::refresh-due is the per-wiki cron
-  # target; on-turn-started/completed are harness trigger-bridge targets whose
-  # direct call could forge generation progress. The hot-reload hook follows
+  # openwiki: internal observer targets. cron::refresh-due is the per-wiki
+  # cron::on-tick target; on-turn-started/completed observe
+  # harness::on-turn-started/completed, and a direct call could forge
+  # generation progress. The hot-reload hook follows
   # the same pattern as the other on-config-change denies.
   - '!openwiki::cron::refresh-due'
   - '!openwiki::on-turn-started'
@@ -409,8 +409,7 @@ rules:
   # opengantry: bus-internal registration hooks; agents must not call them.
   # gantry::verify and gantry::middleware stay at needs_approval (not listed).
   - '!gantry::on-function-registration'
-  - '!gantry::on-trigger-registration'
-  - '!gantry::on-trigger-type-registration'
+  - '!gantry::on-observer-registration'
 
   # Read-only / introspection (extend below for your tools).
   - configuration::list
@@ -423,37 +422,35 @@ rules:
   - router::models::supports
   - router::provider::list
   # harness::status is read-only (current turn status for a session), and
-  # harness::triggers::list is the matching read over a session's own trigger
-  # bindings. The teardown half (harness::triggers::unregister) is NOT listed:
-  # agents unregister through the intercepted engine::unregister_trigger,
-  # which enforces ownership; the standalone teardown stays behind the
+  # harness::observers::list is the matching read over a session's own
+  # observers. The teardown half (harness::observers::dispose) is NOT listed:
+  # agents remove observers through the intercepted harness::unobserve, which
+  # enforces ownership; the standalone teardown stays behind the
   # needs_approval default for the console's privileged path.
   - harness::status
   - eval::status
   - eval::result
   - eval::assert::exact
-  - harness::triggers::list
+  - harness::observers::list
   - oauth::anthropic::status
   - oauth::openai-codex::status
   - engine::functions::list
   - engine::functions::info
-  - engine::triggers::list
-  - engine::triggers::info
   - engine::workers::list
   - engine::workers::info
-  - engine::registered-triggers::list
-  - engine::registered-triggers::info
-  # Subscriptions: engine::register_trigger is intercepted by the harness and
-  # produces a binding that either WAKES the registering session or CALLS a
-  # plain function — a binding never starts an agent (`harness::spawn` is
-  # refused as a target, so nothing fires engine-side past this gate
-  # anymore). Call targets are checked at registration against the
-  # registrant's own policy AND the approval gate's verdict, so a binding
+  - engine::observers::list
+  - engine::observers::get
+  # Observers: harness::observe is intercepted by the harness and produces an
+  # observer that either WAKES the observing session or CALLS a plain
+  # function — an observer never starts an agent (`harness::spawn` is refused
+  # as a target). Call targets are checked when observing against the
+  # session's own policy AND the approval gate's verdict, so an observer
   # cannot grant an unattended call the session could not make itself.
-  # Bindings registered against the removed `harness::react` / spawn targets
-  # are purged on startup; register a wake and spawn directly instead.
-  - engine::register_trigger
-  - engine::unregister_trigger
+  # engine::observers::dispose stays denied to agents by the harness itself:
+  # the harness created every agent observer, so its authority would remove
+  # any session's.
+  - harness::observe
+  - harness::unobserve
   - worker::list
   # Public worker-registry catalogue reads — the system prompt's
   # search-before-build ladder starts here. worker::add stays approval-gated.
@@ -606,8 +603,8 @@ rules:
   - github::search::prs
   - github::search::code
   # web::fetch is load-bearing for the system prompt's SDK-reference gate and
-  # HTTP-trigger verification; it enforces size/timeout caps and server-side
-  # SSRF protection, so it is allowed by default.
+  # for verifying `http::on-request` observers; it enforces size/timeout caps
+  # and server-side SSRF protection, so it is allowed by default.
   - web::fetch
 
   # pdf: every function is a pure read of a document the agent could already

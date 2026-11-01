@@ -1,7 +1,7 @@
 /* The branch the chat's folder is on, as the composer's worktree switcher
    shows it: three quick gits, read again when the ide worker says the
-   repository moved (`shell::git-changed`), and only the dirty mark read
-   again when the folder's files change (`shell::changed`). Nothing is read
+   repository moved (`shell::on-git-changed`), and only the dirty mark read
+   again when the folder's files change (`shell::on-changed`). Nothing is read
    on a timer or on focus. */
 
 import type { Host } from '@iii-dev/console-ui'

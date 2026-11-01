@@ -1,4 +1,4 @@
-//! `workflow::sweep` — cron-bound node-timeout sweep.
+//! `workflow::sweep` — the node-timeout sweep, run by a `cron::on-tick` observer.
 //!
 //! Scans all `AwaitingNodes` runs. For each, re-runs reconciliation (to pick up
 //! any newly-completed nodes) and times out any `Running` checkpoint past its
@@ -17,11 +17,16 @@ pub const SWEEP_DESC: &str =
     "Internal cron sweep: reconcile AwaitingNodes runs and time out nodes past their deadline. \
      Not called directly.";
 
-/// Cron event payload (schedule info ignored — the sweep scans all run records).
+/// The `cron::on-tick` event, delivered as output. Informational only: the
+/// sweep scans every run record whatever the tick says.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct SweepEvent {
+    /// The expression that fired.
     #[serde(default)]
-    pub scheduled_at: Option<i64>,
+    pub expression: Option<String>,
+    /// RFC 3339, UTC.
+    #[serde(default)]
+    pub scheduled_time: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]

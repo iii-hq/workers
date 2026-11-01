@@ -10,15 +10,13 @@ kit install and update. Every public function sits under a single
 | **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, function_id, disable_model_invocation, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, function_id, disable_model_invocation, path, body, modified_at }` (the full body instead of the list teaser), and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). Authored by `create`, edited by `update`, removed by `delete`. `title` prefers the YAML frontmatter `title:` (then `name:`) over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. System-installed agent skills under the read-only `agents_skills_folder` are served too (see [On-disk layout](#on-disk-layout)). | Orientation: "when and why to use my worker's tools" |
 | **System prompts** (`directory::system-prompts::*`) | Identity prompts listed by `list`, read by `get`, authored by `create`, edited by `update`, and removed by `delete`. The list response keeps its `prompts` field name. Stored under any `system-prompts/` path segment; `create` writes `<skills_folder>/system-prompts/<name>.md`. | What the chat's system-prompt picker offers as an identity prompt (enrich or replace) |
 | **Agent Profiles** (`directory::agents::*`) | Reusable session identities whose file body is the system prompt, with display `name`, emoji `logo`, preloaded `skills` and `functions` (bodies and contracts the harness freezes into every session's prompt), and optional `model` + `reasoning_effort` in required frontmatter. `list` rows carry the display/configuration metadata and `get` adds `system_prompt` and `unknown_skills`. Stored as direct `<agents_folder>/<id>.md` files. See [Agent profile storage](../docs/architecture/agent-profile-storage.md). | A named identity selected with `harness::send { options: { agent } }` |
-| **Search** (`directory::search_functions`) | One to six external capabilities → compact function-id candidates (installed, plus registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. The response also carries `skills` (installed how-to documents) and `triggers` (registered bindings that already fire, schedule, or hook a function, minus ephemeral console listeners), ranked in the same mode as the functions; `search_mode` reports the mode that actually ranked. | "Which functions do I call for this task?" |
+| **Search** (`directory::search_functions`) | One to six external capabilities → compact function-id candidates (installed, plus registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. The response also carries `skills` (installed how-to documents) and `observers` (existing observers that already run a function on an event, schedule, or hook, minus ephemeral console listeners), ranked in the same mode as the functions; `search_mode` reports the mode that actually ranked. | "Which functions do I call for this task?" |
 | **Kits** (`directory::download-kit`, `directory::kits::*`) | Install, update and remove kits — agent profiles, skills and registry workers published together as `<author>/<kit>` — through plans a human reviews (ADE → Directory → Kits) before anything is written. `kits.lock` records what is installed. See [Kits](#kits). | "Install the kanban team kit", "what does 1.1.0 change?" |
 | **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with the engine's `engine::workers::list` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
 
-Engine introspection (functions / triggers / registered triggers /
-workers) is served by the engine natively at
-`engine::functions::*`, `engine::triggers::*`,
-`engine::registered-triggers::*`, and `engine::workers::*`. Call the
-engine ids directly. One wrapper survives for callers that can only
+Engine introspection (functions / observers / workers) is served by the
+engine natively at `engine::functions::*`, `engine::observers::*` and
+`engine::workers::*`. Call the engine ids directly. One wrapper survives for callers that can only
 reach the `directory::` namespace: `directory::engine::functions::info`
 proxies a single function's schema (see its row below).
 
@@ -38,9 +36,8 @@ per-kind single-file editors — `directory::skills::{create,update,delete}`,
 `directory::system-prompts::{create,update,delete}` and
 `directory::agents::{create,update,delete}`. Once downloaded, files
 belong to the developer — edit them however you want, in the editor of
-your choice: a change made directly on disk fires the matching
-`on-change` with `op: "external"` (see [Custom trigger
-types](#custom-trigger-types)).
+your choice: a change made directly on disk calls the matching
+`on-change` with `op: "external"` (see [Change functions](#change-functions)).
 
 `directory::registry::workers::*` and the engine's `engine::workers::*`
 share the core `name` / `description` / `version` fields so a parser
@@ -59,7 +56,7 @@ registry view also surfaces publication metadata (`type`, `config`,
 6. [Kits](#kits)
 7. [Functions](#functions)
 8. [Function search & pre-generate hint](#function-search--pre-generate-hint)
-9. [Custom trigger types](#custom-trigger-types)
+9. [Change functions](#change-functions)
 10. [Local development & testing](#local-development--testing)
 
 ---
@@ -67,14 +64,14 @@ registry view also surfaces publication metadata (`type`, `config`,
 ## Install
 
 ```bash
-iii trigger compose::add worker=iii-directory
+iii call compose::add worker=iii-directory
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 For container settings, fetch `compose::schema { function_id: "compose::add" }` and use
-its `workers` list. For example, after registering the completion wake described below:
+its `workers` list. For example, after arming the completion wake described below:
 
 ```json
 {
@@ -97,8 +94,9 @@ workers only. Supplied maps replace the whole field; omitted settings are retain
 
 The returned `install.payload` from function search is a minimal shorthand. If the worker
 needs settings, replace its singular `worker` with an object in `workers`.
-Register a one-shot `compose-operation` wake before calling `compose::add`, use the same
-`operation_id` in both calls, and wait for terminal success before using the new functions.
+Observe `compose::on-operation-progress` once, filtered on the `operation_id`, before calling
+`compose::add`; use the same `operation_id` in both calls, and wait for terminal success before
+using the new functions.
 An acceptance response does not mean the worker is ready. See the
 [container settings example and completion flow](https://github.com/iii-hq/workers/blob/main/harness/README.md#adding-workers-with-container-settings)
 for field behavior, path resolution, and recovery.
@@ -127,8 +125,8 @@ npx skills add iii-hq/workers --all
 Runtime settings live in the **`configuration` worker** under id
 **`iii-directory`** (the same pattern `database` and `storage` use). At boot
 the worker registers its JSON Schema, reads the live value via
-`configuration::get` (the configuration worker env-expands `${VAR}`), and binds
-a `configuration` trigger so it re-fetches on change.
+`configuration::get` (the configuration worker env-expands `${VAR}`), and observes
+`configuration::on-updated` for its entry so it re-fetches on change.
 
 Persisted values default to `./data/configuration/iii-directory.yaml` (fs
 adapter). Edit that file directly, call `configuration::set id=iii-directory`,
@@ -142,7 +140,7 @@ skills_folder: skills                  # under III_COMPOSE_DIR, or the process c
 local_skills_folder: skills/iii        # project-scoped overrides (whole-namespace local-wins)
 agents_folder: agents                  # direct <id>.md agent profiles
 agents_skills_folder: .agents/skills   # READ-ONLY agent skills, with the same relative-path base
-auto_download: true                   # subscribe to worker-add + run the boot reconcile
+auto_download: true                   # observe worker connections + run the boot reconcile
 # function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-<revision> # pinned Hybrid bundle, also router::embed's local fallback (loads on first use in every mode); null disables both
 function_search_model_download: true   # download the pinned bundle at boot in Hybrid mode
 
@@ -152,13 +150,13 @@ registry_url: https://api.workers.iii.dev   # workers registry base URL (workers
 download_timeout_ms: 60000                   # per git-clone / HTTP request timeout (ms)
 registry_cache_ttl_ms: 60000                 # in-process TTL for registry::workers::* responses
 filter_unregistered: true                    # hide skills whose namespace isn't an installed worker
-inject_hint: false                           # bind the directory::pre-generate search-hint hook (off: the harness identity prompt already teaches directory-first discovery)
+inject_hint: false                           # observe harness::hook::on-pre-generate with the directory::pre-generate search hint (off: the harness identity prompt already teaches directory-first discovery)
 hint_min_workers: 2                          # minimum surface width before the hint fires (0 = always)
 registry_search: true                        # include installable registry workers in every search
 function_search_mode: judge                  # lexical | hybrid | judge (default)
 function_search_judge_timeout_ms: 3000        # integer 1..30000; shared judge deadline per public search
 function_search_judge_min_relevance: 0.5      # finite 0..1 inclusive; noul floor (initial calibration value)
-function_search_judge_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; noul floor for the skills and triggers sections
+function_search_judge_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; noul floor for the skills and observers sections
 function_search_judge_question: choice       # choice (default: one question per capability) | noul (one yes/no per shortlisted document) | tournament (whole catalog: compact rounds, then a final choice; no Hybrid shortlist)
 function_search_judge_choice_min_probability: 0.1 # finite 0..1 inclusive; with choice, the floor for all but the best document
 ```
@@ -212,19 +210,19 @@ roots are fixed for the process lifetime.
 ```bash
 # Pull a specific worker's directory bundle at a fixed semver from
 # the registry. Files land under `<skills_folder>/agent-memory/`.
-iii trigger --function-id=directory::skills::download \
+iii call --function-id=directory::skills::download \
   --payload='{"worker": "agent-memory", "version": "1.2.3"}'
 
 # Same, but always fetch whatever's tagged `latest` (also the default
 # when neither version nor tag is given).
-iii trigger --function-id=directory::skills::download \
+iii call --function-id=directory::skills::download \
   --payload='{"worker": "agent-memory"}'
 
 # Pull a single subfolder out of a public GitHub repo via
 # `git clone --depth 1 --branch main`. Files land under
 # `<skills_folder>/frontend-design/`. The `branch` field defaults to
 # `main`; pass `"master"` for older repos that haven't migrated.
-iii trigger --function-id=directory::skills::download \
+iii call --function-id=directory::skills::download \
   --payload='{
     "repo": "https://github.com/anthropics/skills",
     "skill": "frontend-design"
@@ -245,10 +243,10 @@ A registry download (explicit or automatic) writes
 `version` and, per agent profile it wrote, `agents: { <id>: <sha256> }`. That
 is how `directory::agents::list` attributes a profile to a worker.
 
-After every successful download the worker fires the
+After every successful download the worker calls
 `directory::skills::on-change`, `directory::system-prompts::on-change`,
-and/or `directory::agents::on-change` trigger types so that
-subscribers like the [`mcp`](https://github.com/iii-hq/workers/tree/main/mcp) worker can
+and/or `directory::agents::on-change`, so that their observers, like the
+[`mcp`](https://github.com/iii-hq/workers/tree/main/mcp) worker, can
 forward MCP `notifications/list_changed` to their clients.
 
 ---
@@ -435,13 +433,13 @@ A **kit** is a publishable bundle of agent profiles (`agents/<id>.md`), skills
 (`registry_url`, endpoints under `/k`). Install one with
 
 ```bash
-iii trigger directory::download-kit kit=acme/kanban-team          # latest
-iii trigger directory::download-kit kit=acme/kanban-team@1.3.0    # or a tag, or a range (@^1.3)
+iii call directory::download-kit kit=acme/kanban-team          # latest
+iii call directory::download-kit kit=acme/kanban-team@1.3.0    # or a tag, or a range (@^1.3)
 ```
 
 Nothing is written by that call: it builds a **plan** and answers with it.
 Review the plan in the ADE (**Directory → Kits**) or apply it from a script
-with `iii trigger directory::kits::apply plan_id=kp_…`. `apply=true` on
+with `iii call directory::kits::apply plan_id=kp_…`. `apply=true` on
 `download-kit` applies at once only when the plan has no warnings, nothing
 blocking it and no file that needs a decision.
 
@@ -721,18 +719,16 @@ whose policy only admits the `directory::` namespace:
 
 | Function ID | Description |
 |---|---|
-| `directory::engine::functions::info` | Thin proxy to `engine::functions::info` for a single `function_id`: request/response schemas, metadata, and registered triggers. The one `directory::engine::*` helper that still exists — reach for it only when you cannot call `engine::*` directly. |
+| `directory::engine::functions::info` | Thin proxy to `engine::functions::info` for a single `function_id`: request/response schemas, metadata, `args_format`, `observer_count`, `private` and `observable`. The one `directory::engine::*` helper that still exists — reach for it only when you cannot call `engine::*` directly. |
 
 The native ids:
 
 | Function ID | Description |
 |---|---|
 | `engine::functions::list` | List functions registered with the engine. |
-| `engine::functions::info` | Single-function detail: schemas, owning worker. |
-| `engine::triggers::list` | List trigger TYPES (the providers, e.g. `http`, `cron`). |
-| `engine::triggers::info` | Single trigger-type detail: configuration schema, return schema. |
-| `engine::registered-triggers::list` | List trigger INSTANCES (subscriber rows). |
-| `engine::registered-triggers::info` | Single registered-trigger detail. |
+| `engine::functions::info` | Single-function detail: schemas, owning worker, `args_format`, `observer_count`, `private`, `observable`. |
+| `engine::observers::list` | List observers: observed function, args, filters, target, observing worker, state. |
+| `engine::observers::get` | Single observer detail. |
 | `engine::workers::list` | List workers with an open engine WS connection. Daemon-managed providers (`http`, `cron`, `state`) won't appear — call `worker::list` from the supervisor to see those. |
 | `engine::workers::info` | One worker's detail by `name`. |
 
@@ -741,7 +737,7 @@ The native ids:
 | Function ID | Description |
 |---|---|
 | `directory::registry::workers::list` | Browse / search published workers in `api.workers.iii.dev`. Optional free-text `search` (matched fuzzy by `pg_trgm`) and opaque `cursor` for pagination; page size is server-authored. Response is `{ workers: [...], pagination: { next_cursor, has_more, page_size } }`. Shares the core `name` / `description` / `version` fields with the engine's `engine::workers::list`. |
-| `directory::registry::workers::info` | Pre-install card for one worker. Fans out two parallel registry calls — `GET /w/{slug}` for the worker envelope (publication metadata + readme + functions + triggers) and `GET /w/{slug}/skills` for the skills tree — and merges them into `{ worker, api_reference, skills_tree, readme? }`. The card keeps public function/trigger names and descriptions only: request/response schemas, metadata, internal and search-excluded functions are dropped (browser's schemas alone ran 65 KB; the contract is `engine::functions::info` after installing), and `readme` (10–25 KB) is included only with `readme: true`. The full record stays cached in-process for `directory::search_functions`. Input still accepts `version:` (semver) or `tag:` (e.g. `latest`); both go on the wire as `?version=…`. |
+| `directory::registry::workers::info` | Pre-install card for one worker. Fans out two parallel registry calls — `GET /w/{slug}` for the worker envelope (publication metadata + readme + functions) and `GET /w/{slug}/skills` for the skills tree — and merges them into `{ worker, api_reference, skills_tree, readme? }`. The card keeps public function names and descriptions only (the event sources the worker hosts included): request/response schemas, metadata, internal and search-excluded functions are dropped (browser's schemas alone ran 65 KB; the contract is `engine::functions::info` after installing), and `readme` (10–25 KB) is included only with `readme: true`. The full record stays cached in-process for `directory::search_functions`. Input still accepts `version:` (semver) or `tag:` (e.g. `latest`); both go on the wire as `?version=…`. |
 
 Both `directory::registry::*` responses are cached in-process for
 `registry_cache_ttl_ms` (default 60s).
@@ -798,9 +794,9 @@ catalog with `engine::functions::list`.
 
 | Function | Kind | What it does |
 |---|---|---|
-| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, skills[]?, triggers[]?, search_mode, latency_ms }`: rank with the configured mode over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
+| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, skills[]?, observers[]?, search_mode, latency_ms }`: rank with the configured mode over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
 | `directory::pre-generate` | internal hook | Injects the conditional search hint into a harness generation (at most once per turn). |
-| `directory::on-functions-change` | internal | Refreshes the search catalog on the engine's functions-available push. |
+| `directory::on-functions-change` | internal | Refreshes the search catalog; observes `engine::on-functions-changed`. |
 | `directory::hint-preview` | internal | The exact hint text per exposure mode, for the configuration UI. |
 
 Lexical/Hybrid ranking pipeline:
@@ -847,7 +843,7 @@ Function relevance is judged by the [`judge`](../judge) worker
 worker does not declare them as dependencies, because Compose turns a
 dependency into a `start_after` edge and stops the directory whenever the
 judge exits. The Harness and dev-template stacks do not run them. Install the
-hub with `iii trigger compose::add worker=judge` (it brings `judge-typesafe`)
+hub with `iii call compose::add worker=judge` (it brings `judge-typesafe`)
 and set the TypeSafe key and model in the **judge-typesafe** settings. This
 worker holds no credentials.
 
@@ -855,7 +851,7 @@ worker holds no credentials.
 only while `judge::evaluate` is in the live function catalog and answers.
 **Whenever the judge is unavailable the search uses Hybrid** (then Lexical if
 the local model is not ready), for functions, installable workers, skills and
-triggers alike:
+observers alike:
 
 - `judge::evaluate` is not registered: no call is made at all.
 - the hub has no provider (`provider_unavailable`), or the provider has no
@@ -894,7 +890,7 @@ of at most 16 documents goes whole, so the judge still finds functions whose
 wording shares nothing with the capability. A larger one is cut to the top 16
 of raw BM25 fused with the raw MiniLM ranking (when the index is ready). Each
 capability is one evaluation, and all capabilities of a lane (functions,
-registry pool, skills or triggers) travel in one `judge::evaluate` call, so
+registry pool, skills or observers) travel in one `judge::evaluate` call, so
 the provider answers them together with one model, and cancels the rest when
 one fails. Requests carry normalized capabilities, function IDs, short
 descriptions and parameter names; no conversation history or argument values.
@@ -941,7 +937,7 @@ time: JEV 22 / 22 / 1.00 at 2.2 s, SemIf 22 / 22 / 0.90 at 6.1 s, decider 22 /
 21 / 0.88 at 3.7 s, laya 20 / 19 / 0.80 at 2.2 s; the former winner-only rounds
 of 16 gave JEV 22 / 22 / 0.98, decider 21 / 21 / 0.81 at 9.1 s, and timed SemIf
 out at 10 s. The installed functions and the registry pools play it; skills and
-triggers keep their shortlists. With `choice` (the default), a judge that
+observers keep their shortlists. With `choice` (the default), a judge that
 advertises a context window under 4096 tokens gets a tournament automatically;
 SemIf and hosted judges keep `choice`.
 
@@ -973,11 +969,11 @@ a how-to question under the same deadline as the functions; Lexical ranks them
 with BM25 and Hybrid fuses in the dense lane, the same ad-hoc document ranking
 the `installable` section uses, and that local ranking also serves whenever the
 judge fails. "Installed" is read off the live function catalog: a worker with
-no registered functions contributes no skills. The registered-trigger section
-(under `triggers`) is ranked the same way in every mode.
+no registered functions contributes no skills. The observers section
+(under `observers`) is ranked the same way in every mode.
 
 A valid response with no functions at or above the relevance threshold stays
-empty. Judge failures instead trigger **Judge → Hybrid → Lexical** fallback.
+empty. Judge failures instead fall back **Judge → Hybrid → Lexical**.
 Hybrid uses the existing local ranking policy; if the model is disabled,
 missing, not yet indexed for the current catalog, or fails, Lexical serves the
 results. A registry HTTP failure still omits the installable section.
@@ -1026,20 +1022,61 @@ for deployments running a custom identity prompt without that doctrine. The
 hook's transcript annotations (`origin.directory`) carry only coarse
 outcome/reason and counts.
 
+With `inject_hint: true` the worker observes the harness's hook function
+with `directory::pre-generate` as the target, and disposes the observer when
+the knob turns off:
+
+```ts
+iii.observe(
+  {
+    function_id: 'harness::hook::on-pre-generate',
+    args: { priority: 100, timeout_ms: 5000, on_error: 'fail_open' },
+  },
+  'directory::pre-generate',
+)
+```
+
+`fail_open` keeps a slow or failing hint from blocking a turn. The observer
+stays pending until the harness registers the hook function.
+
 Knobs (`inject_hint`, `hint_min_workers`, `registry_search`) live in the
 `iii-directory` configuration entry and hot-apply — see Configuration.
 
-## Custom trigger types
+## Change functions
 
-| Trigger type | Fires when | Payload to subscribers |
-|---|---|---|
-| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, a `directory::skills::update`, `create`, or `delete`, or external (file pasted/edited/deleted directly on disk — including under `agents_skills_folder`) | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "namespace": "<ns>", "id": "<id>" }`; external (file pasted/edited/deleted directly on disk): `{ "op": "external" }` |
-| `directory::system-prompts::on-change` | After a `directory::skills::download` that wrote at least one system prompt markdown file, a `directory::system-prompts::update`, `create`, `delete`, or external file change | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<name>" }`; external: `{ "op": "external" }` |
-| `directory::agents::on-change` | After a `directory::skills::download` that wrote at least one agent profile, a `directory::agents::update`, `create`, `delete`, or external file change | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<id>" }`; external: `{ "op": "external" }` |
-| `directory::kits::on-change` | A kit plan is created or discarded, an apply makes progress or lands, or an update check changes the set of available updates (also fires the skills / agents on-change when an apply wrote those files) | `{ "op": "plan", "kit", "plan_id", "kind" }`, `{ "op": "discard", "kit", "plan_id" }`, `{ "op": "progress", "plan_id", "kit", "steps": [{ id, label, state, detail? }], "error"? }`, `{ "op": "apply", "kit", "plan_id", "kind" }`, `{ "op": "updates", "kit"? }` |
+The worker hosts four functions that it calls when a change happens. Each is
+private (only this worker calls it), takes no args, and returns the event it
+is called with, so its observers receive the event. Select changes with
+filters on the event's fields.
 
-Dispatches are fire-and-forget (Void), so the write path doesn't
-block on downstream latency.
+| Function | Called when | Filter on | Event |
+|---|---|---|---|
+| `directory::skills::on-change` | After a `directory::skills::download` that wrote at least one skill markdown file, a `directory::skills::update`, `create`, or `delete`, a kit apply that wrote skills or downloaded the bundles of the workers it added or updated, or external (file pasted/edited/deleted directly on disk — including under `agents_skills_folder`) | `input.op`, `input.name`, `input.namespace` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }` from `directory::skills::download`, `{ "op": "download", "source": "registry" }` from a kit apply's worker bundles; update/create/delete: `{ "op": "<operation>", "namespace": "<ns>", "name": "<id>", "id": "<id>" }`; kit: `{ "op": "kit", "kit", "plan_id" }`; external: `{ "op": "external" }` |
+| `directory::system-prompts::on-change` | After a `directory::skills::download` that wrote at least one system prompt markdown file, a `directory::system-prompts::update`, `create`, `delete`, or external file change | `input.op`, `input.name` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }`; update/create/delete: `{ "op": "<operation>", "name": "<name>" }`; external: `{ "op": "external" }` |
+| `directory::agents::on-change` | After a `directory::skills::download` that wrote at least one agent profile, a `directory::agents::update`, `create`, `delete`, a kit apply that wrote profiles or downloaded the bundles of the workers it added or updated, or external file change | `input.op`, `input.name` | download: `{ "op": "download", "namespace": "<ns>", "source": "repo" \| "registry" }` from `directory::skills::download`, `{ "op": "download", "source": "registry" }` from a kit apply's worker bundles; update/create/delete: `{ "op": "<operation>", "name": "<id>" }`; kit: `{ "op": "kit", "kit", "plan_id" }`; external: `{ "op": "external" }` |
+| `directory::kits::on-change` | A kit plan is created or discarded, an apply makes progress or lands, or an update check changes the set of available updates | `input.op`, `input.plan_id`, `input.kit` | `{ "op": "plan", "kit", "plan_id", "kind" }`, `{ "op": "discard", "kit", "plan_id" }`, `{ "op": "progress", "plan_id", "kit", "steps": [{ id, label, state, detail? }], "error"? }`, `{ "op": "apply", "kit", "plan_id", "kind" }`, `{ "op": "updates", "kit"? }` |
+
+Observe one with your own function as the target:
+
+```ts
+iii.observe(
+  { function_id: 'directory::skills::on-change', deliver: 'output' },
+  'mcp::__on_skills_changed',
+)
+
+// only the progress of one kit apply
+iii.observe(
+  {
+    function_id: 'directory::kits::on-change',
+    filters: { 'input.op': { $eq: 'progress' }, 'input.plan_id': { $eq: planId } },
+    deliver: 'output',
+  },
+  'my-worker::on-kit-progress',
+)
+```
+
+The worker calls them fire-and-forget (`Void`), and only when something
+observes them, so the write path doesn't block on downstream latency.
 
 The `external` op comes from a filesystem watch over `skills_folder`,
 `local_skills_folder`, and (when it already exists) the read-only
@@ -1049,10 +1086,10 @@ data. A burst coalesces into one event per kind, and this worker's own writes
 are suppressed — a `create` or `update` sends its precise op and never an
 extra `external`.
 
-**Loop hazard for subscribers.** Suppression covers writes made *through this
-worker*. A subscriber that reacts to `{ "op": "external" }` by writing `.md`
+**Loop hazard for observers.** Suppression covers writes made *through this
+worker*. An observer that reacts to `{ "op": "external" }` by writing `.md`
 files under `skills_folder` by some other route — a shell or coder worker, a
-script — is not suppressed and will re-trigger itself. Either write through
+script — is not suppressed and will run itself again. Either write through
 `directory::*::update` / `create`, or make the reaction idempotent and gated.
 
 ---
@@ -1096,10 +1133,11 @@ cargo test
 
 # One feature group at a time. Available tags:
 #   @engine  @read  @download  @download_repo  @download_registry
+#   @registry  @registry_worker_list  @registry_worker_info  @on_change
 cargo test --test bdd -- --tags @download
 ```
 
 The BDD harness lives under [tests/](tests/). Feature files mirror the
 modules in [src/functions/](src/functions/). Step definitions under
 [tests/steps/](tests/steps/) drive each feature through the same
-`iii.trigger` path the production binary uses.
+`iii.call` path the production binary uses.

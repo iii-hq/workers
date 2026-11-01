@@ -9,9 +9,9 @@ import { useCopyToClipboard } from '../lib/traceUtils'
 interface SpanErrorsTabProps {
   span: VisualizationSpan
   /**
-   * The span's function-trigger redactor (`spanRawRedactor` in
-   * functionTriggerFromSpan.ts). `exception.message`/`exception.stacktrace`
-   * read off the SAME `exception` event `functionTriggerFromSpan.ts`'s
+   * The span's function-call redactor (`spanRawRedactor` in
+   * functionCallFromSpan.ts). `exception.message`/`exception.stacktrace`
+   * read off the SAME `exception` event `functionCallFromSpan.ts`'s
    * `exceptionOutput()` reads to build the info tab's redacted error output
    * — one tab-click away here otherwise, same as the tags/logs tabs.
    */

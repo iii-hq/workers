@@ -103,7 +103,7 @@ mod tests {
 
     fn tool() -> AgentFunction {
         AgentFunction {
-            name: "agent::trigger".into(),
+            name: "agent::call".into(),
             description: "d".into(),
             parameters: serde_json::json!({ "type": "object" }),
             label: None,
@@ -141,7 +141,7 @@ mod tests {
         let body = build_body(&a);
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["reasoning_effort"], "high");
-        assert_eq!(body["tools"][0]["function"]["name"], "agent__trigger");
+        assert_eq!(body["tools"][0]["function"]["name"], "agent__call");
         assert_eq!(body["tool_stream"], true, "glm-4.7 streams tool args");
     }
 

@@ -6,7 +6,7 @@ import { bindCondition, type Condition, type Fired, reconcileCondition } from '.
 /** The state scope the tour's agent steps report into; its chat is kept there too. */
 const STATE_SCOPE = 'learn-iii'
 const CHAT_SESSION_KEY = 'chat_session'
-const TURN_COMPLETED = 'harness::turn-completed'
+const TURN_COMPLETED = 'harness::on-turn-completed'
 
 /**
  * Everything the tour knows and does, shared by its two faces: the floating
@@ -44,7 +44,7 @@ export interface Tour {
 export interface StepRecord {
   status: 'complete'
   at: number
-  fired?: { trigger_type: string | null; payload: unknown; at: number } | null
+  fired?: { function_id: string | null; payload: unknown; at: number } | null
 }
 
 export type StepRecords = Record<string, StepRecord | undefined>
@@ -103,15 +103,15 @@ export function useTour(host: Host): TourController {
     void (async () => {
       try {
         const [list, progress] = await Promise.all([
-          host.iii.trigger<{ tours: { id: string }[] }>('learn-iii::tours::list'),
-          host.iii.trigger<ProgressResponse>('learn-iii::progress::get', {}),
+          host.iii.call<{ tours: { id: string }[] }>('learn-iii::tours::list'),
+          host.iii.call<ProgressResponse>('learn-iii::progress::get', {}),
         ])
         const id = progress.next_tour_id ?? list.tours[0]?.id
         if (!id) {
           if (live) setError('This engine has no tours registered.')
           return
         }
-        const { tour: loaded } = await host.iii.trigger<{ tour: Tour }>('learn-iii::tours::get', { id })
+        const { tour: loaded } = await host.iii.call<{ tour: Tour }>('learn-iii::tours::get', { id })
         if (!live) return
         const stored = progress.tours[id]?.steps ?? {}
         setTour(loaded)
@@ -147,7 +147,7 @@ export function useTour(host: Host): TourController {
   const complete = useCallback(
     (stepId: string, fired?: Fired) => {
       if (!tour) return
-      // The same step can be reported twice — its trigger and a reconcile
+      // The same step can be reported twice — its observer and a reconcile
       // read, a delivery the engine retries — and closes once.
       if (recordsRef.current[stepId]?.status === 'complete' || completing.current.has(stepId)) return
       completing.current.add(stepId)
@@ -155,10 +155,10 @@ export function useTour(host: Host): TourController {
       // lands. A rejected write leaves the step where it was, instead of
       // showing complete until the next reload disagrees.
       void host.iii
-        .trigger<{ step?: StepRecord }>('learn-iii::steps::complete', {
+        .call<{ step?: StepRecord }>('learn-iii::steps::complete', {
           tour_id: tour.id,
           step_id: stepId,
-          ...(fired ? { fired: { trigger_type: fired.trigger_type, payload: fired.payload } } : {}),
+          ...(fired ? { fired: { function_id: fired.function_id, payload: fired.payload } } : {}),
         })
         .then((result) => {
           const current = recordsRef.current
@@ -176,7 +176,7 @@ export function useTour(host: Host): TourController {
   const refresh = useCallback(() => {
     if (!tour) return
     void host.iii
-      .trigger<ProgressResponse>('learn-iii::progress::get', {})
+      .call<ProgressResponse>('learn-iii::progress::get', {})
       .then((progress) => {
         const stored = progress.tours[tour.id]?.steps ?? {}
         const current = recordsRef.current
@@ -197,7 +197,7 @@ export function useTour(host: Host): TourController {
    * sending either way, so the message is a normal turn — the same one the
    * step's condition is waiting for.
    *
-   * A step with a condition closes when its trigger fires; one without closes
+   * A step with a condition closes when its observer fires; one without closes
    * here, because sending WAS the step.
    */
   // The chat the first step started, kept in the engine's state so a later
@@ -207,7 +207,7 @@ export function useTour(host: Host): TourController {
   const tourChat = useCallback(async (): Promise<string | null> => {
     if (chatSession.current) return chatSession.current
     try {
-      const stored = await host.iii.trigger<unknown>('state::get', { scope: STATE_SCOPE, key: CHAT_SESSION_KEY })
+      const stored = await host.iii.call<unknown>('state::get', { scope: STATE_SCOPE, key: CHAT_SESSION_KEY })
       chatSession.current = typeof stored === 'string' && stored ? stored : null
     } catch {
       chatSession.current = null
@@ -224,7 +224,7 @@ export function useTour(host: Host): TourController {
           .startChat({ text, agent })
           .then((id) => {
             chatSession.current = id
-            return host.iii.trigger('state::set', { scope: STATE_SCOPE, key: CHAT_SESSION_KEY, value: id })
+            return host.iii.call('state::set', { scope: STATE_SCOPE, key: CHAT_SESSION_KEY, value: id })
           })
           .catch((cause: unknown) => setError(errorMessage(cause)))
       } else if (!agent && host.chat?.compose) {
@@ -249,14 +249,14 @@ export function useTour(host: Host): TourController {
 
   /**
    * Open the step's screen beside the chat, in the tab showing. The layout
-   * change rings `console::workspace::changed`, which `useScreenPresent`
+   * change calls `console::workspace::on-changed`, which `useScreenPresent`
    * follows, so the step moves on by itself.
    */
   const openScreen = useCallback(
     (step: Step) => {
       if (!step.to_open) return
       void host.iii
-        .trigger('console::workspace::open', { screen: step.to_open.screen, relative_to: 'chat' })
+        .call('console::workspace::open', { screen: step.to_open.screen, relative_to: 'chat' })
         .catch((cause: unknown) => setError(errorMessage(cause)))
     },
     [host],
@@ -278,7 +278,7 @@ export function useTour(host: Host): TourController {
     const steps = tour.steps.filter((step) => waiting.split(',').includes(step.id))
     const unbinds = steps.map((step) =>
       bindCondition(host, `${tour.id}::${step.id}`, step.condition as Condition, (fired) => {
-        if (step.condition?.type !== TURN_COMPLETED) return complete(step.id, fired)
+        if (step.condition?.function_id !== TURN_COMPLETED) return complete(step.id, fired)
         // A turn counts only in the tour's own chat: an example built from
         // setup, or any other chat, finishing a turn says nothing about it.
         const session = (fired.payload as { session_id?: unknown } | null)?.session_id
@@ -337,7 +337,7 @@ export function useTour(host: Host): TourController {
   const closing = openStep?.to_close && records[openStep.id]?.status !== 'complete' ? openStep.to_close.screen : null
   useEffect(() => {
     if (!closing) return
-    void host.iii.trigger('console::workspace::close', { screen: closing }).catch(() => undefined)
+    void host.iii.call('console::workspace::close', { screen: closing }).catch(() => undefined)
   }, [host, closing])
 
   const markSubscribed = useCallback(() => setSubscribed(true), [])
@@ -376,11 +376,11 @@ interface ScreenPresence {
  * Whether `screen` is in any workspace tab: `null` while unknown — not
  * watching, not read yet, or a console too old to say.
  *
- * The console rings `console::workspace::changed` after every layout write,
- * opening or closing a pane or a tab included. That makes this reactive
- * rather than polled: one read of the layout per layout change, and none
- * while nothing moves. A console without the trigger leaves the binding
- * pending, and only the first read runs.
+ * The console calls `console::workspace::on-changed` after every layout
+ * write, opening or closing a pane or a tab included. That makes this
+ * reactive rather than polled: one read of the layout per layout change, and
+ * none while nothing moves. A console without that function leaves the
+ * observer pending, and only the first read runs.
  *
  * Read once when the step opens too: the operator may have opened or closed
  * the screen before reading this far.
@@ -392,7 +392,7 @@ function useScreenPresent(host: Host, screen: string | null): ScreenPresence | n
     let live = true
     const check = () =>
       void host.iii
-        .trigger<{ tabs: { id: string; screens: string[]; active?: boolean }[] }>('console::workspace::list')
+        .call<{ tabs: { id: string; screens: string[]; active?: boolean }[] }>('console::workspace::list')
         .then((ws) => {
           if (!live) return
           const holding = ws.tabs.filter((tab) => tab.screens.includes(screen))
@@ -411,25 +411,21 @@ function useScreenPresent(host: Host, screen: string | null): ScreenPresence | n
         .catch(() => {})
     const localId = `learn-iii::layout::${screen}`
     let offHandler: () => void = () => {}
-    let offTrigger: () => void = () => {}
+    let offObserver: () => void = () => {}
     try {
       offHandler = host.iii.on(localId, check)
-      offTrigger = host.iii.registerTrigger({
-        type: 'console::workspace::changed',
-        function_id: `${localId}::${host.iii.browserId}`,
-        config: {},
-      })
+      offObserver = host.iii.observe('console::workspace::on-changed', `${localId}::${host.iii.browserId}`)
     } catch {
-      // Same rule as `bindCondition`: no handler without its trigger. The
+      // Same rule as `bindCondition`: no handler without its observer. The
       // read below still runs once.
       offHandler()
       offHandler = () => {}
     }
-    // Bind first, then read: a change that landed before the binding still counts.
+    // Observe first, then read: a change that landed before the observer still counts.
     check()
     return () => {
       live = false
-      offTrigger()
+      offObserver()
       offHandler()
     }
   }, [host, screen])

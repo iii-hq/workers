@@ -7,12 +7,13 @@
 use async_trait::async_trait;
 use iii_helpers::observability::opentelemetry::trace::{Status, TraceContextExt as _};
 use iii_helpers::observability::opentelemetry::{Context, KeyValue};
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, TriggerAction};
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{CallAction, IIIClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::call;
 use crate::clients::router::{ChatError, ChatParams, StreamSink};
 use crate::clients::{LoadedEntry, SessionClient};
 use crate::deps::Deps;
@@ -20,7 +21,6 @@ use crate::error::HarnessError;
 use crate::ids;
 use crate::policy::{self, CallKind, CompiledPolicy};
 pub use crate::queue::TURN_QUEUE;
-use crate::trigger;
 use crate::types::content::ContentBlock;
 use crate::types::event::ErrorKind;
 use crate::types::message::{empty_assistant, AgentMessage, AssistantMessage};
@@ -178,10 +178,10 @@ pub async fn enqueue_step(
     let mut last_error = String::new();
     for attempt in 1..=ENQUEUE_ATTEMPTS {
         match iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "harness::turn".to_string(),
                 payload: payload.clone(),
-                action: Some(TriggerAction::Enqueue {
+                action: Some(CallAction::Enqueue {
                     queue: TURN_QUEUE.to_string(),
                 }),
                 timeout_ms: None,
@@ -220,7 +220,7 @@ fn origin(turn_id: &str) -> Value {
 
 /// `{ turn_id }` with hook annotations merged in (audit trail — harness.md §
 /// Cautions: mutations are silent; annotations record what ran).
-/// The `description` the model gave an `agent_trigger` call (dropped by
+/// The `description` the model gave an `agent_call` call (dropped by
 /// `plan_calls`): the call's stated purpose, used as reconciliation intent.
 fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
     content.iter().find_map(|block| match block {
@@ -230,7 +230,7 @@ fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'
             id,
             function_id,
             arguments,
-        } if id == call_id && function_id == policy::AGENT_TRIGGER_NAME => {
+        } if id == call_id && policy::is_agent_call_name(function_id) => {
             arguments.get("description").and_then(Value::as_str)
         }
         _ => None,
@@ -509,7 +509,7 @@ async fn generate_step(
 
     // A redelivered step whose reply already dispatched a call that never
     // returned finishes with that reply instead of regenerating: a new
-    // generation names its calls anew, so the `Triggered` checkpoint would
+    // generation names its calls anew, so the `Dispatched` checkpoint would
     // never match and the target would run again, and the step would be billed
     // twice. The call closes with `interrupted_result` (at most once).
     if let Some(message) = dispatched_reply(&session, &record, payload.step).await? {
@@ -704,12 +704,16 @@ async fn generate_step(
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record, &runtime_aid);
     // Static hook injections join before assembly, so the budget, the
-    // compaction gate and the request count the same prompt (MOT-5569). One
-    // snapshot for the whole step: a binding registering mid-step must not be
-    // skipped at pre_generate as static yet missing from assembly.
-    let pre_generate = deps.hooks.pre_generate.ordered();
+    // compaction gate and the request count the same prompt (MOT-5569). The
+    // pre_generate chain never calls an observer with a static contribution;
+    // the injections are the ones whose `sessions` globs and filters select
+    // this turn.
+    let pre_generate = deps.hooks.bindings(crate::hooks::HookPoint::PreGenerate);
+    let static_injections = deps
+        .hooks
+        .static_injections(&deps.hooks.static_injection_input(&record, payload.step));
     let assembly_system_prompt =
-        crate::hooks::runner::with_static_prompts(&pre_generate, assembly_system_prompt);
+        crate::hooks::runner::with_static_prompts(&static_injections, assembly_system_prompt);
     // Registry-change notice: if a function this session may call changed or
     // left since it last acknowledged them, tell the model its cached
     // contracts may be stale. First sighting stamps silently, and so does a
@@ -774,7 +778,7 @@ async fn generate_step(
         .functions
         .as_ref()
         .map(|f| f.expose)
-        .unwrap_or(ExposeMode::AgentTrigger);
+        .unwrap_or(ExposeMode::AgentCall);
     if expose == ExposeMode::Native && decision_tools.is_empty() {
         tracing::warn!(
             session_id = %record.session_id,
@@ -859,7 +863,6 @@ async fn generate_step(
         let (gen_system_prompt, appended, gen_annotations) = match deps
             .hooks
             .run_pre_generate(
-                &pre_generate,
                 &record,
                 payload.step,
                 assembled.system_prompt.clone(),
@@ -1112,7 +1115,7 @@ async fn generate_step(
     // A contract may be compacted only while its exact earlier full result is
     // still present in the final request after assembly, hooks, and orphan
     // repair. Persisted pruning happens with the normal pre-generation write.
-    trigger::retain_visible_contract_sources(&mut record.function_contract_ledger, &gen_messages);
+    call::retain_visible_contract_sources(&mut record.function_contract_ledger, &gen_messages);
 
     // The router client strips file blocks again (hook appends are not covered
     // by assembly): fingerprint a stripped copy so it is of what it sends,
@@ -1532,7 +1535,7 @@ fn superseded_generation(entries: &[LoadedEntry], turn_id: &str, step: u64) -> O
 }
 
 /// This step's stored reply when one of its calls was dispatched and never
-/// returned (checkpoint still `Triggered`). Calls are dispatched only after
+/// returned (checkpoint still `Dispatched`). Calls are dispatched only after
 /// the final reply is written, so a partially streamed reply never matches:
 /// nothing of it ran, and the step regenerates as before.
 async fn dispatched_reply(
@@ -1540,14 +1543,14 @@ async fn dispatched_reply(
     record: &TurnRecord,
     step: u64,
 ) -> Result<Option<AssistantMessage>, HarnessError> {
-    let triggered = |id: &str| {
+    let dispatched = |id: &str| {
         record
             .calls
             .get(id)
-            .is_some_and(|c| c.state == CallState::Triggered)
+            .is_some_and(|c| c.state == CallState::Dispatched)
     };
     // Spares every ordinary step the transcript read.
-    if !record.calls.keys().any(|id| triggered(id)) {
+    if !record.calls.keys().any(|id| dispatched(id)) {
         return Ok(None);
     }
     let own = ids::assistant_entry_id(&record.turn_id, step);
@@ -1561,7 +1564,7 @@ async fn dispatched_reply(
         })
         .filter(|message| {
             message.content.iter().any(
-                |block| matches!(block, ContentBlock::FunctionCall { id, .. } if triggered(id)),
+                |block| matches!(block, ContentBlock::FunctionCall { id, .. } if dispatched(id)),
             )
         }))
 }
@@ -1570,7 +1573,11 @@ async fn dispatched_reply(
 ///
 /// This phase is separate from context assembly and provider generation so
 /// the executor does not poll one monolithic future with every turn-loop
-/// state in the same stack frame.
+/// state in the same stack frame. For the same reason every large tail it
+/// awaits (finalization, submit handling, spawn, the observe intercept and
+/// the stoppable dispatch) is boxed: a debug build reserves a slot in this
+/// function's frame for each future it builds inline, and the SDK thread
+/// polls it on a default-size stack (`stack_tests`).
 async fn finish_step(
     deps: &Deps,
     generated: Box<GeneratedStep>,
@@ -1593,7 +1600,7 @@ async fn finish_step(
     // Cancellation during generation finalises the partial as cancelled.
     if cancel_requested(record.abort, durable_abort, outcome.message.stop_reason) {
         record.abort = true;
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return Box::pin(finalize_cancelled(deps, &session, &mut record, "cancelled")).await;
     }
     if !outcome.ok {
         let generation_error = outcome.error.clone().unwrap_or_else(|| ChatError {
@@ -1680,7 +1687,14 @@ async fn finish_step(
             record.transient_resumes = attempt;
             return advance(deps, &mut record).await;
         }
-        return finalize_failed(deps, &session, &mut record, &reason, failure).await;
+        return Box::pin(finalize_failed(
+            deps,
+            &session,
+            &mut record,
+            &reason,
+            failure,
+        ))
+        .await;
     }
 
     if record.transient_resumes > 0 {
@@ -1707,28 +1721,28 @@ async fn finish_step(
             .await;
     }
 
-    // Trigger any function calls in content order.
+    // Call the planned functions in content order.
     let expose = record
         .options
         .functions
         .as_ref()
         .map(|f| f.expose)
-        .unwrap_or(ExposeMode::AgentTrigger);
+        .unwrap_or(ExposeMode::AgentCall);
     let planned = policy::plan_calls(&outcome.message, expose);
-    let trigger_calls: Vec<_> = planned
+    let dispatch_calls: Vec<_> = planned
         .iter()
-        .filter(|c| c.kind == CallKind::Trigger)
+        .filter(|c| c.kind == CallKind::Call)
         .collect();
     let submit_call = planned.iter().find(|c| c.kind == CallKind::SubmitResult);
 
-    if !trigger_calls.is_empty() {
+    if !dispatch_calls.is_empty() {
         let policy = CompiledPolicy::from(record.options.functions.as_ref());
         let engine = deps.engine().await;
         let session_grants =
             crate::filesystem_grants::roots(&deps.iii, &record.session_id, cfg.session_timeout_ms)
                 .await?;
         let filesystem_root = record.options.filesystem_root().map(str::to_string);
-        for call in trigger_calls.iter().copied() {
+        for call in dispatch_calls.iter().copied() {
             // Cancel check between tool calls. Only the in-process signal can
             // be observed here: this phase holds the session lock, so the
             // durable abort write in harness::stop is blocked behind it by
@@ -1736,14 +1750,15 @@ async fn finish_step(
             // so finalizing mid-loop loses nothing.
             if deps.cancels.is_fired(&record.turn_id) {
                 record.abort = true;
-                return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+                return Box::pin(finalize_cancelled(deps, &session, &mut record, "cancelled"))
+                    .await;
             }
 
             // Per-call checkpoint: skip done/pending, recover an interrupted
-            // trigger.
+            // call.
             match record.calls.get(&call.id).map(|c| c.state) {
                 Some(CallState::Done) | Some(CallState::Pending) => continue,
-                Some(CallState::Triggered) => {
+                Some(CallState::Dispatched) => {
                     append_unreturned(&session, &mut record, call, interrupted_result()).await?;
                     let eid = record_entry_id(&record, &call.id);
                     mark_done(&mut record, &call.id, &eid);
@@ -1753,13 +1768,13 @@ async fn finish_step(
                 _ => {}
             }
 
-            // A call still named `agent_trigger` here means plan_calls found
+            // A call still named `agent_call` here means plan_calls found
             // no resolvable `function` in its arguments (empty/null/
             // unparseable — local models flub JSON args). The wrapper is not
             // an engine function; fail locally with a teachable error instead
             // of the engine's cryptic function_not_found.
-            if call.function_id == policy::AGENT_TRIGGER_NAME {
-                let data = trigger::wrapper_without_target_result(&call.arguments);
+            if policy::is_agent_call_name(&call.function_id) {
+                let data = call::wrapper_without_target_result(&call.arguments);
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
                     &session,
@@ -1770,7 +1785,7 @@ async fn finish_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
-                trigger::apply_contract_updates_after_append(
+                call::apply_contract_updates_after_append(
                     &mut record.function_contract_ledger,
                     &call.id,
                     Vec::new(),
@@ -1788,8 +1803,8 @@ async fn finish_step(
             // failing — the complete-looking leading fields may be missing
             // the constraints the model was still writing. The stop reason
             // tells the model which of the two it was.
-            if trigger::arguments_degraded(&call.arguments) {
-                let data = trigger::truncated_arguments_result(
+            if call::arguments_degraded(&call.arguments) {
+                let data = call::truncated_arguments_result(
                     &call.function_id,
                     &call.arguments,
                     outcome.message.stop_reason,
@@ -1804,7 +1819,7 @@ async fn finish_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
-                trigger::apply_contract_updates_after_append(
+                call::apply_contract_updates_after_append(
                     &mut record.function_contract_ledger,
                     &call.id,
                     Vec::new(),
@@ -1818,10 +1833,9 @@ async fn finish_step(
             // only after it passes (a denial never reaches a hook).
             if !policy.allows(&call.function_id) {
                 let functions = deps.functions().await;
-                let did_you_mean =
-                    trigger::closest_permitted(&call.function_id, &policy, &functions);
+                let did_you_mean = call::closest_permitted(&call.function_id, &policy, &functions);
                 let data =
-                    trigger::denied_result_with_hint(&call.function_id, did_you_mean.as_deref());
+                    call::denied_result_with_hint(&call.function_id, did_you_mean.as_deref());
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
                     &session,
@@ -1832,7 +1846,7 @@ async fn finish_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
-                trigger::apply_contract_updates_after_append(
+                call::apply_contract_updates_after_append(
                     &mut record.function_contract_ledger,
                     &call.id,
                     Vec::new(),
@@ -1845,9 +1859,9 @@ async fn finish_step(
             // A call that already failed identically this turn is answered
             // locally before any hook or approval runs: re-running it would
             // only return the error the model has already seen.
-            let failure_key = trigger::call_digest(&call.function_id, &call.arguments);
+            let failure_key = call::call_digest(&call.function_id, &call.arguments);
             if let Some(data) = failure_key.as_deref().and_then(|key| {
-                trigger::repeated_failure_result(&record.failed_calls, key, &call.function_id)
+                call::repeated_failure_result(&record.failed_calls, key, &call.function_id)
             }) {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
@@ -1859,7 +1873,7 @@ async fn finish_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
-                trigger::apply_contract_updates_after_append(
+                call::apply_contract_updates_after_append(
                     &mut record.function_contract_ledger,
                     &call.id,
                     Vec::new(),
@@ -1889,7 +1903,7 @@ async fn finish_step(
 
             // harness::ask is a harness control like submit_result, not a
             // dispatched function, so it is answered HERE, before the
-            // pre_trigger chain: an approval hook could only
+            // pre_call chain: an approval hook could only
             // hold it, and a held call's release re-dispatches it to the
             // registered handler, which cannot show the card. The session's
             // allow/deny policy, the repeated-failure breaker and argument
@@ -1931,7 +1945,7 @@ async fn finish_step(
                     &origin_with(&record.turn_id, &ask_annotations),
                 )
                 .await?;
-                trigger::apply_contract_updates_after_append(
+                call::apply_contract_updates_after_append(
                     &mut record.function_contract_ledger,
                     &call.id,
                     Vec::new(),
@@ -1941,7 +1955,7 @@ async fn finish_step(
                 continue;
             }
 
-            // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
+            // pre_call chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
@@ -1955,7 +1969,7 @@ async fn finish_step(
             );
             let (eff_args, pre_ann) = match deps
                 .hooks
-                .run_pre_trigger(
+                .run_pre_call(
                     &record,
                     payload.step,
                     &call.id,
@@ -1965,7 +1979,7 @@ async fn finish_step(
                 )
                 .await
             {
-                crate::hooks::runner::PreTriggerOutcome::Continue {
+                crate::hooks::runner::PreCallOutcome::Continue {
                     arguments,
                     annotations,
                 } => {
@@ -1978,8 +1992,8 @@ async fn finish_step(
                     );
                     (arguments, annotations)
                 }
-                crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
-                    let mut data = trigger::ResultData {
+                crate::hooks::runner::PreCallOutcome::Deny(reason) => {
+                    let mut data = call::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
                         is_error: true,
                         details: json!({ "error": "hook_denied", "message": reason }),
@@ -2004,7 +2018,7 @@ async fn finish_step(
                         &origin_with(&record.turn_id, &deny_annotations),
                     )
                     .await?;
-                    trigger::apply_contract_updates_after_append(
+                    call::apply_contract_updates_after_append(
                         &mut record.function_contract_ledger,
                         &call.id,
                         Vec::new(),
@@ -2013,10 +2027,10 @@ async fn finish_step(
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                     continue;
                 }
-                crate::hooks::runner::PreTriggerOutcome::Hold {
+                crate::hooks::runner::PreCallOutcome::Hold {
                     held_by, arguments, ..
                 } => {
-                    let info = trigger::PendingInfo {
+                    let info = call::PendingInfo {
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
                         held_arguments: Some(arguments),
@@ -2032,13 +2046,13 @@ async fn finish_step(
 
             // harness::spawn is fire-and-forget: seed a child and return its
             // ids immediately (never invoke a target, never park). The child's
-            // result reaches consumers only through registered triggers/state.
-            // Guard failures skip post_trigger.
+            // result reaches consumers only through observers and state.
+            // Guard failures skip post_call.
             if call.function_id == crate::functions::SPAWN_ID {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                let (mut data, child) = match crate::subagent::spawn_from_turn(
+                let (mut data, child) = match Box::pin(crate::subagent::spawn_from_turn(
                     deps, &record, &call.id, &eff_args,
-                )
+                ))
                 .await
                 {
                     Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
@@ -2065,7 +2079,7 @@ async fn finish_step(
                     &origin_with(&record.turn_id, &spawn_annotations),
                 )
                 .await?;
-                trigger::apply_contract_updates_after_append(
+                call::apply_contract_updates_after_append(
                     &mut record.function_contract_ledger,
                     &call.id,
                     Vec::new(),
@@ -2094,11 +2108,11 @@ async fn finish_step(
                 continue;
             }
 
-            // Checkpoint triggered before invoking the (at-most-once) target.
+            // Checkpoint dispatched before invoking the (at-most-once) target.
             record.calls.insert(
                 call.id.clone(),
                 CallCheckpoint {
-                    state: CallState::Triggered,
+                    state: CallState::Dispatched,
                     function_id: Some(call.function_id.clone()),
                     entry_id: None,
                     child_session_id: None,
@@ -2115,20 +2129,20 @@ async fn finish_step(
 
             // Single invocation chokepoint: subscription control calls are
             // intercepted (trusted session injected); everything else invokes the
-            // target. Then the post_trigger chain runs over the result.
+            // target. Then the post_call chain runs over the result.
             //
             // An engine dispatch is raced against `harness::stop`: a target
             // that never returns would otherwise hold this step, and the
             // session lock `harness::stop` waits on, until the dispatch
             // timeout. Interceptions are short and not drop-safe, so they run
             // uninterrupted.
-            let raw = if crate::functions::subscribe::is_locally_intercepted(
+            let raw = if crate::functions::observe::is_locally_intercepted(
                 &call.function_id,
                 &eff_args,
                 &record.session_id,
                 true,
             ) {
-                crate::functions::subscribe::invoke(
+                Box::pin(crate::functions::observe::invoke(
                     deps,
                     &engine,
                     &policy,
@@ -2136,10 +2150,10 @@ async fn finish_step(
                     &eff_args,
                     &record.session_id,
                     true, // run_step holds this session's lock
-                    Some(crate::functions::subscribe::CallerModel::from_options(
+                    Some(crate::functions::observe::CallerModel::from_options(
                         &record.options,
                     )),
-                )
+                ))
                 .await
             } else {
                 let dispatch = {
@@ -2147,7 +2161,7 @@ async fn finish_step(
                     let (function_id, args) = (call.function_id.clone(), eff_args.clone());
                     let (session_id, options) = (record.session_id.clone(), record.options.clone());
                     async move {
-                        crate::functions::subscribe::invoke(
+                        crate::functions::observe::invoke(
                             &deps,
                             &engine,
                             &policy,
@@ -2155,14 +2169,19 @@ async fn finish_step(
                             &args,
                             &session_id,
                             true, // as inline: only interceptions read it
-                            Some(crate::functions::subscribe::CallerModel::from_options(
+                            Some(crate::functions::observe::CallerModel::from_options(
                                 &options,
                             )),
                         )
                         .await
                     }
                 };
-                match dispatch_unless_stopped(deps.cancels.watch(&record.turn_id), dispatch).await {
+                match Box::pin(dispatch_unless_stopped(
+                    deps.cancels.watch(&record.turn_id),
+                    dispatch,
+                ))
+                .await
+                {
                     Some(raw) => raw,
                     None => {
                         append_unreturned(&session, &mut record, call, stopped_result(call))
@@ -2170,14 +2189,20 @@ async fn finish_step(
                         let eid = record_entry_id(&record, &call.id);
                         mark_done(&mut record, &call.id, &eid);
                         record.abort = true;
-                        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+                        return Box::pin(finalize_cancelled(
+                            deps,
+                            &session,
+                            &mut record,
+                            "cancelled",
+                        ))
+                        .await;
                     }
                 }
             };
             let info_raw = (call.function_id == "engine::functions::info").then(|| raw.clone());
             let post_outcome = deps
                 .hooks
-                .run_post_trigger(
+                .run_post_call(
                     &record,
                     payload.step,
                     &call.id,
@@ -2188,18 +2213,18 @@ async fn finish_step(
                 .await;
             let mut annotations = pre_ann;
             let (data, post_ann) = match post_outcome {
-                crate::hooks::runner::PostTriggerOutcome::Result {
+                crate::hooks::runner::PostCallOutcome::Result {
                     result,
                     annotations,
                 } => (result, annotations),
-                crate::hooks::runner::PostTriggerOutcome::Hold {
+                crate::hooks::runner::PostCallOutcome::Hold {
                     held_by,
                     annotations: _,
                 } => {
-                    let info = trigger::PendingInfo {
+                    let info = call::PendingInfo {
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
-                        // A post-trigger release re-invokes the target: keep
+                        // A post-call release re-invokes the target: keep
                         // the fully pre-mutated args, not the model originals.
                         held_arguments: Some(eff_args.clone()),
                         reconciled: reconciled.as_ref().map(|r| r.changes.clone()),
@@ -2215,7 +2240,7 @@ async fn finish_step(
                 annotations.insert(k, v);
             }
             let (mut data, contract_updates) = match info_raw {
-                Some(raw) => trigger::prepare_info_result(
+                Some(raw) => call::prepare_info_result(
                     &call.id,
                     &eff_args,
                     &data,
@@ -2227,7 +2252,7 @@ async fn finish_step(
             // The breaker digests the target's own result, before the harness
             // adds its reconciliation note or schema diagnosis.
             if let Some(key) = &failure_key {
-                trigger::note_call_result(&mut record.failed_calls, key, &data);
+                call::note_call_result(&mut record.failed_calls, key, &data);
             }
             crate::reconcile::settle_result(
                 deps,
@@ -2244,7 +2269,7 @@ async fn finish_step(
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)
                 .await?;
-            trigger::apply_contract_updates_after_append(
+            call::apply_contract_updates_after_append(
                 &mut record.function_contract_ledger,
                 &call.id,
                 contract_updates,
@@ -2255,7 +2280,7 @@ async fn finish_step(
     }
 
     // If any call deferred, the turn parks: no re-enqueue while the deferred
-    // work runs (harness.md § Deferred trigger).
+    // work runs (harness.md, deferred calls).
     let has_pending = record.calls.values().any(|c| c.state == CallState::Pending);
     if has_pending {
         record.status = TurnStatus::AwaitingFunctions;
@@ -2269,31 +2294,38 @@ async fn finish_step(
         });
     }
 
-    // submit_result is terminal: triggered calls already landed above; now
+    // submit_result is terminal: dispatched calls already landed above; now
     // the harness consumes the submit_result (validate + record + finalise).
     if let Some(submit) = submit_call {
-        return handle_submit(deps, &session, &mut record, &strategy, submit).await;
+        return Box::pin(handle_submit(
+            deps,
+            &session,
+            &mut record,
+            &strategy,
+            submit,
+        ))
+        .await;
     }
 
-    // With triggered calls and no submit_result, re-enqueue so the model
+    // With dispatched calls and no submit_result, re-enqueue so the model
     // reacts to the results — unless the step showed a harness::ask card:
     // then the turn ends on the question and the answer arrives as the
     // user's next message. A user message already waiting (steering) needs
     // the model, so that step advances as usual. Steering is only read when
     // an ask was accepted, so ordinary function steps pay no extra reads.
-    if !trigger_calls.is_empty() {
+    if !dispatch_calls.is_empty() {
         let asked_this_step = ask_accepted_this_step(&record);
         let steering = asked_this_step
             && (has_user_after_watermark(&session, &record).await?
                 || has_queued(deps, &record).await?);
         if ends_after_ask(asked_this_step, submit_call.is_some(), steering) {
-            return finalize_with_contract(
+            return Box::pin(finalize_with_contract(
                 deps,
                 &session,
                 &mut record,
                 &strategy,
                 &outcome.message,
-            )
+            ))
             .await;
         }
         return advance(deps, &mut record).await;
@@ -2304,7 +2336,14 @@ async fn finish_step(
         return advance(deps, &mut record).await;
     }
 
-    finalize_with_contract(deps, &session, &mut record, &strategy, &outcome.message).await
+    Box::pin(finalize_with_contract(
+        deps,
+        &session,
+        &mut record,
+        &strategy,
+        &outcome.message,
+    ))
+    .await
 }
 
 /// Decide one in-turn `harness::ask` against the record's per-step markers
@@ -2478,7 +2517,7 @@ async fn handle_submit(
         Ok(()) => ("result recorded".to_string(), false),
         Err(msg) => (msg.clone(), true),
     };
-    let data = crate::trigger::ResultData {
+    let data = crate::call::ResultData {
         content: vec![ContentBlock::text(text)],
         is_error,
         details: Value::Null,
@@ -2493,7 +2532,7 @@ async fn handle_submit(
         &origin(&record.turn_id),
     )
     .await?;
-    trigger::apply_contract_updates_after_append(
+    call::apply_contract_updates_after_append(
         &mut record.function_contract_ledger,
         &submit.id,
         Vec::new(),
@@ -2505,7 +2544,7 @@ async fn handle_submit(
 }
 
 /// Contract-valid result → run the `post_turn` hook chain (validators
-/// attached via `engine::register_trigger` on `harness::hook::post-turn`)
+/// observing `harness::hook::on-post-turn` through `harness::observe`)
 /// before finalising; a deny re-prompts through the same retry budget as a
 /// schema failure.
 async fn complete_validated(
@@ -3316,7 +3355,7 @@ fn checkpoint_pending(
     record: &mut TurnRecord,
     call_id: &str,
     call: &policy::PlannedCall,
-    info: &trigger::PendingInfo,
+    info: &call::PendingInfo,
 ) {
     record.calls.insert(
         call_id.to_string(),
@@ -3366,7 +3405,7 @@ async fn append_function_result(
     session: &SessionClient,
     record: &TurnRecord,
     call: &policy::PlannedCall,
-    data: &trigger::ResultData,
+    data: &call::ResultData,
     entry_id: &str,
     origin: &Value,
 ) -> Result<(), HarnessError> {
@@ -3383,7 +3422,7 @@ async fn append_function_result(
     // `session::append`. Keep the per-session step lock while the dependency
     // catches up: this append is idempotent on `entry_id`, and retaining the
     // lock prevents a restart-redelivered copy of the same step from
-    // regenerating against the still-triggered call checkpoint.
+    // regenerating against the still-dispatched call checkpoint.
     const ATTEMPTS: u32 = 10;
     const BACKOFF_MS: u64 = 250;
     for attempt in 1..=ATTEMPTS {
@@ -3430,8 +3469,8 @@ fn retryable_function_result_append_error(error: &HarnessError) -> bool {
             || message.contains("timed out"))
 }
 
-fn interrupted_result() -> trigger::ResultData {
-    trigger::ResultData {
+fn interrupted_result() -> call::ResultData {
+    call::ResultData {
         content: vec![ContentBlock::text(
             "interrupted: executed at most once, result unknown (restart during execution)"
                 .to_string(),
@@ -3444,14 +3483,14 @@ fn interrupted_result() -> trigger::ResultData {
 /// The result of a call `harness::stop` cut off before its target returned.
 /// The engine cannot reach the worker running it, so the text tells the model
 /// the effects are unknown, not undone.
-fn stopped_result(call: &policy::PlannedCall) -> trigger::ResultData {
+fn stopped_result(call: &policy::PlannedCall) -> call::ResultData {
     let msg = format!(
         "{} was stopped by the user before it returned. Its result was discarded and it may \
          still be running on its worker: do not assume it completed, and do not assume its \
          side effects were undone.",
         call.function_id
     );
-    trigger::ResultData {
+    call::ResultData {
         content: vec![ContentBlock::text(msg.clone())],
         is_error: true,
         details: json!({ "error": "cancelled", "cancelled_by": "user", "message": msg }),
@@ -3467,9 +3506,9 @@ fn stopped_result(call: &policy::PlannedCall) -> trigger::ResultData {
 async fn dispatch_unless_stopped<F>(
     mut stop: tokio::sync::watch::Receiver<bool>,
     dispatch: F,
-) -> Option<trigger::ResultData>
+) -> Option<call::ResultData>
 where
-    F: std::future::Future<Output = trigger::ResultData> + Send + 'static,
+    F: std::future::Future<Output = call::ResultData> + Send + 'static,
 {
     use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
     // Carry the step's OTel context into the task (the router::chat idiom) so
@@ -3478,7 +3517,7 @@ where
         tokio::spawn(dispatch.with_context(Context::current()))
             .await
             .unwrap_or_else(|error| {
-                trigger::invocation_error_result(None, format!("dispatch task failed: {error}"))
+                call::invocation_error_result(None, format!("dispatch task failed: {error}"))
             })
     };
     tokio::select! {
@@ -3492,7 +3531,7 @@ async fn append_unreturned(
     session: &SessionClient,
     record: &mut TurnRecord,
     call: &policy::PlannedCall,
-    data: trigger::ResultData,
+    data: call::ResultData,
 ) -> Result<(), HarnessError> {
     let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
     append_function_result(
@@ -3504,7 +3543,7 @@ async fn append_unreturned(
         &origin(&record.turn_id),
     )
     .await?;
-    trigger::apply_contract_updates_after_append(
+    call::apply_contract_updates_after_append(
         &mut record.function_contract_ledger,
         &call.id,
         Vec::new(),
@@ -4376,7 +4415,7 @@ fn concrete_allowed_tools(
     descriptors: &[crate::clients::FunctionDescriptor],
     hidden: &[String],
 ) -> Vec<crate::types::model::AgentFunction> {
-    let mut tools = crate::functions::subscribe::native_control_tools(policy);
+    let mut tools = crate::functions::observe::native_control_tools(policy);
     for descriptor in descriptors {
         if !policy.allows(&descriptor.function_id)
             || hidden.iter().any(|id| id == &descriptor.function_id)
@@ -4400,7 +4439,7 @@ fn concrete_allowed_tools(
 }
 
 /// The invocation-schema surface attached to the generate request
-/// (harness.md § Exposure modes). Default: the single `agent_trigger`
+/// (harness.md § Exposure modes). Default: the single `agent_call`
 /// schema, its `description` label naming the session's response language.
 /// Native: the concrete allowed tools verbatim.
 fn provider_tools(
@@ -4409,7 +4448,7 @@ fn provider_tools(
     response_language: Option<&ResponseLanguage>,
 ) -> Vec<crate::types::model::AgentFunction> {
     match expose {
-        ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema(response_language)],
+        ExposeMode::AgentCall => vec![policy::agent_call_schema(response_language)],
         ExposeMode::Native => concrete.to_vec(),
     }
 }
@@ -4493,7 +4532,7 @@ mod tests {
     #[test]
     fn an_assistant_step_carries_its_build_and_a_fingerprint_of_the_request() {
         let tools = vec![super::AgentFunction {
-            name: "agent_trigger".into(),
+            name: "agent_call".into(),
             description: "Call a function".into(),
             parameters: serde_json::json!({ "type": "object" }),
             label: None,
@@ -4841,11 +4880,11 @@ mod tests {
     }
 
     #[test]
-    fn call_description_reads_only_the_agent_trigger_wrapper() {
+    fn call_description_reads_only_the_agent_call_wrapper() {
         let blocks = vec![
             ContentBlock::FunctionCall {
                 id: "c1".into(),
-                function_id: "agent_trigger".into(),
+                function_id: "agent_call".into(),
                 arguments: serde_json::json!({ "function": "x::y", "description": "look up" }),
             },
             ContentBlock::FunctionCall {
@@ -5000,7 +5039,7 @@ mod tests {
             "request_schema": { "type": "object" },
             "response_schema": { "type": "object" }
         });
-        let data = crate::trigger::ResultData {
+        let data = crate::call::ResultData {
             content: vec![ContentBlock::text(details.to_string())],
             is_error: false,
             details,
@@ -5009,15 +5048,15 @@ mod tests {
         let mut ledger = std::collections::BTreeMap::new();
 
         let (first, updates) =
-            crate::trigger::prepare_info_result("call-1", &arguments, &data, &ledger, true);
-        crate::trigger::apply_contract_updates_after_append(&mut ledger, "call-1", updates);
+            crate::call::prepare_info_result("call-1", &arguments, &data, &ledger, true);
+        crate::call::apply_contract_updates_after_append(&mut ledger, "call-1", updates);
 
         let (second, updates) =
-            crate::trigger::prepare_info_result("call-2", &arguments, &data, &ledger, true);
+            crate::call::prepare_info_result("call-2", &arguments, &data, &ledger, true);
         assert_eq!(second.content, first.content, "a sibling result stays full");
-        crate::trigger::apply_contract_updates_after_append(&mut ledger, "call-2", updates);
+        crate::call::apply_contract_updates_after_append(&mut ledger, "call-2", updates);
 
-        crate::trigger::retain_visible_contract_sources(
+        crate::call::retain_visible_contract_sources(
             &mut ledger,
             &[serde_json::json!({
                 "role": "function_result",
@@ -5027,7 +5066,7 @@ mod tests {
             })],
         );
         let (third, updates) =
-            crate::trigger::prepare_info_result("call-3", &arguments, &data, &ledger, true);
+            crate::call::prepare_info_result("call-3", &arguments, &data, &ledger, true);
 
         assert_eq!(
             third.content,
@@ -5046,15 +5085,9 @@ mod tests {
         assert_eq!(updates[0].1.repeats, 1);
         assert_eq!(
             first.content,
-            crate::trigger::prepare_info_result(
-                "probe",
-                &arguments,
-                &data,
-                &Default::default(),
-                true
-            )
-            .0
-            .content,
+            crate::call::prepare_info_result("probe", &arguments, &data, &Default::default(), true)
+                .0
+                .content,
             "the first result is the full (response-schema-stripped) rendering"
         );
     }
@@ -5121,7 +5154,7 @@ mod tests {
             ("worker::other".into(), unrelated_source.clone()),
         ]);
 
-        crate::trigger::apply_contract_updates_after_append(
+        crate::call::apply_contract_updates_after_append(
             &mut ledger,
             "reused-call",
             vec![("worker::function".into(), replacement)],
@@ -5240,13 +5273,13 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_trigger_tool_names_the_response_language() {
+    fn the_agent_call_tool_names_the_response_language() {
         let english = super::ResponseLanguage {
             code: "eng".into(),
             name: "English".into(),
         };
         let label = |language: Option<&super::ResponseLanguage>| {
-            super::provider_tools(super::ExposeMode::AgentTrigger, &[], language)[0].parameters
+            super::provider_tools(super::ExposeMode::AgentCall, &[], language)[0].parameters
                 ["properties"]["description"]["description"]
                 .as_str()
                 .unwrap()
@@ -5388,10 +5421,7 @@ mod tests {
     fn authorized_virtual_controls_are_not_removed_by_public_catalog() {
         let policy =
             crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
-                allow: vec![
-                    "engine::register_trigger".into(),
-                    "engine::unregister_trigger".into(),
-                ],
+                allow: vec!["harness::observe".into(), "harness::unobserve".into()],
                 deny: vec![],
                 expose: crate::types::turn::ExposeMode::Native,
             }));
@@ -6254,7 +6284,7 @@ mod tests {
                 .contains("now available"));
             assert!(stale(Some(&missing), &snap(&live), &CompiledPolicy::from(None)).is_none());
         }
-        for id in ["engine::register_trigger", "engine::unregister_trigger"] {
+        for id in ["harness::observe", "harness::unobserve"] {
             let effective = effective_contract(id, &all, &snap(&[])).unwrap();
             let frozen = std::collections::BTreeMap::from([(
                 id.to_string(),
@@ -6333,8 +6363,8 @@ mod tests {
         assert!(stale(Some(&frozen), &live, &all).is_none());
     }
 
-    fn dispatched(text: &str) -> crate::trigger::ResultData {
-        crate::trigger::ResultData {
+    fn dispatched(text: &str) -> crate::call::ResultData {
+        crate::call::ResultData {
             content: vec![crate::types::content::ContentBlock::text(text)],
             is_error: false,
             details: serde_json::Value::Null,

@@ -184,6 +184,13 @@ async fn handle_connection(
                             break;
                         }
                     }
+                    DownstreamAction::ForwardThenReply(out, reply) => {
+                        if a_engine_out.send(TungMessage::Text(out)).await.is_err()
+                            || a_client_out.send(AxumMessage::Text(reply)).await.is_err()
+                        {
+                            break;
+                        }
+                    }
                     DownstreamAction::Drop => {}
                     DownstreamAction::Close(replies) => {
                         for reply in replies {
@@ -213,19 +220,35 @@ async fn handle_connection(
     // Direction B: engine → downstream worker (rewrite Text frames).
     let b_int = interceptor.clone();
     let b_client_out = client_out.clone();
+    let b_engine_out = engine_out.clone();
     let engine_to_client = async move {
         while let Some(msg) = engine_rx.next().await {
             let Ok(msg) = msg else { break };
             let is_close = matches!(msg, TungMessage::Close(_));
             match msg {
-                TungMessage::Text(t) => match b_int.handle_upstream(t.as_str()).await {
-                    UpstreamAction::Forward(out) => {
-                        if b_client_out.send(AxumMessage::Text(out)).await.is_err() {
+                TungMessage::Text(t) => {
+                    let (to_engine, frames) = match b_int.handle_upstream(t.as_str()).await {
+                        UpstreamAction::Forward(out) => (None, vec![out]),
+                        UpstreamAction::ForwardAll(frames) => (None, frames),
+                        UpstreamAction::ReplyThenForwardAll(reply, frames) => (Some(reply), frames),
+                        UpstreamAction::Drop => (None, Vec::new()),
+                    };
+                    if let Some(reply) = to_engine {
+                        if b_engine_out.send(TungMessage::Text(reply)).await.is_err() {
                             break;
                         }
                     }
-                    UpstreamAction::Drop => {}
-                },
+                    let mut sent = true;
+                    for out in frames {
+                        if b_client_out.send(AxumMessage::Text(out)).await.is_err() {
+                            sent = false;
+                            break;
+                        }
+                    }
+                    if !sent {
+                        break;
+                    }
+                }
                 other => {
                     if let Some(out) = tungstenite_to_axum(other) {
                         if b_client_out.send(out).await.is_err() {
@@ -253,9 +276,9 @@ async fn handle_connection(
 
     // One side closed: tear the connection down promptly. Aborting the writers
     // drops their socket sinks (closing both sockets); the engine then tears
-    // down this connection's functions/triggers via its existing per-connection
-    // cleanup. Any in-flight spawned middleware task finishes on its own — its
-    // reply send fails harmlessly once the forwarder is gone.
+    // down this connection's functions and observers via its existing
+    // per-connection cleanup. Any in-flight spawned middleware task finishes
+    // on its own — its reply send fails harmlessly once the forwarder is gone.
     client_writer.abort();
     engine_writer.abort();
     reply_forwarder.abort();

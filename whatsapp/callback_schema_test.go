@@ -26,6 +26,9 @@ func TestCallbackWireSchemasAndResponses(t *testing.T) {
 		}
 		return nil
 	})
+	// whatsapp::on-config-change and whatsapp::cloud::webhook::verify are not
+	// observable, which the SDK registers only with an observe.v2 engine.
+	peer.registerWorker(t)
 	manager, err := newTestManager(c)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +107,7 @@ func TestCallbackWireSchemasAndResponses(t *testing.T) {
 			}
 		}
 	}
-	fixture, err := json.Marshal(map[string]any{"functions": functions, "triggers": []any{}})
+	fixture, err := json.Marshal(map[string]any{"functions": functions})
 	if err != nil {
 		t.Fatal(err)
 	}

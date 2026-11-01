@@ -23,7 +23,7 @@ function loadSchema(): unknown {
   return JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
 }
 
-async function triggerWithRetry(
+async function callWithRetry(
   iii: ReturnType<typeof registerWorker>,
   functionId: string,
   payload: unknown,
@@ -31,7 +31,7 @@ async function triggerWithRetry(
   let lastErr: unknown;
   for (let attempt = 1; attempt <= CONFIG_RETRIES; attempt++) {
     try {
-      return await iii.trigger({
+      return await iii.call({
         function_id: functionId,
         payload,
         timeoutMs: CONFIG_TIMEOUT_MS,
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
     url: URL,
   });
 
-  await triggerWithRetry(iii, 'configuration::register', {
+  await callWithRetry(iii, 'configuration::register', {
     id: DATABASE_CONFIG_ID,
     name: 'Database',
     description: 'Connection pools for PostgreSQL, MySQL, and SQLite.',
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     initial_value: DATABASE_CONFIG_VALUE,
   });
 
-  const got = (await triggerWithRetry(iii, 'configuration::get', {
+  const got = (await callWithRetry(iii, 'configuration::get', {
     id: DATABASE_CONFIG_ID,
   })) as { id?: string; value?: unknown };
 

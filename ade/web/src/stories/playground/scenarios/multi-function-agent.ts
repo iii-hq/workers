@@ -6,13 +6,13 @@ import {
 } from './helpers'
 
 const THOUGHT = `multi-step agent: i'll list workers, then inspect the
-healthiest one, then echo a probe through it. each function trigger is sequential
+healthiest one, then echo a probe through it. each function call is sequential
 so the chat surface needs to reset its fcall pointer between calls.`
 
 const BODY = `## probe complete
 
-triggered three functions end-to-end: listed workers, inspected \`worker-7\` (least
-loaded), and echoed a probe through it. all three triggers returned cleanly,
+called three functions end-to-end: listed workers, inspected \`worker-7\` (least
+loaded), and echoed a probe through it. all three calls returned cleanly,
 so the dispatch path is healthy.
 
 \`\`\`text
@@ -22,7 +22,7 @@ list -> info(worker-7) -> echo(worker-7, "ping")
 ready for the next instruction.`
 
 /**
- * Three sequential function triggers back-to-back. Surfaces any pointer-reset
+ * Three sequential function calls back-to-back. Surfaces any pointer-reset
  * bug in ChatView (the consumer must clear its fcallId after each fcall-end
  * so the next fcall-start gets a fresh slot).
  */

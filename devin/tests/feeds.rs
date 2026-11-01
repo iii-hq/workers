@@ -1,37 +1,34 @@
 //! A devin::run turn's frames through the owned feeds, exercised without a
 //! live engine: the run loop delivers each CLI stdout line on
-//! `devin::raw-event` (as `stdout_frame`) and the terminal frames on
-//! `devin::agent-event` (as `terminal_frames`). A capturing sender stands in
-//! for the engine.
+//! `devin::on-raw-event` (as `stdout_frame`) and the terminal frames on
+//! `devin::on-agent-event` (as `terminal_frames`), each call made only for an
+//! observed session. A capturing sender stands in for the engine.
 
 use std::sync::Mutex;
 
-use devin::agent_feed::{Delivery, Feed, Feeds};
+use devin::agent_feed::{Feed, FeedPayload, Feeds};
 use devin::cli::{stdout_frame, terminal_frames};
 use devin::config::Config;
-use iii_sdk::trigger::TriggerConfig;
 use serde_json::{json, Value};
 
-fn bound_feeds(session: &str) -> Feeds {
-    let feeds = Feeds::new("epoch-turn");
-    for feed in [&feeds.agent, &feeds.raw] {
-        feed.bind(&TriggerConfig {
-            id: format!("{}-consumer", feed.id()),
-            function_id: "acp::__on_event::c1".into(),
-            config: json!({ "session_id": session }),
-            metadata: Some(json!({ "conn": "c1" })),
-            namespace: None,
-        })
-        .unwrap();
-    }
-    feeds
-}
-
-async fn push(feed: &Feed, session: &str, event: Value, sink: &Mutex<Vec<Delivery>>) {
-    feed.emit_with(session, event, |delivery| {
-        sink.lock().unwrap().push(delivery);
-        std::future::ready(Ok::<Value, iii_sdk::Error>(Value::Null))
-    })
+/// Emit one frame on `feed`, with only `observed` observed, capturing the
+/// call's envelope.
+async fn push(
+    feed: &Feed,
+    observed: &str,
+    session: &str,
+    event: Value,
+    sink: &Mutex<Vec<FeedPayload>>,
+) {
+    feed.emit_with(
+        session,
+        || event,
+        |session_id| session_id == observed,
+        |payload| {
+            sink.lock().unwrap().push(payload);
+            std::future::ready(Ok::<Value, iii_sdk::Error>(Value::Null))
+        },
+    )
     .await;
 }
 
@@ -42,31 +39,23 @@ async fn turn_frames_flow_unchanged_through_the_owned_feeds() {
         r#"{"id":"devin-abc","url":"https://app.devin.ai/sessions/abc"}"#,
         "done",
     ];
-    let feeds = bound_feeds("s1");
+    let feeds = Feeds::new("epoch-turn");
     let raw_sink = Mutex::new(Vec::new());
     let agent_sink = Mutex::new(Vec::new());
     for line in stdout {
-        push(&feeds.raw, "s1", stdout_frame(line), &raw_sink).await;
+        push(&feeds.raw, "s1", "s1", stdout_frame(line), &raw_sink).await;
     }
     let terminal = terminal_frames(&stdout.join("\n"), "swe-1.6", "end");
     for frame in terminal.clone() {
-        push(&feeds.agent, "s1", frame, &agent_sink).await;
+        push(&feeds.agent, "s1", "s1", frame, &agent_sink).await;
     }
-    // Another session's frames never reach the s1 consumer.
-    push(&feeds.raw, "s2", stdout_frame("other"), &raw_sink).await;
+    // Another session's frames never reach the s1 observer.
+    push(&feeds.raw, "s1", "s2", stdout_frame("other"), &raw_sink).await;
 
     let raw = raw_sink.into_inner().unwrap();
     let agent = agent_sink.into_inner().unwrap();
-    let events = |sent: &[Delivery]| {
-        sent.iter()
-            .map(|d| d.payload["event"].clone())
-            .collect::<Vec<_>>()
-    };
-    let seqs = |sent: &[Delivery]| {
-        sent.iter()
-            .map(|d| d.payload["seq"].as_u64().unwrap())
-            .collect::<Vec<_>>()
-    };
+    let events = |sent: &[FeedPayload]| sent.iter().map(|p| p.event.clone()).collect::<Vec<_>>();
+    let seqs = |sent: &[FeedPayload]| sent.iter().map(|p| p.seq).collect::<Vec<_>>();
     assert_eq!(
         events(&raw),
         stdout
@@ -75,31 +64,26 @@ async fn turn_frames_flow_unchanged_through_the_owned_feeds() {
             .collect::<Vec<_>>()
     );
     assert_eq!(events(&agent), terminal.to_vec());
-    assert_eq!(agent[0].payload["event"]["type"], "turn_end");
+    assert_eq!(agent[0].event["type"], "turn_end");
     assert_eq!(
-        agent[0].payload["event"]["message"]["content"][0]["text"],
+        agent[0].event["message"]["content"][0]["text"],
         stdout.join("\n")
     );
-    assert_eq!(agent[1].payload["event"]["type"], "agent_end");
+    assert_eq!(agent[1].event["type"], "agent_end");
     assert_eq!(seqs(&raw), vec![0, 1, 2]);
     assert_eq!(seqs(&agent), vec![0, 1]);
-    for delivery in raw.iter().chain(agent.iter()) {
-        assert_eq!(delivery.function_id, "acp::__on_event::c1");
-        assert_eq!(delivery.metadata, Some(json!({ "conn": "c1" })));
-        assert_eq!(delivery.payload["session_id"], "s1");
-        assert_eq!(delivery.payload["source"], "devin");
+    for payload in raw.iter().chain(agent.iter()) {
+        assert_eq!(payload.session_id, "s1");
+        assert_eq!(payload.source, "devin");
         assert_eq!(
-            delivery.payload["event_id"],
-            format!(
-                "s1-epoch-turn-{:08}",
-                delivery.payload["seq"].as_u64().unwrap()
-            )
+            payload.event_id,
+            format!("s1-epoch-turn-{:08}", payload.seq)
         );
     }
 }
 
 #[test]
-fn retired_stream_keys_still_load_and_are_ignored() {
+fn stream_name_keys_load_and_are_ignored() {
     let stored = json!({
         "devin_executable": "/opt/devin",
         "events_stream": "agent::events",

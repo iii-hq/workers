@@ -1,144 +1,80 @@
-//! End-to-end: spawn the `iii` engine and the worker binary, then drive the
-//! lifecycle (create -> claim -> status -> release -> remove) through
-//! `iii-sdk` as a client. Self-skips when `iii` is not on PATH.
+//! End-to-end: an iii engine and the worker binary, driven through `iii-sdk`
+//! as a client: the lifecycle (create -> claim -> status -> release ->
+//! remove), and an observer of `worktree::on-created` filtered on
+//! `input.repo_path`.
+//!
+//! The engine and the worker come from the bus harness (tests/bus): without
+//! an engine the test skips; `III_E2E_REQUIRE=1` turns the skip into a
+//! failure. The engine hosts no `state::*` functions, so the test registers
+//! in-memory ones when the engine has none.
+
+mod bus;
 
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, InitOptions};
+use bus::{call, engine, git, register_state, registered, request, require, spawn_worker};
+use iii_sdk::{register_worker, Deliver, IIIClient, InitOptions, RegisterFunction, Source};
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 
-const ENGINE_WS: &str = "ws://127.0.0.1:49134";
-
-struct Harness {
-    iii: Child,
-    worker: Child,
-    _dirs: (tempfile::TempDir, tempfile::TempDir),
-}
-
-impl Drop for Harness {
-    fn drop(&mut self) {
-        let _ = self.worker.kill();
-        let _ = self.worker.wait();
-        let _ = self.iii.kill();
-        let _ = self.iii.wait();
-    }
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("spawn git");
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-async fn boot() -> Option<Harness> {
-    // The only reason to self-skip: no `iii` engine on PATH. Every failure
-    // past this point is a real test-environment fault and must fail loudly.
-    let iii_bin = which::which("iii").ok()?;
-
-    // Isolate the engine's data dir (configuration store, state) in a
-    // tempdir so the seed applies and nothing leaks between runs.
-    let engine_dir = tempfile::tempdir().expect("create engine tempdir");
-    let worker_dir = tempfile::tempdir().expect("create worker tempdir");
-
-    let iii = Command::new(&iii_bin)
-        .arg("--use-default-config")
-        .current_dir(engine_dir.path())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn iii engine");
-
-    sleep(Duration::from_millis(1200)).await;
-
-    // Seed the config so managed worktrees land inside the tempdir.
-    let seed_path = worker_dir.path().join("seed.yaml");
-    std::fs::write(
-        &seed_path,
-        format!(
-            "worktree_root: {}\n",
-            worker_dir.path().join("wts").display()
-        ),
-    )
-    .expect("write seed config");
-
-    let worker_bin = env!("CARGO_BIN_EXE_worktree");
-    let worker = Command::new(worker_bin)
-        .arg("--url")
-        .arg(ENGINE_WS)
-        .arg("--config")
-        .arg(&seed_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn worktree worker");
-
-    sleep(Duration::from_millis(2000)).await;
-
-    Some(Harness {
-        iii,
-        worker,
-        _dirs: (engine_dir, worker_dir),
-    })
-}
-
-async fn call(client: &iii_sdk::IIIClient, function_id: &str, payload: Value) -> Value {
-    timeout(
-        Duration::from_secs(15),
-        client.trigger(TriggerRequest {
-            function_id: function_id.into(),
-            payload,
-            action: None,
-            timeout_ms: Some(10_000),
+/// A function that forwards every payload it is called with to a channel.
+fn recorder(client: &IIIClient, function_id: &str) -> mpsc::UnboundedReceiver<Value> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    client.register_function(
+        function_id,
+        RegisterFunction::new(move |payload: Value| {
+            let _ = tx.send(payload);
+            Ok::<_, iii_sdk::Error>(json!({ "ok": true }))
         }),
-    )
-    .await
-    .unwrap_or_else(|_| panic!("{function_id} timed out"))
-    .unwrap_or_else(|e| panic!("{function_id} failed: {e}"))
-}
-
-/// Worker boot is not instant (connect retry backoff plus the configuration
-/// register/fetch round-trips), so wait for the surface to register instead
-/// of racing it with a fixed sleep.
-async fn wait_until_registered(client: &iii_sdk::IIIClient) {
-    for _ in 0..40 {
-        let listed = client
-            .trigger(TriggerRequest {
-                function_id: "engine::functions::list".into(),
-                payload: Value::Object(Default::default()),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await;
-        if let Ok(v) = listed {
-            if v.to_string().contains("worktree::create") {
-                return;
-            }
-        }
-        sleep(Duration::from_millis(500)).await;
-    }
-    panic!("worktree::create never registered with the engine");
+    );
+    rx
 }
 
 #[tokio::test]
 async fn end_to_end_lifecycle_via_iii_sdk() {
-    let Some(_h) = boot().await else {
-        eprintln!("skipping: `iii` binary not on PATH");
+    let Some(engine) = engine().await else {
+        assert!(
+            !require(),
+            "III_E2E_REQUIRE=1 but no engine: set III_ENGINE_WS_URL or III_ENGINE_BIN"
+        );
+        eprintln!("skipping: no iii engine (set III_ENGINE_WS_URL or III_ENGINE_BIN)");
         return;
     };
 
+    let client = register_worker(&engine.url, InitOptions::default());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while client
+        .call(request("engine::workers::list", json!({}), 2_000))
+        .await
+        .is_err()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the engine at {} never answered",
+            engine.url
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+    if !registered(&client, "state::get").await {
+        register_state(&client);
+    }
+
+    let worker_dir = tempfile::tempdir().unwrap();
+    let worker = spawn_worker(&engine.url, worker_dir.path());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !registered(&client, "worktree::create").await {
+        assert!(
+            Instant::now() < deadline,
+            "worktree::create never registered with the engine; worker log:\n{}",
+            worker.log_tail()
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+
     let repo_dir = tempfile::tempdir().unwrap();
-    let repo = repo_dir.path().join("repo");
+    let repo = repo_dir.path().canonicalize().unwrap().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-b", "main"]);
     git(&repo, &["config", "user.email", "test@example.com"]);
@@ -146,14 +82,35 @@ async fn end_to_end_lifecycle_via_iii_sdk() {
     std::fs::write(repo.join("README.md"), "hello\n").unwrap();
     git(&repo, &["add", "README.md"]);
     git(&repo, &["commit", "-m", "initial"]);
+    let repo_path = repo.to_string_lossy().to_string();
 
-    let client = register_worker(ENGINE_WS, InitOptions::default());
-    wait_until_registered(&client).await;
+    // One observer of this repository's creations, and one of another
+    // repository's, which must receive nothing.
+    let mut created_events = recorder(&client, "e2e::worktree-created");
+    let mut other_events = recorder(&client, "e2e::other-repo-created");
+    let this_repo = client.observe(
+        Source::function("worktree::on-created")
+            .filters(json!({ "input.repo_path": { "$eq": repo_path } }))
+            .deliver(Deliver::Output),
+        "e2e::worktree-created",
+    );
+    let other_repo = client.observe(
+        Source::function("worktree::on-created")
+            .filters(json!({ "input.repo_path": { "$eq": "/no/such/repo" } }))
+            .deliver(Deliver::Output),
+        "e2e::other-repo-created",
+    );
+    for observer in [&this_repo, &other_repo] {
+        timeout(Duration::from_secs(15), observer.ready())
+            .await
+            .expect("the observer of worktree::on-created never became active")
+            .expect("the observer of worktree::on-created was rejected");
+    }
 
     let created = call(
         &client,
         "worktree::create",
-        json!({ "repo_path": repo.to_string_lossy() }),
+        json!({ "repo_path": repo_path }),
     )
     .await;
     let worktree_id = created["worktree_id"]
@@ -162,6 +119,14 @@ async fn end_to_end_lifecycle_via_iii_sdk() {
         .to_string();
     let path = created["path"].as_str().expect("path").to_string();
     assert!(Path::new(&path).is_dir());
+
+    let event = timeout(Duration::from_secs(10), created_events.recv())
+        .await
+        .expect("worktree::on-created never reached its observer")
+        .expect("recorder channel closed");
+    assert_eq!(event["worktree_id"], worktree_id.as_str());
+    assert_eq!(event["repo_path"], repo_path.as_str());
+    assert_eq!(event["path"], path.as_str());
 
     let claimed = call(
         &client,
@@ -200,5 +165,16 @@ async fn end_to_end_lifecycle_via_iii_sdk() {
     assert_eq!(removed["removed"], true);
     assert!(!Path::new(&path).exists());
 
+    assert!(
+        other_events.try_recv().is_err(),
+        "an observer filtered on another repository received this one's creation"
+    );
+    // Exactly one creation reached the matching observer.
+    assert!(created_events.try_recv().is_err());
+
+    for observer in [this_repo, other_repo] {
+        observer.dispose().await.expect("dispose observer");
+    }
+    drop(worker);
     client.shutdown_async().await;
 }

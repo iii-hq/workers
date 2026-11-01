@@ -3,21 +3,21 @@
 //! Drift used to be found on timers: a 30 s binding sweep, a 120 s
 //! orphaned-turn scan, 5-minute function/skill catalog reloads. Each of them
 //! was really waiting for the same few things — a worker (the state store,
-//! the queue, a trigger provider, another harness instance) connecting, going
-//! away, or announcing its registrations — and the engine publishes exactly
-//! those on `engine::workers-available`. This module binds that trigger once
-//! and turns each event into coalesced kicks:
+//! the queue, an event source's host, another harness instance) connecting,
+//! going away, or announcing its registrations — and the engine publishes
+//! exactly those as calls of `engine::on-workers-changed`. This module
+//! observes that function once and turns each event into coalesced kicks:
 //!
 //! | `event`                                      | kicks                                   |
 //! |----------------------------------------------|-----------------------------------------|
 //! | `worker_connected`, `worker_disconnected`    | binding pass, orphaned-turn pass        |
 //! | `worker_metadata_updated` (registrations in) | the same, plus a catalog refresh        |
 //!
-//! The engine fires `worker_metadata_updated` only after the announcing
-//! worker's buffered function/trigger registrations were applied, so it is
-//! the moment a restarted worker's functions (and their schemas) are
-//! readable — including this harness's own reconnect, since the SDK replays
-//! this binding before announcing.
+//! The engine emits `worker_metadata_updated` only after the announcing
+//! worker's buffered function registrations were applied, so it is the
+//! moment a restarted worker's functions (and their schemas) are readable —
+//! including this harness's own reconnect, since the SDK replays this
+//! observer before announcing.
 //!
 //! A kick is a [`Notify`] permit: a burst of events while a pass runs
 //! collapses into one follow-up pass, and no pass ever runs on a clock. The
@@ -28,25 +28,24 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::RegisterFunction;
+use iii_sdk::{Deliver, RegisterFunction, Source};
 use serde_json::json;
 use tokio::sync::Notify;
 
 use crate::deps::Deps;
 
-/// Internal handler the engine's worker change trigger calls.
+/// Internal handler observing the engine's worker changes.
 pub const ENGINE_CHANGE_FN_ID: &str = "harness::on-engine-change";
-/// Fired by the engine when a worker connects, disconnects, or announces its
-/// metadata (`engine::workers::register`).
-pub const WORKERS_AVAILABLE_TRIGGER: &str = "engine::workers-available";
+/// Called by the engine when a worker connects, disconnects, or announces
+/// its metadata (`engine::workers::register`).
+pub const ON_WORKERS_CHANGED_FN: &str = "engine::on-workers-changed";
 
 /// Wake-ups for the passes the change feed drives. Each is consumed by one
 /// long-lived driver task; see [`crate::bindings::expiry::run`],
 /// [`crate::inflight::run`], and [`run_catalog`].
 #[derive(Clone, Default)]
 pub struct RecoveryKicks {
-    /// Binding reconciliation: orphan delivery triggers, Compose wake
+    /// Binding reconciliation: orphan delivery observers, Compose wake
     /// recovery, and re-arming every stored binding's deadline timer.
     pub bindings: Arc<Notify>,
     /// Orphaned-turn re-drive.
@@ -56,7 +55,7 @@ pub struct RecoveryKicks {
 }
 
 /// Process-wide engine change generation, bumped on every
-/// `engine::workers-available` event. Waiters that hold no [`Deps`] — an
+/// `engine::on-workers-changed` event. Waiters that hold no [`Deps`] — an
 /// in-flight dispatch watching for an engine restart — re-check once per
 /// change instead of on a timer.
 static ENGINE_CHANGES: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
@@ -72,7 +71,7 @@ fn note_engine_change() {
     ENGINE_CHANGES.send_modify(|generation| *generation = generation.wrapping_add(1));
 }
 
-/// What one `engine::workers-available` event reports.
+/// What one `engine::on-workers-changed` event reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineChange {
     WorkerConnected,
@@ -107,7 +106,8 @@ pub fn kick(kicks: &RecoveryKicks, change: EngineChange) {
     }
 }
 
-/// `harness::on-engine-change` payload. Only the event tag is read; the
+/// `harness::on-engine-change` payload: the `engine::on-workers-changed`
+/// event, delivered as the output. Only the event tag is read; the
 /// `worker_id` is logged for tracing the cause of a pass.
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct EngineChangeEvent {
@@ -122,9 +122,9 @@ pub struct EngineChangeAck {
     pub ok: bool,
 }
 
-/// Register [`ENGINE_CHANGE_FN_ID`], bind it to `engine::workers-available`,
-/// and start the catalog refresher. A failed bind only warns: every pass
-/// still runs once at boot, it just will not re-run until restart.
+/// Register [`ENGINE_CHANGE_FN_ID`], observe `engine::on-workers-changed`
+/// with it, and start the catalog refresher. The observer stays `pending`
+/// until the engine hosts the source; every pass still runs once at boot.
 pub fn register(deps: &Arc<Deps>) {
     let kicks = deps.kicks.clone();
     deps.iii.register_function(
@@ -150,22 +150,15 @@ pub fn register(deps: &Arc<Deps>) {
         )
         .metadata(json!({ "internal": true })),
     );
-    match deps.iii.register_trigger(RegisterTriggerInput::new(
-        WORKERS_AVAILABLE_TRIGGER.to_string(),
-        ENGINE_CHANGE_FN_ID.to_string(),
-        json!({}),
-    )) {
-        Ok(_) => tracing::info!(
-            trigger_type = WORKERS_AVAILABLE_TRIGGER,
-            function_id = ENGINE_CHANGE_FN_ID,
-            "engine worker change trigger bound"
-        ),
-        Err(error) => tracing::warn!(
-            trigger_type = WORKERS_AVAILABLE_TRIGGER,
-            %error,
-            "binding engine::workers-available failed; recovery passes run only at boot"
-        ),
-    }
+    let _observer = deps.iii.observe(
+        Source::function(ON_WORKERS_CHANGED_FN).deliver(Deliver::Output),
+        ENGINE_CHANGE_FN_ID,
+    );
+    tracing::info!(
+        source = ON_WORKERS_CHANGED_FN,
+        function_id = ENGINE_CHANGE_FN_ID,
+        "observing engine worker changes"
+    );
     tokio::spawn(run_catalog(deps.clone()));
 }
 

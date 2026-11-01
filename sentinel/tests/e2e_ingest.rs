@@ -2,10 +2,10 @@
 //! appears.
 //!
 //! Everything else in this suite runs the worker's logic over a store it
-//! controls. This runs the whole thing — the engine's trigger, the durable
-//! queue, the `database` worker, the attribution, the frozen evidence — and
-//! it is the only place that can catch the class of bug where each piece is
-//! right and the wiring between them is not.
+//! controls. This runs the whole thing — the engine's span source, the
+//! durable queue, the `database` worker, the attribution, the frozen
+//! evidence — and it is the only place that can catch the class of bug where
+//! each piece is right and the wiring between them is not.
 //!
 //! Connect-or-skip: with no engine it prints why and returns, so CI and a
 //! casual `cargo test` stay green. `III_E2E_REQUIRE=1` turns a missing engine
@@ -19,9 +19,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, RegisterFunction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -80,7 +79,7 @@ async fn connect(name: &str) -> Option<Arc<IIIClient>> {
 }
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,

@@ -26,8 +26,8 @@ const CLOUD_FIELDS: { key: CloudConfigKey; label: string; description: string; e
 
 export function RuntimeStatus({ host, quietWhenApplied = false }: { host: Host; quietWhenApplied?: boolean }) {
   const instance = useId()
-  const status = useWorkerLive<ConfigStatus>({ iii: host.iii, triggers: [], pollMs: 10000,
-    handlerId: `iii::whatsapp-ui::configuration::${instance}`, fetch: () => host.iii.trigger('whatsapp::config-status') })
+  const status = useWorkerLive<ConfigStatus>({ iii: host.iii, sources: [], pollMs: 10000,
+    handlerId: `iii::whatsapp-ui::configuration::${instance}`, fetch: () => host.iii.call('whatsapp::config-status') })
   if (status.error) return <StatusPanel variant="warn" role="alert" headline="Active configuration unavailable" detail={status.error} action={<Button variant="ghost" onClick={status.refresh}>Try again</Button>} />
   if (!status.data) return null
   const current = status.data

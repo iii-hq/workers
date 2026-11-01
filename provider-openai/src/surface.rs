@@ -28,7 +28,7 @@ pub const REFRESH_MODELS_DESC: &str = "Refresh the OpenAI catalog slice from GET
 
 pub const ON_ROUTER_READY_ID: &str = "provider::openai::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
-    "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
+    "Internal: re-declares this provider and refreshes its catalog on every router::on-ready event.";
 
 pub const EMBED_ID: &str = "provider::openai::embed";
 pub const EMBED_DESC: &str =

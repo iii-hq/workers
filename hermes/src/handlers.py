@@ -1,13 +1,13 @@
 """hermes::* function handlers + the inbound bridge.
 
 The agent loop (`hermes::run`) shells the documented `hermes -z` one-shot, which
-returns only the final response text -- so the normalized `hermes::agent-event`
+returns only the final response text -- so the normalized `hermes::on-agent-event`
 feed carries `turn_end` + `agent_end` with the final message, not per-tool
-frames (Hermes one-shot exposes no event stream); the raw `hermes::raw-event`
-feed carries the `result` frame. `hermes::send` is omnichannel out. Inbound
-platform/webhook deliveries land on the HTTP sink and are republished on
-`hermes::raw-event` so iii workers can react. Both feeds are owned trigger types
-(see `agent_feed.py`).
+frames (Hermes one-shot exposes no event stream); the raw
+`hermes::on-raw-event` feed carries the `result` frame. `hermes::send` is
+omnichannel out. Inbound platform/webhook deliveries land on the HTTP route
+and are republished on `hermes::on-raw-event` so iii workers can react. Both
+feeds are private functions that iii workers observe (see `agent_feed.py`).
 """
 
 from __future__ import annotations
@@ -61,9 +61,7 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger, feeds: Feed
             model = data.get("model") or cfg["defaults"]["model"]
             tools = data.get("tools")
             tools = cfg["defaults"].get("tools", "") if tools is None else tools
-            prior = await iii.trigger_async(
-                {"function_id": "state::get", "payload": {"scope": SCOPE, "key": session_id}}
-            )
+            prior = await iii.call_async({"function_id": "state::get", "payload": {"scope": SCOPE, "key": session_id}})
             iii_ctx = data.get("iii_context")
             iii_ctx = cfg["iii_context"] if iii_ctx is None else iii_ctx
             prompt_text = f"{III_CONTEXT_PROMPT}\n\n---\n\n{prompt}" if (iii_ctx and not prior) else prompt
@@ -94,7 +92,7 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger, feeds: Feed
             if usage_info:
                 record["usage"] = usage_info["usage"]
                 record["total_cost_usd"] = usage_info["total_cost_usd"]
-            await iii.trigger_async(
+            await iii.call_async(
                 {"function_id": "state::set", "payload": {"scope": SCOPE, "key": session_id, "value": record}}
             )
 
@@ -153,13 +151,13 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger, feeds: Feed
 
     async def sessions_list(_data: dict[str, Any]) -> dict[str, Any]:
         cfg = get_cfg()
-        stored = await iii.trigger_async({"function_id": "state::list", "payload": {"scope": SCOPE}}) or []
+        stored = await iii.call_async({"function_id": "state::list", "payload": {"scope": SCOPE}}) or []
         raw = await hermes_cli.sessions_list(cfg["hermes_executable"] or "hermes")
         return {"sessions": stored, "hermes_sessions_raw": raw}
 
     async def status(data: dict[str, Any]) -> dict[str, Any]:
         session_id = data.get("session_id", "")
-        record = await iii.trigger_async({"function_id": "state::get", "payload": {"scope": SCOPE, "key": session_id}})
+        record = await iii.call_async({"function_id": "state::get", "payload": {"scope": SCOPE, "key": session_id}})
         return {"session_id": session_id, "live": session_id in live, "record": record}
 
     async def stop(data: dict[str, Any]) -> dict[str, Any]:
@@ -171,10 +169,11 @@ def create_handlers(iii: IIIClient, get_cfg, logger: logging.Logger, feeds: Feed
 
     async def inbound(req: HttpRequest[Any], log: logging.Logger) -> HttpResponse[Any]:
         body = req.body or {}
-        # Republish the inbound platform/webhook delivery on `hermes::raw-event`
-        # so iii workers can react. TODO(live-integration): the exact Hermes
-        # delivery payload shape is confirmed against a running gateway; map it
-        # onto a dedicated `hermes::message` trigger type once verified.
+        # Republish the inbound platform/webhook delivery on
+        # `hermes::on-raw-event` so iii workers can react. TODO(live-integration):
+        # the exact Hermes delivery payload shape is confirmed against a running
+        # gateway; map it onto a dedicated `hermes::on-message` function once
+        # verified.
         session_id = str(body.get("session_id") or body.get("chat_id") or uuid.uuid4())
         await feeds.raw.emit(session_id, {"type": "inbound", "body": body})
         log.info("hermes inbound delivery: session_id=%s", session_id)

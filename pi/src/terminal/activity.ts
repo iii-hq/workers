@@ -266,7 +266,7 @@ export function registerActivity(iii: IIIClient, emit: Emit): ActivityTracker {
   const tracker = new ActivityTracker(emit);
   iii.registerFunction('pi::terminal::activity', (input: PiEvent) => tracker.handle(input ?? {}), {
     description:
-      'A pi lifecycle event from a terminal session (session_start, agent_start, tool_start, tool_end, agent_end, session_end), posted by the workspace extension. Translated into AgentEvent frames on the pi::agent-event feed.',
+      'A pi lifecycle event from a terminal session (session_start, agent_start, tool_start, tool_end, agent_end, session_end), posted by the workspace extension. Translated into AgentEvent frames on the pi::on-agent-event feed.',
     request_format: {
       type: 'object',
       properties: {

@@ -41,7 +41,7 @@ async function listCollection(
 ): Promise<Row[]> {
   const payload =
     collection.id === 'skills' ? { include_description: true } : {}
-  const out = await host.iii.trigger<Record<string, unknown>>(
+  const out = await host.iii.call<Record<string, unknown>>(
     collection.listFn,
     payload,
   )

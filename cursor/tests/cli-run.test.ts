@@ -461,9 +461,9 @@ describe('CursorWorker CLI ACP backend', () => {
       pending_prompt_sha256: null,
       updated_at_ms: record.updated_at_ms + 1,
     };
-    const originalTrigger = iii.trigger.bind(iii);
+    const originalCall = iii.call.bind(iii);
     let reads = 0;
-    iii.trigger = async (request: Record<string, unknown>) => {
+    iii.call = async (request: Record<string, unknown>) => {
       if (
         request.function_id === 'state::get' &&
         (request.payload as { key?: string }).key === record.session_id
@@ -471,7 +471,7 @@ describe('CursorWorker CLI ACP backend', () => {
         reads += 1;
         if (reads === 2) iii.state.set(record.session_id, terminal);
       }
-      return originalTrigger(request);
+      return originalCall(request);
     };
     const worker = cliWorker(iii, unusedBridge(), new FakeCursorCliFactory());
     worker.register();
@@ -646,9 +646,9 @@ describe('CursorWorker CLI ACP backend', () => {
       cancel_requested: false,
       updated_at_ms: record.updated_at_ms + 1,
     };
-    const originalTrigger = iii.trigger.bind(iii);
+    const originalCall = iii.call.bind(iii);
     let reads = 0;
-    iii.trigger = async (request: Record<string, unknown>) => {
+    iii.call = async (request: Record<string, unknown>) => {
       if (
         request.function_id === 'state::get' &&
         (request.payload as { key?: string }).key === record.session_id
@@ -656,7 +656,7 @@ describe('CursorWorker CLI ACP backend', () => {
         reads += 1;
         if (reads === 2) iii.state.set(record.session_id, replacement);
       }
-      return originalTrigger(request);
+      return originalCall(request);
     };
     const nonOwner = cliWorker(iii, unusedBridge(), new FakeCursorCliFactory());
     nonOwner.register();

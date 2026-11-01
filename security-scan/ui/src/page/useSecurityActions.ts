@@ -46,7 +46,7 @@ export function useSecurityActions(host: Host): SecurityActionsLive {
     () =>
       createSecurityActionsStore({
         host,
-        bindingId: instanceId,
+        instanceId,
         requestAction: requestFindingAction,
         readAction: readFindingAction,
         errorText: errorMessage,

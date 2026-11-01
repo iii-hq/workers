@@ -1,0 +1,118 @@
+{
+  "description": "Called after a security scan run was created or changed. Event { run_id, repository, status, attempt, updated_at, completed_at }; re-read security-scan::list or security-scan::read. No args; filter on input.repository or input.run_id.",
+  "function_id": "security-scan::on-run-changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "RunStatusV1": {
+        "enum": [
+          "queued",
+          "materializing",
+          "materialized",
+          "dispatching",
+          "analyzing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`security-scan::on-run-changed` event: the public status projection.",
+    "properties": {
+      "attempt": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "completed_at": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "repository": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/RunStatusV1"
+      },
+      "updated_at": {
+        "description": "Revision hint: set on every committed write (ms).",
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "attempt",
+      "repository",
+      "run_id",
+      "status",
+      "updated_at"
+    ],
+    "title": "RunChangedEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "RunStatusV1": {
+        "enum": [
+          "queued",
+          "materializing",
+          "materialized",
+          "dispatching",
+          "analyzing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "description": "`security-scan::on-run-changed` event: the public status projection.",
+    "properties": {
+      "attempt": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "completed_at": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "repository": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/RunStatusV1"
+      },
+      "updated_at": {
+        "description": "Revision hint: set on every committed write (ms).",
+        "format": "int64",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "attempt",
+      "repository",
+      "run_id",
+      "status",
+      "updated_at"
+    ],
+    "title": "RunChangedEventV1",
+    "type": "object"
+  }
+}

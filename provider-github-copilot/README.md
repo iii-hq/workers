@@ -17,12 +17,16 @@ sign-in surface (`login::start` / `login::poll`).
 ## Signing in
 
 ```bash
-iii trigger provider::github-copilot::login::start
+iii call provider::github-copilot::login::start
 # → { user_code, verification_uri, device_code, interval }
 # enter the code at the verification URL, then:
-iii trigger provider::github-copilot::login::poll device_code=<device_code>
+iii call provider::github-copilot::login::poll device_code=<device_code>
 # → { status: "ok" } — the catalog fills within seconds
 ```
+
+The `device_code` exchanges for the GitHub OAuth token, so `login::start` and
+`login::poll` are registered with `observable: false`: observing either fails
+with `NOT_OBSERVABLE`.
 
 Machines already signed in through an editor need no login at all: the worker
 imports (read-only) `~/.config/github-copilot/apps.json` or pi's auth store.
@@ -66,7 +70,7 @@ dev sessions).
   Discovery therefore probes each admitted model with a one-token request,
   four at a time, and reconciles only what answered. Verdicts persist for
   24 hours, so a model is probed once and answered from cache after that —
-  a refresh runs at boot, on every `router::ready` rebind, and after each
+  a refresh runs at boot, on every `router::on-ready` event, and after each
   sign-in, and a probe that *succeeds* on a premium model spends a premium
   request, not just a token. When the TTL lapses everything is re-checked,
   so enabling more models upstream (or changing plan) needs no code change.
@@ -78,7 +82,8 @@ dev sessions).
   editor-side picker preference and reads `false` for every row on accounts
   that have never toggled models in an editor — gating on it admits nothing.
 - **Registration:** self-declares via `router::provider::register` with
-  backoff until acked, and re-declares on the `router::ready` trigger type.
+  backoff until acked, and re-declares on every `router::on-ready` event
+  (it observes that function at boot; the observer outlives router restarts).
   The declaration carries no static `models` slice; a refresh fires right
   after registration and after every successful login.
 - **Client identity:** the token exchange, discovery, and every chat call

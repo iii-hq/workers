@@ -4,10 +4,10 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SecretKeyField } from './SecretKeyField'
 
-const trigger = vi.fn()
+const call = vi.fn()
 
 vi.mock('@/lib/iii-client', () => ({
-  getIiiClient: async () => ({ trigger }),
+  getIiiClient: async () => ({ call }),
 }))
 
 const META = {
@@ -28,7 +28,7 @@ beforeEach(() => {
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
-  trigger.mockReset()
+  call.mockReset()
 })
 
 afterEach(async () => {
@@ -54,7 +54,7 @@ function secretsWorker({
   found = [] as { kind: string; location: string; hint: string }[],
   envFile = '/p/.env',
 } = {}) {
-  trigger.mockImplementation(
+  call.mockImplementation(
     async (fn: string, payload: { name?: string; store?: string }) => {
       if (fn === 'secrets::status') return { env_file: envFile }
       if (fn === 'secrets::get' && payload.store === 'env')
@@ -154,9 +154,7 @@ describe('SecretKeyField', () => {
       'Use the key from your shell profile',
     )
     await act(async () => button('Save key').click())
-    const importCall = trigger.mock.calls.find(
-      ([fn]) => fn === 'secrets::import',
-    )
+    const importCall = call.mock.calls.find(([fn]) => fn === 'secrets::import')
     expect(importCall?.[1]).toMatchObject({
       name: 'ANTHROPIC_API_KEY',
       source: 'login_shell',
@@ -172,7 +170,7 @@ describe('SecretKeyField', () => {
       'Saved as plain text in configuration',
     )
     await act(async () => button('Move to secrets store').click())
-    const setCall = trigger.mock.calls.find(([fn]) => fn === 'secrets::set')
+    const setCall = call.mock.calls.find(([fn]) => fn === 'secrets::set')
     expect(setCall?.[1]).toMatchObject({ value: 'sk-ant-plain-text-key' })
     expect(onChange).toHaveBeenCalledWith('secret://ANTHROPIC_API_KEY')
   })
@@ -184,7 +182,7 @@ describe('SecretKeyField', () => {
   })
 
   it('offers to start the secrets worker again when it is not running', async () => {
-    trigger.mockRejectedValue(new Error('function_not_found: secrets::get'))
+    call.mockRejectedValue(new Error('function_not_found: secrets::get'))
     await render()
     expect(container.textContent).toContain('is not running')
     button('Start the secrets worker')
@@ -204,13 +202,13 @@ describe('SecretKeyField', () => {
     )
     expect(container.textContent).toContain('env://ANTHROPIC_API_KEY')
     await act(async () => button('Use variable').click())
-    const access = trigger.mock.calls.find(([fn]) => fn === 'secrets::access')
+    const access = call.mock.calls.find(([fn]) => fn === 'secrets::access')
     expect(access?.[1]).toEqual({
       name: 'ANTHROPIC_API_KEY',
       consumers: ['llm-router'],
       store: 'env',
     })
-    expect(trigger.mock.calls.some(([fn]) => fn === 'secrets::set')).toBe(false)
+    expect(call.mock.calls.some(([fn]) => fn === 'secrets::set')).toBe(false)
     expect(onChange).toHaveBeenCalledWith('env://ANTHROPIC_API_KEY')
   })
 
@@ -224,7 +222,7 @@ describe('SecretKeyField', () => {
     if (!input) throw new Error('no key input')
     await type(input, 'sk-ant-pasted-into-dotenv-0000')
     await act(async () => button('Save to .env').click())
-    const set = trigger.mock.calls.find(([fn]) => fn === 'secrets::set')
+    const set = call.mock.calls.find(([fn]) => fn === 'secrets::set')
     expect(set?.[1]).toMatchObject({
       name: 'ANTHROPIC_API_KEY',
       value: 'sk-ant-pasted-into-dotenv-0000',
@@ -262,7 +260,7 @@ describe('SecretKeyField', () => {
     expect(container.textContent).toContain(
       "Environment variable · sk-ant…9f2c · from this project's .env",
     )
-    expect(trigger).toHaveBeenCalledWith(
+    expect(call).toHaveBeenCalledWith(
       'secrets::get',
       { name: 'ANTHROPIC_API_KEY', store: 'env' },
       expect.anything(),

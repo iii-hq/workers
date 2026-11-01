@@ -1,6 +1,6 @@
 ---
 name: design-console-ui
-description: Responsive UX and configuration forms for iii Console interfaces — native surfaces and runtime-injected worker pages, function and trigger-activity renderers, worker configuration forms, and provider-owned configuration or authentication flows — across phones, narrow split panes, and desktops. Use for archetype choice, pane-width behavior, phone drill-in, bottom sheets, state integrity, configuration editors, model/provider setup, touch and keyboard accessibility, and the validation matrix. Delivery lives in ade/injectable-ui; visual rules and every number live in ade/design-system.
+description: Responsive UX and configuration forms for iii Console interfaces — native surfaces and runtime-injected worker pages, function and observer-activity renderers, worker configuration forms, and provider-owned configuration or authentication flows — across phones, narrow split panes, and desktops. Use for archetype choice, pane-width behavior, phone drill-in, bottom sheets, state integrity, configuration editors, model/provider setup, touch and keyboard accessibility, and the validation matrix. Delivery lives in ade/injectable-ui; visual rules and every number live in ade/design-system.
 ---
 
 # Design iii Console UI
@@ -19,7 +19,7 @@ do not invent components, slots, or props.
 
 1. Inventory the behavior, data, states, actions, dirty drafts, async work, and existing constraints before changing markup.
 2. Choose one archetype and one information architecture for the primary task. Define the wide flow and the narrow flow separately.
-3. Decide whether the surface belongs to the Console itself, a full injected page, a function renderer, a trigger-activity renderer, a worker configuration form, a provider configuration form, or a compact chat slot (`ade/injectable-ui` › Slots).
+3. Decide whether the surface belongs to the Console itself, a full injected page, a function renderer, a observer-activity renderer, a worker configuration form, a provider configuration form, or a compact chat slot (`ade/injectable-ui` › Slots).
 4. Keep authoritative data, validation, persistence, and navigation guards in the host. Let an injected worker own presentation and worker-specific calls.
 5. Build from shared primitives and design tokens. Add the least scoped CSS needed for the domain.
 6. Exercise loading, empty, unavailable, unconfigured, dirty, saving, saved, error, reconnect, and stale-response states.
@@ -161,7 +161,7 @@ hot reload: `ade/injectable-ui`.
 
 - Hydrate once, subscribe to changes, and unsubscribe on cleanup
   (`useWorkerLive` from `@iii-dev/console-ui/hooks` does this for
-  fetch + trigger bindings + visible-tab poll).
+  fetch + observers + a re-read on tab focus).
 - Use request ids, abort controllers, or monotonic tokens so an old response
   cannot overwrite a newer selection or edited value. Invalidate
   connection-test results as soon as any tested field changes.
@@ -331,7 +331,7 @@ purpose-written labels, grouping, defaults, and reload semantics.
 
 ## Validate the result
 
-Static and delivery checks (build, lint, manifest, hot reload, trigger
+Static and delivery checks (build, lint, manifest, hot reload, observer
 renderer fallthrough): `ade/injectable-ui` › Testing. For screenshots and
 drive-through of one page, open it alone at `<url>/#/worker/<scope>[/<page-id>]` (`url` from `console::status`)
 (no workspace, shared layout untouched); slots outside the page need the

@@ -11,14 +11,21 @@ listener, while at the boundary it:
   `is_function_allowed`: forbidden > scoped grant > allowed > infrastructure
   carve-out > `expose_functions` > deny), and the namespace a connection may
   declare,
-- **gates trigger bindings** to functions the session may actually invoke,
+- **gates observers**: an observer needs the session to be allowed to call
+  both the function it observes and its target, and the frames a worker
+  exchanges about the observers of its own functions pass for those functions
+  only ([Observers](#observers)),
 - **namespaces** a session's registrations behind `function_registration_prefix`,
-- runs **middleware** and the three **registration hooks**, and
-- **rewrites the results of the eight `engine::*` discovery functions** so a
+- runs **middleware** and the two **registration hooks** (functions and
+  observers), and
+- **rewrites the results of the six `engine::*` discovery functions** so a
   caller only ever sees the surface it is allowed to invoke,
-- **pins identities**: a proxied worker registers as `rbac-proxy:<declared
-  name>`, and an `engine::*` call is forwarded only as a direct call (a queued
-  one is refused), so a session never runs anything as a trusted worker, and
+- **pins identities**: a proxied worker registers as
+  `rbac-proxy:<prefix>::<declared name>` (`rbac-proxy:<session id>:<declared
+  name>` for a session without `function_registration_prefix`), and an
+  `engine::*` call is
+  forwarded only as a direct call (a queued one is refused), so a session
+  never runs anything as a trusted worker or as another prefix's worker, and
 - **forwards only the frame types it knows, and only text frames from the
   client**: anything else, a binary frame included, is dropped, so a protocol
   addition stays closed until the proxy learns to gate it.
@@ -40,7 +47,7 @@ Full design: [`tech-specs/2026-06-rbac-proxy-worker/`](https://github.com/iii-hq
 ## Install
 
 ```bash
-iii trigger compose::add worker=rbac-proxy
+iii call compose::add worker=rbac-proxy
 ```
 
 Requires a trusted engine listener with **no** `rbac` block (the proxy is the
@@ -74,8 +81,7 @@ middleware_function_id: my-project::middleware-function
 rbac:
   auth_function_id: my-project::auth-function
   on_function_registration_function_id: my-project::on-function-reg
-  on_trigger_registration_function_id: my-project::on-trigger-reg
-  on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+  on_observer_registration_function_id: my-project::on-observer-reg
   expose_functions:
     - match("api::*")        # wildcard, anchored both ends, * = any run of chars
     - match("*::public")
@@ -89,8 +95,20 @@ Namespaces work as in the engine's RBAC: a rule answers in the namespace it
 names, `default` when it names none. The auth function may return scoped
 grants (`namespaces: { orders: ["svc::*"] }`); their keys are then the only
 namespaces a connection may declare, and `allowed_functions` applies in
-`default` only. `on_observer_registration_function_id` is accepted (so an
-engine `rbac` block copies over unchanged) but not called yet; see below.
+`default` only.
+
+The registration hooks are the engine's, with the engine's input and answer:
+
+| Hook | Input | An object answer may replace |
+|---|---|---|
+| `on_function_registration_function_id` | `{ function_id, description, metadata, namespace, private, observable, args_format?, context }` | `function_id`, `description`, `metadata`, `private`, `observable`, `args_format` |
+| `on_observer_registration_function_id` | `{ observer_id, function_id, namespace, args, filters, target_function_id, target_namespace, metadata, context }` | `function_id`, `target_function_id`, `args`, `filters`, `metadata` |
+
+A hook that throws or answers anything but an object denies: a denied
+function registration is dropped, as the engine drops it, and a denied
+observer is refused with `FORBIDDEN`. Hooks see bare ids (before the session
+prefix). `rbac` keys of entries stored before 0.26 are ignored with one
+`warn` each, naming the setting to use, so such an entry loads.
 
 A call through the middleware waits up to 610 s for it (a middleware that
 forwards with its own timeout should use 600 s or less), and a connection that
@@ -101,22 +119,89 @@ bind failure — the previous listener *and* config are kept); everything else
 (`engine_url`, `rbac.*`, `middleware_function_id`, `expose_worker_internals`)
 takes effect on the next connection.
 
-## iii 0.25 observe
+## Observers
 
-The proxy does not support observers yet, and the engine behind it gates none
-of them for a proxied connection, so it keeps them off:
+Workers behind the proxy observe functions and host observable functions as
+they do against the engine. The engine runs observers for a proxied
+connection with no RBAC session, so the proxy gates every observe frame:
 
-- it removes `observe.v1` / `local-dispatch.v1` from what the worker declares
-  and what the engine answers, so a 0.25 SDK speaks the 0.24 protocol
-  (`observe()` fails with `UNSUPPORTED`, nothing runs in-process);
-- it refuses `observe` (`UNSUPPORTED`) and owner deliveries (`activation`),
-  drops the other observe messages, removes the SDK's `caller` /
-  `observe_depth` claims from calls and the `observe` descriptor from
-  registrations (keeping only `allow: false`), and refuses
-  `engine::observers::*`.
+- **Features.** `observe.v1`, `observe.v2` and `local-dispatch.v1` are kept
+  in what the worker declares and what the engine answers. With
+  `middleware_function_id` set, `functionregistered` reaches the worker with
+  `local_dispatch: false` for every function except the ones the connection
+  registered `private: true`: a call that runs in-process never reaches the
+  middleware, and the connection's own calls of a private function skip it
+  (see **Registrations**). `large-messages.v1` is removed (the proxy forwards
+  text frames only).
+- **Observing.** An `observe` runs `on_observer_registration_function_id`,
+  then needs the session to be allowed to call both the observed function and
+  the target, each in the namespace it names. The session's own
+  registrations pass and resolve to their prefixed ids. Refused with
+  `FORBIDDEN`: an `engine::*` target (an observer's target runs with no
+  session behind it), and as the observed function the infrastructure
+  carve-out, the discovery functions, `engine::observers::*` and the engine
+  events whose calls list functions, workers or observers
+  (`engine::on-functions-changed`, `engine::on-workers-changed`,
+  `engine::on-observers-changed`). The `Observed` envelope iii delivers for
+  an observer the connection created names the observed function without the
+  prefix; a call through that observer reaches the target with the payload
+  as the host sent it. A refusal of an `observe` under an id whose earlier
+  `observe` waits for the engine's answer goes out right after that answer,
+  so the worker hears the answers in the order it sent the observes. Each
+  `observeresult` answers the oldest unanswered `observe` under its id, and a
+  refusal is that `observe`'s final answer. An observer is the connection's
+  once the engine accepts it, unless the connection's `unobserve` of the id
+  followed its `observe`. A refusal also sends the engine an `unobserve` of
+  the id, unless the worker sent one after that `observe` or observes the id
+  again: a `Reattach` gives the connection the observers of the worker's
+  previous connection with no RBAC check, and the replay of one the session
+  may no longer have is refused here (or, rewritten otherwise by the
+  registration hook, by the engine).
+- **Hosting.** `functionregistered`, `observeradded`, `observerremoved`,
+  `observerack`, `invocationsobserved` and `localinvocationstats` pass for the
+  functions the connection registered, with the session prefix removed toward
+  the worker and applied toward the engine. A call through an observer
+  (`iii.call({ observer, payload })`) passes for an observer the engine
+  announced to the connection as the host of its function; any other gets
+  `NOT_FUNCTION_OWNER`. `invocationresult.matched` and `delivered`, and
+  `output_is_input`, pass as sent, and the engine checks them.
+- **Registrations.** `private`, `observable` and `args_format` on
+  `registerfunction` pass to the engine. The connection's calls of its own
+  private functions skip the middleware, which runs on the proxy's control
+  connection, a connection a private function refuses: they run in-process
+  once `functionregistered` offers `local_dispatch`, and go straight to the
+  engine otherwise.
+- **Back on a new connection.** An `observe` that names the id of a
+  suspended observer replaces it when it comes from a connection under the
+  same worker name in the same namespace (the observe v2 rule for a worker
+  that restarts). The worker name carries the session prefix, so a restarted
+  worker under the same prefix takes its observers back (a queue consumer
+  keeps its backlog), and an `observe` of the id from a session under another
+  prefix gets `OBSERVER_ID_CONFLICT` until the grace period ends. A session
+  without a prefix declares `rbac-proxy:<session id>:<declared name>`, with
+  the id the proxy gives each connection: nothing else tells two such
+  sessions apart, so a session declaring another's name neither shuts it out
+  (one live worker per name) nor takes its suspended observers. Its own
+  reconnect keeps them by `Reattach`; an `observe` under its id from a new
+  session is another worker's.
+- **Call chains.** A `caller` a worker sets on a call or a report is kept only
+  when it names a call the engine routed to that connection and the
+  connection has not answered yet; the proxy writes it from that call, so a
+  worker cannot place its calls in another worker's call chain.
+- **Discovery.** `engine::observers::list` and `engine::observers::get` show
+  the observers the connection created and the ones whose observed function
+  and target it may call, with the prefix removed. `engine::observers::dispose`
+  disposes only observers the connection created.
 
-Workers behind the proxy keep `registerTrigger`, which the 0.25 engine still
-serves. Details: [`protocol-interception.md § iii 0.25 observe`](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-rbac-proxy-worker/protocol-interception.md#iii-025-observe).
+Frame types the iii protocol does not have, including the binding messages
+of SDKs before 0.26, are dropped with one `warn` per connection and frame
+type, naming the replacement.
+
+Every function is observable unless it is registered `observable: false`.
+The auth function receives the upgrade's headers, bearer tokens included, and
+the middleware and the hooks receive payloads and session context: register
+them with `observable: false`. Details:
+[`protocol-interception.md § Observers`](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-06-rbac-proxy-worker/protocol-interception.md#observers).
 
 > **Security.** Only the proxy's RBAC port should face untrusted networks.
 > Set `auth_function_id`: with none, every upgrade is refused. The stored
@@ -124,12 +209,25 @@ serves. Details: [`protocol-interception.md § iii 0.25 observe`](https://github
 
 ## Functions
 
-- `rbac-proxy::status` — read-only health/identity probe (bound host/port, the
-  credential-redacted engine URL, whether RBAC is enabled, live connection
-  count, version).
-- `rbac-proxy::on-config-change`, `rbac-proxy::on-functions-available` —
-  internal trigger handlers (config hot reload and catalog-cache invalidation);
-  never agent-callable (denied in `iii-permissions.yaml`).
+| Function | Input | Output |
+|---|---|---|
+| `rbac-proxy::status` | `{}` | `{ host, port, engine_url, rbac_enabled, active_connections, version }` |
+
+`rbac-proxy::status` is a read-only health and identity probe: the bound
+host and port, the upstream engine URL with any `user:pass@` redacted,
+whether an auth function is configured, the live connection count and the
+worker version.
+
+The proxy hosts no observable event source. Two internal functions are the
+targets of its own observers; both are never agent-callable (denied in
+`iii-permissions.yaml`) and answer `{ ok: true }`:
+
+| Function | Observes | Receives | Does |
+|---|---|---|---|
+| `rbac-proxy::on-config-change` | `configuration::on-updated`, filters `{ "input.id": { "$eq": <config id> }, "input.event_type": { "$eq": "configuration:updated" } }`, `deliver: output` | the `ConfigurationEvent` | re-reads the entry with `configuration::get` (the event itself is ignored) and applies it; the proxy also reloads once when the observer becomes active, for an update made during boot |
+| `rbac-proxy::on-functions-changed` | `engine::on-functions-changed`, `capture: []` | the `Observed` envelope, without payloads | invalidates the discovery catalog cache (a 5 s TTL bounds staleness either way) |
+
+The config id is `rbac-proxy`, or `III_CONFIG_NAME` when set.
 
 ## Local development & testing
 
@@ -139,13 +237,14 @@ UPDATE_GOLDENS=1 cargo test  # regenerate tests/golden/ after an intentional sur
 ```
 
 `tests/integration.rs` boots a real `iii` engine + the proxy and drives a
-downstream worker through the proxy port (exposed call, forbidden call,
-forbidden trigger binding, channel round-trip, filtered discovery, a call in
-another namespace, `observe`). The engine is `III_BIN` or the `iii` on `PATH`,
+downstream worker through the proxy port (exposed call, forbidden call, an
+observer with a forbidden target, channel round-trip, filtered discovery, a
+call in another namespace, an accepted observer, an engine event that cannot
+be observed). The engine is `III_BIN` or the `iii` on `PATH`,
 started from a temporary directory on its own port (49381; the proxy on
 49382), never the default 49134. It **self-skips** when there is no `iii`
 binary, a port is taken, or the proxy does not come up (e.g. the
 `configuration` worker is not deployed).
 
-`tests/observe_protocol.rs` runs iii 0.25's observe wire fixtures (vendored in
+`tests/observe_protocol.rs` runs iii's observe wire fixtures (vendored in
 `tests/fixtures/protocol/observe/`) through the interceptor.

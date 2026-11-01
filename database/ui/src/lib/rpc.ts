@@ -70,7 +70,7 @@ export const OPTIONAL_FNS: readonly DbFunction[] = [
 ]
 
 async function call<T>(host: Host, fn: DbFunction, payload: Record<string, unknown>, schema: z.ZodType<T>): Promise<T> {
-  const raw = await host.iii.trigger<unknown>(fn, payload)
+  const raw = await host.iii.call<unknown>(fn, payload)
   const parsed = schema.safeParse(raw)
   if (!parsed.success) {
     throw new Error(`unexpected response shape from ${fn}`)
@@ -522,8 +522,8 @@ const executeResponseSchema = z.object({
 export type ExecuteResponse = z.infer<typeof executeResponseSchema>
 
 /** Ad-hoc write SQL from the editor. Goes through `database::execute` — the
-    same surface agents use, so policy and `database::row-changed` both see
-    it. */
+    same surface agents use, so policy and `database::on-row-changed` both
+    see it. */
 export async function execSql(host: Host, db: string, sql: string): Promise<ExecuteResponse> {
   return call(host, DB.execute, { db, sql }, executeResponseSchema)
 }
@@ -912,7 +912,7 @@ export type TestConnectionResult = z.infer<typeof testConnectionSchema>
 
 /** Probe a draft connection before it is saved. `ok: false` is data, not an error. */
 export async function testConnection(host: Host, payload: Record<string, unknown>): Promise<TestConnectionResult> {
-  const raw = await host.iii.trigger<unknown>(DB.testConnection, payload, {
+  const raw = await host.iii.call<unknown>(DB.testConnection, payload, {
     timeoutMs: 40_000,
   })
   const parsed = testConnectionSchema.safeParse(raw)

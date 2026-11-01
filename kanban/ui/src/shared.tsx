@@ -183,7 +183,8 @@ export type ConfigInfo = {
   columns: Column[]
   priorities: string[]
   agents_path_resolved: string
-  subscribers: { change: number; comment: number }
+  /** How many observers `kanban::on-change` and `kanban::on-comment` have. */
+  observers: { change: number; comment: number }
 }
 
 export type ChangeEvent = {
@@ -196,7 +197,12 @@ export type ChangeEvent = {
   at: string
 }
 
-/** The 'kanban:change' event that names no ticket: the configuration was reloaded. */
+/** Called after every ticket write, and with `config.updated` after a configuration reload. */
+export const CHANGE_FN = 'kanban::on-change'
+/** Called once per comment created. */
+export const COMMENT_FN = 'kanban::on-comment'
+
+/** The 'kanban::on-change' event that names no ticket: the configuration was reloaded. */
 export const CONFIG_EVENT = 'config.updated'
 
 export const COLUMNS_CONFIGURATION_ID = 'kanban'
@@ -206,7 +212,7 @@ export const RELEASES_PAGE_ID = 'kanban-releases'
 export const PROJECTS_PAGE_ID = 'kanban-projects'
 
 /**
- * Project and release writes fire no 'kanban:change' event. Pages that make one dispatch this window event
+ * Project and release writes call no 'kanban::on-change'. Pages that make one dispatch this window event
  * (same tab) so open boards and pickers read the plan again; other tabs catch up on their next read.
  */
 export const PLAN_CHANGED_EVENT = 'kanban:plan-changed'
@@ -216,44 +222,44 @@ export function announcePlanChange(): void {
 }
 
 export const api = {
-  board: (iii: ExtensionIii) => iii.trigger<BoardData>('kanban::board::get', {}),
-  config: (iii: ExtensionIii) => iii.trigger<ConfigInfo>('kanban::config::info', {}),
+  board: (iii: ExtensionIii) => iii.call<BoardData>('kanban::board::get', {}),
+  config: (iii: ExtensionIii) => iii.call<ConfigInfo>('kanban::config::info', {}),
   agents: (iii: ExtensionIii) =>
-    iii.trigger<{ agents: AgentProfile[]; source: string; error?: string }>('kanban::agent::list', {}),
-  ticket: (iii: ExtensionIii, id: string) => iii.trigger<Ticket>('kanban::ticket::get', { id }),
+    iii.call<{ agents: AgentProfile[]; source: string; error?: string }>('kanban::agent::list', {}),
+  ticket: (iii: ExtensionIii, id: string) => iii.call<Ticket>('kanban::ticket::get', { id }),
   create: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>('kanban::ticket::create', payload),
+    iii.call<Ticket>('kanban::ticket::create', payload),
   update: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>('kanban::ticket::update', payload),
-  move: (iii: ExtensionIii, payload: Record<string, unknown>) => iii.trigger<Ticket>('kanban::ticket::move', payload),
+    iii.call<Ticket>('kanban::ticket::update', payload),
+  move: (iii: ExtensionIii, payload: Record<string, unknown>) => iii.call<Ticket>('kanban::ticket::move', payload),
   remove: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>('kanban::ticket::delete', payload),
+    iii.call<Ticket>('kanban::ticket::delete', payload),
   restore: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<Ticket>('kanban::ticket::restore', payload),
+    iii.call<Ticket>('kanban::ticket::restore', payload),
   comment: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<{ comment: Comment; ticket: Ticket }>('kanban::comment::create', payload),
-  links: (iii: ExtensionIii, id: string) => iii.trigger<TicketLinks>('kanban::ticket::links', { id }),
+    iii.call<{ comment: Comment; ticket: Ticket }>('kanban::comment::create', payload),
+  links: (iii: ExtensionIii, id: string) => iii.call<TicketLinks>('kanban::ticket::links', { id }),
   projects: (iii: ExtensionIii, includeArchived = true) =>
-    iii.trigger<{ projects: ProjectView[] }>('kanban::project::list', { include_archived: includeArchived }),
+    iii.call<{ projects: ProjectView[] }>('kanban::project::list', { include_archived: includeArchived }),
   createProject: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ProjectView>('kanban::project::create', payload),
+    iii.call<ProjectView>('kanban::project::create', payload),
   updateProject: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ProjectView>('kanban::project::update', payload),
-  archiveProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>('kanban::project::archive', { id }),
-  restoreProject: (iii: ExtensionIii, id: string) => iii.trigger<ProjectView>('kanban::project::restore', { id }),
-  releases: (iii: ExtensionIii) => iii.trigger<{ releases: ReleaseView[] }>('kanban::release::list', {}),
+    iii.call<ProjectView>('kanban::project::update', payload),
+  archiveProject: (iii: ExtensionIii, id: string) => iii.call<ProjectView>('kanban::project::archive', { id }),
+  restoreProject: (iii: ExtensionIii, id: string) => iii.call<ProjectView>('kanban::project::restore', { id }),
+  releases: (iii: ExtensionIii) => iii.call<{ releases: ReleaseView[] }>('kanban::release::list', {}),
   createRelease: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ReleaseView>('kanban::release::create', payload),
+    iii.call<ReleaseView>('kanban::release::create', payload),
   updateRelease: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ReleaseView>('kanban::release::update', payload),
+    iii.call<ReleaseView>('kanban::release::update', payload),
   /** `move_open_to`: a release id, `null` to take not-done tickets out of any release; required when some aren't done. */
   shipRelease: (iii: ExtensionIii, payload: { id: string; move_open_to?: string | null }) =>
-    iii.trigger<{ release: ReleaseView; moved: TicketSummary[] }>('kanban::release::ship', payload),
-  reopenRelease: (iii: ExtensionIii, id: string) => iii.trigger<ReleaseView>('kanban::release::reopen', { id }),
+    iii.call<{ release: ReleaseView; moved: TicketSummary[] }>('kanban::release::ship', payload),
+  reopenRelease: (iii: ExtensionIii, id: string) => iii.call<ReleaseView>('kanban::release::reopen', { id }),
   deleteRelease: (iii: ExtensionIii, id: string) =>
-    iii.trigger<{ deleted: boolean }>('kanban::release::delete', { id }),
+    iii.call<{ deleted: boolean }>('kanban::release::delete', { id }),
   convertLabel: (iii: ExtensionIii, payload: Record<string, unknown>) =>
-    iii.trigger<ConvertResult>('kanban::label::convert', payload),
+    iii.call<ConvertResult>('kanban::label::convert', payload),
 }
 
 type Listener = (event: ChangeEvent) => void
@@ -272,13 +278,9 @@ function hubInit(iii: ExtensionIii): void {
       }
     }
   })
-  const offTrigger = iii.registerTrigger({
-    type: 'kanban:change',
-    function_id: `${handlerId}::${iii.browserId}`,
-    config: {},
-  })
+  const offObserver = iii.observe(CHANGE_FN, `${handlerId}::${iii.browserId}`)
   hubTeardown = () => {
-    offTrigger()
+    offObserver()
     offHandler()
   }
 }

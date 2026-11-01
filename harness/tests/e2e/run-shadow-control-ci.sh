@@ -124,7 +124,7 @@ wait_for_engine() {
   local response
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
     kill -0 "$engine_pid" 2>/dev/null || fail "iii engine exited before becoming ready"
-    response=$("$iii_bin" trigger engine::workers::list --port "$engine_port" --json '{}' 2>/dev/null || true)
+    response=$("$iii_bin" call engine::workers::list --port "$engine_port" --json '{}' 2>/dev/null || true)
     jq -e '.workers != null' <<<"$response" >/dev/null 2>&1 && return 0
     sleep 1
   done
@@ -137,13 +137,13 @@ wait_for_functions() {
   deadline=$((SECONDS + wait_seconds))
   stable_since=""
   while ((SECONDS < deadline)); do
-    response=$("$iii_bin" trigger engine::functions::list --port "$engine_port" \
+    response=$("$iii_bin" call engine::functions::list --port "$engine_port" \
       --json '{"include_internal":true}' 2>/dev/null || true)
     missing=$(jq -r --argjson required "$required" \
       '(.functions // [] | map(.function_id)) as $available | ($required - $available) | join(" ")' \
       <<<"$response" 2>/dev/null || printf 'function discovery failed')
     if [[ -z "$missing" ]] && timeout --signal=TERM --kill-after=2s 5 \
-      "$iii_bin" trigger state::list --port "$engine_port" \
+      "$iii_bin" call state::list --port "$engine_port" \
       --json '{"scope":"harness_e2e_execution"}' >/dev/null 2>&1; then
       [[ -n "$stable_since" ]] || stable_since=$SECONDS
       if ((SECONDS - stable_since >= stack_settle_seconds)); then
@@ -190,7 +190,7 @@ install_exact_stack() {
 }
 
 capture_workers() {
-  "$iii_bin" trigger engine::workers::list --port "$engine_port" --json '{}' >"$project_dir/workers.json"
+  "$iii_bin" call engine::workers::list --port "$engine_port" --json '{}' >"$project_dir/workers.json"
 }
 
 verify_target_harness_runtime() {
@@ -308,7 +308,7 @@ capture_workers
 verify_target_harness_runtime
 
 failure_phase=materialization
-"$iii_bin" trigger e2e::scenarios-list --port "$engine_port" \
+"$iii_bin" call e2e::scenarios-list --port "$engine_port" \
   --json "$(jq -cn --argjson seed "$seed" '{seed:$seed}')" >"$artifact_dir/catalog.json"
 python3 "$contract_tool" materialize \
   --contract "$contract_path" \
@@ -317,7 +317,7 @@ python3 "$contract_tool" materialize \
 
 failure_phase=execution
 timeout --signal=TERM --kill-after=30s "$admission_timeout_seconds" \
-  "$iii_bin" trigger e2e::run --port "$engine_port" \
+  "$iii_bin" call e2e::run --port "$engine_port" \
   --json "$(jq -c . "$artifact_dir/run-request.json")" >"$artifact_dir/accepted.json"
 remote_execution_id=$(jq -er '.execution_id | select(type == "string" and length > 0)' "$artifact_dir/accepted.json")
 printf '%s\n' "$remote_execution_id" >"$artifact_dir/remote-execution-id.txt"
@@ -326,7 +326,7 @@ started_at=$SECONDS
 poll_index=0
 while true; do
   timeout --signal=TERM --kill-after=30s 60 \
-    "$iii_bin" trigger e2e::status --port "$engine_port" \
+    "$iii_bin" call e2e::status --port "$engine_port" \
     --json "$(jq -cn --arg execution_id "$remote_execution_id" '{execution_id:$execution_id}')" \
     >"$artifact_dir/status.json"
   jq -e --arg id "$remote_execution_id" '.execution_id == $id' "$artifact_dir/status.json" >/dev/null
@@ -341,17 +341,17 @@ done
 
 failure_phase=results
 timeout --signal=TERM --kill-after=30s 120 \
-  "$iii_bin" trigger e2e::results-get --port "$engine_port" \
+  "$iii_bin" call e2e::results-get --port "$engine_port" \
   --json "$(jq -cn --arg execution_id "$remote_execution_id" '{execution_id:$execution_id}')" \
   >"$artifact_dir/results.json"
 jq -e --arg id "$remote_execution_id" '.execution_id == $id' "$artifact_dir/results.json" >/dev/null
 
 # This proves the archive contract while the runner is alive. GitHub Artifact,
 # not this ephemeral local storage, is the D0 retention boundary.
-if "$iii_bin" trigger e2e::archive --port "$engine_port" \
+if "$iii_bin" call e2e::archive --port "$engine_port" \
   --json "$(jq -cn --arg execution_id "$remote_execution_id" '{execution_id:$execution_id,retention_class:"longitudinal"}')" \
   >"$artifact_dir/archive.json" 2>"$artifact_dir/logs/archive.log"; then
-  "$iii_bin" trigger e2e::archive-head --port "$engine_port" \
+  "$iii_bin" call e2e::archive-head --port "$engine_port" \
     --json "$(jq -cn --arg execution_id "$remote_execution_id" '{execution_id:$execution_id}')" \
     >"$artifact_dir/archive-head.json" 2>>"$artifact_dir/logs/archive.log" || true
 fi

@@ -2,7 +2,7 @@
 //! system reports changes in the project directory (inotify, FSEvents or
 //! ReadDirectoryChangesW, through `notify`'s recommended watcher — never its
 //! polling fallback), and each burst of events naming `.env` re-reads the
-//! shared variables once. `secrets::changed` then carries what changed.
+//! shared variables once. `secrets::on-changed` then carries what changed.
 //!
 //! The directory is watched rather than the file: an editor that saves by
 //! writing a new file and renaming it over `.env` replaces the inode a

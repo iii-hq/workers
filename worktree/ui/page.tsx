@@ -1,14 +1,16 @@
 /**
  * Entry for the worktree worker's injected console UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/page.js and served over
- * the `console:script` trigger (see src/ui.rs). The stylesheet is its own
- * asset: ../styles.css ships over `console:style` as worktree/styles.css —
+ * an observer of `console::ui::asset` with `kind: 'script'` (see src/ui.rs).
+ * The stylesheet is its own asset: ../styles.css ships with `kind: 'style'`
+ * as worktree/styles.css —
  * the console mounts and link-swaps it, styles-before-scripts on boot.
  *
  * `setup(host)` registers one contribution:
  * - src/page/ — the `worktree` page: a live repo → worktree → session
  *   topology graph with a per-worktree detail panel, reading the live worker
- *   over `worktree::list` and refreshing on the six lifecycle trigger types.
+ *   over `worktree::list` and refreshing on the six `worktree::on-*` lifecycle
+ *   functions it observes.
  *   Read-only on purpose: create / claim / land stay in agent + CLI flows.
  *
  * Registrations go through `host` so the loader disposes them on hot

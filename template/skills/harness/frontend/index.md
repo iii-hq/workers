@@ -14,8 +14,8 @@ over `iii-browser-sdk`). They are not about UI injected into the ADE console;
 that is the `ade-worker-design` skill and the Frontend Engineer's work on an ADE worker.
 
 - `iii-browser-sdk` — make the app an iii worker: `registerWorker`,
-  `registerFunction`, `trigger`, `registerTrigger`, state and channels. The
-  installed `.d.mts` is the contract.
+  `registerFunction`, `call`, `observe` and the observer hooks, state and
+  channels. The installed `.d.mts` is the contract.
 - `react` — the render, state and effect model; state placement; composition,
   Suspense and transitions.
 - `vite` — config, modes and env, dev proxy, pre-bundling, code splitting,

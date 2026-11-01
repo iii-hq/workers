@@ -110,7 +110,7 @@ class TestHost {
     this.saved = []
     this.opened = []
     this.focusRequests = []
-    /** sub → { trigger, config } */
+    /** sub → { fn, args, filters }: the observers the app holds. */
     this.subscriptions = new Map()
     this.storage = new Map(Object.entries(o.storage ?? {}))
     /** The cards: `{ inst, name, params, reqId }` (reqId of the navPush that made it, or null). */
@@ -391,10 +391,9 @@ class TestHost {
 
   // ── Requests ──────────────────────────────────────────────────────────────
 
-  /** The host's policy: functions `<ns>::…`; trigger types `<ns>::…` or `<ns>:…`; never `iii::` or `engine::`. */
-  _allowed(id, kind = 'call') {
-    const prefix = kind === 'call' ? `${this.ns}::` : `${this.ns}:`
-    return typeof id === 'string' && id.startsWith(prefix) && !/^(iii|engine)::/.test(id)
+  /** The host's policy: calls and observers name functions `<ns>::…`; never `iii::` or `engine::`. */
+  _allowed(id) {
+    return typeof id === 'string' && id.startsWith(`${this.ns}::`) && !/^(iii|engine)::/.test(id)
   }
 
   _respond(reqId, ok, value) {
@@ -448,9 +447,8 @@ class TestHost {
         )
       }
       case 'on':
-        if (!this._allowed(args.trigger, 'bind'))
-          return this._error(reqId, 'forbidden', `${ns} may only bind ${ns}:… or ${ns}::… triggers`)
-        this.subscriptions.set(args.sub, { trigger: args.trigger, config: args.config ?? {} })
+        if (!this._allowed(args.fn)) return this._error(reqId, 'forbidden', `${ns} may only observe ${ns}::… functions`)
+        this.subscriptions.set(args.sub, { fn: args.fn, args: args.args ?? {}, filters: args.filters ?? {} })
         return this._respond(reqId, true, null)
       case 'off':
         this.subscriptions.delete(args.sub)
@@ -663,11 +661,15 @@ class TestHost {
     await this.settle()
   }
 
-  /** Delivers `payload` to every subscription bound to `type`; resolves with how many got it. */
-  async emitTrigger(type, payload) {
+  /**
+   * A call of `fn` whose output is `payload`: delivers it to every observer
+   * of `fn` the app holds (their args and filters are recorded, not
+   * evaluated); resolves with how many got it.
+   */
+  async emitObserved(fn, payload) {
     let n = 0
     for (const [sub, s] of this.subscriptions) {
-      if (s.trigger !== type) continue
+      if (s.fn !== fn) continue
       this._enqueue([9, sub, payload ?? null])
       n++
     }
@@ -772,7 +774,7 @@ class TestHost {
    * The person types `text` while the VM runs its next turn: the edit
    * reaches the host before the message of that turn (so a write in it
    * carries an old count and is dropped), and its `text` entry goes in the
-   * turn after. Drive the turn with the next action (a trigger, a tick).
+   * turn after. Drive the turn with the next action (an observed call, a tick).
    */
   typeWhileBusy(target, text) {
     const { id, type } = this.find(target)

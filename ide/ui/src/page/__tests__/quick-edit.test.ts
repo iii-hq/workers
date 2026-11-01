@@ -18,9 +18,9 @@ const request = (overrides: Partial<CodeEditorQuickEditRequest> = {}): CodeEdito
   ...overrides,
 })
 
-const hostWith = (trigger: (id: string, payload?: Record<string, unknown>) => unknown, composerModel?: string | null) =>
+const hostWith = (respond: (id: string, payload?: Record<string, unknown>) => unknown, composerModel?: string | null) =>
   ({
-    iii: { trigger: vi.fn(async (id: string, payload?: Record<string, unknown>) => trigger(id, payload)) },
+    iii: { call: vi.fn(async (id: string, payload?: Record<string, unknown>) => respond(id, payload)) },
     chat: { composerModel: () => composerModel ?? null },
   }) as unknown as Host
 

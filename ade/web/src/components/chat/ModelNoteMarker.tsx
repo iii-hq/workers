@@ -45,18 +45,18 @@ export function ModelNoteMarker({
         open={open}
         onOpenChange={setOpen}
         className={cn(
-          '@container trigger-activity-collapsible',
-          !open && 'trigger-activity-collapsible--compact',
+          '@container observer-activity-collapsible',
+          !open && 'observer-activity-collapsible--compact',
         )}
       >
         <CollapsibleCardTrigger
-          className="group trigger-activity-collapsible__trigger select-none"
+          className="group observer-activity-collapsible__trigger select-none"
           aria-label={`${open ? 'Hide' : 'Show'} what the model was told`}
         >
           <div className="flex w-full min-w-0 items-center gap-2">
             {/* The kind glyph sits in the status slot, drawn like the Check
-                a settled trigger shows: same box, size and stroke, so the
-                row lines up with the trigger rows around it. */}
+                a settled call shows: same box, size and stroke, so the
+                row lines up with the activity rows around it. */}
             <span
               aria-hidden="true"
               className="activity-status-icon"

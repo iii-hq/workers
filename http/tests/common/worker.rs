@@ -6,9 +6,9 @@
 //! started (and live) within the test that uses it. The shared engine client
 //! is runtime-independent and is reused across tests.
 //!
-//! Tests must boot the worker *before* registering a backend trigger so the
-//! `http` trigger type exists when the binding arrives, making delivery to the
-//! freshly-registered handler live (no reliance on replay into a new table).
+//! An observer of `http::on-request` is `pending` until the worker registers
+//! the function, then active once its route is in the table: tests boot the
+//! worker, observe, and wait for the route (`crate::common::wait_for_route`).
 
 use std::sync::Arc;
 

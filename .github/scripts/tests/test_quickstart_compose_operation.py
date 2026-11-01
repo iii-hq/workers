@@ -120,10 +120,10 @@ def test_fetches_snapshot_through_compose_operation(monkeypatch):
         (
             [
                 "/tmp/iii",
-                "trigger",
+                "call",
                 "compose::operation",
-                "--port",
-                "49134",
+                "--engine",
+                "ws://127.0.0.1:49134",
                 "--timeout-ms",
                 "10000",
                 "--json",
@@ -137,6 +137,7 @@ def test_fetches_snapshot_through_compose_operation(monkeypatch):
             },
         )
     ]
+    assert "--port" not in calls[0][0]
 
 
 def test_reports_cli_failure_without_accepting_stdout(monkeypatch):

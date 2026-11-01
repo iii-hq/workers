@@ -679,7 +679,7 @@ async fn probe_sqlite(url: &str) -> Result<String, String> {
             let conn = rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?;
             return version(&conn);
         }
-        let Some(path) = crate::triggers::sqlite_watch::sqlite_file_path(&url) else {
+        let Some(path) = crate::row_changes::sqlite_watch::sqlite_file_path(&url) else {
             return Err("unreadable sqlite url".into());
         };
         // Open WITHOUT the create flag: a probe must not leave a database

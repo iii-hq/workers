@@ -13,13 +13,13 @@ Workers may optionally ship a canonical overview file:
 The file is lean on purpose. Inputs, outputs, JSON schemas, and worked examples
 live in the API reference — agents fetch them with `iii list functions` and
 `iii get function info` (or the equivalent SDK calls). The skill doc explains
-intent, lists what's available, and covers trigger binding when the worker emits
-events.
+intent, lists what's available, and covers observing the worker's events when it
+has any.
 
 ## Recommended SKILL.md structure
 
 When present, a worker `SKILL.md` has YAML frontmatter and four body sections
-(the last one only when the worker exposes a trigger type).
+(the last one only when the worker hosts event functions).
 
 ### Frontmatter
 
@@ -48,8 +48,8 @@ is relevant.
 
 ### `## When to Use`
 
-Bullet list of concrete situations that should trigger reading this skill.
-Mirror the tone of other iii skills — specific triggers, not generic filler.
+Bullet list of concrete situations in which an agent should read this skill.
+Mirror the tone of other iii skills — specific situations, not generic filler.
 
 ### `## Boundaries`
 
@@ -91,34 +91,38 @@ Optional: a one-sentence note on cross-cutting behaviour that isn't obvious
 from function names alone (e.g. "reads expand `${VAR:default}` placeholders
 against the live process env").
 
-### `## Reactive triggers` (when applicable)
+### `## Observing events` (when applicable)
 
-Include this section when the worker registers a custom trigger type. Skip it
-entirely for workers that only expose functions.
+Include this section when the worker hosts event functions: private functions
+it calls when something happens, whose handler returns the event. Skip it
+entirely for workers that only expose functions to call.
 
 This section is **not** deferrable to the API reference — agents need to
-understand *why* to bind a trigger and *how* the two-step registration works
-(handler function + trigger registration).
+understand *why* to observe an event function and *how* an observer is set up
+(a target function plus `iii.observe`).
 
 Cover:
 
-1. **Why bind** — what reactive behaviour you get vs. polling or imperative
+1. **Why observe** — what reactive behaviour you get vs. polling or imperative
    follow-up calls after a write.
-2. **When to bind** — concrete scenarios; when *not* to bind (e.g. the writer
+2. **When to observe** — concrete scenarios; when *not* to (e.g. the writer
    already has the new value in its return payload).
-3. **How to bind** — the two-step pattern:
-   - Register a handler with `registerFunction`.
-   - Register the trigger with `registerTrigger({ type, function_id, config })`.
-4. **Config knobs that matter** — filters, conditions, TTL interactions, or
-   adapter-specific behaviour (file watch, bridge forwarding, etc.) described
-   in prose or a small table. Do not paste full event JSON — point to
-   `get function info` on the trigger type or handler for the payload schema.
-5. **One minimal binding example** — enough to show the registration shape,
-   not a full end-to-end scenario.
+3. **How to observe** — the two steps:
+   - Register the target with `registerFunction`.
+   - Observe the event function with
+     `iii.observe({ function_id, args, filters }, target)`.
+4. **Args and filters that matter** — the args the function takes (only when
+   the worker sets something up per observer: a schedule, a route, a watch) and
+   the input fields to filter on, plus TTL interactions or adapter-specific
+   behaviour (file watch, bridge forwarding, etc.), in prose or a small table.
+   Do not paste full event JSON — point to `get function info` on the event
+   function for its `args_format` and event schema.
+5. **One minimal observe example** — enough to show the shape, not a full
+   end-to-end scenario.
 
-Do **not** duplicate the event payload field-by-field if the trigger type is
-registered with `call_request_format` / `trigger_request_format` in the engine.
-Say what the event represents and let the API reference supply the schema.
+Do **not** duplicate the event payload field-by-field: the event function's
+`response_format` carries it in the engine. Say what the event represents and
+let the API reference supply the schema.
 
 ## What to leave out
 
@@ -129,7 +133,7 @@ Say what the event represents and let the API reference supply the schema.
 | `# Inputs`, `# Outputs` | `get function info` → request/response JSON Schema |
 | `# Worked example` | Agent composes calls from schemas |
 | `# Related` | Function list + agent reasoning |
-| `# Side effects`, `# Caching`, `# Rendering rules` | API reference + trigger/event schemas where relevant |
+| `# Side effects`, `# Caching`, `# Rendering rules` | API reference + event function schemas where relevant |
 
 ## Style checklist
 
@@ -159,7 +163,7 @@ next to other workers.
 
 ## When to Use
 
-- Concrete situation that should trigger using this worker.
+- Concrete situation in which to use this worker.
 - Another concrete situation.
 
 ## Boundaries
@@ -173,9 +177,9 @@ next to other workers.
 - `my-worker::foo::get` — one-line purpose.
 - `my-worker::foo::list` — one-line purpose.
 
-## Reactive triggers
+## Observing events
 
-Register a `my-worker` trigger when a function should run automatically every
+Observe `my-worker::on-change` when a function should run automatically every
 time … — without polling `my-worker::get`.
 
 Reach for it when:
@@ -184,34 +188,34 @@ Reach for it when:
 - …
 
 If you only need the new value inside the same function that wrote it, call
-`my-worker::set` and use its return value — register a trigger only when a
-*different* worker should react.
+`my-worker::set` and use its return value — observe only when a *different*
+worker should react.
 
-### How to bind
+### How to observe
 
-1. Register a handler: `registerFunction('consumer::on-my-worker-change', handler)`.
-2. Register the trigger:
+1. Register the target: `registerFunction('consumer::on-my-worker-change', handler)`.
+2. Observe the event function:
 
 ```typescript
-iii.registerTrigger({
-  type: 'my-worker',
-  function_id: 'consumer::on-my-worker-change',
-  config: {
-    // optional filters — see get function info on the trigger type
+iii.observe(
+  {
+    function_id: 'my-worker::on-change',
+    filters: { 'input.id': { $eq: 'orders' } }, // see get function info for the event fields
+    deliver: 'output',                          // the target receives the event
   },
-})
+  'consumer::on-my-worker-change',
+)
 ```
 
-Mutations that fire triggers: … Reads do **not** fire triggers.
+Mutations call `my-worker::on-change`: … Reads do **not**.
 
-For the event payload shape, call `get function info` on the trigger type or
-handler function id.
+For the event shape, call `get function info` on `my-worker::on-change`.
 ````
 
 ## Before you ship
 
 1. Read a peer worker's `SKILL.md` (if one exists) and match its tone.
 2. List every function id — cross-check against `iii list functions` for the worker.
-3. If the worker has a trigger type, verify the binding example matches the
-   registered `trigger_request_format`.
+3. If the worker hosts event functions, verify the observe example matches each
+   function's registered `args_format` and event fields.
 4. Confirm nothing duplicates JSON schemas already returned by `get function info`.

@@ -116,11 +116,11 @@ interface TestsPage {
 }
 
 export function createEvalApi(host: Host): EvalApi {
-  const trigger = <T>(functionId: string, payload: Record<string, unknown>, timeoutMs = TIMEOUT_MS) =>
-    host.iii.trigger<T>(functionId, payload, { timeoutMs })
+  const call = <T>(functionId: string, payload: Record<string, unknown>, timeoutMs = TIMEOUT_MS) =>
+    host.iii.call<T>(functionId, payload, { timeoutMs })
 
   const configure: EvalApi['configure'] = (enabled, model, codeRepository, dailyCostCapUsd) =>
-    trigger('eval::configure', {
+    call('eval::configure', {
       enabled,
       model: { ...model },
       ...(codeRepository ? { code_repository: codeRepository } : {}),
@@ -129,33 +129,33 @@ export function createEvalApi(host: Host): EvalApi {
 
   return {
     monitor(checkProviders = false) {
-      return trigger('eval::config', { check_providers: checkProviders })
+      return call('eval::config', { check_providers: checkProviders })
     },
     configure,
     toggle(config) {
       return configure(!config.enabled, config.model, config.code_repository, config.daily_cost_cap_usd)
     },
     analyze(sessionId, reanalyze = false) {
-      return trigger('eval::analyze-session', { session_id: sessionId, reanalyze })
+      return call('eval::analyze-session', { session_id: sessionId, reanalyze })
     },
     async list(observationKey) {
-      const response = await trigger<{ evaluations: AnalysisRecord[] }>('eval::list', {
+      const response = await call<{ evaluations: AnalysisRecord[] }>('eval::list', {
         limit: 200,
         ...(observationKey ? { observation_key: observationKey } : {}),
       })
       return response.evaluations
     },
     result(evaluationId) {
-      return trigger('eval::result', { evaluation_id: evaluationId })
+      return call('eval::result', { evaluation_id: evaluationId })
     },
     cancel(evaluationId) {
-      return trigger('eval::cancel', { evaluation_id: evaluationId })
+      return call('eval::cancel', { evaluation_id: evaluationId })
     },
     delete(evaluationId) {
-      return trigger('eval::delete', { evaluation_id: evaluationId })
+      return call('eval::delete', { evaluation_id: evaluationId })
     },
     attachValidation(request) {
-      return trigger(
+      return call(
         'eval::attach-validation',
         {
           evaluation_id: request.evaluationId,
@@ -168,7 +168,7 @@ export function createEvalApi(host: Host): EvalApi {
       )
     },
     reproduce(evaluationId, suggestionIndex, params) {
-      return trigger(
+      return call(
         'eval::reproduce',
         {
           evaluation_id: evaluationId,
@@ -183,24 +183,24 @@ export function createEvalApi(host: Host): EvalApi {
       )
     },
     review(evaluationId, suggestionIndex, change) {
-      return trigger('eval::review', {
+      return call('eval::review', {
         evaluation_id: evaluationId,
         suggestion_index: suggestionIndex,
         ...change,
       })
     },
     reviews(evaluationId) {
-      return trigger('eval::reviews', evaluationId ? { evaluation_id: evaluationId } : {})
+      return call('eval::reviews', evaluationId ? { evaluation_id: evaluationId } : {})
     },
     startValidation(evaluationId, suggestionIndex, params) {
-      return trigger(
+      return call(
         'eval::start-validation',
         { evaluation_id: evaluationId, suggestion_index: suggestionIndex, ...params },
         START_VALIDATION_TIMEOUT_MS,
       )
     },
     resolveValidation(evaluationId, suggestionIndex, params) {
-      return trigger('eval::start-validation', {
+      return call('eval::start-validation', {
         evaluation_id: evaluationId,
         suggestion_index: suggestionIndex,
         ...params,
@@ -208,18 +208,18 @@ export function createEvalApi(host: Host): EvalApi {
       })
     },
     recurrence(evaluationId, suggestionIndex) {
-      return trigger('eval::recurrence', { evaluation_id: evaluationId, suggestion_index: suggestionIndex })
+      return call('eval::recurrence', { evaluation_id: evaluationId, suggestion_index: suggestionIndex })
     },
     e2eExecutions(ids) {
       // The E2E keeps 100 detailed executions: every run that can be attached.
-      return trigger('e2e::dashboard::executions-list', ids ? { ids } : { limit: 100 })
+      return call('e2e::dashboard::executions-list', ids ? { ids } : { limit: 100 })
     },
     async e2eScenarios() {
       const scenarios: E2eCatalogScenario[] = []
       let cursor: string | null | undefined
       let pages = 0
       do {
-        const response = await trigger<TestsPage>('e2e::dashboard::tests-list', {
+        const response = await call<TestsPage>('e2e::dashboard::tests-list', {
           limit: SCENARIO_PAGE_LIMIT,
           ...(cursor ? { cursor } : {}),
         })
@@ -232,7 +232,7 @@ export function createEvalApi(host: Host): EvalApi {
       return scenarios
     },
     async models() {
-      const response = await trigger<{ models: CatalogModel[] }>('router::models::list', {})
+      const response = await call<{ models: CatalogModel[] }>('router::models::list', {})
       return response.models
     },
   }

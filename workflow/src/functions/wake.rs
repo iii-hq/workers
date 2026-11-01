@@ -1,6 +1,6 @@
 //! `workflow::wake` — fast-wake a run when one of its nodes finishes.
 //!
-//! Bound to `harness::turn-completed` (no session filter, so we receive every
+//! Observes `harness::on-turn-completed` (no session filter, so we receive every
 //! terminal turn in the engine and discard non-workflow ones). A finished node
 //! re-ticks its run within milliseconds instead of waiting for the next cron
 //! sweep. Best-effort: events are at-least-once / unordered / lost if the worker
@@ -13,11 +13,12 @@ use crate::functions::{start, Deps};
 
 pub const WAKE_ID: &str = "workflow::wake";
 pub const WAKE_DESC: &str =
-    "Internal: on a harness turn-completed event, wake the owning run with a tick. \
+    "Internal: on a harness::on-turn-completed event, wake the owning run with a tick. \
      Best-effort latency optimization; the cron sweep is the durable backstop. \
      Not called directly.";
 
-/// Harness `turn-completed` payload; only `session_id` is read.
+/// The `harness::on-turn-completed` event (delivered as output); only
+/// `session_id` is read.
 // Lenient (no `deny_unknown_fields`): turn_id/status/result/timestamp/parent are ignored.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct WakeEvent {

@@ -168,7 +168,7 @@ impl PartialAccumulator {
             }
             // Mid-call view: replace the open call block's placeholder args
             // with every value observable so far. The incremental parser also
-            // exposes an open string, so agent_trigger's function and
+            // exposes an open string, so agent_call's function and
             // description no longer wait for their closing quote.
             Some(OpenBlock::Call { raw, stream }) if !raw.is_empty() => {
                 if let Some(ContentBlock::FunctionCall { arguments, .. }) = out
@@ -332,7 +332,7 @@ mod tests {
         let mut with_call = base();
         with_call.content = vec![ContentBlock::FunctionCall {
             id: "c1".into(),
-            function_id: "agent_trigger".into(),
+            function_id: "agent_call".into(),
             arguments: json!({}),
         }];
         let mut acc = PartialAccumulator::default();
@@ -364,7 +364,7 @@ mod tests {
         let mut with_call = base();
         with_call.content = vec![ContentBlock::FunctionCall {
             id: "c1".into(),
-            function_id: "agent_trigger".into(),
+            function_id: "agent_call".into(),
             arguments: json!({}),
         }];
         let mut acc = PartialAccumulator::default();
@@ -387,7 +387,7 @@ mod tests {
         let mut with_call = base();
         with_call.content = vec![ContentBlock::FunctionCall {
             id: "c1".into(),
-            function_id: "agent_trigger".into(),
+            function_id: "agent_call".into(),
             arguments: json!({}),
         }];
         let mut acc = PartialAccumulator::default();

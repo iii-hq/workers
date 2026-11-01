@@ -17,7 +17,7 @@ pub struct ActInput {
     #[serde(default)]
     pub click_count: Option<u32>,
     /// Element ref from `browser::elements` (`n4`), `browser::snapshot`
-    /// (`e3`), `browser::dom::read` (`d7`) or `browser::picked` (`p1`). A
+    /// (`e3`), `browser::dom::read` (`d7`) or `browser::on-picked` (`p1`). A
     /// click, type or select by ref is refused when the element is disabled,
     /// hidden or covered. Refs die on navigation; re-read the page after.
     #[serde(default)]

@@ -196,7 +196,7 @@ vi.mock('@iii-dev/console-ui', () => ({
   Switch: (props: ComponentProps<'input'>) => <input {...props} type="checkbox" />,
 }))
 
-const host = { iii: { trigger: vi.fn() } } as unknown as Host
+const host = { iii: { call: vi.fn() } } as unknown as Host
 
 const DETAIL_FOCUS = ['databases', 'primary', 'url']
 

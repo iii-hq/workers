@@ -12,8 +12,8 @@
 //! location that has no file yet simply starts from the default layout.
 //! Writes are atomic (temp file + rename) so a browser re-reading the file
 //! through `console::workspace::get` never observes a half-written document.
-//! Every save and re-point bumps [`WorkspaceStore::subscribe`], which the
-//! `console::workspace::changed` trigger turns into a ring to each browser.
+//! Every save and re-point bumps [`WorkspaceStore::subscribe`], which
+//! `console::workspace::on-changed` turns into a ring to each browser.
 //! Every save also stamps the document's [`revision`], so a read-modify-write
 //! can tell whether another writer moved it in between.
 

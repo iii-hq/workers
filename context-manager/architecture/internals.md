@@ -15,11 +15,11 @@ in tests.
 
 | Path | Responsibility |
 |---|---|
-| [src/main.rs](../src/main.rs) | Boot: CLI (`--config` seed, `--url`, `--manifest`), engine connect, **register the config schema (+ optional seed) with the `configuration` worker and fetch the authoritative value** (boot-fatal on failure), build adapters from it, `register_all`, then bind the `configuration` hot-reload trigger; Ctrl+C → `shutdown_async`. |
+| [src/main.rs](../src/main.rs) | Boot: CLI (`--config` seed, `--url`, `--manifest`), engine connect, **register the config schema (+ optional seed) with the `configuration` worker and fetch the authoritative value** (boot-fatal on failure), build adapters from it, `register_all`, observe `router::models::on-changed` for the budget-cache flush, then observe `configuration::on-updated` for hot reload; Ctrl+C → `shutdown_async`. |
 | [src/lib.rs](../src/lib.rs) | Module tree only. |
 | [src/types.rs](../src/types.rs) | Wire contracts shared with the agentic family: `Role`, `ContentBlock` (5 variants), `AgentMessage` (4 roles), `ModelInput`, `ModelLimits`, `Model`, `ThinkingLevel`, `AgentFunction`. Serde renames keep the JSON byte-compatible with the TypeScript spec and session-manager's Rust copy. |
 | [src/config.rs](../src/config.rs) | `WorkerConfig` (13 budget/prune/cap/lease knobs incl. `lease_dir`, `~/`-expanded via `resolved_lease_dir`), each with a serde default; `deny_unknown_fields` so a typo'd key fails loudly. Also the JSON-Schema source (`json_schema`/`to_json`/`from_json`, derived `JsonSchema`) and the env-expanding seed parser (`from_file`/`from_yaml`); `boot_signature` names the one structural field (`lease_dir`). |
-| [src/configuration.rs](../src/configuration.rs) | The `configuration` worker client: `register_config` (schema + seed), `fetch_config` (authoritative, env-expanded), the `ConfigCell` snapshot + `apply_config`, the `FsLeaseStore` rebuild-and-swap on a `lease_dir` change, and the `context::on-config-change` trigger handler. |
+| [src/configuration.rs](../src/configuration.rs) | The `configuration` worker client: `register_config` (schema + seed), `fetch_config` (authoritative, env-expanded), the `ConfigCell` snapshot + `apply_config`, the `FsLeaseStore` rebuild-and-swap on a `lease_dir` change, and the `context::on-config-change` handler that observes `configuration::on-updated`. |
 | [src/error.rs](../src/error.rs) | `ContextError` → `code: message` on the bus (`context/invalid_request`, `context/model_unresolved`, `context/state`). The two spec strings are kept verbatim. |
 | [src/ports.rs](../src/ports.rs) | The four seams: `ModelResolver`, `Summarizer`, `LeaseStore`, `Clock`, plus the `Deps` struct every handler receives. |
 | [src/manifest.rs](../src/manifest.rs) | `--manifest` JSON for the registry publish pipeline; `default_config` mirrors `WorkerConfig::default()` field-for-field (unit-tested). |
@@ -60,8 +60,8 @@ flowchart LR
   reproduces the exact production code path without an engine.
 - **Config is a hot-swappable snapshot.** `Deps.config` is a `ConfigCell`
   (`Arc<RwLock<Arc<WorkerConfig>>>`) sourced from the `configuration` worker;
-  handlers call `deps.config().await` once per request. A `configuration:updated`
-  trigger ([configuration.rs](../src/configuration.rs)) re-fetches and swaps it
+  handlers call `deps.config().await` once per request. An observer of
+  `configuration::on-updated` ([configuration.rs](../src/configuration.rs)) re-fetches and swaps it
   live for the per-call tuning knobs (including `summarizer_timeout_ms`, which
   the `RouterSummarizer` reads from the snapshot per call) and rebuilds + swaps
   the `FsLeaseStore` on a `lease_dir` change — no field requires a restart.
@@ -121,7 +121,7 @@ Load-bearing details:
    untouched").
 2. **The model-facing view excludes `role: "custom"` and is cloned.** Custom messages have
    no provider wire mapping, so they are filtered out of `working` *before*
-   counting (a huge custom entry must not trigger a phantom overflow) and never
+   counting (a huge custom entry must not cause a phantom overflow) and never
    appear in the returned `messages`. `view_to_orig: Vec<usize>` records, for
    each surviving message, its index in the original request array — so
    `tail_start_index` can be reported against the **request** array the caller
@@ -444,7 +444,7 @@ The four ports in [ports.rs](../src/ports.rs), production adapters in
   `stop` with `stop_reason: "error"`) fails. Empty result → `SummarizeError::Empty`.
 - `summarizer_timeout_ms` (default 320000) is the **outer** budget for the
   whole call and must exceed the router's own stream budget; `READER_DRAIN_MS`
-  is a 2s grace for the socket to drain after the trigger returns.
+  is a 2s grace for the socket to drain after the call returns.
 - Unroutable detection is string-sniffing the error (`function_not_found` /
   `not found` / `no function`) → `Unavailable`, which `compact` maps to
   `status: "overflow"` with `error_kind: "permanent"` logged. This is the
@@ -522,13 +522,13 @@ Boot and reload rules (`main.rs` / `configuration.rs`):
   `fetch_config` run over the live connection, and a failure aborts startup. A
   missing stored value seeds defaults (or the `--config` seed); a `null` value
   reads as defaults.
-- The config **hot-reloads — nothing requires a restart**: a
-  `configuration:updated` trigger re-fetches the authoritative value and swaps
+- The config **hot-reloads — nothing requires a restart**: each
+  `configuration:updated` event re-fetches the authoritative value and swaps
   the snapshot. `summarizer_timeout_ms` is read from the snapshot per call (the
   `RouterSummarizer` holds the `ConfigCell`); `lease_dir` is the one structural
   field — a change rebuilds the `FsLeaseStore` and swaps it in (a rebuild that
-  fails keeps the previous store + config, last-good). The handler ignores its
-  trigger payload and re-fetches, so a forged call can at most reload the
+  fails keeps the previous store + config, last-good). The handler ignores the
+  delivered event and re-fetches, so a forged call can at most reload the
   already-stored value.
 - A `--config` file is only a SEED for the first registration; an unparseable
   seed WARNS and is skipped (the authoritative value comes from the worker).
@@ -563,7 +563,7 @@ is one composition of them; the BDD world is another.
   in-memory lease store (+ "foreign lease", "unavailable"), and a manually
   advanced `FakeClock` to drive TTL expiry.
 - **`engine_roundtrip.feature`** is the proof that the registered wire surface
-  matches the handlers: real triggers, production adapters, `llm-router` absent
+  matches the handlers: real engine calls, production adapters, `llm-router` absent
   — i.e. the spec's degraded mode (limits fall back, prune/count work, compact
   overflows after a real filesystem lease acquire/release cycle).
 - Unit tests live next to what they pin: budget math in `budget.rs`, the
@@ -598,7 +598,7 @@ UPDATE_GOLDENS=1 cargo test --test schemas      # regenerate wire-schema goldens
   calls are unaffected.
 - **One summariser call per over-budget request if the caller doesn't persist.**
   The round trip (§8) is the fix; skipping it is correct but not cheap.
-- **`assemble`/`compact` can spend money.** They may trigger a summariser LLM
+- **`assemble`/`compact` can spend money.** They may start a summariser LLM
   call; `count-tokens` and `prune` never do. Deny the former two in
   cost-sensitive agent deployments (see [integration.md §9](integration.md)).
 - **Lease key is content-derived by default.** Two callers compacting the

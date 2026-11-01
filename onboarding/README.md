@@ -16,10 +16,29 @@ Three parts:
 
 - `learn-iii::tours::list` — every tour in curriculum order.
 - `learn-iii::tours::get` — one tour with all of its steps.
-- `learn-iii::progress::get` — the status of every step per tour, with the trigger evidence that closed it, plus the next tour to offer.
-- `learn-iii::steps::complete` — mark one step complete. Pass `fired` when a trigger closed it; its type and payload are kept as evidence. The first time a step closes, it is also announced on the `onboarding:steps:complete` topic (see Events).
+- `learn-iii::progress::get` — the status of every step per tour, with the observed event that closed it, plus the next tour to offer.
+- `learn-iii::steps::complete` — mark one step complete. Pass `fired` (`{ function_id, payload }`) when an observed event closed it; the observed function and the event are kept as evidence. The first time a step closes, it is also announced on the `onboarding:steps:complete` topic (see Events).
 - `learn-iii::steps::reset` — forget one tour and start it again.
 - `learn-iii::subscribe` — add an email address to the iii product-update list (the last step's signup box; the POST happens here, never in the browser).
+
+A step that waits on something carries a `condition`: an observe source the
+page observes from the browser with a per-tab target. The agent-finished steps
+observe `state::on-changed` with filters on `input.scope` (`learn-iii`) and
+`input.key` (`step_<id>_completed`); the first step observes
+`harness::on-turn-completed` and counts only turns of the tour's own chat. The
+page also observes `console::workspace::on-changed` to follow the layout, and
+the worker serves its page through one `console::ui::asset` observer per asset
+(`{ kind: 'script' | 'style', path }`).
+
+```js
+host.iii.observe(
+  {
+    function_id: 'state::on-changed',
+    filters: { 'input.scope': { $eq: 'learn-iii' }, 'input.key': { $eq: 'step_reactivity_completed' } },
+  },
+  `learn-iii::condition::learn-iii::reactivity::${host.iii.browserId}`,
+)
+```
 
 Progress is written with `state::update` and its ordered atomic ops, never
 `state::get` then `state::set`: two invocations can interleave around an
@@ -31,8 +50,8 @@ and the read drops nulls on the way out.
 ## Events
 
 Each closed step is published to the `onboarding:steps:complete` topic through the
-`queue` worker, so anything that follows a tour subscribes instead of reading
-this worker's state. The payload:
+`queue` worker, so anything that follows a tour subscribes to the topic and
+never reads this worker's state. The payload:
 
 ```json
 {
@@ -48,8 +67,28 @@ The step number is the 1-based position in the tour, read from the ordered
 step list. A step announces itself once per subject: a reload, or a second
 report from the agent, writes the same progress again but publishes nothing.
 
-Delivery is durable (`iii::durable::publish`, and subscribers bind the
-`durable:subscriber` trigger type): the message waits in the queue and is
-retried until a subscriber takes it, instead of being dropped when nothing is
-listening at that instant. The publish itself is best effort — a project
-without the `queue` worker logs the failure and still closes the step.
+Delivery is durable. The worker publishes with `iii::durable::publish`, and a
+subscriber observes `queue::on-message` with args
+`{ topic: 'onboarding:steps:complete' }` under a stable observer id:
+
+```typescript
+iii.observe(
+  { function_id: 'queue::on-message', args: { topic: 'onboarding:steps:complete' } },
+  'my-worker::on-step',
+  { id: 'my-worker::step-watch' },
+)
+```
+
+The `queue` worker keeps one durable queue per subscriber, keyed by its
+observer id. A step waits in that queue until the subscriber takes it, and
+a failed delivery is retried. A subscriber that restarts under the same
+worker name and observer id within the engine's grace period takes its queue
+back, with every step published while it was away; after that, the queue
+keeps what it holds for the next observer with that id (see
+[Subscribing](../queue/README.md#subscribing-queueon-message) in the `queue`
+worker's README). A subscriber that observes without an `id` gets a new
+observer id, and with it a new, empty queue, each time it starts. The
+engine's telemetry subscribes as `iii-telemetry::onboarding-step-watch`.
+
+The publish itself is best effort: a project without the `queue` worker logs
+the failure and still closes the step.

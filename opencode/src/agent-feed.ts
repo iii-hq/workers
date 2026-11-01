@@ -1,30 +1,37 @@
 /**
- * Owned event feeds: `opencode::agent-event` (translated AgentEvent frames)
- * and `opencode::raw-event` (verbatim OpenCode JSON events).
+ * Event feeds: `opencode::on-agent-event` (translated AgentEvent frames) and
+ * `opencode::on-raw-event` (verbatim OpenCode JSON events).
  *
- * Each feed is a trigger type this worker registers and serves. A consumer
- * binds it with `{ session_id, metadata? }` and receives one Void call per
- * frame of that session:
- * `{ session_id, event_id, seq, epoch, source, event }`. `seq` is contiguous
- * per (feed, session_id, epoch) from 0; `epoch` is a per-process uuid, so a
- * restart starts a new sequence. Frames are ephemeral: nothing is stored or
- * replayed, a consumer bound late never sees earlier frames. The durable
- * record of a turn is `opencode::status` / `opencode::sessions::list` and the
- * result `opencode::run` returns.
+ * Each feed is a private function this worker hosts and calls once per frame;
+ * its handler returns the frame. A consumer observes a feed with args
+ * `{ session_id }` and receives every frame of that session:
+ * `{ session_id, event_id, seq, epoch, source, event }`. iii delivers each
+ * frame to the observers filed under its session id (`onObserverMatch` by
+ * keys); a frame of a session nobody observes is not sent. `seq` is
+ * contiguous per (feed, session_id, epoch) from 0 and advances for every
+ * frame; `epoch` is a per-process uuid, so a restart starts a new sequence.
+ * Frames are ephemeral: nothing is stored or replayed, an observer added late
+ * never sees earlier frames. The durable record of a turn is
+ * `opencode::status` / `opencode::sessions::list` and the result
+ * `opencode::run` returns.
+ *
+ * A frame carries a copy of the event taken when it is emitted. A feed is a
+ * private function, and the SDK passes a private function's payload by
+ * reference (deep-frozen under NODE_ENV=development), so the copy keeps the
+ * caller's own objects, which it may still be mutating, out of the call.
  */
 
 import { randomUUID } from 'node:crypto';
-import { type IIIClient, TriggerAction } from 'iii-sdk';
+import { CallAction, type IIIClient, ObserveRejection } from 'iii-sdk';
 
-export const MAX_BINDINGS = 256;
+export const MAX_OBSERVERS = 256;
 export const MAX_SESSION_ID_LENGTH = 512;
-export const AGENT_EVENT_TRIGGER_TYPE = 'opencode::agent-event';
-export const RAW_EVENT_TRIGGER_TYPE = 'opencode::raw-event';
+export const ON_AGENT_EVENT_FN = 'opencode::on-agent-event';
+export const ON_RAW_EVENT_FN = 'opencode::on-raw-event';
 export const FEED_SOURCE = 'opencode';
 
-const CONFIG_KEYS = new Set(['session_id', 'metadata']);
-
-export type FeedConfig = { session_id: string; metadata?: Record<string, unknown> };
+/** What an observer of a feed passes: the session whose frames it receives. */
+export type FeedArgs = { session_id: string };
 
 export type FeedPayload = {
   session_id: string;
@@ -35,121 +42,126 @@ export type FeedPayload = {
   event: unknown;
 };
 
-type Binding = {
-  id: string;
-  function_id: string;
-  namespace?: string;
-  metadata?: unknown;
-  config: FeedConfig;
+/** `args_format` of both feeds; the engine rejects other args with `INVALID_ARGS`. */
+export const FEED_ARGS_FORMAT = {
+  type: 'object' as const,
+  properties: {
+    session_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: MAX_SESSION_ID_LENGTH,
+      description: 'The session whose frames this observer receives.',
+    },
+  },
+  required: ['session_id'],
+  additionalProperties: false,
 };
 
-/** Emit one frame; resolves to the number of consumers the frame was handed to. */
-export type Emit = (session_id: string, event: unknown) => Promise<number>;
+/** `request_format` and `response_format` of both feeds: the frame. */
+export const FEED_PAYLOAD_FORMAT = {
+  type: 'object' as const,
+  properties: {
+    session_id: { type: 'string' },
+    event_id: { type: 'string', description: '`<session_id>-<epoch>-<seq:08>`, unique per frame.' },
+    seq: {
+      type: 'integer',
+      minimum: 0,
+      description: 'Contiguous per (feed, session_id, epoch) from 0.',
+    },
+    epoch: { type: 'string', description: 'Per-process uuid.' },
+    source: { type: 'string', description: 'The agent: `opencode`.' },
+    event: { description: 'The AgentEvent frame, or the raw OpenCode JSON event.' },
+  },
+  required: ['session_id', 'event_id', 'seq', 'epoch', 'source', 'event'],
+};
 
-export type Feed = { emit: Emit; bindingCount: () => number };
+/** Emit one frame; resolves `true` when it was sent to the session's observers, `false` when nobody observes it. */
+export type Emit = (session_id: string, event: unknown) => Promise<boolean>;
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+export type Feed = { emit: Emit };
+
+/**
+ * The event as it is at emit time, sharing no object with the caller:
+ * `structuredClone`, or a JSON round trip (what the wire carries) for values
+ * it cannot clone, such as functions.
+ */
+export function snapshot<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value;
+  try {
+    return structuredClone(value);
+  } catch {
+    const text = JSON.stringify(value);
+    return (text === undefined ? undefined : JSON.parse(text)) as T;
+  }
 }
 
-/** Validate a binding config; throwing rejects the binding. */
-export function validateFeedConfig(typeId: string, raw: unknown): FeedConfig {
-  if (!isPlainObject(raw)) {
-    throw new Error(`${typeId}: config must be an object with a session_id`);
-  }
-  for (const key of Object.keys(raw)) {
-    if (!CONFIG_KEYS.has(key)) throw new Error(`${typeId}: unknown config key "${key}"`);
-  }
-  const sessionId = raw.session_id;
-  if (typeof sessionId !== 'string' || sessionId.length === 0) {
-    throw new Error(`${typeId}: session_id must be a non-empty string`);
-  }
-  if (sessionId.length > MAX_SESSION_ID_LENGTH) {
-    throw new Error(`${typeId}: session_id exceeds ${MAX_SESSION_ID_LENGTH} characters`);
-  }
-  if (raw.metadata === undefined) return { session_id: sessionId };
-  if (!isPlainObject(raw.metadata)) throw new Error(`${typeId}: metadata must be an object`);
-  return { session_id: sessionId, metadata: raw.metadata };
-}
-
-/** Register one owned feed trigger type and return its emitter. */
+/** Register one feed function and return its emitter. */
 export function createFeed(
   iii: IIIClient,
   opts: { id: string; source: string; description: string },
 ): Feed {
-  const bindings = new Map<string, Binding>();
   const seqBySession = new Map<string, number>();
   const epoch = randomUUID();
 
-  iii.registerTriggerType<unknown>(
-    { id: opts.id, description: opts.description },
-    {
-      async registerTrigger(binding) {
-        const config = validateFeedConfig(opts.id, binding.config);
-        if (!bindings.has(binding.id) && bindings.size >= MAX_BINDINGS) {
-          throw new Error(`${opts.id}: binding limit (${MAX_BINDINGS}) reached`);
-        }
-        bindings.set(binding.id, {
-          id: binding.id,
-          function_id: binding.function_id,
-          namespace: binding.namespace,
-          metadata: binding.metadata,
-          config,
-        });
-      },
-      async unregisterTrigger(binding) {
-        bindings.delete(binding.id);
-      },
-    },
-  );
+  const feed = iii
+    .registerFunction<FeedPayload, FeedPayload>(opts.id, (frame) => frame, {
+      description: opts.description,
+      request_format: FEED_PAYLOAD_FORMAT,
+      response_format: FEED_PAYLOAD_FORMAT,
+      args_format: FEED_ARGS_FORMAT,
+      private: true,
+    })
+    .onObserverAdded(() => {
+      if (feed.observers().length >= MAX_OBSERVERS) {
+        throw new ObserveRejection(
+          'OBSERVER_LIMIT',
+          `${opts.id}: observer limit (${MAX_OBSERVERS}) reached`,
+        );
+      }
+    })
+    .onObserverMatch({
+      observer: (obs) => String((obs.args as FeedArgs).session_id),
+      call: (call) => call.input.session_id,
+    });
 
-  async function emit(session_id: string, event: unknown): Promise<number> {
+  async function emit(session_id: string, event: unknown): Promise<boolean> {
     const seq = seqBySession.get(session_id) ?? 0;
     seqBySession.set(session_id, seq + 1);
-    const payload: FeedPayload = {
-      session_id,
-      event_id: `${session_id}-${epoch}-${String(seq).padStart(8, '0')}`,
-      seq,
-      epoch,
-      source: opts.source,
-      event,
-    };
-    let delivered = 0;
-    for (const binding of Array.from(bindings.values())) {
-      if (binding.config.session_id !== session_id) continue;
-      const metadata = binding.config.metadata ?? binding.metadata;
-      try {
-        await iii.trigger({
-          function_id: binding.function_id,
-          namespace: binding.namespace,
-          payload,
-          ...(metadata === undefined ? {} : { metadata }),
-          action: TriggerAction.Void(),
-        });
-        delivered++;
-      } catch (err) {
-        console.warn(`${opts.id}: delivery to ${binding.function_id} failed: ${String(err)}`);
-      }
+    if (!iii.isObserved(opts.id, { input: { session_id } })) return false;
+    const event_id = `${session_id}-${epoch}-${String(seq).padStart(8, '0')}`;
+    try {
+      const payload: FeedPayload = {
+        session_id,
+        event_id,
+        seq,
+        epoch,
+        source: opts.source,
+        event: snapshot(event),
+      };
+      await iii.call({ function_id: opts.id, payload, action: CallAction.Void() });
+      return true;
+    } catch (err) {
+      console.warn(`${opts.id}: frame ${event_id} was not sent: ${String(err)}`);
+      return false;
     }
-    return delivered;
   }
 
-  return { emit, bindingCount: () => bindings.size };
+  return { emit };
 }
 
-/** The worker's two feeds, each with its own per-session sequence. */
+/** The worker's two feeds, each with its own observers and per-session sequence. */
 export function createAgentFeeds(iii: IIIClient): { emit: Emit; emitRaw: Emit } {
   const agent = createFeed(iii, {
-    id: AGENT_EVENT_TRIGGER_TYPE,
+    id: ON_AGENT_EVENT_FN,
     source: FEED_SOURCE,
     description:
-      'Translated AgentEvent frames of one OpenCode session. Config: { session_id, metadata? }. Payload: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
+      'Translated AgentEvent frames of one OpenCode session. Private: observe it with args { session_id }. Event: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
   });
   const raw = createFeed(iii, {
-    id: RAW_EVENT_TRIGGER_TYPE,
+    id: ON_RAW_EVENT_FN,
     source: FEED_SOURCE,
     description:
-      'Raw OpenCode JSON events (verbatim `opencode run --format json` lines) of one session. Config: { session_id, metadata? }. Payload: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
+      'Raw OpenCode JSON events (verbatim `opencode run --format json` lines) of one session. Private: observe it with args { session_id }. Event: { session_id, event_id, seq, epoch, source, event }. Ephemeral: not stored or replayed.',
   });
   return { emit: agent.emit, emitRaw: raw.emit };
 }

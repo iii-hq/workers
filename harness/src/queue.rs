@@ -2,11 +2,11 @@
 //!
 //! The `queue` worker does not infer named function queues from enqueue calls.
 //! The harness therefore defines its turn queue after registering
-//! `harness::turn`, but before binding lifecycle triggers or announcing ready.
+//! `harness::turn`, but before observing lifecycle events or announcing ready.
 
 use std::time::Duration;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
@@ -23,7 +23,7 @@ const DEFINE_RETRY_BACKOFF_MS: u64 = 250;
 pub async fn ensure_turn_queue(iii: &IIIClient) -> Result<(), String> {
     ensure_queues_with(
         |payload| async move {
-            iii.trigger(TriggerRequest {
+            iii.call(CallRequest {
                 function_id: DEFINE_QUEUE_FUNCTION_ID.into(),
                 payload,
                 action: None,

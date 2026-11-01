@@ -30,7 +30,7 @@ interface TraceListRowProps {
   onHideFunction?: (functionId: string) => void
   /**
    * True while the trace is still receiving spans beyond its own root (e.g.
-   * a queue-triggered trace whose root closes instantly but whose children
+   * a queue-driven trace whose root closes instantly but whose children
    * run for seconds after) — pulses the status dot the same way a genuinely
    * pending root does, per `isTraceLive`.
    */

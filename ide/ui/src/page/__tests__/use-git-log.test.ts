@@ -1,4 +1,4 @@
-import type { Host } from '@iii-dev/console-ui'
+import type { Host, ObserveSource } from '@iii-dev/console-ui'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CommitDetails, LogFilter, RefsSnapshot } from '../git-log-window'
 import { detailsFor, useCommitDetails, useGitLog } from '../use-git-log'
@@ -49,9 +49,9 @@ vi.mock('../git-log-window', async (original) => ({
     sha === 'wedged' ? new Promise<never>(() => {}) : 'G',
 }))
 
-// The log binds the worker's repository feed; `fire` sends it an event.
+// The log observes the worker's repository feed; `fire` sends it an event.
 const feed = new Map<string, (payload: unknown) => void>()
-const bindings: Array<{ type: string; function_id: string; config: Record<string, unknown> }> = []
+const observers: Array<{ source: ObserveSource; target: string }> = []
 const host = {
   iii: {
     browserId: 'tab',
@@ -59,15 +59,16 @@ const host = {
       feed.set(functionId, handler)
       return () => feed.delete(functionId)
     },
-    registerTrigger: (input: (typeof bindings)[number]) => {
-      bindings.push(input)
-      return () => bindings.splice(bindings.indexOf(input), 1)
+    observe: (source: ObserveSource, target: string) => {
+      const observer = { source, target }
+      observers.push(observer)
+      return () => observers.splice(observers.indexOf(observer), 1)
     },
   },
 } as unknown as Host
 const fire = (changes: string[]) => {
-  for (const binding of bindings.filter((b) => b.type === 'shell::git-changed')) {
-    feed.get(binding.function_id.replace(/::tab$/, ''))?.({ path: binding.config.path, changes })
+  for (const observer of observers.filter((o) => o.source.function_id === 'shell::on-git-changed')) {
+    feed.get(observer.target.replace(/::tab$/, ''))?.({ path: observer.source.args?.path, changes })
   }
 }
 const snapshot = (signature: string): RefsSnapshot => ({
@@ -192,7 +193,9 @@ describe('the log', () => {
     const log = mount(() => useGitLog(host, '/watched', 0, active, {}, null), undefined)
     await settle()
     expect(git.refs).toBe(1)
-    expect(bindings.map((b) => [b.type, b.config])).toEqual([['shell::git-changed', { path: '/watched' }]])
+    expect(observers.map((o) => [o.source.function_id, o.source.args])).toEqual([
+      ['shell::on-git-changed', { path: '/watched' }],
+    ])
 
     // A commit in a terminal: a ref moved.
     git.signature = 'b'
@@ -208,7 +211,7 @@ describe('the log', () => {
     // Hidden, the log lets go of the feed.
     active = false
     log.rerender(undefined)
-    expect(bindings).toEqual([])
+    expect(observers).toEqual([])
     log.unmount()
   })
 })

@@ -10,9 +10,9 @@ import {
   runtimeJsonSchema,
 } from '../src/config.js';
 import {
-  bindConfigTrigger,
   ConfigChangeEventSchema,
   fetchRuntime,
+  observeConfigChanges,
   registerCursorConfig,
 } from '../src/configuration.js';
 import { MockIII } from './helpers.js';
@@ -85,13 +85,11 @@ describe('Cursor configuration', () => {
     process.env.III_CONFIG_NAME = 'cursor-team';
 
     await registerCursorConfig(iii.asClient());
-    expect(iii.triggerCalls.map((call) => call.function_id)).toEqual(['configuration::ensure']);
+    expect(iii.calls.map((call) => call.function_id)).toEqual(['configuration::ensure']);
     const runtime = await fetchRuntime(iii.asClient());
 
     expect(runtime.api_key).toBe('key_runtime');
-    const registration = iii.triggerCalls.find(
-      (call) => call.function_id === 'configuration::ensure',
-    );
+    const registration = iii.calls.find((call) => call.function_id === 'configuration::ensure');
     expect(registration?.payload).toMatchObject({
       id: 'cursor-team',
       name: 'Cursor',
@@ -105,8 +103,21 @@ describe('Cursor configuration', () => {
     const iii = new MockIII();
     const holder = { current: { ...defaultConfig(), api_key: 'key_old' } };
     iii.configValue = { ...defaultConfig(), api_key: 'key_first' };
-    await bindConfigTrigger(iii.asClient(), holder);
+    await observeConfigChanges(iii.asClient(), holder);
     expect(holder.current.api_key).toBe('key_first');
+    expect(iii.observed).toEqual([
+      {
+        source: {
+          function_id: 'configuration::on-updated',
+          filters: {
+            'input.id': { $eq: configId() },
+            'input.event_type': { $eq: 'configuration:updated' },
+          },
+          deliver: 'output',
+        },
+        target: 'cursor::on-config-change',
+      },
+    ]);
 
     const reload = iii.functions.get('cursor::on-config-change');
     expect(reload?.options.metadata).toEqual({ internal: true });
@@ -125,29 +136,29 @@ describe('Cursor configuration', () => {
     iii.configValue = null;
     await registerCursorConfig(iii.asClient(), seed);
     expect(
-      iii.triggerCalls.find((call) => call.function_id === 'configuration::ensure')?.payload,
+      iii.calls.find((call) => call.function_id === 'configuration::ensure')?.payload,
     ).toHaveProperty('initial_value', seed);
-    iii.triggerCalls.length = 0;
+    iii.calls.length = 0;
     iii.configValue = { ...defaultConfig(), workspace: '/compose' };
     await registerCursorConfig(iii.asClient(), seed);
     expect(
-      iii.triggerCalls.find((call) => call.function_id === 'configuration::ensure')?.payload,
+      iii.calls.find((call) => call.function_id === 'configuration::ensure')?.payload,
     ).toHaveProperty('initial_value', seed);
     expect(iii.configValue).toMatchObject({ workspace: '/compose' });
-    expect(iii.triggerCalls.map((call) => call.function_id)).toEqual(['configuration::ensure']);
+    expect(iii.calls.map((call) => call.function_id)).toEqual(['configuration::ensure']);
   });
 
   it('uses legacy registration immediately when ensure is unavailable', async () => {
     const iii = new MockIII();
     iii.ensureError = { code: 'function_not_found' };
     await registerCursorConfig(iii.asClient());
-    expect(iii.triggerCalls.map((call) => call.function_id)).toEqual([
+    expect(iii.calls.map((call) => call.function_id)).toEqual([
       'configuration::ensure',
       'configuration::get',
       'configuration::register',
     ]);
-    expect(iii.triggerCalls[1]?.payload).toMatchObject({ raw: true });
-    expect(iii.triggerCalls[2]?.payload).not.toHaveProperty('initial_value');
+    expect(iii.calls[1]?.payload).toMatchObject({ raw: true });
+    expect(iii.calls[2]?.payload).not.toHaveProperty('initial_value');
     expect(iii.configValue).toEqual(defaultConfig());
   });
 
@@ -156,9 +167,7 @@ describe('Cursor configuration', () => {
     const error = Object.assign(new Error('function_not_found'), { code: 'OTHER' });
     iii.ensureError = error;
     await expect(registerCursorConfig(iii.asClient())).rejects.toBe(error);
-    expect(iii.triggerCalls.every((call) => call.function_id === 'configuration::ensure')).toBe(
-      true,
-    );
+    expect(iii.calls.every((call) => call.function_id === 'configuration::ensure')).toBe(true);
   });
 
   it('validates configuration change events', () => {

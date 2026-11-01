@@ -8,14 +8,12 @@ use std::{
 };
 
 use async_trait::async_trait;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{IIIClient, TriggerAction};
+use iii_sdk::{CallAction, CallRequest, IIIClient};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::events::{
-    ActionChangedEventV1, ChangeFeed, ChangeKind, IiiChangeDeliverer, ReconciliationChangedEventV1,
-    RunChangedEventV1,
+    ActionChangedEventV1, ChangeFeed, ChangeKind, ReconciliationChangedEventV1, RunChangedEventV1,
 };
 use crate::{
     archive, AnalysisHandle, AnalysisPlan, ArchiveConfigV1, CreateRunOutcome, EnqueueRequest,
@@ -69,9 +67,7 @@ pub struct IiiRuntime {
 
 impl IiiRuntime {
     pub fn new(iii: Arc<IIIClient>) -> Self {
-        let change_feed = Arc::new(ChangeFeed::new(Arc::new(IiiChangeDeliverer::new(
-            iii.clone(),
-        ))));
+        let change_feed = Arc::new(ChangeFeed::new(iii.clone()));
         Self {
             iii,
             pending_index_repairs: Arc::new(Mutex::new(HashSet::new())),
@@ -85,11 +81,6 @@ impl IiiRuntime {
 
     pub fn private_state_is_ready(&self) -> bool {
         self.private_state_ready.load(Ordering::Acquire)
-    }
-
-    /// Binding tables and emitter behind this worker's change trigger types.
-    pub fn change_feed(&self) -> Arc<ChangeFeed> {
-        self.change_feed.clone()
     }
 
     pub async fn claim_private_state(&self) -> Result<(), SecurityScanError> {
@@ -299,11 +290,11 @@ impl IiiRuntime {
         &self,
         function_id: &str,
         payload: Value,
-        action: Option<TriggerAction>,
+        action: Option<CallAction>,
         timeout_ms: Option<u64>,
     ) -> Result<Value, SecurityScanError> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function_id.into(),
                 payload,
                 action,
@@ -555,41 +546,27 @@ impl IiiRuntime {
             .remove(run_id);
     }
 
-    /// Notifies `security-scan::run-changed` bindings. Callers invoke this
-    /// only after the run CAS swapped, so every notification describes a
-    /// committed record.
+    /// Calls `security-scan::on-run-changed`. Callers invoke this only after
+    /// the run CAS swapped, so every call describes a committed record.
     async fn emit_run_update(&self, run: &RunRecordV1) {
         self.change_feed
-            .emit(
-                ChangeKind::Run,
-                &run.repository,
-                &run.run_id,
-                &RunChangedEventV1::from(run),
-            )
+            .emit(ChangeKind::Run, &RunChangedEventV1::from(run))
             .await;
     }
 
-    /// Notifies `security-scan::action-changed` bindings after the action
-    /// CAS swapped.
+    /// Calls `security-scan::on-action-changed` after the action CAS swapped.
     async fn emit_action_update(&self, action: &crate::SecurityActionRecordV1) {
         self.change_feed
-            .emit(
-                ChangeKind::Action,
-                &action.repository,
-                &action.run_id,
-                &ActionChangedEventV1::from(action),
-            )
+            .emit(ChangeKind::Action, &ActionChangedEventV1::from(action))
             .await;
     }
 
-    /// Notifies `security-scan::reconciliation-changed` bindings after the
-    /// snapshot CAS swapped.
+    /// Calls `security-scan::on-reconciliation-changed` after the snapshot
+    /// CAS swapped.
     async fn emit_reconciliation_update(&self, snapshot: &ReconciliationSnapshotV1) {
         self.change_feed
             .emit(
                 ChangeKind::Reconciliation,
-                &snapshot.repository,
-                &snapshot.run_id,
                 &ReconciliationChangedEventV1 {
                     run_id: snapshot.run_id.clone(),
                     repository: snapshot.repository.clone(),

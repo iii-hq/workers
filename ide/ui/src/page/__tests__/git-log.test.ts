@@ -30,13 +30,13 @@ function reply(overrides: Partial<{ exit_code: number | null; stdout: string; st
 function hostAnswering(answer: (args: string[]) => ReturnType<typeof reply>) {
   const calls: string[][] = []
   const flagged: boolean[] = []
-  const trigger = vi.fn(async (_fn: string, payload: { args: string[] }) => {
+  const call = vi.fn(async (_fn: string, payload: { args: string[] }) => {
     const [first, ...rest] = payload.args
     flagged.push(first === '--no-optional-locks')
     calls.push(rest)
     return answer(rest)
   })
-  return { host: { iii: { trigger } } as unknown as Parameters<typeof gitLog>[0], calls, flagged }
+  return { host: { iii: { call } } as unknown as Parameters<typeof gitLog>[0], calls, flagged }
 }
 
 const SHA_A = 'a'.repeat(40)

@@ -7,8 +7,7 @@ use std::time::Duration;
 
 use iii_sdk::channel::{ChannelWriter, StreamChannelRef};
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, RegisterFunction};
+use iii_sdk::{register_worker, CallRequest, IIIClient, RegisterFunction};
 use llm_router::chat::chat::{ChatCall, ChatFnInput};
 use llm_router::config::entry::{register_entry, write_entry_value};
 use llm_router::register::register_router;
@@ -21,7 +20,7 @@ mod engine_fixture;
 use engine_fixture::*;
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Value {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.into(),
         payload,
         action: None,

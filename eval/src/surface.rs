@@ -10,6 +10,7 @@ use crate::contract::{
     StepRequestV1, StepResponseV1, SuggestionReviewV1, SweepEventV1, SweepResponseV1, WakeEventV1,
     WakeResponseV1,
 };
+use crate::events::{CompletedEventV1, ON_COMPLETED_FN};
 use crate::functions::{
     ANALYZE_SESSION_ID, ATTACH_VALIDATION_ID, CANCEL_ID, CONFIGURE_ID, CONFIG_ID, DELETE_ID,
     LIST_ID, RECURRENCE_ID, REPRODUCE_ID, RESULT_ID, REVIEWS_ID, REVIEW_ID, START_VALIDATION_ID,
@@ -55,5 +56,6 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<StepRequestV1, StepResponseV1>(STEP_ID),
         spec::<WakeEventV1, WakeResponseV1>(WAKE_ID),
         spec::<SweepEventV1, SweepResponseV1>(SWEEP_ID),
+        spec::<CompletedEventV1, CompletedEventV1>(ON_COMPLETED_FN),
     ]
 }

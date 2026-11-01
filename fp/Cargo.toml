@@ -17,9 +17,9 @@ name = "fp"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
+iii-sdk = "=0.26.0-rc.1"
 # Shared plumbing for the builtin `configuration` worker (seeding, retries,
-# NOT_FOUND semantics, serialized hot-reload, guidance binding slot).
+# NOT_FOUND semantics, serialized hot-reload, guidance observer slot).
 iii-config-client = { path = "../crates/config-client" }
 # Must stay on the same schemars major as iii-sdk so the derived schemas line up.
 schemars = "0.8"

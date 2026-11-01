@@ -100,7 +100,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    .system_prompt_regex("agent_trigger")
+                    .system_prompt_regex("agent_call")
                     .messages_exact([
                         Message::user(INITIAL_MESSAGE),
                         Message::function_call(
@@ -115,7 +115,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                         Message::assistant_text(ASSISTANT_TEXT, &model, 64, 24),
                         Message::user(USER_PAYLOAD),
                     ])
-                    .tools_subset([Tool::named("agent_trigger")]),
+                    .tools_subset([Tool::named("agent_call")]),
             )
             .respond(Response::text(USER_ACK, 72, 4)),
     )

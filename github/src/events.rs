@@ -1,30 +1,25 @@
-//! The `github::called` trigger type this worker emits, the subscriber
-//! registry behind it, and the summarizers that turn a call's argv + result
-//! into the short human strings the console activity feed renders.
+//! `github::on-called`, the private function this worker calls after every
+//! `github::*` function runs, and the summarizers that turn a call's argv +
+//! result into the short human strings the console activity feed renders.
 //!
-//! After every `github::*` function runs, [`run_and_emit`] fires a
-//! fire-and-forget `github::called` event (`TriggerAction::Void`) carrying the
-//! call and a bounded result summary. Subscribers (the console page) bind a
-//! trigger instance of the type with the standard two-step pattern; the engine
-//! routes each registration through [`CalledTriggerHandler`], which stashes the
-//! subscriber in [`SubscriberSet`]. Emission is best-effort: a slow or absent
-//! subscriber never blocks or fails the real call — the mirror of the
-//! `iii-directory` / `browser` worker fan-out.
+//! After every `github::*` function runs, [`run_and_emit`] calls
+//! `github::on-called` fire-and-forget (`CallAction::Void`) with the call and
+//! a bounded result summary, when anything observes it. Its handler returns
+//! the event, and iii delivers each call to every observer (the console page
+//! observes it with `deliver: 'output'`). Emission is best-effort: a slow or
+//! absent observer never blocks or fails the real call.
 
-use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
-use serde::Serialize;
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-/// The trigger type the console subscribes to for the activity feed.
-pub const CALLED: &str = "github::called";
+/// The function the console observes for the activity feed.
+pub const ON_CALLED_FN: &str = "github::on-called";
 
 /// Result/args summaries are bounded so a huge diff or body can never bloat the
 /// event past what the feed row needs.
@@ -47,9 +42,10 @@ const PREVIEW_STRING_BYTES: usize = 1024;
 /// stdout AND stderr together still fit the budget.
 const PREVIEW_STREAM_BYTES: usize = PREVIEW_MAX_BYTES / 2;
 
-/// One `github::called` event: the call that ran plus a short, human result
-/// summary. Serialized as the trigger payload; the console renders it directly.
-#[derive(Debug, Clone, Serialize)]
+/// One `github::on-called` event: the call that ran plus a short, human result
+/// summary. The function's handler returns it, so observers that deliver
+/// `output` receive it as is; the console renders it directly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CalledEvent {
     /// The `github::*` function id that ran.
     pub function_id: String,
@@ -77,137 +73,64 @@ pub struct CalledEvent {
     pub timestamp: String,
 }
 
-/// Thread-safe subscriber registry keyed by trigger-instance id. Cloned into
-/// the [`CalledTriggerHandler`] (mutates on register/unregister) and the
-/// [`CalledEmitter`] fan-out (iterates read-only).
-#[derive(Clone, Default)]
-pub struct SubscriberSet {
-    inner: Arc<Mutex<HashMap<String, String>>>,
-}
-
-impl SubscriberSet {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    fn insert(&self, id: String, function_id: String) {
-        self.lock().insert(id, function_id);
-    }
-
-    fn remove(&self, id: &str) {
-        self.lock().remove(id);
-    }
-
-    /// Snapshot of the current subscriber `function_id`s so the mutex is never
-    /// held across an await.
-    pub fn function_ids(&self) -> Vec<String> {
-        self.lock().values().cloned().collect()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-struct CalledTriggerHandler {
-    subscribers: SubscriberSet,
-}
-
-#[async_trait]
-impl TriggerHandler for CalledTriggerHandler {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        tracing::info!(
-            trigger_type = CALLED,
-            id = %config.id,
-            function_id = %config.function_id,
-            "trigger subscription registered"
-        );
-        self.subscribers.insert(config.id, config.function_id);
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        tracing::info!(trigger_type = CALLED, id = %config.id, "trigger subscription unregistered");
-        self.subscribers.remove(&config.id);
-        Ok(())
-    }
-}
-
-/// Fires `github::called` events to every current subscriber. Holds the client
-/// and the shared subscriber set; cheap to clone into each function handler.
+/// Calls `github::on-called` with each event. Holds the client; cheap to
+/// clone into each function handler.
 #[derive(Clone)]
 pub struct CalledEmitter {
     iii: Arc<IIIClient>,
-    subscribers: SubscriberSet,
 }
 
 impl CalledEmitter {
-    pub fn new(iii: Arc<IIIClient>, subscribers: SubscriberSet) -> Self {
-        Self { iii, subscribers }
+    pub fn new(iii: Arc<IIIClient>) -> Self {
+        Self { iii }
     }
 
-    pub fn has_subscribers(&self) -> bool {
-        !self.subscribers.is_empty()
+    /// Whether `github::on-called` has an active observer: one atomic load.
+    pub fn is_observed(&self) -> bool {
+        self.iii.is_observed(ON_CALLED_FN)
     }
 
-    /// Fan `event` out to every subscriber with `TriggerAction::Void`
-    /// (fire-and-forget). No subscribers ⇒ no work. Delivery failures are
+    /// Call `github::on-called` with `event`, fire-and-forget. Failures are
     /// logged and swallowed — the real call already returned.
     pub async fn emit(&self, event: CalledEvent) {
-        let targets = self.subscribers.function_ids();
-        if targets.is_empty() {
-            return;
-        }
         let payload = match serde_json::to_value(&event) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, "github::called payload failed to serialize");
+                tracing::warn!(error = %e, "github::on-called payload failed to serialize");
                 return;
             }
         };
-        for function_id in targets {
-            let res = self
-                .iii
-                .trigger(TriggerRequest {
-                    function_id: function_id.clone(),
-                    payload: payload.clone(),
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                })
-                .await;
-            if let Err(e) = res {
-                tracing::warn!(function_id = %function_id, error = %e, "github::called fan-out failed");
-            }
+        let request = CallRequest {
+            action: Some(CallAction::Void),
+            ..CallRequest::new(ON_CALLED_FN, payload)
+        };
+        if let Err(e) = self.iii.call(request).await {
+            tracing::warn!(error = %e, "github::on-called call failed");
         }
     }
 }
 
-/// Register the `github::called` trigger type with the engine and return the
-/// emitter wired to its subscriber set. Call before registering the functions
-/// so the emitter is ready to thread through them.
-pub fn register_called_trigger(iii: &Arc<IIIClient>) -> CalledEmitter {
-    let subscribers = SubscriberSet::new();
-    // `register_trigger_type` is deprecated in iii-sdk 0.25. Kept until the
-    // trigger type is retired; consumers bind it on 0.24 and 0.25 engines.
-    #[allow(deprecated)]
-    let _ = iii.register_trigger_type(RegisterTriggerType::new(
-        CALLED,
-        "Fires after each github function runs; carries the call + a short result summary.",
-        CalledTriggerHandler {
-            subscribers: subscribers.clone(),
-        },
-    ));
-    tracing::info!(trigger_type = CALLED, "registered trigger type");
-    CalledEmitter::new(iii.clone(), subscribers)
+/// Register `github::on-called` (private: only this worker calls it; any
+/// worker may observe it) and return the emitter that calls it. Call before
+/// registering the functions so the emitter is ready to thread through them.
+pub fn register_on_called(iii: &Arc<IIIClient>) -> CalledEmitter {
+    iii.register_function(
+        ON_CALLED_FN,
+        RegisterFunction::new(|event: CalledEvent| Ok::<_, Error>(event))
+            .description(
+                "Called after each github function runs; returns the event: the call (function_id, \
+                 args_summary, repo, ok, duration_ms) and a short result summary and budgeted preview. \
+                 Takes no args; observe it with filters on input.function_id or input.repo. Only the \
+                 github worker calls it.",
+            )
+            .private(),
+    );
+    CalledEmitter::new(iii.clone())
 }
 
-/// Run `fut` (the real handler), measure it, then emit a `github::called`
-/// event. The wrapped handler's result is returned unchanged; the emit never
-/// affects it (fire-and-forget, log-and-ignore on failure).
+/// Run `fut` (the real handler), measure it, then call `github::on-called`
+/// with the event. The wrapped handler's result is returned unchanged; the
+/// emit never affects it (fire-and-forget, log-and-ignore on failure).
 pub async fn run_and_emit<Resp, Fut>(
     emitter: &CalledEmitter,
     function_id: &'static str,
@@ -222,7 +145,7 @@ where
     let started = std::time::Instant::now();
     let result = fut.await;
     let duration_ms = started.elapsed().as_millis() as u64;
-    if !emitter.has_subscribers() {
+    if !emitter.is_observed() {
         return result;
     }
     let (ok, result_summary, kind, result_preview) = match &result {
@@ -253,8 +176,8 @@ where
         result_preview,
         timestamp: now_rfc3339(),
     };
-    // Detach the fan-out so a slow subscriber can never delay the real call's
-    // return — the event + emitter are owned by the spawned task.
+    // Detach the call so it can never delay the real call's return — the
+    // event + emitter are owned by the spawned task.
     let emitter = emitter.clone();
     tokio::spawn(async move { emitter.emit(event).await });
     result
@@ -1035,11 +958,9 @@ mod tests {
         struct Out {
             output: String,
         }
-        // No subscribers ⇒ emit is a no-op and never touches the client.
-        let emitter = CalledEmitter::new(
-            Arc::new(IIIClient::new("ws://127.0.0.1:1")),
-            SubscriberSet::new(),
-        );
+        // Nothing observes github::on-called ⇒ emit is a no-op and never
+        // touches the client.
+        let emitter = CalledEmitter::new(Arc::new(IIIClient::new("ws://127.0.0.1:1")));
 
         let ok = run_and_emit(
             &emitter,

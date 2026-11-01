@@ -5,7 +5,7 @@
 //! - `iii` — `None` when the engine is unreachable so `@engine` steps
 //!   can soft-skip without failing the run.
 //! - `http` — reusable reqwest client posting to `http_url`.
-//! - `http_url` — engine HTTP path bound by mcp's HTTP trigger
+//! - `http_url` — the HTTP path of mcp's `http::on-request` route
 //!   (`http://127.0.0.1:3000/mcp` by default; override via
 //!   `III_ENGINE_HTTP_URL`).
 //! - `unique_id` — UUID-prefixed id used by step defs that need to

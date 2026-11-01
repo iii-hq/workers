@@ -6,7 +6,7 @@
       "ExposeMode": {
         "description": "How allowed functions reach the model (harness.md § Exposure modes).",
         "enum": [
-          "agent_trigger",
+          "agent_call",
           "native"
         ],
         "type": "string"
@@ -34,7 +34,7 @@
                 "$ref": "#/definitions/ExposeMode"
               }
             ],
-            "default": "agent_trigger"
+            "default": "agent_call"
           }
         },
         "type": "object"
@@ -130,7 +130,7 @@
             ]
           },
           "orchestrator": {
-            "description": "Let the child spawn, send, and register triggers (still capped by the parent's policy); default false makes it a leaf.",
+            "description": "Let the child spawn, send, and remove observers (still capped by the parent's policy); default false makes it a leaf.",
             "type": [
               "boolean",
               "null"

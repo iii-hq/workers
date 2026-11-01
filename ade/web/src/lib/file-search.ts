@@ -13,7 +13,7 @@
  * in-flight request.
  */
 
-import { type TriggerFn, triggerOr } from '@/lib/attachments/shared'
+import { type CallFn, callOr } from '@/lib/attachments/shared'
 import { workspaceScope } from '@/lib/fs-scope'
 
 export const SEARCH_FUNCTION_ID = 'coder::search'
@@ -100,7 +100,7 @@ export async function searchWorkspaceFiles(
   workingDir: string,
   query: string,
   { limit = FILE_SEARCH_LIMIT }: FileSearchOptions = {},
-  trigger?: TriggerFn,
+  invoke?: CallFn,
 ): Promise<FileHit[]> {
   const q = query.trim()
   const key = cacheKey(workingDir, q, limit)
@@ -109,7 +109,7 @@ export async function searchWorkspaceFiles(
   const pending = inFlight.get(key)
   if (pending) return pending
 
-  const request = doSearch(workingDir, q, limit, trigger)
+  const request = doSearch(workingDir, q, limit, invoke)
     .then((hits) => {
       remember(key, hits)
       return hits
@@ -137,9 +137,9 @@ async function doSearch(
   workingDir: string,
   query: string,
   limit: number,
-  trigger?: TriggerFn,
+  invoke?: CallFn,
 ): Promise<FileHit[]> {
-  const call = triggerOr(trigger)
+  const call = callOr(invoke)
   const out = (await call(SEARCH_FUNCTION_ID, {
     query,
     path: '.',

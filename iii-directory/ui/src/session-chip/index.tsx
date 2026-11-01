@@ -14,8 +14,8 @@
  * A chip receives only `{ sessionId }`, so the active
  * choice is read from the session's own metadata (`system_prompt`, written by
  * the console's new-session picker) and kept current by two events —
- * `session::meta-updated` and `session::created`, see the subscribe effect for
- * why both are needed.
+ * `session::on-meta-updated` and `session::on-created`, see the observe effect
+ * for why both are needed.
  *
  * The dialog asks the harness to preview the same deterministic construction
  * used by a turn, split into built-in, selected, and runtime-injected layers.
@@ -40,7 +40,7 @@ import { ArrowLeftRight, ChevronDown, Plus } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 
 /** Namespaced so the per-session function ids can't collide with another
- *  worker's chip subscriptions. */
+ *  worker's chip observers. */
 const META_FN = 'iii::directory-ui::sysprompt-meta'
 const CREATED_FN = 'iii::directory-ui::sysprompt-created'
 
@@ -212,7 +212,7 @@ export function createSystemPromptChip(host: Host) {
 
     const readMeta = useCallback(
       () =>
-        host.iii.trigger<{
+        host.iii.call<{
           meta?: { metadata?: Record<string, unknown> }
         } | null>('session::get', {
           session_id: sessionId,
@@ -227,7 +227,7 @@ export function createSystemPromptChip(host: Host) {
       setOpen(false)
       readMeta()
         // A draft session does not exist server-side yet; nothing to show
-        // until the first send materialises it (see the `created` binding).
+        // until the first send materialises it (see the `created` observer).
         .then((res) => {
           if (!cancelled) setContext(readPromptContext(res?.meta?.metadata))
         })
@@ -247,7 +247,7 @@ export function createSystemPromptChip(host: Host) {
      *                  the chip stays blank for the whole session.
      *
      * The function ids carry the session: two chips can be mounted at once,
-     * and either teardown would otherwise cancel the other's subscription.
+     * and either teardown would otherwise cancel the other's observer.
      */
     useEffect(() => {
       const metaFn = `${META_FN}::${sessionId}`
@@ -263,19 +263,18 @@ export function createSystemPromptChip(host: Host) {
           .then((res) => setContext(readPromptContext(res?.meta?.metadata)))
           .catch(() => {})
       })
-      const offMetaTrigger = host.iii.registerTrigger({
-        type: 'session::meta-updated',
-        function_id: `${metaFn}::${host.iii.browserId}`,
-        config: {},
-      })
-      const offCreatedTrigger = host.iii.registerTrigger({
-        type: 'session::created',
-        function_id: `${createdFn}::${host.iii.browserId}`,
-        config: {},
-      })
+      const forSession = { 'input.session_id': { $eq: sessionId } }
+      const unobserveMeta = host.iii.observe(
+        { function_id: 'session::on-meta-updated', filters: forSession },
+        `${metaFn}::${host.iii.browserId}`,
+      )
+      const unobserveCreated = host.iii.observe(
+        { function_id: 'session::on-created', filters: forSession },
+        `${createdFn}::${host.iii.browserId}`,
+      )
       return () => {
-        offMetaTrigger()
-        offCreatedTrigger()
+        unobserveMeta()
+        unobserveCreated()
         offMeta()
         offCreated()
       }
@@ -296,7 +295,7 @@ export function createSystemPromptChip(host: Host) {
           }
         : undefined
       host.iii
-        .trigger<SystemPromptPreview>('harness::system-prompt::get', {
+        .call<SystemPromptPreview>('harness::system-prompt::get', {
           session_id: sessionId,
           ...(context.mode ? { mode: context.mode } : {}),
           ...(context.filesystemRoot

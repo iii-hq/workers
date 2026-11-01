@@ -1,4 +1,4 @@
-//! Durable, opt-in pull-request webhook monitor. Independent from github::called.
+//! Durable, opt-in pull-request webhook monitor. Independent from github::on-called.
 mod lifecycle;
 #[cfg(test)]
 mod lifecycle_tests;
@@ -12,15 +12,14 @@ mod tests;
 pub mod types;
 mod wiring;
 pub use types::*;
-pub use wiring::register;
+pub use wiring::{queue_observer_id, register, WEBHOOK_CONSUMER_GROUP};
 
 use crate::configuration::ConfigCell;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use iii_sdk::{
     channel::{ChannelReader, StreamChannelRef},
-    protocol::TriggerRequest,
-    IIIClient,
+    CallRequest, CallRequestWithMetadata, IIIClient,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -29,6 +28,16 @@ use sha2::Sha256;
 use std::{collections::HashMap, path::Path, sync::Arc};
 use store::Store;
 use tokio::sync::Mutex;
+/// The private function each subscriber notification is a call of. Observers
+/// pass [`EventFilter`] as args; its deliver hook hands each call to the one
+/// subscriber it is for.
+pub const ON_EVENT_FN: &str = "github::pr::on-event";
+
+pub const ON_EVENT_DESCRIPTION: &str = "Durable PR lifecycle, comment, review and per-entity CI notifications. Observe it with args { notifications?, watch_id?, repo?, number?, categories? } before calling github::pr::watch, then read one snapshot after watch. Each notification goes to one observer: its target receives the payload (the full event, or a compact event or digest per its notification policy) and its result acks it; an error retries the delivery. Only the github worker calls it.";
+
+/// How long one notification call may take: the target's timeout plus slack.
+const NOTIFY_TIMEOUT_MS: u64 = 10_000;
+
 static SELF_LOGIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static SELF_ATTEMPT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
@@ -91,32 +100,43 @@ impl Service {
         self.store.as_ref().ok_or(Failure::Disabled)
     }
     async fn invoke(&self, function_id: &str, payload: Value) -> Result<Value> {
-        self.invoke_target(function_id, payload, None, None).await
+        self.invoke_target(function_id, payload, None).await
     }
     async fn invoke_target(
         &self,
         function_id: &str,
         payload: Value,
         namespace: Option<&str>,
-        metadata: Option<Value>,
     ) -> Result<Value> {
         #[cfg(test)]
         if let Some(bus) = &self.bus {
-            return bus.invoke(function_id, payload, namespace, metadata);
+            return bus.invoke(function_id, payload, namespace, None);
         }
-        let mut request = iii_sdk::protocol::TriggerRequestWithMetadata::from(TriggerRequest {
+        let request = CallRequest {
             function_id: function_id.into(),
             payload,
             action: None,
             timeout_ms: Some(8_000),
-        });
-        if let Some(namespace) = namespace {
-            request = request.namespace(namespace);
+        };
+        let request: CallRequestWithMetadata = match namespace {
+            Some(namespace) => request.namespace(namespace),
+            None => request.into(),
+        };
+        Ok(self.iii.call(request).await?)
+    }
+    /// Deliver `payload` to `subscriber`: one call of `github::pr::on-event`
+    /// naming it in the metadata, which the function's deliver hook hands to
+    /// that observer's target. Resolves to the target's answer.
+    async fn notify(&self, subscriber: &str, payload: Value) -> Result<Value> {
+        let metadata = json!({ "subscriber": subscriber });
+        #[cfg(test)]
+        if let Some(bus) = &self.bus {
+            return bus.invoke(ON_EVENT_FN, payload, None, Some(metadata));
         }
-        if let Some(metadata) = metadata {
-            request = request.metadata(metadata);
-        }
-        Ok(self.iii.trigger(request).await?)
+        let request = CallRequest::new(ON_EVENT_FN, payload)
+            .metadata(metadata)
+            .timeout(std::time::Duration::from_millis(NOTIFY_TIMEOUT_MS));
+        Ok(self.iii.call(request).await?)
     }
     fn record_failure(&self, error: &Failure) -> Result<()> {
         self.store()?.change(|d| {
@@ -248,16 +268,10 @@ impl Service {
                             Ok(())
                         })?;
                     } else {
-                        // Legacy subscribers retain their original full-event contract.
-                        // None is the legacy/default namespace, not this provider's.
+                        // Profile `all` subscribers receive the full event.
                         // Crash before local ack can repeat event_id (at-least-once).
-                        self.invoke_target(
-                            &target.function_id,
-                            serde_json::to_value(event)?,
-                            Some(target.namespace.as_deref().unwrap_or("default")),
-                            target.metadata.clone(),
-                        )
-                        .await?;
+                        self.notify(&target.id, serde_json::to_value(event)?)
+                            .await?;
                         self.store()?.change(|d| {
                             d.jobs.remove(id);
                             d.publications.remove(id);
@@ -295,13 +309,8 @@ impl Service {
                             .and_then(|w| w.snapshot.head_sha.as_deref());
                         let mut digest = (**payload).clone();
                         if notifications::prune_digest(&mut digest, head) {
-                            self.invoke_target(
-                                &current_target.function_id,
-                                serde_json::to_value(&digest)?,
-                                Some(current_target.namespace.as_deref().unwrap_or("default")),
-                                current_target.metadata.clone(),
-                            )
-                            .await?;
+                            self.notify(&current_target.id, serde_json::to_value(&digest)?)
+                                .await?;
                         }
                         self.ack_job(id)?;
                         self.cleanup().await?;
@@ -355,13 +364,8 @@ impl Service {
                             }
                         }
                     }
-                    self.invoke_target(
-                        &current_target.function_id,
-                        serde_json::to_value(payload)?,
-                        Some(current_target.namespace.as_deref().unwrap_or("default")),
-                        current_target.metadata.clone(),
-                    )
-                    .await?;
+                    self.notify(&current_target.id, serde_json::to_value(payload)?)
+                        .await?;
                     self.ack_job(id)?;
                 }
                 Job::Inbox(inbox) => {

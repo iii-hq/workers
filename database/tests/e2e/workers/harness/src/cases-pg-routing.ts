@@ -13,16 +13,15 @@
  * - the keyword inside a string literal or comment matched, routing a plain
  *   write through the query path, which then reported `affected_rows: 0` for
  *   a write that had committed — and a zero-row change fires no
- *   `database::row-changed` event at all.
+ *   `database::on-row-changed` event at all.
  *
  * The routing signal is the prepared statement's column list now, so these
  * cases pin both directions: rows come back when the clause is real, and the
  * event fires when it only looks real.
  */
 
-import type { IIIClient } from 'iii-sdk'
 import type { TestCase } from './cases.ts'
-import { expect, expectEqual } from './cases.ts'
+import { expect, expectEqual, observeRowChanged } from './cases.ts'
 
 const EVENT_TIMEOUT_MS = 5_000
 
@@ -51,19 +50,6 @@ function sink(events: RowChangedEvent[], label: string) {
       expectEqual(events.length, cursor, `${label}: unexpected extra event`)
     },
   }
-}
-
-async function awaitRegistration(iii: IIIClient, functionId: string): Promise<void> {
-  const registered = await iii.trigger<
-    Record<string, never>,
-    { registered_triggers: Array<{ trigger_type: string; function_id: string }> }
-  >({ function_id: 'engine::registered-triggers::list', payload: {} })
-  expect(
-    registered.registered_triggers.some(
-      (t) => t.trigger_type === 'database::row-changed' && t.function_id === functionId,
-    ),
-    `binding for ${functionId} is visible to the engine`,
-  )
 }
 
 const TABLE = 'e2e_pg_routing'
@@ -142,7 +128,7 @@ export const PG_ROUTING_CASES: TestCase[] = [
     async run({ driver, dialect, call, iii }) {
       const functionId = 'harness::pg_routing_literal'
       const events: RowChangedEvent[] = []
-      const seen = sink(events, 'literal-keyword subscriber')
+      const seen = sink(events, 'literal-keyword observer')
       const ph = dialect.placeholder(1)
 
       await call('database::execute', { db: driver, sql: `DROP TABLE IF EXISTS ${TABLE}` })
@@ -158,13 +144,9 @@ export const PG_ROUTING_CASES: TestCase[] = [
         },
         { description: 'Literal-keyword routing E2E sink.' },
       )
-      const triggerRef = iii.registerTrigger({
-        type: 'database::row-changed',
-        function_id: functionId,
-        config: { db: driver, table: TABLE },
-      })
+      const observer = observeRowChanged(iii, { db: driver, table: TABLE }, functionId)
       try {
-        await awaitRegistration(iii, functionId)
+        await observer.ready()
 
         // The word inside a string literal: pre-fix this routed through the
         // query path, reported affected_rows: 0, and fired nothing.
@@ -193,7 +175,7 @@ export const PG_ROUTING_CASES: TestCase[] = [
         await sleep(500)
         seen.expectDrained()
       } finally {
-        triggerRef.unregister()
+        await observer.dispose()
         fnRef.unregister()
         await call('database::execute', { db: driver, sql: `DROP TABLE IF EXISTS ${TABLE}` })
       }

@@ -26,6 +26,14 @@ import { pushProgress, onProgress } from './lib/progress.mjs';
 import { INDEX_HTML } from './lib/ui.mjs';
 import * as configuration from './lib/configuration.mjs';
 import * as S from './lib/schemas.mjs';
+import {
+  REFRESH_INTERVALS,
+  SCHEDULE_PRESETS,
+  createWikiSchedules,
+  isRawCron,
+  observeRoutes,
+  observeTurnEvents,
+} from './lib/observers.mjs';
 
 const III_URL = process.env.III_URL || process.env.III_ENGINE_URL || 'ws://localhost:49134';
 let cfg = configuration.defaults();
@@ -38,6 +46,10 @@ const worker = registerWorker(III_URL, {
 
 store.setWorker(worker);
 store.ensureRoot().catch((e) => console.error('[openwiki] ensureRoot', e));
+
+// Per-wiki auto-refresh: one cron::on-tick observer per wiki with a cadence.
+const wikiSchedules = createWikiSchedules(worker);
+const applyWikiSchedule = wikiSchedules.apply;
 
 const now = () => new Date().toISOString();
 const inflight = new Set();
@@ -427,7 +439,7 @@ async function runGeneration(wikiId, { repoUrl, model, ref, steer }) {
     const content_hash = await store.computeContentHash(wikiId);
     // Preserve the auto-refresh cadence across a (re)generation (this saveWiki
     // rebuilds meta from scratch), defaulting a brand-new wiki to the config
-    // default. Then (re)register its cron trigger.
+    // default. Then (re)arm its cron observer.
     const prior = await store.getWiki(wikiId);
     const refresh_schedule = prior?.refresh_schedule || cfg.refresh_default || 'off';
     await store.saveWiki(wikiId, {
@@ -754,7 +766,7 @@ worker.registerFunction(
   async (a) => {
     const id = needId(a, 'openwiki::delete');
     if (inflight.has(id)) throw err('openwiki/generating', 'wiki is generating; stop it before deleting');
-    applyWikiSchedule(id, 'off'); // tear down any auto-refresh trigger for this wiki
+    applyWikiSchedule(id, 'off'); // dispose any auto-refresh observer for this wiki
     await store.deleteWiki(id);
     invalidateInventory(id);
     resetReadStats(id);
@@ -804,7 +816,7 @@ worker.registerFunction(
 
 // ---------- Scoped source readers (the harness's exploration tools) ----------
 // Each is jailed to one wiki's clone; the page-writer harness calls these via
-// agent_trigger to explore the repo and cite exact line ranges.
+// agent_call to explore the repo and cite exact line ranges.
 
 // Surface the harness's file exploration as live activity. During planning
 // (one long opaque plan turn) there is no page progress, so without this the UI
@@ -1121,7 +1133,7 @@ worker.registerFunction(
     const id = path_params?.id;
     if (!id) return jsonResponse(400, { error: 'id required' });
     if (inflight.has(id)) return jsonResponse(409, { error: 'wiki is generating; stop it before deleting' });
-    applyWikiSchedule(id, 'off'); // tear down any auto-refresh trigger for this wiki
+    applyWikiSchedule(id, 'off'); // dispose any auto-refresh observer for this wiki
     await store.deleteWiki(id);
     invalidateInventory(id);
     resetReadStats(id);
@@ -1284,79 +1296,19 @@ worker.registerFunction(
   HTTP_META('HTTP GET /openwiki/api/wikis/:id/diagram'),
 );
 
-// ---------- HTTP triggers ----------
-// api_path has NO leading slash: the engine prepends '/', and a leading slash
-// double-slashes and 404s.
+// ---------- HTTP routes ----------
+// One http::on-request observer per route (lib/observers.mjs ROUTES).
+observeRoutes(worker);
 
-function bind(function_id, api_path, http_method = 'GET') {
-  return worker.registerTrigger({ type: 'http', function_id, config: { api_path, http_method } });
-}
-bind('openwiki::http::ui', 'openwiki', 'GET');
-bind('openwiki::http::ui', 'openwiki/', 'GET');
-bind('openwiki::http::wikis-list', 'openwiki/api/wikis', 'GET');
-bind('openwiki::http::models', 'openwiki/api/models', 'GET');
-bind('openwiki::http::wikis-create', 'openwiki/api/wikis', 'POST');
-bind('openwiki::http::wiki-get', 'openwiki/api/wikis/:id', 'GET');
-bind('openwiki::http::wiki-delete', 'openwiki/api/wikis/:id', 'DELETE');
-bind('openwiki::http::wiki-status', 'openwiki/api/wikis/:id/status', 'GET');
-bind('openwiki::http::pages-list', 'openwiki/api/wikis/:id/pages', 'GET');
-bind('openwiki::http::page-get', 'openwiki/api/wikis/:id/pages/:slug', 'GET');
-bind('openwiki::http::search', 'openwiki/api/wikis/:id/search', 'GET');
-bind('openwiki::http::refresh', 'openwiki/api/wikis/:id/refresh', 'POST');
-bind('openwiki::http::schedule-set', 'openwiki/api/wikis/:id/schedule', 'PUT');
-bind('openwiki::http::events', 'openwiki/api/wikis/:id/events', 'GET');
-bind('openwiki::http::ask', 'openwiki/api/wikis/:id/ask', 'POST');
-bind('openwiki::http::diagram', 'openwiki/api/wikis/:id/diagram', 'GET');
-
-// ---------- Scheduled refresh (per-wiki cron triggers) ----------
-// Each wiki carries its own auto-refresh cadence, set from the UI, never
-// hardcoded. openwiki::set-schedule registers a per-wiki cron trigger; every
-// such trigger fires openwiki::cron::refresh-due, which refreshes the wikis whose
-// interval has elapsed. Trigger handles live in wikiTriggers so a schedule change
-// or delete can unregister the old one; on boot they are re-registered from the
-// stored schedules.
-const wikiTriggers = new Map(); // wikiId -> unregister fn
-
-const REFRESH_INTERVALS = {
-  '3h': { cron: '0 0 */3 * * *', ms: 3 * 3600e3 },
-  '6h': { cron: '0 0 */6 * * *', ms: 6 * 3600e3 },
-  '12h': { cron: '0 0 */12 * * *', ms: 12 * 3600e3 },
-  daily: { cron: '0 0 3 * * *', ms: 24 * 3600e3 },
-  weekly: { cron: '0 0 3 * * 1', ms: 7 * 24 * 3600e3 },
-};
-const SCHEDULE_PRESETS = ['off', ...Object.keys(REFRESH_INTERVALS)];
-const isRawCron = (s) => /^(\S+\s+){4,5}\S+$/.test(String(s || ''));
-
-// Register (or replace) one wiki's cron trigger. 'off' just unregisters. A raw
-// 5-6 field cron is accepted for power users; its due window is the trigger
-// cadence itself (refresh whenever it fires).
-function applyWikiSchedule(wikiId, schedule) {
-  const prev = wikiTriggers.get(wikiId);
-  if (prev) {
-    try {
-      prev();
-    } catch {
-      /* already gone */
-    }
-    wikiTriggers.delete(wikiId);
-  }
-  if (!schedule || schedule === 'off') return;
-  const cron = REFRESH_INTERVALS[schedule] ? REFRESH_INTERVALS[schedule].cron : schedule;
-  try {
-    const { unregister } = worker.registerTrigger({
-      type: 'cron',
-      function_id: 'openwiki::cron::refresh-due',
-      config: { schedule: cron },
-      metadata: { wiki_id: wikiId },
-    });
-    wikiTriggers.set(wikiId, unregister);
-  } catch (e) {
-    console.warn('[openwiki] failed to schedule', wikiId, e?.message || e);
-  }
-}
+// ---------- Scheduled refresh (per-wiki cron observers) ----------
+// openwiki::set-schedule observes cron::on-tick with the wiki's expression
+// (wikiSchedules, lib/observers.mjs); every tick runs
+// openwiki::cron::refresh-due, which refreshes the wikis whose interval has
+// elapsed. A schedule change or delete disposes the old observer; on boot the
+// stored schedules are observed again.
 
 // A scheduled cron fired: refresh every wiki whose interval has elapsed. All the
-// per-wiki triggers point here; the due check keeps it correct regardless of
+// per-wiki observers point here; the due check keeps it correct regardless of
 // which one fired, and idempotent (content-hash gate + inflight guard).
 worker.registerFunction(
   'openwiki::cron::refresh-due',
@@ -1390,7 +1342,7 @@ worker.registerFunction(
   },
 );
 
-// Set (or clear) a wiki's auto-refresh cadence and (re)register its cron trigger.
+// Set (or clear) a wiki's auto-refresh cadence and (re)arm its cron observer.
 worker.registerFunction(
   'openwiki::set-schedule',
   async (a) => {
@@ -1416,22 +1368,22 @@ worker.registerFunction(
   },
 );
 
-// Real-time page collection: subscribe to the harness's emitted turn-completed
-// events and route each to the active generation (turnbus). One broad binding
-// (no session filter) sees every turn; unowned roots are a cheap map miss. This
-// drives the orchestrator's live per-page progress instead of polling.
+// Real-time page collection: observe harness::on-turn-completed and route each
+// turn to the active generation (turnbus). One broad observer (no filters) sees
+// every turn; unowned roots are a cheap map miss. This drives the
+// orchestrator's live per-page progress instead of polling.
 worker.registerFunction(
   'openwiki::on-turn-completed',
   async (evt) => {
     try {
-      turnbus.deliver(evt?.payload || evt);
+      turnbus.deliver(evt);
     } catch (e) {
       console.warn('[openwiki] turn-event route failed', e?.message || e);
     }
     return null;
   },
   {
-    description: 'Internal: routes harness::turn-completed events to the active generation.',
+    description: 'Internal: routes harness::on-turn-completed events to the active generation.',
     request_format: { type: 'object', additionalProperties: true, properties: {} },
     response_format: { type: 'null' },
   },
@@ -1442,30 +1394,30 @@ worker.registerFunction(
   'openwiki::on-turn-started',
   async (evt) => {
     try {
-      turnbus.deliverStarted(evt?.payload || evt);
+      turnbus.deliverStarted(evt);
     } catch (e) {
       console.warn('[openwiki] turn-started route failed', e?.message || e);
     }
     return null;
   },
   {
-    description: 'Internal: routes harness::turn-started events (sub-agent spawns) to the active generation.',
+    description: 'Internal: routes harness::on-turn-started events (sub-agent spawns) to the active generation.',
     request_format: { type: 'object', additionalProperties: true, properties: {} },
     response_format: { type: 'null' },
   },
 );
 
-Promise.resolve()
-  .then(() =>
-    worker.registerTrigger({ type: 'harness::turn-completed', function_id: 'openwiki::on-turn-completed', config: {} }),
-  )
-  .then(() =>
-    worker.registerTrigger({ type: 'harness::turn-started', function_id: 'openwiki::on-turn-started', config: {} }),
-  )
+// Both observers deliver the event itself (lib/observers.mjs). They stay
+// pending while the harness is absent; generation then uses its synchronous
+// fallback.
+const turnObservers = observeTurnEvents(worker);
+Promise.all(turnObservers.map((h) => h.ready()))
   .then(() => {
-    console.log('[openwiki] subscribed to harness turn events (real-time collection + spawn feed)');
+    console.log('[openwiki] observing harness turn events (real-time collection + spawn feed)');
   })
-  .catch((e) => console.warn('[openwiki] turn-event subscribe failed; using synchronous fallback:', e?.message || e));
+  .catch((e) =>
+    console.warn('[openwiki] turn-event observers not active; using synchronous fallback:', e?.message || e),
+  );
 
 // Configuration: register the schema, load the stored value, and hot-reload on
 // change. Runs off the boot path so it never delays function registration.
@@ -1476,7 +1428,7 @@ configuration
     cfg = c;
   })
   .catch((e) => console.warn('[openwiki] config register failed; using defaults', e?.message || e));
-configuration.bindConfigTrigger(worker, async () => {
+configuration.observeConfigChanges(worker, async () => {
   cfg = await configuration.fetchConfig(worker);
 });
 
@@ -1500,8 +1452,8 @@ configuration.bindConfigTrigger(worker, async () => {
       });
       await store.appendLog(w.id, `Reaped orphaned generation (${pages.length} pages on disk).`);
     }
-    // Cron triggers are in-memory registrations, so re-arm each wiki's stored
-    // auto-refresh cadence after a restart.
+    // Observers live with this worker's connection, so observe each wiki's
+    // stored auto-refresh cadence again after a restart.
     for (const w of wikis) {
       if (w.refresh_schedule && w.refresh_schedule !== 'off') applyWikiSchedule(w.id, w.refresh_schedule);
     }

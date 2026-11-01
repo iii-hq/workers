@@ -42,15 +42,14 @@ Promote-class is a kernel match on the function id. Suffixes `::promote`, `::dep
 | `gantry::verify` | Kernel `verifyMission`. A pass binds the mission onto the lease. |
 | `gantry::middleware` | Governed-port gate. Recomputes claims from disk; never trusts the token's own payload. |
 | `gantry::on-function-registration` | Blocks `gantry::` / `opengantry::` squatting and reserved suffixes `::verify` / `::attest` / `::promote`. |
-| `gantry::on-trigger-registration` | Blocks triggers bound into the `gantry::` namespace. |
-| `gantry::on-trigger-type-registration` | Always denied. Agents must not register trigger types on the governed port. |
-| `gantry::verdict` | Trigger type emitted when verify completes. |
+| `gantry::on-observer-registration` | Blocks observers created on the governed port whose target is in the `gantry::` namespace. |
+| `gantry::on-verdict` | Event source, private: called once per completed verify with its verdict. No args; observers filter on `input.status`, `input.repo_root`, `input.msn_id`. See [`gantry::on-verdict`](#gantryon-verdict). |
 
 ## Practices this worker follows
 
 These are the rules the code is written to. A missing `.gitagent` does not unlock promote.
 
-**Fail closed.** Promote without a matching token throws `GantryDenied`. A corrupted lease file throws. A missing `forwardTrigger` throws at boot. Middleware never silently forwards a promote-class call.
+**Fail closed.** Promote without a matching token throws `GantryDenied`. A corrupted lease file throws. A missing `forwardCall` throws at boot. Middleware never silently forwards a promote-class call.
 
 **Recompute, do not trust.** At promote time the kernel rebuilds expected claims from the mission file on disk, then HMAC-checks the token against that. Changing the mission after verify invalidates the token even if the agent still holds it.
 
@@ -64,16 +63,16 @@ These are the rules the code is written to. A missing `.gitagent` does not unloc
 
 **Verify coalesces.** Identical in-flight `gantry::verify` calls share one kernel run. A full coalescer returns `GXT_VERIFY_SATURATED` rather than starting a 33rd gate.
 
-**Registration is reserved.** Other workers cannot register `gantry::` / `opengantry::` functions, bind triggers into `gantry::`, or register trigger types on the governed listener. Suffixes `::verify`, `::attest`, and `::promote` are reserved bus-wide so a sibling cannot mint a fake gate.
+**Registration is reserved.** Other workers cannot register `gantry::` / `opengantry::` functions or target an observer at `gantry::` on the governed listener, and only this worker calls `gantry::on-verdict` (it is private), so nobody forges a verdict event. Suffixes `::verify`, `::attest`, and `::promote` are reserved bus-wide so a sibling cannot mint a fake gate.
 
 **The worker process is not Planner.** It does not write missions, manifests, or `gantry init` output. Bootstrap `.gitagent` on the host, then commit missions through the Planner workflow.
 
-**iii worker contract.** Every `registerFunction` passes `request_format` and `response_format`. Payload and context schemas `.passthrough()` extra adopter fields. The request envelope stays strict. Bundle deploy, no `scripts.setup` / `scripts.install`.
+**iii worker contract.** Every `registerFunction` passes `request_format` and `response_format`. Payload and context schemas `.passthrough()` extra adopter fields. The middleware request envelope stays strict. The registration hooks publish the engine's input (`gantry::on-function-registration`: `function_id`, `description`, `metadata`, `namespace`, `private`, `observable`, `args_format`, `context`) and accept fields the engine adds; an accepted function registration is answered with `{ function_id }`, which keeps the declared `private`, `observable` and `args_format`. Bundle deploy, no `scripts.setup` / `scripts.install`.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=opengantry
+iii call compose::add worker=opengantry
 ```
 
 ## Skills
@@ -114,8 +113,7 @@ workers:
       rbac:
         auth_function_id: session::auth
         on_function_registration_function_id: gantry::on-function-registration
-        on_trigger_registration_function_id: gantry::on-trigger-registration
-        on_trigger_type_registration_function_id: gantry::on-trigger-type-registration
+        on_observer_registration_function_id: gantry::on-observer-registration
 ```
 
 ### Tier 2 — preferred production (rbac-proxy as public door)
@@ -137,8 +135,7 @@ workers:
       rbac:
         auth_function_id: session::auth
         on_function_registration_function_id: gantry::on-function-registration
-        on_trigger_registration_function_id: gantry::on-trigger-registration
-        on_trigger_type_registration_function_id: gantry::on-trigger-type-registration
+        on_observer_registration_function_id: gantry::on-observer-registration
   - name: iii-worker-manager
     config:
       host: 127.0.0.1
@@ -149,7 +146,7 @@ workers:
 
 Machine gate first, human hold second:
 
-1. `approval::gate` (`pre_trigger`) evaluates session mode and rules — can **hold** promote-class calls for a human.
+1. `approval::gate` (on `harness::hook::on-pre-call`) evaluates session mode and rules — can **hold** promote-class calls for a human.
 2. `gantry::middleware` recomputes verdict claims and forwards only when the token matches.
 
 Recommended `approval-gate` rules (seed into the `approval-gate` configuration entry):
@@ -175,9 +172,9 @@ Tune `action` to `allow` per session mode once you trust unattended promote on s
 
 Leases live at `<repo>/.gitagent/leases.json` (mode `0600`), not in the bus-shared `state` worker. That is intentional: lease state is part of the security model for a governed repo — it must be colocated with the mission, exclusive-locked, and fail-closed on corruption. A shared KV any worker can write would break those guarantees.
 
-### `gantry::verdict` trigger
+### `gantry::on-verdict`
 
-After every `gantry::verify` completes (pass or fail), the worker fans out a best-effort event to every binding on the `gantry::verdict` trigger type:
+After every `gantry::verify` completes (pass or fail), the worker calls `gantry::on-verdict` once, fire-and-forget, and iii delivers the event to its observers. The function is private (only opengantry calls it) and takes no args; it is not called while nothing observes it. The event, which the handler returns as observers observe it:
 
 ```json
 {
@@ -189,14 +186,21 @@ After every `gantry::verify` completes (pass or fail), the worker fans out a bes
 }
 ```
 
-Subscribe a sibling function (audit log, Slack notifier, console inbox) via `registerTrigger` on `gantry::verdict`. A failing subscriber never fails verify.
+Observe it with a sibling function (audit log, Slack notifier, console inbox); filters on the event's fields pick the verdicts you want. A failing observer never fails verify.
+
+```js
+iii.observe(
+  { function_id: 'gantry::on-verdict', filters: { 'input.status': { $eq: 'failed' } }, deliver: 'output' },
+  'audit::on-verdict',
+);
+```
 
 ## Quickstart
 
 From zero to a fail-closed land on the governed port:
 
 ```bash
-iii trigger compose::add worker=opengantry worker=approval-gate worker=worktree worker=ide
+iii call compose::add worker=opengantry worker=approval-gate worker=worktree worker=ide
 iii   # starts the engine + workers
 ```
 
@@ -208,13 +212,13 @@ import { registerWorker } from 'iii-sdk';
 const iii = registerWorker('ws://127.0.0.1:49135', { workerName: 'demo' });
 
 // 1. Mint an isolated worktree for the agent.
-const wt = await iii.trigger({
+const wt = await iii.call({
   function_id: 'worktree::create',
   payload: { repo_root: '/path/to/repo', branch: 'gxt/msn-0001' },
 });
 
 // 2. Agent works in wt.path, then verify the active mission.
-const verify = await iii.trigger({
+const verify = await iii.call({
   function_id: 'gantry::verify',
   payload: {
     repo_root: '/path/to/repo',
@@ -224,7 +228,7 @@ const verify = await iii.trigger({
 });
 
 // 3. Land with the verdict token (promote-class — middleware gates this).
-const land = await iii.trigger({
+const land = await iii.call({
   function_id: 'worktree::land',
   payload: { worktree_id: wt.id },
   context: {
@@ -258,27 +262,26 @@ workers:
       rbac:
         auth_function_id: session::auth
         on_function_registration_function_id: gantry::on-function-registration
-        on_trigger_registration_function_id: gantry::on-trigger-registration
-        on_trigger_type_registration_function_id: gantry::on-trigger-type-registration
+        on_observer_registration_function_id: gantry::on-observer-registration
 ```
 
-`worktree_path` / `repo_root` in trigger context must be absolute. Leases persist at `<repo>/.gitagent/leases.json`. Override with `GANTRY_III_LEASE_STORE` only if the path still resolves under that repo's `.gitagent/`. Verdict HMAC keys default to `<repo>/.config/gantry/pepper-keyring.json` (`GANTRY_VERDICT_KEYRING` to override).
+`worktree_path` / `repo_root` in the call context must be absolute. Leases persist at `<repo>/.gitagent/leases.json`. Override with `GANTRY_III_LEASE_STORE` only if the path still resolves under that repo's `.gitagent/`. Verdict HMAC keys default to `<repo>/.config/gantry/pepper-keyring.json` (`GANTRY_VERDICT_KEYRING` to override).
 
 ## Source map
 
-Start at `src/index.js`, then `src/middleware.js` and `src/verify.js`. Tests in `tests/` use `createGantryRuntime` with a fake `forwardTrigger`.
+Start at `src/index.js`, then `src/middleware.js` and `src/verify.js`. Tests in `tests/` use `createGantryRuntime` with a fake `forwardCall`.
 
 | File | Why it exists |
 |------|----------------|
-| `src/index.js` | Boot. Static `iii-sdk` import, registers the five functions, injects `forwardTrigger`. |
-| `src/runtime.js` | Composition root. Builds deps once. Refuses to start without `forwardTrigger`. |
+| `src/index.js` | Boot. Static `iii-sdk` import, registers the five functions, injects `forwardCall`. |
+| `src/runtime.js` | Composition root. Builds deps once. Refuses to start without `forwardCall`. |
 | `src/middleware.js` | Hot-path policy. Lease, verdict, scope, then forward. |
 | `src/verify.js` | `gantry::verify` handler, coalescer, post-pass lease bind. |
 | `src/verdict.js` | Recompute claims + HMAC. Maps kernel errors to `GantryDenied`. |
 | `src/lease-store.js` | File-locked `leases.json`. Fail-closed on corrupt JSON. |
 | `src/stores.js` | Bounded LRU for lease stores and governance bundles. |
 | `src/registration-hooks.js` | Reserved prefix / suffix predicates and RBAC hook handlers. |
-| `src/verdict-events.js` | `gantry::verdict` trigger fan-out after verify completes. |
+| `src/verdict-events.js` | `gantry::on-verdict`: the handler and the fire-and-forget call after verify completes. |
 | `src/repo-path.js` | Absolute repo resolution. Lease-path jail under `.gitagent/`. |
 | `src/formats.js` | Zod → JSON Schema for `registerFunction`. |
 | `src/denied.js` | `GantryDenied`. Throw so iii records `InvocationResult.error`. |

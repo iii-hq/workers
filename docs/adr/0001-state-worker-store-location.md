@@ -4,7 +4,7 @@
 Accepted (2026-07-06).
 
 ## Context
-The legacy in-engine state service is not just a trigger handler: it owns a key-value
+The legacy in-engine state service is not just a source of change events: it owns a key-value
 store that lives in the engine process (`engine/src/builtins/kv.rs`,
 `BuiltinKvStore`, in_memory or file_based with a background flush loop).
 Migrating that state service to the standalone `state` worker forces a decision about where that

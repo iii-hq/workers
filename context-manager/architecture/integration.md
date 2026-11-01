@@ -40,7 +40,7 @@ Integration is always some subset of four moves:
 
 ## 2. Conventions
 
-- **Invocation**: every function is a **sync** `iii.trigger({ function_id,
+- **Invocation**: every function is a **sync** `iii.call({ function_id,
   payload, timeout_ms })` call; responses are the JSON shapes in §4. Give
   `assemble`/`compact` a generous `timeout_ms` (they may make a summariser LLM
   call — default outer budget is 320s).
@@ -178,7 +178,7 @@ Pure and router-free; safe for cost-sensitive callers with no `llm-router`.
 {
   messages: AgentMessage[];        // required
   system_prompt?: string;          // counted on top of messages
-  tools?: AgentFunction[];         // invocation schema(s), typically [agent_trigger]
+  tools?: AgentFunction[];         // invocation schema(s), typically [agent_call]
   model: ModelInput;               // tokenizer selection (v1: always heuristic)
 }
 -> {
@@ -293,7 +293,7 @@ The contract, step by step:
    verbatim tail and everything after it) **plus** the stored summary as
    `options.previous_summary`.
 3. `assemble` renders `previous_summary` into the returned `system_prompt`
-   under a `# Conversation summary` heading. If compaction triggers again, the
+   under a `# Conversation summary` heading. If compaction runs again, the
    summariser **updates** that summary instead of starting over — so it
    converges instead of growing.
 
@@ -321,7 +321,7 @@ provider-legal. Build on these:
   narrower arguments if the omitted middle is needed]`.
 - **`custom` messages never reach the model.** `assemble` excludes
   `role: "custom"` from the returned `messages` and from `token_count`. A huge
-  custom entry can't trigger a phantom overflow, and customs never leak to a
+  custom entry can't cause a phantom overflow, and customs never leak to a
   provider with no wire mapping for them.
 - **`tail_start_index` indexes the request array** you sent (customs included),
   so it maps cleanly onto your storage even though the model-facing list
@@ -329,7 +329,7 @@ provider-legal. Build on these:
 
 ## 7. Error contract
 
-| Code | Meaning / trigger | Functions |
+| Code | Meaning / cause | Functions |
 |---|---|---|
 | `context/invalid_request` | `messages` missing or `null` (`messages is required`); a `model` missing where required; malformed shapes serde can't coerce. | all |
 | `context/model_unresolved` | No inline limits, router can't resolve, and `allow_fallback_limits` is off (`could not resolve model limits`). | assemble, compact |
@@ -375,7 +375,7 @@ persisted summary; send only the post-compaction window as `messages`.
 
 Call `context::count-tokens` with inline `model.limits` (or just an id — the
 heuristic ignores it) to decide whether a cheaper/larger model is needed before
-committing. Include the `agent_trigger` schema in `tools` so tool tokens count.
+committing. Include the `agent_call` schema in `tools` so tool tokens count.
 No LLM, no router, no state — works on a bare engine.
 
 ### Prune-only first pass
@@ -402,7 +402,7 @@ overflow` union, and persists `summary` + `tail_start_index` itself.
 The fully standalone *request* path — inline `limits` + `count-tokens`/`prune`,
 or `assemble` with compaction off — needs no `llm-router` and writes no lease
 files (the `configuration` dependency is a one-time boot cost, not per call).
-Cost note: only `assemble` and `compact` can trigger a summariser LLM call.
+Cost note: only `assemble` and `compact` can start a summariser LLM call.
 
 ## 10. Boundaries
 
@@ -411,7 +411,7 @@ context-manager does **not**:
 - store conversations — pass messages in, persist results yourself (or use
   [session-manager](../../session-manager/architecture/integration.md));
 - decide *when* to compact a live session — that is your policy (a pre-flight,
-  or the optional reactive trigger in §11);
+  or the optional reactive pre-warm in §11);
 - talk to LLM providers directly — summarisation goes through `llm-router`;
 - guarantee exact token counts — v1 is a heuristic estimator (§2);
 - implement long-term / vector memory — that belongs in a dedicated sibling
@@ -445,14 +445,14 @@ bespoke in-harness compaction side-car with a reusable worker.
   the second caller skip compaction (`assemble`) or see `busy` (`compact`)
   without burning a model call. Crashed holders expire after `lease_ttl_secs`.
 - **Optional reactive pre-warm.** To pre-warm or surface a token-usage metric
-  off the hot path, bind a handler to `session::message-added` and call
-  `context::count-tokens` (cheap, no LLM) there. This is opt-in and lives in
-  the harness — context-manager binds no *session* triggers and never
-  reaches into a session itself, which is exactly what keeps it
-  store-agnostic.
+  off the hot path, observe `session::on-message-added` (filter on
+  `input.session_id`) with a handler that calls `context::count-tokens`
+  (cheap, no LLM). This is opt-in and lives in the harness — context-manager
+  observes no *session* functions and never reaches into a session itself,
+  which is exactly what keeps it store-agnostic.
 - **Agent exposure.** All functions are pure transforms (nothing to leak), but
   deny `context::assemble` and `context::compact` to in-run agents in
-  cost-sensitive deployments — they can trigger a summariser call.
+  cost-sensitive deployments — they can start a summariser call.
   `context::count-tokens` and `context::prune` are always safe.
 - **Degraded engine.** With `llm-router` absent the harness still gets budgeted
   output: limits fall back (or use inline `limits`), prune runs, and an

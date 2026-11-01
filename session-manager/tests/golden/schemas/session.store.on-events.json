@@ -1,0 +1,57 @@
+{
+  "function_id": "session::store::on-events",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Wire form of an [`EmittableEvent`] for cross-instance propagation: what `session::store::on-events` observers receive, and what `session::store::publish-events` takes.",
+    "properties": {
+      "function_id": {
+        "description": "The event function the event belongs to (`session::on-created`, ...).",
+        "type": "string"
+      },
+      "payload": {
+        "description": "The event, without the session metadata."
+      },
+      "session_metadata": {
+        "additionalProperties": true,
+        "description": "`SessionMeta.metadata` as of the mutation.",
+        "type": [
+          "object",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "function_id",
+      "payload"
+    ],
+    "title": "EventEnvelope",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Wire form of an [`EmittableEvent`] for cross-instance propagation: what `session::store::on-events` observers receive, and what `session::store::publish-events` takes.",
+    "properties": {
+      "function_id": {
+        "description": "The event function the event belongs to (`session::on-created`, ...).",
+        "type": "string"
+      },
+      "payload": {
+        "description": "The event, without the session metadata."
+      },
+      "session_metadata": {
+        "additionalProperties": true,
+        "description": "`SessionMeta.metadata` as of the mutation.",
+        "type": [
+          "object",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "function_id",
+      "payload"
+    ],
+    "title": "EventEnvelope",
+    "type": "object"
+  }
+}

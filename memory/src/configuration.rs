@@ -10,8 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -75,7 +74,7 @@ mod initialization;
 /// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
     initialization::ensure_with(payload, |function, payload| {
-        trigger_configuration_with_retry(iii, function, payload)
+        call_configuration_with_retry(iii, function, payload)
     })
     .await
 }
@@ -130,7 +129,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
 /// service/transport failure (`function_not_found`/`statement_not_found`)
 /// propagates as an error instead of seeding over a stored value.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+    match call_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         // A successful reply MUST carry `value`; treating its absence as
@@ -150,8 +149,8 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Internal `memory::on-config-change` trigger payload. The handler
-/// re-fetches the authoritative configuration (trusting `new_value` from a
+/// The `configuration::on-updated` event, as `memory::on-config-change`
+/// receives it. The handler re-fetches the authoritative configuration (trusting `new_value` from a
 /// discoverable bus function would let any caller inject config).
 #[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct OnConfigChangeEvent {
@@ -165,13 +164,15 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger.
-pub fn register_config_trigger(
-    iii: &IIIClient,
-    cell: ConfigCell,
-    store: StoreCell,
-) -> Result<(), Error> {
+/// The configuration worker's change event.
+const CONFIG_ON_UPDATED_FN: &str = "configuration::on-updated";
+
+/// Register the internal config-change handler and observe
+/// `configuration::on-updated` with it for the `configuration:updated` events
+/// of this worker's entry. The observer stays `pending` while the
+/// configuration worker is not registered, and lives as long as the worker's
+/// connection.
+pub fn observe_config_changes(iii: &IIIClient, cell: ConfigCell, store: StoreCell) {
     let cell_for_fn = cell.clone();
     let store_for_fn = store.clone();
     let engine = iii.clone();
@@ -196,15 +197,20 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "configuration".to_string(),
-        CONFIG_FN_ID.to_string(),
-        json!({
-            "configuration_id": config_id(),
-            "event_types": ["configuration:updated"],
-        }),
-    ))?;
-    Ok(())
+    iii.observe(
+        Source::function(CONFIG_ON_UPDATED_FN)
+            .filters(update_filters(config_id()))
+            .deliver(Deliver::Output),
+        CONFIG_FN_ID,
+    );
+}
+
+/// Selects the `configuration:updated` events of one entry.
+fn update_filters(config_id: &str) -> Value {
+    json!({
+        "input.id": { "$eq": config_id },
+        "input.event_type": { "$eq": "configuration:updated" },
+    })
 }
 
 /// Serializes reloads: concurrent configuration events would otherwise
@@ -242,7 +248,7 @@ async fn on_config_change(
     Ok(())
 }
 
-async fn trigger_configuration_with_retry(
+async fn call_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -250,8 +256,8 @@ async fn trigger_configuration_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: function_id.to_string(),
                     payload: payload.clone(),
                     action: None,
@@ -334,5 +340,16 @@ mod tests {
         };
         apply_config(&cell, tuned).await;
         assert_eq!(cell.read().await.recall_limit, 12);
+    }
+
+    #[test]
+    fn update_filters_select_one_entrys_updates() {
+        assert_eq!(
+            update_filters("memory"),
+            json!({
+                "input.id": { "$eq": "memory" },
+                "input.event_type": { "$eq": "configuration:updated" },
+            })
+        );
     }
 }

@@ -1,6 +1,6 @@
 # database
 
-> Connect to PostgreSQL, MySQL, and SQLite. Run queries, prepared statements, transactions, and subscribe to row-level change feeds.
+> Connect to PostgreSQL, MySQL, and SQLite. Run queries, prepared statements, transactions, and observe row-level changes.
 
 | field | value |
 |-------|-------|
@@ -11,7 +11,7 @@
 ## Install
 
 ```sh
-iii trigger compose::add worker=database
+iii call compose::add worker=database
 ```
 
 ## Skills
@@ -121,7 +121,7 @@ databases:
 
 Only a well-formed reference, or a `${NAME}` engine template **without** a default (`${NAME}` / `${NAME:}`), names a value. Anything else in a sensitive field is a literal credential: a malformed `secret://…`, and a template with a default (`${DB_PASSWORD:hunter2}` carries the password itself). `getConnection` returns those as `"__redacted__"` and the rules below refuse them inside `connection`. A url's password counts whether it is in the userinfo (percent-encoding decoded first) or a `?password=` parameter.
 
-The worker resolves them through `secrets::resolve` as consumer **`database`**, so each secret must list `database` in its consumers (`secrets::set` / `secrets::access`). Resolved values are cached (re-read every 5 minutes, failures after 10 s), wiped from memory when replaced, and never logged, returned or written to the configuration. When a secret is rotated, deleted or re-shared, `secrets::changed` makes the worker re-read it and rebuild **only** the connections whose resolved values changed (a secret no stored connection uses is simply dropped from the cache). `database::testConnection` never uses the cache — it resolves its references at that moment, so a corrected or re-created secret is what the next Test sees — and `database::saveConnection` re-reads the saved entry's references before building its pool. The worker depends on the `secrets` worker (`iii.worker.yaml`).
+The worker resolves them through `secrets::resolve` as consumer **`database`**, so each secret must list `database` in its consumers (`secrets::set` / `secrets::access`). Resolved values are cached (re-read every 5 minutes, failures after 10 s), wiped from memory when replaced, and never logged, returned or written to the configuration. When a secret is rotated, deleted or re-shared, the worker's observer of `secrets::on-changed` makes it re-read it and rebuild **only** the connections whose resolved values changed (a secret no stored connection uses is simply dropped from the cache). `database::testConnection` never uses the cache — it resolves its references at that moment, so a corrected or re-created secret is what the next Test sees — and `database::saveConnection` re-reads the saved entry's references before building its pool. The worker depends on the `secrets` worker (`iii.worker.yaml`).
 
 **Literal credentials and traces.** A worker's trace spans record each call's payload, redacting keys that look sensitive (`password`, `private_key`, `secret`, `credential`, …) but not `passphrase`, `client_key` or a password inside `url`. So `database::testConnection` and `database::saveConnection` **refuse** a literal credential inside `connection` (a password, an inline key, a passphrase, a url password — `CONFIG_ERROR` naming the field): send it as a `secret://` / `env://` reference (safe anywhere), or in the request's **`credentials`** object — the same shape as the entry, sensitive fields only (`password`, `url`, `tls.client_key`, `ssh.password`, `ssh.private_key`, `ssh.passphrase`), merged over `connection` by the worker — which traces redact whole. Key file paths, `${VAR}` templates and `"__redacted__"` stay in `connection`. Responses never carry a credential (`getConnection` returns literals as `"__redacted__"`), no client can observe these three functions, and the configuration-change observer receives no configuration value (it re-reads it). What traces can still show: a literal that sits in the stored configuration itself (written by hand or by `configuration::set`) whenever another path ships the stored value — and a refused call's own payload: refusing happens inside the worker, after the engine traced the request, so a literal sent in `connection` by mistake is in that trace (redacted only when its key is on the SDK's list). Change that credential. A key file path stays in `connection` only while it looks like one (one line, at most 4096 bytes, not a pasted base64 key that happens to start with `/`). The lasting fix is upstream: the SDK's trace redaction (`iii-helpers`) should add `passphrase` and `client_key` to its key list and scrub url credentials.
 
@@ -131,7 +131,7 @@ An unresolvable reference fails only its connection, with a message that names t
 
 ### Hot reload
 
-When configuration changes (`configuration::set`, `database::saveConnection`, or an external edit to `./data/configuration/database.yaml`), the worker rebuilds only the connections whose entry or resolved secrets changed; the others keep their pools, tunnels and open connections. Invalid configs are rejected and the previous pools are kept. In-flight prepared-statement handles and open transactions continue on their original pool until they expire.
+The worker observes `configuration::on-updated` for its entry (filters on `input.id` and `input.event_type`, delivering only the caller, never the value). When configuration changes (`configuration::set`, `database::saveConnection`, or an external edit to `./data/configuration/database.yaml`), the worker re-reads the entry and rebuilds only the connections whose entry or resolved secrets changed; the others keep their pools, tunnels and open connections. Invalid configs are rejected and the previous pools are kept. In-flight prepared-statement handles and open transactions continue on their original pool until they expire.
 
 ### TLS (postgres + mysql)
 
@@ -230,7 +230,7 @@ import { registerWorker } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134')
 
-await iii.trigger({
+await iii.call({
   function_id: 'database::execute',
   payload: {
     db: 'primary',
@@ -238,7 +238,7 @@ await iii.trigger({
   },
 })
 
-await iii.trigger({
+await iii.call({
   function_id: 'database::execute',
   payload: {
     db: 'primary',
@@ -247,7 +247,7 @@ await iii.trigger({
   },
 })
 
-const { rows } = await iii.trigger({
+const { rows } = await iii.call({
   function_id: 'database::query',
   payload: {
     db: 'primary',
@@ -359,20 +359,23 @@ sqlite returns what each value is stored as (its affinity): `NUMERIC` columns ma
 
 ### `database::on-row-changed`
 
-One event per committed write statement. It is an **observable function**
-(iii 0.25): observe it with args that say which database, table and
-operations, and filters on what changed or who changed it. Two capture modes,
-chosen per database in the worker config (`capture:`):
+One event per committed write statement. The worker calls this private
+function after each committed write, and its handler returns the event, so
+observers observe the event. Observe it with args that say which database,
+table and operations, and filters on what changed or who changed it. Two
+capture modes, chosen per database in the worker config (`capture:`):
 
 - **`statements`** (default) — reports mutations made *through this worker*
   (`execute`, `executeBatch`, `transaction`, `insertRow`, and the interactive
   transaction surface) by classifying the SQL. A write applied by psql,
   another worker, or a database-side trigger is invisible to it. No database
-  setup; identical on SQLite, Postgres and MySQL. Events carry `caller`: the
-  function that made the write, and its `parent`, the one that called it.
+  setup; identical on SQLite, Postgres and MySQL. The worker calls the
+  function from the invocation that made the write, so events carry `caller`:
+  the function that made the write, and its `parent`, the one that called it.
 - **`native`** — reports committed writes from *any* client. Postgres: per-table
-  triggers + LISTEN/NOTIFY (the role needs TRIGGER on the table). File-backed
-  SQLite: triggers feeding a changelog table, drained on filesystem wake-up.
+  database triggers + LISTEN/NOTIFY (the role needs TRIGGER on the table).
+  File-backed SQLite: database triggers feeding a changelog table, drained on
+  filesystem wake-up.
   MySQL: the binlog replication stream (`REPLICATION SLAVE, REPLICATION CLIENT`
   grants, `binlog_row_metadata=FULL` for row identity). Observers must name a
   `table`. Events have no `caller.parent`: nothing in iii made the write.
@@ -415,31 +418,57 @@ iii.observe(
 );
 ```
 
-**Args.** `db` (required, a configured connection), `table` (optional on
-`statements`, required on `native`) and `ops` (optional; `insert` /
-`update` / `delete` / `other`). `table` is canonical: the bare name,
-unquoted and lowercase (`orders`, not `public.Orders`); the schema is in the
-event. An observer the worker cannot serve is refused when it is created,
-and its `ready()` says why:
+**Args** (`args_format`, checked by the engine). `db` (required, a configured
+connection), `table` (optional on `statements`, required on `native`) and
+`ops` (optional; `insert` / `update` / `delete` / `other`). `table` is
+canonical: the bare name, unquoted and lowercase (`orders`, not
+`public.Orders`); the schema is in the event. An observer the worker cannot
+serve is refused when it is created, and its `ready()` says why:
 
 | Code | Why |
 |---|---|
 | `INVALID_ARGS` | A missing `db`, or an unknown arg (`tabel`). |
 | `NON_CANONICAL_TABLE` | `table` is not canonical; the message names the canonical value. |
-| `UNKNOWN_DB` | No such connection. A configuration reload that removes a connection rejects its observers the same way. |
+| `UNKNOWN_DB` | No such connection. |
 | `NATIVE_CAPTURE_REQUIRES_TABLE` | A `native` database and no `table`. |
 | `CAPTURE_INSTALL_FAILED` | Native capture could not be installed (privileges, a table that does not exist under that name, a MySQL server without a ROW binlog). |
 
-**Event** (`input`): `{ db, schema, table, op, affected_rows, returning?,
-truncated?, at }`. `schema` is lowercase, `null` when neither the SQL nor the
-driver named one; `table` is canonical. Filter paths are checked against this
-shape (`input.tabel` is `INVALID_FILTER_PATH`).
+A configuration reload serves each observer as the new configuration says.
+When its database becomes `native`, or a `native` database's connection
+changes, the worker installs capture for its table through the new
+connection; when its database becomes `statements`, the statements path
+serves it. An observer the new configuration cannot serve is rejected with
+the code for the reason: its database was removed (`UNKNOWN_DB`), its
+database became `native` and it names no table
+(`NATIVE_CAPTURE_REQUIRES_TABLE`), or capture cannot be installed through
+the new connection (`CAPTURE_INSTALL_FAILED`). A `native` database whose
+connection cannot be built keeps its observers, and the worker installs
+their capture once the connection builds.
 
-**Only the database worker emits it.** Invoking `database::on-row-changed`
-directly is refused (`FORBIDDEN`): the engine refuses it from any other
-connection, and the function itself refuses every call, so no worker can
-hand observers an event of its own making. What an event says is still what
-the database told the worker:
+**Event** (`input`, and `output`: the handler returns it): `{ db, schema,
+table, op, affected_rows, returning?, truncated?, at }`. `schema` is
+lowercase, `null` when neither the SQL nor the driver named one; `table` is
+canonical. Filter paths are checked against this shape (`input.tabel` is
+`INVALID_FILTER_PATH`). An observer with `deliver: 'input'` or
+`deliver: 'output'` receives the event itself; the default delivers the
+`Observed` envelope.
+
+**Delivery.** iii delivers each call to the observers whose args match it:
+the worker files each observer under its `db`, its `table` (or every table)
+and each of its `ops` (or every operation), and looks each event up under its
+db, its table and every table, its op and every op. The observer's filters
+then apply as usual. The worker calls the function from the task that
+announces the write and waits for the call, which does not wait for the
+observers' targets. iii runs each delivery as a call of the target of its
+own, so a target can receive row events in any order, the statements of one
+transaction included. An observer with `max_in_flight: 1` receives them one
+at a time, in the order the worker called the function: commit order for one
+transaction's statements and for one native database's changes.
+
+**Only the database worker calls it.** The function is private: the engine
+refuses a call from any other connection (`FORBIDDEN`) and refuses it as an
+observer's target, so no worker can hand observers an event of its own
+making. What an event says is still what the database told the worker:
 
 - on `statements` it describes the statement as its writer wrote it
   (`returning` is the writer's projection), and `caller` says which function
@@ -450,8 +479,15 @@ the database told the worker:
   `database::query` too) or write the SQLite changelog, and the event
   carries no caller.
 
-Nobody observing costs nothing: no event is built and nothing goes on the
-wire.
+With nobody observing the function, no event is built: the worker
+classifies no SQL (except an interactive transaction's statements, held
+until its commit for an observer added before it), parses or decodes
+nothing a `native` database sends, does not call the function, and puts
+nothing on the wire. A `native` database still sends what it captures (a
+Postgres notification, the MySQL binlog stream, rows in the SQLite
+changelog, which the worker deletes), and the worker drops it without
+decoding it. With observers of other tables only, the event is built and
+costs a hash lookup per key; it is not serialized.
 
 **Which rows changed — `returning`.** The event never invents row data:
 
@@ -476,19 +512,20 @@ Worth knowing:
 - **Announced on commit, never before.** Statements inside an interactive
   transaction are buffered until `commitTransaction`; a rollback — including
   the timeout watcher's — drops the buffer. Atomic batches announce their
-  statements in order only after the whole batch commits. Native capture is
-  commit-gated by the database itself.
-- **Delivery is best-effort.** Dispatch happens after commit and is not durable
+  statements only after the whole batch commits. Native capture is
+  commit-gated by the database itself. **Delivery** above says in what order
+  a target receives them.
+- **Delivery is best-effort.** The call happens after commit and is not durable
   or atomic with the database write. There is no replay, retry, or exactly-once
-  guarantee; a crash between commit and dispatch can lose an event. Subscriber
-  failures never fail the write. A harness wake notification
+  guarantee; a crash between commit and the call can lose an event. A target's
+  failure never fails the write. A harness wake notification
   renders the event as JSON within ~8,000 characters; an over-long `returning`
   keeps its leading rows and ends with one marker string, `"…N more entries
   omitted (array shortened for this notification; JSON is complete)"` (N is
   what the wake dropped, on top of any `truncated` cap above), so the text
   still parses and `affected_rows` stays exact. Only an event whose
   non-array fields alone exceed the budget is cut as plain text with an
-  `…(truncated)` tail. Re-read the table on wake when a binding can see wide
+  `…(truncated)` tail. Re-read the table on wake when an observer can see wide
   or many-row writes. A filter that misses sends nothing: observers' filters
   run in the database worker, before anything goes on the wire.
 - **`table` can be null on `statements`.** The table is read off the SQL. A
@@ -502,6 +539,22 @@ Worth knowing:
   returns rows, not an affected-row count, and an event that invented one would
   be lying. Use `execute` when you need the change announced. On a `native`
   database the database itself reports the write, whichever path it took.
+- **Native capture stays installed.** The database triggers native capture
+  installs on a table stay when the table's last observer leaves, and when
+  the database leaves the configuration, leaves `capture: native` or moves
+  to another server: every worker and connection that captures the table
+  shares them, and the worker cannot tell whether another one still relies
+  on them. While they stay, each write
+  statement on the table raises a notification (Postgres) or appends
+  changelog rows (SQLite); a worker deletes the changelog rows only while it
+  has the database configured `capture: native`. To remove capture from a
+  table, drop them: on Postgres the triggers `iii_row_changed_ins`,
+  `iii_row_changed_upd` and `iii_row_changed_del` on the table (the
+  `iii_row_changed_notify()` function serves every captured table); on
+  SQLite the triggers `iii_row_changed_ins_<table>`,
+  `iii_row_changed_upd_<table>` and `iii_row_changed_del_<table>`, and the
+  `_iii_row_changes` table once no table is captured. MySQL capture installs
+  nothing.
 - **Native caveats.** Postgres additionally trims keys to fit NOTIFY's
   8000-byte payload. SQLite's triggers call `json_object`, so every process
   writing the file needs libsqlite ≥ 3.38 (JSON built in) — an older client
@@ -515,36 +568,13 @@ Worth knowing:
   outside the connection's `search_path`, or a quoted mixed-case one
   (`"Orders"`), fails with `CAPTURE_INSTALL_FAILED` and a hint.
 
-### `database::row-changed` (consumers that have not moved)
-
-The pre-0.25 trigger type keeps working, unchanged: the worker still
-registers it on every engine, 0.24 and 0.25 alike, and serves its bindings
-itself, however they were made — `registerTrigger` from a worker,
-`engine::register_trigger` (the CLI, a script), a harness subscription:
-
-```ts
-iii.registerTrigger({
-  type: 'database::row-changed',
-  function_id: 'shop::on-order',
-  config: { db: 'primary', table: 'orders', ops: ['insert'] },
-})
-```
-
-A binding is checked like an observer's args and routed by the same index.
-It receives the event in its pre-0.25 shape: no `schema`, and the table
-schema-qualified when a schema is known (`public.orders` from Postgres native
-capture). `table` in the config matches case- and schema-insensitively, as
-before; on `statements` the event's table is now lowercase (`INSERT INTO
-ORDERS` reports `orders`). The trigger's metadata rides along with each call.
-New code should observe `database::on-row-changed` instead.
-
 ## Isolation between callers
 
 - **Postgres** pooled connections are reset when they come back to the pool (`RESET ALL`, `UNLISTEN *`, `pg_advisory_unlock_all()`, temporary tables and sequences, open cursors), so one call's `set_config(…, false)` or advisory lock never reaches the next caller. Reads run in read-only transactions.
 - **Postgres prepared statements.** Session-level `PREPARE` / `EXECUTE` / `DEALLOCATE` are refused in every statement a call carries — `query`, `execute`, `transaction` / `executeBatch`, the interactive transaction calls and `prepareStatement` (`INVALID_PARAM`): a named statement would outlive the call on the pooled session (the reset cannot `DEALLOCATE ALL`: the driver's own cached statements live there too), where the next caller could run it. Use `prepareStatement` / `runStatement`, which pin a connection.
 - **SQLite** connections refuse `ATTACH` (and so `VACUUM`, which attaches underneath): a call can only ever see and write its own database file. They also refuse setting `writable_schema`, `schema_version`, `ignore_check_constraints`, `trusted_schema`, `legacy_alter_table`, `temp_store_directory` and `data_store_directory` (reading them is fine), and run with double-quoted string literals off, so `"name"` is always an identifier — a misspelt column is an error, not the string `'name'`.
 - **`saveConnection` is not bound to a server.** `testConnection` sends a stored credential only to that connection's own server, but `saveConnection` writes whatever entry it is given: a client allowed to call it can save an entry that points a `secret://` reference the `database` consumer can read at a server of its choosing, and the next connection attempt delivers it. That is the function's purpose (connection editors save new servers), so it is gated by permission instead: agents are denied `saveConnection`, `deleteConnection`, `getConnection` and `testConnection` (`iii-permissions.yaml`); grant them through RBAC only to clients you would let manage your connections, and share secrets with the `database` consumer only when every such client may use them.
-- **Observers.** `database::query`, `execute`, `browseTable`, `insertRow` and the other data functions are ordinary observable functions: an observer capturing `input` / `output` sees other clients' SQL and rows — the same reach as calling `database::query` itself, so grant `observe` on them as you would grant the call. `testConnection`, `saveConnection` and `getConnection` refuse every observer.
+- **Observers.** `database::query`, `execute`, `browseTable`, `insertRow` and the other data functions are ordinary observable functions: an observer capturing `input` / `output` sees other clients' SQL and rows — the same reach as calling `database::query` itself, so grant `observe` on them as you would grant the call. `testConnection`, `saveConnection` and `getConnection` are registered with `observable: false`: observing them fails with `NOT_OBSERVABLE`.
 
 ## Errors
 

@@ -1,6 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
-import { createWebImageRenderer } from './src/function-trigger'
+import { createWebImageRenderer } from './src/function-call'
 
 export default function setup(host: Host) {
-  host.functionTriggers.register(createWebImageRenderer())
+  host.functionCalls.register(createWebImageRenderer())
 }

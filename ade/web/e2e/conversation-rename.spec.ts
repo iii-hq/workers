@@ -8,7 +8,7 @@ test.describe('desktop rename focus', () => {
     stack,
   }) => {
     const completed = stack.waitForTurnCompleted()
-    await stack.trigger()
+    await stack.send()
     expect(await completed).toMatchObject({ status: 'completed' })
 
     await page.setViewportSize({ width: 1280, height: 800 })
@@ -72,7 +72,7 @@ test.describe('touch rows', () => {
     stack,
   }) => {
     const completed = stack.waitForTurnCompleted()
-    await stack.trigger()
+    await stack.send()
     expect(await completed).toMatchObject({ status: 'completed' })
 
     await page.setViewportSize({ width: 1280, height: 800 })

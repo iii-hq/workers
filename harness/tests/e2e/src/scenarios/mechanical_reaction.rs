@@ -94,7 +94,7 @@ fn evaluate<'a>(
         let source = source_value(run_id);
         let mirror = common::state_value(
             context
-                .trigger_value(
+                .call_value(
                     "state::get",
                     json!({ "scope": names.scope, "key": MIRROR_KEY }),
                 )
@@ -104,7 +104,7 @@ fn evaluate<'a>(
         let registrations: Vec<_> = calls
             .iter()
             .enumerate()
-            .filter(|(_, call)| call.function_id == "engine::register_trigger")
+            .filter(|(_, call)| call.function_id == common::OBSERVE)
             .collect();
         let wakes: Vec<_> = registrations
             .iter()
@@ -130,7 +130,7 @@ fn evaluate<'a>(
             && mirrors[0].0 < writes[0].0;
 
         let mirror_valid = valid_mirror(&mirror, &names, &source);
-        let records = common::trigger_fired_records(&observation.transcript);
+        let records = common::observer_fired_records(&observation.transcript);
         let call_records: Vec<_> = records
             .iter()
             .filter(|record| record.get("target").and_then(Value::as_str) == Some("state::set"))
@@ -198,17 +198,10 @@ fn evaluate<'a>(
 }
 
 fn is_mirror_wake(call: &common::ObservedFunctionCall, names: &Names) -> bool {
-    call.function_id == "engine::register_trigger"
-        && call.arguments.get("trigger_type").and_then(Value::as_str) == Some("state")
-        && call
-            .arguments
-            .pointer("/config/scope")
-            .and_then(Value::as_str)
+    common::observes(call, "state::on-changed")
+        && common::filter_eq(&call.arguments, "input.scope").and_then(Value::as_str)
             == Some(names.scope.as_str())
-        && call
-            .arguments
-            .pointer("/config/key")
-            .and_then(Value::as_str)
+        && common::filter_eq(&call.arguments, "input.key").and_then(Value::as_str)
             == Some(MIRROR_KEY)
         && call
             .arguments
@@ -219,39 +212,21 @@ fn is_mirror_wake(call: &common::ObservedFunctionCall, names: &Names) -> bool {
 }
 
 fn is_mirror_call(call: &common::ObservedFunctionCall, names: &Names) -> bool {
-    if call.function_id != "engine::register_trigger"
-        || call.arguments.get("trigger_type").and_then(Value::as_str) != Some("state")
-        || call
-            .arguments
-            .pointer("/config/scope")
-            .and_then(Value::as_str)
+    if !common::observes(call, "state::on-changed")
+        || common::filter_eq(&call.arguments, "input.scope").and_then(Value::as_str)
             != Some(names.scope.as_str())
-        || call
-            .arguments
-            .pointer("/config/key")
-            .and_then(Value::as_str)
+        || common::filter_eq(&call.arguments, "input.key").and_then(Value::as_str)
             != Some(SOURCE_KEY)
     {
         return false;
     }
 
-    let (function_id, payload, event_into) = if let Some(target) = call
-        .arguments
-        .get("target")
-        .filter(|target| !target.is_null())
-    {
-        (
-            target.get("function_id"),
-            target.get("payload"),
-            target.get("event_into"),
-        )
-    } else {
-        (
-            call.arguments.get("function_id"),
-            call.arguments.pointer("/metadata/payload"),
-            call.arguments.pointer("/metadata/event_into"),
-        )
-    };
+    let target = call.arguments.get("target");
+    let (function_id, payload, event_into) = (
+        target.and_then(|target| target.get("function_id")),
+        target.and_then(|target| target.get("payload")),
+        target.and_then(|target| target.get("event_into")),
+    );
 
     function_id.and_then(Value::as_str) == Some("state::set")
         && payload
@@ -282,32 +257,10 @@ fn source_value(run_id: &str) -> Value {
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let names = Names::new(run_id);
-        let listed = context
-            .trigger_value(
-                "harness::triggers::list",
-                json!({ "session_id": names.root_session }),
-            )
-            .await?;
-        for subscription_id in listed
-            .get("subscriptions")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|subscription| subscription.get("subscription_id").and_then(Value::as_str))
-        {
-            let _: Value = context
-                .trigger(
-                    "harness::triggers::unregister",
-                    json!({
-                        "session_id": names.root_session,
-                        "subscription_id": subscription_id,
-                    }),
-                )
-                .await?;
-        }
+        common::dispose_session_observers(context, &names.root_session).await?;
         for key in [SOURCE_KEY, MIRROR_KEY] {
             let _: Value = context
-                .trigger("state::delete", json!({ "scope": names.scope, "key": key }))
+                .call("state::delete", json!({ "scope": names.scope, "key": key }))
                 .await?;
         }
         Ok(())

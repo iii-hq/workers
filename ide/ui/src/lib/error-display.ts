@@ -2,7 +2,7 @@
    hand a shell renderer: flat wire errors, harness `{ content, details }`
    wrappers, translate `{ error: { kind, message, … } }` envelopes,
    approval denials, and fail-closed dispatch-policy denials. Ported from
-   the console's sandbox/parsers.ts when the shell function-trigger family
+   the console's sandbox/parsers.ts when the shell function-call family
    moved into this worker's injected UI.
 
    Deliberately React-free (the cards live in errors.tsx): parsing stays
@@ -113,9 +113,9 @@ function denialToInvocation(
           ? 'Denied by user'
           : denial.status === 'denied'
             ? 'Denied'
-            : 'Trigger failed'
+            : 'Call failed'
   const message =
-    denial.reason ?? fallbackMessage ?? 'The trigger could not complete.'
+    denial.reason ?? fallbackMessage ?? 'The call could not complete.'
   return {
     title,
     message,
@@ -136,7 +136,7 @@ function invocationFromFunctionError(
     return denialToInvocation(denial, envelope.message, detailText)
   }
   return {
-    title: 'Trigger failed',
+    title: 'Call failed',
     message: envelope.message,
     detailText,
   }

@@ -41,7 +41,7 @@ export type ComposeStatus = z.infer<typeof composeStatusSchema>
 
 export async function fetchEngineWorkersList(): Promise<WorkersListResponse> {
   const client = await getIiiClient()
-  const raw = await client.trigger<unknown>(WORKERS_RPC.engineList, {})
+  const raw = await client.call<unknown>(WORKERS_RPC.engineList, {})
   const parsed = workersListResponseSchema.safeParse(raw)
   return parsed.success ? parsed.data : { workers: [] }
 }
@@ -50,7 +50,7 @@ export async function fetchEngineWorkerInfo(
   name: string,
 ): Promise<WorkerInfoResponse | null> {
   const client = await getIiiClient()
-  const raw = await client.trigger<unknown>(WORKERS_RPC.engineInfo, { name })
+  const raw = await client.call<unknown>(WORKERS_RPC.engineInfo, { name })
   const parsed = workerInfoResponseSchema.safeParse(raw)
   return parsed.success ? parsed.data : null
 }
@@ -63,7 +63,7 @@ export async function fetchSupervisorWorkersList(): Promise<WorkerListResponse> 
     return { workers: [] }
   }
   const client = await getIiiClient()
-  const raw = await client.trigger<unknown>(WORKERS_RPC.supervisorList, {})
+  const raw = await client.call<unknown>(WORKERS_RPC.supervisorList, {})
   const parsed = workerListResponseSchema.safeParse(raw)
   return parsed.success ? parsed.data : { workers: [] }
 }
@@ -71,7 +71,7 @@ export async function fetchSupervisorWorkersList(): Promise<WorkerListResponse> 
 export async function fetchComposeStatus(): Promise<ComposeStatus | null> {
   const client = await getIiiClient()
   try {
-    const raw = await client.trigger<unknown>(
+    const raw = await client.call<unknown>(
       WORKERS_RPC.composeStatus,
       {},
       { timeoutMs: 10_000 },
@@ -85,7 +85,7 @@ export async function fetchComposeStatus(): Promise<ComposeStatus | null> {
 
 export async function stopSupervisorWorker(name: string): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger(WORKERS_RPC.supervisorStop, { name, yes: true })
+  await client.call(WORKERS_RPC.supervisorStop, { name, yes: true })
 }
 
 export interface RawWorkersSnapshot {

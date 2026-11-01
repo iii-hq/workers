@@ -7,20 +7,23 @@
 //!   2. Connect to the local iii engine over WebSocket.
 //!   3. Register the config schema (+ seed) and fetch the authoritative,
 //!      env-expanded value (a required boot dependency).
-//!   4. Register the trigger types the harness emits/owns (readiness + turn
-//!      events + the five hook points) BEFORE functions so handlers capture
-//!      subscriber sets.
-//!   5. Seed the function and skill catalog caches and bind their change signals.
-//!   6. Register the `harness::*` functions. Registering `harness::turn`
-//!      allows restored queue deliveries to run, but is not external readiness.
+//!   4. Register the observable functions the harness hosts (readiness + turn
+//!      events + the six hook points), each with its observer hooks set by id
+//!      before it registers, so every observer is accepted through them.
+//!   5. Seed the function and skill catalog caches and observe their change
+//!      events.
+//!   6. Register the `harness::*` functions and `harness::on-timer`.
+//!      Registering `harness::turn` allows restored queue deliveries to run,
+//!      but is not external readiness.
 //!   7. Ensure the dedicated `harness-turn` queue exists (required; bounded
 //!      retries cover queue-worker registration during stack startup).
-//!   8. Bind the cron pending-sweep (retain its handle for live re-bind).
-//!   9. LAST: bind the configuration-change trigger so its handler closes over
-//!      the fully-built snapshot cell + the cron handle.
-//!  10. Emit `harness::ready`, run the boot recovery passes, bind the engine's
-//!      worker change feed that re-runs them, then sleep on Ctrl+C and shut
-//!      down cleanly. Nothing in the worker runs on a periodic timer.
+//!   8. Observe `cron::on-tick` for the pending-call sweep (retain its handle
+//!      for a live replacement) and `session::on-deleted`.
+//!   9. LAST: observe `configuration::on-updated` so its handler closes over
+//!      the fully-built snapshot cell + the sweep observer.
+//!  10. Call `harness::on-ready`, run the boot recovery passes, observe the
+//!      engine's worker changes that re-run them, then sleep on Ctrl+C and
+//!      shut down cleanly. Nothing in the worker runs on a periodic timer.
 
 use std::sync::Arc;
 
@@ -30,7 +33,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
 use tokio::sync::RwLock;
 
-use harness::configuration::{self, ConfigCell, TriggerHandles};
+use harness::configuration::{self, ConfigCell, LifecycleObservers};
 use harness::deps::Deps;
 use harness::events::TurnEvents;
 use harness::hooks::HookRegistry;
@@ -117,7 +120,8 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("loading harness configuration")?;
 
-    // Trigger types first: the handlers capture the subscriber sets.
+    // The harness's own observable functions first: each sets its observer
+    // hooks by id before it registers.
     let events = TurnEvents::register(&iii);
     let hooks = HookRegistry::register(&iii);
 
@@ -138,59 +142,53 @@ async fn main() -> Result<()> {
     // harness::turn, because target registration is what releases any held
     // delivery waiting for this worker to come back.
     discovery::seed(&iii, &functions_cell, cfg.dispatch_timeout_ms).await;
-    discovery::register_functions_trigger(&iii, functions_cell.clone(), cfg.dispatch_timeout_ms);
+    discovery::observe_function_changes(&iii, functions_cell.clone(), cfg.dispatch_timeout_ms);
     harness::skills::seed(&iii, &skills_cell, cfg.dispatch_timeout_ms).await;
-    harness::skills::register_trigger(&iii, skills_cell, cfg.dispatch_timeout_ms);
+    harness::skills::observe_skill_changes(&iii, skills_cell, cfg.dispatch_timeout_ms);
 
     functions::register_all(&iii, &deps);
 
-    // Injectable console UI: content function + console:script/style triggers.
-    // Ordering doesn't matter for the console side (the engine parks the
-    // registration until a console owns the type), but the content function
-    // must exist before the trigger names it.
+    // Injectable console UI: content function + one `console::ui::asset`
+    // observer per asset. Ordering doesn't matter for the console side (an
+    // observer stays pending until the console hosts the function), but the
+    // content function must exist before an observer names it.
     ui::register(&iii);
 
-    // The one-shot deadline provider, registered with the ENGINE so `timer`
-    // shows up in engine::triggers::list and live registrations replay to it
-    // after a restart (re-armed at the same absolute `at` — the registration
-    // intercept resolves `in_ms` before the engine stores the config).
-    let timer_bus = harness::timer::TimerBus::new(iii.clone(), cfg.dispatch_timeout_ms);
-    let _timer_type = iii.register_trigger_type(iii_sdk::RegisterTriggerType::new(
-        harness::timer::TIMER_TYPE,
-        harness::timer::TIMER_DESC,
-        harness::timer::TimerHandler { bus: timer_bus },
-    ));
+    // The one-shot deadline: `harness::on-timer`, whose observers replay to
+    // its added hook after a restart (re-armed at the same absolute `at` —
+    // the `harness::observe` intercept resolves `in_ms` before observing).
+    let _timer = harness::timer::TimerBus::register(&iii);
 
     // The queue consumer may restore durable jobs as soon as this definition
-    // succeeds. Discovery and `harness::turn` are already ready; do not bind
-    // lifecycle triggers or announce ready unless the queue is usable.
+    // succeeds. Discovery and `harness::turn` are already ready; do not
+    // observe lifecycle events or announce ready unless the queue is usable.
     queue::ensure_turn_queue(&iii)
         .await
         .map_err(anyhow::Error::msg)
         .context("ensuring harness turn and deletion queues before recovery")?;
 
-    // Bind lifecycle triggers and retain their handles for the worker lifetime.
-    // The sweep binding is hot-reloaded when sweep_expression changes.
-    let handles = Arc::new(TriggerHandles::new(
-        configuration::bind_sweep(&iii, &cfg),
-        configuration::bind_session_deleted(&iii),
+    // Observe lifecycle events and retain the handles for the worker
+    // lifetime. The sweep observer is replaced when sweep_expression changes.
+    let handles = Arc::new(LifecycleObservers::new(
+        configuration::observe_sweep(&iii, &cfg),
+        configuration::observe_session_deleted(&iii),
     ));
 
-    // LAST: bind the configuration-change trigger.
-    configuration::register_config_trigger(&iii, cell, handles)
-        .context("registering the configuration change trigger")?;
+    // LAST: observe configuration changes.
+    let _config_observer = configuration::observe_config_changes(&iii, cell, handles);
 
     harness::functions::delete_session_tree::recover(&deps)
         .await
         .context("recovering durable session deletions")?;
     deps.events.emit_ready().await;
     tracing::info!(
-        "harness ready: harness::* functions + subscriptions + turn events + hook points + reactive function-registry cache"
+        "harness ready: harness::* functions + observers + turn events + hook points + reactive function-registry cache"
     );
 
-    // Background GC of durable spawn/notify bindings orphaned across restarts
-    // (their in-memory session tracking is gone; their owner session may have
-    // been deleted while this harness was down), then the binding pass: it
+    // Background GC of durable bindings orphaned across restarts (their owner
+    // session may have been deleted while this harness was down), the replay
+    // that re-creates every surviving binding's observer, then the binding
+    // pass: it
     // retires lifecycle-spent bindings (an unfired wake past its deadline
     // wakes its owner) and arms every other deadline as its own timer — the
     // timer, not a sweep, is what turns `expires_at` into that notice. The
@@ -216,9 +214,10 @@ async fn main() -> Result<()> {
     // boot, then one per engine worker change plus known-due follow-ups.
     tokio::spawn(harness::inflight::run(deps.clone()));
     // Compose wakes whose operation finished inside their activation window.
-    harness::bindings::compose::register_terminal_watch(&deps);
-    // The engine's worker connect/disconnect/announce feed: kicks the binding
-    // pass, the orphaned-turn pass, and (on announce) the catalog refresh.
+    harness::bindings::compose::observe_terminal_operations(&deps);
+    // The engine's worker connect/disconnect/announce events: kick the
+    // binding pass, the orphaned-turn pass, and (on announce) the catalog
+    // refresh.
     harness::engine_events::register(&deps);
 
     tokio::signal::ctrl_c().await?;

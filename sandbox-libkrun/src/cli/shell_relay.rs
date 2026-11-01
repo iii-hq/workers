@@ -1105,7 +1105,7 @@ mod tests {
     /// so a burst of 17+ fast sequential connections found every slot
     /// still held and the 17th was refused (`early eof on handshake`,
     /// S216 on the host). Real-world repro: `fs-example.mjs` running
-    /// ~14 happy-path triggers then a few more in <250 ms.
+    /// ~14 happy-path calls then a few more in <250 ms.
     ///
     /// A clean disconnect now frees its range at once (`release_range`).
     /// This test fires 32 sequential connect/handshake/disconnect

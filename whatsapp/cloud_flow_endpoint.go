@@ -153,9 +153,8 @@ func processCloudFlow(ctx context.Context, config Config, raw []byte, signature 
 func registerCloudFlowEndpoint(client *iii.Client, manager *Manager, engineURL string) error {
 	const function = "whatsapp::cloud::flows::endpoint"
 	metadata := iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true,"trace_hidden":true}`)}
-	if err := iii.RegisterFunctionTyped(client, function, cloudFlowEndpointHandler(client, manager, engineURL), metadata); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, function, cloudFlowEndpointHandler(client, manager, engineURL), metadata); err != nil {
 		return err
 	}
-	route, _ := json.Marshal(map[string]any{"api_path": cloudFlowPath(), "http_method": "POST", "public_webhook": true})
-	return client.RegisterTriggerNamespaced(ConfigID()+"-cloud-flow-endpoint", "http", function, Namespace(), route)
+	return observeHTTPRoute(client, "POST", cloudFlowPath(), function)
 }

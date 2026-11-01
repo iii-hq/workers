@@ -1,29 +1,42 @@
 # cron
 
-Schedules registered functions with cron expressions. Any function bound to a
-`cron` trigger is invoked by this worker at the next matching UTC time. The
-worker replaces the legacy built-in cron worker while keeping the trigger type
-and payload shape stable. On iii 0.25 engines it also hosts
-[`cron::on-tick`](#observable-function-cronon-tick), an observable function
-next to the trigger type.
+Runs functions on cron schedules. A function runs on a schedule when it
+observes `cron::on-tick` with a cron expression as args: this worker calls
+`cron::on-tick` once per fire of that expression, at the next matching UTC
+time, and every observer of the expression receives the tick.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=cron
+iii call compose::add worker=cron
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
 
-Register a function and bind it to this worker's trigger type (`cron`) with an
-`expression`:
+Register a function and observe `cron::on-tick` with it, passing the schedule
+as args:
+
+```typescript
+iii.registerFunction('reports::daily', async (tick: CronTick) => {
+  // tick: { expression, scheduled_time, actual_time }
+  await sendDigest(tick.scheduled_time)
+})
+
+const digest = iii.observe(
+  { function_id: 'cron::on-tick', args: { expression: '0 0 9 * * Mon-Fri' }, deliver: 'output' },
+  'reports::daily',
+)
+await digest.ready()   // rejected with INVALID_CRON_EXPRESSION for a bad expression
+// later: await digest.dispose() stops the schedule
+```
+
+The same in Rust:
 
 ```rust
-use iii_sdk::protocol::RegisterTriggerInput;
-use iii_sdk::{errors::Error, register_worker, InitOptions, RegisterFunction};
+use iii_sdk::{errors::Error, register_worker, Deliver, InitOptions, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 #[tokio::main]
@@ -32,133 +45,120 @@ async fn main() -> anyhow::Result<()> {
 
     iii.register_function(
         "jobs::tick",
-        RegisterFunction::new_async(|payload: Value| async move {
-            println!("cron fired: {payload}");
-            Ok::<Value, Error>(json!({"ok": true}))
+        RegisterFunction::new_async(|tick: Value| async move {
+            println!("cron fired: {tick}");
+            Ok::<Value, Error>(json!({ "ok": true }))
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "cron".to_string(),
-        function_id: "jobs::tick".into(),
-        config: json!({ "expression": "*/5 * * * * *" }),
-        metadata: None,
-    })?;
+    iii.observe(
+        Source::function("cron::on-tick")
+            .args(json!({ "expression": "*/5 * * * * *" }))
+            .deliver(Deliver::Output),
+        "jobs::tick",
+    );
 
     tokio::signal::ctrl_c().await?;
     Ok(())
 }
 ```
 
-The function receives:
+With `deliver: 'output'` the function receives the tick:
 
 ```json
 {
-  "trigger": "cron",
-  "job_id": "<trigger-id>",
+  "expression": "*/5 * * * * *",
   "scheduled_time": "2026-07-03T12:00:00+00:00",
   "actual_time": "2026-07-03T12:00:00.123456789+00:00"
 }
 ```
 
+Without it, the function receives the `Observed` envelope, with the tick as
+its `input` and `output` and the observer's id as `observer_id`.
+
+## Functions
+
+| Function | Args | What it is |
+|---|---|---|
+| `cron::on-tick` | `{ expression }` | One call per fire of a cron expression. Observers observe the tick; each observer receives the ticks of its own expression. |
+
+### `cron::on-tick`
+
+| Arg | Required | Description |
+|---|---|---|
+| `expression` | yes | Cron expression parsed by the Rust `cron` crate: six fields `sec min hour day month weekday`, and an optional seventh year field. UTC. |
+
+Rejections, through the observer's `ready()`:
+
+| Code | When |
+|---|---|
+| `INVALID_ARGS` | `expression` is missing or not a string, or another arg is present. |
+| `INVALID_CRON_EXPRESSION` | `expression` is empty or does not parse; the message names the expression. |
+
+The event, the function's input and what its observers observe:
+
+| Field | Description |
+|---|---|
+| `expression` | The expression that fired, exactly as its observers passed it in args. |
+| `scheduled_time` | The fire's scheduled time: RFC 3339 in UTC with a `+00:00` offset, whole seconds (`2026-11-01T09:00:00+00:00`). |
+| `actual_time` | When the worker fired it: RFC 3339 in UTC with a `+00:00` offset. |
+
+- **Delivery.** The worker runs one job per distinct expression and calls
+  `cron::on-tick` once per fire. iii delivers the tick to the observers of
+  that expression (matched by `args.expression` and `input.expression`) whose
+  filters accept it. The job starts with the expression's first observer and
+  stops with its last. Every fire is delivered, even while the target still
+  runs the previous one: observe with `max_in_flight: 1` to run one at a
+  time, the later fires waiting their turn.
+- **Filters** select ticks by `input`, e.g.
+  `{ 'input.scheduled_time': { $gte: '2026-11-01T00:00:00+00:00' } }`.
+  Filters compare strings by code point, so a time bound is written in the
+  form the worker emits: RFC 3339 with `+00:00`.
+- **Metadata.** The observer's `metadata` arrives as each delivery's sidecar.
+- **Missed fires.** Fires while the worker is stopped, or disconnected from
+  the engine, are skipped; there is no catch-up replay.
+- **Day of week.** Write it as a name (`Mon` ... `Sun`). Numerically the crate
+  counts Sunday as 1, so `0 0 9 * * 1` fires on Sunday, not Monday.
+- **Private.** Only this worker calls `cron::on-tick`; a call from another
+  worker is refused with `FORBIDDEN`, and the function cannot be an
+  observer's target.
+- **One host.** The function registers as a standby: a second instance of the
+  worker waits, and takes over the observers when the first one leaves. Each
+  expression fires once per scheduled time. The engine admits one live worker
+  per worker name and namespace, so the second instance runs under its own
+  name (`III_WORKER_NAME=cron-standby`). An instance started under a name that
+  a live worker holds is refused (`WORKER_NAMESPACE_CONFLICT`) and exits.
+
+A target that needs to know which schedule fired reads `observer_id` from the
+envelope, or observes with its own target per schedule.
+
 ## Configuration
 
-| Field | Default | Description |
-|---|---|---|
-| `adapter.name` | `local` | Lock backend. Use `local` for process-local locking or `redis` for multi-instance mutual exclusion. |
-| `adapter.config.redis_url` | `redis://localhost:6379` | Redis URL when `adapter.name` is `redis`. |
-
-Configuration is owned by the `configuration` worker - edit it from the
-console (**Configuration -> Workers -> cron**) or seed it once via
-`--config <file>.yaml` on first boot. Changing the lock adapter hot-swaps the
-scheduler under a serialized apply lock: existing jobs are stopped, re-created
-with the new backend, and never run in two scheduler instances at once.
+The worker has no settings. The engine passes a worker's `config:` block as
+`--config <file>`; this worker does not read it.
 
 ## Console page
 
 While the worker is connected it injects a **cron** page into the console
 (page `cron`): every agent-owned schedule with its cadence, next UTC run and
-fire count, the cron bindings other workers registered for themselves, and a
-composer that turns "every weekday at 09:00, summarise open PRs" into a
-registered schedule. Schedules created there live in a session of their own,
-so each routine keeps its own transcript.
+fire count, the `cron::on-tick` observers other workers created for their own
+functions, and a composer that turns "every weekday at 09:00, summarise open
+PRs" into a schedule. The composer and the manual form ask a harness agent to
+call `harness::observe` with `{ function_id: 'cron::on-tick', args: {
+expression } }`; schedules created there live in a session of their own, so
+each routine keeps its own transcript.
 
-## Trigger type
-
-This worker always registers the `cron` trigger type. Bind a function to it
-with:
-
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `expression` | yes | - | Cron expression parsed by the Rust `cron` crate. Six-field `sec min hour day month weekday` expressions are supported, and a seventh year field is accepted. |
-| `condition_function_id` | no | - | Function invoked before the scheduled handler. Only an explicit JSON `false` return blocks the fire; missing/null/truthy returns allow it. Condition errors skip that fire. |
-
-All schedules use UTC. Missed fires while the worker is stopped are skipped;
-there is no catch-up replay.
-
-The trigger type is deprecated with `registerTrigger` in iii 0.25 and keeps
-working on 0.24 and 0.25 engines. New consumers on a 0.25 engine can observe
-`cron::on-tick` instead.
-
-Write the day of week as a name (`Mon` ... `Sun`). Numerically the crate counts
-Sunday as 1, so `0 0 9 * * 1` fires on Sunday, not Monday.
-
-## Observable function `cron::on-tick`
-
-On an iii 0.25 engine, observe `cron::on-tick` with the expression as args:
-
-```typescript
-iii.registerFunction('reports::daily', async ({ observer_id, input }) => {
-  // input: { trigger, expression, scheduled_time, actual_time }
-  await sendDigest(input.scheduled_time)
-})
-
-const digest = iii.observe(
-  { function_id: 'cron::on-tick', args: { expression: '0 0 9 * * Mon-Fri' } },
-  'reports::daily',
-)
-await digest.ready()
-// later: await digest.dispose()
-```
-
-| Arg | Required | Description |
-|---|---|---|
-| `expression` | yes | Same grammar and validation as the trigger config. A bad expression fails `ready()` with `INVALID_CRON_EXPRESSION`; a missing `expression` or any other arg fails with `INVALID_ARGS`. |
-
-- The target receives the tick in the envelope's `input`:
-  `{ trigger: "cron", expression, scheduled_time, actual_time }`. There is no
-  `job_id` (one tick serves every observer of the expression; the envelope's
-  `observer_id` says which observer fired) and no `condition_function_id`
-  (add `filters` to the observer, e.g.
-  `{ 'input.scheduled_time': { $gte: '2026-11-01T00:00:00Z' } }`, or check in
-  the target).
-- The observer's `metadata` arrives as each activation's sidecar.
-- Bindings and observers on the same expression share one job, which stops
-  when the last of them leaves. Each still takes its own lock on every fire:
-  a binding its trigger id (`cron_lock:<trigger_id>`, held through the fire,
-  as before), an observer its id and the fire's scheduled time
-  (`cron_observer_lock:<observer_id>@<scheduled_time>`, left to expire, so
-  one emit per observer and period). With the `redis` backend, instances
-  sharing it exclude each other per binding and per observer, never per
-  expression.
-- `cron::on-tick` is an event source: invoking it directly is refused with
-  `FORBIDDEN`.
-- On an engine without observe (0.24), `observe` fails with `UNSUPPORTED`;
-  bind the `cron` trigger type there.
-
-## Console trigger activity
+## Console observer activity
 
 The worker injects a cron-specific source section into Consoles that support
-`host.triggerRenderers`. Trigger registration, firing, and retirement show a
-plain-language schedule, the exact expression, explicit UTC, and the optional
-`condition_function_id`. Expressions that cannot be summarized without
-hiding cron semantics keep an honest “custom schedule” label and the raw
-expression.
+`host.observerRenderers`. The activity of a `cron::on-tick` observer (added,
+fired, retired) shows a plain-language schedule, the exact expression, and
+explicit UTC. Expressions that cannot be summarized without hiding cron
+semantics keep an honest “custom schedule” label and the raw expression.
 
 The Console retains the surrounding activity, delivery target/result,
 lifecycle state and controls, and raw JSON. Disabling or disconnecting this
-worker's injected UI therefore falls back to the generic trigger view rather
-than removing trigger activity.
+worker's injected UI falls back to the generic observer view.
 
 For local UI development:
 
@@ -173,28 +173,3 @@ cd cron && III_CRON_UI_WATCH=1 cargo run
 
 The Rust build embeds `cron/page.js` and `cron/styles.css`; production does
 not require a separate asset server.
-
-### Requires removing the legacy built-in cron worker
-
-The legacy built-in cron worker also owns the `cron` trigger type. Two owners
-of the same trigger type on one engine collide - whichever registers last
-wins - so this worker requires it to be absent: omit it from the
-engine's `config.yaml` (a config that doesn't list a worker won't run it).
-
-On boot, this worker queries the engine for connected workers and refuses to
-start with a clear error if the legacy built-in is still active, so a stale config
-fails loudly instead of silently racing the built-in worker for ownership of
-`cron`.
-
-## Parity vs builtin
-
-| Behavior | Builtin | This worker |
-|---|---|---|
-| Expressions | 6-7 field (`cron` crate) | same |
-| Timezone | UTC only | same |
-| Missed runs | skipped, no catch-up | same |
-| Condition | only explicit `false` blocks | same |
-| Lock TTL | 30s | same |
-| Lock backends | kv (process-local), redis | local (process-local), redis |
-| Service functions | none | none (`cron::on-tick` is observed, never invoked) |
-| Jobs | one per trigger | one per distinct expression, shared by bindings and observers |

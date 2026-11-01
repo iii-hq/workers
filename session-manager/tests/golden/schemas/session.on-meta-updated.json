@@ -1,0 +1,87 @@
+{
+  "function_id": "session::on-meta-updated",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "What an event function is called with and returns, so what its observers observe: the event's fields plus the session's metadata.",
+    "properties": {
+      "description": {
+        "type": "string"
+      },
+      "metadata": {
+        "additionalProperties": true,
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "session_metadata": {
+        "additionalProperties": true,
+        "description": "`SessionMeta.metadata` as of the mutation (for `session::on-deleted`, as of just before deletion); omitted when the session has none. Observers filter on `input.session_metadata.<key>`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "description",
+      "session_id",
+      "timestamp",
+      "title"
+    ],
+    "title": "WithSessionMetadata_for_MetaUpdatedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "What an event function is called with and returns, so what its observers observe: the event's fields plus the session's metadata.",
+    "properties": {
+      "description": {
+        "type": "string"
+      },
+      "metadata": {
+        "additionalProperties": true,
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "session_metadata": {
+        "additionalProperties": true,
+        "description": "`SessionMeta.metadata` as of the mutation (for `session::on-deleted`, as of just before deletion); omitted when the session has none. Observers filter on `input.session_metadata.<key>`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "timestamp": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "description",
+      "session_id",
+      "timestamp",
+      "title"
+    ],
+    "title": "WithSessionMetadata_for_MetaUpdatedEvent",
+    "type": "object"
+  }
+}

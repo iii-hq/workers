@@ -16,7 +16,7 @@ import { normalizeErrorMessage } from '@/lib/providers'
 import { isMissingFunction, storeKey } from '@/lib/secrets'
 import { fetchEngineWorkersList } from '@/pages/Workers/api/workers'
 import { JUDGE_HUB_WORKER, workerSource } from './catalog'
-import { type Done, type WakeTrigger, waitForEvents } from './event-wait'
+import { type Done, type WakeSource, waitForEvents } from './event-wait'
 import type { PlanStep, ProviderState, ToolScan } from './plan'
 import { setPath } from './plan'
 
@@ -72,17 +72,15 @@ const MODELS_SILENCE_MS = 15_000
 const JUDGE_SILENCE_MS = 30_000
 const CONFIGURATION_SILENCE_MS = 10_000
 
-/** Compose streams an add's progress on this trigger type. */
-const COMPOSE_OPERATION_TRIGGER = 'compose-operation'
-/** The engine fires this when a worker connects, registers, or leaves. */
-const WORKERS_AVAILABLE_TRIGGER = 'engine::workers-available'
+/** Compose calls this with each progress event of an add. */
+const COMPOSE_OPERATION_PROGRESS_FN = 'compose::on-operation-progress'
+/** The engine calls this when a worker connects, updates, or leaves. */
+const WORKERS_CHANGED_FN = 'engine::on-workers-changed'
 /** ...and this when the function registry changes. */
-const FUNCTIONS_AVAILABLE_TRIGGER = 'engine::functions-available'
-/** Worker-manager lifecycle, where an engine still publishes it. */
-const WORKER_LIFECYCLE_TRIGGER = 'worker'
-const CONFIGURATION_TRIGGER = 'configuration'
-const ROUTER_MODELS_CHANGED = 'router::models::changed'
-const ROUTER_PROVIDER_CHANGED = 'router::provider::changed'
+const FUNCTIONS_CHANGED_FN = 'engine::on-functions-changed'
+const CONFIGURATION_UPDATED_FN = 'configuration::on-updated'
+const ROUTER_MODELS_CHANGED_FN = 'router::models::on-changed'
+const ROUTER_PROVIDER_CHANGED_FN = 'router::provider::on-changed'
 
 /**
  * An error as the wizard shows it: its own messages keep their sentence
@@ -103,7 +101,7 @@ export function readableError(error: unknown): string {
 export async function fetchOnboardingState(): Promise<OnboardingState | null> {
   const client = await getIiiClient()
   try {
-    return await client.trigger<OnboardingState>(
+    return await client.call<OnboardingState>(
       'console::onboarding::get',
       {},
       { timeoutMs: 5_000 },
@@ -119,7 +117,7 @@ export async function saveOnboardingState(
   summary?: unknown,
 ): Promise<void> {
   const client = await getIiiClient()
-  await client.trigger(
+  await client.call(
     'console::onboarding::set',
     summary === undefined ? { status } : { status, summary },
     { timeoutMs: 5_000 },
@@ -128,7 +126,7 @@ export async function saveOnboardingState(
 
 export async function scanMachine(): Promise<ToolScan[]> {
   const client = await getIiiClient()
-  const result = await client.trigger<{ tools?: ToolScan[] }>(
+  const result = await client.call<{ tools?: ToolScan[] }>(
     'console::onboarding::scan',
     {},
     { timeoutMs: 15_000 },
@@ -161,8 +159,8 @@ function asString(value: unknown): string | undefined {
 export async function readProviderStates(): Promise<ProviderState[]> {
   const client = await getIiiClient()
   const [providers, models] = await Promise.all([
-    client.trigger<{ providers?: unknown }>('router::provider::list', {}),
-    client.trigger<{ models?: unknown }>('router::models::list', {}),
+    client.call<{ providers?: unknown }>('router::provider::list', {}),
+    client.call<{ models?: unknown }>('router::models::list', {}),
   ])
   const counts = new Map<string, number>()
   for (const raw of Array.isArray(models?.models) ? models.models : []) {
@@ -211,10 +209,9 @@ export async function readJudgeProvider(): Promise<string | null> {
     const id = await configurationId(JUDGE_HUB_WORKER)
     if (!id) return null
     const client = await getIiiClient()
-    const entry = await client.trigger<{ value?: unknown }>(
-      'configuration::get',
-      { id },
-    )
+    const entry = await client.call<{ value?: unknown }>('configuration::get', {
+      id,
+    })
     return asString(asRecord(entry?.value)?.provider) ?? null
   } catch {
     return null
@@ -228,7 +225,7 @@ interface ConfigurationListing {
 /** The live entry id of a worker family (`default-llm-router` for `llm-router`). */
 async function configurationId(family: string): Promise<string | null> {
   const client = await getIiiClient()
-  const listing = await client.trigger<ConfigurationListing>(
+  const listing = await client.call<ConfigurationListing>(
     'configuration::list',
     {},
   )
@@ -284,7 +281,7 @@ interface OperationSnapshot {
   last_event?: { detail?: string; container?: string | null } | null
 }
 
-/** One `compose-operation` event (iii-compose `ProgressEvent`). */
+/** One `compose::on-operation-progress` event (iii-compose `ProgressEvent`). */
 export interface ComposeProgressEvent {
   operation_id: string
   phase: string
@@ -353,10 +350,10 @@ function newOperationId(): string {
   return `ade-setup:${id}`
 }
 
-function operationTrigger(operationId: string): WakeTrigger {
+function operationProgress(operationId: string): WakeSource {
   return {
-    type: COMPOSE_OPERATION_TRIGGER,
-    config: { operation_id: operationId, terminal_only: false },
+    function_id: COMPOSE_OPERATION_PROGRESS_FN,
+    filters: { 'input.operation_id': { $eq: operationId } },
   }
 }
 
@@ -376,7 +373,7 @@ async function composeProjectFile(
 ): Promise<string | undefined> {
   const client = await getIiiClient()
   try {
-    const list = await client.trigger<ComposeList>(
+    const list = await client.call<ComposeList>(
       'compose::list',
       {},
       { timeoutMs: 10_000 },
@@ -408,7 +405,7 @@ export function projectFileFor(
 
 /**
  * `compose::add` and follow its operation to the end through
- * `compose-operation` events: bound before the add starts, one
+ * `compose::on-operation-progress` events: observed before the add starts, one
  * `compose::operation` read to catch up, one more when the terminal event
  * arrives (it carries no status), and one after a long silence.
  */
@@ -424,11 +421,11 @@ async function composeAdd(
   let heard = false
   await waitForEvents<undefined>({
     handler: 'iii::console::onboarding::compose',
-    triggers: [operationTrigger(requested)],
+    sources: [operationProgress(requested)],
     start: async (arm) => {
       report({ note: 'Adding to worker-compose.yaml' })
       const file = await composeProjectFile([ROUTER_WORKER])
-      const accepted = await client.trigger<{ operation_id?: string }>(
+      const accepted = await client.call<{ operation_id?: string }>(
         'compose::add',
         {
           ...(file ? { file } : {}),
@@ -441,7 +438,7 @@ async function composeAdd(
       if (id && id !== requested) {
         // An older compose ignored ours: follow the id it chose.
         operationId = id
-        await arm(operationTrigger(id))
+        await arm(operationProgress(id))
       } else if (!id) {
         operationId = null
       }
@@ -459,7 +456,7 @@ async function composeAdd(
       if (!operationId) return { value: undefined }
       let snapshot: OperationSnapshot
       try {
-        snapshot = await client.trigger<OperationSnapshot>(
+        snapshot = await client.call<OperationSnapshot>(
           'compose::operation',
           { operation_id: operationId },
           { timeoutMs: 10_000 },
@@ -499,8 +496,8 @@ async function composeAdd(
 
 /**
  * Wait until every worker in `names` is connected: re-read the worker list
- * once now and once per `engine::workers-available` (a worker connected or
- * registered) — or worker-manager lifecycle — event.
+ * once now and once per `engine::on-workers-changed` event (a worker
+ * connected, updated or left).
  */
 async function waitForWorkers(
   names: readonly string[],
@@ -509,13 +506,7 @@ async function waitForWorkers(
   let waiting = [...names]
   await waitForEvents<undefined>({
     handler: 'iii::console::onboarding::workers',
-    triggers: [
-      { type: WORKERS_AVAILABLE_TRIGGER },
-      {
-        type: WORKER_LIFECYCLE_TRIGGER,
-        config: { operations: ['add'], stages: ['done'] },
-      },
-    ],
+    sources: [{ function_id: WORKERS_CHANGED_FN }],
     check: async () => {
       const connected = await installedWorkerNames()
       waiting = names.filter((worker) => !connected.has(worker))
@@ -543,13 +534,7 @@ async function waitForWorkersGone(
   let lingering = [...names]
   await waitForEvents<undefined>({
     handler: 'iii::console::onboarding::workers-gone',
-    triggers: [
-      { type: WORKERS_AVAILABLE_TRIGGER },
-      {
-        type: WORKER_LIFECYCLE_TRIGGER,
-        config: { operations: ['remove'], stages: ['done'] },
-      },
-    ],
+    sources: [{ function_id: WORKERS_CHANGED_FN }],
     check: async () => {
       const connected = await installedWorkerNames()
       lingering = names.filter((worker) => connected.has(worker))
@@ -577,7 +562,7 @@ async function removeWorkers(
   if (present.length === 0) return { note: 'already removed' }
   report({ note: 'Removing from worker-compose.yaml' })
   const file = await composeProjectFile(present)
-  const accepted = await client.trigger<{ operation_id?: string }>(
+  const accepted = await client.call<{ operation_id?: string }>(
     'compose::remove',
     { ...(file ? { file } : {}), workers: present },
     { timeoutMs: COMPOSE_ADD_TIMEOUT_MS },
@@ -585,7 +570,7 @@ async function removeWorkers(
   if (accepted?.operation_id) {
     // Removal is quick; one read of the operation is enough to learn its
     // outcome, and the worker list below is the proof.
-    const snapshot = await client.trigger<OperationSnapshot>(
+    const snapshot = await client.call<OperationSnapshot>(
       'compose::operation',
       { operation_id: accepted.operation_id },
       { timeoutMs: 10_000 },
@@ -641,11 +626,13 @@ function waitForConfiguration(
     new Error(`the ${family} configuration is not registered`)
   return waitForEvents<string>({
     handler: 'iii::console::onboarding::configuration',
-    triggers: [
+    sources: [
       {
-        type: CONFIGURATION_TRIGGER,
-        config: {
-          event_types: ['configuration:registered', 'configuration:updated'],
+        function_id: CONFIGURATION_UPDATED_FN,
+        filters: {
+          'input.event_type': {
+            $in: ['configuration:registered', 'configuration:updated'],
+          },
         },
       },
     ],
@@ -675,18 +662,18 @@ async function setConfigurationValue(
   const id =
     (await configurationId(family)) ??
     (await waitForConfiguration(family, signal))
-  const current = await client.trigger<{ value?: unknown }>(
-    'configuration::get',
-    { id, raw: true },
-  )
-  await client.trigger('configuration::set', {
+  const current = await client.call<{ value?: unknown }>('configuration::get', {
+    id,
+    raw: true,
+  })
+  await client.call('configuration::set', {
     id,
     value: setPath(current?.value ?? null, path, value),
   })
   return {}
 }
 
-/** The provider a `router::models::changed` / `router::provider::changed` event is about. */
+/** The provider a `router::models::on-changed` / `router::provider::on-changed` event is about. */
 function eventProvider(payload: unknown): string | undefined {
   return asString(asRecord(payload)?.provider)
 }
@@ -694,10 +681,16 @@ function eventProvider(payload: unknown): string | undefined {
 /** The router's events about one provider; everything else is ignored. */
 function providerEvents(providerId: string) {
   return {
-    triggers: [
-      { type: ROUTER_MODELS_CHANGED },
-      { type: ROUTER_PROVIDER_CHANGED },
-    ] satisfies WakeTrigger[],
+    sources: [
+      {
+        function_id: ROUTER_MODELS_CHANGED_FN,
+        filters: { 'input.provider': { $eq: providerId } },
+      },
+      {
+        function_id: ROUTER_PROVIDER_CHANGED_FN,
+        filters: { 'input.provider': { $eq: providerId } },
+      },
+    ] satisfies WakeSource[],
     onEvent: (payload: unknown) =>
       eventProvider(payload) === providerId ? ('check' as const) : 'ignore',
   }
@@ -705,7 +698,7 @@ function providerEvents(providerId: string) {
 
 async function countProviderModels(providerId: string): Promise<number> {
   const client = await getIiiClient()
-  const result = await client.trigger<{ models?: unknown[] }>(
+  const result = await client.call<{ models?: unknown[] }>(
     'router::models::list',
     { provider: providerId },
   )
@@ -737,7 +730,7 @@ function needsSignIn(error: unknown): boolean {
 
 /**
  * Wait for the provider's chat models to reach the router: re-read once per
- * `router::models::changed` / `router::provider::changed` event about it (a
+ * `router::models::on-changed` / `router::provider::on-changed` event about it (a
  * catalog reconciled, the provider registered or came back).
  */
 async function waitForModels(
@@ -774,13 +767,13 @@ async function waitForModels(
       // Once the router holds a credential, ask the provider for its
       // catalog: a rejected key comes back as an empty list, and saying so
       // now beats a timeout a minute and a half later. The answer also
-      // arrives as a `router::models::changed` event, which asks once more.
+      // arrives as a `router::models::on-changed` event, which asks once more.
       report({ note: `Waiting on response from ${title}` })
       const signsIn = state?.ownsAuthentication === true
       let refreshed: { count?: number } | null = null
       let refusal: string | undefined
       try {
-        refreshed = await client.trigger<{ count?: number }>(
+        refreshed = await client.call<{ count?: number }>(
           `provider::${providerId}::refresh_models`,
           {},
           { timeoutMs: 30_000 },
@@ -828,7 +821,7 @@ interface JudgeFailure {
 type JudgeAnswer = JudgeFailure & { models?: unknown[]; status?: string }
 
 /**
- * The judge functions an `engine::functions-available` payload lists, as one
+ * The judge functions an `engine::on-functions-changed` event lists, as one
  * comparable string — the hub's and every `judge-<provider>`'s. A provider
  * registers its functions once it is ready (a local one after downloading
  * its model), which is the event worth re-asking on; every other registry
@@ -869,7 +862,7 @@ async function checkJudge(
       Math.max(1_000, deadlineAt - Date.now()),
     )
     try {
-      return await client.trigger<JudgeAnswer>(
+      return await client.call<JudgeAnswer>(
         'judge::models::list',
         longWait ? { timeout_ms: waitMs } : {},
         { timeoutMs: (longWait ? waitMs : 30_000) + 10_000 },
@@ -881,7 +874,7 @@ async function checkJudge(
   }
   return waitForEvents<StepResult>({
     handler: 'iii::console::onboarding::judge',
-    triggers: [{ type: FUNCTIONS_AVAILABLE_TRIGGER }],
+    sources: [{ function_id: FUNCTIONS_CHANGED_FN }],
     onEvent: (payload) => {
       const signature = judgeFunctionsSignature(payload)
       if (signature === null || signature === seen) return 'ignore'
@@ -1006,14 +999,14 @@ export async function checkProviderKey(
     return { configured: false, models: 0, error: state?.credentialError }
   }
   const refreshed = await client
-    .trigger<{ count?: number }>(
+    .call<{ count?: number }>(
       `provider::${providerId}::refresh_models`,
       {},
       { timeoutMs: 30_000 },
     )
     .catch(() => null)
   const listed = await client
-    .trigger<{ models?: unknown[] }>('router::models::list', {
+    .call<{ models?: unknown[] }>('router::models::list', {
       provider: providerId,
     })
     .catch(() => null)

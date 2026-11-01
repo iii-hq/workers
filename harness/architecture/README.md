@@ -14,8 +14,8 @@ prose explains how to use them.
 | Document | Audience | Read it when |
 |---|---|---|
 | [integration.md](integration.md) | Authors of consumers / siblings | You are building something on top of the harness — a chat UI, a Telegram / WhatsApp / Slack bridge, a cron or webhook worker, an event-driven agent loop, a notification sibling. This file is the handoff contract. |
-| [reactive-triggers.md](reactive-triggers.md) | Anyone wiring an event to an agent | You are registering a trigger, or you last saw this surface when `harness::react` existed. Covers what changed, the full `engine::register_trigger` payload, conditions, lifecycle, and how to migrate a react binding. |
-| [trigger-bindings.md](trigger-bindings.md) | Anyone changing the dispatch path | You are touching `functions/subscribe.rs`, `functions/trigger_deliver.rs`, `bindings/*`, or the spawn/send seam — the internal design and why the harness owns dispatch instead of the engine. |
+| [reactive-observers.md](reactive-observers.md) | Anyone wiring an event to an agent | An agent observes a function with `harness::observe`. Covers the full payload, args and filters, conditions, lifecycle, the timer, and why the harness intercepts the call. |
+| [observer-bindings.md](observer-bindings.md) | Anyone changing the delivery path | You are touching `functions/observe.rs`, `functions/observer_deliver.rs`, `bindings/*`, or the spawn/send seam — the binding record, the delivery order, restarts and stored records. |
 
 The worker [README](../README.md) is the operator how-to (install, config,
 quickstart). The spec
@@ -31,10 +31,10 @@ run any function calls the model requests, and repeat until the turn stops —
 all as durable, enqueued steps so a crash or restart resumes mid-turn. It owns
 sequencing and nothing else. Consumers are deliberately thin: they **kick off**
 a turn (`harness::send` / `harness::run`), **render** the conversation by
-binding `session-manager`'s transcript events, and **react** to boundaries
-(`harness::turn-completed`) and human-gated calls (approval-gate's
-`approval::*` triggers). There is no `agent::events` firehose — the transcript
-is the stream, and turn lifecycle rides discrete triggers.
+observing `session-manager`'s transcript events, and **react** to boundaries
+(`harness::on-turn-completed`) and human-gated calls (approval-gate's
+`approval::*` events). There is no `agent::events` firehose — the transcript
+is the stream, and turn lifecycle rides discrete observable functions.
 
 ## The system in one diagram
 
@@ -44,8 +44,8 @@ flowchart LR
   subgraph harness [harness]
     entry["send / run / spawn"]
     loopStep["turn (durable step)"]
-    events["turn-started / turn-completed"]
-    hooks["hook::* (sync)"]
+    events["on-turn-started / on-turn-completed"]
+    hooks["hook::on-* (sync)"]
   end
   session["session-manager"]
   ctx["context-manager"]
@@ -53,17 +53,17 @@ flowchart LR
   gate["approval-gate"]
   fns["iii functions"]
 
-  consumer -->|"trigger harness::send / run"| entry
+  consumer -->|"call harness::send / run"| entry
   entry --> loopStep
   loopStep -->|"append / update-message"| session
   loopStep -->|"assemble"| ctx
   loopStep -->|"chat"| router
-  loopStep -->|"dispatch (agent_trigger)"| fns
+  loopStep -->|"dispatch (agent_call)"| fns
   loopStep --> events
-  loopStep -.->|"pre-trigger hold"| hooks
+  loopStep -.->|"pre-call hold"| hooks
   hooks -.-> gate
   session -.->|"message-* / status-changed"| consumer
-  events -.->|"turn-completed"| consumer
+  events -.->|"on-turn-completed"| consumer
   gate -.->|"pending-created / resolved"| consumer
 ```
 
@@ -75,9 +75,9 @@ flowchart LR
 | **Step** | One durable, enqueued `harness::turn` iteration: assemble → generate → dispatch. Re-enqueued until the turn finalises. |
 | **Steering / merge** | A `harness::send` for a session that already has a running turn folds the new message into it instead of starting a second turn (the response carries `merged: true`). |
 | **Dispatch policy** | The fail-closed `options.functions.allow` / `deny` globs deciding which functions the model may call. Absent or empty `allow` → a plain chat loop. Ask-mode turns are additionally capped at the configured default policy (`default_functions`). |
-| **Exposure mode** | How allowed functions reach the model: one generic `agent_trigger` schema (default) or one schema per allowed function (`native`). |
-| **Output contract** | The turn's deliverable: free `text` (default) or `json` validated against a schema; the result rides `harness::turn-completed` and `harness::run`. |
-| **Hook** | A synchronous extension point (`harness::hook::*`) a sibling binds to veto / hold / mutate in-path. Hook *logic* lives in the sibling, never the harness. |
+| **Exposure mode** | How allowed functions reach the model: one generic `agent_call` schema (default) or one schema per allowed function (`native`). |
+| **Output contract** | The turn's deliverable: free `text` (default) or `json` validated against a schema; the result rides `harness::on-turn-completed` and `harness::run`. |
+| **Hook** | A synchronous extension point (`harness::hook::on-*`) a sibling observes to veto / hold / mutate in-path. Hook *logic* lives in the sibling, never the harness. |
 | **Pending / parked** | An approval/hook hold checkpoints `pending`; the turn parks and `harness::function::resolve` resumes it later. Delegation never parks; approvals still can. |
-| **Sub-agent** | A child turn in a child session, started fire-and-forget by `harness::spawn` from a parent turn. Its completion is observable only via its `harness::turn-completed` event and the state it writes — the result is never delivered back to the caller. |
-| **Terminal turn** | `harness::turn-completed` carries `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify subscription), meaning a later turn in the same session carries the real outcome. Consumers finalize a logical exchange only on `terminal: true`. |
+| **Sub-agent** | A child turn in a child session, started fire-and-forget by `harness::spawn` from a parent turn. Its completion is observable only via its `harness::on-turn-completed` event and the state it writes — the result is never delivered back to the caller. |
+| **Terminal turn** | `harness::on-turn-completed` carries `terminal: bool` — `false` while the session still owns an armed wake (a one-shot wake observer), meaning a later turn in the same session carries the real outcome. Consumers finalize a logical exchange only on `terminal: true`. |

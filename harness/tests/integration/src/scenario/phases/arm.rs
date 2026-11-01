@@ -22,9 +22,9 @@ impl ScenarioRunner<'_> {
             .register_target(&self.run_id, scenario.target.as_ref())
             .map_err(|error| RunError::setup(phase, "register controlled function", error))?;
 
-        // Register observer bindings before the harness exists. Recoverable
-        // triggers park the harness-owned bindings until their types appear;
-        // the acknowledged RPCs also barrier the probe function registrations.
+        // Observe before the harness exists. Observers of the harness's
+        // functions stay pending until it registers them; the engine-hosted
+        // span observer also barriers the probe function registrations.
         probe
             .bind_observers(&self.session_id, deadline)
             .await

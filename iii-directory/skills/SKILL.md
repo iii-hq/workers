@@ -23,7 +23,7 @@ else here is read-only.
 
 Two kinds of id flow through this worker and they must not be mixed up. A
 **callable id** uses `::` (`directory::skills::get`) and goes in the `function:`
-field of `agent_trigger`. A **skill id** uses `/` (`iii-sandbox`,
+field of `agent_call`. A **skill id** uses `/` (`iii-sandbox`,
 `agent-memory/observe`) and names a *document* — pass it as the `id` argument to
 `directory::skills::get`. The ids that `list` and `index` print are skill ids; a
 worker's overview is the bare worker name (`iii-sandbox`, not `iii-sandbox/index`,
@@ -34,8 +34,8 @@ Only **installed** workers are visible. `index`, `list`, and `get` show on-disk
 skills for installed workers, plus this worker and the `iii` engine which are
 always present. A skill you know exists stays invisible until its worker is
 downloaded, so when one is missing, install it and look again. With
-`auto_download` enabled the worker subscribes to the engine `worker` add event
-and pulls a newly added worker's skills automatically, so freshly installed
+`auto_download` enabled the worker observes worker connections
+(`engine::on-workers-changed`) and pulls a connecting worker's missing skills automatically, so freshly installed
 workers can appear without a manual download. System-installed agent skills
 under the read-only `agents_skills_folder` (`.agents/skills` under
 `III_COMPOSE_DIR`, or the process current directory when standalone) are
@@ -50,7 +50,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - You need to find a skill across the repo with filters — `directory::skills::list`.
 - You need the system prompts the chat picker offers as an identity override — `directory::system-prompts::list` / `get`.
 - You need a reusable agent profile (display name, emoji logo, skill selection, and its system prompt) — `directory::agents::list` / `get`.
-- You are deciding whether to install a worker — `directory::registry::workers::info` is the pre-install card: public function/trigger names with descriptions, config, dependencies, skill paths (no schemas; `readme: true` adds the README). Contracts come from `engine::functions::info` after install.
+- You are deciding whether to install a worker — `directory::registry::workers::info` is the pre-install card: public function names with descriptions (event sources included), config, dependencies, skill paths (no schemas; `readme: true` adds the README). Contracts come from `engine::functions::info` after install.
 - You need to install a published worker's skills — `directory::skills::download_from_registry`.
 - You were asked to install or update a kit (`<author>/<kit>`: agent profiles, skills and workers published together) — `directory::download-kit` plans it; a human reviews the plan in the ADE (Directory → Kits) or you apply it with `directory::kits::apply`.
 - You can only reach the `directory::` namespace but need one engine function's exact schema — `directory::engine::functions::info`.
@@ -61,7 +61,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - Writes are downloads plus the per-family `create` / `update` / `delete` calls; every read function leaves disk untouched.
 - Skills under `agents_skills_folder` are read-only: `update`/`delete` refuse them (`D116`), and `create` refuses ids in their namespaces (`D115`). Edit them with their owning tool, or copy one into `skills_folder` on disk to fork it.
 - Not the live-connection view. `directory::*` reflects what is on disk or in the registry, not what is connected right now. For that, call the engine directly (`engine::functions::list`, `engine::workers::list`, …); daemon-managed providers (`http`, `cron`, `state`) open no WebSocket, so merge `worker::list` by `name`.
-- Do not put a skill id (`/`) in `agent_trigger`'s `function:` field, and do not pass a function id (`::`) to `directory::skills::get`.
+- Do not put a skill id (`/`) in `agent_call`'s `function:` field, and do not pass a function id (`::`) to `directory::skills::get`.
 - System prompt files without a `description:` in frontmatter are silently skipped by `directory::system-prompts::list`.
 - Skills and system prompts share `skills_folder`; a `system-prompts/` path component selects the prompt family, other `prompts/` paths are ignored, and `agents/` is reserved. Agent profiles are direct `<agents_folder>/<id>.md` files.
 - An agent profile's `skills:` list is its PRELOADED skills, the twin of `functions:`: the harness freezes each skill's body into the prompt of every session running as the profile (parents' lists included, root-first). It grants no access and never narrows the skills index; unknown ids are reported by `get` as `unknown_skills` warnings rather than errors and rendered as unavailable. `agents_folder` profiles are unrelated to the read-only `agents_skills_folder` (`~/.agents/skills`), which holds external tools' skills.
@@ -91,8 +91,8 @@ never appear in `index` and `update`/`delete` refuse them.
 - `directory::agents::delete` — permanently remove one EXISTING agent profile by id; running sessions are unaffected, profiles extending it stop resolving until fixed. Deleting a local `iii` falls back to the bundled copy.
 - `directory::agents::functions::add` / `directory::agents::functions::remove` — `{ id, functions: ["coder::tree", …] }`: add ids to / drop ids from one EXISTING profile's OWN `functions:` list without a raw round-trip; the rest of the file stays byte-identical, ids already present (or already absent) are ignored, `unchanged: true` means nothing was written. Editing a bundled profile creates the local shadow. Ids inherited through `extends` are not touched: the resolved list is the union of the chain (root first), so an inherited id is removed on the parent that declares it.
 - `directory::registry::workers::list` — page through published workers in the public registry (`pagination.next_cursor` feeds the next page's `cursor`).
-- `directory::registry::workers::info` — pre-install card for one worker, including ones not installed: envelope, `api_reference` (public functions + triggers, names and descriptions only) and `skills_tree`; `readme: true` adds the README.
-- `directory::engine::functions::info` — thin proxy to the engine's `engine::functions::info`; returns request/response schema, metadata, and registered triggers for one function id.
+- `directory::registry::workers::info` — pre-install card for one worker, including ones not installed: envelope, `api_reference` (public functions, event sources included, names and descriptions only) and `skills_tree`; `readme: true` adds the README.
+- `directory::engine::functions::info` — thin proxy to the engine's `engine::functions::info`; returns request/response schema, metadata, `args_format`, `observer_count`, `private` and `observable` for one function id.
 - `directory::download-kit` — `{ kit: "<author>/<kit>[@version|tag|range]" }`: plans the install of a kit (or the update of an installed one) WITHOUT writing anything and returns the plan (files, collisions with existing profiles, workers Compose would add, preloaded functions, warnings, blocks) plus its `plan_id`. Tell the user to review it in the ADE (Directory → Kits). `apply: true` applies at once only when the plan has no warnings, blocks or pending decisions.
 - `directory::kits::apply` — `{ plan_id, decisions?, remove_workers? }`: executes a plan. `decisions` maps install paths to `overwrite|keep|kit|mine|merged|remove` (or `{ choice: "merged", content }`); files left out take the plan's default. A plan made before the project changed comes back re-planned (`status: replanned`) instead of applied.
 - `directory::kits::plan-update` / `directory::kits::remove` — plan an update (`version?`) or a removal of an installed kit; apply with `directory::kits::apply`.
@@ -101,50 +101,64 @@ never appear in `index` and `update`/`delete` refuse them.
 
 A failed call returns one plain sentence carrying a `Did you mean:` suggestion and a `Next:` function to call (codes `D110`/`D112`/`D210`/`D310`/`D311`, `D410` for a missing agent profile, `D416` for an agent `functions::add`/`remove` request with no valid function ids, `D320` when the registry is unreachable, and on the write paths `D213` for content the next scan would skip, `D214`/`D114`/`D414` for a create whose name/id or target path is already taken, `D115` for a skill id the visibility filter or an agents namespace reserves, and `D116` for a write to a read-only system-installed skill; for kits `D510` unknown kit/version, `D511` a malformed kit ref, `D512` an expired or unknown plan, `D513` a missing or invalid file decision, `D514` a blocked plan, `D515` a Compose failure, `D516` content that changed since the plan) — follow it instead of retrying the same input. Downloads overwrite file-by-file, so hand-edited extra files survive a re-pull.
 
-## Reactive triggers
+## Change functions
 
-The worker publishes four custom trigger types — one per file kind,
+The worker hosts four change functions — one per file kind,
 `directory::skills::on-change`,
 `directory::system-prompts::on-change`, and `directory::agents::on-change`, plus
-`directory::kits::on-change` for kit plans, apply progress and update checks. Each fires for its own kind only, on any
+`directory::kits::on-change` for kit plans, apply progress and update checks. The worker calls each for its own kind only, on any
 of: a download that wrote at least one file of that kind (`op: "download"`), that
 family's `update`, `create`, or `delete` (`op: "update"` / `"create"` /
 `"delete"`), or a change made to
 that kind's files directly on disk, outside this worker (`op: "external"` — a
-file pasted in, edited in an external editor, deleted, or renamed). Bind one when
+file pasted in, edited in an external editor, deleted, or renamed). Observe one when
 a *different* worker must react to the on-disk set changing; the `mcp` worker uses
 this to emit `notifications/*_list_changed` to its clients without re-polling.
-Direct `<id>.md` profile edits under `agents_folder` fire
+Direct `<id>.md` profile edits under `agents_folder` call
 `directory::agents::on-change`; nested files there are ignored.
+
+The functions are private (only this worker calls them) and take no args:
+select changes with filters on the event (`input.op`, `input.name`,
+`input.namespace`, `input.plan_id`).
 
 Reach for it when:
 
 - A worker caches the skill, system-prompt, or agent-profile list and must invalidate it on change.
 - You want a push the moment new bundles install, instead of polling `directory::skills::list`.
 
-Do not bind when:
+Do not observe when:
 
 - You ran the download yourself — its return payload already lists `skills_written` / `system_prompts_written` / `agents_written`.
-- Your own reaction writes `.md` files under `skills_folder` through some path OTHER than this worker's `update` / `create` (a shell or coder worker, say). Writes made through this worker are suppressed, but outside writes are not: your handler would re-trigger itself.
+- Your own reaction writes `.md` files under `skills_folder` through some path OTHER than this worker's `update` / `create` (a shell or coder worker, say). Writes made through this worker are suppressed, but outside writes are not: your handler would run itself again.
 
-### How to bind
+### How to observe
 
 1. Register a handler: `registerFunction('my-worker::on-skills-changed', handler)`.
-2. Register the trigger:
+2. Observe the change function with it:
 
 ```typescript
-iii.registerTrigger({
-  type: 'directory::skills::on-change',
-  function_id: 'my-worker::on-skills-changed',
-})
+iii.observe(
+  { function_id: 'directory::skills::on-change', deliver: 'output' },
+  'my-worker::on-skills-changed',
+)
+
+// only external edits
+iii.observe(
+  {
+    function_id: 'directory::skills::on-change',
+    filters: { 'input.op': { $eq: 'external' } },
+    deliver: 'output',
+  },
+  'my-worker::on-skills-edited',
+)
 ```
 
 Delivery is fire-and-forget (best-effort, at-most-once): a slow or failing
-subscriber is logged and skipped so it cannot block the write path. Direct edits
-under `skills_folder` DO fire it now, as `op: "external"` — a filesystem watch
-supplies that, coalescing a burst into one event per kind. Read calls never fire
-it, and neither does this worker's own writing twice (a `create` or `update`
-sends its precise op, not an extra `external`). The watch is a doorbell, not a
-ledger: every read re-scans disk, so a missed event costs a stale open view until
-the next call, never data. For the event payload shape, call `get function info`
-on the trigger type.
+observer cannot block the write path. Direct edits under `skills_folder` call
+it as `op: "external"` — a filesystem watch supplies that, coalescing a burst
+into one event per kind. Read calls never call it, and neither does this
+worker's own writing twice (a `create` or `update` sends its precise op, not
+an extra `external`). The watch is a doorbell, not a ledger: every read
+re-scans disk, so a missed event costs a stale open view until the next call,
+never data. For the event shape, read the function's `response_format` with
+`engine::functions::info`.

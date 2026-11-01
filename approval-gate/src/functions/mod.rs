@@ -40,10 +40,10 @@ use crate::events::EventSink;
 // ---------------------------------------------------------------------------
 
 pub const GATE_ID: &str = "approval::gate";
-pub const GATE_DESC: &str = "pre_trigger hook: evaluate the permission model and answer continue / deny / hold; writes the pending inbox record on hold. Called by the harness only.";
+pub const GATE_DESC: &str = "pre_call hook (observer of harness::hook::on-pre-call): evaluate the permission model and answer continue / deny / hold; writes the pending inbox record on hold. Called by the harness only.";
 
 pub const FILESYSTEM_ACCESS_WATCH_ID: &str = "approval::filesystem-access-watch";
-pub const FILESYSTEM_ACCESS_WATCH_DESC: &str = "post_trigger hook: watch shell::*/coder::* dispatch failures for a jail-scope filesystem_access_request and hold a filesystem_access pending approval for it. Called by the harness only.";
+pub const FILESYSTEM_ACCESS_WATCH_DESC: &str = "post_call hook (observer of harness::hook::on-post-call): watch shell::*/coder::* dispatch failures for a jail-scope filesystem_access_request and hold a filesystem_access pending approval for it. Called by the harness only.";
 
 pub const RESOLVE_ID: &str = "approval::resolve";
 pub const RESOLVE_DESC: &str = "Apply a human decision to a held call: release it for execution (allow) or deliver a denial (deny). Human/console-only.";
@@ -70,7 +70,7 @@ pub const APPROVE_ALWAYS_DESC: &str =
     "Record a per-session 'approve always' grant (honoured in every mode). Human/console-only.";
 
 pub const EVALUATE_ID: &str = "approval::evaluate";
-pub const EVALUATE_DESC: &str = "Report what approval::gate WOULD decide for a function id (allow / deny / needs_approval) without deciding it: no pending record, no writes. Called by the harness before binding a trigger to an ordinary function, since a trigger-fired call runs outside any turn and cannot ask a human.";
+pub const EVALUATE_DESC: &str = "Report what approval::gate WOULD decide for a function id (allow / deny / needs_approval) without deciding it: no pending record, no writes. Called by the harness before an agent observes a function with an ordinary function as the target, since an observer's target runs outside any turn and cannot ask a human.";
 
 pub const GET_SETTINGS_ID: &str = "approval::get-settings";
 pub const GET_SETTINGS_DESC: &str = "Read the session's effective settings (stored record or configuration defaults); never writes.";
@@ -81,11 +81,11 @@ pub const CLEAR_SETTINGS_DESC: &str =
 
 pub const ON_SESSION_DELETED_ID: &str = "approval::on-session-deleted";
 pub const ON_SESSION_DELETED_DESC: &str =
-    "Internal: session::deleted handler (purge the session's settings and pending records).";
+    "Internal: observer of session::on-deleted (purge the session's settings and pending records).";
 
 pub const ON_TURN_COMPLETED_ID: &str = "approval::on-turn-completed";
 pub const ON_TURN_COMPLETED_DESC: &str =
-    "Internal: harness::turn-completed handler (purge the turn's pending records).";
+    "Internal: observer of harness::on-turn-completed (purge the turn's pending records).";
 
 /// Everything a function handler needs.
 pub struct Deps {
@@ -294,33 +294,28 @@ pub fn catalog() -> Vec<FunctionSpec> {
 }
 
 // ---------------------------------------------------------------------------
-// Trigger wire-surface catalog.
+// Event function catalog.
 // ---------------------------------------------------------------------------
 
-/// One trigger type's complete agent-facing wire surface: id, description,
-/// and the schemars-derived payload schema.
-pub struct TriggerSpec {
-    pub trigger_id: &'static str,
-    pub description: &'static str,
-    pub payload_schema: schemars::schema::RootSchema,
-}
-
-/// The full trigger wire-surface catalog, in registration order. Golden-tested
-/// in `tests/schemas.rs`; keep in lockstep with `events::register_trigger_types`.
-pub fn trigger_catalog() -> Vec<TriggerSpec> {
-    use crate::events::{PENDING_CREATED, PENDING_RESOLVED};
-    use crate::types::{PendingApprovalRecord, PendingResolvedEvent};
+/// The two event functions registered by `events::register_functions`, in
+/// registration order. Each handler returns the event it is called with, so
+/// the request and response schemas are the event's. Golden-tested in
+/// `tests/schemas.rs`.
+pub fn event_catalog() -> Vec<FunctionSpec> {
+    use crate::events::{
+        ON_PENDING_CREATED_DESC, ON_PENDING_CREATED_FN, ON_PENDING_RESOLVED_DESC,
+        ON_PENDING_RESOLVED_FN,
+    };
+    use crate::types::{PendingCreatedEvent, PendingResolvedEvent};
 
     vec![
-        TriggerSpec {
-            trigger_id: PENDING_CREATED,
-            description: crate::events::PENDING_CREATED_DESC,
-            payload_schema: schema_of::<PendingApprovalRecord>(),
-        },
-        TriggerSpec {
-            trigger_id: PENDING_RESOLVED,
-            description: crate::events::PENDING_RESOLVED_DESC,
-            payload_schema: schema_of::<PendingResolvedEvent>(),
-        },
+        spec::<PendingCreatedEvent, PendingCreatedEvent>(
+            ON_PENDING_CREATED_FN,
+            ON_PENDING_CREATED_DESC,
+        ),
+        spec::<PendingResolvedEvent, PendingResolvedEvent>(
+            ON_PENDING_RESOLVED_FN,
+            ON_PENDING_RESOLVED_DESC,
+        ),
     ]
 }

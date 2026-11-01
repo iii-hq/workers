@@ -1,7 +1,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { listSurfaces } from './src/data'
 import { A2uiPage } from './src/page'
-import { createA2uiTriggerRenderer } from './src/trigger-renderer'
+import { createA2uiCallRenderer } from './src/call-renderer'
 
 export default function setup(host: Host) {
   host.pages.register({
@@ -10,7 +10,7 @@ export default function setup(host: Host) {
     configurationId: 'a2ui',
     render: (props) => <A2uiPage host={host} {...props} />,
   })
-  host.functionTriggers.register(createA2uiTriggerRenderer(host))
+  host.functionCalls.register(createA2uiCallRenderer(host))
 
   host.palette?.registerSource({
     id: 'surfaces',

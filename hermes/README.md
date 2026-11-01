@@ -1,11 +1,11 @@
 # hermes
 
-Hermes agent as an iii worker: the Hermes agent on the iii bus as functions and trigger types. `hermes::run` runs one headless Hermes turn carrying the iii runtime context, so the agent discovers and drives the whole engine live. `hermes::send` delivers to any of Hermes's 27+ messaging platforms (Telegram, Discord, Slack, WhatsApp, Teams, …). Inbound platform messages and webhook events land on the worker's HTTP sink and republish on the `hermes::raw-event` trigger type so any iii worker can react. The result: iii gains omnichannel reach wired to its entire function registry, with an iii-aware agent in between.
+Hermes agent as an iii worker: the Hermes agent on the iii bus as functions. `hermes::run` runs one headless Hermes turn carrying the iii runtime context, so the agent discovers and drives the whole engine live. `hermes::send` delivers to any of Hermes's 27+ messaging platforms (Telegram, Discord, Slack, WhatsApp, Teams, …). Inbound platform messages and webhook events land on the worker's HTTP route and republish on `hermes::on-raw-event` so any iii worker can react. The result: iii gains omnichannel reach wired to its entire function registry, with an iii-aware agent in between.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=hermes
+iii call compose::add worker=hermes
 ```
 
 Container worker (`deploy: image`) — the image bundles the Hermes CLI (Python 3.11 + Node bridge + platform adapters) via the official installer. Hermes is provider-agnostic: configure any LLM provider non-interactively with `hermes auth add anthropic --api-key <key>` (or set `ANTHROPIC_API_KEY` + `HERMES_INFERENCE_MODEL=anthropic/...`). The interactive OAuth-via-portal flow is not needed.
@@ -20,36 +20,36 @@ Container worker (`deploy: image`) — the image bundles the Hermes CLI (Python 
 | `hermes::status` | Point-in-time session state, live flag |
 | `hermes::stop` | Interrupt a live run |
 | `run::start_and_wait` | Alias for `hermes::run` under the shared agent entrypoint |
-
-Trigger sink (HTTP): `hermes::inbound` — the Hermes gateway delivers inbound platform/webhook events here; the worker republishes them on `hermes::raw-event` for other workers to react to.
-
-Trigger types: `hermes::agent-event` (normalized turn frames) and `hermes::raw-event` (raw Hermes frames and inbound deliveries); see [Event feeds](#event-feeds).
+| `hermes::start` | Start a turn and return `{session_id, started}` at once; frames arrive on the event feeds |
+| `hermes::inbound` | HTTP route: observes `http::on-request` with args `{ method: "POST", path: <inbound_api_path> }`; the Hermes gateway delivers inbound platform/webhook events here and the worker republishes them on `hermes::on-raw-event` |
+| `hermes::on-agent-event` | Event feed: normalized turn frames of one session (args `{ session_id }`); see [Event feeds](#event-feeds) |
+| `hermes::on-raw-event` | Event feed: raw Hermes frames and inbound deliveries of one session (args `{ session_id }`) |
 
 ## Quickstart
 
 ```bash
 # one turn (the agent has the iii runtime context by default)
-iii trigger hermes::run --timeout-ms 600000 \
+iii call hermes::run --timeout-ms 600000 \
   --json '{"prompt":"List every worker connected to this engine and what each one does.","cwd":"/tmp"}'
 
 # omnichannel out
-iii trigger hermes::send --json '{"platform":"telegram","message":"deploy finished"}'
+iii call hermes::send --json '{"platform":"telegram","message":"deploy finished"}'
 
-iii trigger hermes::sessions::list
-iii trigger hermes::run --help
+iii call hermes::sessions::list
+iii call hermes::run --help
 ```
 
-`hermes::run` returns `{session_id, result, usage, total_cost_usd, cost_source}`. Hermes records per-turn token counts (input / output / cache / reasoning) and cost in its own SQLite session store; `hermes -z` does not print them, so the worker reads the latest session row back after the turn and surfaces it on the result envelope, the session record, and the `agent_end` frame on `hermes::agent-event`.
+`hermes::run` returns `{session_id, result, usage, total_cost_usd, cost_source}`. Hermes records per-turn token counts (input / output / cache / reasoning) and cost in its own SQLite session store; `hermes -z` does not print them, so the worker reads the latest session row back after the turn and surfaces it on the result envelope, the session record, and the `agent_end` frame on `hermes::on-agent-event`.
 
-`iii trigger hermes::run --help` and `hermes::send --help` print the published request schemas as parameter tables:
+`iii call hermes::run --help` and `hermes::send --help` print the published request schemas as parameter tables:
 
-![iii trigger hermes::run --help showing the request schema](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-run-help.png)
+![iii call hermes::run --help showing the request schema](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-run-help.png)
 
-![iii trigger hermes::send --help showing the request schema](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-send-help.png)
+![iii call hermes::send --help showing the request schema](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-send-help.png)
 
 `hermes::sessions::list` returns the worker's session records plus the raw `hermes sessions list` output:
 
-![iii trigger hermes::sessions::list output](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-sessions.png)
+![iii call hermes::sessions::list output](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-sessions.png)
 
 Pass the same `session_id` again to continue a conversation: the worker threads it to Hermes as `hermes -z --resume <session_id>`, so the first call creates that session and later calls continue it. (Hermes also keeps its own cross-session memory, so some facts persist beyond a single session regardless.)
 
@@ -59,7 +59,7 @@ Pass the same `session_id` again to continue a conversation: the worker threads 
 
 By default every turn prepends the iii runtime context: the engine-grounded discovery rules retargeted to the `iii` CLI, which Hermes reaches through its own shell / `execute_code` tool. The agent discovers capabilities from the live engine (`engine::functions::list`, `<fn> --help`, the registry flow) instead of memory. Disable per call with `"iii_context": false`, or globally in `config.yaml`.
 
-A real turn over the bus (`pong`) and a live discovery turn where Hermes enumerates every connected worker by running `iii trigger engine::workers::list` itself:
+A real turn over the bus (`pong`) and a live discovery turn where Hermes enumerates every connected worker by running `iii call engine::workers::list` itself:
 
 ![hermes::run returning pong, then a discovery turn listing the connected workers](https://raw.githubusercontent.com/iii-hq/workers/main/hermes/assets/cli-run-discovery.png)
 
@@ -68,7 +68,7 @@ A real turn over the bus (`pong`) and a live discovery turn where Hermes enumera
 The unique value over the other agent workers: Hermes is iii's gateway to 27+ chat platforms.
 
 ```text
-27 platforms ─▶ Hermes gateway ─▶ hermes::inbound (http) ─▶ hermes::raw-event
+27 platforms ─▶ Hermes gateway ─▶ hermes::inbound (http) ─▶ hermes::on-raw-event
                                                                     │ iii worker reacts,
                                                                     │ drives the bus
                                                                     ▼
@@ -88,27 +88,37 @@ defaults:
 
 iii_context: true                   # prepend the iii runtime context on a fresh session
 hermes_executable: ""               # path to the hermes CLI; empty = resolve on PATH
-inbound_api_path: /hermes/inbound   # http path the gateway delivers inbound events to
+inbound_api_path: /hermes/inbound   # path of the http::on-request route the gateway delivers to
 ```
 
-The event feeds have fixed trigger type ids (`hermes::agent-event`, `hermes::raw-event`), so there is nothing to configure for them. The former `events_stream` / `raw_events_stream` keys are ignored if an older config still carries them.
+The event feeds have fixed function ids (`hermes::on-agent-event`, `hermes::on-raw-event`), so there is nothing to configure for them. `events_stream` and `raw_events_stream` keys in a config are accepted and ignored.
 
 ## Event feeds
 
-The worker owns two trigger types. Bind a function to either one for a single session; frames of other sessions never reach it.
+The worker provides two private functions that carry one session's frames. Observe either one with `{ session_id }` as args to run a function of your own on that session's frames; frames of other sessions never reach it.
 
-| Trigger type | Frames |
-| --- | --- |
-| `hermes::agent-event` | Normalized AgentEvent frames: `turn_end`, then `agent_end` (final message, plus `usage` / `total_cost_usd` when Hermes recorded them) |
-| `hermes::raw-event` | Raw Hermes frames: `{type: "result", text, is_error}` per turn, and `{type: "inbound", body}` per gateway delivery (session = the delivery's `session_id`, else `chat_id`, else a fresh uuid) |
+| Function | Args | Frames |
+| --- | --- | --- |
+| `hermes::on-agent-event` | `{ session_id }` | Normalized AgentEvent frames: `turn_end`, then `agent_end` (final message, plus `usage` / `total_cost_usd` when Hermes recorded them) |
+| `hermes::on-raw-event` | `{ session_id }` | Raw Hermes frames: `{type: "result", text, is_error}` per turn, and `{type: "inbound", body}` per gateway delivery (session = the delivery's `session_id`, else `chat_id`, else a fresh uuid) |
 
-Binding config (validated; an unknown key, a missing / empty / over-512-character `session_id` or a non-object `metadata` rejects the binding; at most 256 bindings per trigger type):
+```python
+async def on_frame(frame):
+    # frame: {session_id, event_id, seq, epoch, source, event}
+    print(frame["event"]["type"])
 
-```json
-{ "session_id": "sess-1", "metadata": { "optional": "echoed to the handler" } }
+
+iii.register_function("my-app::on-hermes-frame", on_frame)
+iii.observe(
+    {"function_id": "hermes::on-raw-event", "args": {"session_id": "chat-7"}, "deliver": "output"},
+    "my-app::on-hermes-frame",
+    {"metadata": {"conn": "c1"}},  # optional: reaches your function as its metadata
+)
 ```
 
-Each matching binding gets one fire-and-forget call with:
+`session_id` is required (non-empty, at most 512 characters) and is the only arg; the engine rejects any other with `INVALID_ARGS`. Each function accepts at most 256 observers, and one more is rejected with `OBSERVER_LIMIT`. Only this worker calls the functions; any worker may observe them.
+
+Each frame is one fire-and-forget call of the function, and the event it returns is what its session's observers observe (with `deliver: "output"`, your function receives it as its input):
 
 ```json
 {
@@ -121,9 +131,9 @@ Each matching binding gets one fire-and-forget call with:
 }
 ```
 
-`seq` counts from 0 per feed and session within one `epoch` (a new worker process starts a new epoch); order by `(epoch, seq)` and dedup by `event_id`, since deliveries may run concurrently. The binding's namespace is preserved, and `metadata` from the config (else the binding's) is forwarded. A failing consumer never fails the turn.
+`seq` counts from 0 per feed and session within one `epoch` (a new worker process starts a new epoch), and a frame of a session nobody observes still takes its `seq`; order by `(epoch, seq)` and dedup by `event_id`, since deliveries may run concurrently. A failing consumer never fails the turn.
 
-The feeds are ephemeral: frames are neither stored nor replayed, and a consumer bound late never sees earlier frames. History lives in the session records (`hermes::status`, `hermes::sessions::list`) and the turn result `hermes::run` returns. These trigger types replace the former iii-stream feeds `agent::events` and `hermes::events` (see the guide "Migrate from iii-stream and pubsub").
+The feeds are ephemeral: frames are neither stored nor replayed, and an observer added late never sees earlier frames. History lives in the session records (`hermes::status`, `hermes::sessions::list`) and the turn result `hermes::run` returns.
 
 ## Scope
 
@@ -131,10 +141,10 @@ Exposes the agent loop, omnichannel send, and inbound events — not Hermes's du
 
 ## Status
 
-Live-verified against a running engine with the Hermes CLI and an Anthropic key: the agent loop (`hermes::run` / `start` / `status` / `sessions::list`), real turns (`pong`), live iii discovery (the agent runs `iii trigger engine::workers::list` itself), and session continuity (`--resume`) all work end to end. Two parts remain to finalize against a live messaging gateway:
+Live-verified against a running engine with the Hermes CLI and an Anthropic key: the agent loop (`hermes::run` / `start` / `status` / `sessions::list`), real turns (`pong`), live iii discovery (the agent runs `iii call engine::workers::list` itself), and session continuity (`--resume`) all work end to end. Two parts remain to finalize against a live messaging gateway:
 
-- **Events granularity** — Hermes one-shot (`hermes -z`) prints only the final response text, so `hermes::agent-event` carries `turn_end` + `agent_end` (the final message), not per-tool frames. A richer event feed depends on a Hermes mode that emits one.
-- **Inbound trigger contract** — `hermes::inbound` republishes raw deliveries on `hermes::raw-event` today and binds via `http`; the exact gateway payload is mapped onto a dedicated `hermes::message` trigger type once verified against a running gateway.
+- **Events granularity** — Hermes one-shot (`hermes -z`) prints only the final response text, so `hermes::on-agent-event` carries `turn_end` + `agent_end` (the final message), not per-tool frames. A richer event feed depends on a Hermes mode that emits one.
+- **Inbound event contract** — `hermes::inbound` serves an `http::on-request` route and republishes raw deliveries on `hermes::on-raw-event`; the exact gateway payload is mapped onto a dedicated `hermes::on-message` function once verified against a running gateway.
 
 ## Tool profile
 

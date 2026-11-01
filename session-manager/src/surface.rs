@@ -3,11 +3,13 @@
 //! schemas.
 //!
 //! Golden-tested in `tests/schemas.rs`; keep in lockstep with the boot
-//! registration in `main.rs`: `store_protocol::register_store_protocol`, then
-//! `functions::register_all`, then the two `configuration::register_*`
-//! handlers. Schema generation MUST mirror iii-sdk's internal `json_schema_for`
-//! (`SchemaSettings::draft07()` on the handler's request/response types) so a
-//! catalog snapshot pins exactly what registration emits.
+//! registration in `main.rs`: `events::register_event_functions`, then
+//! `store_protocol::register_store_protocol`, then `functions::register_all`,
+//! then the two `configuration::register_*` handlers. Schema generation MUST
+//! mirror iii-sdk's internal `json_schema_for` (`SchemaSettings::draft07()` on
+//! the handler's request/response types) so a catalog snapshot pins exactly
+//! what registration emits. An event function's handler returns the event it
+//! is called with, so its request and response schemas are the same.
 //!
 //! Descriptions are intentionally not snapshotted here (they live inline at
 //! each registration site); the goldens pin the request/response schemas — the
@@ -16,6 +18,10 @@
 
 use crate::configuration::{
     ConfigStatusRequest, OnConfigChangeEvent, OnConfigChangeResponse, ReloadStatus,
+};
+use crate::events::{
+    self, EventEnvelope, MessageAddedEvent, MessageUpdatedEvent, MetaUpdatedEvent,
+    SessionCreatedEvent, SessionDeletedEvent, StatusChangedEvent, WithSessionMetadata,
 };
 use crate::functions::{
     append, append_many, create, delete, delete_attachment, ensure, fork, get, get_attachment,
@@ -54,11 +60,25 @@ where
     }
 }
 
+/// An event function: called with and returning the event plus the session's
+/// metadata.
+fn event_spec<E: schemars::JsonSchema>(function_id: &'static str) -> FunctionSpec {
+    spec::<WithSessionMetadata<E>, WithSessionMetadata<E>>(function_id)
+}
+
 /// The full wire-surface catalog, in registration order. Golden-tested in
 /// `tests/schemas.rs`; keep in lockstep with the boot sequence in `main.rs`.
 pub fn catalog() -> Vec<FunctionSpec> {
     use store_protocol as sp;
     vec![
+        // 0. event functions and the bridge feed (register_event_functions order)
+        event_spec::<SessionCreatedEvent>(events::ON_CREATED_FN),
+        event_spec::<MessageAddedEvent>(events::ON_MESSAGE_ADDED_FN),
+        event_spec::<MessageUpdatedEvent>(events::ON_MESSAGE_UPDATED_FN),
+        event_spec::<StatusChangedEvent>(events::ON_STATUS_CHANGED_FN),
+        event_spec::<MetaUpdatedEvent>(events::ON_META_UPDATED_FN),
+        event_spec::<SessionDeletedEvent>(events::ON_DELETED_FN),
+        spec::<EventEnvelope, EventEnvelope>(events::STORE_ON_EVENTS_FN),
         // 1. internal store protocol (register_store_protocol order)
         spec::<sp::SessionIdRequest, Option<SessionMeta>>(sp::GET_META),
         spec::<sp::PutMetaRequest, sp::OkResponse>(sp::PUT_META),
@@ -123,7 +143,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         >("session::delete-attachment"),
         spec::<MentionSearchRequest, MentionSearchResponse>(mention::SEARCH_FN),
         spec::<MentionGetRequest, Option<MentionView>>(mention::GET_FN),
-        // 3. configuration handlers (register_config_trigger, then register_config_status)
+        // 3. configuration handlers (register_config_observer, then register_config_status)
         spec::<OnConfigChangeEvent, OnConfigChangeResponse>("session::on-config-change"),
         spec::<ConfigStatusRequest, ReloadStatus>("session::config-status"),
     ]

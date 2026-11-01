@@ -21,13 +21,13 @@ import {
   ATTACHED_FILE_PREFIX,
   type AttachmentFailure,
   type AttachmentReadSummary,
+  type CallFn,
+  callOr,
   describeWorkerFailure,
   escapeAttr,
   failureBlock,
   fileToBase64,
   reportDropped,
-  type TriggerFn,
-  triggerOr,
 } from './shared'
 
 export const CLASSIFY_FUNCTION_ID = 'pdf::classify'
@@ -120,12 +120,12 @@ interface MarkdownWire {
  */
 export async function expandPdfAttachments(
   attachments: Attachment[],
-  trigger?: TriggerFn,
+  invoke?: CallFn,
 ): Promise<ExpandedPdfs> {
   const pdfs = attachments.filter((a) => isPdfAttachment(a) && a.file)
   if (pdfs.length === 0) return { blocks: [], read: [], failures: [] }
 
-  const call = triggerOr(trigger)
+  const call = callOr(invoke)
 
   const blocks: string[] = []
   const read: AttachmentReadSummary[] = []
@@ -169,7 +169,7 @@ interface ExpandOutcome {
 
 async function expandOne(
   attachment: Attachment,
-  call: TriggerFn,
+  call: CallFn,
 ): Promise<ExpandOutcome> {
   const bytes_base64 = await fileToBase64(attachment.file as File)
 

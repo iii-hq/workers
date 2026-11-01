@@ -7,14 +7,14 @@ import type { Step, StepRecord, StepState, TourController } from './use-tour'
 
 /**
  * One step's content, the same in the card and in the page: what to read,
- * the one thing to do, and — for a step that waits on a trigger — what it
+ * the one thing to do, and — for a step that waits on an observer — what it
  * is waiting for. The caller supplies the frame around it.
  */
 export function StepContent({ host, tour, step }: { host: Host; tour: TourController; step: Step }) {
   const state = tour.stateOf(step)
   const record = tour.records[step.id]
   const reading = tour.open === step.id
-  // Opened by the operator only — a trigger that fires does not throw its
+  // Opened by the operator only — an observer that fires does not throw its
   // payload open over what is being read.
   const [conditionOpen, setConditionOpen] = useState(false)
   const waitingForScreen = reading && Boolean(step.to_open) && tour.awaitingScreen && state !== 'complete'
@@ -131,10 +131,10 @@ export function StateChip({ state, step, record }: { state: StepState; step: Ste
 
 /**
  * What the step is waiting on, as one line at the foot of its panel: the
- * state, the trigger, and — once it fires — when. Expanding it shows the
- * binding and the payload the engine delivered, the way the harness shows a
- * function call. It opens when the operator opens it: a trigger that fires
- * does not throw its payload over whatever is being read.
+ * state, the observed function, and — once it fires — when. Expanding it
+ * shows the observer's source and the payload the engine delivered, the way
+ * the harness shows a function call. It opens when the operator opens it: an
+ * observer that fires does not throw its payload over whatever is being read.
  */
 function ConditionRow({
   condition,
@@ -147,12 +147,16 @@ function ConditionRow({
   open: boolean
   onToggle: () => void
 }) {
-  const hasConfig = Object.keys(condition.config ?? {}).length > 0
+  const selection = {
+    ...(condition.args ? { args: condition.args } : {}),
+    ...(condition.filters ? { filters: condition.filters } : {}),
+  }
+  const hasSelection = Object.keys(selection).length > 0
   return (
     <div className="learn-condition" data-fired={fired ? 'true' : undefined}>
       <button type="button" className="learn-disclosure" aria-expanded={open} onClick={onToggle}>
         <ChevronRight className={`learn-caret ${uiClasses.icon}`} data-open={open || undefined} aria-hidden="true" />
-        <span className="learn-disclosure-label">Trigger</span>
+        <span className="learn-disclosure-label">Observer</span>
         <span className="learn-disclosure-summary">
           {fired ? (
             <>
@@ -171,8 +175,8 @@ function ConditionRow({
         <div className="learn-panel-clip">
           <div className="learn-panel-body learn-terminal">
             <span className="learn-terminal-line">
-              <span className="learn-terminal-prompt">$</span> {fired?.trigger_type ?? condition.type}
-              {hasConfig ? <span className="learn-terminal-dim"> {JSON.stringify(condition.config)}</span> : null}
+              <span className="learn-terminal-prompt">$</span> {fired?.function_id ?? condition.function_id}
+              {hasSelection ? <span className="learn-terminal-dim"> {JSON.stringify(selection)}</span> : null}
             </span>
             {fired ? (
               <pre className="learn-pre">{format(fired.payload)}</pre>
@@ -238,7 +242,7 @@ function StayInTouch({
       if (!email.trim() || status === 'sending') return
       setStatus('sending')
       void host.iii
-        .trigger('learn-iii::subscribe', { email: email.trim(), source: 'learn_iii_flow' })
+        .call('learn-iii::subscribe', { email: email.trim(), source: 'learn_iii_flow' })
         .then(() => {
           setStatus('done')
           onSubscribed()

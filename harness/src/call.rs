@@ -1,0 +1,2889 @@
+//! The function-call pipeline (harness.md § Functions / §
+//! `harness::function::call`): the fail-closed allow/deny globs first,
+//! then the target invocation, then result normalisation. Discovery results
+//! (`engine::functions::list` / `info`) are post-filtered through the same
+//! globs so the model only discovers what it can call.
+//!
+//! P1 covers the glob policy + target + normalisation. The `pre_call` /
+//! `post_call` hook chain and `pending` deferral layer on in later phases.
+
+use std::collections::{BTreeMap, HashMap};
+
+use jsonschema::JSONSchema;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+use crate::clients::EngineClient;
+use crate::policy::CompiledPolicy;
+use crate::types::content::ContentBlock;
+use crate::types::turn::{FailedCall, FunctionContractLedgerEntry};
+
+/// A normalised function result ready to become a `function_result` entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResultData {
+    pub content: Vec<ContentBlock>,
+    pub is_error: bool,
+    pub details: Value,
+}
+
+/// Discard ledger rows whose exact full source is not the only model-facing
+/// result for its call id.
+pub(crate) fn retain_visible_contract_sources(
+    ledger: &mut BTreeMap<String, FunctionContractLedgerEntry>,
+    messages: &[Value],
+) {
+    ledger.retain(|_, source| {
+        let eligible = unique_visible_result(messages, &source.source_function_call_id)
+            .is_some_and(|(function_id, content)| {
+                function_id == Some("engine::functions::info")
+                    && content.and_then(digest_value).as_deref()
+                        == Some(source.source_content_digest.as_str())
+            });
+        source.eligible = eligible;
+        eligible
+    });
+}
+
+/// Record a successful function-result append. Reusing a source call id
+/// invalidates every row that named it; such an ambiguous id cannot become a
+/// replacement source in the same append.
+pub(crate) fn apply_contract_updates_after_append(
+    ledger: &mut BTreeMap<String, FunctionContractLedgerEntry>,
+    call_id: &str,
+    updates: Vec<(String, FunctionContractLedgerEntry)>,
+) {
+    let reused_source = ledger
+        .values()
+        .any(|source| source.source_function_call_id == call_id);
+    ledger.retain(|_, source| source.source_function_call_id != call_id);
+    if !reused_source {
+        ledger.extend(updates);
+    }
+}
+
+fn unique_visible_result<'a>(
+    messages: &'a [Value],
+    call_id: &str,
+) -> Option<(Option<&'a str>, Option<&'a Value>)> {
+    let mut found = None;
+    let mut call_seen = false;
+    for message in messages {
+        for block in message
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            match block.get("type").and_then(Value::as_str) {
+                Some("function_call")
+                    if block.get("id").and_then(Value::as_str) == Some(call_id) =>
+                {
+                    let function_id = block.get("function_id").and_then(Value::as_str);
+                    let wrapped_target = block
+                        .get("arguments")
+                        .and_then(|arguments| arguments.get("function"))
+                        .and_then(Value::as_str);
+                    let is_info = function_id == Some("engine::functions::info")
+                        || (function_id.is_some_and(crate::policy::is_agent_call_name)
+                            && wrapped_target == Some("engine::functions::info"));
+                    if call_seen || !is_info {
+                        return None;
+                    }
+                    call_seen = true;
+                }
+                Some("function_result")
+                    if block.get("function_call_id").and_then(Value::as_str) == Some(call_id) =>
+                {
+                    if found.is_some() {
+                        return None;
+                    }
+                    // Inline provider-style results do not carry the source
+                    // function id, so they can never validate a top-level source.
+                    found = Some((None, block.get("content")));
+                }
+                _ => {}
+            }
+        }
+        if message.get("role").and_then(Value::as_str) == Some("function_result")
+            && message.get("function_call_id").and_then(Value::as_str) == Some(call_id)
+        {
+            if found.is_some() {
+                return None;
+            }
+            found = Some((
+                message.get("function_id").and_then(Value::as_str),
+                message.get("content"),
+            ));
+        }
+    }
+    found
+}
+
+/// Prepare an `engine::functions::info` result for the model: every
+/// contract in the model-visible copy is compacted (see [`compact_contract`])
+/// and an unchanged, successful contract already in context is replaced by
+/// an `unchanged_in_context` marker. The raw result always stays in
+/// `details`. Returned ledger updates are applied only after the caller
+/// successfully appends the result.
+pub(crate) fn prepare_info_result(
+    call_id: &str,
+    arguments: &Value,
+    data: &ResultData,
+    ledger: &BTreeMap<String, FunctionContractLedgerEntry>,
+    hook_unchanged: bool,
+) -> (ResultData, Vec<(String, FunctionContractLedgerEntry)>) {
+    // The ledger only trusts a pristine result: no error, untouched by hooks,
+    // and content that is the plain render of `details`. Anything else is
+    // still compacted — from whatever the model would otherwise see.
+    let pristine = !data.is_error && hook_unchanged && normalize(&data.details).0 == data.content;
+    let mut display = if pristine {
+        data.details.clone()
+    } else {
+        match content_json(&data.content) {
+            Some(value) => value,
+            None => return (data.clone(), Vec::new()),
+        }
+    };
+
+    let requested_single = arguments.get("function_id").and_then(Value::as_str);
+    let requested_batch = arguments.get("function_ids").and_then(Value::as_array);
+    let mut candidates = Vec::new();
+    if pristine {
+        if let (Some(requested), Some(item)) = (requested_single, display.as_object()) {
+            if valid_contract_id(&Value::Object(item.clone())) == Some(requested) {
+                candidates.push((None, requested.to_string()));
+            }
+        } else if let (Some(requested), Some(items)) = (
+            requested_batch,
+            display.get("functions").and_then(Value::as_array),
+        ) {
+            let requested_counts = counts(requested.iter().filter_map(Value::as_str));
+            let result_counts = counts(items.iter().filter_map(|item| {
+                item.get("function_id")
+                    .or_else(|| item.get("id"))
+                    .and_then(Value::as_str)
+            }));
+            for (index, item) in items.iter().enumerate() {
+                let Some(id) = valid_contract_id(item) else {
+                    continue;
+                };
+                if requested_counts.get(id) == Some(&1) && result_counts.get(id) == Some(&1) {
+                    candidates.push((Some(index), id.to_string()));
+                }
+            }
+        }
+    }
+
+    // `(function_id, digest, repeats)` sent in full this time, and the rows
+    // whose repeat was answered from the ledger.
+    let mut full = Vec::new();
+    let mut counted = Vec::new();
+    let mut changed = false;
+    for (index, function_id) in candidates {
+        let contract = match index {
+            Some(index) => &data.details["functions"][index],
+            None => &data.details,
+        };
+        let Some(contract_digest) = digest_value(contract) else {
+            continue;
+        };
+        match ledger.get(&function_id) {
+            Some(source)
+                if source.eligible
+                    && source.contract_digest == contract_digest
+                    && source.source_function_call_id != call_id =>
+            {
+                let source_id = &source.source_function_call_id;
+                let item = match index {
+                    Some(index) => &mut display["functions"][index],
+                    None => &mut display,
+                };
+                if source.repeats == 1 {
+                    // Asked again after one marker: send it in full once
+                    // more, in case the model (or its provider) cannot see
+                    // the source. This call becomes the source.
+                    item["note"] = json!(format!(
+                        "This contract was already in your context (call {source_id}) and is \
+                         sent again in full because it was requested again. Call \
+                         {function_id} now instead of fetching its contract."
+                    ));
+                    full.push((function_id, contract_digest, 2));
+                } else {
+                    let mut marker = json!({
+                        "function_id": function_id,
+                        "contract_status": "unchanged_in_context",
+                        "source_function_call_id": source_id,
+                    });
+                    // Past the re-send, the bare status did not stop the
+                    // loop (MOT-4928): say what to do instead.
+                    if source.repeats >= 2 {
+                        marker["note"] = json!(format!(
+                            "This contract was already sent in full (call {source_id}). Do \
+                             not fetch it again: call {function_id} now."
+                        ));
+                    }
+                    *item = marker;
+                    counted.push((
+                        function_id,
+                        FunctionContractLedgerEntry {
+                            repeats: source.repeats + 1,
+                            ..source.clone()
+                        },
+                    ));
+                }
+                changed = true;
+            }
+            Some(source) if source.source_function_call_id == call_id => {}
+            // A same-step duplicate of a source sent moments ago (not yet
+            // confirmed visible) is still a repeat: keep its count.
+            _ => {
+                let repeats = ledger
+                    .get(&function_id)
+                    .filter(|source| source.contract_digest == contract_digest)
+                    .map_or(0, |source| source.repeats);
+                full.push((function_id, contract_digest, repeats));
+            }
+        }
+    }
+
+    // Compaction runs on the model-visible copy only, after candidate
+    // selection: `valid_contract_id` needs the raw response schema, and the
+    // ledger digest is taken over the raw contract in `details`.
+    match display.get_mut("functions").and_then(Value::as_array_mut) {
+        Some(items) => {
+            for item in items {
+                changed |= compact_contract(item);
+            }
+        }
+        None => changed |= compact_contract(&mut display),
+    }
+
+    let mut prepared = data.clone();
+    if changed {
+        prepared.content = normalize(&display).0;
+    }
+    let Some(source_content_digest) = digest_content(&prepared.content) else {
+        return (prepared, Vec::new());
+    };
+    let updates = full
+        .into_iter()
+        .map(|(function_id, contract_digest, repeats)| {
+            (
+                function_id,
+                FunctionContractLedgerEntry {
+                    contract_digest,
+                    source_function_call_id: call_id.to_string(),
+                    source_content_digest: source_content_digest.clone(),
+                    eligible: false,
+                    repeats,
+                },
+            )
+        })
+        .chain(counted)
+        .collect();
+    (prepared, updates)
+}
+
+/// The model-visible result as JSON, when it is a single text block holding
+/// a JSON object (the shape every info result and hook rewrite renders to).
+fn content_json(content: &[ContentBlock]) -> Option<Value> {
+    let [ContentBlock::Text { text }] = content else {
+        return None;
+    };
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .filter(Value::is_object)
+}
+
+/// Compact one model-visible contract item in place, dropping what carries
+/// no calling contract: response-side schemas (the model reads results, it
+/// never constructs them), the registry envelope, and JSON-Schema boilerplate
+/// inside the request schema (`$schema`, `title`, `default: null`, and
+/// `definitions` referenced exactly once, which are inlined at their `$ref`).
+/// Property names, types, `required`, `enum`, real defaults and every
+/// description survive. A dedupe marker or error item has none of these keys
+/// — the call is a no-op there.
+fn compact_contract(item: &mut Value) -> bool {
+    let Some(object) = item.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for key in [
+        "response_schema",
+        "response_format",
+        "metadata",
+        "observer_count",
+        "worker_name",
+        "namespace",
+        "$schema",
+        "title",
+    ] {
+        changed |= object.remove(key).is_some();
+    }
+    for key in ["request_schema", "request_format", "parameters"] {
+        if let Some(schema) = object.get_mut(key) {
+            changed |= compact_schema(schema);
+        }
+    }
+    changed
+}
+
+/// Compact one JSON Schema in place: inline single-use definitions, drop the
+/// ones nothing reaches, and strip boilerplate from every schema node.
+pub(crate) fn compact_schema(schema: &mut Value) -> bool {
+    let Some(object) = schema.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    let definitions_key = ["definitions", "$defs"]
+        .into_iter()
+        .find(|key| object.contains_key(*key));
+    if let Some(key) = definitions_key {
+        let Some(Value::Object(mut definitions)) = object.remove(key) else {
+            return false;
+        };
+        changed = true;
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        count_refs(schema, &mut counts);
+        for body in definitions.values() {
+            count_refs(body, &mut counts);
+        }
+        let mut stack = Vec::new();
+        inline_single_refs(schema, &definitions, &counts, &mut stack);
+        for name in definitions.keys().cloned().collect::<Vec<_>>() {
+            let mut body = definitions.remove(&name).unwrap_or(Value::Null);
+            stack.push(name.clone());
+            inline_single_refs(&mut body, &definitions, &counts, &mut stack);
+            stack.pop();
+            definitions.insert(name, body);
+        }
+        // Keep only what the schema body still reaches.
+        let mut reachable = serde_json::Map::new();
+        let mut queue = Vec::new();
+        collect_refs(schema, &mut queue);
+        while let Some(name) = queue.pop() {
+            if reachable.contains_key(&name) {
+                continue;
+            }
+            if let Some(body) = definitions.get(&name) {
+                collect_refs(body, &mut queue);
+                reachable.insert(name, body.clone());
+            }
+        }
+        if !reachable.is_empty() {
+            if let Some(object) = schema.as_object_mut() {
+                object.insert(key.to_string(), Value::Object(reachable));
+            }
+        }
+    }
+    changed | strip_schema_boilerplate(schema)
+}
+
+/// `#/definitions/X` or `#/$defs/X` → `X`; anything else is not ours.
+fn definition_name(reference: &str) -> Option<&str> {
+    reference
+        .strip_prefix("#/definitions/")
+        .or_else(|| reference.strip_prefix("#/$defs/"))
+}
+
+/// The child schema nodes of one schema node. Only schema positions are
+/// visited: the keys of `properties`/`definitions` maps and data such as
+/// `enum`, `default` or `description` are never treated as schemas.
+fn schema_children(node: &Value) -> Vec<&Value> {
+    let Some(object) = node.as_object() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, value) in object {
+        match key.as_str() {
+            "properties" | "patternProperties" | "definitions" | "$defs" => {
+                if let Value::Object(map) = value {
+                    out.extend(map.values());
+                }
+            }
+            "items"
+            | "additionalProperties"
+            | "additionalItems"
+            | "not"
+            | "if"
+            | "then"
+            | "else"
+            | "contains"
+            | "propertyNames" => match value {
+                Value::Object(_) => out.push(value),
+                Value::Array(list) => out.extend(list.iter()),
+                _ => {}
+            },
+            "anyOf" | "oneOf" | "allOf" => {
+                if let Value::Array(list) = value {
+                    out.extend(list.iter());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn schema_children_mut(node: &mut Value) -> Vec<&mut Value> {
+    let Some(object) = node.as_object_mut() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, value) in object.iter_mut() {
+        match key.as_str() {
+            "properties" | "patternProperties" | "definitions" | "$defs" => {
+                if let Value::Object(map) = value {
+                    out.extend(map.values_mut());
+                }
+            }
+            "items"
+            | "additionalProperties"
+            | "additionalItems"
+            | "not"
+            | "if"
+            | "then"
+            | "else"
+            | "contains"
+            | "propertyNames" => match value {
+                Value::Object(_) => out.push(value),
+                Value::Array(list) => out.extend(list.iter_mut()),
+                _ => {}
+            },
+            "anyOf" | "oneOf" | "allOf" => {
+                if let Value::Array(list) = value {
+                    out.extend(list.iter_mut());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn count_refs(node: &Value, counts: &mut HashMap<String, usize>) {
+    if let Some(name) = node
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(definition_name)
+    {
+        *counts.entry(name.to_string()).or_default() += 1;
+    }
+    for child in schema_children(node) {
+        count_refs(child, counts);
+    }
+}
+
+fn collect_refs(node: &Value, out: &mut Vec<String>) {
+    if let Some(name) = node
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(definition_name)
+    {
+        out.push(name.to_string());
+    }
+    for child in schema_children(node) {
+        collect_refs(child, out);
+    }
+}
+
+/// Replace every `$ref` to a definition used exactly once with the
+/// definition body. Keys beside the `$ref` (a field description, a default)
+/// are kept on the inlined body. `stack` guards recursive definitions.
+fn inline_single_refs(
+    node: &mut Value,
+    definitions: &serde_json::Map<String, Value>,
+    counts: &HashMap<String, usize>,
+    stack: &mut Vec<String>,
+) {
+    let target = node
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(definition_name)
+        .map(str::to_string);
+    if let Some(name) = target {
+        if counts.get(&name) == Some(&1) && !stack.contains(&name) {
+            if let Some(body) = definitions.get(&name) {
+                let mut inlined = body.clone();
+                if let (Value::Object(target), Value::Object(site)) = (&mut inlined, &*node) {
+                    for (key, value) in site {
+                        if key != "$ref" {
+                            target.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                *node = inlined;
+                stack.push(name);
+                inline_single_refs(node, definitions, counts, stack);
+                stack.pop();
+            }
+        }
+        return;
+    }
+    for child in schema_children_mut(node) {
+        inline_single_refs(child, definitions, counts, stack);
+    }
+}
+
+fn strip_schema_boilerplate(node: &mut Value) -> bool {
+    let mut changed = false;
+    if let Some(object) = node.as_object_mut() {
+        changed |= object.remove("$schema").is_some();
+        changed |= object.remove("title").is_some();
+        if object.get("default") == Some(&Value::Null) {
+            object.remove("default");
+            changed = true;
+        }
+    }
+    for child in schema_children_mut(node) {
+        changed |= strip_schema_boilerplate(child);
+    }
+    changed
+}
+
+fn valid_contract_id(value: &Value) -> Option<&str> {
+    let object = value.as_object()?;
+    if object.contains_key("error") || !contract_schemas_compile(object) {
+        return None;
+    }
+    object
+        .get("function_id")
+        .or_else(|| object.get("id"))
+        .and_then(Value::as_str)
+}
+
+fn contract_schemas_compile(object: &serde_json::Map<String, Value>) -> bool {
+    ["parameters", "request_format", "request_schema"]
+        .iter()
+        .find_map(|key| object.get(*key))
+        .is_some_and(|schema| JSONSchema::compile(schema).is_ok())
+        && ["response_format", "response_schema"]
+            .iter()
+            .find_map(|key| object.get(*key))
+            .is_some_and(|schema| JSONSchema::compile(schema).is_ok())
+}
+
+fn counts<'a>(ids: impl Iterator<Item = &'a str>) -> HashMap<&'a str, usize> {
+    let mut counts = HashMap::new();
+    for id in ids {
+        *counts.entry(id).or_default() += 1;
+    }
+    counts
+}
+
+fn digest_content(content: &[ContentBlock]) -> Option<String> {
+    serde_json::to_value(content)
+        .ok()
+        .as_ref()
+        .and_then(digest_value)
+}
+
+fn digest_value(value: &Value) -> Option<String> {
+    Some(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(value).ok()?)
+    ))
+}
+
+/// Identical failures of one call after which the next identical call is
+/// answered locally instead of re-running the target.
+pub(crate) const REPEATED_FAILURE_LIMIT: u32 = 2;
+
+/// The repeated-failure key of a call: its target and model-authored arguments.
+pub(crate) fn call_digest(function_id: &str, arguments: &Value) -> Option<String> {
+    digest_value(&json!([function_id, arguments]))
+}
+
+/// Track a target result: an error identical to the previous one for this
+/// call counts up, any other error restarts at one, a success clears it.
+pub(crate) fn note_call_result(
+    failed: &mut BTreeMap<String, FailedCall>,
+    key: &str,
+    data: &ResultData,
+) {
+    if !data.is_error {
+        failed.remove(key);
+        return;
+    }
+    let Some(error_digest) = digest_content(&data.content) else {
+        failed.remove(key);
+        return;
+    };
+    match failed.get_mut(key) {
+        Some(entry) if entry.error_digest == error_digest => entry.count += 1,
+        _ => {
+            failed.insert(
+                key.to_string(),
+                FailedCall {
+                    error_digest,
+                    count: 1,
+                },
+            );
+        }
+    }
+}
+
+/// The local `is_error` answer for a call that already failed identically
+/// [`REPEATED_FAILURE_LIMIT`] times this turn; `None` lets it run.
+pub(crate) fn repeated_failure_result(
+    failed: &BTreeMap<String, FailedCall>,
+    key: &str,
+    function_id: &str,
+) -> Option<ResultData> {
+    let count = failed
+        .get(key)
+        .filter(|entry| entry.count >= REPEATED_FAILURE_LIMIT)?
+        .count;
+    let msg = format!(
+        "This exact call to {function_id} (same arguments) already failed {count} times this \
+         turn with the identical error shown above. It was not run again. Change the arguments \
+         or the approach, or report the blocker."
+    );
+    Some(ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({
+            "error": "repeated_failure",
+            "function_id": function_id,
+            "count": count,
+            "message": msg,
+        }),
+    })
+}
+
+/// The outcome of calling one function.
+pub enum CallOutcome {
+    /// A settled result (success, policy denial, or target error).
+    Result(ResultData),
+    /// Deferred — the result arrives later via `harness::function::resolve`.
+    #[allow(dead_code)]
+    Pending(PendingInfo),
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default)]
+pub struct PendingInfo {
+    pub pending_timeout_ms: Option<u64>,
+    pub held_by: Option<String>,
+    /// Hook holds only: the arguments as mutated by the chain up to the hold,
+    /// checkpointed so a release executes the mutated call (issue #506).
+    pub held_arguments: Option<Value>,
+    /// Argument repairs applied before the hold (MOT-4847).
+    pub reconciled: Option<Vec<crate::reconcile::Change>>,
+    pub child_session_id: Option<String>,
+    pub child_turn_id: Option<String>,
+}
+
+/// Run the call pipeline for one call. `function_id` is the unwrapped
+/// target; `arguments` the target payload.
+pub async fn call_function(
+    engine: &EngineClient,
+    policy: &CompiledPolicy,
+    function_id: &str,
+    arguments: &Value,
+) -> CallOutcome {
+    // Fail-closed glob policy — structural and final.
+    if !policy.allows(function_id) {
+        return CallOutcome::Result(denied_result(function_id));
+    }
+
+    CallOutcome::Result(invoke_target(engine, policy, function_id, arguments).await)
+}
+
+/// Invoke the target and normalise its result — WITHOUT the policy gate (the
+/// caller checks `policy.allows` first) or the hook chain. `policy` is still
+/// used to post-filter runtime discovery results. Used by the loop and the
+/// hook-held release path after `pre_call` has run.
+pub async fn invoke_target(
+    engine: &EngineClient,
+    policy: &CompiledPolicy,
+    function_id: &str,
+    arguments: &Value,
+) -> ResultData {
+    invoke_target_classified(engine, policy, function_id, arguments)
+        .await
+        .0
+}
+
+/// [`invoke_target`] plus whether a failed dispatch has an unknown outcome
+/// (the target may still have run; see
+/// [`crate::clients::engine::invocation_outcome_unknown`]). The flag is set by
+/// the harness from the structured SDK error, never from result text a target
+/// controls, so it can gate the deletion dispatch witness.
+pub(crate) async fn invoke_target_classified(
+    engine: &EngineClient,
+    policy: &CompiledPolicy,
+    function_id: &str,
+    arguments: &Value,
+) -> (ResultData, bool) {
+    let (arguments, start_note) = match scaffold_start_gate(function_id, arguments, policy) {
+        StartGate::Pass => (arguments.clone(), None),
+        StartGate::Deny(denied) => return (denied, false),
+        StartGate::FilesOnly(arguments, note) => (arguments, Some(note)),
+    };
+    if let Some(denied) = project_wide_compose_denial(function_id, &arguments) {
+        return (denied, false);
+    }
+    match engine.dispatch(function_id, arguments).await {
+        Ok(mut value) => {
+            if function_id == "engine::functions::list" {
+                post_filter_discovery(&mut value, policy);
+            } else if function_id == "engine::functions::info" {
+                post_filter_info(&mut value, policy);
+            }
+            let mut result = normalized_result(value);
+            if let Some(note) = start_note {
+                result.content.push(ContentBlock::text(note));
+            }
+            (result, false)
+        }
+        Err(e) => {
+            let outcome_unknown = e.outcome_unknown;
+            (invocation_error_result(e.code, e.message), outcome_unknown)
+        }
+    }
+}
+
+/// Apply the same function-result normalization to a locally intercepted call
+/// as [`invoke_target`] applies to an engine-dispatched return value.
+pub(crate) fn normalized_result(value: Value) -> ResultData {
+    let (content, is_error) = normalize(&value);
+    ResultData {
+        content,
+        is_error,
+        details: value,
+    }
+}
+
+/// Bound a captured function result BEFORE it is written to the session or
+/// echoed to the provider: past `max_bytes` (0 disables) `content` + `details`
+/// are replaced by an elision marker, `is_error` kept. Applied once at the
+/// exit of `observe::invoke` and on the `function::resolve` deliver path.
+/// An oversized frame resets the engine connection and the SDK re-flushes it
+/// forever, wedging the worker (MOT-4498).
+pub(crate) fn cap_result(result: ResultData, max_bytes: usize) -> ResultData {
+    if max_bytes == 0 {
+        return result;
+    }
+    let max_bytes = max_bytes.max(1024); // the marker itself must fit
+    let total = serde_json::to_vec(&(&result.content, &result.details)).map_or(0, |b| b.len());
+    if total <= max_bytes {
+        return result;
+    }
+    let marker = format!(
+        "<omitted: result was ~{} KB, over the {} KB harness result cap; \
+         re-call with narrower arguments, or ask for a slice or summary instead>",
+        total / 1024,
+        max_bytes / 1024,
+    );
+    ResultData {
+        content: vec![ContentBlock::text(marker)],
+        is_error: result.is_error,
+        details: json!({ "result_capped": { "original_bytes": total, "max_bytes": max_bytes } }),
+    }
+}
+
+/// Compose operations that, without a target, act on EVERY container of the
+/// supervised project — the harness running this turn included. A
+/// project-wide `compose::restart {}` observed live (Linkly Ch. 7, MOT-4718)
+/// took down harness, session-manager and shell mid-turn: the turn was never
+/// resumed and the session was left with a dangling `function_call`. The
+/// prompt asks the model to confirm first; this is the structural guard for
+/// when it does not.
+const PROJECT_WIDE_COMPOSE_OPS: [&str; 5] = [
+    "compose::restart",
+    "compose::down",
+    "compose::stop",
+    "compose::remove",
+    "compose::update",
+];
+
+/// The target fields the compose daemon accepts for scoping one of those
+/// operations to specific containers (`container` and its `worker` alias,
+/// or a `workers` batch).
+const COMPOSE_TARGET_FIELDS: [&str; 3] = ["container", "worker", "workers"];
+
+fn compose_has_target(arguments: &Value) -> bool {
+    COMPOSE_TARGET_FIELDS
+        .iter()
+        .any(|field| match arguments.get(field) {
+            Some(Value::String(s)) => !s.trim().is_empty(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .any(|item| item.as_str().is_some_and(|s| !s.trim().is_empty())),
+            _ => false,
+        })
+}
+
+/// The `is_error` result for a project-wide compose operation issued from
+/// inside a turn. Refused before dispatch: it cannot be undone from the
+/// session it destroys, and the model can always narrow it to one container.
+pub(crate) fn project_wide_compose_denial(
+    function_id: &str,
+    arguments: &Value,
+) -> Option<ResultData> {
+    if !PROJECT_WIDE_COMPOSE_OPS.contains(&function_id) || compose_has_target(arguments) {
+        return None;
+    }
+    let op = function_id.trim_start_matches("compose::");
+    let message = format!(
+        "{function_id} without a target acts on every container in this project, including the \
+         harness running this session: the turn would be lost mid-flight and the session left \
+         with an unanswered call. Pass `container` (or `worker` / `workers`) to {op} one worker, \
+         or ask the user to run `iii call {function_id}` from their own terminal."
+    );
+    Some(invocation_error_result(
+        Some("compose_project_scope_denied".to_string()),
+        message,
+    ))
+}
+
+/// What the turn does with a `coder::scaffold-worker` call, whose `start`
+/// (default true) has the ide run compose::add under its own permissions,
+/// in its own stack.
+pub(crate) enum StartGate {
+    Pass,
+    /// An explicit `start: true` this session cannot have.
+    Deny(ResultData),
+    /// No `start` given and this session cannot start: the call goes with
+    /// `start: false`, and the note joins its result.
+    FilesOnly(Value, String),
+}
+
+/// A session may start a scaffold only if it may call compose::add itself:
+/// the flag must not widen its policy. (The ide adds to its own stack, which
+/// compose gives every container it supervises, the harness included, as
+/// the same III_COMPOSE_FILE / III_COMPOSE_NAMESPACE.)
+pub(crate) fn scaffold_start_gate(
+    function_id: &str,
+    arguments: &Value,
+    policy: &CompiledPolicy,
+) -> StartGate {
+    if function_id != crate::clients::engine::SCAFFOLD_WORKER || policy.allows("compose::add") {
+        return StartGate::Pass;
+    }
+    start_refused(
+        arguments,
+        "it runs compose::add, which this session may not call",
+        "Adding it to the stack needs compose::add: ask for it, or for someone who has it to send the compose_add.",
+    )
+}
+
+/// Whether a `coder::scaffold-worker` call would start the worker: `start`
+/// defaults to true.
+pub(crate) fn scaffold_starts(function_id: &str, arguments: &Value) -> bool {
+    function_id == crate::clients::engine::SCAFFOLD_WORKER
+        && arguments.get("start") != Some(&Value::Bool(false))
+}
+
+/// A start this session cannot have: a defaulted one goes files-only, an
+/// explicit one is refused.
+/// `next` is the step that does add the worker, for the agent to take.
+pub(crate) fn start_refused(arguments: &Value, why: &str, next: &str) -> StartGate {
+    match arguments.get("start") {
+        Some(Value::Bool(false)) => StartGate::Pass,
+        None => {
+            let mut files_only = arguments.clone();
+            if let Some(object) = files_only.as_object_mut() {
+                object.insert("start".to_string(), Value::Bool(false));
+            }
+            StartGate::FilesOnly(
+                files_only,
+                format!("[harness] Not started ({why}): only the files were written. {next}"),
+            )
+        }
+        // true, or a value the ide would refuse anyway: never dispatched.
+        Some(_) => StartGate::Deny(invocation_error_result(
+            Some("scaffold_start_denied".to_string()),
+            format!(
+                "coder::scaffold-worker with start: true is refused here: {why}. Call it with \
+                 start: false to write the files only. {next}"
+            ),
+        )),
+    }
+}
+
+pub(crate) fn invocation_error_result(code: Option<String>, message: String) -> ResultData {
+    ResultData {
+        content: vec![ContentBlock::text(message.clone())],
+        is_error: true,
+        details: json!({ "error": { "code": code, "message": message } }),
+    }
+}
+
+/// Post-filter an `engine::functions::info` result — the flat single-id
+/// detail (blanked to `null` when not callable, as ever) or the engine's
+/// `function_ids` batch envelope. Batch entries the agent cannot dispatch are
+/// masked to the same `{ function_id, error: "not available" }` stub the
+/// engine uses for unknown ids — denied stays indistinguishable from
+/// nonexistent, and (unlike the list filter) entries are never dropped, so
+/// the model can pair every requested id with an outcome.
+fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
+    let keep = |id: &str| policy.allows(id);
+    if let Some(items) = value.get_mut("functions").and_then(Value::as_array_mut) {
+        for item in items.iter_mut() {
+            let id = item
+                .get("function_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if !keep(&id) {
+                *item = json!({ "function_id": id, "error": "not available" });
+            } else {
+                overlay_control_contract(item, &id);
+            }
+        }
+    } else if let Some(id) = value
+        .get("function_id")
+        .or_else(|| value.get("id"))
+        .and_then(Value::as_str)
+    {
+        let id = id.to_string();
+        if !keep(&id) {
+            *value = Value::Null;
+        } else {
+            overlay_control_contract(value, &id);
+        }
+    }
+}
+
+/// `harness::observe` / `harness::unobserve` are intercepted in-turn, so the
+/// registered functions (which only answer calls from outside a turn) are NOT
+/// the contract an agent calls. Discovery must describe the intercept, or an
+/// agent that reads `functions::info` "learns" its tool schema is wrong. Only the schema keys
+/// the engine sent are replaced: an info detail gets the intercepted request
+/// (and, for the raw details — console, hooks, contract ledger — its response;
+/// the model-visible copy strips response schemas), a list row carries no
+/// schema and gets the description only.
+fn overlay_control_contract(item: &mut Value, id: &str) {
+    // Decided: the engine's negative wins over the harness's own offer. An
+    // RBAC `forbidden` or a foreign-`namespace` `not_found` passes through;
+    // an overlay never turns an error into a contract.
+    if item.get("error").is_some() {
+        return;
+    }
+    let Some((description, schema)) = crate::functions::observe::control_contract(id) else {
+        return;
+    };
+    if let Some(map) = item.as_object_mut() {
+        map.insert("description".into(), Value::String(description.into()));
+        for key in ["request_schema", "parameters", "request_format"] {
+            if map.contains_key(key) {
+                map.insert(key.into(), schema.clone());
+            }
+        }
+        if let Some(response) = crate::functions::observe::control_response_schema(id) {
+            for key in ["response_schema", "response_format"] {
+                if map.contains_key(key) {
+                    map.insert(key.into(), response.clone());
+                }
+            }
+        }
+    }
+}
+
+/// The `is_error` result for a policy denial (no allow match or a deny match).
+pub fn denied_result(function_id: &str) -> ResultData {
+    denied_result_with_hint(function_id, None)
+}
+
+/// [`denied_result`] naming the permitted id the model most likely meant
+/// (see [`closest_permitted`]): a mistyped id is denied like a forbidden one,
+/// and without the hint the model reads it as a policy problem.
+pub fn denied_result_with_hint(function_id: &str, did_you_mean: Option<&str>) -> ResultData {
+    let hint = did_you_mean
+        .map(|id| format!(" No registered function has this id; did you mean {id}?"))
+        .unwrap_or_default();
+    let msg = format!(
+        "function {function_id} is not permitted by this agent's dispatch policy (no allow-glob \
+         match or a deny-glob match).{hint} Calling it again will be denied again: use a \
+         permitted function or report the blocker."
+    );
+    ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({ "error": "policy_denied", "function_id": function_id, "message": msg }),
+    }
+}
+
+/// The permitted, registered id closest to `function_id` when `function_id`
+/// itself is not registered at all — a model retyping a long id (a hashed
+/// worker name) corrupts it. `None` for a real function the policy denies, or
+/// when nothing permitted is within an eighth of the id's length (at least 2)
+/// edits.
+pub fn closest_permitted(
+    function_id: &str,
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> Option<String> {
+    let registered = snapshot.internal_ids.contains(function_id)
+        || snapshot
+            .functions
+            .iter()
+            .any(|f| f.function_id == function_id);
+    if registered {
+        return None;
+    }
+    let limit = (function_id.chars().count() / 8).max(2);
+    snapshot
+        .functions
+        .iter()
+        .map(|f| f.function_id.as_str())
+        .filter(|id| policy.allows(id))
+        .map(|id| (edit_distance(function_id, id), id))
+        .filter(|(distance, _)| *distance <= limit)
+        .min()
+        .map(|(_, id)| id.to_string())
+}
+
+/// Levenshtein distance over chars; ids are short and this runs only on a
+/// denial.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(ca != *cb));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
+/// The `is_error` result for an `agent_call` call with no resolvable
+/// target — arguments were empty, null, or unparseable (local models emit
+/// malformed JSON args). Dispatching the wrapper name to the engine would
+/// only return a cryptic `function_not_found: agent_call`.
+/// Char-safe ≤200-char preview of raw arguments for error messages —
+/// model-emitted JSON serializes with literal UTF-8, and a byte-indexed
+/// `String::truncate` panics mid-char on CJK/emoji payloads.
+fn arguments_preview(arguments: &Value) -> String {
+    truncate_chars(&arguments.to_string(), PREVIEW_CHARS)
+}
+
+const PREVIEW_CHARS: usize = 200;
+
+pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => s[..i].to_string(),
+        None => s.to_string(),
+    }
+}
+
+pub fn wrapper_without_target_result(arguments: &Value) -> ResultData {
+    let got = arguments_preview(&without_salvage_markers(arguments));
+    let msg = format!(
+        "agent_call was called without a usable target (arguments were {got}); expected \
+         {{\"function\": \"<function id>\", \"payload\": {{...}}}}. Re-issue the call with the \
+         target function id."
+    );
+    ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({ "error": "agent_call_no_target", "message": msg }),
+    }
+}
+
+/// Salvaged (`_partial`/`_raw`) or non-object arguments must never reach dispatch.
+pub fn arguments_degraded(arguments: &Value) -> bool {
+    match arguments {
+        Value::Object(map) => map.contains_key("_partial") || map.contains_key("_raw"),
+        _ => true,
+    }
+}
+
+/// Provider-degraded arguments (a stream cut by the output-token limit, text
+/// that stopped before the object closed, or text that is not valid JSON,
+/// salvaged to a `"_partial": true` prefix or a raw `{"_raw": …}` evidence
+/// object) must never execute: the salvage preserves evidence for the
+/// transcript, not intent. Teachable local failure, mirroring
+/// [`wrapper_without_target_result`].
+///
+/// The wording names the real cause, so the model fixes the right thing:
+/// - `_invalid` (set by the router's salvage, or by `plan_calls` for a
+///   stringified payload) — the JSON has a syntax error, reported with the
+///   parser's message and the text around it. A cut stream alone never sets
+///   it, so it wins over `stop_reason: length`, which is the whole message's
+///   and may belong to another call;
+/// - `stop_reason: length` — the model ran out of output room;
+/// - otherwise — the arguments stopped before the object was complete.
+///
+/// Only an ok `Done` outcome reaches dispatch (a dead stream goes to transient
+/// resume instead), so this is never a transport failure.
+pub fn truncated_arguments_result(
+    function_id: &str,
+    arguments: &Value,
+    stop_reason: crate::types::event::StopReason,
+) -> ResultData {
+    let invalid = arguments
+        .get("_invalid")
+        .filter(|invalid| invalid.is_object());
+    let hit_output_limit = stop_reason == crate::types::event::StopReason::Length;
+    let (msg, cause) = if invalid.is_none() && hit_output_limit {
+        let got = salvage_preview(arguments);
+        (
+            format!(
+                "{function_id} did not run: the model reached its maximum output length before \
+                 it finished writing this call's arguments, so they arrived incomplete (received \
+                 {got}). The output was too long for one turn. Produce it in smaller pieces: send \
+                 this call with a shorter payload and continue in follow-up calls (for example, \
+                 create a file with its first part and append the rest in later calls), or split \
+                 the work across several smaller calls."
+            ),
+            "max_output_tokens",
+        )
+    } else if let Some(invalid) = invalid {
+        let error = invalid
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("syntax error");
+        let near = invalid
+            .get("context")
+            .and_then(Value::as_str)
+            .map(|context| truncate_chars(context, PREVIEW_CHARS))
+            .unwrap_or_default();
+        // Text after a complete value has, in every case seen live, been an
+        // object closed too soon with its later fields one level out, not a
+        // stray bracket: deleting the last bracket would keep the wrong shape.
+        let hint = if error.contains("after the root value") {
+            " Text after a complete object usually means an object closed too soon, so the \
+             fields after it landed one level up: check where each object closes, and remove a \
+             bracket only if it is truly extra."
+        } else {
+            ""
+        };
+        (
+            format!(
+                "{function_id} did not run: its arguments are not valid JSON ({error}, near \
+                 `{near}`).{hint} Nothing ran. Re-send the call with every bracket and quote \
+                 balanced; a large edit is easier to get right as several smaller calls."
+            ),
+            "invalid_json",
+        )
+    } else {
+        let got = salvage_preview(arguments);
+        (
+            format!(
+                "{function_id} did not run: its arguments stopped before the JSON object was \
+                 complete (received {got}). Nothing ran. Re-send the complete call."
+            ),
+            "incomplete_json",
+        )
+    };
+    ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({
+            "error": "arguments_truncated",
+            "cause": cause,
+            "message": msg,
+        }),
+    }
+}
+
+/// What the model actually sent, for the teachable message. A `_raw` salvage
+/// (arguments that never parsed) shows the text it carried; a `_partial`
+/// salvage shows the fields that did parse. Neither shows the marker keys,
+/// which read like a system fault to the model and the user.
+fn salvage_preview(arguments: &Value) -> String {
+    match arguments.get("_raw").and_then(Value::as_str) {
+        Some(raw) => truncate_chars(raw, PREVIEW_CHARS),
+        None => arguments_preview(&without_salvage_markers(arguments)),
+    }
+}
+
+/// The salvaged fields without the `_partial`/`_raw`/`_streaming`/`_invalid`
+/// markers.
+fn without_salvage_markers(arguments: &Value) -> Value {
+    match arguments {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(k, _)| {
+                    !matches!(k.as_str(), "_partial" | "_raw" | "_streaming" | "_invalid")
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Normalise an arbitrary function return into content blocks. `details`
+/// always carries the raw value; content is a string render, an explicit
+/// `content` block array, or a compact JSON fallback.
+fn normalize(value: &Value) -> (Vec<ContentBlock>, bool) {
+    let is_error = value
+        .get("is_error")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    if let Value::String(s) = value {
+        return (vec![ContentBlock::text(s.clone())], is_error);
+    }
+    if let Some(blocks) = value.get("content") {
+        if let Ok(parsed) = serde_json::from_value::<Vec<ContentBlock>>(blocks.clone()) {
+            if !parsed.is_empty() {
+                return (parsed, is_error);
+            }
+        }
+    }
+    let rendered = serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_string());
+    (vec![ContentBlock::text(rendered)], is_error)
+}
+
+/// Drop functions the agent cannot call from an `engine::functions::list`
+/// result so the model only sees what its policy permits (a list is a
+/// filtered view — dropping is correct there; info results go through
+/// [`post_filter_info`] instead, which masks rather than drops).
+fn post_filter_discovery(value: &mut Value, policy: &CompiledPolicy) {
+    let keep = |id: &str| policy.allows(id);
+    if let Some(arr) = value.get_mut("functions").and_then(Value::as_array_mut) {
+        arr.retain(|f| {
+            f.get("function_id")
+                .or_else(|| f.get("id"))
+                .or_else(|| f.get("name"))
+                .and_then(Value::as_str)
+                .map(keep)
+                .unwrap_or(false)
+        });
+        for item in arr.iter_mut() {
+            let id = item
+                .get("function_id")
+                .or_else(|| item.get("id"))
+                .or_else(|| item.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            overlay_control_contract(item, &id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::turn::FunctionPolicy;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn cap_result_bounds_oversized_results_and_only_those() {
+        let small = cap_result(normalized_result(json!({ "ok": true })), 262_144);
+        assert_eq!(small.details, json!({ "ok": true }));
+        let giant = json!({ "is_error": true, "blob": "x".repeat(300_000) });
+        assert_eq!(
+            cap_result(normalized_result(giant.clone()), 0).details,
+            giant
+        );
+        let capped = cap_result(normalized_result(giant), 1);
+        assert!(capped.is_error, "the tool's own error flag survives");
+        let text = match capped.content.as_slice() {
+            [ContentBlock::Text { text }] => text,
+            other => panic!("expected one text block, got {other:?}"),
+        };
+        assert!(text.starts_with("<omitted: result was ~"), "{text}");
+        let bytes = serde_json::to_vec(&(&capped.content, &capped.details))
+            .unwrap()
+            .len();
+        assert!(bytes <= 1024, "replacement must fit the floor, was {bytes}");
+        assert_eq!(capped.details["result_capped"]["max_bytes"], 1024);
+    }
+
+    fn pol(allow: &[&str]) -> CompiledPolicy {
+        CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: allow.iter().map(|s| s.to_string()).collect(),
+            deny: vec![],
+            expose: Default::default(),
+        }))
+    }
+
+    /// Prevents: `start: true` laundering a compose::add the session's policy
+    /// does not grant through the ide's own permissions.
+    #[test]
+    fn a_starting_scaffold_needs_compose_add() {
+        let id = "coder::scaffold-worker";
+        let explicit = json!({ "template": "worker-node-ade", "name": "orders", "start": true });
+        let default = json!({ "template": "worker-node-ade", "name": "orders" });
+        let opt_out = json!({ "template": "worker-node-ade", "name": "orders", "start": false });
+        let coder_only = pol(&["coder::*"]);
+        let allowed = pol(&["coder::*", "compose::add"]);
+
+        let StartGate::Deny(denied) = scaffold_start_gate(id, &explicit, &coder_only) else {
+            panic!("an explicit start without compose::add must be refused");
+        };
+        assert_eq!(denied.details["error"]["code"], "scaffold_start_denied");
+        // The default start degrades to the files only, with a note.
+        let StartGate::FilesOnly(sent, note) = scaffold_start_gate(id, &default, &coder_only)
+        else {
+            panic!("a defaulted start without compose::add must go files-only");
+        };
+        assert_eq!(sent, opt_out);
+        assert!(note.contains("Not started"), "{note}");
+        for args in [&opt_out, &explicit, &default] {
+            let policy = if args == &opt_out {
+                &coder_only
+            } else {
+                &allowed
+            };
+            assert!(
+                matches!(scaffold_start_gate(id, args, policy), StartGate::Pass),
+                "{args}"
+            );
+        }
+    }
+
+    /// Prevents: the self-inflicted restart — a project-wide `compose::restart`
+    /// issued from a turn took the harness down with everything else and left
+    /// the session with an unanswered call (Linkly Ch. 7, MOT-4718).
+    #[test]
+    fn project_wide_compose_operations_are_refused_before_dispatch() {
+        use serde_json::json;
+        for op in [
+            "compose::restart",
+            "compose::down",
+            "compose::stop",
+            "compose::remove",
+        ] {
+            for args in [
+                json!({}),
+                json!(null),
+                json!({ "container": "" }),
+                json!({ "workers": [] }),
+            ] {
+                let denied = project_wide_compose_denial(op, &args)
+                    .unwrap_or_else(|| panic!("{op} {args} must be refused"));
+                assert!(denied.is_error);
+                assert_eq!(
+                    denied.details["error"]["code"],
+                    "compose_project_scope_denied"
+                );
+                let text = serde_json::to_string(&denied.content).unwrap();
+                assert!(
+                    text.contains("container"),
+                    "the refusal names the fix: {text}"
+                );
+            }
+        }
+        assert!(project_wide_compose_denial("compose::update", &json!({})).is_some());
+    }
+
+    #[test]
+    fn targeted_compose_operations_and_other_calls_pass_through() {
+        use serde_json::json;
+        assert!(
+            project_wide_compose_denial("compose::restart", &json!({ "container": "link" }))
+                .is_none()
+        );
+        assert!(
+            project_wide_compose_denial("compose::restart", &json!({ "worker": "link" })).is_none()
+        );
+        assert!(
+            project_wide_compose_denial("compose::remove", &json!({ "workers": ["a", "b"] }))
+                .is_none()
+        );
+        // Adds, status, logs and non-compose calls are never in scope.
+        assert!(
+            project_wide_compose_denial("compose::add", &json!({ "worker": "database" })).is_none()
+        );
+        assert!(project_wide_compose_denial("compose::status", &json!({})).is_none());
+        assert!(project_wide_compose_denial("compose::logs", &json!({})).is_none());
+        assert!(project_wide_compose_denial("shell::exec", &json!({})).is_none());
+    }
+
+    #[test]
+    fn discovery_reports_the_intercepted_observe_contract() {
+        // A row other than the intercept's own would describe a different
+        // request — the overlay swaps in the intercept's contract.
+        let policy = pol(&["*"]);
+        let mut info = serde_json::json!({
+            "function_id": "harness::observe",
+            "description": "raw",
+            "request_schema": { "required": ["source"] }
+        });
+        post_filter_info(&mut info, &policy);
+        assert!(info["description"]
+            .as_str()
+            .unwrap()
+            .contains("omit `target`"));
+        let schema = serde_json::to_string(&info["request_schema"]).unwrap();
+        assert!(
+            schema.contains("lifecycle"),
+            "intercept schema expected: {schema}"
+        );
+
+        let mut list = serde_json::json!({ "functions": [
+            { "function_id": "harness::observe", "description": "raw" },
+            { "function_id": "state::get", "description": "Get a value from state" }
+        ]});
+        post_filter_discovery(&mut list, &policy);
+        assert!(list["functions"][0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("omit `target`"));
+        assert_eq!(
+            list["functions"][1]["description"],
+            "Get a value from state"
+        );
+    }
+
+    #[test]
+    fn arguments_preview_is_char_safe_on_multibyte_payloads() {
+        // Byte 200 lands mid-emoji: the old byte-indexed String::truncate
+        // panicked here on model-emitted CJK/emoji args.
+        let args = json!({ "text": "🎉".repeat(100) });
+        let preview = arguments_preview(&args);
+        assert!(preview.chars().count() <= 200);
+        assert!(args.to_string().starts_with(&preview));
+        // Both teachable results render without panicking.
+        assert!(wrapper_without_target_result(&args).is_error);
+        // Salvage markers stay out of the preview: they would fill it with
+        // text the model did not write.
+        let marked = json!({ "a": 1, "_partial": true, "_invalid": { "error": "e", "offset": 7, "context": "c" } });
+        let no_target = wrapper_without_target_result(&marked);
+        let text = no_target.details["message"].as_str().unwrap();
+        assert!(text.contains("arguments were {\"a\":1})"), "{text}");
+        assert!(
+            truncated_arguments_result("state::set", &args, crate::types::event::StopReason::End)
+                .is_error
+        );
+        // Short args pass through whole.
+        assert_eq!(arguments_preview(&json!({"a": 1})), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn truncated_arguments_name_the_real_cause_without_salvage_markers() {
+        use crate::types::event::StopReason;
+        let args = json!({ "_partial": true, "path": "a.rs", "_streaming": "…tail" });
+
+        let cut = truncated_arguments_result("coder::create-file", &args, StopReason::Length);
+        let text = match &cut.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("want text, got {other:?}"),
+        };
+        assert!(text.contains("maximum output length"), "{text}");
+        assert!(text.contains("smaller pieces"), "{text}");
+        assert!(
+            !text.contains("_partial") && !text.contains("_streaming"),
+            "{text}"
+        );
+        assert!(text.contains(r#"{"path":"a.rs"}"#), "{text}");
+        assert_eq!(cut.details["cause"], "max_output_tokens");
+        assert_eq!(cut.details["error"], "arguments_truncated");
+
+        let bad = truncated_arguments_result("coder::create-file", &args, StopReason::End);
+        let text = match &bad.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("want text, got {other:?}"),
+        };
+        assert!(
+            text.contains("stopped before the JSON object was complete"),
+            "{text}"
+        );
+        assert!(!text.contains("maximum output length"), "{text}");
+        assert_eq!(bad.details["cause"], "incomplete_json");
+    }
+
+    #[test]
+    fn truncated_arguments_report_a_syntax_error_where_it_happened() {
+        use crate::types::event::StopReason;
+        // What the router's salvage stores for `…"path":"web/App.tsx"}]}`: the
+        // fields that parsed, plus where the text stopped being JSON.
+        let args = json!({
+            "_partial": true,
+            "files": [{ "ops": [{ "op": "replace" }] }],
+            "path": "web/App.tsx",
+            "_invalid": {
+                "error": "unexpected data after the root value",
+                "offset": 61,
+                "context": "\"path\":\"web/App.tsx\"}]}",
+            },
+        });
+        let bad = truncated_arguments_result("coder::update-file", &args, StopReason::End);
+        let text = match &bad.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("want text, got {other:?}"),
+        };
+        assert!(text.contains("not valid JSON"), "{text}");
+        assert!(
+            text.contains("unexpected data after the root value"),
+            "{text}"
+        );
+        assert!(text.contains(r#"near `"path":"web/App.tsx"}]}`"#), "{text}");
+        assert!(
+            !text.contains("_invalid") && !text.contains("_partial"),
+            "{text}"
+        );
+        assert!(!text.contains("stopped before"), "{text}");
+        assert!(text.contains("closed too soon"), "{text}");
+        assert_eq!(bad.details["cause"], "invalid_json");
+
+        // Any other syntax error gets no closed-too-soon hint.
+        let mut other = args.clone();
+        other["_invalid"]["error"] = json!("expected ',' or '}' in an object");
+        let other = truncated_arguments_result("kanban::project::create", &other, StopReason::End);
+        let ContentBlock::Text { text } = &other.content[0] else {
+            panic!("want text");
+        };
+        assert!(text.contains("expected ',' or '}'"), "{text}");
+        assert!(!text.contains("closed too soon"), "{text}");
+
+        // A syntax error wins over the output limit: `length` is the whole
+        // message's and may belong to another call, and a cut stream alone
+        // never sets `_invalid`.
+        let cut = truncated_arguments_result("coder::update-file", &args, StopReason::Length);
+        assert_eq!(cut.details["cause"], "invalid_json");
+        let mut only_cut = args.clone();
+        only_cut.as_object_mut().unwrap().remove("_invalid");
+        let cut = truncated_arguments_result("coder::update-file", &only_cut, StopReason::Length);
+        assert_eq!(cut.details["cause"], "max_output_tokens");
+    }
+
+    #[test]
+    fn truncated_arguments_show_a_raw_salvage_as_the_text_it_carried() {
+        use crate::types::event::StopReason;
+        let args = json!({ "_raw": "{\"path\":\"/tm" });
+        let bad = truncated_arguments_result("coder::create-file", &args, StopReason::End);
+        let text = match &bad.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("want text, got {other:?}"),
+        };
+        assert!(!text.contains("_raw"), "{text}");
+        assert!(text.contains(r#"received {"path":"/tm)"#), "{text}");
+        assert!(
+            arguments_preview(&without_salvage_markers(&json!({ "_raw": 1, "a": 2 })))
+                == r#"{"a":2}"#
+        );
+    }
+
+    #[test]
+    fn degraded_arguments_cover_markers_and_non_objects() {
+        assert!(arguments_degraded(
+            &json!({ "_partial": true, "path": "/tmp" })
+        ));
+        assert!(arguments_degraded(&json!({ "_raw": "{\"path\":\"/tm" })));
+        assert!(arguments_degraded(&Value::Null));
+        assert!(arguments_degraded(&json!("{}")));
+        assert!(arguments_degraded(&json!([1, 2])));
+        assert!(!arguments_degraded(&json!({})));
+        assert!(!arguments_degraded(&json!({ "path": "/tmp" })));
+    }
+
+    /// The model-visible rendering of a full contract result: `details`
+    /// with every contract compacted the way prepare_info_result does.
+    fn stripped_content(details: &Value) -> Vec<ContentBlock> {
+        let mut display = details.clone();
+        match display.get_mut("functions").and_then(Value::as_array_mut) {
+            Some(items) => {
+                for item in items {
+                    compact_contract(item);
+                }
+            }
+            None => {
+                compact_contract(&mut display);
+            }
+        }
+        normalize(&display).0
+    }
+
+    #[test]
+    fn response_schemas_are_stripped_from_the_model_visible_copy_only() {
+        let details = json!({ "functions": [{
+            "function_id": "worker::function",
+            "description": "Does work",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" },
+            "response_format": { "type": "object" }
+        }]});
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details: details.clone(),
+        };
+        let (prepared, updates) = prepare_info_result(
+            "call_1",
+            &json!({ "function_ids": ["worker::function"] }),
+            &data,
+            &BTreeMap::new(),
+            true,
+        );
+        let rendered: Value =
+            serde_json::from_str(&ContentBlock::join_text(&prepared.content)).unwrap();
+        assert!(rendered["functions"][0].get("response_schema").is_none());
+        assert!(rendered["functions"][0].get("response_format").is_none());
+        assert_eq!(
+            rendered["functions"][0]["request_schema"],
+            json!({ "type": "object" })
+        );
+        assert_eq!(prepared.details, details, "raw contract stays in details");
+        // The ledger digest is over the RAW contract, so a repeat fetch of the
+        // same contract still dedupes to a marker — the stripped transcript
+        // copy is what the visibility check digests.
+        let mut ledger: BTreeMap<_, _> = updates.into_iter().collect();
+        let source = json!({
+            "role": "function_result",
+            "function_call_id": "call_1",
+            "function_id": "engine::functions::info",
+            "content": serde_json::to_value(&prepared.content).unwrap()
+        });
+        retain_visible_contract_sources(&mut ledger, &[source]);
+        let (second, _) = prepare_info_result(
+            "call_2",
+            &json!({ "function_ids": ["worker::function"] }),
+            &data,
+            &ledger,
+            true,
+        );
+        let rendered: Value =
+            serde_json::from_str(&ContentBlock::join_text(&second.content)).unwrap();
+        assert_eq!(
+            rendered["functions"][0]["contract_status"],
+            "unchanged_in_context"
+        );
+    }
+
+    #[test]
+    fn repeated_requests_for_an_unchanged_contract_escalate() {
+        let details = json!({
+            "function_id": "worker::function",
+            "description": "Does work",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details: details.clone(),
+        };
+        let digest = digest_value(&details).unwrap();
+        let entry = |source: &str, repeats| FunctionContractLedgerEntry {
+            contract_digest: digest.clone(),
+            source_function_call_id: source.to_string(),
+            source_content_digest: "source".to_string(),
+            eligible: true,
+            repeats,
+        };
+        let ledger = |source: &str, repeats| {
+            BTreeMap::from([("worker::function".to_string(), entry(source, repeats))])
+        };
+        let arguments = json!({ "function_id": "worker::function" });
+        let shown = |prepared: &ResultData| -> Value {
+            serde_json::from_str(&ContentBlock::join_text(&prepared.content)).unwrap()
+        };
+
+        // The first repeat keeps the bare marker, and is counted.
+        let (first, updates) =
+            prepare_info_result("call_1", &arguments, &data, &ledger("call_0", 0), true);
+        assert_eq!(shown(&first)["contract_status"], "unchanged_in_context");
+        assert!(shown(&first).get("note").is_none());
+        assert_eq!(
+            updates,
+            vec![("worker::function".to_string(), entry("call_0", 1))]
+        );
+
+        // The next one sends the contract in full again, with a note, and
+        // becomes the source.
+        let (second, updates) =
+            prepare_info_result("call_2", &arguments, &data, &ledger("call_0", 1), true);
+        let second = shown(&second);
+        assert_eq!(second["request_schema"], json!({ "type": "object" }));
+        assert!(second["note"].as_str().unwrap().contains("(call call_0)"));
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].1.source_function_call_id, "call_2");
+        assert_eq!(updates[0].1.repeats, 2);
+
+        // After that, the marker says what to do instead.
+        let (third, updates) =
+            prepare_info_result("call_3", &arguments, &data, &ledger("call_2", 2), true);
+        let third = shown(&third);
+        assert_eq!(third["contract_status"], "unchanged_in_context");
+        assert!(third["note"]
+            .as_str()
+            .unwrap()
+            .contains("call worker::function now"));
+        assert_eq!(
+            updates,
+            vec![("worker::function".to_string(), entry("call_2", 3))]
+        );
+    }
+
+    #[test]
+    fn same_step_duplicates_keep_counting_until_the_instruction_note() {
+        let details = json!({
+            "function_id": "worker::function",
+            "description": "Does work",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details: details.clone(),
+        };
+        let arguments = json!({ "function_id": "worker::function" });
+        let visible = |call: &str, prepared: &ResultData| {
+            json!({
+                "role": "function_result",
+                "function_call_id": call,
+                "function_id": "engine::functions::info",
+                "content": serde_json::to_value(&prepared.content).unwrap()
+            })
+        };
+        let mut ledger = BTreeMap::new();
+        let mut transcript = Vec::new();
+        let (full, updates) = prepare_info_result("call_0", &arguments, &data, &ledger, true);
+        apply_contract_updates_after_append(&mut ledger, "call_0", updates);
+        transcript.push(visible("call_0", &full));
+        retain_visible_contract_sources(&mut ledger, &transcript);
+
+        // Three identical calls in one step, applied one after another with
+        // no visibility check in between.
+        for call in ["call_1", "call_2", "call_3"] {
+            let (prepared, updates) = prepare_info_result(call, &arguments, &data, &ledger, true);
+            apply_contract_updates_after_append(&mut ledger, call, updates);
+            transcript.push(visible(call, &prepared));
+        }
+        assert_eq!(
+            ledger["worker::function"].repeats, 2,
+            "the duplicate kept the count"
+        );
+        retain_visible_contract_sources(&mut ledger, &transcript);
+
+        let (next, _) = prepare_info_result("call_4", &arguments, &data, &ledger, true);
+        let next: Value = serde_json::from_str(&ContentBlock::join_text(&next.content)).unwrap();
+        assert_eq!(next["contract_status"], "unchanged_in_context");
+        assert!(next["note"]
+            .as_str()
+            .unwrap()
+            .contains("call worker::function now"));
+    }
+
+    #[test]
+    fn unchanged_info_contract_reuses_an_exact_model_visible_source() {
+        let details = json!({
+            "function_id": "worker::function",
+            "description": "Does work",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details,
+        };
+        let mut ledger = BTreeMap::new();
+
+        let (first, updates) = prepare_info_result(
+            "call_123",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+        assert_eq!(
+            first.content,
+            stripped_content(&data.details),
+            "the first result keeps everything but response schemas"
+        );
+        ledger.extend(updates);
+
+        let source = json!({
+            "role": "function_result",
+            "function_call_id": "call_123",
+            "function_id": "engine::functions::info",
+            "content": serde_json::to_value(&first.content).unwrap(),
+            "details": first.details,
+            "is_error": false,
+            "timestamp": 1
+        });
+        retain_visible_contract_sources(&mut ledger, &[source]);
+
+        let (second, updates) = prepare_info_result(
+            "call_456",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+        assert_eq!(
+            second.content,
+            vec![ContentBlock::text(
+                json!({
+                    "function_id": "worker::function",
+                    "contract_status": "unchanged_in_context",
+                    "source_function_call_id": "call_123"
+                })
+                .to_string()
+            )]
+        );
+        assert_eq!(second.details, data.details, "details stay exact");
+        assert!(
+            updates.iter().all(|(_, entry)| entry.source_function_call_id == "call_123" && entry.repeats == 1),
+            "markers never replace the full source; they only count the repeat"
+        );
+    }
+
+    #[test]
+    fn info_batch_preserves_order_cardinality_unknowns_and_details() {
+        let details = json!({ "functions": [
+            {
+                "function_id": "a::one",
+                "request_schema": { "type": "object" },
+                "response_schema": { "type": "string" }
+            },
+            { "function_id": "missing::fn", "error": "not available" },
+            {
+                "function_id": "b::two",
+                "request_schema": { "type": "object" },
+                "response_schema": { "type": "number" }
+            }
+        ]});
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details: details.clone(),
+        };
+        let args = json!({ "function_ids": ["a::one", "missing::fn", "b::two"] });
+        let (first, updates) =
+            prepare_info_result("batch-full", &args, &data, &BTreeMap::new(), true);
+        let mut ledger: BTreeMap<_, _> = updates.into_iter().collect();
+        let source = json!({
+            "role": "function_result",
+            "function_call_id": "batch-full",
+            "function_id": "engine::functions::info",
+            "content": serde_json::to_value(&first.content).unwrap()
+        });
+        retain_visible_contract_sources(&mut ledger, &[source]);
+
+        let (prepared, updates) = prepare_info_result("batch-repeat", &args, &data, &ledger, true);
+        let rendered: Value = serde_json::from_str(&ContentBlock::join_text(&prepared.content))
+            .expect("prepared batch content is JSON");
+        let functions = rendered["functions"].as_array().unwrap();
+        assert_eq!(functions.len(), 3);
+        assert_eq!(functions[0]["contract_status"], "unchanged_in_context");
+        assert_eq!(functions[1], details["functions"][1]);
+        assert_eq!(functions[2]["contract_status"], "unchanged_in_context");
+        assert_eq!(prepared.details, details);
+        // The markers only count the repeat; the full source stays.
+        let counted: BTreeMap<_, _> = updates.into_iter().collect();
+        assert_eq!(counted.keys().collect::<Vec<_>>(), ["a::one", "b::two"]);
+        for (id, entry) in &counted {
+            assert_eq!(
+                entry.source_function_call_id,
+                ledger[id].source_function_call_id
+            );
+            assert_eq!(entry.repeats, 1);
+        }
+    }
+
+    #[test]
+    fn ambiguous_or_unverifiable_info_sources_stay_full() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details,
+        };
+        let args = json!({ "function_id": "worker::function" });
+        let (first, updates) = prepare_info_result("source", &args, &data, &BTreeMap::new(), true);
+        let mut ledger: BTreeMap<_, _> = updates.into_iter().collect();
+        let exact = json!({
+            "role": "function_result",
+            "function_call_id": "source",
+            "function_id": "engine::functions::info",
+            "content": serde_json::to_value(&first.content).unwrap()
+        });
+        let mutated = json!({
+            "role": "user",
+            "content": [{
+                "type": "function_result",
+                "function_call_id": "source",
+                "content": [{ "type": "text", "text": "changed by a hook" }]
+            }]
+        });
+        retain_visible_contract_sources(&mut ledger, &[exact, mutated]);
+        assert!(ledger.is_empty(), "the exact last result must match");
+
+        let (without_source, updates) = prepare_info_result("repeat", &args, &data, &ledger, true);
+        assert_eq!(without_source.content, stripped_content(&data.details));
+        assert_eq!(updates.len(), 1, "the new full result becomes the source");
+
+        let same_call_ledger: BTreeMap<_, _> = updates.into_iter().collect();
+        let (same_call, updates) =
+            prepare_info_result("repeat", &args, &data, &same_call_ledger, true);
+        assert_eq!(same_call.content, stripped_content(&data.details));
+        assert!(updates.is_empty(), "a call id cannot source itself");
+
+        let (hook_mutated, updates) =
+            prepare_info_result("later", &args, &data, &same_call_ledger, false);
+        assert_eq!(hook_mutated.content, stripped_content(&data.details));
+        assert_eq!(hook_mutated.details, data.details);
+        assert!(
+            updates.is_empty(),
+            "a hook-mutated result is compacted but never sourced"
+        );
+
+        let changed_details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "string" }
+        });
+        let changed = ResultData {
+            content: normalize(&changed_details).0,
+            is_error: false,
+            details: changed_details,
+        };
+        let (prepared, updates) =
+            prepare_info_result("changed", &args, &changed, &same_call_ledger, true);
+        assert_eq!(prepared.content, stripped_content(&changed.details));
+        assert_eq!(prepared.details, changed.details);
+        assert_eq!(updates.len(), 1, "a changed contract stays full");
+
+        let error = ResultData {
+            is_error: true,
+            ..data.clone()
+        };
+        let (prepared, updates) =
+            prepare_info_result("error", &args, &error, &same_call_ledger, true);
+        assert_eq!(prepared.content, stripped_content(&error.details));
+        assert_eq!(prepared.details, error.details);
+        assert!(
+            updates.is_empty(),
+            "an error result is compacted but never sourced"
+        );
+    }
+
+    #[test]
+    fn malformed_single_info_contract_stays_full_and_is_not_recorded() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": null,
+            "response_schema": "not a schema"
+        });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details: details.clone(),
+        };
+        let ledger = BTreeMap::from([(
+            "worker::function".into(),
+            FunctionContractLedgerEntry {
+                contract_digest: digest_value(&details).unwrap(),
+                source_function_call_id: "source".into(),
+                source_content_digest: "source-content".into(),
+                eligible: true,
+                repeats: 0,
+            },
+        )]);
+
+        let (prepared, updates) = prepare_info_result(
+            "repeat",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+
+        assert_eq!(prepared.content, stripped_content(&data.details));
+        assert_eq!(prepared.details, data.details);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn malformed_batch_entry_stays_full_while_a_valid_sibling_reuses_its_source() {
+        let details = json!({ "functions": [
+            {
+                "function_id": "worker::bad",
+                "request_schema": { "type": 42 },
+                "response_schema": { "type": "object" }
+            },
+            {
+                "function_id": "worker::good",
+                "request_schema": { "type": "object" },
+                "response_schema": { "type": "string" }
+            }
+        ]});
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details: details.clone(),
+        };
+        let ledger = BTreeMap::from([
+            (
+                "worker::bad".into(),
+                FunctionContractLedgerEntry {
+                    contract_digest: digest_value(&details["functions"][0]).unwrap(),
+                    source_function_call_id: "bad-source".into(),
+                    source_content_digest: "bad-content".into(),
+                    eligible: true,
+                    repeats: 0,
+                },
+            ),
+            (
+                "worker::good".into(),
+                FunctionContractLedgerEntry {
+                    contract_digest: digest_value(&details["functions"][1]).unwrap(),
+                    source_function_call_id: "good-source".into(),
+                    source_content_digest: "good-content".into(),
+                    eligible: true,
+                    repeats: 0,
+                },
+            ),
+        ]);
+
+        let (prepared, updates) = prepare_info_result(
+            "batch-repeat",
+            &json!({ "function_ids": ["worker::bad", "worker::good"] }),
+            &data,
+            &ledger,
+            true,
+        );
+        let rendered: Value = serde_json::from_str(&ContentBlock::join_text(&prepared.content))
+            .expect("prepared batch content is JSON");
+
+        assert_eq!(
+            rendered["functions"][0],
+            json!({
+                "function_id": "worker::bad",
+                "request_schema": { "type": 42 }
+            }),
+            "malformed entry stays full, minus the stripped response schema"
+        );
+        assert_eq!(
+            rendered["functions"][1],
+            json!({
+                "function_id": "worker::good",
+                "contract_status": "unchanged_in_context",
+                "source_function_call_id": "good-source"
+            })
+        );
+        assert_eq!(prepared.details, details);
+        // Only the reused contract is counted; its source stays.
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, "worker::good");
+        assert_eq!(updates[0].1.source_function_call_id, "good-source");
+        assert_eq!(updates[0].1.repeats, 1);
+    }
+
+    #[test]
+    fn malformed_same_id_batch_is_never_compacted_or_recorded() {
+        let details = json!({ "functions": [
+            {
+                "function_id": "worker::same",
+                "request_schema": { "type": 42 },
+                "response_schema": { "type": "object" }
+            },
+            {
+                "function_id": "worker::same",
+                "request_schema": { "type": "object" },
+                "response_schema": { "type": "string" }
+            }
+        ]});
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details: details.clone(),
+        };
+        let ledger = BTreeMap::from([(
+            "worker::same".into(),
+            FunctionContractLedgerEntry {
+                contract_digest: digest_value(&details["functions"][1]).unwrap(),
+                source_function_call_id: "source".into(),
+                source_content_digest: "source-content".into(),
+                eligible: true,
+                repeats: 0,
+            },
+        )]);
+
+        let (prepared, updates) = prepare_info_result(
+            "repeat",
+            &json!({ "function_ids": ["worker::same"] }),
+            &data,
+            &ledger,
+            true,
+        );
+
+        assert_eq!(prepared.content, stripped_content(&data.details));
+        assert_eq!(prepared.details, data.details);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn duplicate_non_source_result_id_cannot_become_contract_source() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details,
+        };
+        let mut ledger = BTreeMap::new();
+        let (prepared, updates) = prepare_info_result(
+            "duplicate",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+        apply_contract_updates_after_append(&mut ledger, "duplicate", updates);
+        retain_visible_contract_sources(
+            &mut ledger,
+            &[
+                json!({
+                    "role": "function_result",
+                    "function_call_id": "duplicate",
+                    "function_id": "worker::other",
+                    "content": [{ "type": "text", "text": "earlier" }]
+                }),
+                json!({
+                    "role": "function_result",
+                    "function_call_id": "duplicate",
+                    "function_id": "engine::functions::info",
+                    "content": serde_json::to_value(&prepared.content).unwrap()
+                }),
+            ],
+        );
+
+        assert!(
+            ledger.is_empty(),
+            "a call id shared by visible results is ambiguous"
+        );
+    }
+
+    #[test]
+    fn duplicate_visible_calls_cannot_source_a_contract() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details,
+        };
+        let mut ledger = BTreeMap::new();
+        let (prepared, updates) = prepare_info_result(
+            "duplicate",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+        apply_contract_updates_after_append(&mut ledger, "duplicate", updates);
+        retain_visible_contract_sources(
+            &mut ledger,
+            &[
+                json!({
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "function_call",
+                            "id": "duplicate",
+                            "function_id": "engine::functions::info"
+                        },
+                        {
+                            "type": "function_call",
+                            "id": "duplicate",
+                            "function_id": "worker::other"
+                        }
+                    ]
+                }),
+                json!({
+                    "role": "function_result",
+                    "function_call_id": "duplicate",
+                    "function_id": "engine::functions::info",
+                    "content": serde_json::to_value(&prepared.content).unwrap()
+                }),
+            ],
+        );
+
+        assert!(
+            ledger.is_empty(),
+            "a call id shared by visible calls is ambiguous"
+        );
+    }
+
+    #[test]
+    fn visible_source_call_must_resolve_to_info() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details,
+        };
+        let mut ledger = BTreeMap::new();
+        let (prepared, updates) = prepare_info_result(
+            "source",
+            &json!({ "function_id": "worker::function" }),
+            &data,
+            &ledger,
+            true,
+        );
+        apply_contract_updates_after_append(&mut ledger, "source", updates);
+        let result = json!({
+            "role": "function_result",
+            "function_call_id": "source",
+            "function_id": "engine::functions::info",
+            "content": serde_json::to_value(&prepared.content).unwrap()
+        });
+
+        let mut wrapper_ledger = ledger.clone();
+        retain_visible_contract_sources(
+            &mut wrapper_ledger,
+            &[
+                json!({
+                    "role": "assistant",
+                    "content": [{
+                        "type": "function_call",
+                        "id": "source",
+                        "function_id": "agent_call",
+                        "arguments": { "function": "engine::functions::info" }
+                    }]
+                }),
+                result.clone(),
+            ],
+        );
+        assert!(wrapper_ledger["worker::function"].eligible);
+
+        retain_visible_contract_sources(
+            &mut ledger,
+            &[
+                json!({
+                    "role": "assistant",
+                    "content": [{
+                        "type": "function_call",
+                        "id": "source",
+                        "function_id": "worker::other",
+                        "arguments": {}
+                    }]
+                }),
+                result,
+            ],
+        );
+        assert!(
+            ledger.is_empty(),
+            "a mismatched visible call cannot identify the info result"
+        );
+    }
+
+    #[test]
+    fn duplicate_batch_entries_are_never_compacted_or_recorded() {
+        let contract = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let details = json!({ "functions": [contract.clone(), contract] });
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details,
+        };
+
+        let (prepared, updates) = prepare_info_result(
+            "duplicates",
+            &json!({ "function_ids": ["worker::function", "worker::function"] }),
+            &data,
+            &BTreeMap::new(),
+            true,
+        );
+        assert_eq!(prepared.content, stripped_content(&data.details));
+        assert_eq!(prepared.details, data.details);
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn persisted_contract_digests_are_stable_sha256() {
+        assert_eq!(
+            digest_value(&json!({ "a": 1 })).as_deref(),
+            Some("015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862")
+        );
+    }
+
+    #[test]
+    fn normalize_string_value() {
+        let (content, is_error) = normalize(&json!("hello"));
+        assert!(!is_error);
+        assert_eq!(content.len(), 1);
+        assert!(matches!(&content[0], ContentBlock::Text { text } if text == "hello"));
+    }
+
+    #[test]
+    fn normalize_uses_content_blocks_when_present() {
+        let v = json!({ "content": [{ "type": "text", "text": "ok" }], "is_error": true });
+        let (content, is_error) = normalize(&v);
+        assert!(is_error);
+        assert_eq!(content.len(), 1);
+    }
+
+    #[test]
+    fn discovery_filter_drops_uncallable_functions() {
+        let policy = pol(&["shell::*"]);
+        let mut v = json!({ "functions": [
+            { "function_id": "shell::run" },
+            { "function_id": "fs::read" }
+        ]});
+        post_filter_discovery(&mut v, &policy);
+        let ids: Vec<&str> = v["functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["function_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["shell::run"]);
+    }
+
+    #[test]
+    fn info_filter_masks_denied_batch_entries_without_dropping() {
+        let policy = pol(&["shell::*"]);
+        let mut v = json!({ "functions": [
+            { "function_id": "shell::run", "request_schema": { "type": "object" } },
+            { "function_id": "fs::read", "request_schema": { "type": "object" } },
+            { "function_id": "nope::missing", "error": "not_found" }
+        ]});
+        post_filter_info(&mut v, &policy);
+        let items = v["functions"].as_array().unwrap();
+        assert_eq!(items.len(), 3, "batch entries are masked, never dropped");
+        assert!(items[0].get("request_schema").is_some());
+        assert_eq!(
+            items[1],
+            json!({ "function_id": "fs::read", "error": "not available" })
+        );
+        // A not_found marker for an id outside the policy is masked uniformly.
+        assert_eq!(
+            items[2],
+            json!({ "function_id": "nope::missing", "error": "not available" })
+        );
+    }
+
+    #[test]
+    fn info_filter_blanks_denied_single_detail() {
+        let policy = pol(&["shell::*"]);
+        let mut allowed = json!({ "function_id": "shell::run", "request_schema": {} });
+        post_filter_info(&mut allowed, &policy);
+        assert!(allowed.is_object());
+
+        let mut denied = json!({ "function_id": "fs::read", "request_schema": {} });
+        post_filter_info(&mut denied, &policy);
+        assert!(denied.is_null());
+    }
+    fn content_value(content: &[ContentBlock]) -> Value {
+        let [ContentBlock::Text { text }] = content else {
+            panic!("expected one text block, got {content:?}");
+        };
+        serde_json::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn compact_contract_strips_envelope_and_schema_boilerplate() {
+        let mut item = serde_json::json!({
+            "function_id": "worker::function",
+            "description": "Does the thing.",
+            "namespace": "default",
+            "worker_name": "worker",
+            "metadata": { "k": "v" },
+            "response_schema": { "type": "object" },
+            "request_schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "title": "Input",
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "a property literally named title" },
+                    "mode": { "type": "string", "enum": ["a", "b"], "default": "a" },
+                    "opt": { "type": ["string", "null"], "default": null },
+                    "once": { "description": "site prose stays", "allOf": [{ "$ref": "#/definitions/Once" }] },
+                    "many": { "type": "array", "items": { "$ref": "#/definitions/Shared" } },
+                    "other": { "$ref": "#/definitions/Shared" }
+                },
+                "required": ["mode"],
+                "definitions": {
+                    "Once": { "title": "Once", "type": "object", "properties": { "x": { "type": "integer" } } },
+                    "Shared": { "title": "Shared", "type": "string" },
+                    "Unused": { "type": "boolean" }
+                }
+            }
+        });
+        assert!(compact_contract(&mut item));
+        let expected = serde_json::json!({
+            "function_id": "worker::function",
+            "description": "Does the thing.",
+            "request_schema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "a property literally named title" },
+                    "mode": { "type": "string", "enum": ["a", "b"], "default": "a" },
+                    "opt": { "type": ["string", "null"] },
+                    "once": { "description": "site prose stays", "allOf": [{ "type": "object", "properties": { "x": { "type": "integer" } } }] },
+                    "many": { "type": "array", "items": { "$ref": "#/definitions/Shared" } },
+                    "other": { "$ref": "#/definitions/Shared" }
+                },
+                "required": ["mode"],
+                "definitions": { "Shared": { "type": "string" } }
+            }
+        });
+        assert_eq!(item, expected);
+        compact_contract(&mut item);
+        assert_eq!(item, expected, "compaction is idempotent");
+
+        let marker = serde_json::json!({
+            "function_id": "x",
+            "contract_status": "unchanged_in_context",
+            "source_function_call_id": "c"
+        });
+        let mut untouched = marker.clone();
+        assert!(!compact_contract(&mut untouched));
+        assert_eq!(untouched, marker);
+        let mut error = serde_json::json!({ "function_id": "x", "error": "not found" });
+        assert!(!compact_contract(&mut error));
+    }
+
+    #[test]
+    fn compact_schema_keeps_recursive_definitions_and_ref_site_prose() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tree": { "$ref": "#/definitions/Node" },
+                "leaf": { "$ref": "#/definitions/Leaf", "description": "documented at the site", "default": null }
+            },
+            "definitions": {
+                "Node": {
+                    "type": "object",
+                    "properties": { "children": { "type": "array", "items": { "$ref": "#/definitions/Node" } } }
+                },
+                "Leaf": { "type": "integer", "description": "generic body prose" }
+            }
+        });
+        compact_schema(&mut schema);
+        assert_eq!(
+            schema["properties"]["tree"],
+            serde_json::json!({ "$ref": "#/definitions/Node" })
+        );
+        assert!(schema["definitions"]["Node"].is_object());
+        assert_eq!(
+            schema["properties"]["leaf"],
+            serde_json::json!({ "type": "integer", "description": "documented at the site" })
+        );
+        assert!(schema["definitions"].get("Leaf").is_none());
+    }
+
+    #[test]
+    fn hook_mutated_and_error_info_results_are_still_compacted() {
+        let details = serde_json::json!({
+            "function_id": "worker::function",
+            "request_schema": { "$schema": "x", "type": "object" },
+            "response_schema": { "type": "object" },
+            "worker_name": "w"
+        });
+        let mut mutated = details.clone();
+        mutated["description"] = serde_json::json!("hook says hi");
+        let data = ResultData {
+            content: vec![ContentBlock::text(mutated.to_string())],
+            is_error: false,
+            details: details.clone(),
+        };
+        let arguments = serde_json::json!({ "function_id": "worker::function" });
+        let (prepared, updates) =
+            prepare_info_result("call-1", &arguments, &data, &BTreeMap::new(), false);
+        assert!(
+            updates.is_empty(),
+            "a hook-mutated result never becomes a ledger source"
+        );
+        assert_eq!(
+            content_value(&prepared.content),
+            serde_json::json!({
+                "description": "hook says hi",
+                "function_id": "worker::function",
+                "request_schema": { "type": "object" }
+            })
+        );
+        assert_eq!(prepared.details, details, "details keep the raw contract");
+
+        let details = serde_json::json!({ "functions": [
+            { "function_id": "worker::missing", "error": "not found" },
+            {
+                "function_id": "worker::function",
+                "request_schema": { "title": "T", "type": "object" },
+                "response_schema": { "type": "object" }
+            }
+        ]});
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: true,
+            details: details.clone(),
+        };
+        let arguments =
+            serde_json::json!({ "function_ids": ["worker::missing", "worker::function"] });
+        let (prepared, updates) =
+            prepare_info_result("call-2", &arguments, &data, &BTreeMap::new(), true);
+        assert!(
+            updates.is_empty(),
+            "an error result never becomes a ledger source"
+        );
+        assert_eq!(
+            content_value(&prepared.content),
+            serde_json::json!({ "functions": [
+                { "function_id": "worker::missing", "error": "not found" },
+                { "function_id": "worker::function", "request_schema": { "type": "object" } }
+            ]})
+        );
+
+        let data = ResultData {
+            content: vec![ContentBlock::text("function not found")],
+            is_error: true,
+            details: serde_json::json!("function not found"),
+        };
+        let (prepared, updates) = prepare_info_result(
+            "call-3",
+            &serde_json::json!({ "function_id": "x" }),
+            &data,
+            &BTreeMap::new(),
+            true,
+        );
+        assert_eq!(prepared, data, "non-JSON content is left alone");
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn corpus_contracts_compact_without_changing_what_validates() {
+        // Captured from live sessions (MOT-4636): the contracts the engine
+        // delivered and the payloads models sent after reading them.
+        let corpus: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/function_contracts_corpus.json"
+        )))
+        .unwrap();
+        let contracts = corpus["contracts"].as_array().unwrap();
+        let calls = corpus["calls"].as_array().unwrap();
+
+        let (mut raw_bytes, mut compact_bytes) = (0usize, 0usize);
+        let mut compacted_by_id = HashMap::new();
+        for contract in contracts {
+            let id = contract["function_id"].as_str().unwrap();
+            let mut compacted = contract.clone();
+            compact_contract(&mut compacted);
+            raw_bytes += serde_json::to_vec(contract).unwrap().len();
+            compact_bytes += serde_json::to_vec(&compacted).unwrap().len();
+            for key in [
+                "$schema",
+                "title",
+                "response_schema",
+                "worker_name",
+                "observer_count",
+                "namespace",
+                "metadata",
+            ] {
+                assert!(compacted.get(key).is_none(), "{id}: `{key}` survived");
+            }
+            assert!(
+                JSONSchema::compile(&compacted["request_schema"]).is_ok(),
+                "{id}: compacted request schema does not compile"
+            );
+            compacted_by_id.insert(id.to_string(), compacted);
+        }
+        eprintln!("corpus contracts: {raw_bytes} -> {compact_bytes} bytes");
+        assert!(
+            compact_bytes * 100 <= raw_bytes * 75,
+            "expected >= 25% reduction, got {raw_bytes} -> {compact_bytes}"
+        );
+
+        let mut checked = 0;
+        for call in calls {
+            let function = call["function"].as_str().unwrap();
+            let Some(raw) = contracts.iter().find(|c| c["function_id"] == function) else {
+                continue;
+            };
+            let raw = JSONSchema::compile(&raw["request_schema"]).unwrap();
+            let compact =
+                JSONSchema::compile(&compacted_by_id[function]["request_schema"]).unwrap();
+            let payload = &call["payload"];
+            assert_eq!(
+                raw.is_valid(payload),
+                compact.is_valid(payload),
+                "{function}: compaction changed the validity of {payload}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 100, "only {checked} real payloads checked");
+    }
+
+    fn failure(text: &str) -> ResultData {
+        ResultData {
+            content: vec![ContentBlock::text(text)],
+            is_error: true,
+            details: Value::Null,
+        }
+    }
+
+    fn success(text: &str) -> ResultData {
+        ResultData {
+            is_error: false,
+            ..failure(text)
+        }
+    }
+
+    #[test]
+    fn identical_failures_trip_the_breaker_at_the_limit() {
+        let key = call_digest("shell::exec", &json!({ "command": "make" })).unwrap();
+        let mut failed = BTreeMap::new();
+
+        note_call_result(&mut failed, &key, &failure("exit 2: no rule"));
+        assert!(repeated_failure_result(&failed, &key, "shell::exec").is_none());
+
+        note_call_result(&mut failed, &key, &failure("exit 2: no rule"));
+        let refused = repeated_failure_result(&failed, &key, "shell::exec").unwrap();
+        assert!(refused.is_error);
+        assert_eq!(refused.details["error"], "repeated_failure");
+        assert_eq!(refused.details["count"], REPEATED_FAILURE_LIMIT);
+        assert!(matches!(
+            &refused.content[..],
+            [ContentBlock::Text { text }] if text.contains("shell::exec") && text.contains("not run again")
+        ));
+    }
+
+    #[test]
+    fn a_success_clears_the_count_and_the_next_failure_restarts_it() {
+        let key = call_digest("state::get", &json!({ "key": "k" })).unwrap();
+        let mut failed = BTreeMap::new();
+
+        note_call_result(&mut failed, &key, &failure("not found"));
+        note_call_result(&mut failed, &key, &success("found"));
+        assert!(failed.is_empty());
+
+        note_call_result(&mut failed, &key, &failure("not found"));
+        assert_eq!(failed[&key].count, 1);
+        assert!(repeated_failure_result(&failed, &key, "state::get").is_none());
+    }
+
+    #[test]
+    fn a_different_error_restarts_the_count() {
+        let key = call_digest("http::fetch", &json!({ "url": "https://x" })).unwrap();
+        let mut failed = BTreeMap::new();
+
+        note_call_result(&mut failed, &key, &failure("timeout request_id=1"));
+        note_call_result(&mut failed, &key, &failure("timeout request_id=2"));
+        note_call_result(&mut failed, &key, &failure("timeout request_id=3"));
+
+        assert_eq!(failed[&key].count, 1);
+        assert!(repeated_failure_result(&failed, &key, "http::fetch").is_none());
+    }
+
+    #[test]
+    fn successful_repeats_never_create_an_entry() {
+        let key = call_digest("harness::status", &json!({})).unwrap();
+        let mut failed = BTreeMap::new();
+
+        for _ in 0..5 {
+            note_call_result(&mut failed, &key, &success("running"));
+        }
+
+        assert!(failed.is_empty());
+    }
+
+    #[test]
+    fn the_call_digest_distinguishes_function_and_arguments() {
+        let base = call_digest("coder::read-file", &json!({ "path": "a" }));
+
+        assert_eq!(
+            base,
+            call_digest("coder::read-file", &json!({ "path": "a" }))
+        );
+        assert_ne!(
+            base,
+            call_digest("coder::read-file", &json!({ "path": "b" }))
+        );
+        assert_ne!(base, call_digest("coder::search", &json!({ "path": "a" })));
+    }
+
+    #[test]
+    fn virtual_info_overlay_matches_preload_and_preserves_real_errors() {
+        for id in ["harness::observe", "harness::unobserve"] {
+            let policy = pol(&["*"]);
+            let expected = crate::agents::effective_contract(
+                id,
+                &policy,
+                &crate::discovery::snapshot_of(vec![]),
+            )
+            .unwrap();
+            for key in ["request_schema", "request_format", "parameters"] {
+                let mut detail = json!({"function_id":id, "description":"native"});
+                detail[key] = json!({"required":["source"]});
+                post_filter_info(&mut detail, &policy);
+                assert_eq!(
+                    crate::agents::contract_digest(
+                        id,
+                        detail["description"].as_str(),
+                        Some(detail[key].clone())
+                    ),
+                    crate::agents::digest_of(&expected)
+                );
+                assert_eq!(
+                    detail.as_object().unwrap().len(),
+                    3,
+                    "only the keys the engine sent: {detail}"
+                );
+            }
+            // A list row carries no schema: the description only.
+            let mut list = json!({"functions":[{"function_id":id, "description":"native"}]});
+            post_filter_discovery(&mut list, &policy);
+            let row = &list["functions"][0];
+            assert!(row.get("request_schema").is_none(), "{row}");
+            assert_eq!(
+                row["description"],
+                crate::functions::observe::control_contract(id).unwrap().0
+            );
+            // A registered `{ id }` response is not what the intercept returns.
+            let mut detail = json!({
+                "function_id": id, "description": "native",
+                "request_schema": {"required": ["source"]},
+                "response_schema": {"required": ["id"]},
+                "response_format": {"required": ["id"]}
+            });
+            post_filter_info(&mut detail, &policy);
+            let required: Vec<&str> = detail["response_schema"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            let wrapper_field = if id == "harness::observe" {
+                "observer_id"
+            } else {
+                "removed"
+            };
+            assert!(required.contains(&wrapper_field), "{id}: {required:?}");
+            assert!(!required.contains(&"id"), "{id}: {required:?}");
+            assert_eq!(detail["response_format"], detail["response_schema"]);
+            for error in ["not_found", "forbidden"] {
+                let mut detail = json!({"function_id":id, "error":error});
+                let original = detail.clone();
+                post_filter_info(&mut detail, &policy);
+                assert_eq!(detail, original, "a real negative stays negative");
+            }
+            let mut detail = json!({"function_id":id, "request_schema":{}});
+            post_filter_info(&mut detail, &CompiledPolicy::from(None));
+            assert!(detail.is_null());
+            let mut batch = json!({"functions":[{"function_id":id, "request_schema":{}}]});
+            post_filter_info(&mut batch, &CompiledPolicy::from(None));
+            assert_eq!(
+                batch["functions"][0],
+                json!({"function_id":id,"error":"not available"})
+            );
+        }
+        // Only the two intercepted controls own a wrapper response.
+        assert!(
+            crate::functions::observe::control_response_schema("engine::functions::info").is_none()
+        );
+    }
+
+    /// The production gate is `turn_loop`'s `if !policy.allows(&call.function_id)`,
+    /// which answers `denied_result` before `observe::invoke` can intercept:
+    /// both exposures must plan the control under its own id, and that id must
+    /// fail the gate. (End to end, AC3 of MOT-4861 was observed live.)
+    #[test]
+    fn denied_controls_in_both_exposures_fail_the_turn_loop_gate_under_their_own_id() {
+        use crate::types::{
+            content::ContentBlock,
+            turn::{ExposeMode, FunctionPolicy},
+        };
+        for expose in [ExposeMode::Native, ExposeMode::AgentCall] {
+            for raw_policy in [
+                None,
+                Some(FunctionPolicy {
+                    allow: vec!["*".into()],
+                    deny: vec!["harness::*".into()],
+                    expose,
+                }),
+                Some(FunctionPolicy::default()),
+            ] {
+                let policy = CompiledPolicy::from(raw_policy.as_ref());
+                for id in ["harness::observe", "harness::unobserve"] {
+                    let args = json!({
+                        "function_id": "state::on-changed",
+                        "filters": { "input.scope": { "$eq": "test" }, "input.key": { "$eq": "done" } }
+                    });
+                    let mut message = crate::types::message::empty_assistant("fixture", "fixture");
+                    message.content = vec![ContentBlock::FunctionCall {
+                        id: "call".into(),
+                        function_id: if expose == ExposeMode::Native {
+                            id.into()
+                        } else {
+                            crate::policy::AGENT_CALL_NAME.into()
+                        },
+                        arguments: if expose == ExposeMode::Native {
+                            args
+                        } else {
+                            json!({"function":id,"description":"fixture","payload":args})
+                        },
+                    }];
+                    let calls = crate::policy::plan_calls(&message, expose);
+                    assert_eq!(calls[0].function_id, id);
+                    assert!(
+                        !policy.allows(&calls[0].function_id),
+                        "{id} passed the gate"
+                    );
+                    let result = denied_result(&calls[0].function_id);
+                    assert!(result.is_error);
+                    assert_eq!(result.details["error"], "policy_denied");
+                    assert_eq!(result.details["function_id"], id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_mistyped_id_is_denied_with_the_permitted_id_it_resembles() {
+        let exec =
+            "kanban_eval_598997058842fdedec266aaf02880d80b532995d651db57f24d800b6a42eac97::exec";
+        let typo = "kanban_eval_598997058842fdedec266aaf02880d02880d80b532995d651db57f24d800b6a42eac97::exec";
+        let policy = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec![exec.into()],
+            ..Default::default()
+        }));
+        let descriptor = |id: &str| crate::clients::FunctionDescriptor {
+            function_id: id.into(),
+            description: None,
+            parameters: None,
+        };
+        let snapshot =
+            crate::discovery::snapshot_of(vec![descriptor(exec), descriptor("auth::browser")]);
+
+        let hint = closest_permitted(typo, &policy, &snapshot);
+        assert_eq!(hint.as_deref(), Some(exec));
+        let denied = denied_result_with_hint(typo, hint.as_deref());
+        let text = denied.details["message"].as_str().unwrap();
+        assert!(
+            text.contains("not permitted by this agent's dispatch policy"),
+            "{text}"
+        );
+        assert!(text.contains(&format!("did you mean {exec}?")), "{text}");
+        assert!(
+            text.contains("Calling it again will be denied again"),
+            "{text}"
+        );
+
+        // A real function the policy denies gets no suggestion, nor does an
+        // id nothing permitted resembles.
+        assert_eq!(closest_permitted("auth::browser", &policy, &snapshot), None);
+        assert_eq!(closest_permitted("web::fetch", &policy, &snapshot), None);
+        assert!(!denied_result("web::fetch").details["message"]
+            .as_str()
+            .unwrap()
+            .contains("did you mean"));
+    }
+}

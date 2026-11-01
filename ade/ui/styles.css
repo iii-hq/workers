@@ -1,4 +1,5 @@
-/* The console worker's own stylesheet (`console:style`, console/styles.css):
+/* The console worker's own stylesheet (a `console::ui::asset` of kind style,
+ * console/styles.css):
  * the console entry's settings form, the declarative worker configuration
  * forms, the working-directory proposal card and the two engine-catalogue
  * pages. Every rule is scoped under [data-iii-ui="console"]; tokens only. */
@@ -567,7 +568,7 @@
   font-size: 12px;
 }
 
-/* ── the engine catalogue pages (functions, triggers) ───────────────────
+/* ── the engine catalogue pages (functions, observers) ──────────────────
  *
  * Layout: PageShell > PageHeader > now-strip > PageBody (PageSidebar |
  * PageMain). The sidebar owns search + grouped rows; the main column is
@@ -825,7 +826,7 @@
   -webkit-box-orient: vertical;
 }
 
-/* --- glyph tiles: ƒ for functions, a family icon for triggers --------- */
+/* --- glyph tiles: ƒ for functions, a family icon for observers -------- */
 
 [data-iii-ui="console"] .console-catalog-glyph {
   display: inline-flex;
@@ -1256,15 +1257,20 @@
   overflow-wrap: anywhere;
 }
 
-/* --- trigger cards (function detail + related bindings) --------------- */
+/* --- observer cards (function detail: observers of it, and into it) --- */
 
-[data-iii-ui="console"] .console-catalog-trigcards {
+[data-iii-ui="console"] .console-catalog-obscards {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding-top: 10px;
 }
-[data-iii-ui="console"] .console-catalog-trigcard {
+[data-iii-ui="console"] .console-catalog-obscards-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+[data-iii-ui="console"] .console-catalog-obscard {
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -1272,31 +1278,31 @@
   border-radius: var(--radius-xl);
   background: var(--color-surface);
 }
-[data-iii-ui="console"] .console-catalog-trigcard .copy {
+[data-iii-ui="console"] .console-catalog-obscard .copy {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-[data-iii-ui="console"] .console-catalog-trigcard .line1 {
+[data-iii-ui="console"] .console-catalog-obscard .line1 {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
-[data-iii-ui="console"] .console-catalog-trigcard .name {
+[data-iii-ui="console"] .console-catalog-obscard .name {
   font-family: var(--font-mono);
   font-size: 12.5px;
   overflow-wrap: anywhere;
 }
-[data-iii-ui="console"] .console-catalog-trigcard .type {
+[data-iii-ui="console"] .console-catalog-obscard .type {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--color-ink-ghost);
   overflow-wrap: anywhere;
 }
-[data-iii-ui="console"] .console-catalog-trigcard .fine {
+[data-iii-ui="console"] .console-catalog-obscard .fine {
   font-size: 11px;
   color: var(--color-warn-strong);
 }
@@ -2510,7 +2516,7 @@
 }
 
 /* A binding card ends in its copy action. */
-[data-iii-ui="console"] .console-catalog-trigcard > :last-child:not(.copy) {
+[data-iii-ui="console"] .console-catalog-obscard > :last-child:not(.copy) {
   flex: none;
   margin: -4px -6px 0 0;
 }

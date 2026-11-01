@@ -12,7 +12,7 @@ use harness::functions::send::{self, MessageInput, SendRequest};
 use harness::hooks::HookRegistry;
 use harness::skills;
 use harness::types::message::AgentMessage;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use serde_json::{json, Value};
@@ -80,7 +80,7 @@ async fn isolated_engine() -> Option<Engine> {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if probe
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::workers::list".into(),
                 payload: json!({}),
                 action: None,

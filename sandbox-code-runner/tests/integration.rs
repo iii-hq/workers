@@ -118,7 +118,7 @@ impl Drop for Cleanup {
 /// holding a daemon slot", which is the thing a leak means.
 async fn live_sandbox_ids(iii: &iii_sdk::IIIClient) -> std::collections::HashSet<String> {
     let resp = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "sandbox::list".into(),
             payload: serde_json::json!({}),
             action: None,
@@ -146,7 +146,7 @@ async fn live_sandbox_ids(iii: &iii_sdk::IIIClient) -> std::collections::HashSet
 ///   publishes answers real calls on the real bus;
 /// - `teardown` by `namespace` unregisters it and stops its runtime.
 async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClient) {
-    let eval = |payload: serde_json::Value| iii_sdk::protocol::TriggerRequest {
+    let eval = |payload: serde_json::Value| iii_sdk::CallRequest {
         function_id: "sandbox-code-runner::run".into(),
         payload,
         action: None,
@@ -157,7 +157,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
 
     // One-shot (default): a result, no runtime_id, and no live sandbox left.
     let ephemeral = iii
-        .trigger(eval(
+        .call(eval(
             serde_json::json!({ "lang": "python", "code": "print(1+1)" }),
         ))
         .await
@@ -177,7 +177,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
     // `keep: true`: DOES leave exactly one live sandbox, addressable by the
     // minted runtime_id.
     let kept = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "python",
             "code": "open('/tmp/kept-probe','w').write('kept')",
             "keep": true,
@@ -199,7 +199,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
     // The minted runtime_id really does address that same VM: its
     // filesystem is still there.
     let reused = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "runtime_id": runtime_id,
             "code": "print(open('/tmp/kept-probe').read())",
         })))
@@ -214,7 +214,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
     // register_function with NO runtime_id: sandbox-code-runner resolves its own
     // namespace runtime, and the function answers real calls on the bus.
     let reg = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "sandbox-code-runner::register_function".into(),
             payload: serde_json::json!({
                 "function_id": "ce-e2e-ns::double",
@@ -230,7 +230,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
     assert_eq!(reg["registered"], true, "{reg}");
 
     let call = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "ce-e2e-ns::double".into(),
             payload: serde_json::json!({ "n": 21 }),
             action: None,
@@ -242,7 +242,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
 
     // teardown by namespace unregisters it and stops its runtime.
     let td = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "sandbox-code-runner::teardown".into(),
             payload: serde_json::json!({ "namespace": "ce-e2e-ns" }),
             action: None,
@@ -255,7 +255,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
     assert_eq!(td["unregistered"][0], "ce-e2e-ns::double");
 
     let dead = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "ce-e2e-ns::double".into(),
             payload: serde_json::json!({ "n": 1 }),
             action: None,
@@ -269,7 +269,7 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
 
     // Clean up the kept runtime, and confirm the live-sandbox count returns
     // exactly to baseline — no leaks anywhere across this whole sequence.
-    iii.trigger(iii_sdk::protocol::TriggerRequest {
+    iii.call(iii_sdk::CallRequest {
         function_id: "sandbox-code-runner::teardown".into(),
         payload: serde_json::json!({ "runtime_id": runtime_id }),
         action: None,
@@ -291,35 +291,34 @@ async fn one_shot_keep_and_namespace_over_the_real_chain(iii: &iii_sdk::IIIClien
 /// runner-side install, none of which a `FakeEngine` test can execute for
 /// real:
 ///
-/// - evaluated NODE code triggers a bus function mid-run through the
+/// - evaluated NODE code calls a bus function mid-run through the
 ///   embedded SDK and gets the answer;
 /// - evaluated PYTHON code does the same through the pip-installed SDK;
 /// - `iii.registerFunction` from an eval is live WHILE the process runs
-///   (provable by self-trigger through the engine) and gone after it
+///   (provable by a self-call through the engine) and gone after it
 ///   exits — the documented ephemeral semantics;
 /// - persistence goes through `sandbox-code-runner::register_function`, callable
-///   via `iii.trigger` from inside an eval;
+///   via `iii.call` from inside an eval;
 /// - a registered handler itself uses `iii` (cross-runtime call).
 async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
-    let eval = |payload: serde_json::Value| iii_sdk::protocol::TriggerRequest {
+    let eval = |payload: serde_json::Value| iii_sdk::CallRequest {
         function_id: "sandbox-code-runner::run".into(),
         payload,
         action: None,
         timeout_ms: Some(60_000),
     };
-    let trigger =
-        |function_id: &str, payload: serde_json::Value| iii_sdk::protocol::TriggerRequest {
-            function_id: function_id.into(),
-            payload,
-            action: None,
-            timeout_ms: Some(35_000),
-        };
+    let request = |function_id: &str, payload: serde_json::Value| iii_sdk::CallRequest {
+        function_id: function_id.into(),
+        payload,
+        action: None,
+        timeout_ms: Some(35_000),
+    };
 
     let before = live_sandbox_ids(iii).await;
 
     // A plain registered function to be the CALLEE of guest code — its
     // runtime (ce-e2e-iii, python) is distinct from any eval's VM.
-    iii.trigger(trigger(
+    iii.call(request(
         "sandbox-code-runner::register_function",
         serde_json::json!({
             "function_id": "ce-e2e-iii::double",
@@ -331,45 +330,45 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
     .await
     .expect("register the callee");
 
-    // The embedded Node SDK: an eval triggers the callee mid-run.
+    // The embedded Node SDK: an eval calls the callee mid-run.
     let called = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "node",
-            "code": "const r = await iii.trigger({ function_id: 'ce-e2e-iii::double', payload: { n: 21 } });\nconsole.log('got', r.doubled);",
+            "code": "const r = await iii.call({ function_id: 'ce-e2e-iii::double', payload: { n: 21 } });\nconsole.log('got', r.doubled);",
             "timeout_ms": 30_000,
         })))
         .await
-        .expect("node eval that uses iii.trigger");
+        .expect("node eval that uses iii.call");
     assert_eq!(called["stdout"], "got 42\n", "{called}");
     assert_eq!(called["exit_code"], 0, "{called}");
 
     // The pip-installed Python SDK: same round trip (this is the only
     // place the create-time `pip install iii-sdk` path is proven live).
     let called_py = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "python",
-            "code": "r = iii.trigger({'function_id': 'ce-e2e-iii::double', 'payload': {'n': 21}})\nprint('got', r['doubled'])",
+            "code": "r = iii.call({'function_id': 'ce-e2e-iii::double', 'payload': {'n': 21}})\nprint('got', r['doubled'])",
             "timeout_ms": 30_000,
         })))
         .await
-        .expect("python eval that uses iii.trigger");
+        .expect("python eval that uses iii.call");
     assert_eq!(called_py["stdout"], "got 42\n", "{called_py}");
 
     // iii.registerFunction is the SDK's own, so it is LIVE only while the
-    // eval process runs: the eval proves liveness by triggering its own
+    // eval process runs: the eval proves liveness by calling its own
     // registration THROUGH THE ENGINE, and the bus proves the ephemerality
     // right after the process exits.
     let ephemeral = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "node",
-            "code": "iii.registerFunction('ce-e2e-ephemeral-echo', async (data) => ({ pong: data.ping }), { description: 'dies with the eval process' });\nconst r = await iii.trigger({ function_id: 'ce-e2e-ephemeral-echo', payload: { ping: 7 } });\nconsole.log('pong', r.pong);",
+            "code": "iii.registerFunction('ce-e2e-ephemeral-echo', async (data) => ({ pong: data.ping }), { description: 'dies with the eval process' });\nconst r = await iii.call({ function_id: 'ce-e2e-ephemeral-echo', payload: { ping: 7 } });\nconsole.log('pong', r.pong);",
             "timeout_ms": 30_000,
         })))
         .await
-        .expect("eval that self-registers and self-triggers");
+        .expect("eval that self-registers and self-calls");
     assert_eq!(ephemeral["stdout"], "pong 7\n", "{ephemeral}");
     let dead = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
+        .call(iii_sdk::CallRequest {
             function_id: "ce-e2e-ephemeral-echo".into(),
             payload: serde_json::json!({ "ping": 1 }),
             action: None,
@@ -388,7 +387,7 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
     // actual message. Assert the property (short + names the call site),
     // not the SDK's exact message, so SDK upgrades don't break this.
     let bad_call = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "node",
             "code": "iii.registerFunction({ function_id: 'demo::hello', handler: async () => ({}) });",
             "timeout_ms": 30_000,
@@ -409,11 +408,11 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
     );
 
     // Persistence goes through sandbox-code-runner::register_function — callable
-    // from inside an eval via iii.trigger, surviving the eval's exit.
+    // from inside an eval via iii.call, surviving the eval's exit.
     let registered = iii
-        .trigger(eval(serde_json::json!({
+        .call(eval(serde_json::json!({
             "lang": "node",
-            "code": "const r = await iii.trigger({ function_id: 'sandbox-code-runner::register_function', payload: { function_id: 'ce-e2e-iii::treble', lang: 'node', source: 'export function handler(p) { return { trebled: p.n * 3 }; }', description: 'e2e persistent registration from inside an eval' }, timeout_ms: 60000 });\nconsole.log('registered', r.function_id);",
+            "code": "const r = await iii.call({ function_id: 'sandbox-code-runner::register_function', payload: { function_id: 'ce-e2e-iii::treble', lang: 'node', source: 'export function handler(p) { return { trebled: p.n * 3 }; }', description: 'e2e persistent registration from inside an eval' }, timeout_ms: 60000 });\nconsole.log('registered', r.function_id);",
             "timeout_ms": 90_000,
         })))
         .await
@@ -423,7 +422,7 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
         "{registered}"
     );
     let trebled = iii
-        .trigger(trigger(
+        .call(request(
             "ce-e2e-iii::treble",
             serde_json::json!({ "n": 14 }),
         ))
@@ -433,19 +432,19 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
 
     // A handler using iii itself: cross-runtime call from the python
     // namespace runtime to the node one.
-    iii.trigger(trigger(
+    iii.call(request(
         "sandbox-code-runner::register_function",
         serde_json::json!({
             "function_id": "ce-e2e-iii::describe",
             "lang": "python",
-            "source": "def handler(p):\n    r = iii.trigger({'function_id': 'ce-e2e-iii::treble', 'payload': {'n': p['n']}})\n    return {'trebled': r['trebled']}\n",
+            "source": "def handler(p):\n    r = iii.call({'function_id': 'ce-e2e-iii::treble', 'payload': {'n': p['n']}})\n    return {'trebled': r['trebled']}\n",
             "description": "e2e handler-side iii probe",
         }),
     ))
     .await
     .expect("register the iii-using handler");
     let described = iii
-        .trigger(trigger(
+        .call(request(
             "ce-e2e-iii::describe",
             serde_json::json!({ "n": 4 }),
         ))
@@ -456,7 +455,7 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
     // One namespace teardown covers both language runtimes and all three
     // functions, and the live-sandbox count returns exactly to baseline.
     let td = iii
-        .trigger(trigger(
+        .call(request(
             "sandbox-code-runner::teardown",
             serde_json::json!({ "namespace": "ce-e2e-iii" }),
         ))
@@ -489,7 +488,7 @@ async fn iii_global_over_the_real_chain(iii: &iii_sdk::IIIClient) {
 }
 
 #[test]
-fn full_loop_eval_register_trigger_teardown() {
+fn full_loop_eval_register_call_teardown() {
     if gated() {
         return;
     }
@@ -538,7 +537,7 @@ fn full_loop_eval_register_trigger_teardown() {
                 // to exercise the reuse + explicit-teardown paths below.
                 // First call pulls the image — give it the full window.
                 let out = iii
-                    .trigger(iii_sdk::protocol::TriggerRequest {
+                    .call(iii_sdk::CallRequest {
                         function_id: "sandbox-code-runner::run".into(),
                         payload: serde_json::json!({
                             "lang": "python", "code": "print(6*7)", "keep": true,
@@ -558,7 +557,7 @@ fn full_loop_eval_register_trigger_teardown() {
 
                         // Filesystem persists between evals in one runtime.
                         let w = iii
-                            .trigger(iii_sdk::protocol::TriggerRequest {
+                            .call(iii_sdk::CallRequest {
                                 function_id: "sandbox-code-runner::run".into(),
                                 payload: serde_json::json!({
                                     "runtime_id": runtime_id,
@@ -571,7 +570,7 @@ fn full_loop_eval_register_trigger_teardown() {
                             .expect("second eval");
                         assert_eq!(w["exit_code"], 0);
                         let r = iii
-                            .trigger(iii_sdk::protocol::TriggerRequest {
+                            .call(iii_sdk::CallRequest {
                                 function_id: "sandbox-code-runner::run".into(),
                                 payload: serde_json::json!({
                                     "runtime_id": runtime_id,
@@ -586,7 +585,7 @@ fn full_loop_eval_register_trigger_teardown() {
                         assert_eq!(r["runtime_id"], runtime_id);
 
                         let td = iii
-                            .trigger(iii_sdk::protocol::TriggerRequest {
+                            .call(iii_sdk::CallRequest {
                                 function_id: "sandbox-code-runner::teardown".into(),
                                 payload: serde_json::json!({ "runtime_id": runtime_id }),
                                 action: None,
@@ -605,7 +604,7 @@ fn full_loop_eval_register_trigger_teardown() {
                         // (which would mean teardown didn't really finish)
                         // fails fast instead of stalling the suite.
                         let dead_eval = iii
-                            .trigger(iii_sdk::protocol::TriggerRequest {
+                            .call(iii_sdk::CallRequest {
                                 function_id: "sandbox-code-runner::run".into(),
                                 payload: serde_json::json!({
                                     "runtime_id": runtime_id,

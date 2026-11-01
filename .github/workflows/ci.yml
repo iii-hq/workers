@@ -12,7 +12,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # Atomic worker initialization requires configuration::ensure (MOT-4736).
-  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
+  III_RELEASE_TAG: 'iii/v0.26.0-rc.1'
 
 jobs:
   scripts-tests:
@@ -1291,7 +1291,7 @@ jobs:
               cat iii-engine.log
               exit 1
             fi
-            if timeout --signal=KILL 5s iii trigger 'engine::workers::list' --json '{}' >/dev/null 2>&1; then
+            if timeout --signal=KILL 5s iii call 'engine::workers::list' --json '{}' >/dev/null 2>&1; then
               exit 0
             fi
             sleep 1
@@ -1301,13 +1301,11 @@ jobs:
           cat iii-engine.log || true
           exit 1
 
-      - name: Snapshot engine baselines
+      - name: Snapshot engine baseline
         if: steps.optout.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          iii trigger 'engine::triggers::list' --json '{"include_internal": false}' \
-            > trigger-types-baseline.json
-          iii trigger 'engine::workers::list' --json '{}' > workers-baseline.json
+          iii call 'engine::workers::list' --json '{}' > workers-baseline.json
 
       - name: Start worker from source
         if: steps.optout.outputs.skip != 'true'
@@ -1321,7 +1319,7 @@ jobs:
 
           worker_log="worker-$WORKER.log"
           # Interface collection only needs the worker to connect and register
-          # its functions/trigger types — not a working backend. A worker may
+          # its functions — not a working backend. A worker may
           # ship config.collect.yaml to boot a lighter copy for this. storage's
           # default config.yaml declares a local bucket and spawns a rustfs
           # sidecar that isn't available here, crashing startup with
@@ -1374,16 +1372,20 @@ jobs:
           python3 .github/scripts/collect_worker_interface.py \
             --worker "$WORKER" \
             --out worker-interface.json \
+            --observers-out worker-observers.json \
             --wait-seconds 120 \
-            --trigger-types-baseline trigger-types-baseline.json \
             --workers-baseline workers-baseline.json
 
-      - name: Assert worker interface was collected
+      # The functions must be non-empty and typed; no observer the worker
+      # created may be in state `error` (rejected by the observed function's
+      # host, not acked in time, or invalid against its registration).
+      - name: Assert worker interface and observers
         if: steps.optout.outputs.skip != 'true'
         run: |
           set -euo pipefail
           python3 .github/scripts/collect_worker_interface.py \
-            --assert-non-empty --assert-typed-schemas --assert-file worker-interface.json
+            --assert-non-empty --assert-typed-schemas --assert-file worker-interface.json \
+            --assert-observers worker-observers.json
 
       - name: Dump logs on failure
         if: failure()

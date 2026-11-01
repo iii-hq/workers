@@ -172,7 +172,7 @@ async fn run_git_clone(
 /// Each file's relative path is classified via
 /// [`crate::fs_source::classify_rel_path`]. Markdown files under
 /// `system-prompts/` are recorded in `system_prompts_written` (by file
-/// stem) so the caller can fire the matching `on-change` trigger selectively.
+/// stem) so the caller can call the matching `on-change` selectively.
 /// Agent-profile paths are ignored; all other files are recorded as
 /// `skills_written` (by relative path under the namespace).
 fn copy_recursive(

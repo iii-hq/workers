@@ -1,7 +1,7 @@
 /**
  * The Simulators page (terminal/instrument archetype): a device rail beside
  * one live iPhone. The rail lists the selected tenant's simulators, re-read
- * on every `ios-simulator::device-changed` event (so simulators booted from
+ * on every `ios-simulator::on-device-changed` event (so simulators booted from
  * Xcode or a terminal appear too); the stage shows the chosen simulator live
  * with its controls and media. Under the narrow threshold it becomes a
  * drill-in: list, then the phone with a labelled back action.
@@ -30,7 +30,7 @@ import {
 import { useContainerNarrow, usePaneState, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import { Plus, Smartphone } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { DEFAULT_TENANT, DEVICE_CHANGED, type Device, isBooted, runtimeLabel, SimApi } from '../lib/api'
+import { DEFAULT_TENANT, type Device, isBooted, ON_DEVICE_CHANGED, runtimeLabel, SimApi } from '../lib/api'
 import { CreateDeviceDialog } from './CreateDevice'
 import { Stage } from './Stage'
 
@@ -64,13 +64,13 @@ export function SimulatorsPage({
 
   const { data, loading, error, live, refresh } = useWorkerLive({
     iii: host.iii,
-    triggers: [{ type: DEVICE_CHANGED, config: { tenant } }],
+    sources: [{ function_id: ON_DEVICE_CHANGED, filters: { 'input.tenant': { $eq: tenant } } }],
     fetch: () => api.devices(),
     handlerId: 'iii::ios-simulator-ui::devices',
   })
   const devices = data ?? NO_DEVICES
 
-  // The binding follows the tenant; the list must too.
+  // The observer follows the tenant; the list must too.
   // biome-ignore lint/correctness/useExhaustiveDependencies: refresh on tenant change only
   useEffect(() => refresh(), [tenant])
 

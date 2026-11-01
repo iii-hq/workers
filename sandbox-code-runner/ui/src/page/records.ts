@@ -117,7 +117,7 @@ export function useExecRecords(
   const flush = useCallback(
     (key: string) => {
       host.iii
-        .trigger('state::set', {
+        .call('state::set', {
           scope: RECORDS_SCOPE,
           key,
           value: recordsRef.current.slice(-MAX_RECORDS),
@@ -139,7 +139,7 @@ export function useExecRecords(
     if (!sandboxId) return
     let cancelled = false
     host.iii
-      .trigger('state::get', { scope: RECORDS_SCOPE, key: sandboxId })
+      .call('state::get', { scope: RECORDS_SCOPE, key: sandboxId })
       .then((value) => {
         // value IS the stored array (no { value } wrapper) — see header.
         if (!cancelled) {

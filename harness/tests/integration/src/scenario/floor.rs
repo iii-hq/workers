@@ -257,7 +257,7 @@ fn collect_error_span_keys(
     }
 }
 
-/// Validate `harness::turn-completed` from the lifecycle sink's trace events.
+/// Validate `harness::on-turn-completed` from the lifecycle sink's trace events.
 fn lifecycle_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<String> {
     let expected_turns = expected.turns();
     let lifecycle_name = format!("execute {LIFECYCLE_FUNCTION_ID}");

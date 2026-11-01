@@ -46,6 +46,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::{SharedConfig, SkillsConfig};
+use crate::events;
 use crate::fs_source::{self, FsAgent, FsSkill};
 use crate::functions::error::{invalid_input_message, not_found_message, NextAction};
 use crate::functions::prompts::validate_name;
@@ -54,7 +55,6 @@ use crate::functions::skills::{
 };
 use crate::kits::origin::{AgentSource, OriginIndex, SourceKind};
 use crate::sources::{mark_self_write, write_file_atomic};
-use crate::trigger_types;
 
 /// Recovery pointer attached to a `directory::agents::get` / write miss.
 const AGENT_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
@@ -312,16 +312,16 @@ pub struct AgentDeleteOutput {
 pub fn register(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subs: &super::Subscribers,
+    sources: &super::ChangeSources,
     cache: &Arc<RegisteredWorkersCache>,
 ) {
     register_list(iii, cfg);
     register_get(iii, cfg, cache);
-    register_create(iii, cfg, &subs.agents);
-    register_update(iii, cfg, &subs.agents);
-    register_delete(iii, cfg, &subs.agents);
-    register_functions_add(iii, cfg, &subs.agents);
-    register_functions_remove(iii, cfg, &subs.agents);
+    register_create(iii, cfg, sources.agents);
+    register_update(iii, cfg, sources.agents);
+    register_delete(iii, cfg, sources.agents);
+    register_functions_add(iii, cfg, sources.agents);
+    register_functions_remove(iii, cfg, sources.agents);
 }
 
 fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
@@ -373,19 +373,17 @@ fn register_get(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: &Arc<Registered
     );
 }
 
-fn register_create(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_types::SubscriberSet) {
+fn register_create(iii: &Arc<IIIClient>, cfg: &SharedConfig, source: events::ChangeSource) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     iii.register_function(
         "directory::agents::create",
         RegisterFunction::new_async(move |req: AgentCreateInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             async move {
                 let out = create_agent(&cfg, &req).map_err(Error::Handler)?;
-                trigger_types::dispatch(&iii, &subs, json!({ "op": "create", "name": out.id }))
+                events::emit(&iii, source, json!({ "op": "create", "name": out.id }))
                     .await;
                 Ok::<_, Error>(out)
             }
@@ -401,19 +399,17 @@ fn register_create(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
     );
 }
 
-fn register_update(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_types::SubscriberSet) {
+fn register_update(iii: &Arc<IIIClient>, cfg: &SharedConfig, source: events::ChangeSource) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     iii.register_function(
         "directory::agents::update",
         RegisterFunction::new_async(move |req: AgentUpdateInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             async move {
                 let out = update_agent(&cfg, &req).map_err(Error::Handler)?;
-                trigger_types::dispatch(&iii, &subs, json!({ "op": "update", "name": out.id }))
+                events::emit(&iii, source, json!({ "op": "update", "name": out.id }))
                     .await;
                 Ok::<_, Error>(out)
             }
@@ -429,20 +425,17 @@ fn register_update(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
     );
 }
 
-fn register_delete(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_types::SubscriberSet) {
+fn register_delete(iii: &Arc<IIIClient>, cfg: &SharedConfig, source: events::ChangeSource) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     iii.register_function(
         "directory::agents::delete",
         RegisterFunction::new_async(move |req: AgentDeleteInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             async move {
                 let out = delete_agent(&cfg, &req).map_err(Error::Handler)?;
-                trigger_types::dispatch(&iii, &subs, json!({ "op": "delete", "name": out.id }))
-                    .await;
+                events::emit(&iii, source, json!({ "op": "delete", "name": out.id })).await;
                 Ok::<_, Error>(out)
             }
         })
@@ -455,25 +448,18 @@ fn register_delete(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
     );
 }
 
-fn register_functions_add(
-    iii: &Arc<IIIClient>,
-    cfg: &SharedConfig,
-    subs: &trigger_types::SubscriberSet,
-) {
+fn register_functions_add(iii: &Arc<IIIClient>, cfg: &SharedConfig, source: events::ChangeSource) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     iii.register_function(
         "directory::agents::functions::add",
         RegisterFunction::new_async(move |req: AgentFunctionsInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             async move {
                 let out = add_agent_functions(&cfg, &req).map_err(Error::Handler)?;
                 if !out.unchanged {
-                    trigger_types::dispatch(&iii, &subs, json!({ "op": "update", "name": out.id }))
-                        .await;
+                    events::emit(&iii, source, json!({ "op": "update", "name": out.id })).await;
                 }
                 Ok::<_, Error>(out)
             }
@@ -493,22 +479,19 @@ fn register_functions_add(
 fn register_functions_remove(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subs: &trigger_types::SubscriberSet,
+    source: events::ChangeSource,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
-    let subs_inner = subs.clone();
     iii.register_function(
         "directory::agents::functions::remove",
         RegisterFunction::new_async(move |req: AgentFunctionsInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
             async move {
                 let out = remove_agent_functions(&cfg, &req).map_err(Error::Handler)?;
                 if !out.unchanged {
-                    trigger_types::dispatch(&iii, &subs, json!({ "op": "update", "name": out.id }))
-                        .await;
+                    events::emit(&iii, source, json!({ "op": "update", "name": out.id })).await;
                 }
                 Ok::<_, Error>(out)
             }
@@ -536,7 +519,7 @@ async fn probe_unknown_functions(iii: &IIIClient, functions: &[String]) -> Vec<S
     let mut unknown = Vec::new();
     for chunk in functions.chunks(INFO_BATCH_MAX) {
         let response = iii
-            .trigger(iii_sdk::protocol::TriggerRequest {
+            .call(iii_sdk::CallRequest {
                 function_id: "engine::functions::info".into(),
                 payload: json!({ "function_ids": chunk }),
                 action: None,

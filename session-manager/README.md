@@ -4,19 +4,19 @@ Durable, reactive store for conversations. A session is an append-only
 log of typed message entries (user, assistant, function_result, custom
 — with optional fork branches) plus a small metadata record (title,
 description, coarse status, app-defined metadata). Any worker or client
-appends and reads over the bus; every mutation fires a trigger type
-consumers bind to, so a chat UI, bot, or dashboard renders live with no
-polling and no separate publish call. It runs no agent logic — it is
-the conversation database the [harness](https://github.com/iii-hq/workers/tree/main/harness) family drives, and
+appends and reads over the bus; every mutation calls one of six event
+functions that consumers observe, so a chat UI, bot, or dashboard renders
+live with no polling and no separate publish call. It runs no agent logic —
+it is the conversation database the [harness](https://github.com/iii-hq/workers/tree/main/harness) family drives, and
 it is independently useful as a real-time chat store for any app.
 
 ## Install
 
 ```bash
-iii trigger compose::add worker=session-manager
+iii call compose::add worker=session-manager
 ```
 
-`iii trigger compose::add` resolves the worker and its dependencies, writes
+`iii call compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
@@ -24,24 +24,24 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 Create a session, append a message, read the transcript back:
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::{register_worker, CallRequest, InitOptions};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    let created = iii.trigger(TriggerRequest {
-        function_id: "session::create".into(),
-        payload: json!({ "title": "Weather question", "metadata": { "owner": "u_1" } }),
-        action: None,
-        timeout_ms: Some(5_000),
-    }).await?;
+    let created = iii
+        .call(CallRequest::new(
+            "session::create",
+            json!({ "title": "Weather question", "metadata": { "owner": "u_1" } }),
+        ))
+        .await?;
     let session_id = created["session_id"].as_str().unwrap().to_string();
 
-    iii.trigger(TriggerRequest {
-        function_id: "session::append".into(),
-        payload: json!({
+    iii.call(CallRequest::new(
+        "session::append",
+        json!({
             "session_id": session_id,
             "message": {
                 "role": "user",
@@ -49,27 +49,26 @@ async fn main() -> anyhow::Result<()> {
                 "timestamp": 1717800000000_i64
             }
         }),
-        action: None,
-        timeout_ms: Some(5_000),
-    }).await?;
+    ))
+    .await?;
 
-    let transcript = iii.trigger(TriggerRequest {
-        function_id: "session::messages".into(),
-        payload: json!({ "session_id": session_id }),
-        action: None,
-        timeout_ms: Some(5_000),
-    }).await?;
+    let transcript = iii
+        .call(CallRequest::new(
+            "session::messages",
+            json!({ "session_id": session_id }),
+        ))
+        .await?;
 
     println!("{transcript:#?}");
     Ok(())
 }
 ```
 
-To render live instead of polling, register a handler function and bind
-it to a trigger type (the two-step reactive pattern):
+To render live instead of polling, register a handler function and observe
+an event function with it:
 
 ```rust
-use iii_sdk::{IIIError, RegisterFunction, RegisterTriggerInput};
+use iii_sdk::{Deliver, Error, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 iii.register_function(
@@ -77,21 +76,25 @@ iii.register_function(
     RegisterFunction::new_async(|event: Value| async move {
         // full updated message + monotonic revision; keep the highest
         println!("{} rev {}", event["entry_id"], event["revision"]);
-        Ok::<_, IIIError>(json!({ "ok": true }))
+        Ok::<_, Error>(json!({ "ok": true }))
     }),
 );
 
-iii.register_trigger(RegisterTriggerInput {
-    trigger_type: "session::message-updated".into(),
-    function_id: "my-ui::on-message-updated".into(),
-    config: json!({ "session_id": session_id, "roles": ["assistant"] }),
-    metadata: None,
-})?;
+// one session's assistant messages, as they stream
+iii.observe(
+    Source::function("session::on-message-updated")
+        .filters(json!({
+            "input.session_id": { "$eq": session_id },
+            "input.message.role": { "$in": ["assistant"] },
+        }))
+        .deliver(Deliver::Output),
+    "my-ui::on-message-updated",
+);
 ```
 
 Streaming an assistant reply uses the same primitives: append an
 (initially empty) assistant message, then call `session::update-message`
-as tokens arrive — each update fires `session::message-updated` with an
+as tokens arrive — each update calls `session::on-message-updated` with an
 incremented `revision`.
 
 The full function surface (21 `session::*` functions: lifecycle,
@@ -109,26 +112,80 @@ sessions and the asking session left out) and `session::mention::get`
 returns the pill, preview card and agent summary — never the parked
 draft — and declares the provider, whose details call is `session::get`.
 
-## Custom trigger types
+## Event functions
 
-Six trigger types cover every mutation. Each binding's `config` filters
-what reaches the handler; all configs additionally accept
-`metadata` — a subset-equality match against `SessionMeta.metadata`
-(the tenancy hook, e.g. `{ "owner": "u_1" }`). Malformed configs are
-rejected at registration.
+The worker hosts one function per kind of mutation. Each is private (only
+this worker calls it), and its handler returns the event it is called with,
+so an observer receives the event. The worker calls a function only while
+something observes it. None takes args (an observer that passes args gets
+`INVALID_ARGS` from the engine); observers select events with filters on the
+event's fields. iii delivers each call to every observer whose filters match.
 
-| Trigger type | Fires when | Config filters |
-|---|---|---|
-| `session::created` | A session is created (create / ensure / fork) | `metadata` |
-| `session::message-added` | An entry is appended | `session_id`, `roles`, `metadata` |
-| `session::message-updated` | A message's content changes (streaming deltas) | `session_id`, `roles`, `metadata` |
-| `session::status-changed` | Status moves between idle/working/done/error | `session_id`, `metadata` |
-| `session::meta-updated` | Title/description/metadata change | `session_id`, `metadata` |
-| `session::deleted` | A session and its entries are removed | `session_id`, `metadata` |
+Every event carries `session_metadata`: the session's `SessionMeta.metadata`
+(the tenancy hook, e.g. `{ "owner": "u_1" }`) as of the mutation, omitted
+when the session has none. `session::on-meta-updated` carries the metadata
+after the update, `session::on-deleted` the metadata the session had before
+deletion.
 
-Delivery is fire-and-forget, at-least-once, and unordered — reconcile
-message updates by `revision` (keep the highest) and transcript order
-by the parent chain, never by arrival order.
+| Function | Args | Called when | Event (what observers receive) |
+|---|---|---|---|
+| `session::on-created` | none; filter on `input.session_id`, `input.session_metadata.<key>` | A session is created (create / ensure / fork) | `{ session_id, title, description, status, forked_from?, created_at, session_metadata? }` |
+| `session::on-message-added` | none; filter on `input.session_id`, `input.message.role`, `input.session_metadata.<key>` | An entry is appended | `{ session_id, entry_id, parent_id, message?, custom?, origin?, timestamp, session_metadata? }` |
+| `session::on-message-updated` | none; filter as `session::on-message-added` | A message's content changes (streaming deltas) | `{ session_id, entry_id, message, revision, origin?, timestamp, session_metadata? }` |
+| `session::on-status-changed` | none; filter on `input.session_id`, `input.session_metadata.<key>` | Status moves between idle/working/done/error, or its reason changes | `{ session_id, status, previous_status, status_reason?, timestamp, session_metadata? }` |
+| `session::on-meta-updated` | none; filter as `session::on-status-changed` | Title/description/metadata change | `{ session_id, title, description, metadata?, timestamp, session_metadata? }` |
+| `session::on-deleted` | none; filter as `session::on-status-changed` | A session and its entries are removed | `{ session_id, timestamp, session_metadata? }` |
+| `session::store::on-events` | none | Internal, fs-mode instances only: once per event, for bridged instances (see Storage adapters) | `{ function_id, payload, session_metadata? }`: `function_id` names the event function, `payload` is its event without `session_metadata` |
+
+A custom entry (`kind: "custom"`) carries `custom` and no `message`, so a
+filter on `input.message.role` never matches it; a custom *message* has
+role `custom`.
+
+```rust
+// one session's transcript, every role
+iii.observe(
+    Source::function("session::on-message-added")
+        .filters(json!({ "input.session_id": { "$eq": session_id } }))
+        .deliver(Deliver::Output),
+    "my-ui::on-message-added",
+);
+
+// one tenant's sessions appearing and going away
+iii.observe(
+    Source::function("session::on-created")
+        .filters(json!({ "input.session_metadata.owner": { "$eq": "u_1" } }))
+        .deliver(Deliver::Output),
+    "my-ui::on-session-created",
+);
+iii.observe(
+    Source::function("session::on-deleted")
+        .filters(json!({ "input.session_metadata.owner": { "$eq": "u_1" } }))
+        .deliver(Deliver::Output),
+    "my-ui::on-session-deleted",
+);
+
+// every status change (a spinner per session)
+iii.observe(
+    Source::function("session::on-status-changed").deliver(Deliver::Output),
+    "my-ui::on-status-changed",
+);
+```
+
+Calls are fire-and-forget and unordered, and an event can be lost (the
+mutation is durable either way). A reload replays the current state, so the
+same entry can arrive again. Reconcile message updates by `revision` (keep
+the highest) and transcript order by the parent chain, never by arrival
+order; recover with a read-back (`session::messages`, `session::get`).
+
+### What the worker observes
+
+- `configuration::on-updated`, filtered to the `configuration:updated`
+  events of its own entry (`input.id`, `input.event_type`), with
+  `session::on-config-change` as the target, which re-reads the entry and
+  applies it.
+- On a bridged instance, the main instance's `session::store::on-events`,
+  with a relay function it registers on the main's engine
+  (`session::bridge::recv::<uuid>`) as the target.
 
 ## Storage adapters
 
@@ -152,15 +209,15 @@ Two adapters, selected by an `adapter` block (a `name` plus a nested
 
 Event propagation in a bridge topology: the main is the single fan-out
 point. A bridged instance publishes each mutation's events to the main
-(`session::store::publish-events`); the main delivers to its own
-subscribers and forwards an envelope to **every** attached bridged
-instance over its internal `session::store::events` feed; each bridge
-re-emits through its local trigger types with its own subscribers'
-filters. With several bridged instances attached to one main, a
-mutation made anywhere reaches every instance's subscribers exactly
-once. (Consequence: an originator's own subscribers hear events after
-the round trip through the main — same at-least-once, unordered
-contract as always.)
+(`session::store::publish-events`); the main calls its own event functions
+and, once per event, its internal `session::store::on-events` with an
+envelope, which every attached bridged instance observes; each bridge calls
+its local event functions with the envelope's event, and iii applies its
+local observers' filters. With several bridged instances attached to one
+main, a mutation made anywhere calls every instance's event functions once.
+(Consequence: an originator's own observers receive events after the round
+trip through the main — the same fire-and-forget, unordered delivery as on
+any instance.)
 
 The `session::store::*` functions are deployment plumbing served only
 by fs-mode instances — deny them to agents like every other mutating
@@ -170,8 +227,9 @@ surface.
 
 Runtime settings live in the **`configuration` worker** under id
 **`session-manager`**. At startup the worker registers its JSON Schema,
-fetches the live, env-expanded value via `configuration::get`, and binds a
-`configuration` trigger so changes apply without a restart. Persisted values
+fetches the live, env-expanded value via `configuration::get`, and observes
+`configuration::on-updated` (see What the worker observes) so changes apply
+without a restart. Persisted values
 default to `./data/configuration/session-manager.yaml` (the configuration
 worker's `fs` adapter) — edit that file directly or call `configuration::set`
 and the change propagates. `adapter` is an adjacently tagged enum, so the
@@ -200,8 +258,8 @@ restart required. `default_list_limit` / `max_list_limit` swap the shared
 snapshot the list/messages calls read. A change to the `adapter` (fs↔bridge, a
 new `data_dir`, a bridge url/timeout) rebuilds the store and event plumbing and
 swaps it in atomically; the new store's current state is then replayed through
-the `session::*` triggers so open subscribers (the console sidebar/transcript,
-the harness, ...) stay live without a refetch. A reload that cannot be built
+the `session::on-*` event functions so open observers (the console
+sidebar/transcript, the harness, ...) stay live without a refetch. A reload that cannot be built
 (e.g. an unreadable `data_dir`, or a self-referential bridge `url`) keeps the
 previous runtime (last-good) and is surfaced by `session::config-status`. An
 invalid bridge `config` is still rejected at parse time, and at boot a
@@ -239,8 +297,8 @@ behavioural contract: @pure scenarios drive the production handlers
 against a real fs store over a tempdir with deterministic ids/clock
 (including restart-replay scenarios); @engine scenarios drive the same
 code over a live engine, including JSONL persistence readbacks, real
-trigger fan-out, and full bridge propagation (two bridged instances +
-the main, asserting who received what, exactly once).
+observers with filters, and full bridge propagation (two bridged instances
++ the main, asserting who received what, exactly once).
 
 ## Architecture documentation
 

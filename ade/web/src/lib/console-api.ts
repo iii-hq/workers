@@ -289,10 +289,13 @@ function useThemeValue(): 'light' | 'dark' {
 export function buildConsoleApi(client: IiiClient): ConsoleApi {
   const iii: ExtensionIii = {
     browserId: client.browserId,
+    call: (functionId, payload, options) =>
+      client.call(functionId, payload, options),
     trigger: (functionId, payload, options) =>
-      client.trigger(functionId, payload, options),
+      client.call(functionId, payload, options),
     on: (functionId, handler) => client.on(functionId, handler),
-    registerTrigger: (input) => client.registerTrigger(input),
+    observe: (source, target, options) =>
+      client.observe(source, target, options),
     addConnectionStateListener: (handler) =>
       client.addConnectionStateListener(handler),
   }

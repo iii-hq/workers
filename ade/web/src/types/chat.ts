@@ -56,7 +56,13 @@ export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'default'
  */
 export const THINKING_LOWEST: ThinkingLevel = 'lowest'
 
-export type Role = 'user' | 'assistant' | 'thought' | 'function-trigger'
+/**
+ * A chat message's role. Roles live only in memory: transcripts are
+ * session-manager entries, and lib/sessions/entry-mapper.ts derives each
+ * message's role from its entry as it reads them (a tool call reads as
+ * `function-call`), so no stored conversation carries a chat role.
+ */
+export type Role = 'user' | 'assistant' | 'thought' | 'function-call'
 
 /**
  * Who a session is for (`SessionMeta.kind`): a chat a person started, a run
@@ -114,12 +120,12 @@ export interface UserMessage extends BaseMessage {
   attachments?: Attachment[]
   notification?: boolean
   /**
-   * Harness binding that produced a machine-authored notification. Live
+   * Harness observer that produced a machine-authored notification. Live
    * entries carry it in `origin.binding`; persisted histories recover it
    * from the deterministic `e_fire_*` / `e_expire_*` entry id.
    */
-  triggerBindingId?: string
-  /** A trigger-fired task delivered into this session — machine-sent, not typed. */
+  observerId?: string
+  /** An observer's task delivered into this session — machine-sent, not typed. */
   reaction?: boolean
   /** A direct `harness::spawn` task seeding this session — machine-sent, not typed. */
   spawn?: boolean
@@ -185,11 +191,11 @@ export interface ThoughtMessage extends BaseMessage {
   streaming?: boolean
 }
 
-export interface FunctionTriggerMessage extends BaseMessage {
-  role: 'function-trigger'
+export interface FunctionCallMessage extends BaseMessage {
+  role: 'function-call'
   functionId: string
   /**
-   * Short user-facing action supplied by the agent_trigger wrapper. Calls
+   * Short user-facing action supplied by the agent_call wrapper. Calls
    * recorded before this field existed omit it and keep the function-id
    * fallback.
    */
@@ -199,27 +205,27 @@ export interface FunctionTriggerMessage extends BaseMessage {
   durationMs?: number
   running?: boolean
   /**
-   * An `agent_trigger` wrapper whose target function is not known yet (its
+   * An `agent_call` wrapper whose target function is not known yet (its
    * arguments are still streaming). The UI renders a placeholder instead of
-   * the literal `agent_trigger` while running.
+   * the literal `agent_call` while running.
    */
   unresolvedTarget?: boolean
   /**
    * The function id was resolved from an enclosing invocation rather than
    * this record itself — e.g. TracesV2 rendering an inner span of
-   * `execute <fn>`. The card header stays verb-less: "triggering/triggered
+   * `execute <fn>`. The card header stays verb-less: "calling/called
    * ƒ <fn>" would claim an invocation this card's timing doesn't measure.
    */
   identityInherited?: boolean
   /** awaiting user approval before execution; lifecycle: pending → running → done */
   pendingApproval?: boolean
   /** iii function_call_id — set on pending entries so the approve/deny UI can resolve. */
-  functionTriggerId?: string
-  /** iii session_id owning this call — paired with functionTriggerId for approval::resolve. */
+  functionCallId?: string
+  /** iii session_id owning this call — paired with functionCallId for approval::resolve. */
   sessionId?: string
   /**
    * Present when this pending call is a filesystem-access grant request rather
-   * than a plain function-trigger approval — renders `FilesystemAccessPrompt`
+   * than a plain function-call approval — renders `FilesystemAccessPrompt`
    * instead of the standard approve/deny/always row.
    */
   filesystemAccess?: {
@@ -245,32 +251,34 @@ export interface FunctionTriggerMessage extends BaseMessage {
 }
 
 /**
- * A subscription fire, mirrored from the harness `trigger_fired` custom entry
- * (`subscriptions/fired.rs`). Drives the turn-less "trigger fired" chat notice
- * and lets the panel keep a fired `once` trigger visible after it unregisters.
+ * An observer's activity, mirrored from the harness `observer_fired` custom
+ * entry (`subscriptions/fired.rs`). Drives the turn-less "observer fired"
+ * chat notice and lets the panel keep a fired `once` observer visible after
+ * it is disposed. Records written before 0.26 (`trigger_fired`) are read
+ * into this shape by the transcript mapper.
  */
-export interface TriggerFiredData {
-  subscription_id: string
-  /** Engine trigger id. */
-  trigger_id?: string
+export interface ObserverFiredData {
+  /** The harness observer id (also the engine observer's). */
+  observer_id: string
   /**
-   * The binding's target function id (`harness::send` for a wake, else the
+   * The observer's target function id (`harness::send` for a wake, else the
    * called function). Records written before the delivery hop carry the
    * legacy words `'notify'` / `'spawn'`; historical spawn records may also
    * carry `model` / `child_session_id`.
    */
   target: string
-  /** Trigger source and canonical registration config on newer records. */
-  trigger_type?: string
-  config?: unknown
+  /** The observed function and the observer's args and filters. */
+  function_id?: string
+  args?: Record<string, unknown>
+  filters?: Record<string, unknown>
   label?: string
-  /** Human-readable event text declared as registration metadata.action. */
+  /** Human-readable event text declared as the observe call's `action`. */
   action?: string
   model?: string
   once: boolean
-  /** Durable binding fire counter after this activity; absent on older records. */
+  /** Durable fire counter after this activity; absent on older records. */
   fires?: number
-  /** This activity retired the binding; inspect `retirement_reason` for why. */
+  /** This activity retired the observer; inspect `retirement_reason` for why. */
   retired: boolean
   scope?: string
   key?: string
@@ -283,7 +291,7 @@ export interface TriggerFiredData {
     | 'expired'
     | 'unregistered'
     | 'invalidated'
-  /** Why a binding was retired, when the outcome ended its lifecycle. */
+  /** Why an observer was retired, when the outcome ended its lifecycle. */
   retirement_reason?:
     | 'once_consumed'
     | 'max_fires'
@@ -305,7 +313,7 @@ export interface TriggerFiredData {
  * `kind: 'compaction'` renders the collapsed-history marker in the
  * transcript. The session-manager transcript is the single source of truth
  * for what the provider sees, so this marker is purely presentational.
- * `kind: 'trigger-fired'` renders a turn-less subscription-fire notice.
+ * `kind: 'observer-fired'` renders a turn-less observer-fire notice.
  */
 export interface SystemMessage extends BaseMessage {
   role: 'system'
@@ -316,13 +324,13 @@ export interface SystemMessage extends BaseMessage {
    * attachment that could not be read, a worktree that landed). `turn-failure`
    * is a turn the provider or iii could not finish and renders as the
    * diagnosis card. `working-dir` marks a session scope change in the same
-   * activity-row grammar as function calls and trigger fires; `skills` marks
+   * activity-row grammar as function calls and observer fires; `skills` marks
    * the harness re-sending the model its skill index in that same grammar.
    */
   kind?:
     | 'notice'
     | 'compaction'
-    | 'trigger-fired'
+    | 'observer-fired'
     | 'turn-failure'
     | 'working-dir'
     | 'skills'
@@ -347,8 +355,8 @@ export interface SystemMessage extends BaseMessage {
   provisional?: boolean
   summaryText?: string
   tokensBefore?: number
-  /** Present on `kind: 'trigger-fired'`. */
-  trigger?: TriggerFiredData
+  /** Present on `kind: 'observer-fired'`. */
+  observer?: ObserverFiredData
 }
 
 export interface SystemNoticeTechnicalDetails {
@@ -426,7 +434,7 @@ export type Message =
   | UserMessage
   | AssistantMessage
   | ThoughtMessage
-  | FunctionTriggerMessage
+  | FunctionCallMessage
   | SystemMessage
 
 /**
@@ -444,7 +452,7 @@ export interface MessagePatch {
   output?: unknown
   pendingApproval?: boolean
   /** Set during fcall-start dedupe so resolve handlers know which iii call to resolve. */
-  functionTriggerId?: string
+  functionCallId?: string
   sessionId?: string
   filesystemAccess?: {
     requestedRoot: string
@@ -536,7 +544,7 @@ export interface Conversation {
   /**
    * The engine session_id (`console-<uuid>` for console-created chats).
    * Conversations are backed by the session-manager worker; this id is used
-   * verbatim for `session::*` triggers and `harness::send`.
+   * verbatim in `session::*` calls and event filters and `harness::send`.
    */
   id: string
   title: string
@@ -623,10 +631,12 @@ export interface Conversation {
   depth?: number
   /**
    * Who created this child session (from `metadata.spawned_by`, stamped by the
-   * harness): a trigger reaction or an agent's direct `harness::spawn`.
+   * harness): an observer's reaction or an agent's direct `harness::spawn`.
    * Absent on root chats and pre-existing sessions. Drives the sidebar icon.
+   * Sessions written before 0.26 stamp a reaction `trigger`; readers map it
+   * to `observer`.
    */
-  spawnedBy?: 'trigger' | 'agent'
+  spawnedBy?: 'observer' | 'agent'
   /** Optional chip identity from `metadata.subagent_display`. */
   subagentAppearance?: SubagentAppearance
   /** Driver-owned session status (spinner + sidebar indicator). */
@@ -671,7 +681,7 @@ const KNOWN_ROLES: ReadonlySet<Role> = new Set<Role>([
   'user',
   'assistant',
   'thought',
-  'function-trigger',
+  'function-call',
 ])
 
 export function isKnownRole(role: unknown): role is Role {

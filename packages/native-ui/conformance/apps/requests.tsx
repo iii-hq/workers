@@ -1,10 +1,10 @@
 /**
  * §5.7 "Um pedido de chamada, uma assinatura, um erro": a press calls
- * browser::sessions::list and binds browser::session-started; the trigger
- * updates the page; a second press calls engine::functions::list, outside
- * the namespace, and gets the host's forbidden error. `iii.call` refuses
- * such a call before the wire, so the flow sends it raw (the harness's
- * `rawRequests`, test-only) to show what the host answers.
+ * browser::sessions::list and observes browser::on-session-started; its
+ * event updates the page; a second press calls engine::functions::list,
+ * outside the namespace, and gets the host's forbidden error. `iii.call`
+ * refuses such a call before the wire, so the flow sends it raw (the
+ * harness's `rawRequests`, test-only) to show what the host answers.
  */
 import { Button, Column, createSignal, defineApp, iii, Page, Text } from '@iii-dev/native-ui'
 
@@ -15,7 +15,7 @@ function Sessions() {
   const [status, setStatus] = createSignal('Not loaded')
   const load = () => {
     iii.call<{ sessions: unknown[] }>('browser::sessions::list', {}).then((r) => setStatus(`${r.sessions.length} tabs`))
-    iii.on<{ session_id: string }>('browser::session-started', {}, (p) => setStatus(`Started ${p.session_id}`))
+    iii.on<{ session_id: string }>('browser::on-session-started', {}, (p) => setStatus(`Started ${p.session_id}`))
   }
   const outside = () => {
     const raw = (globalThis as { __iiiui_request?: RawRequest }).__iiiui_request

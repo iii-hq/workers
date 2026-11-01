@@ -17,7 +17,7 @@ async function call<T>(
   functionId: string,
   payload: Record<string, unknown>,
 ): Promise<T> {
-  return unwrapEnvelope(await host.iii.trigger(functionId, payload)) as T
+  return unwrapEnvelope(await host.iii.call(functionId, payload)) as T
 }
 
 export function mutateSurface(host: Host, functionId: string, sessionId: string, payload: Record<string, unknown>) {

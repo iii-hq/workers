@@ -2,7 +2,7 @@
 //!
 //! One engine connection per test binary process via OnceCell — the
 //! cost of each WebSocket handshake dwarfs cucumber's per-scenario
-//! overhead. On success the production surface (trigger types +
+//! overhead. On success the production surface (event functions +
 //! functions) is registered in-process so @engine scenarios drive the
 //! exact code the binary would run. An engine that already runs
 //! session-manager, or one that cannot show it does not, is refused like
@@ -14,9 +14,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, IIIClient, InitOptions, WorkerIdentityMode};
+use iii_sdk::{register_worker, CallRequest, IIIClient, InitOptions, WorkerIdentityMode};
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
@@ -42,6 +41,50 @@ pub fn ws_url() -> String {
 
 async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     let url = ws_url();
+    let (iii, workers) = connect_as(harness()).await;
+    let workers = workers.map_err(|e| e.to_string());
+    if let Some(why) = skip_after_probe(&url, iii.get_connection_state(), &workers) {
+        return skip(&iii, why);
+    }
+
+    // Nothing is registered yet: decide before `register_all` puts a
+    // second session::* surface next to a real one.
+    let functions = list_functions(&iii).await;
+    if let Some(why) = skip_before_registering(&url, &workers, &functions) {
+        return skip(&iii, why);
+    }
+    Some(iii)
+}
+
+/// A second connection to the engine that hosts none of session-manager's
+/// functions: what another worker looks like to the engine. Connected once
+/// per test binary, on first use, after the shared connection passed the
+/// `engine_guard` checks.
+pub async fn outsider() -> Option<Arc<IIIClient>> {
+    static OUTSIDER: OnceCell<Option<Arc<IIIClient>>> = OnceCell::const_new();
+    OUTSIDER
+        .get_or_init(|| async {
+            // One live worker name per namespace: the harness's name is the
+            // shared connection's.
+            let name = format!("session-manager-bdd-outsider-{}", std::process::id());
+            let (iii, workers) = connect_as(name).await;
+            match workers {
+                Ok(_) => Some(iii),
+                Err(e) => skip(
+                    &iii,
+                    format!("the second engine connection to {} failed ({e})", ws_url()),
+                ),
+            }
+        })
+        .await
+        .clone()
+}
+
+/// Connect as the worker `name` and probe until `engine::workers::list`
+/// answers (about 5 s at most); the probe's last outcome comes back with
+/// the client.
+async fn connect_as(name: String) -> (Arc<IIIClient>, Result<Value, Error>) {
+    let url = ws_url();
     // An explicit identity: in the default (managed) mode the SDK takes
     // III_WORKER_NAME / III_NAMESPACE from the environment, and a run
     // under III_WORKER_NAME=session-manager would look like the real one.
@@ -49,7 +92,7 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
         &url,
         InitOptions {
             metadata: Some(WorkerMetadata {
-                name: harness(),
+                name,
                 ..WorkerMetadata::default()
             }),
             identity: WorkerIdentityMode::Explicit,
@@ -65,18 +108,7 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
             break;
         }
     }
-    let workers = workers.map_err(|e| e.to_string());
-    if let Some(why) = skip_after_probe(&url, iii.get_connection_state(), &workers) {
-        return skip(&iii, why);
-    }
-
-    // Nothing is registered yet: decide before `register_all` puts a
-    // second session::* surface next to a real one.
-    let functions = list_functions(&iii).await;
-    if let Some(why) = skip_before_registering(&url, &workers, &functions) {
-        return skip(&iii, why);
-    }
-    Some(iii)
+    (iii, workers)
 }
 
 /// Report why the @engine scenarios soft-skip and close the connection
@@ -93,7 +125,7 @@ async fn list(
     payload: Value,
     timeout_ms: u64,
 ) -> Result<Value, Error> {
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: function_id.to_string(),
         payload,
         action: None,
@@ -199,7 +231,8 @@ fn harness() -> String {
 }
 
 /// Register an engine-side recorder function that stashes every payload
-/// it receives. Returns the generated function id.
+/// it receives: the target of an engine observer. Returns the generated
+/// function id.
 pub fn register_recorder_function(iii: &Arc<IIIClient>) -> String {
     let function_id = format!("test::session_recv::{}", uuid::Uuid::new_v4().simple());
     {

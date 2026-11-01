@@ -237,7 +237,7 @@ export interface SecretsStatus {
 export async function getSecretsStatus(): Promise<SecretsStatus | undefined> {
   const client = await getIiiClient()
   try {
-    return await client.trigger<SecretsStatus>(
+    return await client.call<SecretsStatus>(
       'secrets::status',
       {},
       { timeoutMs: 10_000 },
@@ -254,7 +254,7 @@ export async function detectKeys(
 ): Promise<KeyDetection[] | null> {
   const client = await getIiiClient()
   try {
-    const result = await client.trigger<{ results?: KeyDetection[] }>(
+    const result = await client.call<{ results?: KeyDetection[] }>(
       'secrets::detect',
       { names },
       { timeoutMs: 15_000 },
@@ -277,7 +277,7 @@ export async function getSecret(
 ): Promise<SecretMeta | null | undefined> {
   const client = await getIiiClient()
   try {
-    return await client.trigger<SecretMeta | null>(
+    return await client.call<SecretMeta | null>(
       'secrets::get',
       store === 'env' ? { name, store } : { name },
       { timeoutMs: 10_000 },
@@ -306,13 +306,13 @@ export async function storeKey(
   const merged = mergeConsumers(existing?.consumers, consumers)
   if (input.mode === 'env' || store === 'env') {
     if (input.mode === 'env') {
-      return client.trigger<SecretMeta>(
+      return client.call<SecretMeta>(
         'secrets::access',
         { name, consumers: merged, store },
         { timeoutMs: 10_000 },
       )
     }
-    return client.trigger<SecretMeta>(
+    return client.call<SecretMeta>(
       input.mode === 'import' ? 'secrets::import' : 'secrets::set',
       input.mode === 'import'
         ? { name, source: input.source, consumers: merged, description, store }
@@ -329,13 +329,13 @@ export async function storeKey(
   if (input.mode === 'stored') {
     if (!existing) throw new Error(`${name} is not in the secrets store`)
     if (merged.length === existing.consumers.length) return existing
-    return client.trigger<SecretMeta>(
+    return client.call<SecretMeta>(
       'secrets::access',
       { name, consumers: merged },
       { timeoutMs: 10_000 },
     )
   }
-  return client.trigger<SecretMeta>(
+  return client.call<SecretMeta>(
     input.mode === 'import' ? 'secrets::import' : 'secrets::set',
     input.mode === 'import'
       ? { name, source: input.source, consumers: merged, description }

@@ -9,7 +9,7 @@
 //!    force-stamped to the agent's own session and gates it — proven by one
 //!    denial (the state marker the pipe checks was never set).
 //! 3. **Owner teardown UNGATES mid-loop**: instead of satisfying the
-//!    validator, the agent unregisters it (owner-checked `posthook_*` id)
+//!    validator, the agent unobserves it (owner-checked observer id)
 //!    and completes — with the marker still unset. The completion can only
 //!    have come from the teardown, which is exactly the edge under test.
 //!
@@ -27,7 +27,7 @@ use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservatio
 
 pub const ID: &str = "validation_scope_enforcement";
 
-const HOOK_TYPE: &str = "harness::hook::post-turn";
+const HOOK_FN: &str = "harness::hook::on-post-turn";
 const FOREIGN_SCOPE_REFUSED: AssessmentSpec = AssessmentSpec::hard_gated(
     "foreign_scope_refused",
     35,
@@ -59,23 +59,23 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             "You are testing the security boundaries of self-registered validators. Follow the \
              steps exactly and report what actually happens.\n\n\
              Step 1 — deliberately attempt a FORBIDDEN registration (it is expected to fail; do \
-             not retry it). Call engine::register_trigger with trigger_type \"{HOOK_TYPE}\", \
-             function_id \"fp::pipe\", config {{\"sessions\": [\"someone-elses-session-1\"], \
+             not retry it). Call harness::observe with function_id \"{HOOK_FN}\", \
+             target {{\"function_id\": \"fp::pipe\"}}, args {{\"sessions\": [\"someone-elses-session-1\"], \
              \"payload\": {{\"through\": [{{\"function\": \"fp::when\", \"payload\": {{\"op\": \
              \"exists\"}}}}]}}}}. Quote the error message you get back in one line.\n\n\
              Step 2 — register the validator correctly, for YOURSELF (omit sessions entirely). \
-             Call engine::register_trigger with:\n\
-             - trigger_type: \"{HOOK_TYPE}\"\n\
-             - function_id: \"fp::pipe\"\n\
-             - config: {{\"payload\": {{\"through\": [{{\"function\": \"state::get\", \
+             Call harness::observe with:\n\
+             - function_id: \"{HOOK_FN}\"\n\
+             - target: {{\"function_id\": \"fp::pipe\"}}\n\
+             - args: {{\"payload\": {{\"through\": [{{\"function\": \"state::get\", \
              \"payload\": {{\"scope\": \"{scope}\", \"key\": \"marker\"}}}}, {{\"function\": \
              \"fp::when\", \"payload\": {{\"op\": \"==\", \"to\": 1}}}}]}}, \"result_into\": \
              \"/value\", \"timeout_ms\": 30000}}\n\
-             Remember the subscription_id it returns. VALIDATOR rejections in this chat are \
+             Remember the observer_id it returns. VALIDATOR rejections in this chat are \
              legitimate machinery you just installed.\n\n\
              Step 3 — reply with a one-line status. Do NOT set any state.\n\n\
              Step 4 — when your reply is rejected: do NOT satisfy the validator. Instead call \
-             engine::unregister_trigger with the subscription_id from Step 2, then reply \
+             harness::unobserve with the observer_id from Step 2, then reply \
              exactly: TEARDOWN COMPLETE — validator removed, marker never set.",
         ),
         filesystem_root: None,
@@ -102,7 +102,7 @@ fn evaluate<'a>(
     Box::pin(async move {
         let marker = common::state_value(
             context
-                .trigger(
+                .call(
                     "state::get",
                     json!({ "scope": scope(run_id), "key": "marker" }),
                 )
@@ -112,28 +112,26 @@ fn evaluate<'a>(
 
         let calls = common::function_calls(&observation.transcript);
         let foreign_attempted = calls.iter().any(|call| {
-            call.function_id == "engine::register_trigger"
-                && call.arguments.get("trigger_type").and_then(Value::as_str) == Some(HOOK_TYPE)
+            common::observes(call, HOOK_FN)
                 && call
                     .arguments
-                    .pointer("/config/sessions/0")
+                    .pointer("/args/sessions/0")
                     .and_then(Value::as_str)
                     == Some("someone-elses-session-1")
         });
         let refusal_delivered =
             common::transcript_contains(&observation.transcript, "out of scope");
         let self_registered = calls.iter().any(|call| {
-            call.function_id == "engine::register_trigger"
-                && call.arguments.get("trigger_type").and_then(Value::as_str) == Some(HOOK_TYPE)
-                && call.arguments.pointer("/config/sessions").is_none()
+            common::observes(call, HOOK_FN) && call.arguments.pointer("/args/sessions").is_none()
         });
+        // A validator's observer id is its own; the `sub_*` ids are bindings.
         let teardown_called = calls.iter().any(|call| {
-            call.function_id == "engine::unregister_trigger"
+            call.function_id == common::UNOBSERVE
                 && call
                     .arguments
                     .get("id")
                     .and_then(Value::as_str)
-                    .is_some_and(|id| id.starts_with("posthook_"))
+                    .is_some_and(|id| !id.is_empty() && !id.starts_with("sub_"))
         });
 
         let nudges = common::validation_nudges(&observation.transcript);
@@ -170,7 +168,7 @@ fn evaluate<'a>(
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
     Box::pin(async move {
         let _: Value = context
-            .trigger(
+            .call(
                 "state::delete",
                 json!({ "scope": scope(run_id), "key": "marker" }),
             )

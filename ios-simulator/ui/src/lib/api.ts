@@ -8,10 +8,11 @@ import { unwrapEnvelope } from '@iii-dev/console-ui/format'
  */
 
 export const NS = 'ios-simulator::'
-export const DEVICE_CHANGED = 'ios-simulator::device-changed'
-export const MEDIA_CHANGED = 'ios-simulator::media-changed'
-export const FRAME_EVENT = 'ios-simulator::frame-event'
-export const ACTIVITY = 'ios-simulator::activity'
+/** Observable functions of the worker; each call is one event. */
+export const ON_DEVICE_CHANGED = 'ios-simulator::on-device-changed'
+export const ON_MEDIA_CHANGED = 'ios-simulator::on-media-changed'
+export const ON_FRAME_EVENT = 'ios-simulator::on-frame-event'
+export const ON_ACTIVITY = 'ios-simulator::on-activity'
 export const OPEN = 'ios-simulator::open'
 export const DEFAULT_TENANT = 'default'
 
@@ -67,7 +68,7 @@ export class SimApi {
   ) {}
 
   async call<T>(fn: string, payload: Payload = {}, timeoutMs?: number): Promise<T> {
-    const res = await this.iii.trigger<unknown>(
+    const res = await this.iii.call<unknown>(
       NS + fn,
       { ...payload, tenant: this.tenant },
       timeoutMs ? { timeoutMs } : undefined,
@@ -127,7 +128,7 @@ export interface TouchPoint {
   y2?: number
 }
 
-/** An `ios-simulator::frame-event` payload, or null for anything else. */
+/** An `ios-simulator::on-frame-event` event, or null for anything else. */
 export function frameEvent(raw: unknown): FrameEvent | null {
   if (!raw || typeof raw !== 'object') return null
   const f = raw as Partial<FrameEvent>

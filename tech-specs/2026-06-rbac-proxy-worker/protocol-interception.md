@@ -16,23 +16,40 @@ is spliced into each pump half.
 
 All protocol messages are WebSocket **Text** frames carrying a JSON object with
 a `type` discriminant (lowercase). Binary frames are reserved for OpenTelemetry
-(OTLP/MTRC/LOGS) and are forwarded untouched. The `Message` enum:
+(OTLP/MTRC/LOGS) and are forwarded untouched. The `Message` enum, as far as the
+proxy reads it:
 
 ```rust
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
-  RegisterTriggerType { id, description, trigger_request_format?, call_request_format? },
-  RegisterTrigger     { id, trigger_type, function_id, config, metadata? },   // wire key: trigger_type
-  TriggerRegistrationResult { id, trigger_type, function_id, error? },
-  UnregisterTrigger   { id, trigger_type },
-  RegisterFunction    { id, description?, request_format?, response_format?, metadata?, invocation? },
-  UnregisterFunction  { id },
-  InvokeFunction      { invocation_id: Option<Uuid>, function_id, data, traceparent?, baggage?, action? },
-  InvocationResult    { invocation_id: Uuid, function_id, result?, error?, traceparent?, baggage? },
-  RegisterService     { id, name, description?, parent_service_id? },
+  RegisterFunction     { id, description?, request_format?, response_format?, metadata?, invocation?,
+                         args_format?, private?, observable? },
+  UnregisterFunction   { id },
+  FunctionRegistered   { id, namespace, revision, local_dispatch, observers: [ObserverView] },
+  RegistrationRejected { code, namespace, function_id?, owner_worker_id, worker_name? },
+  InvokeFunction       { invocation_id: Option<Uuid>, function_id, data, namespace?, traceparent?, baggage?,
+                         action?, metadata?, caller?, observe_depth?, activation?: { observer_id } },
+  InvocationResult     { invocation_id: Uuid, function_id, result?, error?, observed?: [observer_id],
+                         traceparent?, baggage? },
+  Observe              { id, source: { function_id, namespace?, args?, filters?, capture?, on?, deliver? },
+                         target: { function_id, namespace? }, metadata?, max_fires?, expires_in_ms?, max_in_flight? },
+  Unobserve            { id },
+  ObserveResult        { id, state, error?, warnings? },
+  ObserverStateChanged { id, state, reason?, fires },
+  ObserverAdded        { function_id, namespace, revision, observer: ObserverView },
+  ObserverRemoved      { function_id, namespace, revision, id },
+  ObserverAck          { function_id, namespace, id, revision, error? },
+  InvocationsObserved  { items: [{ function_id, namespace, invocation_id, matched, status, input?,
+                         output?, output_is_input?, error?, caller?, ... }] },
+  LocalInvocationStats { window_ms, functions: [{ function_id, ... }], dropped_reports: [{ function_id, ... }] },
+  RegisterService      { id, name, description?, parent_service_id? },
+  Reattach             { token },
   Ping, Pong,
-  WorkerRegistered    { worker_id },
+  WorkerRegistered     { worker_id, features?, reattach_token? },
 }
+
+// What a host sees of an observer of its function.
+struct ObserverView { id, args, filters, target, capture, on }
 ```
 
 Supporting shapes:
@@ -41,7 +58,7 @@ Supporting shapes:
 struct ErrorBody { code: String, message: String, stacktrace: Option<String> }
 
 #[serde(tag = "type", rename_all = "lowercase")]
-enum TriggerAction { Enqueue { queue: String }, Void }
+enum CallAction { Enqueue { queue: String }, Void }
 ```
 
 - **Correlation** is by `invocation_id` (a UUID). `InvokeFunction` carries it
@@ -53,11 +70,12 @@ enum TriggerAction { Enqueue { queue: String }, Void }
 - **`WorkerRegistered { worker_id }`** is the engine's first frame on a new
   connection. The proxy forwards it downstream (the upstream connection's
   `worker_id` is the worker's identity), minus the protocol `features` it does
-  not enforce (see [iii 0.25 observe](#iii-025-observe)).
-- **`UnregisterTriggerType`.** Every SDK sends it when a provider retires a
-  trigger type. Engines before 0.25 cannot decode it and drop it; from 0.25 the
-  engine removes the type when the sender is its provider. It carries a trigger
-  type id, not a function id, so the proxy forwards it unchanged.
+  not enforce (see [Observers](#observers)).
+- **Removed frame types.** The five binding messages of SDKs before 0.26
+  (`REMOVED_FRAMES` in `src/interceptor.rs`, the engine's `REMOVED_MESSAGES`)
+  are not part of the protocol. The proxy drops them with one `warn` per
+  connection and frame type, naming what replaces each, exactly as the engine
+  does.
 
 ### The out-of-band rejection frame
 
@@ -83,37 +101,52 @@ message type, the direction it travels and what the proxy does.
 
 | Message | Proxy action |
 |---|---|
-| `RegisterFunction` | Run `on_function_registration` hook (map/deny) → check `allow_function_registration` → apply `{prefix}::` to `id` → forward. See [Registration frames](#registration-frames). |
-| `RegisterTrigger` | Check `allowed_trigger_types` → run `on_trigger_registration` hook → [resolve prefix + verify target access](rbac.md#trigger-registration-rbac) → forward with resolved `function_id`, or reply `TriggerRegistrationResult{error}` on deny. |
-| `RegisterTriggerType` | Check `allow_trigger_type_registration` → run `on_trigger_type_registration` hook → forward, or reply `TriggerRegistrationResult{error}` on deny. |
-| `UnregisterFunction` | Its `id` **is** a function id, so re-apply `{prefix}::` to `id` (the engine prefixes it on registration via `resolve_registration_id`), then forward. |
-| `UnregisterTrigger` | `{ id, trigger_type }` — `id` is a **trigger-instance** id, not a function id, and the engine never prefixes trigger ids. Forward **without** any prefix rewrite. |
+| `RegisterFunction` | Check `allow_function_registration` → run the `on_function_registration` hook (map/deny) → apply `{prefix}::` to `id` → record the id as the session's own (and as private when `private: true`) → forward. See [Registration frames](#registration-frames). |
+| `UnregisterFunction` | Its `id` **is** a function id, so re-apply `{prefix}::` to `id` (the engine prefixes it on registration via `resolve_registration_id`), forget the observers it hosted, then forward. |
+| `Observe` | Run the `on_observer_registration` hook → resolve source and target (own-vs-foreign prefix rules) → refuse `engine::*` targets and sources the proxy cannot disclose → [verify access to both](rbac.md#observer-registration-rbac) → forward with the resolved ids, or reply `ObserveResult{ state: "error", error: FORBIDDEN }`; while an earlier `Observe` under the id waits for the engine's answer, the reply goes out right after that answer, so the worker hears the answers in the order it sent the observes. See [Observers](#observers). |
+| `Unobserve` | The id's observer stops counting as one this connection created, and so do the observers its unanswered `Observe`s under the id create (the engine reads the `Unobserve` after them and disposes them) → forward unchanged (the engine disposes only an observer the connection owns, and ignores an id it does not hold). |
+| `ObserverAck` | Forward with `{prefix}::` applied to `function_id` when the connection registered that function; else drop. |
+| `InvocationsObserved` | Per item: keep it only for a function the connection registered, under its engine id, with a `caller` the proxy vouches for; drop the frame when no item is left. |
+| `LocalInvocationStats` | Keep the `functions` and `dropped_reports` entries of functions the connection registered, under their engine ids; drop the frame when none is left. |
+| `InvokeFunction` with `activation.observer_id` | A call through an observer: forward as sent when the engine announced that observer to this connection as the host of its function; else reply `InvocationResult{ error: NOT_FUNCTION_OWNER }` (drop a `void` one, as the engine does). No middleware. |
 | `InvokeFunction` (`engine::*` discovery) | Forward; record `invocation_id → function_id` in the pending-override map so the matching result is rewritten. See [engine-overrides.md](engine-overrides.md). |
-| `InvokeFunction` (`engine::*` carve-out, e.g. `engine::channels::create`) | Allowed by carve-out → forward unchanged. |
-| `InvokeFunction` (other) | [Access resolution](rbac.md#access-resolution-order): deny → synthesize `InvocationResult{error: FORBIDDEN}` (matching the engine, which replies even for a `void` action — fabricate an `invocation_id` when it is `null`; the worker simply has no pending entry for it); allow + middleware set → invoke middleware on the control connection, reply with its result; allow + no middleware → resolve [prefix](#prefix-resolution) → forward. |
-| `InvokeFunction` (`engine::workers::register`) | Carve-out. When the auth result scopes the session to namespaces, the declared `data.namespace` (absent = `default`) must be one of them, else the engine's refusal is reproduced: the call's `FORBIDDEN` result, `RegistrationRejected{ code: NAMESPACE_FORBIDDEN }`, then Close. The declared namespace is recorded (an id is the session's own only in it), and `data.features` is reduced to what the proxy enforces. |
-| `InvocationResult` (worker answering a dispatched call) | Forward; correlation is by `invocation_id`, so the (bare) `function_id` is informational and passes through. |
-| `TriggerRegistrationResult` (a provider answering the engine) | Forward unchanged. |
-| `UnregisterTriggerType` | Forward unchanged. |
+| `InvokeFunction` (`engine::observers::dispose`) | Forward only for an observer this connection created; else `FORBIDDEN`. |
+| `InvokeFunction` (`engine::*` carve-out, e.g. `engine::channels::create`) | Allowed by carve-out → forward unchanged. A queued `engine::*` call is refused: it would run later as the queue worker. |
+| `InvokeFunction` (other) | [Access resolution](rbac.md#access-resolution-order): deny → synthesize `InvocationResult{error: FORBIDDEN}` (matching the engine, which replies even for a `void` action — fabricate an `invocation_id` when it is `null`; the worker simply has no pending entry for it); allow + the session's own private function → forward (the middleware runs on the control connection, which a private function refuses); allow + middleware set → invoke middleware on the control connection, reply with its result; allow + no middleware → resolve [prefix](#prefix-resolution) → forward. |
+| `InvokeFunction` (`engine::workers::register`) | Carve-out. When the auth result scopes the session to namespaces, the declared `data.namespace` (absent = `default`) must be one of them, else the engine's refusal is reproduced: the call's `FORBIDDEN` result, `RegistrationRejected{ code: NAMESPACE_FORBIDDEN }`, then Close. The declared namespace is recorded (an id is the session's own only in it), `data.name` becomes `rbac-proxy:<prefix>::<name>` (`rbac-proxy:<name>` without a `function_registration_prefix`; see [Observers](#observers)), and `data.features` is reduced to what the proxy enforces. |
+| `InvocationResult` (worker answering a dispatched call) | Forward; correlation is by `invocation_id`, so the (bare) `function_id` is informational and passes through, and so do `matched`, `delivered` and the result (the engine evaluates the observers of the call). |
 | `RegisterService` | Forward unchanged (engine-internal service discovery; not gated). |
 | `Reattach` | Forward unchanged (carries the connection's own token). |
 | `Ping` / `Pong` | Forward unchanged. |
-| `Observe` | Refused: `ObserveResult{ state: "error", error: UNSUPPORTED }`. See [iii 0.25 observe](#iii-025-observe). |
+| a removed frame type | Dropped, with one `warn` per connection and type. |
 | anything else | Dropped. |
 
 Every `InvokeFunction` is gated in the namespace it names (`namespace`, absent =
 `default`); a non-string `namespace` is dropped, as the engine cannot decode
-it. `RegisterTrigger`'s target is checked in its `namespace` the same way.
+it. An `Observe`'s source and target are each checked in the `namespace` they
+name the same way.
+
+On every call and report, `caller` (the SDK's claim about the call chain,
+which observers read and filter on) is kept only when it names a call the
+engine routed to this connection that it has not answered yet, and the proxy
+then writes it from that call: its `function_id` and `invocation_id`, and that
+call's own caller as `parent`. Anything else loses its `caller`.
+`observe_depth` passes as sent. Report items are local calls of the reporting
+connection: the engine evaluates the observers of the calls it routes, and
+drops an item for a call it routed to the connection.
 
 ### Engine → downstream (frames the engine sends)
 
 | Message | Proxy action |
 |---|---|
-| `WorkerRegistered` | Forward unchanged. |
-| `InvokeFunction` (engine dispatching a call **to** the worker) | Strip `{prefix}::` from `function_id` so the worker SDK finds its local handler → forward. Middleware does **not** apply to inbound dispatch. |
+| `WorkerRegistered` | Reduce `features` to what the proxy enforces → forward. |
+| `RegistrationRejected` | The id stops being the session's own; strip `{prefix}::` from `function_id` → forward. |
+| `FunctionRegistered` | Record its observers as the ones this connection hosts; strip `{prefix}::` from `id` and from each `observers[].target`; set `local_dispatch: false` when middleware is configured, unless this connection registered the function `private: true` in its namespace → forward. |
+| `ObserverAdded` / `ObserverRemoved` | Add or remove the observer among the ones this connection hosts; strip `{prefix}::` from `function_id` (and `observer.target`) → forward. |
+| `ObserveResult` / `ObserverStateChanged` | Track the observers this connection created (accepted until `error` or `disposed`); an `ObserveResult` answers the oldest `Observe` under its id with no answer yet, as the engine answers a connection's observes in order, and ends that `Observe`'s entry (a refusal is its final answer) → forward, followed by any refusal that waited for it. |
+| `InvokeFunction` (engine dispatching a call **to** the worker) | Remember the call until the worker answers it (what a `caller` must name) → strip `{prefix}::` from `function_id` so the worker SDK finds its local handler; for an activation of an observer this connection created that delivers the `Observed` envelope, strip it from `data.function_id` too → forward. Middleware does **not** apply to inbound dispatch. |
 | `InvocationResult` (result of a call the worker made) | If `invocation_id` is in the pending-override map → rewrite `result` per [engine-overrides.md](engine-overrides.md) and drop the map entry → forward; else forward unchanged. |
-| `TriggerRegistrationResult` | Strip `{prefix}::` from `function_id` (so the worker sees the id it sent) → forward. |
-| `RegistrationRejected`, `RegisterTrigger` / `UnregisterTrigger` (to a provider), `error` | Forward unchanged. |
+| `error` | Forward unchanged. |
 | `Ping` / `Pong` | Forward unchanged. |
 | anything else | Dropped. |
 
@@ -124,40 +157,63 @@ addition therefore stays closed through the proxy until the proxy learns it,
 rather than reaching the engine unchecked. Frames that are not JSON, or carry
 no `type`, are dropped too (the engine drops them anyway).
 
-### iii 0.25 observe
+### Observers
 
-iii 0.25 adds observers (`iii.observe`), owner delivery and local dispatch,
-negotiated per connection with protocol `features` (`observe.v1`,
-`local-dispatch.v1`). The proxy cannot gate them yet (the observed function,
-the target, the owner side), so it keeps them off:
+Observers are negotiated per connection with protocol `features`. The engine
+runs them for a proxied connection with no RBAC session, so the proxy gates
+them from both sides.
 
-- **No features either way.** `data.features` of `engine::workers::register`
-  and `features` of `WorkerRegistered` are reduced to the features the proxy
-  enforces, which is none. The SDK then speaks the 0.24 protocol (`observe()`
-  fails with `UNSUPPORTED`, nothing runs in-process), and the engine sends the
-  connection none of the observe messages.
-- **`observe` is refused** with `ObserveResult{ state: "error", error:
-  UNSUPPORTED }`; `unobserve`, `observerack`, `invocationsobserved` and
-  `localinvocationstats` are dropped. The engine decodes these from any
-  connection, so a client that sends them anyway must not reach it.
-- **`InvokeFunction` with `activation`** (an owner delivery, which the engine
-  routes without a session) is refused with `UNSUPPORTED`. `caller` and
-  `observe_depth`, the SDK's own claims about the call chain that observers
-  read, are removed.
-- **`RegisterFunction.observe`** is removed (owner delivery, `args_format`, and
-  a `legacy_trigger_type` that would make the function a stand-in for another
-  provider's trigger type). Only an opt-out, `{ allow: false }`, is kept.
-- **`engine::observers::*`** is refused (`FORBIDDEN`) whatever
-  `expose_functions` says: the engine filters it by a session the proxied
-  connection does not have.
-- Engine → worker observe messages (`functionregistered`, `observeradded`,
-  `observerremoved`, `observeresult`, `observerstatechanged`) are dropped.
+- **Features.** `data.features` of `engine::workers::register` and `features`
+  of `WorkerRegistered` keep `observe.v1`, `observe.v2` and
+  `local-dispatch.v1`. With `middleware_function_id` set, a
+  `FunctionRegistered` reaches the worker with `local_dispatch: false` unless
+  the connection registered the function `private: true` (observe v2
+  decision 46). An in-process call never reaches the middleware, so the SDK
+  routes its own calls of every other function through the engine and the
+  proxy; its own calls of a private function skip the middleware on either
+  path. `large-messages.v1` is removed: the proxy forwards text frames only.
+- **Observing.** An `Observe` is gated like a call of both functions it names
+  (see the flowchart below and [rbac.md § Observer registration RBAC](rbac.md#observer-registration-rbac)).
+  On top of the engine's checks, the proxy refuses an `engine::*` target, since
+  an observer's target runs with no session behind it, and these sources,
+  whose calls carry what the session's discovery view hides: the
+  infrastructure carve-out, the discovery functions, `engine::observers::*`,
+  `engine::on-functions-changed`, `engine::on-workers-changed` and
+  `engine::on-observers-changed`.
+- **Hosting.** The frames a host exchanges about the observers of its
+  functions pass for the functions the connection registered, with the
+  session prefix rewritten both ways: `FunctionRegistered`, `ObserverAdded`,
+  `ObserverRemoved` toward the worker; `ObserverAck`, `InvocationsObserved`,
+  `LocalInvocationStats` toward the engine. `output_is_input` on report items
+  and `matched` and `delivered` on results pass as sent.
+- **Calls through observers.** An `InvokeFunction` with
+  `activation.observer_id` passes only for an observer the engine announced to
+  this connection (in `FunctionRegistered` or `ObserverAdded`, until
+  `ObserverRemoved`). The engine checks the rest: that the sender hosts the
+  observed function, that the observer is active, and its policy.
+- **Back on a new connection.** An `Observe` that names the id of a
+  suspended observer replaces it when the engine knows both connections
+  under one worker name in one namespace (observe v2 decision 51), and is
+  refused with `OBSERVER_ID_CONFLICT` otherwise, until the grace period ends.
+  The proxy declares a session's worker as `rbac-proxy:<prefix>::<name>`, so
+  the replacement, like the engine's one live worker per name, stays within
+  the sessions of one `function_registration_prefix`: a restarted worker
+  takes its observers back (a queue consumer keeps its backlog by observer
+  id), and a session under another prefix is another worker. A session
+  without a prefix is declared as `rbac-proxy:<name>`; as with its function
+  ids, nothing scopes its names (a declared `tenant1::queue` is tenant1's
+  `queue`).
+- **Registrations.** `private`, `observable` and `args_format` on
+  `RegisterFunction` pass to the engine and to the `on_function_registration`
+  hook, whose answer may replace them. A 0.25 `observe` object passes as sent;
+  the engine reads `allow: false` as `observable: false` and refuses
+  `delivery: owner`.
+- **Discovery.** `engine::observers::list` and `engine::observers::get` are
+  [discovery overrides](engine-overrides.md); `engine::observers::dispose`
+  reaches only the observers this connection created.
 
 The vendored wire fixtures (`rbac-proxy/tests/fixtures/protocol/observe/`) pin
-each case. Supporting observe (gating `observe` like `RegisterTrigger`, the
-owner frames, the observer builtins) is the next step; it needs the
-`on_observer_registration_function_id` hook, which the config already
-accepts.
+each case.
 
 ## Registration frames
 
@@ -166,57 +222,48 @@ accepts.
 
 ```mermaid
 flowchart TD
-  RF["RegisterFunction{ id, metadata, ... }"] --> AFR{allow_function_registration?}
+  RF["RegisterFunction{ id, metadata, private?, observable?, args_format?, ... }"] --> AFR{allow_function_registration?}
   AFR -- no --> DROP["drop (engine does the same)"]
   AFR -- yes --> HOOK{on_function_registration set?}
   HOOK -- no --> PFX
-  HOOK -- yes --> CALL["iii.trigger(hook, { function_id:id, description, metadata, context })"]
+  HOOK -- yes --> CALL["iii.call(hook, { function_id:id, description, metadata, namespace,<br/>private, observable, args_format?, context })"]
   CALL -- throws / non-object --> DROP
-  CALL -- result obj --> MAP["apply mapped function_id/description/metadata"]
+  CALL -- result obj --> MAP["apply mapped function_id / description / metadata /<br/>private / observable / args_format"]
   MAP --> PFX["id := {prefix}::id  (if session has a prefix)"]
   PFX --> FWD["forward RegisterFunction to engine"]
 ```
 
-`RegisterTrigger` and `RegisterTriggerType` follow the same shape but gate on
-`allowed_trigger_types` / `allow_trigger_type_registration` first. `RegisterTrigger`
-additionally resolves the bound `function_id` and verifies the session may cause
-that invocation (see [rbac.md § Trigger registration RBAC](rbac.md#trigger-registration-rbac)).
-On denial, reply `TriggerRegistrationResult{ error: { code: "REGISTRATION_DENIED", message } }`
-to the worker (see [rbac.md § Registration hooks](rbac.md#registration-hooks)).
-Sending a denial frame is an
-[intentional divergence](rbac.md#intentional-divergences-from-the-engine) — the
-engine denies silently.
+`Observe` runs the `on_observer_registration` hook, then resolves both ids and
+verifies the session may call each (see
+[rbac.md § Observer registration RBAC](rbac.md#observer-registration-rbac)).
+On denial the proxy answers as the engine does,
+`ObserveResult{ state: "error", error: { code: "FORBIDDEN", message } }`.
 
 ```mermaid
 flowchart TD
-  RT["RegisterTrigger{ function_id, trigger_type, ... }"] --> ATT{allowed_trigger_types<br/>includes trigger_type?}
-  ATT -- no --> DENY["TriggerRegistrationResult{ error: REGISTRATION_DENIED }"]
-  ATT -- yes --> HOOK{on_trigger_registration set?}
-  HOOK -- yes --> CALL["iii.trigger(hook, { trigger_id, trigger_type, function_id, config, context })"]
-  CALL -- throws / non-object --> DENY
-  CALL -- result obj --> MAP["apply mapped trigger_id / trigger_type / function_id / config"]
+  OB["Observe{ id, source: { function_id, namespace?, args?, filters? }, target, metadata? }"] --> HOOK{on_observer_registration set?}
+  HOOK -- yes --> CALL["iii.call(hook, { observer_id, function_id, namespace, args, filters,<br/>target_function_id, target_namespace, metadata, context })"]
+  CALL -- throws / non-object --> DENY["ObserveResult{ state: error, error: FORBIDDEN }"]
+  CALL -- result obj --> MAP["apply mapped function_id / target_function_id / args / filters / metadata"]
   HOOK -- no --> RES
-  MAP --> RES["resolve function_id → engine target<br/>(own-vs-foreign prefix rules)"]
-  RES --> OWN{target registered<br/>by this session?}
-  OWN -- yes --> FWD["forward RegisterTrigger with function_id := target"]
-  OWN -- no --> ACC{is_function_allowed(target)?}
-  ACC -- no --> DENY
-  ACC -- yes --> FWD
+  MAP --> RES["resolve source and target → engine ids<br/>(own-vs-foreign prefix rules)"]
+  RES --> ENG{"target engine::* or<br/>source undisclosable?"}
+  ENG -- yes --> DENY
+  ENG -- no --> EACH{"for source and target:<br/>registered by this session<br/>or access_allowed?"}
+  EACH -- no --> DENY
+  EACH -- yes --> FWD["forward Observe with resolved ids"]
 ```
 
-> **Hook input note — ordering.** The hook sees the **bare** id, *before* prefix
-> resolution or the target access check: the engine calls the hook with the
-> worker-supplied `function_id`, applies the hook's optional mapping, and only
-> then resolves the engine target (`engine/mod.rs:1251-1282` for
-> `RegisterFunction`, `:784,:817-822` for `RegisterTrigger`). So the proxy order
-> for `RegisterFunction` is **bare id → hook → apply `{prefix}::{id}` → forward**.
-> For `RegisterTrigger` it is **bare id → hook → apply mapped id → resolve
-> target (own-vs-foreign) → access check → forward** — see the flowchart above.
+> **Hook input note — ordering.** The hooks see **bare** ids, *before* prefix
+> resolution or the access check: the engine calls the hook with the
+> worker-supplied ids, applies the hook's optional mapping, and only then
+> resolves the engine ids. So the proxy order for `RegisterFunction` is **bare
+> id → hook → apply `{prefix}::{id}` → forward**. For `Observe` it is **bare
+> ids → hook → apply mapped ids → resolve source and target (own-vs-foreign) →
+> access check → forward** — see the flowchart above.
 > (The engine's own `iii-worker-manager` README states "after
 > `function_registration_prefix`", which is a **doc bug** — the code applies the
-> prefix after the hook, not before. The proxy follows the code for
-> `RegisterFunction`; for `RegisterTrigger` it additionally hardens beyond the
-> engine by verifying target access after resolution.)
+> prefix after the hook, not before. The proxy follows the code.)
 
 ## Prefix resolution
 
@@ -228,7 +275,7 @@ foreign function (canonical id)?
 
 The proxy resolves it deterministically against the set of ids the session has
 registered on this connection (it sees every `RegisterFunction`, so it knows
-them):
+them). An `Observe` resolves its source and its target the same way:
 
 ```
 on InvokeFunction{ function_id: F } from a session with prefix P:

@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::rbac::RbacConfig;
+use crate::rbac::{self, RbacConfig};
 
 /// Default upstream engine listener (also the control connection's `--url`
 /// default).
@@ -54,7 +54,8 @@ pub struct WorkerConfig {
     /// `false` (strip) is the multi-tenant-safe default.
     #[serde(default)]
     pub expose_worker_internals: bool,
-    /// The RBAC contract (auth function, expose filters, registration hooks).
+    /// The RBAC contract (auth function, expose filters, the function and
+    /// observer registration hooks).
     #[serde(default)]
     pub rbac: RbacConfig,
 }
@@ -86,8 +87,15 @@ pub struct BootSignature {
 }
 
 impl WorkerConfig {
+    /// Parse a stored configuration. The `rbac` keys of entries stored before
+    /// 0.26 ([`rbac::REMOVED_KEYS`]) are dropped with a `warn` first, so such
+    /// an entry loads; every other unknown key is refused.
     pub fn from_json(value: &Value) -> Result<Self, String> {
-        serde_json::from_value(value.clone()).map_err(|e| format!("json parse: {e}"))
+        let mut value = value.clone();
+        if let Some(rbac) = value.get_mut("rbac") {
+            rbac::drop_removed_keys(rbac);
+        }
+        serde_json::from_value(value).map_err(|e| format!("json parse: {e}"))
     }
 
     pub fn to_json(&self) -> Value {
@@ -97,16 +105,34 @@ impl WorkerConfig {
     /// The JSON Schema registered with the `configuration` worker, with the
     /// built-in default attached as the top-level `example` (mirrors
     /// approval-gate / context-manager).
+    ///
+    /// The `rbac` keys of entries stored before 0.26 ([`rbac::REMOVED_KEYS`])
+    /// are in the schema as deprecated and ignored, so a stored entry that
+    /// sets one validates and [`from_json`](Self::from_json) can drop it.
     pub fn json_schema() -> Value {
         let root = schemars::schema_for!(WorkerConfig);
         let mut schema =
             serde_json::to_value(&root.schema).expect("WorkerConfig JSON Schema serializes");
+        let mut definitions =
+            serde_json::to_value(&root.definitions).expect("definitions serialize");
+        if let Some(properties) = definitions
+            .pointer_mut("/RbacConfig/properties")
+            .and_then(Value::as_object_mut)
+        {
+            for (key, replacement) in rbac::REMOVED_KEYS {
+                properties.insert(
+                    key.to_string(),
+                    serde_json::json!({
+                        "description": format!("Ignored: {replacement}."),
+                        "deprecated": true,
+                        "type": ["string", "null"],
+                    }),
+                );
+            }
+        }
         if let Some(obj) = schema.as_object_mut() {
             if !root.definitions.is_empty() {
-                obj.insert(
-                    "definitions".into(),
-                    serde_json::to_value(&root.definitions).expect("definitions serialize"),
-                );
+                obj.insert("definitions".into(), definitions);
             }
             obj.insert("example".into(), WorkerConfig::default().to_json());
         }
@@ -197,6 +223,30 @@ mod tests {
         re.engine_url = "ws://10.0.0.1:49134".into();
         assert!(!base.requires_rebind(&re));
         assert_ne!(base.boot_signature(), re.boot_signature());
+    }
+
+    #[test]
+    fn a_stored_entry_with_removed_rbac_keys_loads() {
+        let mut stored = json!({ "rbac": { "auth_function_id": "p::auth" } });
+        for (key, _) in rbac::REMOVED_KEYS {
+            stored["rbac"][key] = json!("p::hook");
+        }
+        let cfg = WorkerConfig::from_json(&stored).unwrap();
+        assert_eq!(cfg.rbac.auth_function_id.as_deref(), Some("p::auth"));
+        assert!(!cfg.to_json()["rbac"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .any(|k| rbac::REMOVED_KEYS.iter().any(|(removed, _)| removed == k)));
+
+        // The schema still accepts them, as deprecated.
+        let schema = WorkerConfig::json_schema();
+        for (key, _) in rbac::REMOVED_KEYS {
+            assert_eq!(
+                schema["definitions"]["RbacConfig"]["properties"][key]["deprecated"],
+                true
+            );
+        }
     }
 
     #[test]

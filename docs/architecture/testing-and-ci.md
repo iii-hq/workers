@@ -71,20 +71,25 @@ in both `rust` and `interface-smoke` jobs.
 
 ## Interface registration checks and release capture (Rust)
 
-**Why it exists:** Registry discovery is generated from the functions and
-trigger types a worker registers. A successful build cannot prove that this
-metadata is present or typed.
+**Why it exists:** Registry discovery is generated from the functions a worker
+registers: their request and response schemas, and for its event sources the
+`args_format` observers pass and the `private` flag. A successful build cannot
+prove that this metadata is present or typed.
 
 **Flow:**
 
 1. `cargo build --locked` (default features — same as release binary)
 2. Install `iii` CLI + start engine
 3. Start worker from `./target/debug/<bin>` (with `--config config.collect.yaml` when shipped)
-4. `collect_worker_interface.py` — 120 s wait, assert non-empty interface
+4. `collect_worker_interface.py` — 120 s wait; reads the worker's functions
+   (`engine::functions::list|info`) and the observers it created
+   (`engine::observers::list`); asserts a non-empty, typed interface and no
+   observer in state `error` (a `pending` observer whose target is not
+   registered is a warning)
 
 **Opt-out:** `registry_interface: false` in `iii.worker.yaml` (for example `lsp`).
 The release compiler records this as `interface_capture: skipped`; only that
-explicit immutable policy permits empty `functions` and `triggers` in Registry.
+explicit immutable policy permits empty `functions` in Registry.
 
 Release prepare repeats registration collection from one immutable prepared
 artifact and binds `deployment-interface.json` to the descriptor and prepared

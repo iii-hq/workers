@@ -40,7 +40,7 @@
             }
           }
         },
-        "description": "retained items in crawl order; seq matches the browser::crawl-item events"
+        "description": "retained items in crawl order; seq matches the browser::on-crawl-item events"
       },
       "next_after": {
         "type": "integer",

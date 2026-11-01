@@ -15,7 +15,7 @@ name = "iii_directory"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
+iii-sdk = "=0.26.0-rc.1"
 iii-worker-paths = { path = "../crates/worker-paths" }
 arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "process"] }
@@ -36,13 +36,13 @@ tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 dirs = "5"
 # Filesystem watch for external skill/system-prompt/agent edits (inotify wake-up; reads
-# stay scan-on-demand — the watch only fires on-change doorbells).
+# stay scan-on-demand — the watch only calls the on-change doorbells).
 notify = "8"
-# Injectable console UI registration (content function + console:script /
-# console:style triggers + dev watcher). Path-linked, never published —
-# versions with the console worker in this repo.
+# Injectable console UI registration (content function + one
+# console::ui::asset observer per asset + dev watcher). Path-linked, never
+# published — versions with the console worker in this repo.
 iii-console-ui = { path = "../crates/console-ui" }
-# Hook-binding reconcile (BindingSlot/try_bind) for the pre-generate hint —
+# Hook-observer reconcile (ObserverSlot) for the pre-generate hint —
 # the configuration register/fetch here stays hand-rolled on purpose.
 iii-config-client = { path = "../crates/config-client" }
 judge-contract = { path = "../crates/judge-contract" }

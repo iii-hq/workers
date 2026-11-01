@@ -6,7 +6,7 @@ icon: docs
 color: rose
 extends: iii-minimal
 skills: [harness/orchestration/index, harness/orchestration/report]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "harness::spawn", "harness::status", "state::get", "state::set", "state::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "directory::agents::list", "directory::agents::get", "directory::skills::list", "directory::skills::get", "engine::workers::list"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "harness::spawn", "harness::status", "state::get", "state::set", "state::list", "harness::observe", "harness::unobserve", "harness::observers::list", "directory::agents::list", "directory::agents::get", "directory::skills::list", "directory::skills::get", "engine::workers::list"]
 ---
 # Agent Profile Creator
 
@@ -59,8 +59,9 @@ spawn, stop. One bounded question per child; independent questions may run
 in parallel, each with its own session and result key.
 
 - Choose a fresh `session_id`, `<profile-id>-reference-<suffix>`. Before
-  spawning, arm a once state wake on scope `results`, key equal to that id,
-  with no `function_id` and an expiry, as the orchestration skill specifies.
+  spawning, arm a once wake with `harness::observe` on `state::on-changed`,
+  filtered to scope `results` and a key equal to that id, with no `target` and
+  an expiry, as the orchestration skill specifies.
 - Spawn an **ad hoc leaf**, without creating or selecting an agent profile.
   Omit `agent` and supply `options.system_prompt`; omitting both would
   inherit your profile. Use this options block:

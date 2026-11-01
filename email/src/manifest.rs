@@ -13,13 +13,12 @@ pub fn build_manifest() -> Value {
             { "id": "email::search",            "stability": "beta", "streams": "ndjson" },
             { "id": "email::flag",              "stability": "beta" },
             { "id": "email::move",              "stability": "beta" },
-            { "id": "email::attachment::get",   "stability": "beta", "streams": "bytes" }
-        ],
-        "trigger_types": [
+            { "id": "email::attachment::get",   "stability": "beta", "streams": "bytes" },
             {
-                "name": "email::new-mail",
+                "id": "email::on-new-mail",
                 "stability": "beta",
-                "description": "Fires when IMAP IDLE pushes a new message to a configured (account, folder)."
+                "private": true,
+                "description": "Called once per message IMAP IDLE pushes to a configured (account, folder); observers filter on input.account and input.folder."
             }
         ],
         "default_config": {

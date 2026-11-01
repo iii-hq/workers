@@ -6,7 +6,7 @@
 //! them between scenarios.
 
 use cucumber::{given, when};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
@@ -86,7 +86,7 @@ async fn run_download(world: &mut IiiSkillsWorld, payload: Value) {
         return;
     };
     match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "directory::skills::download".to_string(),
             payload,
             action: None,
@@ -105,19 +105,17 @@ async fn run_download(world: &mut IiiSkillsWorld, payload: Value) {
     }
 }
 
-#[when(
-    regex = r#"^I trigger directory::skills::download with worker="([^"]+)" version="([^"]+)"$"#
-)]
-async fn trigger_with_version(world: &mut IiiSkillsWorld, worker: String, version: String) {
+#[when(regex = r#"^I call directory::skills::download with worker="([^"]+)" version="([^"]+)"$"#)]
+async fn call_with_version(world: &mut IiiSkillsWorld, worker: String, version: String) {
     run_download(world, json!({ "worker": worker, "version": version })).await;
 }
 
-#[when(regex = r#"^I trigger directory::skills::download with worker="([^"]+)" tag="([^"]+)"$"#)]
-async fn trigger_with_tag(world: &mut IiiSkillsWorld, worker: String, tag: String) {
+#[when(regex = r#"^I call directory::skills::download with worker="([^"]+)" tag="([^"]+)"$"#)]
+async fn call_with_tag(world: &mut IiiSkillsWorld, worker: String, tag: String) {
     run_download(world, json!({ "worker": worker, "tag": tag })).await;
 }
 
-#[when(regex = r#"^I trigger directory::skills::download with worker="([^"]+)" alone$"#)]
-async fn trigger_alone(world: &mut IiiSkillsWorld, worker: String) {
+#[when(regex = r#"^I call directory::skills::download with worker="([^"]+)" alone$"#)]
+async fn call_alone(world: &mut IiiSkillsWorld, worker: String) {
     run_download(world, json!({ "worker": worker })).await;
 }

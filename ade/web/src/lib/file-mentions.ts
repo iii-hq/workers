@@ -19,10 +19,10 @@
 
 import {
   ATTACHED_FILE_PREFIX,
+  type CallFn,
+  callOr,
   escapeAttr,
   failureBlock,
-  type TriggerFn,
-  triggerOr,
 } from '@/lib/attachments/shared'
 import {
   FILE_MENTION_RE,
@@ -125,7 +125,7 @@ function readTarget(ref: WindowedRef): ReadTargetWire {
 export async function expandFileMentions(
   workingDir: string,
   refs: readonly FileMentionRef[],
-  trigger?: TriggerFn,
+  invoke?: CallFn,
 ): Promise<ExpandedMentions> {
   const windowRefs = refs.filter(hasRange)
   if (windowRefs.length === 0) {
@@ -133,7 +133,7 @@ export async function expandFileMentions(
   }
   const labels = windowRefs.map(formatFileMentionInner)
 
-  const call = triggerOr(trigger)
+  const call = callOr(invoke)
 
   let results: ReadEntryResultWire[]
   try {

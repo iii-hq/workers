@@ -2,6 +2,7 @@
 //! under `tests/` can drive them at the public-API level. Both targets
 //! share source files via Cargo's two-target compile.
 
+pub mod calls;
 pub mod code;
 pub mod config;
 pub mod configuration;
@@ -19,6 +20,6 @@ pub mod pty;
 pub mod scode;
 pub mod target;
 pub mod telemetry;
-pub mod triggers;
+pub mod turn_events;
 pub mod ui;
 pub mod ui_state;

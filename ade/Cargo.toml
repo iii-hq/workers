@@ -14,10 +14,10 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.24.6"
-# Worker-side injectable console UI (content function + console:script/style
-# triggers + hot-reload watcher) — the console dogfoods its own protocol to
-# ship the injectable-UI toggle form. Direct link, never published.
+iii-sdk = "=0.26.0-rc.1"
+# Worker-side injectable console UI (content function + one console::ui::asset
+# observer per asset + hot-reload watcher) — the console dogfoods its own
+# protocol to ship the injectable-UI toggle form. Direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 # Project-relative `data_dir` resolution shared by every worker (III_COMPOSE_DIR).
 iii-worker-paths = { path = "../crates/worker-paths" }

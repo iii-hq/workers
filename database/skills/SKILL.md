@@ -192,9 +192,9 @@ arrays as JSON arrays. When writing them back, pass the same forms.
 
 ## Reacting to writes
 
-`database::on-row-changed` announces each committed write statement, instead
-of polling. Code observes it (iii 0.25) with args naming the database, and
-optionally the table and operations, plus filters on what changed:
+`database::on-row-changed` announces each committed write statement, so
+nothing polls. Observe it with args naming the database, and optionally the
+table and operations, plus filters on what changed:
 
 ```json
 {
@@ -204,20 +204,17 @@ optionally the table and operations, plus filters on what changed:
 }
 ```
 
+In a session, pass the same `function_id`, `args` and `filters` to
+`harness::observe`.
+
 `table` is the bare lowercase name (`orders`, not `public.Orders`); anything
 else is refused with the name to use. The event is
 `{ db, schema, table, op, affected_rows, returning?, truncated?, at }`, and
-`caller.parent` names the function that made the write. Nothing can invoke
-the function: only the database worker emits its events.
+`caller.parent` names the function that made the write. The function is
+private: only the database worker calls it, so nobody else can raise an
+event.
 
-In a session, subscribe with a `database::row-changed` trigger (served on
-0.24 and 0.25 engines; the event has no `schema`):
-
-```json
-{ "trigger_type": "database::row-changed", "config": { "db": "primary", "table": "orders", "ops": ["insert"] } }
-```
-
-Either way it fires on commit — an interactive transaction's writes are
+It fires on commit — an interactive transaction's writes are
 announced by `commitTransaction`, and a rollback announces nothing.
 `returning` says which rows: on a `capture: statements` database it is the
 writer's own `RETURNING` projection, so write `RETURNING <primary key>` into
@@ -227,4 +224,7 @@ changed rows' primary keys, capped at 100 with `truncated: true` past that.
 `table` is null when the statement's table cannot be read off the SQL (a
 CTE-wrapped write), and `runStatement` does not fire on the statements path
 because it has no affected-row count to report. Delivery is best-effort: it
-is not durable with the commit and has no replay or exactly-once guarantee.
+is not durable with the commit and has no replay or exactly-once guarantee,
+and a target can receive events in any order (an observer with
+`max_in_flight: 1` receives them one at a time, a transaction's statements
+in commit order).

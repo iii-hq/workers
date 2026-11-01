@@ -11,8 +11,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::IIIClient;
+use iii_sdk::{CallRequest, IIIClient};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -151,7 +150,7 @@ pub fn make_count_tokens(
             let provider = candidates[0].clone();
 
             let reply = iii
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: format!("provider::{provider}::count_tokens"),
                     payload: provider_payload(&model, &req),
                     action: None,

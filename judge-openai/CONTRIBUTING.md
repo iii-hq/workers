@@ -24,7 +24,7 @@ output directory. To build without the Console form or its Node/pnpm dependency:
 cargo build --manifest-path judge-openai/Cargo.toml --locked --release --no-default-features
 ```
 
-For a standalone development process, use engine **`iii/v0.24.0-rc.2`** with
+For a standalone development process, use engine **`iii/v0.26.0`** with
 `configuration::ensure` available. This is the verified release pinned by CI.
 If making provider calls, supply a key through configuration (preferably
 `secret://OPENAI_API_KEY`) or the worker's environment:
@@ -106,7 +106,7 @@ must keep all of those suites passing.
 ## Real-engine integration with local mocked HTTP
 
 The dedicated [Judge E2E workflow](https://github.com/iii-hq/workers/blob/main/.github/workflows/judge-e2e.yml)
-runs on pull requests only. It pins **`iii/v0.24.0-rc.2`** and selects two
+runs on pull requests only. It pins **`iii/v0.26.0`** and selects two
 standalone bus cases from [tests/engine.rs](tests/engine.rs):
 
 | Test | Coverage |

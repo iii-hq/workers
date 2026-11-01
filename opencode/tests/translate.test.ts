@@ -5,7 +5,7 @@ vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 import { spawn } from 'node:child_process';
 import { type Config, loadConfig } from '../src/config.js';
 import { executeRun, RunPayloadSchema } from '../src/run.js';
-import { AGENT, boundFeeds, fakeIii, RAW } from './_helpers/fake-iii.js';
+import { AGENT, observedFeeds, fakeIii, RAW } from './_helpers/fake-iii.js';
 import { ev, newSpawnCapture, scriptedSpawn } from './_helpers/fake-opencode.js';
 
 const spawnMock = vi.mocked(spawn);
@@ -15,7 +15,7 @@ async function run(events: object[], payload: Record<string, unknown> = {}) {
   const fake = fakeIii();
   const c = await cfg();
   spawnMock.mockImplementation(scriptedSpawn(events, newSpawnCapture()) as never);
-  const { emit, emitRaw } = await boundFeeds(
+  const { emit, emitRaw } = await observedFeeds(
     fake,
     typeof payload.session_id === 'string' ? payload.session_id : 's1',
   );
@@ -133,7 +133,7 @@ describe('event translation', () => {
         newSpawnCapture(),
       ) as never,
     );
-    const { emit, emitRaw } = await boundFeeds(fake, 's1');
+    const { emit, emitRaw } = await observedFeeds(fake, 's1');
     const result = await executeRun(
       fake.iii,
       c,

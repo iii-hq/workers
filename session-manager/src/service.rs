@@ -105,7 +105,7 @@ impl Clock for SystemClock {
 type ServiceResult<T> = Result<(T, Vec<EmittableEvent>), SessionError>;
 
 /// Wrap a config value in a fresh, standalone [`ConfigCell`] (not shared with
-/// a configuration-change trigger). Used by the non-production constructors.
+/// the configuration-change handler). Used by the non-production constructors.
 fn new_config_cell(cfg: &WorkerConfig) -> ConfigCell {
     Arc::new(RwLock::new(Arc::new(cfg.clone())))
 }
@@ -115,7 +115,7 @@ pub struct SessionService {
     ids: Arc<dyn IdGen>,
     clock: Arc<dyn Clock>,
     /// Hot-swappable config snapshot shared with the configuration-change
-    /// trigger; `list` / `messages` read the current list limits per call so
+    /// handler; `list` / `messages` read the current list limits per call so
     /// a `configuration::set` of the limits applies without a restart.
     config: ConfigCell,
     /// Per-session mutation locks. Entries are kept for the worker
@@ -130,7 +130,7 @@ impl SessionService {
     }
 
     /// Production constructor: shares the hot-swappable [`ConfigCell`] with the
-    /// configuration-change trigger, so a live `configuration::set` of the
+    /// configuration-change handler, so a live `configuration::set` of the
     /// list limits is picked up without a restart.
     pub fn with_config_cell(store: Arc<dyn SessionStore>, config: ConfigCell) -> Self {
         Self::with_parts_cell(store, Arc::new(UuidIds), Arc::new(SystemClock), config)
@@ -403,7 +403,7 @@ impl SessionService {
 
         // Deliberately no `updated_at` bump and no event: drafts are saved at
         // keystroke cadence, and a save must neither re-order `session::list`
-        // nor spam meta-updated subscribers. Consumers read the draft back
+        // nor spam `session::on-meta-updated` observers. Consumers read the draft back
         // from `session::get` / `session::list`.
         meta.draft = draft;
         meta.draft_attachments = draft_attachments;
@@ -516,7 +516,16 @@ impl SessionService {
     // Messages
     // -----------------------------------------------------------------
 
-    pub async fn append(&self, req: AppendRequest) -> ServiceResult<AppendResponse> {
+    /// Append one entry. The `session::on-message-added` event is built only
+    /// when `wants_event` holds (the sink's [`EventSink::wants`]); otherwise
+    /// no event is returned and nothing is copied for one.
+    ///
+    /// [`EventSink::wants`]: crate::events::EventSink::wants
+    pub async fn append(
+        &self,
+        req: AppendRequest,
+        wants_event: bool,
+    ) -> ServiceResult<AppendResponse> {
         let _guard = self.lock_session(&req.session_id).await;
         self.meta_or_not_found(&req.session_id).await?;
         let parent_explicit = req.parent_id.is_some();
@@ -589,61 +598,49 @@ impl SessionService {
             .await?;
         let meta = committed.meta;
         let entry = committed.entry;
-        let entry_id = entry.id().to_string();
-        let parent_id = entry.parent_id().map(str::to_string);
-        let now = entry.timestamp();
-        if !committed.committed {
-            return Ok((
-                AppendResponse {
-                    entry_id,
-                    parent_id,
-                    timestamp: now,
-                },
-                vec![],
-            ));
+        let response = AppendResponse {
+            entry_id: entry.id().to_string(),
+            parent_id: entry.parent_id().map(str::to_string),
+            timestamp: entry.timestamp(),
+        };
+        if !committed.committed || !wants_event {
+            return Ok((response, vec![]));
         }
-        let (event_message, event_custom, origin) = match &entry {
+        // The stored entry and the metadata move into the event.
+        let (event_message, event_custom, origin) = match entry {
             SessionEntry::Message {
                 message, origin, ..
-            } => (Some((**message).clone()), None, origin.clone()),
+            } => (Some(*message), None, origin),
             SessionEntry::Custom {
                 custom_type,
                 data,
                 origin,
                 ..
-            } => (
-                None,
-                Some(CustomPayload {
-                    custom_type: custom_type.clone(),
-                    data: data.clone(),
-                }),
-                origin.clone(),
-            ),
+            } => (None, Some(CustomPayload { custom_type, data }), origin),
         };
 
         let event = EmittableEvent {
             event: SessionEvent::MessageAdded(MessageAddedEvent {
-                session_id: req.session_id.clone(),
-                entry_id: entry_id.clone(),
-                parent_id: parent_id.clone(),
+                session_id: req.session_id,
+                entry_id: response.entry_id.clone(),
+                parent_id: response.parent_id.clone(),
                 message: event_message,
                 custom: event_custom,
                 origin,
-                timestamp: now,
+                timestamp: response.timestamp,
             }),
-            session_metadata: meta.metadata.clone(),
+            session_metadata: meta.metadata,
         };
-        Ok((
-            AppendResponse {
-                entry_id,
-                parent_id,
-                timestamp: now,
-            },
-            vec![event],
-        ))
+        Ok((response, vec![event]))
     }
 
-    pub async fn append_many(&self, req: AppendManyRequest) -> ServiceResult<AppendManyResponse> {
+    /// Append several messages in order. `wants_event` as for
+    /// [`Self::append`].
+    pub async fn append_many(
+        &self,
+        req: AppendManyRequest,
+        wants_event: bool,
+    ) -> ServiceResult<AppendManyResponse> {
         let _guard = self.lock_session(&req.session_id).await;
         let mut meta = self.meta_or_not_found(&req.session_id).await?;
 
@@ -673,7 +670,7 @@ impl SessionService {
 
         let now = self.clock.now_ms();
         let mut entry_ids = Vec::with_capacity(req.messages.len());
-        let mut events = Vec::with_capacity(req.messages.len());
+        let mut events = Vec::with_capacity(if wants_event { req.messages.len() } else { 0 });
 
         for message in req.messages {
             let entry_id = self.ids.entry_id();
@@ -683,25 +680,37 @@ impl SessionService {
                 timestamp: now,
                 revision: 0,
                 origin: req.origin.clone(),
-                message: Box::new(message.clone()),
+                message: Box::new(message),
             };
             self.store.put_entry(&req.session_id, &entry).await?;
-
-            events.push(EmittableEvent {
-                event: SessionEvent::MessageAdded(MessageAddedEvent {
-                    session_id: req.session_id.clone(),
-                    entry_id: entry_id.clone(),
-                    parent_id: parent_id.clone(),
-                    message: Some(message),
-                    custom: None,
-                    origin: req.origin.clone(),
-                    timestamp: now,
-                }),
-                session_metadata: meta.metadata.clone(),
-            });
-
             parent_id = Some(entry_id.clone());
             entry_ids.push(entry_id);
+
+            if !wants_event {
+                continue;
+            }
+            // The stored entry moves into the event.
+            if let SessionEntry::Message {
+                id,
+                parent_id: entry_parent_id,
+                origin,
+                message,
+                ..
+            } = entry
+            {
+                events.push(EmittableEvent {
+                    event: SessionEvent::MessageAdded(MessageAddedEvent {
+                        session_id: req.session_id.clone(),
+                        entry_id: id,
+                        parent_id: entry_parent_id,
+                        message: Some(*message),
+                        custom: None,
+                        origin,
+                        timestamp: now,
+                    }),
+                    session_metadata: meta.metadata.clone(),
+                });
+            }
         }
 
         let last_entry_id = entry_ids
@@ -724,9 +733,14 @@ impl SessionService {
         ))
     }
 
+    /// Replace a message entry's content. The `session::on-message-updated`
+    /// event is built only when `wants_event` holds: every streaming delta
+    /// lands here, and an unobserved one copies neither the message nor the
+    /// session metadata.
     pub async fn update_message(
         &self,
         req: UpdateMessageRequest,
+        wants_event: bool,
     ) -> ServiceResult<UpdateMessageResponse> {
         let _guard = self.lock_session(&req.session_id).await;
         let mut meta = self.meta_or_not_found(&req.session_id).await?;
@@ -802,7 +816,7 @@ impl SessionService {
             timestamp,
             revision: new_revision,
             origin,
-            message: message.clone(),
+            message,
         };
         self.store
             .put_entry(&req.session_id, &updated_entry)
@@ -812,23 +826,27 @@ impl SessionService {
         meta.updated_at = now;
         self.store.put_meta(&meta).await?;
 
-        let event = EmittableEvent {
-            event: SessionEvent::MessageUpdated(MessageUpdatedEvent {
-                session_id: req.session_id.clone(),
-                entry_id: req.entry_id.clone(),
-                message: *message,
-                revision: new_revision,
-                origin: req.origin,
-                timestamp: now,
-            }),
-            session_metadata: meta.metadata.clone(),
+        // The stored message and the metadata move into the event.
+        let events = match (wants_event, updated_entry) {
+            (true, SessionEntry::Message { message, .. }) => vec![EmittableEvent {
+                event: SessionEvent::MessageUpdated(MessageUpdatedEvent {
+                    session_id: req.session_id,
+                    entry_id: req.entry_id,
+                    message: *message,
+                    revision: new_revision,
+                    origin: req.origin,
+                    timestamp: now,
+                }),
+                session_metadata: meta.metadata,
+            }],
+            _ => vec![],
         };
         Ok((
             UpdateMessageResponse {
                 updated: true,
                 revision: new_revision,
             },
-            vec![event],
+            events,
         ))
     }
 
@@ -1175,7 +1193,7 @@ impl SessionService {
 
     /// Store original bytes for a session. Event-silent: the attachment
     /// surfaces through the message that embeds the returned `file` block,
-    /// and that append fires `session::message-added` on its own.
+    /// and that append calls `session::on-message-added` on its own.
     pub async fn put_attachment(
         &self,
         req: PutAttachmentRequest,
@@ -1614,7 +1632,7 @@ fn referenced_attachment_ids(path: &[&SessionEntry]) -> Vec<String> {
     ids
 }
 
-/// The `session::created` event for a session's metadata. Shared with the
+/// The `session::on-created` event for a session's metadata. Shared with the
 /// post-reload [`resync`](crate::resync) replay so a swap re-announces sessions
 /// through the exact event shape a real create fires.
 pub(crate) fn created_event(meta: &SessionMeta) -> EmittableEvent {

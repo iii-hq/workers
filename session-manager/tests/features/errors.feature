@@ -65,10 +65,7 @@ Feature: error codes — stable session/* codes on the bus
   # Prevents: malformed requests reaching the domain logic — serde
   # rejects them at the boundary with a deserialization error.
   Scenario: a structurally invalid request is rejected before any logic runs
-    Given a binding "b1" on "session::created" delivering to "obs::all" with config:
-      """
-      {}
-      """
+    Given an observer "b1" of "session::on-created" delivering to "obs::all"
     When I call "session::create" with:
       """
       { "title": 12345 }

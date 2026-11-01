@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::config::{SharedConfig, SkillsConfig};
+use crate::events;
 use crate::functions::skills::RegisteredWorkersCache;
 use crate::kits::apply::{ApplyTiming, DecisionInput};
 use crate::kits::compose::EngineCompose;
@@ -24,7 +25,6 @@ use crate::kits::plan::{KitsEnv, Plan, PlanContents, PlanKind};
 use crate::kits::registry::HttpKitRegistry;
 use crate::kits::service::{self, KitPlanResponse, PlanStatus};
 use crate::kits::store::{self, ApplyProgress};
-use crate::trigger_types;
 
 /// How often installed kits are checked for updates (also at boot).
 const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
@@ -188,7 +188,7 @@ impl RegistryCell {
 struct Ctx {
     iii: Arc<IIIClient>,
     cfg: SharedConfig,
-    subs: super::Subscribers,
+    sources: super::ChangeSources,
     cache: Arc<RegisteredWorkersCache>,
     registry: Arc<RegistryCell>,
     /// One apply at a time.
@@ -204,7 +204,7 @@ impl Ctx {
     }
 
     async fn emit(&self, payload: Value) {
-        trigger_types::dispatch(&self.iii, &self.subs.kits, payload).await;
+        events::emit(&self.iii, self.sources.kits, payload).await;
     }
 
     fn progress_emitter(
@@ -213,7 +213,7 @@ impl Ctx {
         kit: String,
     ) -> impl Fn(&ApplyProgress) + Send + Sync {
         let iii = self.iii.clone();
-        let kits = self.subs.kits.clone();
+        let kits = self.sources.kits;
         let rt = tokio::runtime::Handle::current();
         move |progress: &ApplyProgress| {
             let payload = json!({
@@ -224,14 +224,13 @@ impl Ctx {
                 "error": progress.error,
             });
             let iii = iii.clone();
-            let kits = kits.clone();
             rt.spawn(async move {
-                trigger_types::dispatch(&iii, &kits, payload).await;
+                events::emit(&iii, kits, payload).await;
             });
         }
     }
 
-    /// Fan out after a plan was created or applied.
+    /// Call the change functions after a plan was created or applied.
     async fn after(&self, response: &KitPlanResponse, cfg: &SkillsConfig) {
         match response.status {
             PlanStatus::Planned | PlanStatus::Replanned => {
@@ -251,10 +250,10 @@ impl Ctx {
                 };
                 let payload = json!({ "op": "kit", "kit": report.kit, "plan_id": report.plan_id });
                 if report.agents_changed {
-                    trigger_types::dispatch(&self.iii, &self.subs.agents, payload.clone()).await;
+                    events::emit(&self.iii, self.sources.agents, payload.clone()).await;
                 }
                 if report.skills_changed {
-                    trigger_types::dispatch(&self.iii, &self.subs.skills, payload.clone()).await;
+                    events::emit(&self.iii, self.sources.skills, payload.clone()).await;
                 }
                 self.emit(json!({
                     "op": "apply",
@@ -318,8 +317,8 @@ impl Ctx {
             if any {
                 ctx.cache.invalidate().await;
                 let payload = json!({ "op": "download", "source": "registry" });
-                trigger_types::dispatch(&ctx.iii, &ctx.subs.skills, payload.clone()).await;
-                trigger_types::dispatch(&ctx.iii, &ctx.subs.agents, payload).await;
+                events::emit(&ctx.iii, ctx.sources.skills, payload.clone()).await;
+                events::emit(&ctx.iii, ctx.sources.agents, payload).await;
             }
         });
     }
@@ -328,13 +327,13 @@ impl Ctx {
 pub fn register(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
-    subs: &super::Subscribers,
+    sources: &super::ChangeSources,
     cache: &Arc<RegisteredWorkersCache>,
 ) {
     let ctx = Ctx {
         iii: iii.clone(),
         cfg: cfg.clone(),
-        subs: subs.clone(),
+        sources: *sources,
         cache: cache.clone(),
         registry: Arc::new(RegistryCell::default()),
         apply_lock: Arc::new(tokio::sync::Mutex::new(())),

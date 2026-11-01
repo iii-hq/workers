@@ -20,7 +20,7 @@ path = "src/lib.rs"
 [dependencies]
 # Screenshot downscale + JPEG re-encode (native capture, remote guest frames).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-iii-sdk = "=0.24.6"
+iii-sdk = "=0.26.0-rc.1"
 iii-console-ui = { path = "../crates/console-ui" }
 # Typed judge::evaluate messages for computer::run; the judge worker itself is
 # optional at runtime.

@@ -4,7 +4,7 @@
 name = "iii-state"
 version = "0.22.23"
 edition = "2024"
-description = "State worker for iii — key-value state with reactive change triggers (state trigger type, state::* functions)"
+description = "State worker for iii — key-value state (state::* functions) with an observable change event (state::on-changed)"
 license = "Apache-2.0"
 repository = "https://github.com/iii-hq/workers"
 publish = false
@@ -18,13 +18,13 @@ name = "state"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.25.0"
+iii-sdk = "=0.26.0-rc.1"
 iii-worker-paths = { path = "../crates/worker-paths" }
 # UpdateOp / StreamSetResult / StreamUpdateResult / UpdateOpError / MergePath —
 # the exact types the builtin used; pinned to the version iii-sdk resolves.
-iii-helpers = "=0.25.0"
-# Worker-side injectable console UI (content function + console:script/style
-# triggers + hot-reload watcher) — direct link, never published.
+iii-helpers = "=0.26.0-rc.1"
+# Worker-side injectable console UI (content function + one console::ui::asset
+# observer per asset + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs"] }
@@ -41,7 +41,7 @@ schemars = "0.8"
 indexmap = { version = "2", features = ["serde"] }
 rkyv = "0.8"
 redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
-# Single-use tokens of state::on-changed emissions (unguessable, see on_changed.rs).
+# Unique temp paths and scopes in tests.
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

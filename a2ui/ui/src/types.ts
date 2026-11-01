@@ -39,18 +39,31 @@ export interface SurfaceRecord {
   last_action: ActionRecord | null
   pinned: boolean
   bindings: LiveBinding[]
+  /** Bindings stored under iii 0.25 that could not be translated, with the reason. */
+  retired_bindings?: RetiredBinding[]
   history: SurfaceRevision[]
+}
+
+export interface RetiredBinding {
+  id: string
+  /** The function the stored type reads as. */
+  function_id: string
+  reason: string
 }
 
 export interface SurfaceRevision { revision: number; title: string; updated_at_ms: number; reason: string }
 export interface BindingQuery { function_id: string; payload?: JsonValue; result_path?: string }
 export interface LiveBinding {
   id: string
-  trigger_type: string
-  config: JsonValue
+  /** The observed function: a worker's event source, `state::on-changed`, or `shell::on-changed`. */
+  function_id: string
+  /** Args for a function that takes them. */
+  args?: JsonValue
+  /** Filters selecting which calls are delivered (`{ 'input.status': { $eq: 'open' } }`). */
+  filters?: JsonValue
   target_path: string
   event_path?: string
-  /** Provider read query (worker-owned trigger types): initial read + notify-then-query. */
+  /** Provider read query (a worker's event source): initial read + notify-then-query. */
   query?: BindingQuery
 }
 export interface SurfaceTemplate { template_id: string; title: string; description: string; updated_at_ms: number }

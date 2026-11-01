@@ -1,8 +1,8 @@
 /**
  * opencode::* function registrations. `opencode::run` spawns
  * `opencode run --format json`, parses the JSON event stream line by line,
- * translates it onto the opencode::agent-event feed, mirrors it raw onto the
- * opencode::raw-event feed, and
+ * translates it onto the opencode::on-agent-event feed, mirrors it raw onto the
+ * opencode::on-raw-event feed, and
  * returns the final result with token usage and cost. Accepts a bare `prompt`
  * or the shared agent entrypoint shape (`messages`), so anything that drives
  * `run::start_and_wait` can drive OpenCode unchanged.
@@ -366,7 +366,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
-        'Run one OpenCode coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; delivers raw events on the opencode::raw-event trigger and AgentEvent frames on opencode::agent-event (bind with { session_id }), and returns {session_id, result, usage, total_cost_usd}.',
+        'Run one OpenCode coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; delivers raw events on opencode::on-raw-event and AgentEvent frames on opencode::on-agent-event (observe with args { session_id }), and returns {session_id, result, usage, total_cost_usd}.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: RUN_RESPONSE_FORMAT,
     },
@@ -395,7 +395,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     },
     {
       description:
-        'Start an OpenCode turn and return immediately; bind opencode::agent-event with { session_id } for progress and turn_end.',
+        'Start an OpenCode turn and return immediately; observe opencode::on-agent-event with args { session_id } for progress and turn_end.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },

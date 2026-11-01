@@ -63,7 +63,7 @@ fn prune_at(store: &Store, now: i64) {
     db.data = data;
 }
 #[test]
-fn legacy_migration_preserves_installation_secrets_inbox_outbox_and_subscriber_metadata() {
+fn legacy_migration_preserves_installation_secrets_inbox_outbox_and_subscribers() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store.sqlite3");
     let mut data = Data {
@@ -80,10 +80,10 @@ fn legacy_migration_preserves_installation_secrets_inbox_outbox_and_subscriber_m
     data.repos.insert("owner/repo".into(), hook());
     let sub = Subscriber {
         id: "sub".into(),
-        function_id: "handler".into(),
-        filter: EventFilter::default(),
-        metadata: Some(json!({"tenant":"test"})),
-        namespace: Some("private".into()),
+        filter: EventFilter {
+            repo: Some("owner/repo".into()),
+            ..Default::default()
+        },
     };
     let event = crate::webhooks::normalize::make_event(
         data.watches.get("existing").unwrap(),
@@ -276,10 +276,7 @@ fn pending_notification_pins_terminal_snapshot_until_acknowledged() {
                 crate::webhooks::normalize::make_event(&w, Category::Pr, "closed", "pr", 1, true);
             let target = Subscriber {
                 id: "sub".into(),
-                function_id: "handler".into(),
                 filter: EventFilter::default(),
-                metadata: None,
-                namespace: None,
             };
             d.jobs.insert(
                 "notify:pending".into(),

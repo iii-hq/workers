@@ -15,14 +15,14 @@ engine WebSocket on one port (`http_port`, 3113 by default; `console::status`
 returns the actual `url`). It renders the
 chat (on the `harness` turn loop), the OpenTelemetry trace explorer, the worker
 catalog, and a tabbed workspace of floating panels the operator arranges. It is
-also the delivery host for **injectable UI**: any worker registers a
-`console:script` / `console:style` trigger whose `config.path` names an asset
-and whose `function_id` serves the bytes, and every open tab imports the module,
-calls its `setup(host)`, and hot-reloads it on re-registration. No console
-rebuild, no iframe.
+also the delivery host for **injectable UI**: any worker observes
+`console::ui::asset` with args `{ kind: 'script' | 'style', path }` naming an
+asset and its content function as the target that serves the bytes, and every
+open tab imports the module, calls its `setup(host)`, and hot-reloads it when
+the asset changes. No console rebuild, no iframe.
 
 Reach for this worker in two situations. First, when a worker needs a face in
-the console — a page, a function-call or trigger-activity renderer, a settings
+the console — a page, a function-call or observer-activity renderer, a settings
 form — build it against the three companion skills below rather than inventing
 markup. Second, when an agent should change what the operator is looking at:
 open a worker page beside the conversation, pin a chat, close a screen, or
@@ -75,13 +75,12 @@ Snapshots persist in `<data_dir>/context-tracking.json`, with atomic writes.
 - The console renders; it does not own domain data. Injected UI acts by
   calling its own worker's functions over `host.iii`, and configuration values
   live in the `configuration` worker.
-- `console:assets` is the tab-side live-update subscription. Workers never
-  register it; register `console:script` / `console:style` only.
+- `console::ui::on-assets-changed` is the tab-side live-update feed. Workers
+  never observe it; they observe `console::ui::asset` only.
 - Injected styles are scoped under `[data-iii-ui="<worker>"]`; an unscoped
   rule restyles the whole console and is reported as a manifest warning.
-- Register asset triggers through the SDK's Message path so they are
-  garbage-collected on disconnect — not through the durable
-  `engine::register_trigger`.
+- Observe `console::ui::asset` over the worker's own connection: its
+  observers leave with the worker, and the console drops the asset.
 - `workspace::open` reuses a tab that already shows the screen; it never
   duplicates panels. Selection of the active tab is per browser tab and only
   follows a function-driven activation, which every activating `open` stamps.
@@ -108,29 +107,49 @@ Snapshots persist in `<data_dir>/context-tracking.json`, with atomic writes.
 - `console::on-config-change`, `console::working-directory::inject-guidance`, `console::working-directory::stamp-session` — internal wiring; never call directly.
 - `console::mentions::trace::search`, `console::mentions::trace::get` — the `@trace(id="<trace_id>")` chat mention provider over `engine::traces::list`; internal. Agents read a mentioned trace through `engine::traces::tree` (see `ade/mentions`).
 
-## Reactive triggers
+## Observable functions
 
-The console owns four trigger types. Two are the injectable-UI contract a
-worker binds to ship UI; the third is tab-internal; the fourth reports layout
-changes.
+The console hosts four private functions others observe. One is the
+injectable-UI contract a worker observes to ship UI; one is tab-internal; two
+report changes.
 
-- `console:script` — an ESM JavaScript asset. `config: { path }` is the
-  identity (`<worker>/page.js`); the trigger's `function_id` is the worker's
-  content function returning `{ content, content_type? }` for `{ path }`.
-- `console:style` — a CSS asset with the same contract and a `.css` path.
-- `console:assets` — a tab's live-update subscription; the console registers
-  it itself.
-- `console::workspace::changed` — fires after every workspace layout write
-  (`open`, `close`, a browser's own edit), and once when a binding registers.
-  Empty config, empty event: a page that watches the layout binds it and
-  re-reads `console::workspace::list`.
+- `console::ui::asset` — one asset per observer. Args
+  `{ kind: 'script' | 'style' | 'module', path }`; `path` is the identity
+  (`<worker>/page.js`, at most 512 bytes) and the observer's target is the
+  worker's content function, returning `{ content, content_type? }` for
+  `{ path }`. Once the observer is active the console calls the function
+  with `{ path }` for that observer alone, and its deliver hook calls the
+  content function through the observer. A later observer of the same path
+  supersedes the earlier one (`UI_ASSET_SUPERSEDED`); a content fetch that
+  fails rejects the observer (`UI_ASSET_FETCH_FAILED`).
+- `console::ui::on-assets-changed` — a tab's live-update feed, no args. Each
+  new observer gets one call of its own once it is accepted,
+  `{ op: 'sync', assets }`; every later change is `{ op: 'set', asset }` or
+  `{ op: 'delete', path }`. iii delivers each like every call, so a tab
+  receives every event in one shape. The console's tabs observe it
+  themselves.
+- `console::workspace::on-changed` — called after every workspace layout
+  write (`open`, `close`, a browser's own edit), and once for each new
+  observer alone when it is accepted. No args, empty event: a page that
+  watches the layout observes it and re-reads `console::workspace::list`.
+- `console::compose::on-changed` — called when the Compose daemon writes
+  `state.json` or the compose file changes. No args; filter on `input.kind`,
+  `input.file` or `input.namespace`.
 
-Bind the first two once per asset at worker startup, after the content
-function is registered. Re-registering the same path with different bytes
-hot-swaps the asset in every open tab; identical bytes are a no-op. Rust
-workers use the `iii-console-ui` crate (`ConsoleUi::new("<worker>").script(..).style(..).register(&iii)`),
-which also wires the `III_<WORKER>_UI_WATCH` development watcher; Node workers
-register the content function and the two triggers directly.
+Observe `console::ui::asset` once per asset at worker startup, after the
+content function is registered. To change an asset, observe it again and
+dispose the old observer: different bytes hot-swap the asset in every open
+tab; identical bytes are a no-op. Rust workers use the `iii-console-ui` crate
+(`ConsoleUi::new("<worker>").script(..).style(..).register(&iii)`), which also
+wires the `III_<WORKER>_UI_WATCH` development watcher; Node workers register
+the content function and observe `console::ui::asset` directly:
+
+```ts
+iii.observe(
+  { function_id: 'console::ui::asset', args: { kind: 'script', path: 'my-worker/page.js' } },
+  'my-worker::ui-content',
+)
+```
 
 ## Skills shipped with this worker
 

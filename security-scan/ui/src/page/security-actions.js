@@ -3,7 +3,7 @@
 /** @typedef {import('./security-scan-data').ActionRequestResult} ActionRequestResult */
 /** @typedef {import('./security-scan-data').SecurityAction} SecurityAction */
 
-import { ACTION_CHANGED_TRIGGER } from './live-triggers.js'
+import { ON_ACTION_CHANGED_FN } from './live-sources.js'
 
 /**
  * @typedef {{
@@ -30,9 +30,9 @@ function objectRecord(value) {
 }
 
 /**
- * Parses a `security-scan::action-changed` notification
+ * Parses a `security-scan::on-action-changed` event
  * (`{ action_id, run_id, repository, status, updated_at }`). Extra fields
- * the engine adds are ignored; anything else is not an action change.
+ * are ignored; anything else is not an action change.
  *
  * @param {unknown} payload
  * @returns {ActionUpdate | null}
@@ -57,14 +57,14 @@ export function actionUpdateFromEvent(payload) {
 /**
  * @param {{
  *   host: Host,
- *   bindingId: string,
+ *   instanceId: string,
  *   requestAction(host: Host, runId: string, findingIndex: number, action: ActionKind): Promise<ActionRequestResult>,
  *   readAction(host: Host, actionId: string): Promise<SecurityAction | null>,
  *   errorText(error: unknown): string,
  * }} dependencies
  */
 export function createSecurityActionsStore(dependencies) {
-  const { host, bindingId, requestAction, readAction, errorText } = dependencies
+  const { host, instanceId, requestAction, readAction, errorText } = dependencies
 
   /** @type {SecurityActionsSnapshot} */
   let snapshot = {}
@@ -84,7 +84,7 @@ export function createSecurityActionsStore(dependencies) {
   /** @type {Array<() => void>} */
   let disposers = []
   let connected = false
-  let bound = false
+  let observing = false
   let disposed = false
 
   const emit = () => {
@@ -177,7 +177,7 @@ export function createSecurityActionsStore(dependencies) {
 
   const start = () => {
     disposed = false
-    const handlerId = `iii::security-scan-ui::actions::${bindingId}`
+    const handlerId = `iii::security-scan-ui::actions::${instanceId}`
     try {
       disposers.push(
         host.iii.on(handlerId, (payload) => {
@@ -185,23 +185,17 @@ export function createSecurityActionsStore(dependencies) {
           if (update) applyUpdate(update)
         }),
       )
-      disposers.push(
-        host.iii.registerTrigger({
-          type: ACTION_CHANGED_TRIGGER,
-          function_id: `${handlerId}::${host.iii.browserId}`,
-          config: {},
-        }),
-      )
-      bound = true
+      disposers.push(host.iii.observe(ON_ACTION_CHANGED_FN, `${handlerId}::${host.iii.browserId}`))
+      observing = true
     } catch {
       for (const dispose of disposers) dispose()
       disposers = []
-      bound = false
+      observing = false
     }
     try {
       disposers.push(
         host.iii.addConnectionStateListener((state) => {
-          connected = bound && state === 'connected'
+          connected = observing && state === 'connected'
           // Reconnect is the recovery path: notifications missed while the
           // socket was down are not replayed, so tracked actions are re-read
           // once, here.

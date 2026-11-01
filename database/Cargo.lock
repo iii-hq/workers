@@ -789,7 +789,6 @@ name = "database"
 version = "0.5.26"
 dependencies = [
  "anyhow",
- "async-trait",
  "base64 0.22.1",
  "bytes",
  "chrono",
@@ -1683,9 +1682,9 @@ dependencies = [
 
 [[package]]
 name = "iii-filter"
-version = "0.25.0"
+version = "0.26.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a3d4bb15e834619f1180c09b78bf40cb0eeaa87c99869b821081eecaf5e4b3f"
+checksum = "20f12d8240baa346d3aaf7b2735ff0c22f613e013ff89b9d2528c43e5805afc8"
 dependencies = [
  "serde",
  "serde_json",
@@ -1693,9 +1692,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.25.0"
+version = "0.26.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1caa4741cf4ae1bd37c860a872f3b86f94e15ac5a5b1b16ba9507d313be5d2bb"
+checksum = "bf9b531aca1d1f67af91b2ca583ea6392108fb901a30c6ddf6814a6f196e7ad6"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -1714,9 +1713,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.25.0"
+version = "0.26.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ba3c91f524939ab1c980cf07786975dfdd16ffae90eed7345dd2a34c12643e8"
+checksum = "a487703a2afde8f34e4b58df70f889a0534b237b028c879268412a5d0b2ce6ca"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3888,7 +3887,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

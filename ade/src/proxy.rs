@@ -14,18 +14,20 @@
 //!    the proxy boundary, so stale/cached bundles cannot reconnect in
 //!    `default` while the Console worker runs in a project namespace.
 //! 2. `registerfunction` messages get `metadata.internal = true` stamped
-//!    on (see [`stamp_internal_registration`]). Everything a console page
-//!    registers is a live-update delivery target for that page, never a
-//!    discoverable API, and stamping here (not just in the SPA) means
-//!    stale/cached bundles can't pollute `engine::functions::list` either.
-//!    Their `observe.legacy_trigger_type` (iii 0.25) is removed on the way:
-//!    it makes the function the stand-in for that trigger type whenever no
-//!    provider of the type is live, the same takeover as exception 3.
-//! 3. `registertriggertype` frames are dropped (see
-//!    [`is_trigger_type_registration`]). Trigger-type ownership is
-//!    last-writer-wins engine-wide — a hostile page could re-register
-//!    `console:script` and intercept every UI-asset registration. The SPA
-//!    never sends this frame, so dropping it breaks nothing.
+//!    on, and `private`, `args_format`, `observable` and the 0.25 `observe`
+//!    descriptor stripped (see [`stamp_internal_registration`]). Everything
+//!    a console page registers is a live-update target for that page's own
+//!    observers, never a discoverable API or an event source, and stamping
+//!    here (not just in the SPA) means stale/cached bundles can't pollute
+//!    `engine::functions::list` either.
+//! 3. A `registerfunction` for one of the functions this worker hosts
+//!    (`console::ui::*`, `console::workspace::on-changed`,
+//!    `console::compose::on-changed`) is dropped (see
+//!    [`is_provider_registration`]). A function has one host per namespace
+//!    and pages share this worker's: a page that registered
+//!    `console::ui::asset` first would receive every worker's UI asset
+//!    observer. The SPA never registers these ids, so dropping breaks
+//!    nothing.
 
 use std::sync::Arc;
 
@@ -158,10 +160,11 @@ async fn handle_ws(client: WebSocket, config: ProxyConfig) {
             let is_close = matches!(msg, AxumMessage::Close(_));
             let msg = match msg {
                 AxumMessage::Text(t) => {
-                    if is_trigger_type_registration(&t) {
+                    if is_provider_registration(&t) {
                         tracing::warn!(
-                            "dropped browser-originated registertriggertype frame \
-                             (trigger-type ownership is not available through the /ws proxy)"
+                            "dropped a browser registerfunction for a function the console \
+                             hosts (the console's own functions cannot be registered through \
+                             the /ws proxy)"
                         );
                         continue;
                     }
@@ -249,24 +252,45 @@ pub(crate) fn enforce_worker_namespace(text: &str, namespace: Option<&str>) -> O
     serde_json::to_string(&msg).ok()
 }
 
-/// `true` if `text` is a wire `registertriggertype` message — the one
-/// frame the proxy refuses to forward (tab-originated trigger-type
-/// hijack; worker-originated hijack remains an RBAC concern).
-pub(crate) fn is_trigger_type_registration(text: &str) -> bool {
-    if !text.contains("\"registertriggertype\"") {
+/// The functions this worker hosts, which a page must not register first.
+const PROVIDER_FUNCTIONS: &[&str] = &[
+    crate::ui_assets::ASSET_FN,
+    crate::ui_assets::ON_ASSETS_CHANGED_FN,
+    crate::functions::workspace::ON_CHANGED_FN,
+    crate::compose::ON_CHANGED_FN,
+];
+/// Every id under it is the console's injected-UI surface.
+const PROVIDER_PREFIX: &str = "console::ui::";
+
+/// `true` if `text` is a wire `registerfunction` for one of the functions
+/// this worker hosts — the one frame the proxy refuses to forward
+/// (tab-originated takeover; a worker registering them first remains an
+/// RBAC concern).
+pub(crate) fn is_provider_registration(text: &str) -> bool {
+    if !text.contains("\"registerfunction\"") {
         return false;
     }
     let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
         return false;
     };
-    msg.get("type").and_then(|t| t.as_str()) == Some("registertriggertype")
+    if msg.get("type").and_then(|t| t.as_str()) != Some("registerfunction") {
+        return false;
+    }
+    msg.get("id")
+        .and_then(|id| id.as_str())
+        .is_some_and(|id| id.starts_with(PROVIDER_PREFIX) || PROVIDER_FUNCTIONS.contains(&id))
 }
 
+/// What a page's registration may not declare: an event source's settings
+/// (`private`, `args_format`), `observable`, and the 0.25 `observe`
+/// descriptor that carries the same.
+const STRIPPED_REGISTRATION_KEYS: &[&str] = &["private", "args_format", "observable", "observe"];
+
 /// If `text` is a wire `registerfunction` message, return a copy with
-/// `metadata.internal = true` merged in and any
-/// `observe.legacy_trigger_type` removed; `None` means "forward the
-/// original untouched" (not a registration, unparseable, or nothing to
-/// change — a metadata shape we don't understand is left as it is).
+/// `metadata.internal = true` merged in and [`STRIPPED_REGISTRATION_KEYS`]
+/// removed; `None` means "forward the original untouched" (not a
+/// registration, unparseable, or nothing to change — a metadata shape we
+/// don't understand is left as it is).
 pub(crate) fn stamp_internal_registration(text: &str) -> Option<String> {
     // Fast path: skip the JSON parse for the overwhelming majority of
     // frames (invocations, results, stream sends).
@@ -291,12 +315,10 @@ pub(crate) fn stamp_internal_registration(text: &str) -> Option<String> {
             changed = true;
         }
     }
-    // A page must not stand in for a trigger type (iii 0.25's legacy shim
-    // routes old `registertrigger`s of a type nobody provides to a function
-    // declaring it). The rest of the descriptor only concerns the page's own
-    // function.
-    if let Some(serde_json::Value::Object(observe)) = obj.get_mut("observe") {
-        changed |= observe.remove("legacy_trigger_type").is_some();
+    // A page's function is a target for the page's own observers: plain,
+    // callable, observable. A private one could not be a target at all.
+    for key in STRIPPED_REGISTRATION_KEYS {
+        changed |= obj.remove(*key).is_some();
     }
     if !changed {
         return None;
@@ -507,33 +529,48 @@ mod tests {
     }
 
     #[test]
-    fn stamp_removes_a_legacy_trigger_type_stand_in() {
-        let wire = r#"{"type":"registerfunction","id":"x","observe":{"delivery":"owner","legacy_trigger_type":"console:script","allow":true}}"#;
+    fn stamp_strips_event_source_settings() {
+        let wire = r#"{"type":"registerfunction","id":"x","private":true,"args_format":{"type":"object"},"observable":false,"observe":{"delivery":"owner","allow":false},"description":"d"}"#;
         let out = stamp_internal_registration(wire).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert!(v["observe"].get("legacy_trigger_type").is_none());
-        assert_eq!(v["observe"]["delivery"], "owner");
-        assert_eq!(v["observe"]["allow"], true);
+        for key in ["private", "args_format", "observable", "observe"] {
+            assert!(v.get(key).is_none(), "`{key}` survived");
+        }
+        assert_eq!(v["description"], "d");
         assert_eq!(v["metadata"]["internal"], serde_json::json!(true));
 
-        // Removed even when the metadata is a shape left alone.
-        let weird = r#"{"type":"registerfunction","id":"x","metadata":"weird","observe":{"legacy_trigger_type":"cron"}}"#;
+        // Stripped even when the metadata is a shape left alone.
+        let weird = r#"{"type":"registerfunction","id":"x","metadata":"weird","private":true}"#;
         let out = stamp_internal_registration(weird).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["metadata"], "weird");
-        assert_eq!(v["observe"], serde_json::json!({}));
+        assert!(v.get("private").is_none());
     }
 
     #[test]
-    fn trigger_type_registration_is_detected() {
-        assert!(is_trigger_type_registration(
-            r#"{"type":"registertriggertype","id":"console:script","description":"x"}"#
+    fn provider_registrations_are_detected() {
+        for id in [
+            "console::ui::asset",
+            "console::ui::on-assets-changed",
+            "console::ui::anything-else",
+            "console::workspace::on-changed",
+            "console::compose::on-changed",
+        ] {
+            let wire = format!(r#"{{"type":"registerfunction","id":"{id}"}}"#);
+            assert!(is_provider_registration(&wire), "{id} was forwarded");
+        }
+        // A page's own handlers pass.
+        assert!(!is_provider_registration(
+            r#"{"type":"registerfunction","id":"iii::console::ui-assets::console-1"}"#
+        ));
+        assert!(!is_provider_registration(
+            r#"{"type":"registerfunction","id":"console::workspace::list"}"#
         ));
         // Payload mentions it, but the frame is a different type — forward.
-        assert!(!is_trigger_type_registration(
-            r#"{"type":"invokefunction","payload":"\"registertriggertype\""}"#
+        assert!(!is_provider_registration(
+            r#"{"type":"invokefunction","function_id":"console::ui::asset","payload":"\"registerfunction\""}"#
         ));
-        assert!(!is_trigger_type_registration("registertriggertype{"));
+        assert!(!is_provider_registration("registerfunction{"));
     }
 
     #[test]

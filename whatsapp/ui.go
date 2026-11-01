@@ -39,12 +39,16 @@ func uiContent(_ context.Context, request UIRequest) (UIResponse, error) {
 	return UIResponse{string(b), contentType}, err
 }
 func registerUI(client *iii.Client) error {
-	if err := iii.RegisterFunctionTyped(client, "whatsapp::ui-content", uiContent, iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true}`)}); err != nil {
+	if _, err := iii.RegisterFunctionTyped(client, "whatsapp::ui-content", uiContent, iii.RegisterFunctionOptions{Metadata: json.RawMessage(`{"internal":true}`)}); err != nil {
 		return err
 	}
-	for _, asset := range []struct{ path, kind string }{{"whatsapp/page.js", "console:script"}, {"whatsapp/styles.css", "console:style"}} {
-		config, _ := json.Marshal(map[string]string{"path": asset.path})
-		if err := client.RegisterTriggerNamespaced("whatsapp:ui:"+asset.path, asset.kind, "whatsapp::ui-content", Namespace(), config); err != nil {
+	// The console accepts each asset's observer and calls whatsapp::ui-content
+	// through it with {path}.
+	for _, asset := range []struct{ path, kind string }{{"whatsapp/page.js", "script"}, {"whatsapp/styles.css", "style"}} {
+		if err := observeFunction(client, iii.Source{
+			FunctionID: "console::ui::asset",
+			Args:       iii.Args{"kind": asset.kind, "path": asset.path},
+		}, "whatsapp::ui-content"); err != nil {
 			return err
 		}
 	}

@@ -1,13 +1,11 @@
 //! `api_key: "secret://NAME"` is a reference resolved through the `secrets` worker
 //! (`secrets::resolve`) at call time, never sent upstream as a key. Resolved values stay
-//! in memory, are re-read after a TTL or when `secrets::changed` names them, are wiped
+//! in memory, are re-read after a TTL or when `secrets::on-changed` names them, are wiped
 //! when replaced, and are never logged. A reference that does not resolve is an error
 //! with an actionable reason: it never falls back to the worker's environment key.
 //! Any other `scheme://` value is rejected the same way, never sent as a literal key.
 use iii_sdk::{
-    errors::Error,
-    protocol::{RegisterTriggerInput, TriggerRequest},
-    IIIClient, RegisterFunction,
+    errors::Error, CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -22,7 +20,7 @@ use std::{
 
 pub const SCHEME: &str = "secret://";
 const RESOLVE_ID: &str = "secrets::resolve";
-const CHANGED_TRIGGER_TYPE: &str = "secrets::changed";
+const ON_CHANGED_FN: &str = "secrets::on-changed";
 /// A missing secrets worker answers `function_not_found` at once; this bounds a hung one.
 const RESOLVE_TIMEOUT_MS: u64 = 3_000;
 /// Re-read a resolved value at least this often, bounding staleness if an event is missed.
@@ -152,7 +150,7 @@ pub fn bus_fetch(iii: IIIClient) -> Fetch {
         let iii = iii.clone();
         Box::pin(async move {
             let response = iii
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: RESOLVE_ID.into(),
                     payload: json!({ "ref": format!("{SCHEME}{name}") }),
                     action: None,
@@ -265,8 +263,8 @@ impl SecretCache {
     }
 }
 
-/// Advisory `secrets::changed` payload; it never carries a value. Other fields
-/// (`action`, `fingerprint`, `updated_at`) are ignored.
+/// The `secrets::on-changed` event, delivered as output; it never carries a value.
+/// Other fields (`action`, `fingerprint`, `updated_at`) are ignored.
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct SecretChangedEvent {
     #[serde(default)]
@@ -279,11 +277,16 @@ pub struct SecretChangedResponse {
     pub ok: bool,
 }
 
-/// Register `fn_id` (`<worker>::on-secret-change`) to evict the named secret on
-/// `secrets::changed`. The type belongs to the optional `secrets` worker: when it is
-/// absent the engine parks this binding and activates it once the type registers, so
-/// nothing retries here; the TTLs bound staleness.
-pub fn register_secret_trigger(iii: &IIIClient, cache: Arc<SecretCache>, fn_id: &str) {
+/// Register `fn_id` (`<worker>::on-secret-change`) to evict the named secret, then
+/// observe `secrets::on-changed` with it, the event delivered as output. The function
+/// belongs to the optional `secrets` worker: while it is absent the observer stays
+/// `pending` and the engine activates it once the function registers, so nothing
+/// retries here; the TTLs bound staleness.
+pub fn observe_secret_changes(
+    iii: &IIIClient,
+    cache: Arc<SecretCache>,
+    fn_id: &str,
+) -> ObserverHandle {
     iii.register_function(
         fn_id,
         RegisterFunction::new_async(move |event: SecretChangedEvent| {
@@ -304,13 +307,10 @@ pub fn register_secret_trigger(iii: &IIIClient, cache: Arc<SecretCache>, fn_id: 
         )
         .metadata(json!({ "internal": true })),
     );
-    if let Err(error) = iii.register_trigger(RegisterTriggerInput::new(
-        CHANGED_TRIGGER_TYPE,
+    iii.observe(
+        Source::function(ON_CHANGED_FN).deliver(Deliver::Output),
         fn_id,
-        json!({}),
-    )) {
-        tracing::warn!(%error, "binding secrets::changed failed; secret:// keys refresh on their TTL only");
-    }
+    )
 }
 
 #[cfg(test)]
@@ -453,7 +453,7 @@ mod tests {
             Ok(Some("ts-from-secrets".into()))
         );
 
-        // secrets::changed evicts: a rotation or revocation lands on the next call
+        // secrets::on-changed evicts: a rotation or revocation lands on the next call
         set(Err(SecretError::Forbidden));
         cache.evict("TYPESAFE_API_KEY");
         let error = cache.configured_key(reference).await.unwrap_err();

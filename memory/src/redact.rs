@@ -373,7 +373,7 @@ pub fn drop_secrets(fields: &mut Vec<String>) -> Vec<&'static str> {
     labels
 }
 
-/// `redacted: <labels>`, the reason an `item-changed` event carries.
+/// `redacted: <labels>`, the reason a `memory::on-item-changed` event carries.
 pub fn reason(labels: &[&'static str]) -> Option<String> {
     (!labels.is_empty()).then(|| format!("redacted: {}", labels.join(", ")))
 }

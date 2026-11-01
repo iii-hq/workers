@@ -263,7 +263,7 @@ stop_compose() {
   # alone would leave them supervised by nothing until the orphan sweep.
   if [[ -n "$iii_bin" && -n "$engine_pid" ]] \
     && kill -0 "$engine_pid" 2>/dev/null && kill -0 "$compose_pid" 2>/dev/null; then
-    "$iii_bin" trigger compose::down --port "$engine_port" \
+    "$iii_bin" call compose::down --port "$engine_port" \
       --json "$(jq -cn --arg file "$compose_file" '{file: $file}')" \
       >"$log_dir/compose-down.log" 2>&1 || true
   fi
@@ -334,10 +334,10 @@ trap 'exit 143' TERM
 wait_for_engine() {
   local response attempt
   log "Waiting for engine on port $engine_port (up to ${wait_seconds}s)"
-  log_command "iii trigger engine::workers::list --port $engine_port --json '{}'"
+  log_command "iii call engine::workers::list --port $engine_port --json '{}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
     kill -0 "$engine_pid" 2>/dev/null || die "engine exited before becoming ready"
-    response=$("$iii_bin" trigger engine::workers::list --port "$engine_port" \
+    response=$("$iii_bin" call engine::workers::list --port "$engine_port" \
       --json '{}' 2>>"$log_dir/discovery.log" || true)
     if jq -e '.workers != null' <<<"$response" >/dev/null 2>&1; then
       ok "engine ready after ${attempt}s"
@@ -363,9 +363,9 @@ wait_for_functions() {
   ]'
 
   log "Waiting for the harness and Console function surface (up to ${wait_seconds}s)"
-  log_command "iii trigger engine::functions::list --port $engine_port --json '{\"include_internal\":true}'"
+  log_command "iii call engine::functions::list --port $engine_port --json '{\"include_internal\":true}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger engine::functions::list --port "$engine_port" \
+    response=$("$iii_bin" call engine::functions::list --port "$engine_port" \
       --json '{"include_internal":true}' 2>>"$log_dir/discovery.log" || true)
     missing=$(jq -r --argjson required "$required" '
       (.functions // [] | map(.function_id)) as $available
@@ -387,9 +387,9 @@ wait_for_functions() {
 wait_for_providers() {
   local response attempt
   log "Waiting for Anthropic and OpenAI provider configuration (up to ${wait_seconds}s)"
-  log_command "iii trigger router::provider::list --port $engine_port --json '{}'"
+  log_command "iii call router::provider::list --port $engine_port --json '{}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger router::provider::list --port "$engine_port" \
+    response=$("$iii_bin" call router::provider::list --port "$engine_port" \
       --json '{}' 2>>"$log_dir/provider-discovery.log" || true)
     if jq -e '.providers | type == "array"' <<<"$response" >/dev/null 2>&1; then
       printf '%s\n' "$response" >"$artifact_dir/provider-status.json"
@@ -416,9 +416,9 @@ wait_for_model() {
   local provider_id=$1 model_id=$2 output_path=$3
   local response attempt
   log "Waiting for $provider_id/$model_id in the router catalog (up to ${wait_seconds}s)"
-  log_command "iii trigger router::models::get --port $engine_port --json '{\"provider\":\"$provider_id\",\"id\":\"$model_id\"}'"
+  log_command "iii call router::models::get --port $engine_port --json '{\"provider\":\"$provider_id\",\"id\":\"$model_id\"}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger router::models::get --port "$engine_port" \
+    response=$("$iii_bin" call router::models::get --port "$engine_port" \
       --json "{\"provider\":\"$provider_id\",\"id\":\"$model_id\"}" \
       2>>"$log_dir/model-discovery.log" || true)
     if jq -e --arg provider "$provider_id" --arg model "$model_id" \
@@ -432,7 +432,7 @@ wait_for_model() {
     fi
     sleep 1
   done
-  "$iii_bin" trigger router::models::list --port "$engine_port" --json '{}' \
+  "$iii_bin" call router::models::list --port "$engine_port" --json '{}' \
     >"$artifact_dir/model-catalog.json" 2>>"$log_dir/model-discovery.log" || true
   die "$provider_id/$model_id did not appear in the router catalog"
 }
@@ -475,13 +475,13 @@ wait_for_terminal_turns() {
   ((${#session_ids[@]} == 2)) \
     || die "browser evidence must contain exactly two unique session ids"
 
-  log_command "iii trigger harness::status --port $engine_port --json '{\"session_id\":\"<console-session>\",\"verbose\":true}'"
+  log_command "iii call harness::status --port $engine_port --json '{\"session_id\":\"<console-session>\",\"verbose\":true}'"
   for session_id in "${session_ids[@]}"; do
     log "Verifying the durable terminal turn for session $session_id"
     response=''
     completed=0
     for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-      response=$("$iii_bin" trigger harness::status --port "$engine_port" \
+      response=$("$iii_bin" call harness::status --port "$engine_port" \
         --json "{\"session_id\":\"$session_id\",\"verbose\":true}" 2>>"$log_dir/terminal-status.log" || true)
       if jq -e '.status == "completed" and (.expects_wake // false) == false' \
         <<<"$response" >/dev/null 2>&1; then
@@ -512,10 +512,10 @@ verify_first_capability() {
     || die "first capability browser evidence has no session id"
 
   log "Verifying the first capability for session $session_id"
-  log_command "iii trigger harness::status --port $engine_port --json '{\"session_id\":\"<capability-session>\",\"verbose\":true}'"
+  log_command "iii call harness::status --port $engine_port --json '{\"session_id\":\"<capability-session>\",\"verbose\":true}'"
   response=''
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
-    response=$("$iii_bin" trigger harness::status --port "$engine_port" \
+    response=$("$iii_bin" call harness::status --port "$engine_port" \
       --json "{\"session_id\":\"$session_id\",\"verbose\":true}" \
       2>>"$log_dir/first-capability-terminal.log" || true)
     if jq -e '.status == "completed" and (.expects_wake // false) == false' \
@@ -531,15 +531,15 @@ verify_first_capability() {
   done
   ((completed == 1)) || die "first capability session did not reach durable completion"
 
-  log_command "iii trigger session::messages --port $engine_port --json '{\"session_id\":\"<capability-session>\",\"limit\":500}'"
-  transcript=$("$iii_bin" trigger session::messages --port "$engine_port" \
+  log_command "iii call session::messages --port $engine_port --json '{\"session_id\":\"<capability-session>\",\"limit\":500}'"
+  transcript=$("$iii_bin" call session::messages --port "$engine_port" \
     --json "{\"session_id\":\"$session_id\",\"limit\":500}" \
     2>"$log_dir/first-capability-transcript.log") \
     || die "could not load the first capability transcript"
 
   call_count=$(jq -er --arg function "$capability_function" '
     def normalized_function_id:
-      if .function_id == "agent_trigger"
+      if .function_id == "agent_call"
       then .arguments.function
       else .function_id
       end;
@@ -615,17 +615,17 @@ run_compose_add() {
   local spec=$1 payload response status operation_id terminal_snapshot
   payload=$(jq -cn --arg file "$compose_file" --arg worker "$spec" \
     '{file: $file, worker: $worker}')
-  # `iii trigger` waits only 30s for the invocation result by default, far
+  # `iii call` waits only 30s for the invocation result by default, far
   # less than a cold registry install of the full graph on a CI runner —
   # the CLI must wait as long as the add itself is allowed to run; the
   # external `timeout` stays as the hard stop against a hung CLI.
-  log_command "iii trigger compose::add --port $engine_port --timeout-ms $((add_timeout_seconds * 1000)) --json '$payload'"
+  log_command "iii call compose::add --port $engine_port --timeout-ms $((add_timeout_seconds * 1000)) --json '$payload'"
   if command -v timeout >/dev/null 2>&1; then
     response=$(timeout --signal=TERM --kill-after=15s "$((add_timeout_seconds + 30))" \
-      "$iii_bin" trigger compose::add --port "$engine_port" \
+      "$iii_bin" call compose::add --port "$engine_port" \
       --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload")
   else
-    response=$("$iii_bin" trigger compose::add --port "$engine_port" \
+    response=$("$iii_bin" call compose::add --port "$engine_port" \
       --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload")
   fi
   printf '%s\n' "$response"
@@ -639,7 +639,7 @@ run_compose_add() {
       operation_id=$(jq -r '.operation_id // empty' <<<"$response" 2>/dev/null || true)
       [[ -n "$operation_id" ]] \
         || die "compose::add $spec was accepted without an operation_id"
-      log_command "iii trigger compose::operation --port $engine_port --json '{\"operation_id\":\"$operation_id\"}' (until terminal)"
+      log_command "iii call compose::operation --engine ws://127.0.0.1:$engine_port --json '{\"operation_id\":\"$operation_id\"}' (until terminal)"
       if ! terminal_snapshot=$(python3 "$script_dir/wait_for_compose_operation.py" \
         --iii-bin "$iii_bin" \
         --engine-port "$engine_port" \
@@ -661,13 +661,13 @@ run_compose_add() {
 run_compose_restart() {
   local payload response
   payload=$(jq -cn --arg file "$compose_file" '{file: $file}')
-  log_command "iii trigger compose::restart --port $engine_port --timeout-ms $((add_timeout_seconds * 1000)) --json '$payload'"
+  log_command "iii call compose::restart --port $engine_port --timeout-ms $((add_timeout_seconds * 1000)) --json '$payload'"
   if command -v timeout >/dev/null 2>&1; then
     response=$(timeout --signal=TERM --kill-after=15s "$((add_timeout_seconds + 30))" \
-      "$iii_bin" trigger compose::restart --port "$engine_port" \
+      "$iii_bin" call compose::restart --port "$engine_port" \
       --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload")
   else
-    response=$("$iii_bin" trigger compose::restart --port "$engine_port" \
+    response=$("$iii_bin" call compose::restart --port "$engine_port" \
       --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload")
   fi
   printf '%s\n' "$response"
@@ -686,7 +686,7 @@ start_engine() {
   engine_pid=$!
 }
 
-# The daemon serves `compose::*` in the `default` namespace so the triggers
+# The daemon serves `compose::*` in the `default` namespace so the calls
 # below reach it the same way every other function is reached. It runs in the
 # foreground by design; the script owns backgrounding it, like the engine.
 start_compose() {
@@ -711,10 +711,10 @@ start_compose() {
 wait_for_compose() {
   local response attempt
   log "Waiting for the compose daemon (up to ${wait_seconds}s)"
-  log_command "iii trigger engine::functions::list --port $engine_port --json '{\"include_internal\":true}'"
+  log_command "iii call engine::functions::list --port $engine_port --json '{\"include_internal\":true}'"
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
     kill -0 "$compose_pid" 2>/dev/null || die "compose daemon exited before becoming ready"
-    response=$("$iii_bin" trigger engine::functions::list --port "$engine_port" \
+    response=$("$iii_bin" call engine::functions::list --port "$engine_port" \
       --json '{"include_internal":true}' 2>>"$log_dir/discovery.log" || true)
     if jq -e '(.functions // [] | map(.function_id)) | index("compose::add") != null' \
       <<<"$response" >/dev/null 2>&1; then
@@ -789,8 +789,8 @@ wait_for_model anthropic claude-sonnet-5-5 "$artifact_dir/model-anthropic.json"
 wait_for_model openai gpt-5.6-luna "$artifact_dir/model-openai.json"
 
 log "Step 7/9: Verify the Console HTTP surface"
-log_command "iii trigger console::status --port $engine_port --json '{}'"
-console_status=$("$iii_bin" trigger console::status --port "$engine_port" \
+log_command "iii call console::status --port $engine_port --json '{}'"
+console_status=$("$iii_bin" call console::status --port "$engine_port" \
   --json '{}' 2>"$log_dir/console-status.log")
 printf '%s\n' "$console_status" >"$artifact_dir/console-status.json"
 console_port=$(jq -er '.http_port | select(type == "number")' <<<"$console_status") \

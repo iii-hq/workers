@@ -1,0 +1,243 @@
+//! `harness::function::call` — invoke a single iii function and return a
+//! normalised result (harness.md § `harness::function::call`). The loop
+//! unwraps `agent_call` before calling this; it can also be called directly
+//! with an already-unwrapped target.
+
+use std::time::Instant;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::call;
+use crate::deps::Deps;
+use crate::error::HarnessError;
+use crate::hooks::runner::PreCallOutcome;
+use crate::policy::CompiledPolicy;
+use crate::types::content::ContentBlock;
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct CallInput {
+    /// function_call id, echoed into the result.
+    pub id: String,
+    /// The iii function to invoke (already unwrapped from `agent_call`).
+    pub function_id: String,
+    pub arguments: Value,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct FunctionCallRequest {
+    pub session_id: String,
+    pub call: CallInput,
+}
+
+impl Default for CallInput {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            function_id: String::new(),
+            arguments: Value::Null,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CallResultResponse {
+    pub function_call_id: String,
+    pub function_id: String,
+    pub content: Vec<ContentBlock>,
+    pub is_error: bool,
+    pub details: Value,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CallPendingResponse {
+    pub function_call_id: String,
+    pub function_id: String,
+    pub pending: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum FunctionCallResponse {
+    Result(CallResultResponse),
+    Pending(CallPendingResponse),
+}
+
+pub async fn handle(
+    deps: &Deps,
+    req: FunctionCallRequest,
+) -> Result<FunctionCallResponse, HarnessError> {
+    let _guard = deps.locks.guard(&req.session_id).await;
+    super::delete_session_tree::ensure_live(deps, &req.session_id).await?;
+    let cfg = deps.cfg().await;
+    // Honour the calling turn's dispatch policy when one exists; absent a turn
+    // record this is a direct trusted call, which still fails closed.
+    let record = crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
+    let policy = CompiledPolicy::from(record.as_ref().and_then(|r| r.options.functions.as_ref()));
+    let engine = deps.engine().await;
+    let started = Instant::now();
+
+    // A call is a pipeline: fail-closed globs, then the pre_call chain,
+    // then the target, then the post_call chain (harness.md §
+    // `harness::function::call`).
+    if !policy.allows(&req.call.function_id) {
+        let data = call::denied_result(&req.call.function_id);
+        return Ok(result_response(
+            &req.call.id,
+            &req.call.function_id,
+            data,
+            elapsed(started),
+        ));
+    }
+
+    // Stamp the turn's filesystem scope onto scoped shell/coder args BEFORE the
+    // hook chain (an approver must see the fs_scope the call will run under)
+    // and re-apply it before invocation so neither a direct caller nor a hook
+    // rewrite can widen the session scope. No turn record → no scope: any
+    // caller-supplied fs_scope is stripped.
+    let session_grants = if record.is_some() {
+        crate::filesystem_grants::roots(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
+    } else {
+        Vec::new()
+    };
+    let filesystem_root = record
+        .as_ref()
+        .and_then(|rec| rec.options.filesystem_root())
+        .map(str::to_string);
+    let filesystem_boundary = deps.filesystem_boundary(&req.call.function_id).await;
+    let mut arguments = crate::filesystem_scope::inject(
+        &req.call.function_id,
+        req.call.arguments.clone(),
+        filesystem_root.as_deref(),
+        &session_grants,
+        filesystem_boundary,
+    );
+    if let Some(rec) = &record {
+        match deps
+            .hooks
+            .run_pre_call(
+                rec,
+                rec.step,
+                &req.call.id,
+                &req.call.function_id,
+                &arguments,
+                None,
+            )
+            .await
+        {
+            PreCallOutcome::Continue { arguments: a, .. } => {
+                arguments = crate::filesystem_scope::inject(
+                    &req.call.function_id,
+                    a,
+                    filesystem_root.as_deref(),
+                    &session_grants,
+                    filesystem_boundary,
+                );
+            }
+            PreCallOutcome::Deny(reason) => {
+                let data = call::ResultData {
+                    content: vec![ContentBlock::text(reason.clone())],
+                    is_error: true,
+                    details: serde_json::json!({ "error": "hook_denied", "message": reason }),
+                };
+                return Ok(result_response(
+                    &req.call.id,
+                    &req.call.function_id,
+                    data,
+                    elapsed(started),
+                ));
+            }
+            PreCallOutcome::Hold { .. } => {
+                return Ok(FunctionCallResponse::Pending(CallPendingResponse {
+                    function_call_id: req.call.id,
+                    function_id: req.call.function_id,
+                    pending: true,
+                    pending_timeout_ms: None,
+                }));
+            }
+        }
+    }
+
+    // Re-stamp after the hook chain (idempotent) — a hook rewrite must not
+    // widen or drop the session scope.
+    let arguments = crate::filesystem_scope::inject(
+        &req.call.function_id,
+        arguments,
+        filesystem_root.as_deref(),
+        &session_grants,
+        filesystem_boundary,
+    );
+
+    // Single invocation chokepoint: subscription control calls are intercepted
+    // (trusted session injected); everything else invokes the target.
+    let raw = crate::functions::observe::invoke(
+        deps,
+        &engine,
+        &policy,
+        &req.call.function_id,
+        &arguments,
+        &req.session_id,
+        true, // direct pipeline now shares the session lifecycle lock
+        record
+            .as_ref()
+            .map(|rec| crate::functions::observe::CallerModel::from_options(&rec.options)),
+    )
+    .await;
+    let data = if let Some(rec) = &record {
+        match deps
+            .hooks
+            .run_post_call(
+                rec,
+                rec.step,
+                &req.call.id,
+                &req.call.function_id,
+                &arguments,
+                raw,
+            )
+            .await
+        {
+            crate::hooks::runner::PostCallOutcome::Result { result, .. } => result,
+            crate::hooks::runner::PostCallOutcome::Hold { .. } => {
+                return Ok(FunctionCallResponse::Pending(CallPendingResponse {
+                    function_call_id: req.call.id,
+                    function_id: req.call.function_id,
+                    pending: true,
+                    pending_timeout_ms: None,
+                }));
+            }
+        }
+    } else {
+        raw
+    };
+
+    Ok(result_response(
+        &req.call.id,
+        &req.call.function_id,
+        data,
+        elapsed(started),
+    ))
+}
+
+fn elapsed(started: Instant) -> u64 {
+    started.elapsed().as_millis() as u64
+}
+
+fn result_response(
+    call_id: &str,
+    function_id: &str,
+    data: call::ResultData,
+    duration_ms: u64,
+) -> FunctionCallResponse {
+    FunctionCallResponse::Result(CallResultResponse {
+        function_call_id: call_id.to_string(),
+        function_id: function_id.to_string(),
+        content: data.content,
+        is_error: data.is_error,
+        details: data.details,
+        duration_ms,
+    })
+}

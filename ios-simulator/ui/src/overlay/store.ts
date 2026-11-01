@@ -3,7 +3,7 @@
  * shared between the overlay, the expand control and the Simulators page.
  * Keys are `<tenant>/<udid>`. A card never covers a simulator the page shows
  * live in this window, and a boot started from the page never gets one: its
- * `device-changed` event carries `preview: false`.
+ * `ios-simulator::on-device-changed` event carries `preview: false`.
  */
 
 import type { Host } from '@iii-dev/console-ui'

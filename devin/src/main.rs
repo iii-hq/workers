@@ -86,14 +86,12 @@ async fn main() -> Result<()> {
 
     let cell: configuration::ConfigCell = Arc::new(RwLock::new(Arc::new(cfg)));
 
-    if let Err(e) = configuration::register_config_trigger(&iii, cell.clone()) {
-        tracing::warn!(error = %e, "configuration change trigger registration failed");
-    }
+    configuration::observe_config_changes(&iii, cell.clone());
     configuration::reconcile(&iii, &cell).await;
 
     let http = api::build_client();
-    // Own the devin::agent-event / devin::raw-event trigger types before the
-    // first turn can emit.
+    // Register the devin::on-agent-event / devin::on-raw-event functions
+    // before the first turn can emit.
     agent_feed::register(&iii);
     register_all(&iii, cell, http);
     tracing::info!("devin worker registered all functions, ready");

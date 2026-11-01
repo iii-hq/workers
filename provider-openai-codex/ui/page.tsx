@@ -211,5 +211,5 @@ export default function setup(host: Host) {
   host.providerConfigForms?.register('openai-codex', (props) => <CodexProviderForm host={host} {...props} />)
   // A generated picture is a chat artifact: `image::generate` returns only
   // the saved path, and this renderer fetches the preview from the worker.
-  host.functionTriggers.register(createImageRenderer(host))
+  host.functionCalls.register(createImageRenderer(host))
 }

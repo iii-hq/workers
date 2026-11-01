@@ -1,6 +1,6 @@
 {
   "function_id": "browser::cookies::set",
-  "description": "Set cookies on the session, like importing a cookie file. A cookie without a domain is scoped to the current page's URL. same_site is Strict, Lax, or None.",
+  "description": "Set cookies on the session, like importing a cookie file. A cookie without a domain is scoped to the current page's URL. same_site is Strict, Lax, or None. Cookie values are credentials (logged-in sessions), so the function is not observable.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "CookiesSetInput",

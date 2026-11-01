@@ -73,11 +73,11 @@ export const DESIGN_EXAMPLES = [
     id: 'requests.send',
     dir: 'fromVm',
     message:
-      '[[20,7,1,{"fn":"browser::sessions::list","payload":{}}],[20,8,2,{"sub":3,"trigger":"browser::session-started","config":{}}]]',
+      '[[20,7,1,{"fn":"browser::sessions::list","payload":{}}],[20,8,2,{"sub":3,"fn":"browser::on-session-started","args":{},"filters":{}}]]',
   },
   { id: 'requests.responses', dir: 'toVm', message: '[[8,8,1,null],[8,7,1,{"sessions":[]}]]' },
   {
-    id: 'requests.trigger',
+    id: 'requests.observed',
     dir: 'toVm',
     message:
       '[[9,3,{"session_id":"s1","url":"about:blank","headless":true,"preview":false,"timestamp":1761151200000}]]',
@@ -130,7 +130,7 @@ export const FLOWS = [
     name: 'list-splice',
     app: 'list-splice',
     description:
-      'A List with two templates chosen by kindField "kind" (rows and section headers), header, empty and footer slots, a trailing IconButton in the row template. A trigger replaces the items four times (first fill, an append plus a changed title, a removal in the middle, a reorder) and createList().set sends only the splices that changed; then a tap on a row and on the close button inside a row.',
+      'A List with two templates chosen by kindField "kind" (rows and section headers), header, empty and footer slots, a trailing IconButton in the row template. An observed event replaces the items four times (first fill, an append plus a changed title, a removal in the middle, a reorder) and createList().set sends only the splices that changed; then a tap on a row and on the close button inside a row.',
     host: { ns: 'demo', ...DESIGN_HOST },
     async run(h) {
       await h.mount('root')
@@ -138,10 +138,11 @@ export const FLOWS = [
       const a = { key: 'a', kind: 0, title: 'Example Domain', url: 'example.com/' }
       const b = { key: 'b', kind: 0, title: 'iii', url: 'iii.dev' }
       const c = { key: 'c', kind: 0, title: 'GitHub', url: 'github.com/login' }
-      await h.emitTrigger('demo::tabs-changed', { rows: [header, a, b] })
-      await h.emitTrigger('demo::tabs-changed', { rows: [header, a, { ...b, title: 'iii — More application.' }, c] })
-      await h.emitTrigger('demo::tabs-changed', { rows: [header, a, c] })
-      await h.emitTrigger('demo::tabs-changed', { rows: [header, c, a] })
+      const tabsChanged = (rows) => h.emitObserved('demo::on-tabs-changed', { rows })
+      await tabsChanged([header, a, b])
+      await tabsChanged([header, a, { ...b, title: 'iii — More application.' }, c])
+      await tabsChanged([header, a, c])
+      await tabsChanged([header, c, a])
       await h.itemPress('tabs', 'a')
       await h.itemPress('tabs', 'c', 'close')
     },
@@ -162,13 +163,13 @@ export const FLOWS = [
     name: 'text-handshake',
     app: 'text-handshake',
     description:
-      "The edit-count handshake: the script lower-cases each edit (written with the count it saw); then a trigger makes the script write \"filled\" with count 1 while the person had typed again (count 2): the host drops that write (see host.droppedWrites), the person's text reaches the script as the next text entry, and the script's answer with count 2 applies. Submit sends the host's text.",
+      "The edit-count handshake: the script lower-cases each edit (written with the count it saw); then an observed event makes the script write \"filled\" with count 1 while the person had typed again (count 2): the host drops that write (see host.droppedWrites), the person's text reaches the script as the next text entry, and the script's answer with count 2 applies. Submit sends the host's text.",
     host: { ns: 'demo', ...DESIGN_HOST },
     async run(h) {
       await h.mount('root')
       await h.type('name', 'Ab')
       h.typeWhileBusy('name', 'abC')
-      await h.emitTrigger('demo::fill', { text: 'filled' })
+      await h.emitObserved('demo::on-fill', { text: 'filled' })
       await h.submit('name')
     },
   },
@@ -176,16 +177,16 @@ export const FLOWS = [
     name: 'requests',
     app: 'requests',
     description:
-      "Design §5.7, a call, a subscription, an error (namespace browser; ids seeded to request 7 and subscription 3): a press sends a call and an on in one message; the host answers the on at once and the call after; the trigger arrives; a second press calls engine::functions::list, outside the namespace, and the host's policy answers forbidden. iii.call refuses that call before the wire, so the app sends it raw (the harness's test-only rawRequests).",
+      "Design §5.7, a call, an observer, an error (namespace browser; ids seeded to request 7 and subscription 3): a press sends a call and an on in one message; the host answers the on at once and the call after; the observed event arrives; a second press calls engine::functions::list, outside the namespace, and the host's policy answers forbidden. iii.call refuses that call before the wire, so the app sends it raw (the harness's test-only rawRequests).",
     host: { ns: 'browser', ...DESIGN_HOST, ids: { req: 7, sub: 3 }, rawRequests: true },
     calls: {
       'browser::sessions::list': () => ({ sessions: [] }),
     },
-    designExamples: ['requests.send', 'requests.responses', 'requests.trigger', 'requests.error'],
+    designExamples: ['requests.send', 'requests.responses', 'requests.observed', 'requests.error'],
     async run(h) {
       await h.mount('root')
       await h.press({ type: 'Button', text: 'Load' })
-      await h.emitTrigger('browser::session-started', STARTED)
+      await h.emitObserved('browser::on-session-started', STARTED)
       await h.press({ type: 'Button', text: 'Engine' })
     },
   },

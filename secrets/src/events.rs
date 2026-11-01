@@ -1,27 +1,22 @@
-//! The `secrets::changed` trigger type.
+//! `secrets::on-changed`: a private function whose handler returns the change
+//! event it is called with.
 //!
-//! Fires after every create, rotation, deletion and allowlist change with
-//! metadata only, never a value; for the env store, also when an edit to
-//! `.env` sets, changes or removes a shared variable. Config
-//! `{names?: string[]}` narrows it to some secrets: a bare name matches both
-//! stores, `secret://NAME` / `env://NAME` only one. Bindings live in an
-//! in-process map keyed by trigger id; delivery is fire-and-forget (`Void`)
-//! in the binding's namespace, with the binding's metadata as the sidecar.
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+//! The worker calls it after every create, rotation, deletion and allowlist
+//! change with metadata only, never a value; for the env store, also when an
+//! edit to `.env` sets, changes or removes a shared variable. It takes no
+//! args: observers select secrets with filters on `input.name` (a bare name,
+//! both stores) or `input.ref` (`secret://NAME`, `env://NAME`). iii delivers
+//! each call to every observer whose filters match it, fire-and-forget.
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{TriggerAction, TriggerRequest, TriggerRequestWithMetadata};
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{IIIClient, RegisterTriggerType};
+use iii_sdk::{CallAction, CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use crate::api::ids::CHANGED_TRIGGER;
+use crate::api::ids::ON_CHANGED;
 use crate::api::StoreKind;
-use crate::names::{is_valid_name, reference_for, split_reference};
+use crate::names::{reference_for, split_reference};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -32,7 +27,7 @@ pub enum ChangeAction {
     AccessChanged,
 }
 
-/// A `secrets::changed` delivery. Never carries a value.
+/// A `secrets::on-changed` event. Never carries a value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChangedEvent {
     pub name: String,
@@ -82,113 +77,23 @@ impl ChangedEvent {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
-pub struct ChangedConfig {
-    /// Secret names to fire for: a bare `NAME` for both stores, or
-    /// `secret://NAME` / `env://NAME` for one. Omit or leave empty for every
-    /// secret.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub names: Option<Vec<String>>,
-    /// Metadata attached to every invocation this binding receives.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-}
+pub const ON_CHANGED_DESCRIPTION: &str = "Called after a secret is created, rotated, deleted or its consumers change, and after an edit to .env changes a shared variable; returns the event: name, ref, action, fingerprint and updated_at, never the value. Observe it with filters on input.name (both stores) or input.ref (secret://NAME, env://NAME). Only the secrets worker calls it.";
 
-pub type Bindings = Arc<RwLock<HashMap<String, TriggerConfig>>>;
-
-#[derive(Clone, Default)]
-pub struct Subscribers(pub Bindings);
-
-impl Subscribers {
-    pub fn len(&self) -> usize {
-        self.0.read().unwrap_or_else(|p| p.into_inner()).len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-/// Remember a binding, forget it on unregister. A malformed config is
-/// accepted and simply never matches.
-struct BindingTable(Bindings);
-
-#[async_trait]
-impl TriggerHandler for BindingTable {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.0
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(config.id.clone(), config);
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.0
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&config.id);
-        Ok(())
-    }
-}
-
-pub fn register_trigger_type(iii: &IIIClient, subscribers: &Subscribers) {
-    let _ = iii.register_trigger_type(
-        RegisterTriggerType::new(
-            CHANGED_TRIGGER,
-            "Fires after a secret is created, rotated, deleted or its consumers change. Carries name, ref, action, fingerprint and updated_at, never the value. Config: { names? } to narrow to some secrets.",
-            BindingTable(subscribers.0.clone()),
-        )
-        .trigger_request_format::<ChangedConfig>()
-        .call_request_format::<ChangedEvent>(),
+/// Registers `secrets::on-changed`: private (only this worker calls it) and
+/// observable by any worker.
+pub fn register(iii: &IIIClient) {
+    iii.register_function(
+        ON_CHANGED,
+        RegisterFunction::new(|event: ChangedEvent| Ok::<_, Error>(event))
+            .description(ON_CHANGED_DESCRIPTION)
+            .private(),
     );
 }
 
-/// Whether a binding's config wants `name` in `store`. A missing or empty
-/// `names` list matches everything; a `names` that is not a list matches
-/// nothing.
-pub fn matches(config: &Value, store: StoreKind, name: &str) -> bool {
-    match config.get("names") {
-        None | Some(Value::Null) => true,
-        Some(Value::Array(entries)) => {
-            let mut wanted = entries
-                .iter()
-                .filter_map(Value::as_str)
-                .filter(|entry| !entry.trim().is_empty())
-                .peekable();
-            if wanted.peek().is_none() {
-                return true;
-            }
-            wanted.any(|entry| {
-                let (wanted_store, wanted) = split_reference(entry);
-                is_valid_name(wanted)
-                    && wanted == name
-                    && wanted_store.is_none_or(|wanted_store| wanted_store == store)
-            })
-        }
-        Some(_) => false,
-    }
-}
-
-fn subscription_metadata(binding: &TriggerConfig) -> Option<Value> {
-    binding
-        .config
-        .get("metadata")
-        .filter(|value| !value.is_null())
-        .cloned()
-        .or_else(|| binding.metadata.clone())
-}
-
-pub fn emit(iii: &Arc<IIIClient>, subscribers: &Subscribers, event: &ChangedEvent) {
-    let bindings: Vec<TriggerConfig> = subscribers
-        .0
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .values()
-        .filter(|binding| matches(&binding.config, event.store(), &event.name))
-        .cloned()
-        .collect();
-    if bindings.is_empty() {
+/// Calls `secrets::on-changed` with `event`, fire-and-forget, when anything
+/// observes it.
+pub fn emit(iii: &Arc<IIIClient>, event: &ChangedEvent) {
+    if !iii.is_observed(ON_CHANGED) {
         return;
     }
     let payload = match serde_json::to_value(event) {
@@ -197,27 +102,12 @@ pub fn emit(iii: &Arc<IIIClient>, subscribers: &Subscribers, event: &ChangedEven
     };
     let iii = iii.clone();
     tokio::spawn(async move {
-        for binding in bindings {
-            let mut request: TriggerRequestWithMetadata = TriggerRequest {
-                function_id: binding.function_id.clone(),
-                payload: payload.clone(),
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            }
-            .into();
-            if let Some(metadata) = subscription_metadata(&binding) {
-                request = request.metadata(metadata);
-            }
-            if let Some(namespace) = &binding.namespace {
-                request = request.namespace(namespace.clone());
-            }
-            if let Err(error) = iii.trigger(request).await {
-                tracing::warn!(
-                    function_id = binding.function_id,
-                    error = %error,
-                    "secrets::changed delivery failed"
-                );
-            }
+        let request = CallRequest {
+            action: Some(CallAction::Void),
+            ..CallRequest::new(ON_CHANGED, payload)
+        };
+        if let Err(error) = iii.call(request).await {
+            tracing::warn!(error = %error, "secrets::on-changed call failed");
         }
     });
 }
@@ -226,28 +116,6 @@ pub fn emit(iii: &Arc<IIIClient>, subscribers: &Subscribers, event: &ChangedEven
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn names_filter() {
-        let vault = StoreKind::Vault;
-        assert!(matches(&json!({}), vault, "A"));
-        assert!(matches(&json!({"names": null}), vault, "A"));
-        assert!(matches(&json!({"names": []}), vault, "A"));
-        assert!(matches(&json!({"names": ["", "  "]}), vault, "A"));
-        assert!(matches(&json!({"names": ["A", "B"]}), vault, "A"));
-        assert!(matches(&json!({"names": ["secret://A"]}), vault, "A"));
-        assert!(!matches(&json!({"names": ["B"]}), vault, "A"));
-        assert!(!matches(&json!({"names": "A"}), vault, "A"));
-        // A bare name follows both stores; a reference only its own.
-        assert!(matches(&json!({"names": ["A"]}), StoreKind::Env, "A"));
-        assert!(matches(&json!({"names": ["env://A"]}), StoreKind::Env, "A"));
-        assert!(!matches(&json!({"names": ["env://A"]}), vault, "A"));
-        assert!(!matches(
-            &json!({"names": ["secret://A"]}),
-            StoreKind::Env,
-            "A"
-        ));
-    }
 
     #[test]
     fn event_shape_never_has_a_value() {

@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::IIIClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -138,7 +138,7 @@ impl SessionClient {
 
     async fn call(&self, function_id: &str, payload: Value) -> Result<Value, HarnessError> {
         self.iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function_id.to_string(),
                 payload,
                 action: None,

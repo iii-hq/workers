@@ -1,0 +1,1555 @@
+//! `harness::observer::deliver` — the ONE target of every agent-created
+//! observer (architecture/observer-bindings.md).
+//!
+//! It receives a call in one of two shapes. iii's delivery hands it the
+//! `Observed` envelope of each matching call, and the event is the call's
+//! `output` (for an event source, the event itself). A source that delivers
+//! itself (an `onObserverDeliver` hook: `kanban::on-change`,
+//! `stories::on-changed`, ...) calls through the observer, and that call's
+//! payload, as the source sent it, is the event (spec §4.6). The observer's
+//! metadata arrives as the call's metadata sidecar in both shapes and holds a
+//! single key, `__binding`: the binding id, which is also the observer id an
+//! envelope carries. Everything else — owner, target, conditions, lifecycle,
+//! frozen capability — is read from the durable record, so nothing an agent
+//! can write into metadata is ever trusted or even read.
+//!
+//! Order is load-bearing:
+//!
+//! ```text
+//! resolve → stale-target check → declared conditions → claim → project → dispatch → record
+//! ```
+//!
+//! The claim (the persisted fire count) lands BEFORE dispatch: a redelivered
+//! event finds the budget already spent and stops. Retirement lands AFTER, so a
+//! crash mid-dispatch loses nothing that was not already claimed. Dispatch has
+//! exactly two shapes — wake the owner, or call a plain function — and never
+//! creates an agent.
+
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::Observed;
+use schemars::gen::SchemaGenerator;
+use schemars::schema::Schema;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+use crate::bindings::Binding;
+use crate::conditions::{self, Skip};
+use crate::deps::Deps;
+use crate::policy::CompiledPolicy;
+use crate::subscriptions::fired;
+use crate::types::message::AgentMessage;
+
+pub const DELIVER_ID: &str = "harness::observer::deliver";
+pub const DELIVER_DESC: &str =
+    "Internal target of every observer an agent created with harness::observe: evaluates the \
+     binding's conditions, projects the observed call's output into the target's payload, and \
+     dispatches it (a wake into the owner session, or a plain function call). Receives the \
+     Observed envelope from iii's delivery, or the payload as sent from a call through the \
+     observer (a source's deliver hook); never called directly.";
+
+/// The observer's metadata sidecar. A pointer and nothing else.
+#[derive(Debug, Deserialize)]
+struct DeliverMetadata {
+    #[serde(rename = "__binding")]
+    binding: String,
+}
+
+/// What iii's delivery hands the observer's target: the `Observed` envelope
+/// of one call of the observed function.
+pub type DeliverEnvelope = Observed<Value, Value>;
+
+/// The event an envelope delivers: the call's `output` — what observers
+/// observe, and the event itself for an event source — or its `input` when
+/// the output was not captured. Events are not always objects, so this stays
+/// a lossless `Value`.
+pub fn observed_event(envelope: &DeliverEnvelope) -> Value {
+    envelope
+        .output
+        .clone()
+        .or_else(|| envelope.input.clone())
+        .unwrap_or(Value::Null)
+}
+
+/// What `harness::observer::deliver` is called with: the [`DeliverEnvelope`]
+/// of iii's delivery, or the payload of a call through the observer, as its
+/// source's deliver hook sent it. Kept as the raw value: which of the two it
+/// is depends on the call's metadata too ([`delivered`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DeliverInput(pub Value);
+
+/// The two shapes [`DeliverInput`] documents in its schema.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum DeliverInputShape {
+    /// iii's delivery: the `Observed` envelope of one call of the observed
+    /// function.
+    Observed(Box<DeliverEnvelope>),
+    /// A call through the observer from the observed function's deliver
+    /// hook: the payload as the source sent it.
+    Payload(Value),
+}
+
+impl JsonSchema for DeliverInput {
+    fn schema_name() -> String {
+        "DeliverInput".to_string()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        DeliverInputShape::json_schema(generator)
+    }
+}
+
+/// The binding a call of the delivery hop is for, and the event it delivers.
+///
+/// The binding id is the `__binding` key of the call's metadata sidecar,
+/// which the engine attaches from the observer to every call it makes to the
+/// target, delivered by iii or through the observer. An envelope carries the
+/// observer id too, the same id; it names the binding only when the call has
+/// no sidecar. The value is an envelope when it decodes as one that names
+/// this binding's observer, and its event is then the envelope's
+/// [`observed_event`]; any other value is a payload sent through the
+/// observer, and is the event as the source sent it: the top-level
+/// `_caller_worker_id` the engine stamps on every call through an observer
+/// (the host's connection id) is removed.
+pub fn delivered(input: Value, metadata: Option<&Value>) -> (Option<String>, Value) {
+    let sidecar = metadata
+        .and_then(|metadata| metadata.get("__binding"))
+        .and_then(Value::as_str);
+    let envelope = DeliverEnvelope::deserialize(&input)
+        .ok()
+        .filter(|envelope| sidecar.is_none_or(|binding| envelope.observer_id == binding));
+    match envelope {
+        Some(envelope) => {
+            let binding = sidecar.map_or_else(|| envelope.observer_id.clone(), str::to_string);
+            (Some(binding), observed_event(&envelope))
+        }
+        None => {
+            let mut event = input;
+            if let Some(object) = event.as_object_mut() {
+                object.remove(CALLER_STAMP);
+            }
+            (sidecar.map(str::to_string), event)
+        }
+    }
+}
+
+/// The engine's stamp on the payload of every call a worker makes.
+const CALLER_STAMP: &str = "_caller_worker_id";
+
+/// One call of `harness::observer::deliver`, in either shape
+/// ([`delivered`]), handed to [`handle`].
+pub async fn deliver(
+    deps: &Deps,
+    input: DeliverInput,
+    metadata: Option<Value>,
+) -> Result<DeliverResult, crate::error::HarnessError> {
+    let (binding, event) = delivered(input.0, metadata.as_ref());
+    handle(
+        deps,
+        event,
+        binding.map(|binding| json!({ "__binding": binding })),
+    )
+    .await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct DeliverResult {
+    /// Whether the target was dispatched this fire.
+    pub delivered: bool,
+    /// Which gate or condition stopped it. Present iff `!delivered`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
+    /// Why. Present iff `!delivered`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl DeliverResult {
+    fn delivered() -> Self {
+        Self {
+            delivered: true,
+            gate: None,
+            note: None,
+        }
+    }
+    fn stopped(gate: impl Into<String>, note: impl Into<String>) -> Self {
+        Self {
+            delivered: false,
+            gate: Some(gate.into()),
+            note: Some(note.into()),
+        }
+    }
+}
+
+/// An observed call reached a binding. Never errors: an erroring observer
+/// target only fills the engine's activation failures, so every failure
+/// becomes a recorded non-delivery.
+pub async fn handle(
+    deps: &Deps,
+    event: Value,
+    metadata: Option<Value>,
+) -> Result<DeliverResult, crate::error::HarnessError> {
+    let Some(meta) = metadata.and_then(|m| serde_json::from_value::<DeliverMetadata>(m).ok())
+    else {
+        tracing::warn!("{DELIVER_ID}: delivery without a `__binding` key; dropping");
+        return Ok(DeliverResult::stopped(
+            "metadata",
+            "no __binding in the observer metadata",
+        ));
+    };
+
+    let store = deps.bindings().await;
+    let binding = match store.get(&meta.binding).await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            // The record is the authority: no record means the binding was
+            // retired. The binding pass disposes the observer so it stops
+            // delivering into nothing.
+            tracing::info!(binding = %meta.binding, "delivery for an unknown binding; dropping");
+            return Ok(DeliverResult::stopped(
+                "unknown-binding",
+                "no binding record",
+            ));
+        }
+        Err(e) => {
+            tracing::warn!(binding = %meta.binding, error = %e, "binding lookup failed; dropping delivery");
+            return Ok(DeliverResult::stopped(
+                "store",
+                format!("binding lookup failed: {e}"),
+            ));
+        }
+    };
+
+    if super::delete_session_tree::guard_owner(deps, &binding.owner.session_id)
+        .await?
+        .is_some()
+    {
+        return Ok(DeliverResult::stopped(
+            "deleting",
+            "owner session is being deleted",
+        ));
+    }
+
+    // A record that predates the spawn-target removal must never dispatch:
+    // retire it on both sides and tell the owner what to observe instead.
+    // The startup sweep mass-retires these; this is the race backstop for a
+    // delivery already in flight.
+    if binding.target.function_id == crate::functions::SPAWN_ID {
+        crate::bindings::gc::retire_stale_spawn_binding(deps, &binding).await;
+        return Ok(DeliverResult::stopped(
+            "stale-spawn-target",
+            "spawn bindings were removed; the binding was retired and its owner notified",
+        ));
+    }
+
+    let now = AgentMessage::now_ms();
+    if binding.is_exhausted(now) {
+        return Ok(stop_spent(deps, &binding, "binding already spent").await);
+    }
+
+    let event = match conditions::evaluate(deps, &binding, event).await {
+        Ok(event) => event,
+        Err(skip) => {
+            // A skipped fire does NOT consume the lifecycle: a barrier that
+            // answers "not yet" ten times still gets its one delivery.
+            let e = json!({ "skipped": skip.reason });
+            return Ok(record_stop(deps, &binding, &e, skip, None).await);
+        }
+    };
+
+    // Claim before dispatch, atomically. The incremented count is what makes a
+    // redelivered fire find the budget spent — and the compare-and-set is what
+    // stops two SIMULTANEOUS fires taking the same ordinal, which lost a
+    // delivery and let a bounded lifecycle over-spend.
+    let claimed = match store.claim_fire(&binding).await {
+        Ok(crate::bindings::ClaimOutcome::Claimed(b)) => *b,
+        Ok(crate::bindings::ClaimOutcome::Exhausted(current)) => {
+            return Ok(
+                stop_spent(deps, &current, "another fire spent the last of the budget").await,
+            );
+        }
+        Ok(crate::bindings::ClaimOutcome::Gone) => {
+            return Ok(DeliverResult::stopped(
+                "unknown-binding",
+                "binding retired while this fire was in flight",
+            ));
+        }
+        Err(e) => {
+            // A claim that cannot even be attempted is an infrastructure
+            // failure (store down, `state::compare-and-set` missing from the
+            // stack), and it silently eats EVERY fire of EVERY binding. Tell
+            // the owner once per binding — the entry id makes the injection
+            // idempotent — so the failure surfaces where the wake was
+            // expected, not only in worker logs nobody is tailing.
+            tracing::error!(binding = %binding.id, error = %e, "claim failed; dropping fire");
+            let watch = binding
+                .source_text()
+                .map(|source| format!(" (observing {source})"))
+                .unwrap_or_default();
+            let notice = format!(
+                "[notification] binding {}{watch} is DROPPING fires: the delivery claim \
+                 failed with `{e}`. Nothing this binding watches can be delivered until \
+                 the store dependency recovers (is a state worker providing \
+                 `state::compare-and-set` in the stack?).",
+                binding.id
+            );
+            if let Err(inject_err) = crate::functions::send::inject(
+                deps,
+                &binding.owner.session_id,
+                AgentMessage::user_text(notice),
+                Some(&format!("e_claimfail_{}", binding.id)),
+                Some(&json!({ "notification": true, "binding": binding.id })),
+            )
+            .await
+            {
+                tracing::warn!(binding = %binding.id, error = %inject_err, "claim-failure notice failed");
+            }
+            return Ok(DeliverResult::stopped(
+                "store",
+                format!("claim failed: {e}"),
+            ));
+        }
+    };
+    let fires_after = claimed.fires;
+    let retiring = binding.retires_after_fire(fires_after);
+
+    let (delivered, outcome) = dispatch(deps, &claimed, &event).await;
+
+    if retiring {
+        retire(deps, &claimed).await;
+    }
+
+    let note = outcome
+        .as_ref()
+        .err()
+        .map(|e| format!("dispatch failed: {e}"));
+    let record_outcome = if outcome.is_ok() {
+        fired::FireOutcome::Delivered
+    } else {
+        fired::FireOutcome::DeliveryFailed
+    };
+    let retirement_reason = delivery_retirement_reason(&binding, fires_after);
+    let (function_id, args, filters) = fired::source_fields(&binding);
+    fired::emit(
+        &deps.session().await,
+        &binding.owner.session_id,
+        &record_entry_id(&binding.id, fires_after),
+        fired::ObserverFired {
+            observer_id: &binding.id,
+            target: &binding.target.function_id,
+            label: binding_label(&binding),
+            action: binding.event_action(),
+            function_id,
+            args,
+            filters,
+            outcome: record_outcome,
+            once: binding.lifecycle.once,
+            fires: fires_after,
+            retired: retiring,
+            retirement_reason,
+            scope: fired::event_state_watch(&event).0,
+            key: fired::event_state_watch(&event).1,
+            note: note.as_deref(),
+            payload: Some(&delivered),
+            fired_at: now,
+        },
+    )
+    .await;
+
+    Ok(match outcome {
+        Ok(()) => DeliverResult::delivered(),
+        Err(e) => DeliverResult::stopped("dispatch", e),
+    })
+}
+
+/// Dispatch the projected event to the binding's target: a wake into the
+/// owner session, or a plain function call. The selection depends ONLY on the
+/// target function id — never on the event's source or shape, which is what
+/// keeps delivery generic across state, database, queue, cron, timer, and
+/// functions that do not exist yet. Returns the best-known delivered
+/// payload alongside the outcome so the fired record can carry it.
+async fn dispatch(deps: &Deps, binding: &Binding, event: &Value) -> (Value, Result<(), String>) {
+    match binding.target.function_id.as_str() {
+        crate::functions::SEND_ID => (event.clone(), wake_target(deps, binding, event).await),
+        other => call_target(deps, binding, other, project(binding, event)).await,
+    }
+}
+
+/// The target's payload template with the delivered event injected at its
+/// pointer.
+fn project(binding: &Binding, event: &Value) -> Value {
+    let base = binding.target.payload.clone().unwrap_or_else(|| json!({}));
+    inject_at(base, binding.target.event_pointer(), event.clone())
+}
+
+/// Set `value` at `pointer` inside `payload`, creating intermediate objects.
+/// A pointer that cannot be created leaves the payload untouched — the target
+/// still gets its template rather than nothing. Also reused by the turn
+/// loop's functional validation (`options.validation.result_into`).
+pub(crate) fn inject_at(payload: Value, pointer: &str, value: Value) -> Value {
+    if pointer.is_empty() {
+        return value;
+    }
+    let mut root = match payload {
+        Value::Object(_) => payload,
+        other => json!({ "_payload": other }),
+    };
+    let segments: Vec<String> = pointer
+        .trim_start_matches('/')
+        .split('/')
+        .map(|s| s.replace("~1", "/").replace("~0", "~"))
+        .collect();
+    let mut cursor = &mut root;
+    for segment in &segments[..segments.len() - 1] {
+        let map = match cursor.as_object_mut() {
+            Some(m) => m,
+            None => return root,
+        };
+        cursor = map.entry(segment.clone()).or_insert_with(|| json!({}));
+    }
+    if let Some(map) = cursor.as_object_mut() {
+        map.insert(segments[segments.len() - 1].clone(), value);
+    }
+    root
+}
+
+/// A wake: the event becomes a message in the owner's session. Routed through
+/// `send::inject` rather than an engine call to `harness::send` so it keeps the
+/// notification origin marker (clients must not render it as human-typed) and a
+/// deterministic entry id (a redelivered event appends nothing new).
+async fn wake_target(deps: &Deps, binding: &Binding, event: &Value) -> Result<(), String> {
+    let session_id = binding
+        .target
+        .payload
+        .as_ref()
+        .and_then(|p| p.get("session_id"))
+        .and_then(Value::as_str)
+        .unwrap_or(&binding.owner.session_id)
+        .to_string();
+    let message = AgentMessage::user_text(notification_text(binding, event));
+    let entry_id = fire_entry_id(&binding.id, binding.fires);
+    crate::functions::send::inject(
+        deps,
+        &session_id,
+        message,
+        Some(&entry_id),
+        Some(&json!({ "notification": true, "binding": binding.id })),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// The frozen-capability gate for a call dispatch, factored pure for testing:
+/// the target is checked against what the registrant could call WHEN IT
+/// REGISTERED — never the owner's policy now, which may have widened since.
+fn call_allowed(binding: &Binding, target: &str) -> Result<(), String> {
+    if target.starts_with("harness::") {
+        return Err(format!(
+            "`{target}` is an internal harness function and cannot be a deferred call target"
+        ));
+    }
+    if !CompiledPolicy::from(binding.capability.as_ref()).allows(target) {
+        return Err(format!(
+            "`{target}` is outside the policy this binding was created with"
+        ));
+    }
+    Ok(())
+}
+
+/// A mechanical reaction: any ordinary function, checked against the
+/// capability the binding froze at registration. Returns the payload as
+/// finally dispatched (or as far as it got before the failure) so the fired
+/// record shows what ran — or what was attempted.
+async fn call_target(
+    deps: &Deps,
+    binding: &Binding,
+    target: &str,
+    mut payload: Value,
+) -> (Value, Result<(), String>) {
+    if let Err(e) = call_allowed(binding, target) {
+        return (payload, Err(e));
+    }
+    let cfg = deps.cfg().await;
+    let turn =
+        match crate::state::get_turn(&deps.iii, &binding.owner.session_id, cfg.session_timeout_ms)
+            .await
+        {
+            Ok(turn) => turn,
+            Err(e) => return (payload, Err(e.to_string())),
+        };
+    let grants = if turn.is_some() {
+        match crate::filesystem_grants::roots(
+            &deps.iii,
+            &binding.owner.session_id,
+            cfg.session_timeout_ms,
+        )
+        .await
+        {
+            Ok(grants) => grants,
+            Err(e) => return (payload, Err(e.to_string())),
+        }
+    } else {
+        Vec::new()
+    };
+    let root = turn
+        .as_ref()
+        .and_then(|record| record.options.filesystem_root());
+    payload = crate::filesystem_scope::inject(
+        target,
+        payload,
+        root,
+        &grants,
+        deps.filesystem_boundary(target).await,
+    );
+    // Argument-constrained approval rules must see the payload that will
+    // actually run, after event projection and trusted filesystem stamping.
+    if let Err(e) = crate::functions::observe::approval_allows_unattended(
+        deps,
+        target,
+        &binding.owner.session_id,
+        &payload,
+    )
+    .await
+    {
+        return (payload, Err(e));
+    }
+    // A starting scaffold runs compose::add inside the ide, unseen by approval.
+    if crate::call::scaffold_starts(target, &payload) {
+        if let Err(e) = crate::functions::observe::approval_allows_unattended(
+            deps,
+            crate::functions::observe::COMPOSE_ADD_ID,
+            &binding.owner.session_id,
+            &serde_json::json!({}),
+        )
+        .await
+        {
+            return (payload, Err(e));
+        }
+    }
+    // AWAITED, not fire-and-forget. A void dispatch reports success the moment
+    // the engine accepts it, so a target that then fails — a bad statement, a
+    // rejected payload — is recorded as delivered and "why did nothing
+    // happen?" becomes unanswerable from the timeline. The dispatch timeout
+    // bounds the wait.
+    let witness =
+        match super::delete_session_tree::begin_dispatch(deps, &binding.owner.session_id, target)
+            .await
+        {
+            Ok(id) => id,
+            Err(error) => return (payload, Err(error.to_string())),
+        };
+    let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
+    let outcome = deps
+        .iii
+        .call(CallRequest {
+            function_id: target.to_string(),
+            payload: payload.clone(),
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await
+        .map(|_| ());
+    // Classify the structured SDK error before it becomes text: a timeout or
+    // broken transport does not cancel the invocation, so keep the witness.
+    let ambiguous = outcome
+        .as_ref()
+        .err()
+        .is_some_and(crate::clients::engine::invocation_outcome_unknown);
+    if !ambiguous {
+        if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
+            return (payload, Err(error.to_string()));
+        }
+    }
+    (payload, outcome.map_err(|e| e.to_string()))
+}
+
+/// Ceiling on the rendered event inside a wake (the label prefix is extra).
+/// Fits 100 UUID primary keys — the native `database::on-row-changed` cap —
+/// whole; only wider rows or larger composite keys shrink.
+const WAKE_TEXT_MAX: usize = 8_000;
+
+/// What the woken owner reads. Bounded by [`WAKE_TEXT_MAX`]; the shape rules
+/// (array shedding vs. plain cut) are [`render_bounded`]'s.
+fn notification_text(binding: &Binding, event: &Value) -> String {
+    let summary = match event {
+        Value::Null => "event fired".to_string(),
+        Value::String(s) => truncate_chars(s, WAKE_TEXT_MAX),
+        other => render_bounded(other, WAKE_TEXT_MAX),
+    };
+    match binding_label(binding) {
+        Some(label) => format!("[notification] {label}: {summary}"),
+        None => format!("[notification] {summary}"),
+    }
+}
+
+/// `event` as JSON in at most `budget` chars (plus the `…(truncated)` tail on
+/// the fallback path). An object that does not fit sheds trailing elements from
+/// its top-level arrays — longest first, by a share proportional to the
+/// overshoot — until it does; each shrunk array ends in ONE marker string
+/// `"…N more entries omitted (array shortened for this notification; JSON is
+/// complete)"` — N is what the wake dropped, separate from any cap the producer
+/// applied, and the tail says out loud that nothing was cut mid-structure (a
+/// weaker model read a bare ellipsis as a broken array). The text stays valid
+/// JSON with every scalar field intact. Elements are atomic: nested arrays are never descended.
+/// Non-objects, and an object whose non-array fields alone exceed the budget,
+/// fall back to a plain char cut.
+fn render_bounded(event: &Value, budget: usize) -> String {
+    let Some(obj) = event.as_object() else {
+        return truncate_chars(&event.to_string(), budget);
+    };
+    // (key, elements kept, original length). One clone shrunk in place, so a
+    // pass costs O(rendered) whatever the producer sent.
+    let mut v = event.clone();
+    let mut keep: Vec<(&str, usize, usize)> = obj
+        .iter()
+        .filter_map(|(k, val)| {
+            let n = val.as_array()?.len();
+            Some((k.as_str(), n, n))
+        })
+        .collect();
+    // ponytail: the pass ceiling is the DoS guard — a shape the proportional
+    // step cannot converge on (thousands of one-element arrays, where the
+    // marker outgrows what it replaces) ends in the char cut instead of a long
+    // loop; real row events fit in 2–4 passes.
+    for _ in 0..32 {
+        let s = v.to_string();
+        let len = s.chars().count();
+        if len <= budget {
+            return s;
+        }
+        let Some((k, n, total)) = keep
+            .iter_mut()
+            .filter(|(_, n, _)| *n > 0)
+            .max_by_key(|(_, n, _)| *n)
+        else {
+            return truncate_chars(&s, budget);
+        };
+        // The array is only part of `len`, so this share never overshoots;
+        // div_ceil keeps every pass making progress.
+        *n -= (*n * (len - budget)).div_ceil(len);
+        if let Some(arr) = v[*k].as_array_mut() {
+            arr.truncate(*n);
+            arr.push(Value::String(format!(
+                "…{} more entries omitted (array shortened for this notification; JSON is complete)",
+                *total - *n
+            )));
+        }
+    }
+    truncate_chars(&v.to_string(), budget)
+}
+
+/// `s` cut after `max` chars with an explicit tail; unchanged when it fits.
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        None => s.to_string(),
+        Some((cut, _)) => format!("{} …(truncated)", &s[..cut]),
+    }
+}
+
+fn binding_label(binding: &Binding) -> Option<&str> {
+    binding
+        .dedup_key
+        .as_ref()
+        .and_then(|key| key.get("label"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            binding
+                .target
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("label"))
+                .and_then(Value::as_str)
+        })
+}
+
+/// Deterministic per-delivery transcript id: a redelivered event with the
+/// same ordinal appends nothing new.
+fn fire_entry_id(binding_id: &str, ordinal: u64) -> String {
+    format!("e_fire_{binding_id}_{ordinal}")
+}
+
+/// The delivery RECORD's id for the same delivery. Distinct from [`fire_entry_id`]
+/// by construction, and the distinction is load-bearing: session-manager is
+/// idempotent on entry ids, so when the wake message and its record shared one
+/// id, exactly one of the two appends survived per fire. Worse, WHICH one
+/// depended on timing — an idle session appended the wake first and the record
+/// was swallowed; a running turn PARKED the wake while the record appended
+/// immediately, and the drained wake was then deduped as a replay. A burst of
+/// three fires surfaced as one notification and two records.
+fn record_entry_id(binding_id: &str, ordinal: u64) -> String {
+    format!("e_obsfired_{binding_id}_{ordinal}")
+}
+
+/// Tear a binding down on both sides. A placeholder with no observer id is
+/// compare-deleted first so a concurrent observe either loses its attach and
+/// disposes its observer, or wins the attach and lets us retry against that
+/// exact id-only update. Returns `true` only to the caller whose exact
+/// binding snapshot was deleted; only that caller may report retirement.
+async fn retire(deps: &Deps, binding: &Binding) -> bool {
+    let store = deps.bindings().await;
+    if binding.observer_id.is_some() {
+        crate::bindings::dispose_observer(deps, &binding.id).await;
+        return match store.delete_if_unchanged(binding).await {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::warn!(binding = %binding.id, "binding changed while retiring");
+                false
+            }
+            Err(error) => {
+                tracing::warn!(binding = %binding.id, %error, "binding record delete failed");
+                false
+            }
+        };
+    }
+
+    match store.delete_if_unchanged(binding).await {
+        Ok(true) => return true,
+        Err(error) => {
+            tracing::warn!(binding = %binding.id, %error, "binding record delete failed");
+            return false;
+        }
+        Ok(false) => {}
+    }
+
+    let current = match store.get(&binding.id).await {
+        Ok(Some(current)) if differs_only_by_observer_id(binding, &current) => current,
+        Ok(_) => return false,
+        Err(error) => {
+            tracing::warn!(binding = %binding.id, %error, "binding re-read failed during retirement");
+            return false;
+        }
+    };
+    if current.observer_id.is_some() {
+        crate::bindings::dispose_observer(deps, &current.id).await;
+    }
+    match store.delete_if_unchanged(&current).await {
+        Ok(true) => true,
+        Ok(false) => {
+            tracing::warn!(binding = %binding.id, "binding changed after observer-id attach during retirement");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(binding = %binding.id, %error, "binding record delete failed after observer-id attach");
+            false
+        }
+    }
+}
+
+fn differs_only_by_observer_id(expected: &Binding, current: &Binding) -> bool {
+    let mut normalized = current.clone();
+    normalized.observer_id = expected.observer_id.clone();
+    &normalized == expected && current.observer_id != expected.observer_id
+}
+
+/// What a delivery that finds its binding already spent does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpentAttempt {
+    /// Delivered fires used the budget: this attempt is a duplicate of a
+    /// delivery that already happened (the same event by a second path —
+    /// the live call and a Compose recovery replay, an at-least-once
+    /// redelivery). The claiming delivery retires the binding
+    /// and writes its one record; this one stops without touching either,
+    /// so a once wake never shows a second, "skipped" outcome. A spent
+    /// record whose claimer died is cleaned up by the binding pass.
+    Duplicate,
+    /// The budget is left but the deadline passed: retire it, and only the
+    /// compare-and-delete winner reports the expiry (the wake-lost notice
+    /// for an unfired wake).
+    Expired,
+}
+
+fn spent_attempt(binding: &Binding) -> SpentAttempt {
+    if binding.is_spent() {
+        SpentAttempt::Duplicate
+    } else {
+        SpentAttempt::Expired
+    }
+}
+
+async fn stop_spent(deps: &Deps, binding: &Binding, reason: &str) -> DeliverResult {
+    match spent_attempt(binding) {
+        SpentAttempt::Duplicate => {
+            tracing::debug!(
+                binding = %binding.id,
+                fires = binding.fires,
+                "duplicate delivery for a spent binding; its delivery owns the outcome"
+            );
+        }
+        SpentAttempt::Expired => {
+            if retire(deps, binding).await {
+                crate::bindings::expiry::report_expired_retirement(deps, binding).await;
+            }
+        }
+    }
+    DeliverResult::stopped("lifecycle", reason)
+}
+
+/// Record a non-delivery in the owner's timeline. This is the half today's
+/// bookkeeping is missing: a binding that never fires and a binding that fires
+/// and skips look identical from the outside, which is why a mis-wired
+/// condition is so expensive to debug.
+async fn record_stop(
+    deps: &Deps,
+    binding: &Binding,
+    event: &Value,
+    skip: Skip,
+    retirement_reason: Option<fired::RetirementReason>,
+) -> DeliverResult {
+    let (scope, key) = fired::event_state_watch(event);
+    let (function_id, args, filters) = fired::source_fields(binding);
+    fired::emit(
+        &deps.session().await,
+        &binding.owner.session_id,
+        &skip_record_entry_id(&binding.id, skip.gate),
+        fired::ObserverFired {
+            observer_id: &binding.id,
+            target: &binding.target.function_id,
+            label: binding_label(binding),
+            action: binding.event_action(),
+            function_id,
+            args,
+            filters,
+            outcome: fired::FireOutcome::Skipped,
+            once: binding.lifecycle.once,
+            fires: binding.fires,
+            retired: skip.retire,
+            retirement_reason,
+            scope,
+            key,
+            note: Some(&skip.reason),
+            payload: None,
+            fired_at: AgentMessage::now_ms(),
+        },
+    )
+    .await;
+    if skip.is_condition_failure() {
+        notify_condition_failure(deps, binding, &skip).await;
+    }
+    DeliverResult::stopped(skip.gate, skip.reason)
+}
+
+/// Why a successful claim consumes the binding after dispatch. `once` wins
+/// when both shorthands are present because it is the stronger user-facing
+/// explanation for the very first fire.
+fn delivery_retirement_reason(
+    binding: &Binding,
+    fires_after: u64,
+) -> Option<fired::RetirementReason> {
+    if binding.lifecycle.once && fires_after >= 1 {
+        return Some(fired::RetirementReason::OnceConsumed);
+    }
+    if binding
+        .lifecycle
+        .max_fires
+        .is_some_and(|max| fires_after >= max)
+    {
+        return Some(fired::RetirementReason::MaxFires);
+    }
+    None
+}
+
+/// The record above is for the timeline; this is for the OWNER. A condition
+/// that fails to evaluate starves the binding on every fire, and the skip
+/// record lands in a transcript a parked session never reads — three
+/// receiving-op runs slept forever next to a binding whose barrier config
+/// could never resolve. Same doctrine as the claim-failure notice: the
+/// failure surfaces where the wake was expected. The stable entry id makes
+/// re-injection idempotent — one notice per binding, while every later skip
+/// still writes its own record.
+async fn notify_condition_failure(deps: &Deps, binding: &Binding, skip: &Skip) {
+    if let Err(e) = crate::functions::send::inject(
+        deps,
+        &binding.owner.session_id,
+        AgentMessage::user_text(condition_failure_text(binding, skip)),
+        Some(&condition_failure_entry_id(&binding.id)),
+        Some(&json!({ "notification": true, "binding": binding.id })),
+    )
+    .await
+    {
+        tracing::warn!(
+            binding = %binding.id,
+            error = %e,
+            "condition-failure notice failed to deliver"
+        );
+    }
+}
+
+/// What the woken owner reads. It must be actionable without any lookup:
+/// which binding, what it watches, why the fire was dropped, that the binding
+/// is still armed but starving — and the reconcile step, because a
+/// re-registered binding never fires for events that preceded it.
+fn condition_failure_text(binding: &Binding, skip: &Skip) -> String {
+    const MAX_REASON: usize = 400;
+    let reason = truncate_chars(&skip.reason, MAX_REASON);
+    let label = binding_label(binding)
+        .map(|l| format!(" `{l}`"))
+        .unwrap_or_default();
+    let watch = binding
+        .source_text()
+        .map(|source| format!(" observing {source}"))
+        .unwrap_or_default();
+    format!(
+        "[notification] binding {}{label}{watch} fired but was NOT delivered: {reason}. The \
+         binding stays armed and every fire will keep skipping until the condition call \
+         succeeds. If the condition is misconfigured, unobserve it, observe again corrected, \
+         and then read the watched state once — events from before the new observer will \
+         never reach it.",
+        binding.id
+    )
+}
+
+/// One notice per binding, ever — session-manager's entry-id idempotence is
+/// the dedup. Distinct by construction from `e_fire_*`/`e_obsfired_*`/
+/// `e_obsskip_*`/`e_expire_*`/`e_claimfail_*`.
+fn condition_failure_entry_id(binding_id: &str) -> String {
+    format!("e_condfail_{binding_id}")
+}
+
+fn skip_record_entry_id(binding_id: &str, gate: &str) -> String {
+    format!(
+        "e_obsskip_{binding_id}_{gate}_{}",
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn injection_creates_missing_objects_along_the_pointer() {
+        let out = inject_at(json!({ "db": "primary" }), "/args/event", json!({ "n": 1 }));
+        assert_eq!(out["db"], json!("primary"));
+        assert_eq!(out["args"]["event"], json!({ "n": 1 }));
+    }
+
+    #[test]
+    fn an_empty_pointer_replaces_the_whole_payload() {
+        let out = inject_at(json!({ "ignored": true }), "", json!([1, 2]));
+        assert_eq!(out, json!([1, 2]));
+    }
+
+    #[test]
+    fn a_non_object_template_is_preserved_under_a_key() {
+        // Nothing can be injected INTO a scalar; keeping the template under a
+        // known key beats dropping either side silently.
+        let out = inject_at(json!("literal"), "/event", json!({ "n": 1 }));
+        assert_eq!(out["_payload"], json!("literal"));
+        assert_eq!(out["event"], json!({ "n": 1 }));
+    }
+
+    #[test]
+    fn escaped_pointer_segments_round_trip() {
+        let out = inject_at(json!({}), "/a~1b/c", json!(1));
+        assert_eq!(out["a/b"]["c"], json!(1));
+    }
+
+    #[test]
+    fn fire_entry_ids_are_stable_per_ordinal() {
+        assert_eq!(fire_entry_id("sub_1", 2), "e_fire_sub_1_2");
+        assert_ne!(fire_entry_id("sub_1", 2), fire_entry_id("sub_1", 3));
+    }
+
+    #[test]
+    fn notification_text_truncates_a_huge_event() {
+        use crate::bindings::{BindingTarget, Lifecycle, OwnerScope};
+        let b = Binding {
+            id: "sub_1".into(),
+            observer_id: None,
+            source: None,
+            owner: OwnerScope {
+                session_id: "s".into(),
+                root_session_id: None,
+            },
+            target: BindingTarget::new("harness::send"),
+            conditions: vec![],
+            lifecycle: Lifecycle::default(),
+            capability: None,
+            dedup_key: None,
+            fires: 0,
+            created_at: 0,
+        };
+        let big = json!({ "blob": "x".repeat(20_000) });
+        let text = notification_text(&b, &big);
+        assert!(text.starts_with("[notification] "));
+        assert!(text.contains("…(truncated)"));
+        assert_eq!(
+            text.chars().count(),
+            "[notification] ".len() + WAKE_TEXT_MAX + " …(truncated)".chars().count()
+        );
+    }
+
+    fn row_event(rows: usize) -> Value {
+        let returning: Vec<Value> = (0..rows)
+            .map(|i| json!({ "id": format!("550e8400-e29b-41d4-a716-{i:012}") }))
+            .collect();
+        json!({
+            "db": "primary", "table": "orders", "op": "insert",
+            "affected_rows": rows, "returning": returning, "at": 1_700_000_000_000_i64
+        })
+    }
+
+    fn wake_json(text: &str) -> Value {
+        let json = text.strip_prefix("[notification] ").expect("wake prefix");
+        serde_json::from_str(json).unwrap_or_else(|e| panic!("{e}: {json}"))
+    }
+
+    /// N out of a `"…N more entries omitted (…)"` marker.
+    fn omitted(marker: &Value) -> usize {
+        let marker = marker.as_str().expect("marker string");
+        assert!(marker.contains("more entries omitted ("), "{marker}");
+        assert!(marker.ends_with("JSON is complete)"), "{marker}");
+        marker
+            .trim_start_matches('…')
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    /// Prevents: the MOT-4778 regression — the native row-changed cap (100
+    /// keys) must ride the wake whole, or the agent never learns which rows
+    /// changed without a second lookup.
+    #[test]
+    fn notification_text_keeps_a_hundred_uuid_keys_whole() {
+        let b = wake_binding("database::on-row-changed");
+        let text = notification_text(&b, &row_event(100));
+        let event = wake_json(&text);
+        assert_eq!(event["returning"].as_array().unwrap().len(), 100);
+        assert!(!text.contains("omitted"), "{text}");
+    }
+
+    /// Prevents: cutting JSON mid-array. An over-long `returning` keeps its
+    /// leading rows, ends in one self-describing marker, and every scalar
+    /// survives — the text parses, and the reader knows what is missing.
+    #[test]
+    fn notification_text_shrinks_returning_to_parseable_json() {
+        let b = wake_binding("database::on-row-changed");
+        let text = notification_text(&b, &row_event(400));
+        assert!(text.chars().count() <= WAKE_TEXT_MAX + "[notification] ".len());
+        let event = wake_json(&text);
+        let returning = event["returning"].as_array().unwrap();
+        assert_eq!(
+            returning.len() - 1 + omitted(returning.last().unwrap()),
+            400
+        );
+        assert_eq!(event["affected_rows"], 400);
+        assert_eq!(event["table"], "orders");
+    }
+
+    #[test]
+    fn render_bounded_drops_an_element_larger_than_the_budget() {
+        let out = render_bounded(&json!({ "a": ["x".repeat(300)], "b": 1 }), 120);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["b"], 1);
+        assert_eq!(v["a"].as_array().unwrap().len(), 1);
+        assert_eq!(omitted(&v["a"][0]), 1);
+    }
+
+    #[test]
+    fn render_bounded_shrinks_the_longest_array_first() {
+        let long: Vec<u32> = (0..60).collect();
+        let short: Vec<u32> = (0..10).collect();
+        let out = render_bounded(&json!({ "long": long, "short": short }), 200);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["short"].as_array().unwrap().len(), 10, "{out}");
+        assert!(
+            v["long"].as_array().unwrap().last().unwrap().is_string(),
+            "{out}"
+        );
+        assert!(out.chars().count() <= 200, "{out}");
+    }
+
+    /// Prevents: a scalar event escaping the bound. A string event rides raw
+    /// (unquoted) when it fits and is char-cut with the explicit tail when it
+    /// does not; a null event still reads "event fired".
+    #[test]
+    fn notification_text_bounds_a_string_event_and_keeps_a_short_one_raw() {
+        let b = wake_binding("state::on-changed");
+        assert_eq!(
+            notification_text(&b, &json!("plain")),
+            "[notification] plain"
+        );
+        assert_eq!(
+            notification_text(&b, &Value::Null),
+            "[notification] event fired"
+        );
+        let text = notification_text(&b, &json!("y".repeat(20_000)));
+        assert!(text.ends_with("…(truncated)"), "{text}");
+    }
+
+    /// Pins the documented fallback: only an OBJECT's top-level arrays shrink
+    /// structurally. A top-level array (or any other non-object) is a char cut
+    /// with the explicit tail, and a small scalar renders exactly. An array
+    /// with far more elements than the budget has chars still converges.
+    #[test]
+    fn render_bounded_char_cuts_a_non_object_and_converges_on_a_tiny_budget() {
+        assert_eq!(render_bounded(&json!(41.5), 100), "41.5");
+        let rows: Vec<u32> = (0..1000).collect();
+        let out = render_bounded(&json!(rows), 50);
+        assert!(out.starts_with("[0,1,2,"), "{out}");
+        assert!(
+            out.ends_with("…(truncated)") && !out.contains("omitted"),
+            "{out}"
+        );
+        // 500 elements against a 120-char budget: the marker alone is most of it.
+        let many: Vec<u32> = (0..500).collect();
+        let out = render_bounded(&json!({ "a": many }), 120);
+        let v: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+        assert!(
+            v["a"].as_array().unwrap().last().unwrap().is_string(),
+            "{out}"
+        );
+        assert!(out.chars().count() <= 120, "{out}");
+    }
+
+    /// Prevents: a bogus `"…0 more entries omitted"` on an empty array, and a
+    /// shrink loop that never finishes on one. An object whose arrays are
+    /// already empty but whose scalars overflow falls back to the char cut.
+    #[test]
+    fn render_bounded_leaves_an_empty_array_alone_and_falls_back_to_the_cut() {
+        let out = render_bounded(&json!({ "returning": [], "blob": "x".repeat(300) }), 100);
+        assert!(!out.contains("omitted"), "{out}");
+        assert!(out.ends_with("…(truncated)"), "{out}");
+    }
+
+    /// The marker counts what the wake dropped from the REAL length, and a
+    /// shrunk array that still overflows on its scalars falls to the char cut
+    /// with the marker already in place.
+    #[test]
+    fn render_bounded_counts_omissions_from_the_real_length() {
+        let out = render_bounded(&json!({ "a": vec![0u8; 500] }), 100);
+        let v: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+        let a = v["a"].as_array().unwrap();
+        assert_eq!(a.len() - 1 + omitted(a.last().unwrap()), 500, "{out}");
+
+        let out = render_bounded(
+            &json!({ "a": ["x".repeat(50)], "blob": "y".repeat(300) }),
+            100,
+        );
+        assert!(out.ends_with(" …(truncated)"), "{out}");
+        assert!(out.contains("…1 more entries omitted ("), "{out}");
+    }
+
+    /// Prevents: a `<=` → `<` regression shedding a row or appending the tail
+    /// on an event that lands exactly on the cap.
+    #[test]
+    fn truncation_is_exact_at_the_boundary() {
+        assert_eq!(truncate_chars("abc", 3), "abc");
+        assert_eq!(truncate_chars("abcd", 3), "abc …(truncated)");
+        let ev = row_event(3);
+        let exact = ev.to_string();
+        assert_eq!(render_bounded(&ev, exact.chars().count()), exact);
+        assert!(render_bounded(&ev, exact.chars().count() - 1).contains("omitted"));
+    }
+
+    /// Prevents: the wake renderer becoming a CPU amplifier on writer-shaped
+    /// input. Thousands of one-element arrays (the marker outgrows what it
+    /// replaces) and a huge array of tiny scalars both end within the pass
+    /// ceiling, bounded and — for the array — still parseable.
+    #[test]
+    fn render_bounded_stays_bounded_on_adversarial_shapes() {
+        let many: serde_json::Map<String, Value> =
+            (0..3_000).map(|i| (format!("k{i}"), json!([0]))).collect();
+        let out = render_bounded(&Value::Object(many), WAKE_TEXT_MAX);
+        assert!(out.chars().count() <= WAKE_TEXT_MAX + " …(truncated)".chars().count());
+
+        let out = render_bounded(
+            &json!({ "a": vec![0u8; 200_000], "table": "t" }),
+            WAKE_TEXT_MAX,
+        );
+        let v: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {}", &out[..80]));
+        assert_eq!(v["table"], "t");
+        assert!(
+            out.chars().count() <= WAKE_TEXT_MAX,
+            "{}",
+            out.chars().count()
+        );
+    }
+
+    /// Budgets are in chars, not bytes: a multi-byte event never panics on a
+    /// boundary or gets a shorter cut than an ASCII one.
+    #[test]
+    fn truncate_chars_counts_chars_not_bytes() {
+        assert_eq!(truncate_chars("héllo", 5), "héllo");
+        assert_eq!(truncate_chars(&"é".repeat(10), 4), "éééé …(truncated)");
+    }
+
+    #[test]
+    fn notification_text_and_records_preserve_the_label() {
+        let mut b = wake_binding("state::on-changed");
+        b.target.payload = Some(json!({ "session_id": "s_owner", "label": "orders-ready" }));
+        b.dedup_key.as_mut().unwrap()["label"] = json!("orders-ready");
+        assert_eq!(binding_label(&b), Some("orders-ready"));
+        assert!(notification_text(&b, &json!({ "count": 3 }))
+            .starts_with("[notification] orders-ready:"));
+    }
+
+    #[test]
+    fn every_skipped_attempt_gets_a_distinct_record_id() {
+        let first = skip_record_entry_id("sub_1", "condition");
+        let second = skip_record_entry_id("sub_1", "condition");
+        assert_ne!(first, second);
+        assert!(first.starts_with("e_obsskip_sub_1_condition_"));
+    }
+
+    /// Prevents: the silent-starvation variant of the parked-forever bug — a
+    /// condition that errors on every fire while the skip records pile up in
+    /// a transcript nobody reads. The notice must name the binding, the
+    /// watch, the reason, the standing consequence, and the reconcile step.
+    #[test]
+    fn the_condition_failure_notice_is_actionable_without_lookup() {
+        let mut b = wake_binding("state::on-changed");
+        b.dedup_key.as_mut().unwrap()["label"] = json!("All couriers complete");
+        let skip = Skip {
+            gate: "condition-error",
+            reason: "`state::barrier`: condition call failed: BARRIER_ERROR: no arrival key \
+                     at `/supplier` in the event"
+                .into(),
+            retire: false,
+        };
+        let text = condition_failure_text(&b, &skip);
+        assert!(text.starts_with("[notification] binding sub_w"), "{text}");
+        assert!(text.contains("`All couriers complete`"), "{text}");
+        assert!(text.contains("NOT delivered"), "{text}");
+        assert!(text.contains("no arrival key at `/supplier`"), "{text}");
+        assert!(text.contains("stays armed"), "{text}");
+        assert!(
+            text.contains("read the watched state once"),
+            "the reconcile step is the half agents keep missing: {text}"
+        );
+
+        // A runaway reason is bounded, never dropped.
+        let huge = Skip {
+            gate: "condition-error",
+            reason: "x".repeat(2000),
+            retire: false,
+        };
+        let text = condition_failure_text(&b, &huge);
+        assert!(text.contains("…(truncated)"), "{text}");
+        assert!(text.chars().count() < 1200, "{}", text.chars().count());
+    }
+
+    #[test]
+    fn the_condition_failure_notice_is_once_per_binding_and_collision_free() {
+        // Stable id = session-manager's entry-id idempotence dedups repeat
+        // notices; distinct prefixes = it never swallows (or is swallowed by)
+        // the fire, record, expiry, or claim-failure appends for the binding.
+        let id = condition_failure_entry_id("sub_1");
+        assert_eq!(id, condition_failure_entry_id("sub_1"));
+        for other in [
+            "e_fire_sub_1_1",
+            "e_obsfired_sub_1_1",
+            "e_obsskip_sub_1_condition-error_x",
+            "e_expire_sub_1",
+            "e_claimfail_sub_1",
+        ] {
+            assert_ne!(id, other);
+        }
+    }
+
+    #[test]
+    fn retirement_retries_only_an_id_only_attach() {
+        let expected = wake_binding("state::on-changed");
+        let mut attached = expected.clone();
+        attached.observer_id = Some("sub_w".into());
+        assert!(differs_only_by_observer_id(&expected, &attached));
+
+        let mut fired = attached.clone();
+        fired.fires += 1;
+        assert!(!differs_only_by_observer_id(&expected, &fired));
+    }
+
+    #[test]
+    fn delivered_retirement_names_once_and_fire_budget_consumption() {
+        let once = wake_binding("state::on-changed");
+        assert_eq!(
+            delivery_retirement_reason(&once, 1),
+            Some(fired::RetirementReason::OnceConsumed)
+        );
+
+        let mut bounded = wake_binding("cron::on-tick");
+        bounded.lifecycle.once = false;
+        bounded.lifecycle.max_fires = Some(3);
+        assert_eq!(delivery_retirement_reason(&bounded, 2), None);
+        assert_eq!(
+            delivery_retirement_reason(&bounded, 3),
+            Some(fired::RetirementReason::MaxFires)
+        );
+
+        // An explicitly redundant max_fires cannot obscure the simpler once
+        // explanation for the first and only delivered fire.
+        let mut both = once.clone();
+        both.lifecycle.max_fires = Some(1);
+        assert_eq!(
+            delivery_retirement_reason(&both, 1),
+            Some(fired::RetirementReason::OnceConsumed)
+        );
+    }
+
+    #[test]
+    fn a_spent_budget_is_a_silent_duplicate_and_only_a_deadline_reports() {
+        // A once wake its delivery already consumed: any further attempt
+        // (a recovery replay of the same event) is a duplicate — even past
+        // its deadline, it was delivered, not expired.
+        let mut consumed = wake_binding("compose::on-operation-progress");
+        consumed.fires = 1;
+        assert_eq!(spent_attempt(&consumed), SpentAttempt::Duplicate);
+        consumed.lifecycle.expires_at = Some(100);
+        assert_eq!(spent_attempt(&consumed), SpentAttempt::Duplicate);
+
+        let mut bounded = wake_binding("cron::on-tick");
+        bounded.lifecycle.once = false;
+        bounded.lifecycle.max_fires = Some(2);
+        bounded.fires = 2;
+        assert_eq!(spent_attempt(&bounded), SpentAttempt::Duplicate);
+
+        // An unfired wake past its deadline is an expiry: reported once, by
+        // the retirement CAS winner.
+        let mut expired = wake_binding("harness::on-timer");
+        expired.lifecycle.expires_at = Some(100);
+        assert!(expired.is_exhausted(100));
+        assert!(crate::bindings::expiry::is_unfired_wake(&expired));
+        assert_eq!(spent_attempt(&expired), SpentAttempt::Expired);
+    }
+
+    #[test]
+    fn the_delivery_record_never_shares_the_wake_entry_id() {
+        // The regression this pins: both appends carried `e_fire_<b>_<n>`, and
+        // session-manager's entry-id idempotence swallowed whichever landed
+        // second — the record on an idle session, the WAKE when the turn was
+        // running (the record claimed the id while the wake sat parked, and
+        // the drain was then deduped as a replay). One binding, three fires,
+        // one notification.
+        for ordinal in [0, 1, 7] {
+            let wake = fire_entry_id("sub_1", ordinal);
+            let record = record_entry_id("sub_1", ordinal);
+            assert_ne!(wake, record, "ordinal {ordinal}");
+        }
+        assert_eq!(record_entry_id("sub_1", 2), "e_obsfired_sub_1_2");
+        // Redelivery of the same ordinal still dedupes against itself.
+        assert_eq!(record_entry_id("sub_1", 2), record_entry_id("sub_1", 2));
+    }
+
+    fn wake_binding(function_id: &str) -> Binding {
+        use crate::bindings::{BindingTarget, Lifecycle, OwnerScope, SourceSpec};
+        let mut target = BindingTarget::new(crate::functions::SEND_ID);
+        target.payload = Some(json!({ "session_id": "s_owner", "label": null }));
+        Binding {
+            id: "sub_w".into(),
+            observer_id: None,
+            source: Some(SourceSpec {
+                function_id: function_id.into(),
+                namespace: None,
+                args: None,
+                filters: None,
+            }),
+            owner: OwnerScope {
+                session_id: "s_owner".into(),
+                root_session_id: None,
+            },
+            target,
+            conditions: vec![],
+            lifecycle: Lifecycle {
+                once: true,
+                max_fires: None,
+                expires_at: None,
+            },
+            capability: None,
+            dedup_key: Some(json!({ "function_id": function_id })),
+            fires: 0,
+            created_at: 0,
+        }
+    }
+
+    /// The medium-agnostic claim, pinned: nothing in the wake path reads the
+    /// event's source or shape, so a function that does not exist yet
+    /// delivers through the identical owner-notification path as state,
+    /// database, cron, and timer do today.
+    #[test]
+    fn a_wake_binding_delivers_any_source_shape() {
+        let b = wake_binding("sensor::on-motion-detected");
+        assert!(
+            crate::bindings::is_armed_wake(&b, 0),
+            "a once send-target binding is an armed wake whatever its source type"
+        );
+        let event = json!({ "sensor": "porch", "confidence": 0.93, "at": 1234 });
+        let text = notification_text(&b, &event);
+        assert!(text.starts_with("[notification] "));
+        assert!(
+            text.contains("porch"),
+            "the arbitrary event renders: {text}"
+        );
+        // Non-object events deliver too — the event is a lossless Value.
+        for odd in [json!("plain string"), json!(41.5), Value::Null] {
+            assert!(notification_text(&b, &odd).starts_with("[notification] "));
+        }
+    }
+
+    /// A call dispatch is checked against the capability frozen at
+    /// registration — never the owner's policy now, and `None` (a registrant
+    /// that ran with no policy) denies rather than passes.
+    #[test]
+    fn a_call_dispatch_is_checked_against_the_frozen_capability() {
+        use crate::types::turn::FunctionPolicy;
+        let mut b = wake_binding("state::on-changed");
+        b.target = crate::bindings::BindingTarget::new("run::record");
+        b.capability = Some(FunctionPolicy {
+            allow: vec!["run::*".into(), "state::get".into()],
+            deny: vec![],
+            expose: Default::default(),
+        });
+        assert!(call_allowed(&b, "run::record").is_ok());
+        assert!(call_allowed(&b, "state::get").is_ok());
+        assert!(call_allowed(&b, "harness::spawn").is_err());
+        let err = call_allowed(&b, "shell::run").unwrap_err();
+        assert!(
+            err.contains("outside the policy this binding was created with"),
+            "got: {err}"
+        );
+
+        b.capability = None;
+        assert!(
+            call_allowed(&b, "run::record").is_err(),
+            "no frozen capability must deny, not pass"
+        );
+    }
+
+    /// What a ƒ-call target actually receives — the value the delivery record
+    /// carries. Default `event_into` nests the event under `/event`; an
+    /// explicit pointer places it verbatim, template fields untouched.
+    #[test]
+    fn a_call_payload_is_the_template_with_the_event_at_its_pointer() {
+        let mut b = wake_binding("database::on-row-changed");
+        b.target = crate::bindings::BindingTarget::new("receiving::check_completion");
+        let event = json!({ "db": "primary", "table": "courier_status", "op": "update" });
+
+        // No template, default pointer: the event lands under `/event`.
+        assert_eq!(project(&b, &event), json!({ "event": event }));
+
+        // A template is preserved and the pointer is honoured.
+        b.target.payload = Some(json!({ "run_id": "r1", "args": {} }));
+        b.target.event_into = Some("/args/change".into());
+        assert_eq!(
+            project(&b, &event),
+            json!({ "run_id": "r1", "args": { "change": event } })
+        );
+
+        // An empty pointer replaces the whole payload with the raw event.
+        b.target.event_into = Some(String::new());
+        assert_eq!(project(&b, &event), event);
+    }
+
+    /// The event is the observed call's output — for an event source, the
+    /// event itself — and its input only when the output was not captured.
+    #[test]
+    fn the_event_is_the_observed_output() {
+        let mut envelope: DeliverEnvelope = serde_json::from_value(json!({
+            "observer_id": "sub_1",
+            "activation_id": "act_1",
+            "function_id": "state::on-changed",
+            "invocation_id": "inv_1",
+            "status": "success",
+            "input": { "scope": "run", "key": "go" },
+            "output": { "scope": "run", "key": "go", "new_value": 1 },
+            "started_at_ms": 1,
+            "duration_ms": 0.5
+        }))
+        .unwrap();
+        assert_eq!(observed_event(&envelope)["new_value"], 1);
+        envelope.output = None;
+        assert_eq!(
+            observed_event(&envelope),
+            json!({ "scope": "run", "key": "go" })
+        );
+        envelope.input = None;
+        assert_eq!(observed_event(&envelope), Value::Null);
+    }
+
+    fn envelope_of(observer_id: &str, output: Value) -> Value {
+        json!({
+            "observer_id": observer_id,
+            "activation_id": "act_1",
+            "function_id": "state::on-changed",
+            "invocation_id": "inv_1",
+            "status": "success",
+            "input": { "scope": "run", "key": "go" },
+            "output": output,
+            "started_at_ms": 1,
+            "duration_ms": 0.5
+        })
+    }
+
+    /// iii's delivery: the envelope's output is the event, and the sidecar
+    /// names the binding.
+    #[test]
+    fn an_envelope_delivers_its_output_to_the_sidecar_binding() {
+        let output = json!({ "scope": "run", "key": "go", "new_value": 1 });
+        let (binding, event) = delivered(
+            envelope_of("sub_1", output.clone()),
+            Some(&json!({ "__binding": "sub_1" })),
+        );
+        assert_eq!(binding.as_deref(), Some("sub_1"));
+        assert_eq!(event, output);
+    }
+
+    /// An envelope without a sidecar names its binding by the observer id it
+    /// carries (a binding's observer id is its binding id).
+    #[test]
+    fn an_envelope_without_a_sidecar_names_its_binding_by_observer_id() {
+        let (binding, event) = delivered(envelope_of("sub_2", json!({ "n": 2 })), None);
+        assert_eq!(binding.as_deref(), Some("sub_2"));
+        assert_eq!(event, json!({ "n": 2 }));
+    }
+
+    /// A call through the observer from a source's deliver hook: the payload
+    /// as sent is the event, whatever its shape, and the sidecar names the
+    /// binding.
+    #[test]
+    fn a_payload_through_the_observer_is_the_event_as_sent() {
+        let sidecar = json!({ "__binding": "sub_3" });
+        for payload in [
+            json!({ "ticket_id": "T-1", "kind": "moved", "to": "done" }),
+            json!("a bare string"),
+            json!([1, 2, 3]),
+            Value::Null,
+        ] {
+            let (binding, event) = delivered(payload.clone(), Some(&sidecar));
+            assert_eq!(binding.as_deref(), Some("sub_3"));
+            assert_eq!(event, payload);
+        }
+        // Without a sidecar a payload names no binding.
+        assert_eq!(delivered(json!({ "k": 1 }), None).0, None);
+        // The engine's caller stamp on the call is not part of the event.
+        let (_, event) = delivered(
+            json!({ "ticket_id": "T-1", "_caller_worker_id": "conn-1" }),
+            Some(&sidecar),
+        );
+        assert_eq!(event, json!({ "ticket_id": "T-1" }));
+    }
+
+    /// A payload that happens to decode as an envelope of another observer
+    /// is a payload: only an envelope naming this binding's observer is
+    /// unwrapped.
+    #[test]
+    fn an_envelope_of_another_observer_is_a_payload() {
+        let forwarded = envelope_of("someone_else", json!({ "n": 4 }));
+        let (binding, event) = delivered(forwarded.clone(), Some(&json!({ "__binding": "sub_4" })));
+        assert_eq!(binding.as_deref(), Some("sub_4"));
+        assert_eq!(event, forwarded);
+    }
+
+    /// The input format documents both shapes.
+    #[test]
+    fn the_input_format_names_the_envelope_and_a_payload() {
+        let schema = crate::surface::schema_value::<DeliverInput>();
+        let shapes = schema["anyOf"].as_array().expect("anyOf of the two shapes");
+        assert_eq!(shapes.len(), 2, "{schema}");
+        assert!(schema.to_string().contains("observer_id"), "{schema}");
+    }
+}
