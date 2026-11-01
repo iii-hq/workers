@@ -15,8 +15,8 @@ name = "workflow"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0"
-iii-helpers = "=0.26.0"
+iii-sdk = "=0.26.0-rc.1"
+iii-helpers = "=0.26.0-rc.1"
 # Shared plumbing for the builtin `configuration` worker (seeding, retries,
 # NOT_FOUND semantics, serialized hot-reload, guidance observer slot).
 iii-config-client = { path = "../crates/config-client" }

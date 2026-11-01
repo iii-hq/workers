@@ -150,7 +150,7 @@ rows = iii.call({'function_id': 'database::query',
 - **Delivery.** Node runtimes get the SDK planted at
   `/node_modules/iii-sdk` from a bundle embedded in sandbox-code-runner —
   no registry, no `npm install`, works offline. Python runtimes
-  `pip install 'iii-sdk>=0.26.0'` once at runtime creation (its pydantic-core
+  `pip install 'iii-sdk>=0.26.0rc1'` once at runtime creation (its pydantic-core
   dependency is compiled per-platform, so planting is not an option); if
   that install fails — no PyPI route, say — the runtime still works and
   `iii` raises a clear "not installed" error on first use.

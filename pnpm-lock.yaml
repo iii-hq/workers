@@ -187,8 +187,8 @@ importers:
         specifier: ^0.5.0
         version: 0.5.0
       iii-browser-sdk:
-        specifier: 0.24.6
-        version: 0.24.6
+        specifier: 0.26.0-rc.1
+        version: 0.26.0-rc.1
       lexical:
         specifier: ^0.44.0
         version: 0.44.0
@@ -1385,8 +1385,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       iii-sdk:
-        specifier: 0.24.6
-        version: 0.24.6
+        specifier: 0.26.0-rc.1
+        version: 0.26.0-rc.1
       zod:
         specifier: 'catalog:'
         version: 4.4.3
@@ -2500,8 +2500,8 @@ packages:
   '@iconify/utils@3.1.4':
     resolution: {integrity: sha512-b1S7B1k9ohZ+iNTi2ATxbRYG9fTrJmUT0rc46bvVnNxqNRGW7dyo/vRREwyniI5IRN2RSJHDcm+s3BjWrSAjHw==}
 
-  '@iii-dev/helpers@0.24.6':
-    resolution: {integrity: sha512-0Um8HM4wwpZIXr9EDJH1ZiSE/a9HnFyt/9IbhVAHOeZ7lwh0x1SaoY2vTvC6RLu7oSrhdHJxrxQ1Ei7/02gUHg==}
+  '@iii-dev/helpers@0.26.0-rc.1':
+    resolution: {integrity: sha512-qNWSG40ea9g6sJZ303OmnCWOQnYyJvsXTYT0rZ9CQZV7tJmKcMfLdKMLVThqAmVy2ijnfcsW/Q35OzTN3DWk/w==}
 
   '@jitl/quickjs-ffi-types@0.31.0':
     resolution: {integrity: sha512-1yrgvXlmXH2oNj3eFTrkwacGJbmM0crwipA3ohCrjv52gBeDaD7PsTvFYinlAnqU8iPME3LGP437yk05a2oejw==}
@@ -5332,11 +5332,11 @@ packages:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
     engines: {node: '>= 4'}
 
-  iii-browser-sdk@0.24.6:
-    resolution: {integrity: sha512-Gf3vMfi9fn2WI8V88965Zp4z3oS1OKpNobFCwoQpvw9Ahjz5pDHRHrL2BTpVlEQJr5l4VtKC0A2BBpRXETibrA==}
+  iii-browser-sdk@0.26.0-rc.1:
+    resolution: {integrity: sha512-71FJpzziC1Asx/Hk0Gj9BViyfGPeYhf5PxH7YBg2mF7lEw6pnXC6czjHaIFYUj0Auzdqre6Iv19FrK+vfeY0Hw==}
 
-  iii-sdk@0.24.6:
-    resolution: {integrity: sha512-Ori0HR/7kOX3jUymiM6P9PPGoGD1gIa6doFLIolR253L9yKv7qsQAQ5zOoKZJKKBblqMwB2DiO6wUTROGcPp6Q==}
+  iii-sdk@0.26.0-rc.1:
+    resolution: {integrity: sha512-v4zfuEJ1HtkKZgvDZHdeaaIF0CEtwemkl+y7BX8gACGXUrnSWqR0v/q3I3Kok9+T1nh/YuU8bkbh7K+V/jhAOQ==}
 
   image-blob-reduce@3.0.1:
     resolution: {integrity: sha512-/VmmWgIryG/wcn4TVrV7cC4mlfUC/oyiKIfSg5eVM3Ten/c1c34RJhMYKCWTnoSMHSqXLt3tsrBR4Q2HInvN+Q==}
@@ -6014,11 +6014,6 @@ packages:
   multimath@2.0.0:
     resolution: {integrity: sha512-toRx66cAMJ+Ccz7pMIg38xSIrtnbozk0dchXezwQDMgQmbGpfxjtv68H+L00iFL8hxDaVjrmwAFSb3I6bg8Q2g==}
 
-  nanoid@3.3.16:
-    resolution: {integrity: sha512-bzlKTyNJ7+LdGIIwy8ijFpIqEQIvafahV7eYykJ8Cvh42EdJeODoJ6gUJXpQJvej1BddH8OqTXZNE/KfbWAu8Q==}
-    engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
-    hasBin: true
-
   nanoid@3.3.20:
     resolution: {integrity: sha512-uKdg2G3GNCKQn9byYOpxbGqrT2fGO5KRt5J/8b3pok8rT6qxGWF6hxMyJiEYtAf+FVyYuD9hRaDqX5uPFYJ4ZQ==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
@@ -6233,10 +6228,6 @@ packages:
   postcss-selector-parser@7.1.7:
     resolution: {integrity: sha512-wWBro/7hJ40ye6TPiXkUQoXKCw23xSsjriUvqd7Uls9Sso3oLiON1flc18cCdnjgCRXw4fBVqUJJeOdDTh3P3g==}
     engines: {node: '>=4'}
-
-  postcss@8.5.20:
-    resolution: {integrity: sha512-lW616l85ucIQL+FocMmL7pQFPqBmwejrCMg+iPxyImlrANNJG9NHq/RkyCZopDhd8C3LA03PHRJDjkbGu8vvug==}
-    engines: {node: ^10 || ^12 || >=14}
 
   postcss@8.5.32:
     resolution: {integrity: sha512-LJlKCCAUFKOuZxipUdYw1NzIITEsPcgyOG9LkvRJvuKj/bRzbuRY0ARXvL0pWGpsZvn8jku+LMep2eU0seHp8g==}
@@ -7747,7 +7738,7 @@ snapshots:
       '@iconify/types': 2.0.0
       import-meta-resolve: 4.2.0
 
-  '@iii-dev/helpers@0.24.6':
+  '@iii-dev/helpers@0.26.0-rc.1':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.222.0
@@ -9967,7 +9958,7 @@ snapshots:
   css-tree@3.2.1:
     dependencies:
       mdn-data: 2.27.1
-      source-map-js: 1.2.1
+      source-map-js: 1.2.2
 
   css.escape@1.5.1: {}
 
@@ -10560,11 +10551,11 @@ snapshots:
 
   ignore@5.3.2: {}
 
-  iii-browser-sdk@0.24.6: {}
+  iii-browser-sdk@0.26.0-rc.1: {}
 
-  iii-sdk@0.24.6:
+  iii-sdk@0.26.0-rc.1:
     dependencies:
-      '@iii-dev/helpers': 0.24.6
+      '@iii-dev/helpers': 0.26.0-rc.1
       '@opentelemetry/api': 1.9.1
       ws: 8.21.1
     transitivePeerDependencies:
@@ -10916,7 +10907,7 @@ snapshots:
     dependencies:
       '@babel/parser': 7.29.7
       '@babel/types': 7.29.7
-      source-map-js: 1.2.1
+      source-map-js: 1.2.2
 
   make-dir@4.0.0:
     dependencies:
@@ -11355,8 +11346,6 @@ snapshots:
       glur: 1.1.2
       object-assign: 4.1.1
 
-  nanoid@3.3.16: {}
-
   nanoid@3.3.20: {}
 
   nanoid@3.3.3: {}
@@ -11598,12 +11587,6 @@ snapshots:
     dependencies:
       cssesc: 3.0.0
       util-deprecate: 1.0.2
-
-  postcss@8.5.20:
-    dependencies:
-      nanoid: 3.3.16
-      picocolors: 1.1.1
-      source-map-js: 1.2.1
 
   postcss@8.5.32:
     dependencies:
@@ -12332,7 +12315,7 @@ snapshots:
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.5
-      postcss: 8.5.20
+      postcss: 8.5.32
       rolldown: 1.1.5
       tinyglobby: 0.2.17
     optionalDependencies:
@@ -12347,7 +12330,7 @@ snapshots:
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.5
-      postcss: 8.5.20
+      postcss: 8.5.32
       rolldown: 1.1.5
       tinyglobby: 0.2.17
     optionalDependencies:

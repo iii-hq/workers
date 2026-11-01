@@ -14,7 +14,7 @@ publish = false
 
 [dependencies]
 # The exact pin every worker carries, so a build graph has one iii-sdk.
-iii-sdk = "=0.26.0"
+iii-sdk = "=0.26.0-rc.1"
 tokio = { version = "1", features = ["rt", "sync", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

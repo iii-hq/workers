@@ -2073,7 +2073,7 @@ fn worker_compose() -> String {
         .into()
 }
 fn worker_package() -> String {
-    "{\n  \"name\": \"generated-a2ui-worker\",\n  \"version\": \"0.1.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"engines\": { \"node\": \">=22\" },\n  \"scripts\": { \"start\": \"node src/index.mjs\" },\n  \"dependencies\": { \"iii-sdk\": \"^0.26.0\" }\n}\n"
+    "{\n  \"name\": \"generated-a2ui-worker\",\n  \"version\": \"0.1.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"engines\": { \"node\": \">=22\" },\n  \"scripts\": { \"start\": \"node src/index.mjs\" },\n  \"dependencies\": { \"iii-sdk\": \"^0.26.0-rc.1\" }\n}\n"
         .into()
 }
 fn worker_source() -> String {
@@ -2515,7 +2515,7 @@ mod tests {
     fn exported_worker_uses_the_current_javascript_contract() {
         assert!(worker_compose().contains("kind: javascript-bundle"));
         assert!(worker_compose().contains("package_manifest: package.json"));
-        assert!(worker_package().contains("\"iii-sdk\": \"^0.26.0\""));
+        assert!(worker_package().contains("\"iii-sdk\": \"^0.26.0-rc.1\""));
         assert!(worker_source().contains("registerWorker(url"));
         assert!(worker_source().contains("process.env.III_URL"));
     }

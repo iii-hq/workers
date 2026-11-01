@@ -19,7 +19,7 @@ name = "document"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0"
+iii-sdk = "=0.26.0-rc.1"
 # The converter. Pure Rust, no system libraries, no subprocess, no network.
 # Registry-verified 0.1.9 with ZIP 9/calamine 0.37 security dependency fixes.
 # Remove the local patch once an upstream release carries these fixes.

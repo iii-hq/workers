@@ -38,7 +38,7 @@ jobs:
         # which registers only on an engine that advertises observe.v2
         # (0.26): the oldest engine the worker supports.
         engine:
-          - 'iii/v0.26.0'
+          - 'iii/v0.26.0-rc.1'
     env:
       III_RELEASE_TAG: ${{ matrix.engine }}
     steps:

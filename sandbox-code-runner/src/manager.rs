@@ -50,7 +50,7 @@ const FS_TIMEOUT_MS: u64 = 30_000;
 /// The Python SDK a Python runtime installs for its `iii` global: the same
 /// release line as the Node bundle (`ui/package.json`), so guests in both
 /// languages have `iii.call` and `iii.observe`.
-const GUEST_PYTHON_SDK: &str = "iii-sdk>=0.26.0";
+const GUEST_PYTHON_SDK: &str = "iii-sdk>=0.26.0rc1";
 /// In-guest deadline for `create`'s `pip install iii-sdk` step — a cold
 /// PyPI fetch of pydantic-core and friends can take a while on a slow
 /// link, and killing it just corrupts a partial site-packages.

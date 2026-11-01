@@ -12,8 +12,8 @@ importers:
         specifier: ^3.2.5
         version: 3.2.5
       iii-sdk:
-        specifier: 0.24.6
-        version: 0.24.6
+        specifier: 0.26.0-rc.1
+        version: 0.26.0-rc.1
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -248,8 +248,8 @@ packages:
     peerDependencies:
       hono: ^4
 
-  '@iii-dev/helpers@0.24.6':
-    resolution: {integrity: sha512-0Um8HM4wwpZIXr9EDJH1ZiSE/a9HnFyt/9IbhVAHOeZ7lwh0x1SaoY2vTvC6RLu7oSrhdHJxrxQ1Ei7/02gUHg==}
+  '@iii-dev/helpers@0.26.0-rc.1':
+    resolution: {integrity: sha512-qNWSG40ea9g6sJZ303OmnCWOQnYyJvsXTYT0rZ9CQZV7tJmKcMfLdKMLVThqAmVy2ijnfcsW/Q35OzTN3DWk/w==}
 
   '@jeger-ai/opengantry@3.2.5':
     resolution: {integrity: sha512-mM9HjNUgbh1sm+q/fNrM2DTfspXyQOzHJg2ZOjjwNAGYbdF24CkOJZX6J7OOggLpB65O112pUT62XXjY9XJHzg==}
@@ -337,12 +337,14 @@ packages:
   '@opentelemetry/sdk-trace-base@2.12.0':
     resolution: {integrity: sha512-JOERgZCxRM06FEJ5kEWxlSRChah6MmXDx3KwCruqEv/iEyLkTokCSemf2y1w8oIHtfrr8EVTpzebq/31vn2Cpg==}
     engines: {node: ^18.19.0 || >=20.6.0}
+    deprecated: Use @opentelemetry/sdk-trace package
     peerDependencies:
       '@opentelemetry/api': '>=1.3.0 <1.10.0'
 
   '@opentelemetry/sdk-trace-node@2.12.0':
     resolution: {integrity: sha512-9DufH1IlmQMoKAfot5y/FhTP1RnmhLb5K6eKmJO/bvzPjYwPAazoiAUbTZFdPbqxOXN0FEbhZx/e6SB1Og4jmg==}
     engines: {node: ^18.19.0 || >=20.6.0}
+    deprecated: Use @opentelemetry/sdk-trace package
     peerDependencies:
       '@opentelemetry/api': '>=1.0.0 <1.10.0'
 
@@ -550,8 +552,8 @@ packages:
     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
     engines: {node: '>=0.10.0'}
 
-  iii-sdk@0.24.6:
-    resolution: {integrity: sha512-Ori0HR/7kOX3jUymiM6P9PPGoGD1gIa6doFLIolR253L9yKv7qsQAQ5zOoKZJKKBblqMwB2DiO6wUTROGcPp6Q==}
+  iii-sdk@0.26.0-rc.1:
+    resolution: {integrity: sha512-v4zfuEJ1HtkKZgvDZHdeaaIF0CEtwemkl+y7BX8gACGXUrnSWqR0v/q3I3Kok9+T1nh/YuU8bkbh7K+V/jhAOQ==}
 
   import-in-the-middle@3.5.2:
     resolution: {integrity: sha512-WseIA/4o56+GYO3RmlOPvejYi771OFeJEeK/ejROsr9bdjW+E5NXTOD1Di8TL40Qgg3JJX9aa97Hf8iiSVIKZw==}
@@ -901,7 +903,7 @@ snapshots:
     dependencies:
       hono: 4.13.2
 
-  '@iii-dev/helpers@0.24.6':
+  '@iii-dev/helpers@0.26.0-rc.1':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.222.0
@@ -1291,9 +1293,9 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
-  iii-sdk@0.24.6:
+  iii-sdk@0.26.0-rc.1:
     dependencies:
-      '@iii-dev/helpers': 0.24.6
+      '@iii-dev/helpers': 0.26.0-rc.1
       '@opentelemetry/api': 1.9.1
       ws: 8.21.3
     transitivePeerDependencies:

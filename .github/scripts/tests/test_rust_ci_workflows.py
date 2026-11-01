@@ -224,11 +224,11 @@ def test_other_engine_installers_use_the_observe_v2_release() -> None:
                     # A matrix over engines runs the first engine that
                     # advertises observe.v2; its other legs are extra.
                     engines = job.get("strategy", {}).get("matrix", {}).get("engine", [])
-                    assert "iii/v0.26.0" in engines, (
+                    assert "iii/v0.26.0-rc.1" in engines, (
                         path.name, job_name, step.get("name"), engines
                     )
                 else:
-                    assert tag == "iii/v0.26.0", (
+                    assert tag == "iii/v0.26.0-rc.1", (
                         path.name, job_name, step.get("name"), tag
                     )
                 covered.add(path.name)

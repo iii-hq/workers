@@ -15,13 +15,13 @@ name = "session_manager"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0"
+iii-sdk = "=0.26.0-rc.1"
 iii-worker-paths = { path = "../crates/worker-paths" }
 # Chat mention provider descriptor + search/get wire types (`@session(id=…)`).
 mention-contract = { path = "../crates/mention-contract" }
 # `run_with_baggage` for call-site span hiding (`iii.tag.hidden` on the
 # session event calls — see src/events.rs `IiiDeliverer`).
-iii-helpers = "=0.26.0"
+iii-helpers = "=0.26.0-rc.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

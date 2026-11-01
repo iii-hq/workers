@@ -18,7 +18,7 @@ name = "kanban"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.26.0"
+iii-sdk = "=0.26.0-rc.1"
 # Configuration-worker client (seeding, NOT_FOUND-aware reads, serialized
 # reload) and the injectable console UI helper — both path-linked, never
 # published.

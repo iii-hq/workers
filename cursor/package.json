@@ -23,7 +23,7 @@
     "cursor-worker": "./dist/index.js"
   },
   "dependencies": {
-    "iii-sdk": "0.26.0",
+    "iii-sdk": "0.26.0-rc.1",
     "zod": "^4.0.0"
   },
   "devDependencies": {
