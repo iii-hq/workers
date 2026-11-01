@@ -64,6 +64,19 @@ fn args_of(config: &Value) -> Option<Value> {
     (!map.is_empty()).then_some(Value::Object(map))
 }
 
+/// An `http` binding's config named its route `api_path` and `http_method`
+/// (`GET` when unset); `http::on-request` takes them as `path` and `method`.
+fn http_route_args(config: &Value) -> Option<Value> {
+    let mut args = args_of(config)?;
+    let map = args.as_object_mut()?;
+    if let Some(path) = map.remove("api_path") {
+        map.insert("path".to_string(), path);
+    }
+    let method = map.remove("http_method").unwrap_or_else(|| json!("GET"));
+    map.entry("method").or_insert(method);
+    Some(args)
+}
+
 /// One `$eq` filter per scalar config field, on `input.<field>`.
 fn eq_filters(config: &Value, fields: &[(&str, &str)]) -> Option<Value> {
     let config = config.as_object()?;
@@ -201,7 +214,7 @@ pub fn translate(trigger_type: &str, config: &Value, created_at: i64) -> Option<
             Some(json!({ "at": timer_at(config, created_at)? })),
             None,
         ),
-        "http" => source("http::on-request", args_of(config), None),
+        "http" => source("http::on-request", http_route_args(config), None),
         "cron" => source(
             "cron::on-tick",
             Some(json!({ "expression": config.get("expression")?.as_str()? })),
@@ -660,6 +673,31 @@ mod tests {
             tr(
                 "http",
                 &json!({ "method": "POST", "path": "/hook", "metadata": { "x": 1 } })
+            ),
+            Some(spec(
+                "http::on-request",
+                Some(json!({ "method": "POST", "path": "/hook" })),
+                None
+            ))
+        );
+        // As 0.25 stored it: `api_path` and `http_method`, which defaulted to GET.
+        assert_eq!(
+            tr(
+                "http",
+                &json!({ "api_path": "hook", "middleware_function_ids": ["mw::auth"] })
+            ),
+            Some(spec(
+                "http::on-request",
+                Some(
+                    json!({ "method": "GET", "path": "hook", "middleware_function_ids": ["mw::auth"] })
+                ),
+                None
+            ))
+        );
+        assert_eq!(
+            tr(
+                "http",
+                &json!({ "api_path": "/hook", "http_method": "POST" })
             ),
             Some(spec(
                 "http::on-request",
