@@ -790,11 +790,19 @@ async fn handle(
         return observe_post_turn(deps, req, session_id, policy).await;
     }
     reject_forbidden_source(&req.function_id)?;
-    // An observer reads every call of its source: what no agent may call
-    // (credential and private state accessors), no agent observes.
+    // An observer reads every call of its source, other sessions' included:
+    // what no agent may call (credential and private state accessors), no
+    // agent observes, and an agent observes only what its policy allows.
     if agent_call_forbidden(&req.function_id) {
         return Err(HarnessError::InvalidRequest(format!(
             "`{}` is not available to agents, including as an observed function",
+            req.function_id
+        )));
+    }
+    if !policy.allows(&req.function_id) {
+        return Err(HarnessError::InvalidRequest(format!(
+            "observing `{0}` is not permitted by this session's dispatch policy: an observer \
+             reads every call of the function it observes, so the policy must allow `{0}`",
             req.function_id
         )));
     }
@@ -2741,6 +2749,33 @@ pub(crate) mod tests {
             assert!(result.is_error, "{id} must not become a validator");
             assert!(result.details["error"].as_str().unwrap().contains(id));
         }
+    }
+
+    /// An agent observes only functions its policy allows: an observer reads
+    /// every call of its source, other sessions' included.
+    #[tokio::test]
+    async fn an_observed_function_must_be_allowed_by_the_policy() {
+        let deps = disconnected_deps();
+        let engine = deps.engine().await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            invoke(
+                &deps,
+                &engine,
+                &policy_allowing(&[OBSERVE_ID]),
+                OBSERVE_ID,
+                &json!({ "function_id": "router::provider::stream" }),
+                "owner",
+                false,
+                None,
+            ),
+        )
+        .await
+        .expect("the refusal completes locally");
+        assert!(result.is_error);
+        let error = result.details["error"].as_str().unwrap();
+        assert!(error.contains("dispatch policy"), "{error}");
+        assert!(error.contains("router::provider::stream"), "{error}");
     }
 
     /// A post-turn validator names its validator as the target; without one

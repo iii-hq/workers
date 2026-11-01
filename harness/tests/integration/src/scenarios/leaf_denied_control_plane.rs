@@ -69,6 +69,8 @@ pub(super) fn scenario() -> ScenarioFixture {
             .idempotency_key("{{run_id}}:integration-015")
             .allow_id(OBSERVE)
             .allow_id(SPAWN)
+            // An agent observes only what its policy allows.
+            .allow_id("state::on-changed")
             .allow_function(&record),
     )
     // Only the parent's turn is tracked; the child's completion signal is the

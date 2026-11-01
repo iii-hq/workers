@@ -61,6 +61,8 @@ pub(super) fn scenario() -> ScenarioFixture {
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-006")
             .allow_id(OBSERVE)
+            // An agent observes only what its policy allows.
+            .allow_id("state::on-changed")
             .allow_function(&record),
     )
     // Main turn (1) + the state-fired wake turn (2).

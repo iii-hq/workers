@@ -495,6 +495,10 @@ fn parse_dispatch_error_json(value: &Value) -> Option<DispatchError> {
 fn parse_descriptor_list(v: &Value) -> Vec<FunctionDescriptor> {
     descriptor_items(v)
         .into_iter()
+        // Only its host calls a private function (an event source, by the
+        // workers' contract): never a tool an agent could call. An agent
+        // observes one through `harness::observe` when its policy allows it.
+        .filter(|item| item.get("private").and_then(Value::as_bool) != Some(true))
         .filter_map(descriptor_of)
         .collect()
 }
@@ -545,6 +549,16 @@ fn descriptor_of(v: &Value) -> Option<FunctionDescriptor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_private_function_is_no_tool() {
+        let listed = parse_descriptor_list(&json!({ "functions": [
+            { "function_id": "state::get" },
+            { "function_id": "state::on-changed", "private": true },
+        ]}));
+        let ids: Vec<&str> = listed.iter().map(|d| d.function_id.as_str()).collect();
+        assert_eq!(ids, ["state::get"]);
+    }
 
     /// The restart check never runs on a clock: with no engine change it
     /// probes nothing however long the dispatch runs; each change probes

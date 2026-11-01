@@ -726,9 +726,15 @@ payload as sent). The harness counts delivered fires
 itself (`once`, `max_fires`) and runs the conditions before a delivery; the
 lifecycle deadline is also the observer's `expires_in_ms`. The harness waits
 briefly for the observer to become active, so `INVALID_ARGS`, `FORBIDDEN`,
-`NOT_OBSERVABLE` and a worker's rejection come back to the agent. Bindings
-stored by harness versions before 0.26 are translated at boot, or retired with
-a notice to their owner. `harness::observers::list { session_id? }` and
+`NOT_OBSERVABLE` and a worker's rejection come back to the agent. An observer
+reads every call of the function it observes, other sessions' included, so the
+session's dispatch policy must allow that function, as it must allow a target
+or a condition; functions no agent may call (credential and private state
+accessors, `harness::observer::deliver`) are refused either way. Allowing a
+private event source (`state::on-changed`, `shell::on-job-finished`,
+`harness::on-timer`) lets the agent observe it, never call it, and it is not
+offered as a tool. Bindings stored by harness versions before 0.26 are
+translated at boot, or retired with a notice to their owner. `harness::observers::list { session_id? }` and
 `harness::observers::dispose { observer_id, session_id }` are the console's
 read and teardown over a session's observers; new transcript records use the
 custom type `observer_fired`.

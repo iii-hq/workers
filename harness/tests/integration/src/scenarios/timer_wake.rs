@@ -61,6 +61,8 @@ pub(super) fn scenario() -> ScenarioFixture {
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-013")
             .allow_id(OBSERVE)
+            // An agent observes only what its policy allows.
+            .allow_id("harness::on-timer")
             .allow_function(&record),
     )
     // The arm turn completes PARKED (a timer notify is an armed once-wake);

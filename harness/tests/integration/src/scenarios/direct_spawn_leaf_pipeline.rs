@@ -76,6 +76,8 @@ pub(super) fn scenario() -> ScenarioFixture {
             // Declared in sorted order: the harness renders the policy prompt
             // line sorted, while this list is joined in insertion order.
             .allow_id("state::barrier")
+            // An agent observes only what its policy allows.
+            .allow_id("state::on-changed")
             .allow_id("state::set"),
     )
     // Parent and child turns are independently scheduled. Match each request

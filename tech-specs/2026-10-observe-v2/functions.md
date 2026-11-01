@@ -938,7 +938,10 @@ creates the observer itself.
 { id: string } → { removed: boolean }
 ```
 
-- `harness::*` sources are refused for agents except `harness::on-timer`.
+- `harness::*` sources are refused for agents except `harness::on-timer`. A
+  source must be allowed by the session's dispatch policy, as a target is, and
+  one that `agent_call_forbidden` covers is refused whatever the policy. A
+  private function is never offered to the model as a tool.
 - The harness observes
   `Source::function(function_id).namespace(ns).args(args).filters(filters)`
   with target `harness::observer::deliver`, options
