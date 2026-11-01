@@ -124,21 +124,26 @@ impl IIIEngine {
 
     /// Create the observer now, before the returned future is polled, so a
     /// teardown that disposes it mid-await finds its handle.
-    fn observe_now(&self, input: Value) -> Result<String, String> {
-        let guest = parse_guest_observe(input)?;
-        crate::agent_dispatch::validate_observe(&guest.source.function_id, &guest.target)?;
+    /// A refusal comes with the handle it refused, for `observe` to dispose.
+    fn observe_now(&self, input: Value) -> Result<String, (String, Option<ObserverHandle>)> {
+        let guest = parse_guest_observe(input).map_err(|e| (e, None))?;
+        crate::agent_dispatch::validate_observe(&guest.source.function_id, &guest.target)
+            .map_err(|e| (e, None))?;
         let (source, target, options) = sdk_observe(guest);
         let handle = self.iii.observe_with(source, target, options);
         // The SDK refuses a malformed observer (an invalid filter), and one
         // under an id another handle of this client holds
-        // (`OBSERVER_ID_CONFLICT`), before anything is sent, and never
-        // tracks it: the holder is untouched, and there is nothing to
-        // dispose.
+        // (`OBSERVER_ID_CONFLICT`), before anything is sent; the holder is
+        // untouched. One the engine cannot take (`UNSUPPORTED`) stays held
+        // and would be sent with the next connection's replay, so the
+        // refused handle is disposed either way: that sends nothing, and
+        // frees only what it holds itself.
         if handle.state() == ObserverState::Error {
-            return Err(handle
+            let reason = handle
                 .reason()
                 .map(|r| format!("{}: {}", r.code, r.message))
-                .unwrap_or_else(|| "the observer was refused".to_string()));
+                .unwrap_or_else(|| "the observer was refused".to_string());
+            return Err((reason, Some(handle)));
         }
         let id = handle.id().to_string();
         self.handles.lock().unwrap().insert(id.clone(), handle);
@@ -354,7 +359,17 @@ impl Engine for IIIEngine {
 
     fn observe(&self, input: Value) -> BoxFuture<'static, Result<String, String>> {
         let observed = self.observe_now(input);
-        Box::pin(async move { observed })
+        Box::pin(async move {
+            match observed {
+                Ok(id) => Ok(id),
+                Err((error, refused)) => {
+                    if let Some(handle) = refused {
+                        let _ = handle.dispose().await;
+                    }
+                    Err(error)
+                }
+            }
+        })
     }
 
     fn dispose_observer(&self, observer_id: String) -> BoxFuture<'static, Result<(), String>> {
