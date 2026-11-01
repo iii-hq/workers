@@ -150,7 +150,12 @@ connection with no RBAC session, so the proxy gates every observe frame:
   `observeresult` answers the oldest unanswered `observe` under its id, and a
   refusal is that `observe`'s final answer. An observer is the connection's
   once the engine accepts it, unless the connection's `unobserve` of the id
-  followed its `observe`.
+  followed its `observe`. A refusal also sends the engine an `unobserve` of
+  the id, unless the worker sent one after that `observe` or observes the id
+  again: a `Reattach` gives the connection the observers of the worker's
+  previous connection with no RBAC check, and the replay of one the session
+  may no longer have is refused here (or, rewritten otherwise by the
+  registration hook, by the engine).
 - **Hosting.** `functionregistered`, `observeradded`, `observerremoved`,
   `observerack`, `invocationsobserved` and `localinvocationstats` pass for the
   functions the connection registered, with the session prefix removed toward

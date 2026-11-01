@@ -329,7 +329,9 @@ async fn every_observe_fixture_is_gated() {
         match expect {
             Expect::RepliedDownstream(reply_fixture) => {
                 let action = i.handle_downstream(&text).await;
-                let DownstreamAction::ReplyToClient(reply) = action else {
+                let (DownstreamAction::ReplyToClient(reply)
+                | DownstreamAction::ForwardThenReply(_, reply)) = action
+                else {
                     panic!("{file}: expected a reply, got {action:?}");
                 };
                 assert_eq!(

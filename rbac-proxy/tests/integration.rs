@@ -106,12 +106,17 @@ fn register_support() -> IIIClient {
 
     // Auth: accept every upgrade with the default (empty) AuthResult — the
     // proxy's `expose_functions` does the gating. A context is attached so
-    // middleware/hook plumbing has something to carry. It receives bearer
-    // tokens, so nobody may observe it.
+    // middleware/hook plumbing has something to carry. The `narrow` token's
+    // session may not reach `api::echo`. It receives bearer tokens, so nobody
+    // may observe it.
     support.register_function(
         "test::auth",
-        RegisterFunction::new_async(|_input: Value| async move {
-            Ok::<Value, Error>(json!({ "context": { "tenant": "itest" } }))
+        RegisterFunction::new_async(|input: Value| async move {
+            let mut session = json!({ "context": { "tenant": "itest" } });
+            if input["headers"]["authorization"] == "Bearer narrow" {
+                session["forbidden_functions"] = json!(["api::echo"]);
+            }
+            Ok::<Value, Error>(session)
         })
         .observable(false),
     );
@@ -441,6 +446,93 @@ async fn end_to_end_rbac_through_proxy() {
         let _ = ws.close(None).await;
     }
 
+    // (i) A `Reattach` gives a connection its previous connection's
+    //     observers, and the proxy's connections carry no session the engine
+    //     could check them against. A narrower session's refusal of the
+    //     replayed observe disposes the observer: no activation reaches the
+    //     new connection.
+    {
+        const OBSERVER: &str = "9c1e5a7b-3d5f-4b7d-9e1f-5a7c9e1b3d5f";
+        let register_worker = json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": {
+                "runtime": "rust",
+                "name": "rbac-proxy-itest-reattach",
+                "features": ["observe.v1", "observe.v2"]
+            },
+            "action": { "type": "void" }
+        });
+        let register_target = json!({ "type": "registerfunction", "id": "itest::observed-echo" });
+        let observe = json!({
+            "type": "observe",
+            "id": OBSERVER,
+            "source": { "function_id": "api::echo" },
+            "target": { "function_id": "itest::observed-echo" }
+        });
+
+        let mut first = raw_client().await;
+        let registered = request(&mut first, register_worker.clone(), |v| {
+            v["type"] == "workerregistered"
+        })
+        .await;
+        request(&mut first, register_target.clone(), |v| {
+            v["type"] == "functionregistered"
+        })
+        .await;
+        let answer = request(&mut first, observe.clone(), |v| {
+            v["type"] == "observeresult"
+        })
+        .await;
+        assert_ne!(answer["state"], "error", "got {answer}");
+        let _ = first.close(None).await;
+        sleep(Duration::from_millis(300)).await;
+
+        let mut narrow = raw_client_with("Bearer narrow").await;
+        narrow
+            .send(Message::Text(
+                json!({
+                    "type": "reattach",
+                    "previous_worker_id": registered["worker_id"],
+                    "reattach_token": registered["reattach_token"]
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("send reattach");
+        request(&mut narrow, register_worker, |v| {
+            v["type"] == "workerregistered"
+        })
+        .await;
+        request(&mut narrow, register_target, |v| {
+            v["type"] == "functionregistered"
+        })
+        .await;
+        let replay = request(&mut narrow, observe, |v| v["type"] == "observeresult").await;
+        assert_eq!(replay["error"]["code"], "FORBIDDEN", "got {replay}");
+
+        let _ = client
+            .call(call("api::echo", json!({ "after": "reattach" })))
+            .await;
+        let leaked = timeout(Duration::from_secs(2), async {
+            while let Some(Ok(msg)) = narrow.next().await {
+                if let Message::Text(t) = msg {
+                    let v: Value = serde_json::from_str(t.as_str()).unwrap_or_default();
+                    if v["type"] == "invokefunction" {
+                        return v;
+                    }
+                }
+            }
+            Value::Null
+        })
+        .await;
+        assert!(
+            !matches!(&leaked, Ok(v) if !v.is_null()),
+            "the reattached observer reached the narrower session: {leaked:?}"
+        );
+        let _ = narrow.close(None).await;
+    }
+
     let _ = std::fs::remove_file(&seed_path);
 }
 
@@ -448,16 +540,19 @@ type RawClient =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn raw_client() -> RawClient {
+    raw_client_with("Bearer test-token").await
+}
+
+async fn raw_client_with(authorization: &str) -> RawClient {
     let url = format!("ws://127.0.0.1:{PROXY_PORT}/");
     let mut request =
         tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
             url.as_str(),
         )
         .expect("request");
-    request.headers_mut().insert(
-        "authorization",
-        "Bearer test-token".parse().expect("header"),
-    );
+    request
+        .headers_mut()
+        .insert("authorization", authorization.parse().expect("header"));
     let (ws, _) = tokio_tungstenite::connect_async(request)
         .await
         .expect("raw connect to proxy");

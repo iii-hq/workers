@@ -159,8 +159,12 @@ pub enum DownstreamAction {
     /// Forward this (possibly rewritten) text frame to the engine.
     Forward(String),
     /// Answer the downstream worker directly; do **not** touch the engine
-    /// (deny synthesis, observer refusal, middleware result).
+    /// (deny synthesis, middleware result).
     ReplyToClient(String),
+    /// Send the first frame to the engine, then answer the downstream worker
+    /// with the second: a refused `observe`'s `unobserve`, then its refusal
+    /// ([`Interceptor::refuse_observe`]).
+    ForwardThenReply(String, String),
     /// Silently drop (denied `RegisterFunction` — the engine does the same —
     /// and any frame type the proxy does not forward).
     Drop,
@@ -177,6 +181,10 @@ pub enum UpstreamAction {
     /// refusals of the observes under its id that the connection sent after
     /// it ([`Requested::Refused`]).
     ForwardAll(Vec<String>),
+    /// Send the first frame to the engine, then forward these: an engine
+    /// refusal's `unobserve` (see the `observeresult` arm of
+    /// [`Interceptor::handle_upstream`]), then the frames.
+    ReplyThenForwardAll(String, Vec<String>),
     /// A frame type the proxy does not forward.
     Drop,
 }
@@ -742,6 +750,15 @@ impl Interceptor {
     /// The engine's answer to a refused `observe`, `observeresult { state:
     /// error }`: at once, or, while an earlier observe under the id waits for
     /// the engine's answer, right after that answer.
+    ///
+    /// At once, it follows an `unobserve` of the id to the engine. A
+    /// `Reattach` gives this connection the observers of the worker's
+    /// previous connection, with no RBAC check: the proxy's connections carry
+    /// no session. The worker replays their `observe`s, and a refusal is its
+    /// handle's last answer (decision 56), so an observer the session may no
+    /// longer have would stay active under the id. The engine ignores an
+    /// `unobserve` of an id the connection does not hold, and it reads this
+    /// one before anything the worker sends after the refusal.
     async fn refuse_observe(&self, id: &str, code: &str, message: &str) -> DownstreamAction {
         let refusal = observe_refusal(id, code, message);
         let mut book = self.observers.lock().await;
@@ -750,7 +767,7 @@ impl Interceptor {
                 queue.push_back(Requested::Refused(refusal));
                 DownstreamAction::Drop
             }
-            None => DownstreamAction::ReplyToClient(refusal),
+            None => DownstreamAction::ForwardThenReply(unobserve_frame(id), refusal),
         }
     }
 
@@ -1314,15 +1331,23 @@ impl Interceptor {
             // The engine's answer to this connection's oldest unanswered
             // `observe` under the id. It ends that entry: a refusal is that
             // observe's final answer.
+            //
+            // A refusal can leave an observer under the id: the replay of an
+            // observer a `Reattach` gave this connection, refused because the
+            // registration hook rewrote it otherwise for this session
+            // (`OBSERVER_ID_CONFLICT`, a different spec), stays active as the
+            // earlier session had it. So an `unobserve` of the id goes to the
+            // engine first, unless the worker sent one after the observe or
+            // another observe of the id waits on its answer.
             "observeresult" => {
                 let mut refusals = Vec::new();
+                let mut unobserve = None;
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
-                    let ended = matches!(
-                        v.get("state").and_then(Value::as_str),
-                        Some("error" | "disposed")
-                    );
+                    let state = v.get("state").and_then(Value::as_str);
+                    let ended = matches!(state, Some("error" | "disposed"));
                     let mut book = self.observers.lock().await;
                     let mut answered = None;
+                    let mut waiting = false;
                     if let Some(queue) = book.requested.get_mut(id) {
                         answered = queue.pop_front();
                         while let Some(Requested::Refused(_)) = queue.front() {
@@ -1330,29 +1355,31 @@ impl Interceptor {
                                 refusals.push(refusal);
                             }
                         }
-                        if queue.is_empty() {
+                        waiting = !queue.is_empty();
+                        if !waiting {
                             book.requested.remove(id);
                         }
                     }
-                    if let (
-                        Some(Requested::Forwarded {
-                            envelope,
-                            unobserved: false,
-                        }),
-                        false,
-                    ) = (answered, ended)
+                    if let Some(Requested::Forwarded {
+                        envelope,
+                        unobserved: false,
+                    }) = answered
                     {
-                        book.created.insert(id.to_string(), envelope);
+                        if !ended {
+                            book.created.insert(id.to_string(), envelope);
+                        } else if state == Some("error") && !waiting {
+                            unobserve = Some(unobserve_frame(id));
+                        }
                     }
-                    if v.get("state").and_then(Value::as_str) == Some("disposed") {
+                    if state == Some("disposed") {
                         book.created.remove(id);
                     }
                 }
-                if refusals.is_empty() {
-                    UpstreamAction::Forward(v.to_string())
-                } else {
-                    refusals.insert(0, v.to_string());
-                    UpstreamAction::ForwardAll(refusals)
+                refusals.insert(0, v.to_string());
+                match unobserve {
+                    Some(unobserve) => UpstreamAction::ReplyThenForwardAll(unobserve, refusals),
+                    None if refusals.len() == 1 => UpstreamAction::Forward(refusals.remove(0)),
+                    None => UpstreamAction::ForwardAll(refusals),
                 }
             }
             "observerstatechanged" => {
@@ -1517,6 +1544,11 @@ impl Interceptor {
         }
         UpstreamAction::Forward(v.to_string())
     }
+}
+
+/// `unobserve` of `id`, as a worker sends it.
+fn unobserve_frame(id: &str) -> String {
+    json!({ "type": "unobserve", "id": id }).to_string()
 }
 
 /// The engine's answer to an `observe` it refuses: `observeresult { state:
@@ -1771,11 +1803,22 @@ mod tests {
         Interceptor::new(iii(), cfg, Arc::new(CatalogCache::new(iii())), sess, tx)
     }
 
+    /// The synthesized reply; a refused observe's goes after an `unobserve`
+    /// of its id to the engine.
     fn reply(action: DownstreamAction) -> Value {
-        let DownstreamAction::ReplyToClient(text) = action else {
-            panic!("expected a synthesized reply, got {action:?}");
-        };
-        serde_json::from_str(&text).unwrap()
+        match action {
+            DownstreamAction::ReplyToClient(text) => serde_json::from_str(&text).unwrap(),
+            DownstreamAction::ForwardThenReply(out, text) => {
+                let reply: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(reply["type"], "observeresult");
+                assert_eq!(
+                    serde_json::from_str::<Value>(&out).unwrap(),
+                    json!({ "type": "unobserve", "id": reply["id"] })
+                );
+                reply
+            }
+            other => panic!("expected a synthesized reply, got {other:?}"),
+        }
     }
 
     fn forwarded(action: DownstreamAction) -> Value {
@@ -2493,6 +2536,11 @@ mod tests {
         assert_eq!(r["error"]["code"], "FORBIDDEN");
     }
 
+    /// The engine's refusal also unobserves the id first: a `Reattach` gives
+    /// the connection its previous connection's observers with no RBAC check
+    /// (the proxy's connections carry no session), and a replay the engine
+    /// refuses (a spec the registration hook rewrote otherwise for this
+    /// session) leaves that observer active as the earlier session had it.
     #[tokio::test]
     async fn a_refused_observer_is_not_created() {
         let i = interceptor(
@@ -2509,9 +2557,30 @@ mod tests {
             "state": "error",
             "error": { "code": "OBSERVER_ID_CONFLICT", "message": "owned by another connection" }
         });
-        forwarded_up(i.handle_upstream(&refused.to_string()).await);
+        assert_eq!(
+            i.handle_upstream(&refused.to_string()).await,
+            UpstreamAction::ReplyThenForwardAll(
+                unobserve_frame(OBSERVER_ID),
+                vec![refused.to_string()]
+            )
+        );
         let r = reply(i.handle_downstream(&dispose(OBSERVER_ID)).await);
         assert_eq!(r["error"]["code"], "FORBIDDEN");
+    }
+
+    /// A refusal that a later observe of the id waits behind leaves the id
+    /// alone: the engine would read an `unobserve` after that observe and
+    /// dispose what it creates.
+    #[tokio::test]
+    async fn a_refusal_with_a_later_observe_of_its_id_waiting_does_not_unobserve() {
+        let i = interceptor(config_with(expose(&["api::*"]), None), session(None));
+        let observe = observe("api::orders", "api::sink").to_string();
+        forwarded(i.handle_downstream(&observe).await);
+        forwarded(i.handle_downstream(&observe).await);
+        assert_eq!(
+            i.handle_upstream(&engine_refusal()).await,
+            UpstreamAction::Forward(engine_refusal())
+        );
     }
 
     fn engine_refusal() -> String {
@@ -2535,7 +2604,10 @@ mod tests {
         );
         let observe = observe("api::orders", "api::sink").to_string();
         forwarded(i.handle_downstream(&observe).await);
-        forwarded_up(i.handle_upstream(&engine_refusal()).await);
+        assert!(matches!(
+            i.handle_upstream(&engine_refusal()).await,
+            UpstreamAction::ReplyThenForwardAll(..)
+        ));
         assert!(!i.observers.lock().await.requested.contains_key(OBSERVER_ID));
 
         forwarded(i.handle_downstream(&observe).await);

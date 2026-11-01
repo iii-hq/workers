@@ -184,6 +184,13 @@ async fn handle_connection(
                             break;
                         }
                     }
+                    DownstreamAction::ForwardThenReply(out, reply) => {
+                        if a_engine_out.send(TungMessage::Text(out)).await.is_err()
+                            || a_client_out.send(AxumMessage::Text(reply)).await.is_err()
+                        {
+                            break;
+                        }
+                    }
                     DownstreamAction::Drop => {}
                     DownstreamAction::Close(replies) => {
                         for reply in replies {
@@ -213,31 +220,35 @@ async fn handle_connection(
     // Direction B: engine → downstream worker (rewrite Text frames).
     let b_int = interceptor.clone();
     let b_client_out = client_out.clone();
+    let b_engine_out = engine_out.clone();
     let engine_to_client = async move {
         while let Some(msg) = engine_rx.next().await {
             let Ok(msg) = msg else { break };
             let is_close = matches!(msg, TungMessage::Close(_));
             match msg {
-                TungMessage::Text(t) => match b_int.handle_upstream(t.as_str()).await {
-                    UpstreamAction::Forward(out) => {
+                TungMessage::Text(t) => {
+                    let (to_engine, frames) = match b_int.handle_upstream(t.as_str()).await {
+                        UpstreamAction::Forward(out) => (None, vec![out]),
+                        UpstreamAction::ForwardAll(frames) => (None, frames),
+                        UpstreamAction::ReplyThenForwardAll(reply, frames) => (Some(reply), frames),
+                        UpstreamAction::Drop => (None, Vec::new()),
+                    };
+                    if let Some(reply) = to_engine {
+                        if b_engine_out.send(TungMessage::Text(reply)).await.is_err() {
+                            break;
+                        }
+                    }
+                    let mut sent = true;
+                    for out in frames {
                         if b_client_out.send(AxumMessage::Text(out)).await.is_err() {
+                            sent = false;
                             break;
                         }
                     }
-                    UpstreamAction::ForwardAll(frames) => {
-                        let mut sent = true;
-                        for out in frames {
-                            if b_client_out.send(AxumMessage::Text(out)).await.is_err() {
-                                sent = false;
-                                break;
-                            }
-                        }
-                        if !sent {
-                            break;
-                        }
+                    if !sent {
+                        break;
                     }
-                    UpstreamAction::Drop => {}
-                },
+                }
                 other => {
                     if let Some(out) = tungstenite_to_axum(other) {
                         if b_client_out.send(out).await.is_err() {
