@@ -49,8 +49,12 @@ pub fn parse_expression(expression: &str) -> anyhow::Result<Schedule> {
     if expression.trim().is_empty() {
         anyhow::bail!("Cron expression is required");
     }
-    Schedule::from_str(expression)
-        .map_err(|e| anyhow::anyhow!("invalid cron expression '{expression}': {e}"))
+    let schedule = Schedule::from_str(expression)
+        .map_err(|e| anyhow::anyhow!("invalid cron expression '{expression}': {e}"))?;
+    if schedule.upcoming(Utc).next().is_none() {
+        anyhow::bail!("cron expression '{expression}' has no future fire");
+    }
+    Ok(schedule)
 }
 
 impl Scheduler {
@@ -276,6 +280,7 @@ pub(crate) mod tests {
             ("   ", "Cron expression is required"),
             ("not a cron", "invalid cron expression 'not a cron'"),
             ("* * * * *", "invalid cron expression '* * * * *'"),
+            ("0 0 0 1 1 * 2020", "has no future fire"),
         ] {
             let err = s.retain("o1", expression).await.unwrap_err();
             assert!(err.to_string().contains(message), "{expression:?}: {err}");

@@ -107,7 +107,9 @@ The event, the function's input and what its observers observe:
   `cron::on-tick` once per fire. iii delivers the tick to the observers of
   that expression (matched by `args.expression` and `input.expression`) whose
   filters accept it. The job starts with the expression's first observer and
-  stops with its last.
+  stops with its last. Every fire is delivered, even while the target still
+  runs the previous one: observe with `max_in_flight: 1` to run one at a
+  time, the later fires waiting their turn.
 - **Filters** select ticks by `input`, e.g.
   `{ 'input.scheduled_time': { $gte: '2026-11-01T00:00:00+00:00' } }`.
   Filters compare strings by code point, so a time bound is written in the
