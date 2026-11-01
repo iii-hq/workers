@@ -58,6 +58,8 @@ pub(super) fn scenario() -> ScenarioFixture {
         Send::message(MESSAGE)
             .idempotency_key("{{run_id}}:integration-014")
             .allow_id(OBSERVE)
+            // An agent observes only what its policy allows.
+            .allow_id("database::on-row-changed")
             .allow_function(&record),
     )
     // This path serializes two turns around a durable SQLite transaction.
