@@ -31,7 +31,8 @@ const MAX_OBSERVER_ID_LEN: usize = 128;
 /// stay in the durable queue of the consumer group
 /// ([`WEBHOOK_CONSUMER_GROUP`]), which the queue worker keys by the group
 /// whatever the observer id. An id longer than the engine's 128 bytes becomes
-/// `<worker name>:webhooks:sha256:<digest of the whole id>`, cut to 128 bytes.
+/// `<worker name>:webhooks:sha256:<digest of the whole id>`, the name cut to
+/// fit 128 bytes.
 pub fn queue_observer_id(namespace: Option<&str>, worker_name: &str, queue: &str) -> String {
     let id = match namespace {
         Some(namespace) => format!("{namespace}/{worker_name}:webhooks:{queue}"),
@@ -41,14 +42,16 @@ pub fn queue_observer_id(namespace: Option<&str>, worker_name: &str, queue: &str
         return id;
     }
     use sha2::Digest;
-    let digest = hex::encode(Sha256::digest(id.as_bytes()));
-    let mut short = format!("{worker_name}:webhooks:sha256:{digest}");
-    let mut end = short.len().min(MAX_OBSERVER_ID_LEN);
-    while !short.is_char_boundary(end) {
+    // The name is cut, never the digest: it is what tells the ids apart.
+    let tail = format!(
+        ":webhooks:sha256:{}",
+        hex::encode(Sha256::digest(id.as_bytes()))
+    );
+    let mut end = worker_name.len().min(MAX_OBSERVER_ID_LEN - tail.len());
+    while !worker_name.is_char_boundary(end) {
         end -= 1;
     }
-    short.truncate(end);
-    short
+    format!("{}{tail}", &worker_name[..end])
 }
 
 /// Refusal codes that mean another observer still holds what this one asks
@@ -574,12 +577,14 @@ async fn keep_observed(
                 retry = held,
                 "webhook observer refused"
             );
-            let message = format!("webhook observer {} refused: {error}", handle.id());
-            record_activation_error(&s, None, Some(message.clone())).await;
-            recorded = Some(message);
         } else {
             tracing::debug!(observer = handle.id(), error = %error, "webhook observer refused again");
         }
+        // On every refusal: the observers share `last_error`, and another
+        // one's activation clears the message it wrote over this one's.
+        let message = format!("webhook observer {} refused: {error}", handle.id());
+        record_activation_error(&s, None, Some(message.clone())).await;
+        recorded = Some(message);
         if !held {
             return;
         }
@@ -654,6 +659,11 @@ mod metadata_tests {
             id,
             queue_observer_id(Some("ops"), "github", &"r".repeat(200))
         );
+        // A long worker name is cut, never the digest.
+        let name = "g".repeat(200);
+        let long = queue_observer_id(Some("ops"), &name, "jobs");
+        assert!(long.len() <= MAX_OBSERVER_ID_LEN, "{long}");
+        assert_ne!(long, queue_observer_id(Some("dev"), &name, "jobs"));
     }
 
     #[test]
