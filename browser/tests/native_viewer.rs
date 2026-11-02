@@ -19,6 +19,9 @@ use iii_sdk::{register_worker, IIIClient, InitOptions};
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
 
+#[path = "support/private_home.rs"]
+mod private_home;
+
 struct Harness {
     iii: Child,
     worker: Child,
@@ -66,7 +69,7 @@ async fn boot(seed: &str) -> Option<Harness> {
 /// `boot`, with `env` set on the worker process.
 async fn boot_with(seed: &str, env: &[(&str, &str)]) -> Option<Harness> {
     let iii_bin = which::which("iii").ok()?;
-    if !chromium_present() {
+    if !chromium_present() || !private_home::in_child() {
         return None;
     }
     let port = TcpListener::bind("127.0.0.1:0")

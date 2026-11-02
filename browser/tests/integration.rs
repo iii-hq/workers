@@ -17,6 +17,9 @@ use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
+#[path = "support/private_home.rs"]
+mod private_home;
+
 struct Harness {
     iii: Child,
     worker: Child,
@@ -129,6 +132,9 @@ async fn boot_with(lane: Lane, chromium_seed: Option<String>) -> Option<Harness>
             ))
         }
     };
+    if !private_home::in_child() {
+        return None;
+    }
 
     let port = TcpListener::bind("127.0.0.1:0")
         .ok()?

@@ -21,6 +21,9 @@ use iii_sdk::{register_worker, InitOptions, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
 
+#[path = "support/private_home.rs"]
+mod private_home;
+
 struct Live {
     iii: Child,
     worker: Child,
@@ -99,6 +102,9 @@ fn serve_site(port: u16) -> String {
 async fn boot() -> Option<Live> {
     let iii_bin = which::which("iii").ok()?;
     let port = port_from_env("BROWSER_CRAWL_LIVE_ENGINE_PORT")?;
+    if !private_home::in_child() {
+        return None;
+    }
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
         "browser-crawl-live-{}",
         uuid::Uuid::new_v4().simple()
