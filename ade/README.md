@@ -287,10 +287,23 @@ The configuration entry also stores UI preferences and
 without a Console restart; the local `injectable_ui` kill switch remains
 startup-only.
 
-For access from other machines, explicitly set `http_host: 0.0.0.0` or pass
-`--http-host 0.0.0.0`. The CLI flag wins over a stored `console.http_host`,
-which wins over the local seed. Existing stored addresses remain in effect
-until changed; changing `http_host` requires a restart.
+To make the ADE listener reachable from other machines, explicitly set
+`http_host: 0.0.0.0` or pass `--http-host 0.0.0.0`. The CLI flag wins over a
+stored `console.http_host`, which wins over the local seed. Existing stored
+addresses remain in effect until changed; changing `http_host` requires a restart.
+
+Binding to `0.0.0.0` exposes the unauthenticated `/ws` engine proxy to any
+network client that can reach the listener. The browser `Origin` check does
+not authenticate clients, and clients without an `Origin` header are accepted.
+For remote access, use a reverse proxy that enforces authentication and TLS,
+and restrict direct access to the ADE listener to that proxy.
+
+When ADE, or an `iii compose` stack containing it, runs inside a container
+with its own network namespace, `127.0.0.1` is local to that container. A
+forwarded port needs ADE bound to a non-loopback container address, such as
+`0.0.0.0`. The host-side port publication can still stay local: for example,
+Docker's `127.0.0.1:3113:3113` mapping makes the published port reachable only
+from the host.
 
 The workspace layout itself (tabs, panes, active tab) is **not** part of the
 entry: it changes on every click, and the configuration YAML is meant to be

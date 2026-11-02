@@ -116,7 +116,7 @@ fn schema() -> Value {
                 "type": "string",
                 "minLength": 1,
                 "default": "127.0.0.1",
-                "description": "Interface the ADE listens on: 127.0.0.1 (the default) for this machine only; set 0.0.0.0 explicitly to let other machines on the network open it. Applies at the next start."
+                "description": "Interface the ADE listens on: 127.0.0.1 (the default) for this machine only; set 0.0.0.0 explicitly for remote access. This exposes the unauthenticated engine WebSocket proxy to reachable network clients. For remote access, use an authenticated TLS reverse proxy and restrict direct access to the ADE listener to that proxy. Applies at the next start."
             },
             "data_dir": {
                 "type": "string",
