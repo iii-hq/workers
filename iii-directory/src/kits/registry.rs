@@ -357,6 +357,11 @@ impl HttpKitRegistry {
         }
     }
 
+    #[cfg(test)]
+    pub fn iii_version(&self) -> Option<&str> {
+        self.iii_version.as_deref()
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
     }
@@ -513,9 +518,13 @@ impl KitRegistry for HttpKitRegistry {
             return Ok(Vec::new());
         }
         let client = build_http_client(self.timeout_ms)?;
+        let mut body = serde_json::json!({ "kits": queries });
+        if let Some(v) = &self.iii_version {
+            body["iii_version"] = serde_json::json!(v);
+        }
         let response = client
             .post(self.url("/k/updates"))
-            .json(&serde_json::json!({ "kits": queries, "iii_version": self.iii_version }))
+            .json(&body)
             .send()
             .await
             .map_err(|_| unreachable_registry())?;
@@ -740,5 +749,28 @@ mod tests {
         };
         let err = reg.updates(&[q]).await.unwrap_err();
         assert!(err.starts_with(want), "{err}");
+    }
+
+    #[tokio::test]
+    async fn updates_omits_iii_version_when_unknown() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/k/updates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"kits": []})))
+            .mount(&server)
+            .await;
+        let reg = HttpKitRegistry::new(&server.uri(), 5_000, None);
+        let q = UpdateQuery {
+            kit: "acme/k".into(),
+            requested: "latest".into(),
+            version: "1.0.0".into(),
+        };
+        reg.updates(&[q]).await.unwrap();
+        let reqs = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert!(body.get("iii_version").is_none(), "{body}");
     }
 }
