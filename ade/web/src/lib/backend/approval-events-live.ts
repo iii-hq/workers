@@ -12,6 +12,10 @@
  */
 
 import type { IiiClient } from '@/lib/iii-client'
+import {
+  type ObservedSubscription,
+  withObservers,
+} from '@/lib/observer-catch-up'
 import type { Conversation } from '@/types/chat'
 import type {
   PendingApprovalRecord,
@@ -74,7 +78,7 @@ function bind<P>(
   functionId: string,
   sessionId: string | undefined,
   onEvent: (payload: P) => void,
-): () => void {
+): ObservedSubscription {
   const off = client.on(handlerFn, (payload: unknown) => {
     if (!payload || typeof payload !== 'object') return
     // The handler id is shared by every live stream (client.on fans out);
@@ -94,26 +98,28 @@ function bind<P>(
     },
     `${handlerFn}::${client.browserId}`,
   )
-  return () => {
+  return withObservers(() => {
     off()
     try {
       offObserver()
     } catch {
       // SDK already disposed; nothing to do.
     }
-  }
+  }, [offObserver])
 }
 
 /**
  * Observe `approval::on-pending-created` + `approval::on-pending-resolved`
  * for one session. Returns a cleanup that drops both handlers and disposes
- * both observers.
+ * both observers. The cleanup carries the observers (`observers`): run the
+ * `listPendingApprovals` catch-up through `catchUpWhenActive` so it reads
+ * after they are active and again after a reconnect.
  */
 export function startApprovalEventsSubscription(
   client: ClientSubset,
   sessionId: string | undefined,
   handlers: ApprovalEventHandlers,
-): () => void {
+): ObservedSubscription {
   const offs = [
     bind<PendingApprovalRecord>(
       client,
@@ -130,9 +136,9 @@ export function startApprovalEventsSubscription(
       handlers.onResolved,
     ),
   ]
-  return () => {
+  return withObservers(() => {
     for (const off of offs) off()
-  }
+  }, offs)
 }
 
 /**

@@ -208,11 +208,72 @@ function sourcesOfTriggers(triggers) {
 
 const keyOf = (list) => list.map((s) => (typeof s === 'string' ? s : JSON.stringify(s))).join('\u0000')
 
+/** How long the catch-up re-fetch waits for the observers to turn active. */
+const CATCH_UP_READY_WAIT_MS = 3000
+
+/**
+ * Run `read()` once every stateful observer is active (or after a bounded
+ * wait, so an absent worker never stalls it), then again whenever one turns
+ * `active` from any other state (a reconnect replays the observer through
+ * `suspended`/`pending`; the calls in between are lost). An observer only
+ * receives calls made once it is active, so a read before that can miss an
+ * event. Observers without `ready`/`onStateChange` (an older console) are
+ * left alone. Returns the stop function.
+ */
+function catchUpWhenActive(observers, read, timeoutMs = CATCH_UP_READY_WAIT_MS) {
+  const tracked = observers.filter((off) => typeof off?.ready === 'function' && typeof off?.onStateChange === 'function')
+  if (tracked.length === 0) return () => {}
+  let stopped = false
+  let caughtUp = false
+  const unwatch = []
+  for (const off of tracked) {
+    let previous = off.state
+    try {
+      unwatch.push(
+        off.onStateChange((state) => {
+          const was = previous
+          previous = state
+          if (state === 'active' && was !== 'active' && caughtUp && !stopped) read()
+        }),
+      )
+    } catch {
+      // An observer that cannot report its state: the first read stands.
+    }
+  }
+  let timer
+  const waits = tracked.map((off) => {
+    try {
+      return Promise.resolve(off.ready()).catch(() => undefined)
+    } catch {
+      return Promise.resolve()
+    }
+  })
+  void Promise.race([Promise.all(waits), new Promise((resolve) => (timer = setTimeout(resolve, timeoutMs)))]).then(() => {
+    clearTimeout(timer)
+    if (stopped) return
+    caughtUp = true
+    read()
+  })
+  return () => {
+    stopped = true
+    clearTimeout(timer)
+    for (const off of unwatch.splice(0)) {
+      try {
+        off()
+      } catch {
+        // already gone
+      }
+    }
+  }
+}
+
 /**
  * Live worker data: `fetch()` once, re-fetch on every call of the observed
  * `sources` (a function id, or `{ function_id, args?, filters? }` for one
  * that takes args or a filtered feed; each observed with the one tab-scoped
- * handler `handlerId::<browserId>` as target). There is no timer: while the
+ * handler `handlerId::<browserId>` as target), once more when every observer
+ * has turned active (events fired while one was pending are lost) and again
+ * whenever one comes back active after a reconnect. There is no timer: while the
  * observers are not all active (`live: false` — pending, refused, or
  * disconnected), the data is re-read when the tab becomes visible or focused
  * again, and on `refresh()`. Stale responses are dropped by a monotonic
@@ -263,6 +324,9 @@ export function useWorkerLive({ iii, sources, triggers, fetch, handlerId }) {
     const update = () => setLive(!failed && observers.every((off) => !tracked(off) || off.state === 'active'))
     for (const off of observers) if (tracked(off)) unwatch.push(off.onStateChange(update))
     update()
+    // The first fetch may run before the observers are active: fetch again
+    // once they are, and whenever one comes back after a reconnect.
+    if (!failed) unwatch.push(catchUpWhenActive(observers, refresh))
     return () => {
       setLive(false)
       for (const off of [...unwatch, ...offs]) {

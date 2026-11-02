@@ -7,7 +7,9 @@
  *   1. arm the observers (before the work they follow is started, so
  *      nothing is missed),
  *   2. run `start` (kick off the work), then one `check` that covers the
- *      instant before the observers were active,
+ *      instant before the observers were active — once they are active
+ *      (bounded wait), and again whenever one comes back active after a
+ *      reconnect (`reactivated`),
  *   3. one `check` per relevant event (serialized; a burst coalesces),
  *   4. at most one `check` after `silenceMs` without a relevant event — the
  *      safety net for a missed delivery, re-armed only by the next event,
@@ -17,6 +19,10 @@
  */
 
 import { subscribeObserved } from '@/lib/observe-events'
+import {
+  type CatchUpObserver,
+  catchUpWhenActive,
+} from '@/lib/observer-catch-up'
 
 /** A function whose calls wake the wait, with the observer's args and filters. */
 export interface WakeSource {
@@ -30,6 +36,8 @@ export type WaitCause =
   | { kind: 'start' }
   | { kind: 'event'; functionId: string; payload: unknown }
   | { kind: 'silence' }
+  /** An observer came back active after a reconnect: events may be lost. */
+  | { kind: 'reactivated' }
 
 /** A finished wait. Wrapped so `undefined` can be a result. */
 export interface Done<T> {
@@ -71,6 +79,7 @@ export const CANCELLED_MESSAGE = 'cancelled'
 export function waitForEvents<T>(options: WaitOptions<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const disposers: (() => void)[] = []
+    const observers: CatchUpObserver[] = []
     let settled = false
     let checking = false
     let queued: WaitCause | null = null
@@ -157,7 +166,10 @@ export function waitForEvents<T>(options: WaitOptions<T>): Promise<T> {
           { handler: options.handler },
         )
         if (settled) off()
-        else disposers.push(off)
+        else {
+          disposers.push(off)
+          observers.push(off)
+        }
       } catch {
         // No live observer (the client refused it): the start check and the
         // silence check still run.
@@ -184,7 +196,16 @@ export function waitForEvents<T>(options: WaitOptions<T>): Promise<T> {
         return
       }
       armSilence()
-      await runCheck({ kind: 'start' })
+      if (settled) return
+      // The start check once the observers are active (bounded wait), and a
+      // check whenever one comes back active after a reconnect.
+      disposers.push(
+        catchUpWhenActive(observers, (cause) => {
+          void runCheck(
+            cause === 'ready' ? { kind: 'start' } : { kind: 'reactivated' },
+          )
+        }),
+      )
     })()
   })
 }

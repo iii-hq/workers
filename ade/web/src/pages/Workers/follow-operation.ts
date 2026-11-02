@@ -1,3 +1,7 @@
+import {
+  type CatchUpObserver,
+  catchUpWhenActive,
+} from '@/lib/observer-catch-up'
 import type { ExtensionIii } from '@/types/injectable-ui'
 import type { Accepted, OperationSnapshot } from './compose-api'
 
@@ -23,7 +27,10 @@ export type FollowOptions = {
   iii: OperationBus
   /** Submit the mutation under the id chosen here (`operation_id`). */
   start: (operationId: string) => Promise<Accepted>
-  /** `compose::operation`: read once after the accept, and once at the end. */
+  /**
+   * `compose::operation`: read once the observer is active after the accept,
+   * again whenever it comes back active after a reconnect, and once at the end.
+   */
   read: (operationId: string) => Promise<OperationSnapshot>
   /** The operation while it runs: the accept, then each progress event. */
   onProgress?: (snapshot: OperationSnapshot, operationId: string) => void
@@ -44,11 +51,12 @@ let handlerSeq = 0
  * Follow a compose mutation by its pushed progress, never by polling: the
  * observer of `compose::on-operation-progress`, filtered on the operation id,
  * goes in BEFORE the mutation is submitted, under an id chosen here.
- * `compose::operation` is read exactly twice at most — once right after the
- * accept (an operation that finished before the observer became active is
- * settled there), and once when the terminal event arrives, for the
- * final status the event does not carry. Resolves with the final snapshot, or
- * `null` when aborted.
+ * `compose::operation` is read after the accept once the observer is active
+ * (bounded wait: an operation that finished before the observer became
+ * active is settled there), again each time the observer comes back active
+ * after a reconnect (the events of the gap are lost), and once when the
+ * terminal event arrives, for the final status the event does not carry.
+ * Resolves with the final snapshot, or `null` when aborted.
  */
 export function followOperation({
   iii,
@@ -71,11 +79,14 @@ export function followOperation({
   let lastSequence = 0
   let settled = false
   let ending = false
-  let offObserver: (() => void) | null = null
+  let offObserver: CatchUpObserver | null = null
   let offHandler: (() => void) | null = null
+  let stopCatchUp: (() => void) | null = null
 
   return new Promise<OperationSnapshot | null>((resolve, reject) => {
     const unbind = () => {
+      stopCatchUp?.()
+      stopCatchUp = null
       try {
         offObserver?.()
       } catch {
@@ -126,6 +137,40 @@ export function followOperation({
         (error: unknown) => settle(null, error),
       )
     }
+    /**
+     * The catch-up read: an operation that ended (or moved on) while the
+     * observer was not active sends nothing more. Idempotent: a snapshot no
+     * newer than the last event only updates the operation-wide counters.
+     */
+    const catchUp = () => {
+      if (settled || ending) return
+      read(id).then(
+        (snapshot) => {
+          if (settled || ending) return
+          if (snapshot.status !== 'running') {
+            ending = true
+            settle(snapshot)
+            return
+          }
+          // Newer than every event seen: it stands. Older: only its
+          // operation-wide counters are news.
+          const sequence = snapshot.last_sequence ?? 0
+          if (sequence > lastSequence) {
+            lastSequence = sequence
+            current = snapshot
+          } else {
+            current = {
+              ...current,
+              completed: snapshot.completed,
+              total: snapshot.total,
+            }
+          }
+          onProgress?.(current, id)
+        },
+        // Events still arrive; only this catch-up is lost.
+        () => {},
+      )
+    }
 
     if (signal?.aborted) {
       settle(null)
@@ -172,34 +217,9 @@ export function followOperation({
           bind(id)
         }
         onProgress?.(current, id)
-        // The catch-up read: an operation that ended before the observer was
-        // active sends nothing more.
-        read(id).then(
-          (snapshot) => {
-            if (settled || ending) return
-            if (snapshot.status !== 'running') {
-              ending = true
-              settle(snapshot)
-              return
-            }
-            // Newer than every event seen: it stands. Older: only its
-            // operation-wide counters are news.
-            const sequence = snapshot.last_sequence ?? 0
-            if (sequence > lastSequence) {
-              lastSequence = sequence
-              current = snapshot
-            } else {
-              current = {
-                ...current,
-                completed: snapshot.completed,
-                total: snapshot.total,
-              }
-            }
-            onProgress?.(current, id)
-          },
-          // Events still arrive; only the catch-up is lost.
-          () => {},
-        )
+        // Read once the observer is active (or after a bounded wait), and
+        // again whenever it comes back active after a reconnect.
+        stopCatchUp = catchUpWhenActive(offObserver, catchUp)
       },
       (error: unknown) => settle(null, error),
     )

@@ -1,4 +1,8 @@
 import { getIiiClient } from '@/lib/iii-client'
+import {
+  type CatchUpObserver,
+  catchUpWhenActive,
+} from '@/lib/observer-catch-up'
 
 export interface SessionTreeDeletionSnapshot {
   operation_id: string
@@ -36,7 +40,8 @@ function isSnapshot(value: unknown): value is SessionTreeDeletionSnapshot {
 }
 
 /**
- * One high-level command, one catch-up read, then terminal events only.
+ * One high-level command, one catch-up read once the observer is active
+ * (again after a reconnect), then terminal events only.
  * The backend owns tree traversal, cancellation and idempotency by session id.
  * Never fall back to session::delete, even on an older/unavailable harness.
  */
@@ -51,7 +56,8 @@ export function deleteSessionTree(
     const eventKey = (value: SessionTreeDeletionSnapshot) =>
       JSON.stringify([value.operation_id, value.attempt])
     let offHandler: (() => void) | undefined
-    let offObserver: (() => void) | undefined
+    let offObserver: CatchUpObserver | undefined
+    let stopCatchUp: (() => void) | undefined
     // A terminal event can beat the command's acceptance response. It is
     // usable only after that response identifies this attempt's operation.
     const earlyTerminals = new Map<string, SessionTreeDeletionSnapshot>()
@@ -59,6 +65,7 @@ export function deleteSessionTree(
       clearTimeout(timer)
       signal?.removeEventListener('abort', abort)
       earlyTerminals.clear()
+      stopCatchUp?.()
       try {
         offObserver?.()
       } finally {
@@ -144,20 +151,26 @@ export function deleteSessionTree(
       }
       operationId = accepted.operation_id
       attempt = accepted.attempt
-      // Always start the single recovery read after acceptance. Do not wait
-      // for it before accepting a terminal event (the read may be slow).
-      const recovery = client.call<SessionTreeDeletionSnapshot | null>(
-        'harness::delete-session-tree-status',
-        { operation_id: operationId },
-      )
+      // The recovery read: once the observer is active (bounded wait, so a
+      // terminal event fired while it was pending is caught), and again
+      // whenever it comes back active after a reconnect. Started before the
+      // acceptance is applied, and never awaited before accepting a terminal
+      // event (the read may be slow). Only the first read's failure fails
+      // the wait; a later one leaves the events and the deadline in charge.
+      const recoveryId = operationId
+      stopCatchUp = catchUpWhenActive(offObserver, (cause) => {
+        client
+          .call<SessionTreeDeletionSnapshot | null>(
+            'harness::delete-session-tree-status',
+            { operation_id: recoveryId },
+          )
+          .then(accept, (error: unknown) => {
+            if (cause === 'ready') finish(undefined, error)
+          })
+      })
       accept(earlyTerminals.get(eventKey(accepted)))
       earlyTerminals.clear()
       accept(accepted)
-      try {
-        accept(await recovery)
-      } catch (error) {
-        finish(undefined, error)
-      }
     }
     void start().catch((error: unknown) => finish(undefined, error))
   })

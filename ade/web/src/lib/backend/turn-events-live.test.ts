@@ -6,10 +6,12 @@ import type {
   TurnCompletedEvent,
   TurnStartedEvent,
 } from '@/types/iii-agent-event'
+import type { HarnessStatusReport } from './harness-send'
 import {
   startObserversChangedSubscription,
   startQueuedEventsSubscription,
   startTurnEventsSubscription,
+  turnCompletionFromStatus,
 } from './turn-events-live'
 
 function fakeClient() {
@@ -198,5 +200,65 @@ describe('startObserversChangedSubscription', () => {
     stop()
     expect(offHandler).toHaveBeenCalledTimes(1)
     expect(disposeObserver).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('catch-up support', () => {
+  it('exposes the observers of a turn subscription for an ordered catch-up', () => {
+    const { client } = fakeClient()
+    const stop = startTurnEventsSubscription(client, 'sess-a', {
+      onCompleted: () => {},
+      onStarted: () => {},
+    })
+    expect(stop.observers).toHaveLength(2)
+    expect(
+      startQueuedEventsSubscription(client, 'sess-a', () => {}).observers,
+    ).toHaveLength(1)
+  })
+
+  const status = (patch: Partial<HarnessStatusReport> = {}) =>
+    ({
+      session_id: 'sess-a',
+      turn_id: 'turn-1',
+      status: 'completed',
+      step: 3,
+      turn_count: 1,
+      depth: 0,
+      max_turns: 0,
+      validation_retries: 0,
+      max_validation_retries: 0,
+      transient_resumes: 0,
+      max_transient_resumes: 0,
+      partial_result_available: false,
+      pending_function_calls: [],
+      children: [],
+      expects_wake: false,
+      ...patch,
+    }) as HarnessStatusReport
+
+  it('recovers a completion lost while the observer was suspended', () => {
+    expect(
+      turnCompletionFromStatus(
+        status({ status: 'failed', result_error: 'boom' }),
+        'turn-1',
+      ),
+    ).toMatchObject({
+      session_id: 'sess-a',
+      turn_id: 'turn-1',
+      status: 'failed',
+      result_error: 'boom',
+      terminal: true,
+    })
+  })
+
+  it('recovers nothing while the turn runs, parks for a wake, or is another turn', () => {
+    expect(
+      turnCompletionFromStatus(status({ status: 'running' }), 'turn-1'),
+    ).toBeNull()
+    expect(
+      turnCompletionFromStatus(status({ expects_wake: true }), 'turn-1'),
+    ).toBeNull()
+    expect(turnCompletionFromStatus(status(), 'turn-0')).toBeNull()
+    expect(turnCompletionFromStatus(null, 'turn-1')).toBeNull()
   })
 })

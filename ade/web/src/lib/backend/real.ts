@@ -15,6 +15,11 @@
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
+import {
+  catchUpWhenActive,
+  whenObserversReady,
+  withObservers,
+} from '@/lib/observer-catch-up'
 import { newMessageId, newSessionId } from '@/lib/session-id'
 import { fetchTranscript } from '@/lib/sessions/api'
 import { type ModelId, THINKING_LOWEST } from '@/types/chat'
@@ -54,6 +59,7 @@ import {
   startObserversChangedSubscription,
   startQueuedEventsSubscription,
   startTurnEventsSubscription,
+  turnCompletionFromStatus,
 } from './turn-events-live'
 import type {
   ApprovalStreamEvent,
@@ -318,22 +324,38 @@ function realWatchApprovals(
         emit({ kind: 'approval-created', record })
       }
 
-      stop = startApprovalEventsSubscription(client, subscriptionSessionId, {
-        onCreated: emitPending,
-        onResolved: (event) => {
-          if (matcher(event)) {
-            seenPending.delete(pendingApprovalKey(event))
-            emit({ kind: 'approval-resolved', event })
-          }
+      const subscription = startApprovalEventsSubscription(
+        client,
+        subscriptionSessionId,
+        {
+          onCreated: emitPending,
+          onResolved: (event) => {
+            if (matcher(event)) {
+              seenPending.delete(pendingApprovalKey(event))
+              emit({ kind: 'approval-resolved', event })
+            }
+          },
         },
+      )
+      // Read the inbox once the observers are active (bounded wait), and
+      // again whenever one comes back active after a reconnect: a hold
+      // created while they were not active is never delivered.
+      const stopCatchUp = catchUpWhenActive(subscription.observers, () => {
+        void listPendingApprovals(client, subscriptionSessionId)
+          .then((records) => records.forEach(emitPending))
+          .catch((err) => {
+            if (import.meta.env.DEV) {
+              console.warn(
+                '[real-backend] approval::list-pending recovery',
+                err,
+              )
+            }
+          })
       })
-      void listPendingApprovals(client, subscriptionSessionId)
-        .then((records) => records.forEach(emitPending))
-        .catch((err) => {
-          if (import.meta.env.DEV) {
-            console.warn('[real-backend] approval::list-pending recovery', err)
-          }
-        })
+      stop = () => {
+        stopCatchUp()
+        subscription()
+      }
     })
     .catch((err) => {
       if (import.meta.env.DEV) {
@@ -392,12 +414,30 @@ async function* realStream(
     push(event)
   }
 
+  // The turn this send started or joined (not a queued message's later
+  // turn), once `harness::send` answers.
+  let sentTurnId: string | null = null
   const stopTurnEvents = startTurnEventsSubscription(client, sessionId, {
     onCompleted: (event) => push({ kind: 'turn-completed', event }),
     onStarted: (event) => push({ kind: 'turn-started', event }),
   })
+  // A completion delivered while the observers were suspended (a reconnect)
+  // is lost: when they come back active, recover it from `harness::status`.
+  const stopTurnCatchUp = catchUpWhenActive(
+    stopTurnEvents.observers,
+    (cause) => {
+      const turnId = sentTurnId
+      if (cause !== 'reactivated' || !turnId) return
+      void getTurnStatus(client, sessionId)
+        .then((status) => {
+          const event = turnCompletionFromStatus(status, turnId)
+          if (event) push({ kind: 'turn-completed', event })
+        })
+        .catch(() => {})
+    },
+  )
   const stopApprovalEvents = opts?.approvalEventsExternallyManaged
-    ? () => {}
+    ? withObservers(() => {}, [])
     : approvalGateAvailable
       ? startApprovalEventsSubscription(client, approvalSubscriptionSessionId, {
           onCreated: (record) => {
@@ -413,7 +453,8 @@ async function* realStream(
             }
           },
         })
-      : () => {}
+      : withObservers(() => {}, [])
+  let stopApprovalCatchUp = () => {}
 
   const onAbort = () => wake()
   signal?.addEventListener('abort', onAbort, { once: true })
@@ -421,23 +462,33 @@ async function* realStream(
   let kickoffError: Error | null = null
   try {
     // Reconnect recovery: rebuild any pending-approval cards a prior turn left
-    // held (e.g. resending after a reload). Best-effort; skipped without the gate.
+    // held (e.g. resending after a reload). Best-effort; skipped without the
+    // gate. Read once the observers are active (bounded wait), and again
+    // whenever one comes back active after a reconnect.
     if (!opts?.approvalEventsExternallyManaged && approvalGateAvailable) {
-      void listPendingApprovals(client, approvalSubscriptionSessionId)
-        .then((records) => {
-          for (const record of records) {
-            if (!approvalSessionMatcher(record)) continue
-            pushPending(record.session_id, record.function_call_id, {
-              kind: 'approval-created',
-              record,
+      stopApprovalCatchUp = catchUpWhenActive(
+        stopApprovalEvents.observers,
+        () => {
+          void listPendingApprovals(client, approvalSubscriptionSessionId)
+            .then((records) => {
+              for (const record of records) {
+                if (!approvalSessionMatcher(record)) continue
+                pushPending(record.session_id, record.function_call_id, {
+                  kind: 'approval-created',
+                  record,
+                })
+              }
             })
-          }
-        })
-        .catch((err) => {
-          if (import.meta.env.DEV) {
-            console.warn('[real-backend] approval::list-pending recovery', err)
-          }
-        })
+            .catch((err) => {
+              if (import.meta.env.DEV) {
+                console.warn(
+                  '[real-backend] approval::list-pending recovery',
+                  err,
+                )
+              }
+            })
+        },
+      )
     }
 
     // Kick off (or steer) the turn. A turn already running for this session
@@ -449,8 +500,15 @@ async function* realStream(
       messageId,
       opts,
     )
+    // Send only once the turn observers are active (bounded wait): a fast
+    // turn completing before then would never be delivered.
+    await whenObserversReady(stopTurnEvents.observers)
+    if (signal?.aborted) return
     void sendTurn(client, sendRequest)
-      .then((response) => push({ kind: 'send-resolved', response }))
+      .then((response) => {
+        if (!response.queued) sentTurnId = response.turn_id
+        push({ kind: 'send-resolved', response })
+      })
       .catch((err) => {
         kickoffError = toHarnessSendError(err)
         if (import.meta.env.DEV) {
@@ -487,6 +545,8 @@ async function* realStream(
     }
   } finally {
     signal?.removeEventListener('abort', onAbort)
+    stopTurnCatchUp()
+    stopApprovalCatchUp()
     stopTurnEvents()
     stopApprovalEvents()
   }

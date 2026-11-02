@@ -148,7 +148,9 @@ describe('useCopyFlash', () => {
   })
 })
 
-function fakeIii(opts: { failObserve?: boolean; stateful?: boolean } = {}) {
+function fakeIii(
+  opts: { failObserve?: boolean; stateful?: boolean; ready?: boolean } = {},
+) {
   const handlers = new Map<string, (payload: unknown) => void>()
   const offs: Array<ReturnType<typeof vi.fn>> = []
   const observed: string[] = []
@@ -173,10 +175,21 @@ function fakeIii(opts: { failObserve?: boolean; stateful?: boolean } = {}) {
         if (!opts.stateful) return off
         let state = 'pending'
         const listeners = new Set<(state: string) => void>()
+        const waiters: Array<() => void> = []
         states.push((next) => {
           state = next
+          if (next === 'active')
+            for (const resolve of waiters.splice(0)) resolve()
           for (const listener of [...listeners]) listener(next)
         })
+        if (opts.ready) {
+          Object.defineProperty(off, 'ready', {
+            value: () =>
+              state === 'active'
+                ? Promise.resolve()
+                : new Promise<void>((resolve) => waiters.push(resolve)),
+          })
+        }
         return Object.defineProperties(off, {
           state: { get: () => state },
           onStateChange: {
@@ -310,6 +323,38 @@ describe('useWorkerLive', () => {
       window.dispatchEvent(new Event('focus'))
     })
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('re-fetches once every observer is active, and again when one comes back after a reconnect', async () => {
+    const { iii, states } = fakeIii({ stateful: true, ready: true })
+    let n = 0
+    const fetch = vi.fn(async () => ++n)
+    const hook = renderHook(() =>
+      useWorkerLive({
+        iii,
+        sources: ['t::on-x', 't::on-y'],
+        fetch,
+        handlerId: 'h',
+      }),
+    )
+    await act(async () => {})
+    // The first fetch ran while the observers were pending: a change made
+    // then is never delivered, so it fetches again once both are active.
+    expect(fetch).toHaveBeenCalledTimes(1)
+    await act(async () => states[0]?.('active'))
+    expect(fetch).toHaveBeenCalledTimes(1)
+    await act(async () => states[1]?.('active'))
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(hook.current.data).toBe(2)
+    await act(async () => states[0]?.('suspended'))
+    expect(fetch).toHaveBeenCalledTimes(2)
+    await act(async () => states[0]?.('active'))
+    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(hook.current.data).toBe(3)
+    hook.unmount()
+    states[1]?.('suspended')
+    states[1]?.('active')
+    expect(fetch).toHaveBeenCalledTimes(3)
   })
 
   it('works without sources: fetches once and re-reads on focus', async () => {

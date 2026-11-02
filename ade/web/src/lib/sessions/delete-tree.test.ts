@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fakeObserver } from '@/lib/fake-observer.testing'
 import { getIiiClient, type IiiClient } from '@/lib/iii-client'
 import {
   DELETE_TREE_WAIT_MS,
@@ -293,5 +294,47 @@ describe('deleteSessionTree', () => {
     accepted.resolve({ status: 'completed' } as SessionTreeDeletionSnapshot)
     await expect(result).rejects.toThrow('Invalid deletion response')
     cleaned()
+  })
+
+  it('reads the status only once the observer is active, catching a terminal event missed while pending', async () => {
+    const fake = fakeObserver('deletion')
+    vi.mocked(client.observe).mockImplementationOnce(() => fake.observer)
+    const status = vi.fn(async () => snapshot('completed'))
+    vi.mocked(client.call).mockImplementation(((id: string) => {
+      order.push(id)
+      return id === 'harness::delete-session-tree' ? accepted.promise : status()
+    }) as never)
+    const { result } = await start()
+    accepted.resolve(snapshot())
+    await vi.advanceTimersByTimeAsync(0)
+    // Accepted while the observer is pending: the terminal event that fires
+    // now is never delivered, and the read waits for the observer.
+    expect(status).not.toHaveBeenCalled()
+    fake.set('active')
+    await expect(result).resolves.toEqual(snapshot('completed'))
+    expect(status).toHaveBeenCalledTimes(1)
+    expect(fake.disposed).toBe(true)
+    expect(fake.listeners).toBe(0)
+  })
+
+  it('reads the status again when the observer comes back active after a reconnect', async () => {
+    const fake = fakeObserver('deletion', 'active')
+    vi.mocked(client.observe).mockImplementationOnce(() => fake.observer)
+    const status = vi
+      .fn()
+      .mockResolvedValueOnce(snapshot())
+      .mockResolvedValueOnce(snapshot('completed'))
+    vi.mocked(client.call).mockImplementation(((id: string) =>
+      id === 'harness::delete-session-tree'
+        ? accepted.promise
+        : status()) as never)
+    const { result } = await start()
+    accepted.resolve(snapshot())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(status).toHaveBeenCalledTimes(1)
+    fake.set('suspended')
+    fake.set('active')
+    await expect(result).resolves.toEqual(snapshot('completed'))
+    expect(status).toHaveBeenCalledTimes(2)
   })
 })

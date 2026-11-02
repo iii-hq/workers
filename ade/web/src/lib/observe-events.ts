@@ -14,14 +14,18 @@
  * missed, and an observer of a function whose worker is absent stays
  * pending until it registers. Callers subscribe BEFORE they start the work
  * they want to follow, and read the state once afterwards to cover that
- * window — never a loop.
+ * window — never a loop. The disposer carries the observer's `state`,
+ * `ready()` and `onStateChange` (when the client has them), so that read can
+ * wait for it to be active through `catchUpWhenActive`.
  */
 
 import {
   getIiiClient,
   type IiiClient,
+  type ObserverDisposer,
   type ObserverOptions,
 } from '@/lib/iii-client'
+import type { CatchUpObserver } from '@/lib/observer-catch-up'
 
 type ObserveClient = Pick<IiiClient, 'on' | 'observe' | 'browserId'>
 
@@ -68,11 +72,11 @@ export async function subscribeObserved<P = unknown>(
   selection: ObservedSelection,
   onEvent: (payload: P) => void,
   options: SubscribeOptions = {},
-): Promise<() => void> {
+): Promise<CatchUpObserver> {
   const client = options.client ?? (await getIiiClient())
   const fnId = uniqueHandlerId(options.handler ?? 'iii::console::observed')
   let offHandler: (() => void) | undefined
-  let offObserver: (() => void) | undefined
+  let offObserver: Partial<ObserverDisposer> | undefined
   try {
     offHandler = client.on<P>(fnId, (payload) => {
       onEvent(payload)
@@ -92,14 +96,30 @@ export async function subscribeObserved<P = unknown>(
     throw error
   }
   let disposed = false
-  return () => {
+  const dispose = () => {
     if (disposed) return
     disposed = true
     try {
-      offObserver?.()
+      ;(offObserver as (() => void) | undefined)?.()
     } catch {
       // SDK already disposed; nothing to do.
     }
     offHandler?.()
   }
+  const observer = offObserver
+  if (
+    typeof observer?.ready === 'function' &&
+    typeof observer.onStateChange === 'function'
+  ) {
+    const { ready, onStateChange } = observer as ObserverDisposer
+    Object.defineProperties(dispose, {
+      state: { get: () => observer.state },
+      ready: { value: () => ready() },
+      onStateChange: {
+        value: (listener: Parameters<ObserverDisposer['onStateChange']>[0]) =>
+          onStateChange(listener),
+      },
+    })
+  }
+  return dispose as CatchUpObserver
 }

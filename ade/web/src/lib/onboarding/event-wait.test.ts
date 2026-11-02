@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { onCancel, waitForEvents } from './event-wait'
+import { fakeObserver } from '@/lib/fake-observer.testing'
+import { onCancel, type WaitCause, waitForEvents } from './event-wait'
 
 const subscribe = vi.fn()
 
@@ -113,5 +114,43 @@ describe('onCancel', () => {
     const signal = Object.freeze({ cancelled: false })
     const off = onCancel(signal, () => undefined)
     expect(() => off()).not.toThrow()
+  })
+})
+
+describe('waitForEvents and observer activation', () => {
+  it('runs the start check once the observers are active, and a reactivated check after a reconnect', async () => {
+    const fake = fakeObserver('wait')
+    subscribe.mockImplementation(
+      async (
+        _functionId: string,
+        _selection: unknown,
+        onEvent: typeof deliver,
+      ) => {
+        deliver = onEvent
+        return fake.observer
+      },
+    )
+    const causes: string[] = []
+    const check = vi.fn(async (cause: WaitCause) => {
+      causes.push(cause.kind)
+      return null
+    })
+    void waitForEvents({
+      handler: 'test',
+      sources: [{ function_id: 't' }],
+      check,
+      timeoutMs: 60_000,
+      onTimeout: () => undefined,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    // Still pending: an event fired now is lost, so the start check waits.
+    expect(check).not.toHaveBeenCalled()
+    fake.set('active')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(causes).toEqual(['start'])
+    fake.set('suspended')
+    fake.set('active')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(causes).toEqual(['start', 'reactivated'])
   })
 })

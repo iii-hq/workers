@@ -13,7 +13,12 @@
  * fire-and-forget and at-least-once.
  */
 
+import type { HarnessStatusReport } from '@/lib/backend/harness-send'
 import type { IiiClient } from '@/lib/iii-client'
+import {
+  type ObservedSubscription,
+  withObservers,
+} from '@/lib/observer-catch-up'
 import type {
   MessageQueuedEvent,
   ObserversChangedEvent,
@@ -44,7 +49,7 @@ function bind<P>(
   functionId: string,
   sessionId: string,
   onEvent: (payload: P) => void,
-): () => void {
+): ObservedSubscription {
   const off = client.on(handlerFn, (payload: unknown) => {
     if (!payload || typeof payload !== 'object') return
     // The handler id is shared by every live stream (client.on fans out);
@@ -62,27 +67,28 @@ function bind<P>(
     },
     `${handlerFn}::${client.browserId}`,
   )
-  return () => {
+  return withObservers(() => {
     off()
     try {
       offObserver()
     } catch {
       // SDK already disposed; nothing to do.
     }
-  }
+  }, [offObserver])
 }
 
 /**
  * Observe `harness::on-turn-completed` (and optionally
  * `harness::on-turn-started`) for one session. Returns a cleanup that drops
- * the handler and disposes the observers.
+ * the handler and disposes the observers, and carries them (`observers`) so
+ * a caller can order its catch-up after they are active.
  */
 export function startTurnEventsSubscription(
   client: ClientSubset,
   sessionId: string,
   handlers: TurnEventHandlers,
-): () => void {
-  const offs: Array<() => void> = []
+): ObservedSubscription {
+  const offs: ObservedSubscription[] = []
   offs.push(
     bind<TurnCompletedEvent>(
       client,
@@ -103,8 +109,36 @@ export function startTurnEventsSubscription(
       ),
     )
   }
-  return () => {
+  return withObservers(() => {
     for (const off of offs) off()
+  }, offs)
+}
+
+/**
+ * The terminal completion of `turnId` read from `harness::status`, for a
+ * `harness::on-turn-completed` lost while its observer was suspended; `null`
+ * while that turn still runs, parks for a wake, or was superseded.
+ */
+export function turnCompletionFromStatus(
+  status: HarnessStatusReport | null | undefined,
+  turnId: string,
+): TurnCompletedEvent | null {
+  if (!status || status.turn_id !== turnId || status.expects_wake) return null
+  if (
+    status.status !== 'completed' &&
+    status.status !== 'cancelled' &&
+    status.status !== 'failed'
+  ) {
+    return null
+  }
+  return {
+    session_id: status.session_id,
+    turn_id: turnId,
+    status: status.status,
+    ...(status.result !== undefined ? { result: status.result } : {}),
+    ...(status.result_error ? { result_error: status.result_error } : {}),
+    terminal: true,
+    timestamp: Date.now(),
   }
 }
 
@@ -119,7 +153,7 @@ export function startQueuedEventsSubscription(
   client: ClientSubset,
   sessionId: string,
   onQueued: (event: MessageQueuedEvent) => void,
-): () => void {
+): ObservedSubscription {
   return bind<MessageQueuedEvent>(
     client,
     MESSAGE_QUEUED_HANDLER,
@@ -140,7 +174,7 @@ export function startObserversChangedSubscription(
   client: ClientSubset,
   sessionId: string,
   onChanged: (event: ObserversChangedEvent) => void,
-): () => void {
+): ObservedSubscription {
   return bind<ObserversChangedEvent>(
     client,
     OBSERVERS_CHANGED_HANDLER,

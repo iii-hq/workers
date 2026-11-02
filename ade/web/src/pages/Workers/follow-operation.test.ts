@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { fakeObserver } from '@/lib/fake-observer.testing'
 import type { ObserverDisposer } from '@/lib/iii-client'
 import type { Accepted, OperationSnapshot } from './compose-api'
 import {
@@ -248,5 +249,52 @@ describe('followOperation', () => {
     ).rejects.toThrow('WRONG_DAEMON')
     expect(observers.size).toBe(0)
     expect(handlers.size).toBe(0)
+  })
+
+  it('reads only once the observer is active, catching a terminal event it missed while pending', async () => {
+    const { iii } = bus()
+    const fake = fakeObserver('obs-pending')
+    iii.observe.mockImplementationOnce(() => fake.observer)
+    const read = vi.fn(async (id: string) =>
+      snapshot(id, { status: 'succeeded', phase: 'complete' }),
+    )
+    const done = followOperation({
+      iii,
+      start: async (id) => accepted(id),
+      read,
+      operationId: 'compose:p',
+    })
+    await flush()
+    // Accepted, observer still pending: no read yet. The operation's
+    // terminal event fires now and is never delivered.
+    expect(read).not.toHaveBeenCalled()
+    fake.set('active')
+    await expect(done).resolves.toMatchObject({ status: 'succeeded' })
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(fake.disposed).toBe(true)
+    expect(fake.listeners).toBe(0)
+  })
+
+  it('reads again when the observer comes back active after a reconnect', async () => {
+    const { iii } = bus()
+    const fake = fakeObserver('obs-reconnect')
+    iii.observe.mockImplementationOnce(() => fake.observer)
+    const read = vi.fn(async (id: string) => snapshot(id))
+    const done = followOperation({
+      iii,
+      start: async (id) => accepted(id),
+      read,
+      operationId: 'compose:r',
+    })
+    fake.set('active')
+    await flush()
+    expect(read).toHaveBeenCalledTimes(1)
+    // Disconnected: the terminal event of the gap is lost.
+    fake.set('suspended')
+    read.mockResolvedValueOnce(snapshot('compose:r', { status: 'failed' }))
+    fake.set('pending')
+    fake.set('active')
+    await expect(done).resolves.toMatchObject({ status: 'failed' })
+    expect(read).toHaveBeenCalledTimes(2)
   })
 })
