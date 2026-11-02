@@ -212,7 +212,7 @@ const iii = registerWorker(
 
 If passing `undefined` as the address is incompatible with the installed SDK types, omit the first argument and let `III_URL` resolve according to the current SDK reference. Do not invent connection setup beyond the documented API.
 
-Import only actual top-level SDK exports such as `registerWorker` and, when needed, `CallAction`, `ObserveRejection`, `EngineSources` or documented types. Do not import or destructure `registerFunction`, `call`, `observe`, or other client methods as top-level exports. Call `iii.registerFunction(...)`, `iii.call(...)`, `iii.observe(...)`, and the hook methods `iii.onObserverAdded(...)`, `iii.onObserverRemoved(...)`, `iii.onObservationMatch(...)` and `iii.onObservationDeliver(...)`. The `IIIClient`, `FunctionRef`, `Observer`, `Call` and `Observed` types come from `iii-sdk`.
+Import only actual top-level SDK exports such as `registerWorker` and, when needed, `CallAction`, `ObserveRejection`, `EngineSources` or documented types. Do not import or destructure `registerFunction`, `call`, `observe`, or other client methods as top-level exports. Call `iii.registerFunction(...)`, `iii.call(...)`, `iii.observe(...)`, and the hook methods `iii.onObserverAdded(...)`, `iii.onObserverRemoved(...)`, `iii.onObserverMatch(...)` and `iii.onObserverDeliver(...)`. The `IIIClient`, `FunctionRef`, `Observer`, `Call` and `Observed` types come from `iii-sdk`.
 
 ### Namespaces
 
@@ -358,8 +358,8 @@ By default iii accepts every observer, delivers every call to each observer whos
 |---|---|---|
 | `onObserverAdded(obs)` | each observer needs something set up (a timer, a watch, a subscription); throw `ObserveRejection` to refuse it | accept the observer |
 | `onObserverRemoved(obs)` | that setup must be torn down | forget the observer |
-| `onObservationMatch(obs, call)` | the observer's `args` say which calls it wants | every observer wants every call |
-| `onObservationDeliver(call, observers)` | each call goes to one observer, or the caller needs the target's answer | deliver to every match and return the handler's value |
+| `onObserverMatch(obs, call)` | the observer's `args` say which calls it wants | every observer wants every call |
+| `onObserverDeliver(call, observers)` | each call goes to one observer, or the caller needs the target's answer | deliver to every match and return the handler's value |
 
 `args` belong to the worker that hosts the function and `filters` to iii. A function takes args only when an observer needs its own setup or its own calls; it declares them with `args_format`, and the engine validates every observer's args against it (`INVALID_ARGS`). Everything else is a filter on `input`.
 
@@ -391,8 +391,8 @@ iii
   })
   .onObserverRemoved((obs) => timers.release(obs.args.record_id as string))
   // many observers: match by keys, one lookup per call
-  // .onObservationMatch({ observer: (obs) => obs.args.record_id as string, call: (call) => call.input.record_id })
-  .onObservationMatch((obs, call) => obs.args.record_id === call.input.record_id)
+  // .onObserverMatch({ observer: (obs) => obs.args.record_id as string, call: (call) => call.input.record_id })
+  .onObserverMatch((obs, call) => obs.args.record_id === call.input.record_id)
 ```
 
 - Hooks of one function run one at a time. Chain them on `registerFunction`, or set them by id before it, so they see every observer.
@@ -418,16 +418,16 @@ iii
       .catch(() => undefined)
   })
   // a call for one observer goes to it alone, every other call to every observer
-  .onObservationMatch((obs, call) => !call.metadata?.for_observer || call.metadata.for_observer === obs.id)
+  .onObserverMatch((obs, call) => !call.metadata?.for_observer || call.metadata.for_observer === obs.id)
 ```
 
 With keys, the observer function also returns `` `for_observer:${obs.id}` `` and the call function returns that one key for a call for one observer.
 
-- A call through an observer (`iii.call({ observer, payload })`) runs its target with the observer's policy and metadata, and belongs in `onObservationDeliver`, whose function documents what its targets receive. Only the worker that hosts the observed function may make one.
-- `onObservationDeliver` receives the call and the observers that matched it, delivers the call itself, and returns what the caller gets back. It applies each observer's filters with `obs.matches(call)`:
+- A call through an observer (`iii.call({ observer, payload })`) runs its target with the observer's policy and metadata, and belongs in `onObserverDeliver`, whose function documents what its targets receive. Only the worker that hosts the observed function may make one.
+- `onObserverDeliver` receives the call and the observers that matched it, delivers the call itself, and returns what the caller gets back. It applies each observer's filters with `obs.matches(call)`:
 
 ```ts
-iii.onObservationDeliver('<worker-name>::on-command', async (call, observers) => {
+iii.onObserverDeliver('<worker-name>::on-command', async (call, observers) => {
   const handler = observers.find((obs) => obs.args.command === call.input.command)
   if (!handler || !handler.matches(call)) return { handled: false }
   return iii.call({ observer: handler, payload: call.input })
