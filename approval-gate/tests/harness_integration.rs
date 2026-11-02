@@ -18,8 +18,8 @@ where
         eprintln!("skipping: no iii engine");
         return;
     }
+    // spawn_engine already said why it skipped.
     let Some(engine) = spawn_engine().await else {
-        eprintln!("skipping: failed to spawn engine");
         return;
     };
     if std::env::var("CARGO_BIN_EXE_harness").is_err() {

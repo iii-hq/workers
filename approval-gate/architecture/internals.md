@@ -158,12 +158,15 @@ Verified against the engine source (`~/workspaces/personal/motia/iii`):
 - **Unit** (`cargo test`): every module has a suite beside it. Pure-logic
   modules (`decision`, `redact`, `denial`, `settings`, `permissions`, `types`, …) run with
   no engine. The `approval::*` handlers run against a real spawned engine via
-  `testkit::engine` (`III_ENGINE_BIN` or `iii` on PATH; self-skips
-  otherwise), so `delete_with_gate`'s null-tombstone invariant is exercised
-  against the genuine kv contract. The gate suite reproduces the seven
-  prior-art permission-matrix cases plus the fail-closed rows.
+  `testkit::engine` (`III_ENGINE_BIN` or `iii` on PATH, plus the standalone
+  `state` worker from `III_STATE_BIN`, a `state/` build or the Compose
+  package cache; self-skips otherwise), so `delete_with_gate`'s
+  null-tombstone invariant is exercised against the genuine kv contract.
+  The gate suite reproduces the seven prior-art permission-matrix cases
+  plus the fail-closed rows.
 - **Integration** (`cargo test --test integration`): spawns a real engine
-  (`III_ENGINE_BIN` or `iii` on PATH; self-skips otherwise) with
+  through the same `testkit::engine` (the engine plus the standalone
+  `state` worker; self-skips otherwise) with
   `configuration` + `state` real and the unbuilt siblings faked
   in-process. Verifies the no-tombstone invariant, exactly-once event
   delivery through real engine fan-out, and reactive configuration reload.

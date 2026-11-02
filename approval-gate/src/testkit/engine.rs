@@ -1,5 +1,7 @@
-//! Engine-backed test bootstrap (llm-router / integration.rs pattern).
-//! Self-skips when no `iii` binary is on PATH or `III_ENGINE_BIN` is set.
+//! Engine-backed test bootstrap (llm-router's `engine_fixture` pattern): an
+//! engine with `configuration` inline plus the standalone `state` worker,
+//! which engines since 0.23 refuse inline (`UNSUPPORTED_CONFIG_WORKERS`).
+//! Self-skips, saying why, when either binary is missing or never answers.
 
 use std::io::Write as _;
 use std::sync::{Arc, Mutex};
@@ -17,11 +19,16 @@ use crate::functions::{self, Deps};
 pub struct Engine {
     pub url: String,
     child: std::process::Child,
+    state_child: Option<std::process::Child>,
     dir: std::path::PathBuf,
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        if let Some(mut state) = self.state_child.take() {
+            let _ = state.kill();
+            let _ = state.wait();
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -42,6 +49,46 @@ pub fn engine_bin() -> Option<std::path::PathBuf> {
     on_path.then(|| "iii".into())
 }
 
+/// `III_STATE_BIN`, else the in-repo `state` build, else the newest `state`
+/// package in the Compose cache: llm-router's `engine_fixture::state_bin`.
+pub fn state_bin() -> Option<std::path::PathBuf> {
+    if let Some(p) = std::env::var_os("III_STATE_BIN") {
+        return Some(p.into());
+    }
+    let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../state/target");
+    if let Some(p) = ["debug", "release"]
+        .map(|profile| target.join(profile).join("state"))
+        .into_iter()
+        .find(|p| p.is_file())
+    {
+        return Some(p);
+    }
+    let cache = std::path::PathBuf::from(std::env::var_os("HOME")?).join(".iii/compose/packages");
+    std::fs::read_dir(cache)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let version = package_version(e.file_name().to_str()?)?;
+            let bin = e.path().join("state");
+            bin.is_file().then_some((version, bin))
+        })
+        .max()
+        .map(|(_, bin)| bin)
+}
+
+/// The numeric version of a `state-<version>-<target>-<hash>` package, so
+/// 0.22.22 outranks 0.22.5-rc.1 (string order puts the rc last).
+/// shortcut: a release and its own pre-release rank equal, parse the full
+/// semver if both ever share the cache.
+fn package_version(name: &str) -> Option<Vec<u64>> {
+    name.strip_prefix("state-")?
+        .split('-')
+        .next()?
+        .split('.')
+        .map(|n| n.parse().ok())
+        .collect()
+}
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .expect("bind ephemeral port")
@@ -51,7 +98,10 @@ fn free_port() -> u16 {
 }
 
 pub async fn spawn_engine() -> Option<Engine> {
-    let bin = engine_bin()?;
+    let Some(bin) = engine_bin() else {
+        eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
+        return None;
+    };
     let port = free_port();
     let dir = std::env::temp_dir().join(format!(
         "approval-gate-it-{}-{}",
@@ -77,13 +127,6 @@ pub async fn spawn_engine() -> Option<Engine> {
         config:
           directory: {dir}/configuration
       ttl_seconds: 0
-  - name: iii-state
-    config:
-      adapter:
-        name: kv
-        config:
-          file_path: {dir}/state_store.db
-          store_method: file_based
 "#,
         port = port,
         dir = dir.display(),
@@ -92,8 +135,14 @@ pub async fn spawn_engine() -> Option<Engine> {
     std::fs::File::create(&config_path)
         .and_then(|mut f| f.write_all(config.as_bytes()))
         .ok()?;
+    let state_config = dir.join("state-config.yaml");
+    std::fs::write(
+        &state_config,
+        "adapter:\n  name: kv\n  config:\n    store_method: in_memory\n",
+    )
+    .ok()?;
 
-    let mut child = std::process::Command::new(&bin)
+    let child = std::process::Command::new(&bin)
         .arg("--no-update-check")
         .arg("--config")
         .arg(&config_path)
@@ -103,10 +152,17 @@ pub async fn spawn_engine() -> Option<Engine> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
+        .map_err(|e| eprintln!("skipping: cannot start {}: {e}", bin.display()))
         .ok()?;
+    // Built right after the spawn, so every early return below reaps it.
+    let mut engine = Engine {
+        url: format!("ws://127.0.0.1:{port}"),
+        child,
+        state_child: None,
+        dir,
+    };
 
-    let url = format!("ws://127.0.0.1:{port}");
-    let probe = register_worker(&url, InitOptions::default());
+    let probe = register_worker(&engine.url, InitOptions::default());
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         // The engine core must be up AND the configuration worker must be
@@ -141,16 +197,60 @@ pub async fn spawn_engine() -> Option<Engine> {
         }
         if Instant::now() >= deadline {
             probe.shutdown();
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = std::fs::remove_dir_all(&dir);
+            eprintln!("skipping: the iii engine or its configuration worker never answered");
             return None;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    probe.shutdown();
 
-    Some(Engine { url, child, dir })
+    // The state worker registers its own configuration at boot, so it starts
+    // only once the configuration worker answers.
+    let Some(state_bin) = state_bin() else {
+        probe.shutdown();
+        eprintln!(
+            "skipping: no state worker (set III_STATE_BIN or build state/ with `cargo build --manifest-path state/Cargo.toml --bin state`)"
+        );
+        return None;
+    };
+    engine.state_child = std::process::Command::new(&state_bin)
+        .arg("--url")
+        .arg(&engine.url)
+        .arg("--config")
+        .arg(&state_config)
+        .current_dir(&engine.dir)
+        // Its SDK client writes an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &engine.dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut state_ready = false;
+    while engine.state_child.is_some() && Instant::now() < deadline {
+        state_ready = probe
+            .trigger(TriggerRequest {
+                function_id: "state::get".into(),
+                payload: json!({ "scope": "testkit", "key": "ready" }),
+                action: None,
+                timeout_ms: Some(1000),
+            })
+            .await
+            .is_ok();
+        if state_ready {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    probe.shutdown();
+    if !state_ready {
+        eprintln!(
+            "skipping: state worker {} never answered state::get",
+            state_bin.display()
+        );
+        return None;
+    }
+
+    Some(engine)
 }
 
 static BOOT_LOCK: OnceCell<tokio::sync::Mutex<()>> = OnceCell::const_new();
@@ -167,13 +267,7 @@ async fn boot_lock() -> tokio::sync::MutexGuard<'static, ()> {
 /// run in parallel; each call gets its own state store.
 pub async fn require_engine() -> Option<Engine> {
     let _guard = boot_lock().await;
-    match spawn_engine().await {
-        Some(engine) => Some(engine),
-        None => {
-            eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
-            None
-        }
-    }
+    spawn_engine().await
 }
 
 pub type CallLog = Arc<Mutex<Vec<Value>>>;
@@ -300,6 +394,9 @@ impl Drop for TestStack {
             let _ = child.kill();
             let _ = child.wait();
         }
+        // Joins the connection thread, which removes this client's `iii ps`
+        // marker from the test process's $HOME/.iii/run.
+        self.iii.shutdown();
     }
 }
 
@@ -573,11 +670,25 @@ where
     Fut: std::future::Future<Output = ()>,
 {
     let _guard = boot_lock().await;
+    // spawn_engine already said why it skipped.
     let Some(engine) = spawn_engine().await else {
-        eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
         return;
     };
     let stack = boot(&engine, opts).await;
     f(stack).await;
     // `engine` drops here — isolated state cleaned up with the temp dir.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::package_version;
+
+    #[test]
+    fn package_version_orders_numerically() {
+        let newer = package_version("state-0.22.22-aarch64-apple-darwin-284a31ea");
+        let older = package_version("state-0.22.5-rc.1-aarch64-apple-darwin-25e0dfe0");
+        assert_eq!(newer, Some(vec![0, 22, 22]));
+        assert!(newer > older);
+        assert_eq!(package_version("rbac-proxy-0.1.0-aarch64"), None);
+    }
 }

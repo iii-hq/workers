@@ -202,7 +202,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 The integration suite spawns a real engine (`III_ENGINE_BIN` or `iii` on
-PATH) with `configuration` + `state`, registers the production surface
+PATH) with `configuration` inline plus the standalone `state` worker
+(`III_STATE_BIN`, a `state/` build or the Compose package cache; it
+self-skips without either), registers the production surface
 in-process, and fakes sibling RPCs where noted (`session::get`). With the
 harness binary available, `tests/harness_integration.rs` additionally boots the
 real harness worker for cross-worker hold / sweep / resolve checks.
