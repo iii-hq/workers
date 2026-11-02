@@ -56,9 +56,12 @@ export interface SubscribeOptions {
 /**
  * Observe `functionId` with `selection` and run `onEvent` with the event each
  * matching call returned. Resolves to a disposer that disposes the observer
- * and drops the local handler (idempotent). Rejects when the client cannot
- * observe — the caller decides whether a missing subscription is fatal or
- * just means it relies on its fallback read.
+ * and drops the local handler (idempotent). Rejects when the client throws
+ * while observing (no connection, an observer id conflict). The engine's
+ * refusal (`FORBIDDEN`, `NOT_OBSERVABLE`, `TOO_MANY_LISTENERS`, ...) does
+ * not reject: it arrives later as the observer's `error` state, which the
+ * client logs, and no event follows — so callers keep their fallback read
+ * (a start check, a silence check, a deadline) whatever happens here.
  */
 export async function subscribeObserved<P = unknown>(
   functionId: string,

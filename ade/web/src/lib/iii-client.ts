@@ -22,13 +22,16 @@ import {
   type IIIConnectionState,
   type InitOptions,
   type ISdk,
+  type ObserveReason,
+  type ObserverHandle,
+  type ObserverState,
   type RegisterFunctionOptions,
   type RemoteFunctionHandler,
   registerWorker,
   type ObserveSource as SdkObserveSource,
 } from 'iii-browser-sdk'
 
-export type { IIIConnectionState }
+export type { IIIConnectionState, ObserveReason, ObserverState }
 
 /** The function a tab observes, with its args and filters. */
 export interface ObserveSource {
@@ -57,6 +60,23 @@ export interface ObserverOptions {
   max_fires?: number
   expires_in_ms?: number
   max_in_flight?: number
+}
+
+/**
+ * What `observe` returns: its disposer, which also carries the observer's
+ * state (`pending` until the engine and the function's host accept it,
+ * `active`, `suspended` while disconnected, `error` when refused,
+ * `disposed`), the reason for it, `ready()` (resolves when `active`, rejects
+ * with the code on `error`/`disposed`) and `onStateChange`.
+ */
+export type ObserverDisposer = (() => void) & {
+  readonly id: string
+  readonly state: ObserverState
+  readonly reason?: ObserveReason
+  ready(): Promise<void>
+  onStateChange(
+    listener: (state: ObserverState, reason?: ObserveReason) => void,
+  ): () => void
 }
 
 export interface CallOptions {
@@ -97,13 +117,16 @@ export interface IiiClient {
    *     `foo::${client.browserId}`,
    *   )
    * The observer stays pending until its function registers, so observing a
-   * source whose worker is absent never fails here.
+   * source whose worker is absent never fails here. The engine's refusal
+   * (`FORBIDDEN`, `NOT_OBSERVABLE`, `TOO_MANY_LISTENERS`, ...) never throws
+   * either: it arrives as the disposer's `state` `'error'` (a `ready()`
+   * rejection carrying the code), and is logged.
    */
   observe(
     source: string | ObserveSource,
     target: string,
     options?: ObserverOptions,
-  ): () => void
+  ): ObserverDisposer
   addConnectionStateListener(
     handler: (state: IIIConnectionState) => void,
   ): () => void
@@ -273,7 +296,7 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
     source: string | ObserveSource,
     target: string,
     options?: ObserverOptions,
-  ): () => void {
+  ): ObserverDisposer {
     const spec: ObserveSource =
       typeof source === 'string' ? { function_id: source } : source
     const namespace = spec.namespace ?? sourceNamespace(spec.function_id)
@@ -287,6 +310,21 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
       options,
     )
     let active = true
+    // The SDK answers a refusal (FORBIDDEN, NOT_OBSERVABLE,
+    // TOO_MANY_LISTENERS, UNSUPPORTED, INVALID_FILTER, ...) only through the
+    // handle's state, never by throwing: log it, and a disposal this tab did
+    // not ask for, so neither goes unnoticed.
+    handle.onStateChange((state, reason) => {
+      if (state === 'error') {
+        console.warn(
+          `[iii] observer of ${spec.function_id} refused: ${reason?.code ?? 'OBSERVE_FAILED'}${reason?.message ? `: ${reason.message}` : ''}`,
+        )
+      } else if (state === 'disposed' && active) {
+        console.warn(
+          `[iii] observer of ${spec.function_id} disposed: ${reason?.code ?? 'UNOBSERVED'}${reason?.message ? `: ${reason.message}` : ''}`,
+        )
+      }
+    })
     const disposeObserver = () => {
       if (!active) return
       active = false
@@ -296,7 +334,16 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
       })
     }
     observerDisposers.add(disposeObserver)
-    return disposeObserver
+    return Object.defineProperties(disposeObserver, {
+      id: { get: () => handle.id },
+      state: { get: () => handle.state },
+      reason: { get: () => handle.reason },
+      ready: { value: () => handle.ready() },
+      onStateChange: {
+        value: (listener: Parameters<ObserverHandle['onStateChange']>[0]) =>
+          handle.onStateChange(listener),
+      },
+    }) as ObserverDisposer
   }
 
   function addConnectionStateListener(

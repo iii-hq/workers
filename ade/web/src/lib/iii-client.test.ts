@@ -9,6 +9,8 @@ import type {
   CallRequest,
   InitOptions,
   ISdk,
+  ObserveReason,
+  ObserverState,
   ObserveSource,
   RemoteFunctionHandler,
 } from 'iii-browser-sdk'
@@ -25,6 +27,7 @@ function fakeSdk() {
   const calls: CallRequest[] = []
   const observed: Array<{ source: ObserveSource; target: unknown }> = []
   const disposed: string[] = []
+  const handles: Array<ReturnType<typeof fakeHandle>> = []
   const sdk = {
     registerFunction(id: string, handler: RemoteFunctionHandler) {
       // Mirror iii-browser-sdk's duplicate guard (dist/index.mjs:291).
@@ -44,17 +47,63 @@ function fakeSdk() {
     observe: (source: ObserveSource, target: unknown) => {
       const id = `obs-${observed.length + 1}`
       observed.push({ source, target })
-      return {
-        id,
-        dispose: async () => {
-          disposed.push(id)
-        },
-      }
+      const handle = fakeHandle(id, () => {
+        disposed.push(id)
+      })
+      handles.push(handle)
+      return handle
     },
     addConnectionStateListener: () => () => {},
     shutdown: async () => {},
   } as unknown as ISdk
-  return { sdk, functions, calls, observed, disposed }
+  return { sdk, functions, calls, observed, disposed, handles }
+}
+
+type StateListener = (state: ObserverState, reason?: ObserveReason) => void
+
+/** The SDK's ObserverHandle, with `set` standing in for the engine's answers. */
+function fakeHandle(id: string, onDispose: () => void) {
+  let state: ObserverState = 'pending'
+  let reason: ObserveReason | undefined
+  const listeners = new Set<StateListener>()
+  const set = (next: ObserverState, why?: ObserveReason) => {
+    if (state === 'disposed') return
+    state = next
+    reason = why
+    for (const listener of [...listeners]) listener(next, why)
+  }
+  return {
+    id,
+    get state() {
+      return state
+    },
+    get reason() {
+      return reason
+    },
+    ready: () =>
+      new Promise<void>((resolve, reject) => {
+        const settle: StateListener = (next, why) => {
+          if (next === 'active') resolve()
+          else if (next === 'error' || next === 'disposed')
+            reject(new Error(why?.message ?? next))
+          else return
+          listeners.delete(settle)
+        }
+        if (state === 'pending' || state === 'suspended') listeners.add(settle)
+        else settle(state, reason)
+      }),
+    onStateChange: (listener: StateListener) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    dispose: async () => {
+      onDispose()
+      set('disposed', { code: 'UNOBSERVED', message: 'disposed' })
+    },
+    set,
+  }
 }
 
 const BROWSER_ID = 'console-test'
@@ -246,6 +295,54 @@ describe('namespaced browser connection', () => {
     await client.dispose()
 
     expect(disposed).toEqual(['obs-1', 'obs-2'])
+  })
+
+  it('exposes the observer state and logs a refusal with its code and source', async () => {
+    const { sdk, handles } = fakeSdk()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const client = wrapSdk(sdk, BROWSER_ID)
+
+    const off = client.observe('harness::on-turn-completed', SDK_ID)
+    expect(typeof off).toBe('function')
+    expect(off.id).toBe('obs-1')
+    expect(off.state).toBe('pending')
+    const ready = off.ready()
+    const states: string[] = []
+    off.onStateChange((state) => states.push(state))
+    handles[0]?.set('error', {
+      code: 'TOO_MANY_LISTENERS',
+      message: 'limit 64',
+    })
+
+    await expect(ready).rejects.toThrow('limit 64')
+    expect(off.state).toBe('error')
+    expect(off.reason?.code).toBe('TOO_MANY_LISTENERS')
+    expect(states).toEqual(['error'])
+    expect(warn).toHaveBeenCalledWith(
+      '[iii] observer of harness::on-turn-completed refused: TOO_MANY_LISTENERS: limit 64',
+    )
+    warn.mockRestore()
+  })
+
+  it('resolves ready() once active and logs only disposals it did not ask for', async () => {
+    const { sdk, handles } = fakeSdk()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const client = wrapSdk(sdk, BROWSER_ID)
+
+    const own = client.observe('session::on-created', SDK_ID)
+    const other = client.observe('session::on-deleted', SDK_ID)
+    handles[0]?.set('active')
+    await expect(own.ready()).resolves.toBeUndefined()
+    own()
+    handles[1]?.set('disposed', { code: 'WORKER_GONE', message: 'host left' })
+
+    expect(other.state).toBe('disposed')
+    expect(warn.mock.calls).toEqual([
+      [
+        '[iii] observer of session::on-deleted disposed: WORKER_GONE: host left',
+      ],
+    ])
+    warn.mockRestore()
   })
 
   it('refuses to connect when runtime namespace discovery fails', async () => {

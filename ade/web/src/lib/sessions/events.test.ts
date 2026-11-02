@@ -124,4 +124,36 @@ describe('transcript setup rollback', () => {
       expect(offObserver).toHaveBeenCalledTimes(failedObserver - 1)
     },
   )
+
+  it('reports an observer the engine refused once, with its reason', () => {
+    const listeners: Array<(state: string, reason?: unknown) => void> = []
+    const client = {
+      browserId: 'browser-1',
+      on: vi.fn(() => vi.fn()),
+      observe: vi.fn(() =>
+        Object.assign(vi.fn(), {
+          state: 'pending',
+          onStateChange: (listener: (state: string) => void) => {
+            listeners.push(listener)
+            return () => {}
+          },
+        }),
+      ),
+    } as unknown as Parameters<typeof subscribeSessionTranscript>[0]
+    const onObserverError = vi.fn()
+
+    subscribeSessionTranscript(client, 'session-a', {
+      onMessageAdded: vi.fn(),
+      onMessageUpdated: vi.fn(),
+      onObserverError,
+    })
+    const reason = { code: 'TOO_MANY_LISTENERS', message: 'limit' }
+    listeners[0]?.('active')
+    listeners[1]?.('error', reason)
+    listeners[0]?.('error', reason)
+
+    expect(listeners).toHaveLength(2)
+    expect(onObserverError).toHaveBeenCalledOnce()
+    expect(onObserverError).toHaveBeenCalledWith(reason)
+  })
 })

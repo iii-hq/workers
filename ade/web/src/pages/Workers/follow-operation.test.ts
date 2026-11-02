@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { ObserverDisposer } from '@/lib/iii-client'
 import type { Accepted, OperationSnapshot } from './compose-api'
 import {
   followOperation,
   newOperationId,
   type ProgressEvent,
 } from './follow-operation'
+
+/** A disposer as the console's client returns it, already active. */
+const activeDisposer = (id: string, dispose: () => void): ObserverDisposer =>
+  Object.assign(dispose, {
+    id,
+    state: 'active' as const,
+    ready: async () => {},
+    onStateChange: () => () => {},
+  })
 
 /** A bus that records observers and lets a test deliver progress events. */
 function bus() {
@@ -34,10 +44,10 @@ function bus() {
         log.push(`observe ${source.function_id} ${operationId}`)
         const key = ++next
         observers.set(key, { target, operationId })
-        return () => {
+        return activeDisposer(`obs-${key}`, () => {
           log.push(`dispose ${operationId}`)
           observers.delete(key)
-        }
+        })
       },
     ),
   }

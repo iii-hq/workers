@@ -14,7 +14,11 @@
  * and hidden from the Traces view (same convention as turn-events-live).
  */
 
-import type { IiiClient } from '@/lib/iii-client'
+import type {
+  IiiClient,
+  ObserveReason,
+  ObserverDisposer,
+} from '@/lib/iii-client'
 import type {
   MessageAddedEvent,
   MessageUpdatedEvent,
@@ -37,13 +41,15 @@ function bind<P>(
   onEvent: (payload: P) => void,
   /** Distinguishes per-session observers from the global ones. */
   scope: string,
+  /** Called when the engine refuses the observer (its state turns `error`). */
+  onRefused?: (reason?: ObserveReason) => void,
 ): () => void {
   const localFnId = `${HANDLER_BASE}_${functionId.replace(/::/g, '_')}_${scope}`
   const offHandler = client.on(localFnId, (payload: unknown) => {
     if (payload && typeof payload === 'object') onEvent(payload as P)
   })
   // `on()` registers under `<fn>::<browserId>`; the observer targets that id.
-  let offObserver: () => void
+  let offObserver: ObserverDisposer
   try {
     offObserver = client.observe(
       { function_id: functionId, ...(filters ? { filters } : {}) },
@@ -52,6 +58,11 @@ function bind<P>(
   } catch (error) {
     offHandler()
     throw error
+  }
+  if (onRefused && typeof offObserver.onStateChange === 'function') {
+    offObserver.onStateChange((state, reason) => {
+      if (state === 'error') onRefused(reason)
+    })
   }
   return () => {
     offHandler()
@@ -116,6 +127,12 @@ export function subscribeSessionDirectory(
 export interface SessionTranscriptHandlers {
   onMessageAdded: (event: MessageAddedEvent) => void
   onMessageUpdated: (event: MessageUpdatedEvent) => void
+  /**
+   * Called once when the engine refuses one of the observers
+   * (`TOO_MANY_LISTENERS`, `FORBIDDEN`, ...): no live messages arrive, so
+   * the caller falls back as it does when subscribing throws.
+   */
+  onObserverError?: (reason?: ObserveReason) => void
 }
 
 /**
@@ -140,6 +157,15 @@ export function subscribeSessionTranscript(
       if (event.session_id === sessionId) fn(event)
     }
   const offs: Array<() => void> = []
+  // Both observers share one report: the first refusal ends the subscription.
+  let refused = false
+  const onRefused = handlers.onObserverError
+    ? (reason?: ObserveReason) => {
+        if (refused) return
+        refused = true
+        handlers.onObserverError?.(reason)
+      }
+    : undefined
   try {
     offs.push(
       bind(
@@ -148,6 +174,7 @@ export function subscribeSessionTranscript(
         filters,
         guard(handlers.onMessageAdded),
         scope,
+        onRefused,
       ),
     )
     offs.push(
@@ -157,6 +184,7 @@ export function subscribeSessionTranscript(
         filters,
         guard(handlers.onMessageUpdated),
         scope,
+        onRefused,
       ),
     )
   } catch (error) {

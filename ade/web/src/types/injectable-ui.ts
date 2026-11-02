@@ -15,6 +15,7 @@ import type { UiClasses } from '@iii-dev/console-ui/ui-classes'
 import type { useConfirm } from '@/components/ui/ConfirmDialog'
 import type {
   IIIConnectionState,
+  ObserverDisposer,
   ObserverOptions,
   ObserveSource,
 } from '@/lib/iii-client'
@@ -51,13 +52,15 @@ export interface ExtensionIii {
    * Observes `source` with `target` (a function registered with `on`, by its
    * full id `<functionId>::<browserId>`). `deliver` defaults to `'output'`,
    * so the handler receives the event the observed function returned.
-   * Returns its disposer.
+   * Returns its disposer, which also carries the observer's `state`,
+   * `ready()` and `onStateChange`: a refusal (`FORBIDDEN`,
+   * `TOO_MANY_LISTENERS`, ...) never throws, it turns the state `error`.
    */
   observe(
     source: string | ObserveSource,
     target: string,
     options?: ObserverOptions,
-  ): () => void
+  ): ObserverDisposer
   addConnectionStateListener(
     handler: (state: IIIConnectionState) => void,
   ): () => void

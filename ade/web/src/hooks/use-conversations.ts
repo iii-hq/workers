@@ -2360,16 +2360,32 @@ export function useConversations(
           if (cancelled || !stillWatched() || subscriptions.has(sessionId))
             return
           let off: () => void
-          try {
-            off = subscribeSessionTranscript(client, sessionId, handlers)
-          } catch {
-            if (cancelled || !stillWatched()) return
+          const failed = () => {
             failures.add(sessionId)
             setTranscriptSubscriptionErrors((current) => ({
               ...current,
               [sessionId]: 'Unable to receive live messages. Retrying…',
             }))
             retryTimers.set(sessionId, setTimeout(setup, 2_000))
+          }
+          // The engine refuses an observer through its state, not a throw
+          // (TOO_MANY_LISTENERS, FORBIDDEN, ...): drop it and retry the same way.
+          const refused = () => {
+            if (subscriptions.get(sessionId) !== off) return
+            off()
+            subscriptions.delete(sessionId)
+            transcriptSubscriptionEpochsRef.current.delete(sessionId)
+            if (cancelled || !stillWatched()) return
+            failed()
+          }
+          try {
+            off = subscribeSessionTranscript(client, sessionId, {
+              ...handlers,
+              onObserverError: refused,
+            })
+          } catch {
+            if (cancelled || !stillWatched()) return
+            failed()
             return
           }
           if (cancelled || !stillWatched()) {

@@ -44,7 +44,13 @@ const client: Awaited<ReturnType<typeof getIiiClient>> = {
   call,
   trigger: call,
   on: () => () => {},
-  observe: () => () => {},
+  observe: () =>
+    Object.assign(() => {}, {
+      id: 'observer-1',
+      state: 'active' as const,
+      ready: async () => {},
+      onStateChange: () => () => {},
+    }),
   addConnectionStateListener: () => () => {},
   dispose: async () => {},
 }
