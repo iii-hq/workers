@@ -1,8 +1,13 @@
-//! End-to-end: spawn the `iii` engine and the worker binary, then drive the
-//! lifecycle (create -> claim -> status -> release -> remove) through
-//! `iii-sdk` as a client. Self-skips when `iii` is not on PATH.
+//! End-to-end: spawn a private `iii` engine, a `state` worker and the worker
+//! binary, then drive the lifecycle (create -> claim -> status -> release ->
+//! remove) through `iii-sdk` as a client.
+//!
+//! The engine listens on a free port and every process runs with a throwaway
+//! `HOME` and working directory, so a developer's own engine (and `~/.iii`) is
+//! never touched. Self-skips when `iii` is not on PATH or no `state` worker
+//! binary is found (`III_STATE_BIN`, or a build under `../state/target`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -11,21 +16,24 @@ use iii_sdk::{register_worker, InitOptions};
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
 
-const ENGINE_WS: &str = "ws://127.0.0.1:49134";
+/// Kills and reaps the child on drop, so every early return or panic
+/// cleans up instead of orphaning the process.
+struct Reaped(Child);
 
-struct Harness {
-    iii: Child,
-    worker: Child,
-    _dirs: (tempfile::TempDir, tempfile::TempDir),
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
-impl Drop for Harness {
-    fn drop(&mut self) {
-        let _ = self.worker.kill();
-        let _ = self.worker.wait();
-        let _ = self.iii.kill();
-        let _ = self.iii.wait();
-    }
+struct Harness {
+    // Fields drop in order: the workers, then their engine, then the tempdir.
+    _worker: Reaped,
+    _state: Reaped,
+    _iii: Reaped,
+    _dir: tempfile::TempDir,
+    engine_ws: String,
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -41,54 +49,123 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-async fn boot() -> Option<Harness> {
-    // The only reason to self-skip: no `iii` engine on PATH. Every failure
-    // past this point is a real test-environment fault and must fail loudly.
-    let iii_bin = which::which("iii").ok()?;
-
-    // Isolate the engine's data dir (configuration store, state) in a
-    // tempdir so the seed applies and nothing leaks between runs.
-    let engine_dir = tempfile::tempdir().expect("create engine tempdir");
-    let worker_dir = tempfile::tempdir().expect("create worker tempdir");
-
-    let iii = Command::new(&iii_bin)
-        .arg("--use-default-config")
-        .current_dir(engine_dir.path())
+/// Spawn `command` with a private `HOME` and working directory.
+fn spawn_isolated(mut command: Command, dir: &Path, what: &str) -> Reaped {
+    command
+        .current_dir(dir)
+        .env("HOME", dir.join("home"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn iii engine");
+        .map(Reaped)
+        .unwrap_or_else(|error| panic!("spawn {what}: {error}"))
+}
 
-    sleep(Duration::from_millis(1200)).await;
+/// The engine has no built-in `state`, and the lifecycle persists through it.
+fn state_bin() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("III_STATE_BIN") {
+        return Some(path.into());
+    }
+    let target = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../state/target"));
+    ["debug", "release"]
+        .map(|profile| target.join(profile).join("state"))
+        .into_iter()
+        .find(|path| path.is_file())
+}
 
+async fn wait_for_listen(port: u16, max: Duration) -> bool {
+    let deadline = std::time::Instant::now() + max;
+    while std::time::Instant::now() < deadline {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+async fn boot() -> Option<Harness> {
+    // The only reasons to self-skip: no `iii` engine on PATH, or no `state`
+    // worker to run next to it. Every failure past this point is a real
+    // test-environment fault and must fail loudly.
+    let iii_bin = which::which("iii").ok()?;
+    let Some(state_bin) = state_bin() else {
+        eprintln!("skipping: no state worker (set III_STATE_BIN or build ../state)");
+        return None;
+    };
+    let engine_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .expect("free port")
+        .port();
+
+    // Isolate the engine's data dir (configuration store, state) and every
+    // HOME in a tempdir so the seed applies and nothing leaks between runs.
+    let dir = tempfile::tempdir().expect("create tempdir");
+    std::fs::create_dir_all(dir.path().join("home")).expect("private HOME");
+    let engine_config = dir.path().join("engine.yaml");
+    std::fs::write(
+        &engine_config,
+        format!(
+            r#"workers:
+  - name: iii-worker-manager
+    config:
+      port: {engine_port}
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: "{}"
+      ttl_seconds: 0
+"#,
+            dir.path().join("configuration").display()
+        ),
+    )
+    .expect("write engine config");
+    let state_config = dir.path().join("state.yaml");
+    std::fs::write(
+        &state_config,
+        "adapter:\n  name: kv\n  config:\n    store_method: in_memory\n",
+    )
+    .expect("write state config");
     // Seed the config so managed worktrees land inside the tempdir.
-    let seed_path = worker_dir.path().join("seed.yaml");
+    let seed_path = dir.path().join("seed.yaml");
     std::fs::write(
         &seed_path,
-        format!(
-            "worktree_root: {}\n",
-            worker_dir.path().join("wts").display()
-        ),
+        format!("worktree_root: {}\n", dir.path().join("wts").display()),
     )
     .expect("write seed config");
 
-    let worker_bin = env!("CARGO_BIN_EXE_worktree");
-    let worker = Command::new(worker_bin)
-        .arg("--url")
-        .arg(ENGINE_WS)
-        .arg("--config")
-        .arg(&seed_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn worktree worker");
+    let mut command = Command::new(&iii_bin);
+    command
+        .args(["--no-update-check", "--config"])
+        .arg(&engine_config);
+    let iii = spawn_isolated(command, dir.path(), "iii engine");
+    // The configuration functions register before the engine starts listening.
+    assert!(
+        wait_for_listen(engine_port, Duration::from_secs(30)).await,
+        "the iii engine never listened on {engine_port}"
+    );
 
-    sleep(Duration::from_millis(2000)).await;
+    let engine_ws = format!("ws://127.0.0.1:{engine_port}");
+    let mut command = Command::new(state_bin);
+    command
+        .args(["--url", &engine_ws, "--config"])
+        .arg(&state_config);
+    let state = spawn_isolated(command, dir.path(), "state worker");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_worktree"));
+    command
+        .args(["--url", &engine_ws, "--config"])
+        .arg(&seed_path);
+    let worker = spawn_isolated(command, dir.path(), "worktree worker");
 
     Some(Harness {
-        iii,
-        worker,
-        _dirs: (engine_dir, worker_dir),
+        _worker: worker,
+        _state: state,
+        _iii: iii,
+        _dir: dir,
+        engine_ws,
     })
 }
 
@@ -109,7 +186,8 @@ async fn call(client: &iii_sdk::IIIClient, function_id: &str, payload: Value) ->
 
 /// Worker boot is not instant (connect retry backoff plus the configuration
 /// register/fetch round-trips), so wait for the surface to register instead
-/// of racing it with a fixed sleep.
+/// of racing it with a fixed sleep. `state::set` too: the lifecycle persists
+/// through the state worker.
 async fn wait_until_registered(client: &iii_sdk::IIIClient) {
     for _ in 0..40 {
         let listed = client
@@ -120,20 +198,49 @@ async fn wait_until_registered(client: &iii_sdk::IIIClient) {
                 timeout_ms: Some(5_000),
             })
             .await;
-        if let Ok(v) = listed {
-            if v.to_string().contains("worktree::create") {
+        if let Ok(v) = listed.map(|v| v.to_string()) {
+            if v.contains("worktree::create") && v.contains("state::set") {
                 return;
             }
         }
         sleep(Duration::from_millis(500)).await;
     }
-    panic!("worktree::create never registered with the engine");
+    panic!("worktree::create or state::set never registered with the engine");
+}
+
+/// Runs the end-to-end body in a child with a private `HOME`: its SDK client
+/// would otherwise write an `iii ps` marker under the real `~/.iii/run`.
+#[test]
+fn end_to_end_lifecycle_via_iii_sdk() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "end_to_end_child", "--ignored", "--nocapture"])
+        .env("HOME", home.path())
+        .env("WORKTREE_E2E_CHILD", "1")
+        .output()
+        .expect("run the end-to-end child");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // A filter that matches nothing also exits 0.
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{stderr}"
+    );
+    eprint!("{stderr}");
 }
 
 #[tokio::test]
-async fn end_to_end_lifecycle_via_iii_sdk() {
-    let Some(_h) = boot().await else {
-        eprintln!("skipping: `iii` binary not on PATH");
+#[ignore = "isolated subprocess invoked by end_to_end_lifecycle_via_iii_sdk"]
+async fn end_to_end_child() {
+    // `--ignored` runs would otherwise use the real HOME; only the parent sets this.
+    if std::env::var_os("WORKTREE_E2E_CHILD").is_none() {
+        eprintln!("skipping: runs only as the isolated child of end_to_end_lifecycle_via_iii_sdk");
+        return;
+    }
+    let Some(h) = boot().await else {
+        eprintln!("skipping: prerequisites not met (see logs above)");
         return;
     };
 
@@ -147,7 +254,7 @@ async fn end_to_end_lifecycle_via_iii_sdk() {
     git(&repo, &["add", "README.md"]);
     git(&repo, &["commit", "-m", "initial"]);
 
-    let client = register_worker(ENGINE_WS, InitOptions::default());
+    let client = register_worker(&h.engine_ws, InitOptions::default());
     wait_until_registered(&client).await;
 
     let created = call(
