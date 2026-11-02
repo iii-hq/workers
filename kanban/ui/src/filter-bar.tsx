@@ -1,52 +1,52 @@
 import {
-  BottomSheet,
-  BottomSheetContent,
-  BottomSheetTrigger,
-  Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-  IconButton,
-  Input,
-  SearchField,
-  SegmentedControl,
-  StatusDot,
-  Tabs,
-  TabsList,
-  TabsTrigger,
-  Toolbar,
-  uiClasses,
-  useConfirm,
+  ShadcnBadge,
+  ShadcnButton,
+  ShadcnDialog,
+  ShadcnDialogContent,
+  ShadcnDialogDescription,
+  ShadcnDialogFooter,
+  ShadcnDialogHeader,
+  ShadcnDialogTitle,
+  ShadcnDropdownMenu,
+  ShadcnDropdownMenuCheckboxItem,
+  ShadcnDropdownMenuContent,
+  ShadcnDropdownMenuGroup,
+  ShadcnDropdownMenuLabel,
+  ShadcnDropdownMenuRadioGroup,
+  ShadcnDropdownMenuRadioItem,
+  ShadcnDropdownMenuSeparator,
+  ShadcnDropdownMenuTrigger,
+  ShadcnInput,
+  ShadcnTabs,
+  ShadcnTabsList,
+  ShadcnTabsTrigger,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
 } from '@iii-dev/console-ui'
 import { formatRelative } from '@iii-dev/console-ui/format'
 import {
-  Bot,
   Check,
   ChevronDown,
-  CircleDashed,
+  ChevronLeft,
+  ChevronRight,
+  ListFilter,
+  SlidersHorizontal,
   Clock,
   Columns3,
-  Flag,
   Folder,
   Layers,
+  ListTree,
   List as ListIcon,
   type LucideIcon,
-  MoreHorizontal,
+  Milestone,
+  Search,
   SignalHigh,
   Tag,
   User,
+  X,
 } from 'lucide-react'
-import { Fragment, type ReactNode, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import { type KeyboardEvent, type ReactElement, type ReactNode, useId, useRef, useState } from 'react'
 import { coerceGroup, GROUPS, type GroupBy } from './board-state'
 import {
   ALL_VIEW,
@@ -61,6 +61,11 @@ import {
   type UpdatedWindow,
 } from './filters'
 import { type AgentProfile, type ProjectView, priorityLabel, type ReleaseView, type TicketSummary } from './shared'
+import { AssigneeAvatar } from './ui/avatar'
+import { Field } from './ui/feedback'
+import { PriorityIcon } from './ui/glyphs'
+import { SearchPicker } from './ui/search-picker'
+import { humanize, toneOf } from './ui/tone'
 
 type FacetId = 'projects' | 'releases' | 'labels' | 'assignees' | 'priorities' | 'updated'
 
@@ -71,9 +76,9 @@ type Opt = {
   count?: number
   lead?: ReactNode
   /** Quiet word after the name ("Archived"). */
-  tag?: string
-  /** A sub-heading above this row. */
-  heading?: string
+  description?: string
+  /** The heading of the group this row belongs to. */
+  group?: string
   disabled?: boolean
 }
 
@@ -89,25 +94,13 @@ type Facet = {
   selected: string[]
   /** One choice (radio) instead of a set (checkboxes). */
   single?: boolean
-  /** Fixed content above the list (the label search). */
+  /** Fixed content above the list (the label match mode). */
   head?: ReactNode
   note?: string
   empty?: string
   pick: (value: string) => void
   clear: () => void
 }
-
-/**
- * The console's BottomSheet is `md:hidden` (viewport under 768px), so a narrow
- * pane on a wide screen keeps the popover: the sheet needs a phone viewport too.
- */
-const PHONE = '(max-width: 767px)'
-const watchPhone = (notify: () => void) => {
-  const query = window.matchMedia(PHONE)
-  query.addEventListener('change', notify)
-  return () => query.removeEventListener('change', notify)
-}
-const usePhone = () => useSyncExternalStore(watchPhone, () => window.matchMedia(PHONE).matches)
 
 const flip = (list: string[], value: string) =>
   list.includes(value) ? list.filter((v) => v !== value) : [...list, value]
@@ -145,6 +138,8 @@ export type FilterBarProps = {
   releases: ReleaseView[]
   /** Group-by control; absent where the layout has no swimlanes. */
   group?: GroupControl
+  /** Drawn last in the tools group (the Board / List switch). */
+  end?: ReactNode
 }
 
 export type GroupControl = {
@@ -168,18 +163,15 @@ export function FilterBar({
   projects,
   releases,
   group,
+  end,
 }: FilterBarProps) {
-  const [open, setOpen] = useState<FacetId | null>(null)
-  const [labelQuery, setLabelQuery] = useState('')
-  const [saving, setSaving] = useState(false)
-  const phone = usePhone()
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch })
   const counts = (key: FacetId) => facetCounts(tickets, filters, ctx, key)
 
   const projectCounts = counts('projects')
   const projectNames = new Map(projects.map((project) => [project.id, project.name]))
   const projectLead = (color: ProjectView['color']) => (
-    <span aria-hidden="true" className={uiClasses.treeItemIcon} data-color={color ?? undefined}>
+    <span aria-hidden="true" className="kb-project-dot" data-tone={color ?? undefined}>
       <Folder size={16} />
     </span>
   )
@@ -193,7 +185,7 @@ export function FilterBar({
           label: project.name,
           count: projectCounts[project.id] ?? 0,
           lead: projectLead(project.color),
-          tag: project.archived_at ? 'Archived' : undefined,
+          description: project.archived_at ? 'Archived' : undefined,
         })),
       // A saved view can name a project this board no longer has: still a row, so it can be unticked.
       ...filters.projects
@@ -224,13 +216,18 @@ export function FilterBar({
   const firstReleased = releaseOpts.findIndex(
     (opt) => releasedIds.has(opt.value) && !filters.releases.includes(opt.value),
   )
-  if (firstReleased >= 0) releaseOpts[firstReleased] = { ...releaseOpts[firstReleased], heading: 'Released' }
+  if (firstReleased >= 0) {
+    for (let i = firstReleased; i < releaseOpts.length; i += 1) releaseOpts[i] = { ...releaseOpts[i], group: 'Released' }
+  }
 
   const labelCounts = counts('labels')
-  const query = labelQuery.trim().toLowerCase()
   const labelOpts: Opt[] = [...new Set([...allLabels(tickets), ...filters.labels])]
-    .filter((label) => label.toLowerCase().includes(query))
-    .map((label) => ({ value: label, label, count: labelCounts[label] ?? 0 }))
+    .map((label) => ({
+      value: label,
+      label,
+      count: labelCounts[label] ?? 0,
+      lead: <span aria-hidden="true" className="kb-label__dot" data-tone={toneOf(label)} />,
+    }))
     .sort(
       (a, b) =>
         Number(filters.labels.includes(b.value)) - Number(filters.labels.includes(a.value)) ||
@@ -245,20 +242,20 @@ export function FilterBar({
     ...new Set(tickets.flatMap((t) => (t.assignee && !agentNames.has(t.assignee) ? [t.assignee] : []))),
   ].sort()
   const assigneeOpts: Opt[] = [
-    { value: '', label: 'Unassigned', count: assigneeCounts[''] ?? 0, lead: <CircleDashed size={16} /> },
+    { value: '', label: 'Unassigned', count: assigneeCounts[''] ?? 0, lead: <AssigneeAvatar agents={agents} id={null} /> },
     ...[...agents]
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((agent) => ({
         value: agent.id,
         label: agent.name,
         count: assigneeCounts[agent.id] ?? 0,
-        lead: <Bot size={16} />,
+        lead: <AssigneeAvatar agents={agents} id={agent.id} />,
       })),
     ...strayAssignees.map((id) => ({
       value: id,
-      label: id,
+      label: humanize(id),
       count: assigneeCounts[id] ?? 0,
-      lead: <User size={16} />,
+      lead: <AssigneeAvatar agents={agents} id={id} />,
     })),
   ].sort(
     // Stable: ties keep Unassigned first, then names A–Z.
@@ -267,19 +264,17 @@ export function FilterBar({
   )
 
   const priorityCounts = counts('priorities')
-  const priorityOpt = (priority: string, tone?: 'alert' | 'warn'): Opt => ({
+  const priorityOpt = (priority: string): Opt => ({
     value: priority,
     label: priorityLabel(priority),
     count: priorityCounts[priority] ?? 0,
-    lead: <span className="kanban-filter__dot" data-tone={tone} />,
+    lead: <PriorityIcon priorities={priorities} priority={priority} />,
   })
   const strayPriorities = [...new Set(tickets.map((t) => t.priority))]
     .filter((p) => p && !priorities.includes(p))
     .sort()
   const priorityOpts: Opt[] = [
-    ...[...priorities]
-      .reverse()
-      .map((priority, index) => priorityOpt(priority, index === 0 ? 'alert' : index === 1 ? 'warn' : undefined)),
+    ...[...priorities].reverse().map((priority) => priorityOpt(priority)),
     ...strayPriorities.map((priority) => priorityOpt(priority)),
   ]
 
@@ -312,7 +307,7 @@ export function FilterBar({
       id: 'releases',
       name: 'Release',
       heading: 'Filter by release',
-      Icon: Flag,
+      Icon: Milestone,
       value: summary(filters.releases, (id) =>
         id === '' ? 'No release' : (releaseNames.get(id) ?? 'Unknown release'),
       ),
@@ -331,29 +326,17 @@ export function FilterBar({
       opts: labelOpts,
       selected: filters.labels,
       head: (
-        <>
-          <SearchField
-            aria-label="Find a label"
-            onChange={setLabelQuery}
-            placeholder="Find a label"
-            value={labelQuery}
-          />
-          <div className="kanban-filter__mode">
-            <span>Ticket has</span>
-            <SegmentedControl
-              aria-label="Label match"
-              onChange={(labelMode) => set({ labelMode })}
-              options={[
-                { value: 'any', label: 'any of these' },
-                { value: 'all', label: 'all of these' },
-              ]}
-              value={filters.labelMode}
-              variant="radio"
-            />
-          </div>
-        </>
+        <div className="kb-facet__mode">
+          <span>Ticket has</span>
+          <ShadcnTabs onValueChange={(labelMode) => set({ labelMode: labelMode === 'all' ? 'all' : 'any' })} value={filters.labelMode}>
+            <ShadcnTabsList aria-label="Label match">
+              <ShadcnTabsTrigger value="any">any of these</ShadcnTabsTrigger>
+              <ShadcnTabsTrigger value="all">all of these</ShadcnTabsTrigger>
+            </ShadcnTabsList>
+          </ShadcnTabs>
+        </div>
       ),
-      empty: query ? `No label matches “${labelQuery.trim()}”.` : 'No labels on this board yet.',
+      empty: 'No labels on this board yet.',
       pick: (label) => set({ labels: flip(filters.labels, label) }),
       clear: () => set({ labels: [] }),
     },
@@ -362,7 +345,7 @@ export function FilterBar({
       name: 'Assignee',
       heading: 'Filter by assignee',
       Icon: User,
-      value: summary(filters.assignees, (id) => (id === '' ? 'Unassigned' : (agentNames.get(id) ?? id))),
+      value: summary(filters.assignees, (id) => (id === '' ? 'Unassigned' : (agentNames.get(id) ?? humanize(id)))),
       opts: assigneeOpts,
       selected: filters.assignees,
       pick: (id) => set({ assignees: flip(filters.assignees, id) }),
@@ -396,361 +379,322 @@ export function FilterBar({
     },
   ]
 
+  const active = facets.filter((facet) => facet.value)
+
   return (
-    <Toolbar aria-label="Filter tickets" className="kanban-filter" data-narrow={narrow ? 'true' : undefined}>
-      <SearchField
-        aria-label="Search tickets by key or title"
-        className="kanban-filter__search"
-        onChange={(q) => set({ q })}
-        placeholder="Search key or title"
-        value={filters.q}
-      />
-      <div className="kanban-filter__triggers">
-        {/* Narrow panes have no room at the far end: the view option leads the row. */}
-        {group && narrow ? <GroupMenu {...group} narrow sheet={phone} /> : null}
-        {facets.map((facet) => (
-          <FacetMenu
-            f={facet}
-            key={facet.id}
-            narrow={narrow}
-            onOpenChange={(next) => {
-              setOpen(next ? facet.id : null)
-              if (!next) setLabelQuery('')
-            }}
-            open={open === facet.id}
-            sheet={narrow && phone}
-            shown={shownCount}
-          />
-        ))}
-      </div>
-      <div className="kanban-filter__end">
+    <div aria-label="Filter tickets" className="kb-controls" data-narrow={narrow ? 'true' : undefined} role="toolbar">
+      {active.length > 0 ? (
+        <div className="kb-controls__chips">
+          {active.map((facet) => (
+            <ActiveChip f={facet} key={facet.id} />
+          ))}
+          <ShadcnButton className="kb-tool kb-tool--quiet" onClick={() => onChange(EMPTY_FILTERS)} size="sm" type="button" variant="ghost">
+            Clear
+          </ShadcnButton>
+        </div>
+      ) : null}
+      <div className="kb-controls__tools">
         {ctx.lastVisit && filters.updated !== 'visit' && changed > 0 ? (
-          <Button
-            className="kanban-filter__action"
-            data-strong="true"
-            onClick={() => set({ updated: 'visit' })}
-            size="sm"
-            variant="ghost"
-          >
-            <StatusDot tone="accent" />
-            {changed} changed since your last visit
-          </Button>
+          <ShadcnButton className="kb-controls__changed" onClick={() => set({ updated: 'visit' })} size="sm" type="button" variant="ghost">
+            <span aria-hidden="true" className="kb-card__changed-dot" />
+            {changed} new
+          </ShadcnButton>
         ) : null}
-        <span className="kanban-filter__total" role="status">
+        <span className="kb-controls__total" role="status">
           {isEmpty(filters) ? plural(tickets.length) : `${shownCount} of ${tickets.length}`}
         </span>
-        {isEmpty(filters) ? null : (
-          <Button className="kanban-filter__action" onClick={() => onChange(EMPTY_FILTERS)} size="sm" variant="ghost">
-            Clear filters
-          </Button>
-        )}
-        {canSaveView ? (
-          <Button
-            className="kanban-filter__action"
-            data-strong="true"
-            onClick={() => setSaving(true)}
-            size="sm"
-            variant="ghost"
-          >
-            Save as view…
-          </Button>
-        ) : null}
-        {group && !narrow ? <GroupMenu {...group} narrow={false} sheet={false} /> : null}
+        <SearchBox onChange={(q) => set({ q })} value={filters.q} />
+        <FilterMenu active={active.length} facets={facets} />
+        {group ? <DisplayMenu {...group} /> : null}
+        {end}
       </div>
-      <Dialog onOpenChange={setSaving} open={saving}>
-        <DialogContent className="kanban-dialog">
-          <SaveViewForm
-            onCancel={() => setSaving(false)}
-            onSave={(name) => {
-              setSaving(false)
-              onSaveView(name)
-            }}
-          />
-        </DialogContent>
-      </Dialog>
-    </Toolbar>
+    </div>
   )
 }
 
-function FacetMenu({
-  f,
-  sheet,
-  narrow,
-  shown,
-  open,
-  onOpenChange,
-}: {
-  f: Facet
-  sheet: boolean
-  narrow: boolean
-  shown: number
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}) {
-  const headRef = useRef<HTMLDivElement>(null)
-  const picked = f.selected.length
-  const pickedText = picked === 0 ? 'None selected' : `${picked} selected`
-  const trigger = (
-    <Button className="kanban-filter__trigger" data-active={f.value ? 'true' : undefined} size="sm" variant="ghost">
-      <f.Icon size={16} />
-      {f.name}
-      {f.value ? <span className="kanban-filter__value">{f.value}</span> : null}
-      <ChevronDown size={16} />
-    </Button>
-  )
-  const rows = f.opts.map((opt) => (
-    <Fragment key={opt.value}>
-      {opt.heading ? (
-        sheet ? (
-          <p className="kanban-filter__heading">{opt.heading}</p>
-        ) : (
-          <DropdownMenuLabel className="kanban-filter__heading">{opt.heading}</DropdownMenuLabel>
-        )
-      ) : null}
-      <Row checked={f.selected.includes(opt.value)} onPick={f.pick} opt={opt} sheet={sheet} single={f.single} />
-    </Fragment>
-  ))
-  const body = rows.length > 0 ? rows : <p className="kanban-filter__empty">{f.empty}</p>
-
-  if (sheet) {
-    return (
-      <BottomSheet onOpenChange={onOpenChange} open={open}>
-        <BottomSheetTrigger asChild>{trigger}</BottomSheetTrigger>
-        <BottomSheetContent
-          className="kanban-filter__sheet"
-          description={f.single ? f.note : pickedText}
-          heading={f.heading}
-        >
-          <div className="kanban-filter__sheet-body">
-            {f.head ? <div className="kanban-filter__head">{f.head}</div> : null}
-            {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: the role is always radiogroup or group, both name themselves */}
-            <div aria-label={f.heading} className="kanban-filter__list" role={f.single ? 'radiogroup' : 'group'}>
-              {body}
-            </div>
-          </div>
-          <div className="kanban-filter__sheet-foot">
-            {f.single ? null : (
-              <Button disabled={picked === 0} onClick={f.clear} variant="ghost">
-                Clear
-              </Button>
-            )}
-            <Button className="kanban-filter__show" onClick={() => onOpenChange(false)}>
-              Show {plural(shown)}
-            </Button>
-          </div>
-        </BottomSheetContent>
-      </BottomSheet>
-    )
-  }
-
-  return (
-    <DropdownMenu onOpenChange={onOpenChange} open={open}>
-      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="start"
-        className="kanban-filter__menu"
-        data-facet={f.id}
-        data-narrow={narrow ? 'true' : undefined}
-        onOpenAutoFocus={
-          f.head
-            ? (event) => {
-                event.preventDefault()
-                headRef.current?.querySelector('input')?.focus()
-              }
-            : undefined
-        }
-      >
-        {f.head ? (
-          // biome-ignore lint/a11y/noStaticElementInteractions: a key guard around the real controls (search, match mode), not a control
-          <div
-            className="kanban-filter__head"
-            onKeyDown={(event) => {
-              // The menu would turn typing into item typeahead and swallow Tab: keep both out of the field.
-              if (event.key === 'Tab' || event.key.length === 1) event.stopPropagation()
-              else if (event.key === 'ArrowDown') {
-                event.preventDefault()
-                event.currentTarget.parentElement?.querySelector<HTMLElement>('[role^="menuitem"]')?.focus()
-              }
-            }}
-            ref={headRef}
-          >
-            {f.head}
-          </div>
-        ) : null}
-        {f.single ? (
-          <DropdownMenuRadioGroup className="kanban-filter__list" onValueChange={f.pick} value={f.selected[0]}>
-            {body}
-          </DropdownMenuRadioGroup>
-        ) : (
-          <div className="kanban-filter__list">{body}</div>
-        )}
-        {f.single ? (
-          <p className="kanban-filter__note">{f.note}</p>
-        ) : (
-          <div className="kanban-filter__foot">
-            <span className="kanban-filter__hint">{pickedText}</span>
-            <DropdownMenuItem
-              className="kanban-filter__clear"
-              disabled={picked === 0}
-              onSelect={(event) => {
-                event.preventDefault()
-                f.clear()
-              }}
-            >
-              Clear
-            </DropdownMenuItem>
-          </div>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
-/** Group by + "Show empty swimlanes": a view option, not a filter, so it has no count and no Clear. */
-function GroupMenu({
-  value,
-  onChange,
-  showEmpty,
-  onShowEmptyChange,
-  narrow,
-  sheet,
-}: GroupControl & { narrow: boolean; sheet: boolean }) {
+/**
+ * Linear's Filter menu: one button; the popover lists the facets, a facet opens its options (with a way back),
+ * and typing searches every option of every facet at once.
+ */
+function FilterMenu({ facets, active }: { facets: Facet[]; active: number }) {
   const [open, setOpen] = useState(false)
-  const grouped = value !== 'none'
-  const note = grouped
-    ? `A ${value} with no ticket in the current filter keeps its swimlane.`
-    : 'Group the board to see swimlanes.'
-  const trigger = (
-    <Button className="kanban-filter__trigger" data-active={grouped ? 'true' : undefined} size="sm" variant="ghost">
-      <Layers size={16} />
-      {grouped ? 'Group:' : 'Group'}
-      {grouped ? (
-        <span className="kanban-filter__value">{GROUPS.find((group) => group.id === value)?.label}</span>
-      ) : null}
-      <ChevronDown size={16} />
-    </Button>
-  )
-  if (sheet) {
-    return (
-      <BottomSheet onOpenChange={setOpen} open={open}>
-        <BottomSheetTrigger asChild>{trigger}</BottomSheetTrigger>
-        <BottomSheetContent className="kanban-filter__sheet" description={note} heading="Group board by">
-          <div className="kanban-filter__sheet-body">
-            <div aria-label="Group by" className="kanban-filter__list" role="radiogroup">
-              {GROUPS.map((group) => (
-                <Row
-                  checked={value === group.id}
-                  key={group.id}
-                  onPick={() => onChange(group.id)}
-                  opt={{ value: group.id, label: group.label }}
-                  sheet
-                  single
-                />
-              ))}
-            </div>
-            <Row
-              checked={showEmpty}
-              onPick={() => onShowEmptyChange(!showEmpty)}
-              opt={{ value: 'empty', label: 'Show empty swimlanes', disabled: !grouped }}
-              sheet
-            />
-          </div>
-          <div className="kanban-filter__sheet-foot">
-            <Button className="kanban-filter__show" onClick={() => setOpen(false)}>
-              Done
-            </Button>
-          </div>
-        </BottomSheetContent>
-      </BottomSheet>
-    )
+  const [facetId, setFacetId] = useState<FacetId | null>(null)
+  const [query, setQuery] = useState('')
+  const search = useRef<HTMLInputElement>(null)
+  const list = useRef<HTMLDivElement>(null)
+  const facet = facets.find((candidate) => candidate.id === facetId) ?? null
+  const q = query.trim().toLowerCase()
+  const change = (next: boolean) => {
+    setOpen(next)
+    if (!next) {
+      setFacetId(null)
+      setQuery('')
+    }
   }
-  return (
-    <DropdownMenu onOpenChange={setOpen} open={open}>
-      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        className="kanban-filter__menu"
-        data-facet="group"
-        data-narrow={narrow ? 'true' : undefined}
-      >
-        <DropdownMenuLabel className="kanban-filter__heading">Group by</DropdownMenuLabel>
-        <DropdownMenuRadioGroup onValueChange={(next) => onChange(coerceGroup(next))} value={value}>
-          {GROUPS.map((group) => (
-            <DropdownMenuRadioItem key={group.id} value={group.id}>
-              <span className="kanban-filter__name">{group.label}</span>
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuCheckboxItem
-          checked={showEmpty}
-          disabled={!grouped}
-          onCheckedChange={onShowEmptyChange}
-          onSelect={(event) => event.preventDefault()}
-        >
-          <span className="kanban-filter__name">Show empty swimlanes</span>
-        </DropdownMenuCheckboxItem>
-        <p className="kanban-filter__note">{note}</p>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
-function Row({
-  opt,
-  sheet,
-  single,
-  checked,
-  onPick,
-}: {
-  opt: Opt
-  sheet: boolean
-  single?: boolean
-  checked: boolean
-  onPick: (value: string) => void
-}) {
-  const zero = opt.count === 0 ? 'true' : undefined
-  const content = (
-    <>
-      {opt.lead}
-      <span className="kanban-filter__name">{opt.label}</span>
-      {opt.tag ? <span className="kanban-filter__tag">{opt.tag}</span> : null}
-      {opt.count === undefined ? null : <span className="kanban-filter__count">{opt.count}</span>}
-    </>
-  )
-  if (sheet) {
+  const enter = (id: FacetId | null) => {
+    setFacetId(id)
+    setQuery('')
+    requestAnimationFrame(() => search.current?.focus())
+  }
+  const onKey = (event: KeyboardEvent<HTMLElement>) => {
+    event.stopPropagation()
+    if (event.key === 'Backspace' && facet && query === '' && event.target === search.current) {
+      event.preventDefault()
+      enter(null)
+      return
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    event.preventDefault()
+    const rows = Array.from(list.current?.querySelectorAll<HTMLButtonElement>('[data-picker-row]:not(:disabled)') ?? [])
+    const at = rows.indexOf(document.activeElement as HTMLButtonElement)
+    const next = event.key === 'ArrowDown' ? Math.min(rows.length - 1, at + 1) : at - 1
+    if (next < 0) search.current?.focus()
+    else rows[next]?.focus()
+  }
+  const optionRow = (f: Facet, opt: Opt, withFacet = false) => {
+    const on = f.selected.includes(opt.value)
     return (
-      // biome-ignore lint/a11y/useAriaPropsSupportedByRole: the role is always radio or checkbox, both carry aria-checked
       <button
-        aria-checked={checked}
-        className="kanban-filter__row"
-        data-zero={zero}
+        aria-selected={on}
+        className="kb-picker__row"
+        data-checkbox={f.single ? undefined : 'true'}
+        data-picker-row=""
+        data-zero={opt.count === 0 ? 'true' : undefined}
         disabled={opt.disabled}
-        onClick={() => onPick(opt.value)}
-        role={single ? 'radio' : 'checkbox'}
+        key={`${f.id}:${opt.value}`}
+        onClick={() => f.pick(opt.value)}
+        role="option"
         type="button"
       >
-        <Check className="kanban-filter__tick" size={16} />
-        {content}
+        <span aria-hidden="true" className="kb-picker__check" data-on={on ? 'true' : undefined}>
+          {on ? <Check size={16} /> : null}
+        </span>
+        {opt.lead}
+        <span className="kb-picker__label">{opt.label}</span>
+        {withFacet ? <span className="kb-picker__description">{f.name}</span> : null}
+        {opt.count === undefined ? null : <span className="kb-picker__count">{opt.count}</span>}
       </button>
     )
   }
-  if (single) {
+  const matches = (opt: Opt) => opt.label.toLowerCase().includes(q)
+  return (
+    <Popover onOpenChange={change} open={open}>
+      <PopoverTrigger
+        render={
+          <ShadcnButton aria-label="Filter" className="kb-tool" data-active={active > 0 ? 'true' : undefined} size="sm" type="button" variant="ghost" />
+        }
+      >
+        <ListFilter size={16} />
+        <span className="kb-tool__text">Filter</span>
+        {active > 0 ? <span className="kb-tool__count">{active}</span> : null}
+      </PopoverTrigger>
+      <PopoverContent align="end" className="kb-picker kb-filter-menu" initialFocus={search} onKeyDown={onKey}>
+        <div className="kb-picker__search">
+          {facet ? (
+            <button aria-label="All filters" className="kb-filter-menu__back" onClick={() => enter(null)} type="button">
+              <ChevronLeft size={16} />
+            </button>
+          ) : (
+            <Search size={16} />
+          )}
+          <input
+            aria-label={facet ? `Filter by ${facet.name.toLowerCase()}` : 'Filter…'}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={facet ? `${facet.name}…` : 'Filter…'}
+            ref={search}
+            value={query}
+          />
+        </div>
+        {facet?.head ? <div className="kb-picker__head">{facet.head}</div> : null}
+        <div className="kb-picker__list" ref={list} role="listbox">
+          {facet ? (
+            facet.opts.filter(matches).length === 0 ? (
+              <p className="kb-picker__empty">{q ? `Nothing matches “${query.trim()}”.` : (facet.empty ?? 'Nothing to filter by yet.')}</p>
+            ) : (
+              facet.opts.filter(matches).map((opt) => optionRow(facet, opt))
+            )
+          ) : q ? (
+            facets.flatMap((f) => f.opts.filter(matches).map((opt) => optionRow(f, opt, true))).slice(0, 60)
+          ) : (
+            facets.map((f) => (
+              <button className="kb-picker__row" data-picker-row="" key={f.id} onClick={() => enter(f.id)} type="button">
+                <f.Icon className="kb-filter-menu__icon" size={16} />
+                <span className="kb-picker__label">{f.name}</span>
+                {f.value ? <span className="kb-picker__description">{f.value}</span> : null}
+                <ChevronRight className="kb-filter-menu__chevron" size={16} />
+              </button>
+            ))
+          )}
+        </div>
+        {facet?.note ? <p className="kb-picker__note">{facet.note}</p> : null}
+        {facet && !facet.single && facet.selected.length > 0 ? (
+          <div className="kb-picker__foot">
+            <span>{facet.selected.length} selected</span>
+            <button className="kb-picker__clear" onClick={facet.clear} type="button">
+              Clear
+            </button>
+          </div>
+        ) : null}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/** An applied filter as a chip: `Label` `is any of` `design +1` ×. The value reopens that facet's picker. */
+function ActiveChip({ f }: { f: Facet }) {
+  const op = f.single ? 'is' : f.selected.length > 1 ? (f.id === 'labels' ? 'has' : 'is any of') : 'is'
+  return (
+    <span className="kb-chip">
+      <span className="kb-chip__part">
+        <f.Icon size={16} />
+        {f.name}
+      </span>
+      <span className="kb-chip__op">{op}</span>
+      <FacetPicker f={f} trigger={<ShadcnButton className="kb-chip__value" size="xs" type="button" variant="ghost">{f.value}</ShadcnButton>} />
+      <button aria-label={`Remove ${f.name.toLowerCase()} filter`} className="kb-chip__remove" onClick={f.clear} type="button">
+        <X size={16} />
+      </button>
+    </span>
+  )
+}
+
+/** The search field: a magnifier, the query, and a clear button once something is typed. */
+function SearchBox({ value, onChange }: { value: string; onChange: (q: string) => void }) {
+  return (
+    <div className="kb-search">
+      <Search aria-hidden="true" size={16} />
+      <ShadcnInput
+     
+        aria-label="Search tickets by key or title"
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && value) {
+            event.stopPropagation()
+            onChange('')
+          }
+        }}
+        placeholder="Search key or title"
+        value={value}
+      />
+      {value ? (
+        <button aria-label="Clear search" className="kb-search__clear" onClick={() => onChange('')} type="button">
+          <X size={16} />
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+/** A facet's trigger and picker: name, the chosen value as a badge, and a searchable checklist with counts. */
+function FacetPicker({ f, trigger: custom }: { f: Facet; trigger?: ReactElement }) {
+  const trigger = custom ?? (
+    <ShadcnButton className="kb-facet" data-active={f.value ? 'true' : undefined} size="sm" type="button" variant="outline">
+      <f.Icon size={16} />
+      {f.name}
+      {f.value ? <ShadcnBadge className="kb-facet__value" variant="secondary">{f.value}</ShadcnBadge> : null}
+      <ChevronDown className="kb-facet__chevron" size={16} />
+    </ShadcnButton>
+  )
+  const options = f.opts.map((opt) => ({
+    value: opt.value,
+    label: opt.label,
+    icon: opt.lead,
+    count: opt.count,
+    description: opt.description,
+    disabled: opt.disabled,
+    group: opt.group,
+  }))
+  if (f.single) {
     return (
-      <DropdownMenuRadioItem data-zero={zero} disabled={opt.disabled} value={opt.value}>
-        {content}
-      </DropdownMenuRadioItem>
+      <SearchPicker
+        empty={f.empty}
+        label={f.heading}
+        note={f.note}
+        onChange={f.pick}
+        options={options}
+        trigger={trigger}
+        value={f.selected[0] ?? null}
+      />
     )
   }
   return (
-    <DropdownMenuCheckboxItem
-      checked={checked}
-      data-zero={zero}
-      onCheckedChange={() => onPick(opt.value)}
-      onSelect={(event) => event.preventDefault()}
-    >
-      {content}
-    </DropdownMenuCheckboxItem>
+    <SearchPicker
+      empty={f.empty}
+      head={f.head}
+      label={f.heading}
+      multiple
+      onChange={f.pick}
+      onClear={f.clear}
+      options={options}
+      searchPlaceholder={`Filter by ${f.name.toLowerCase()}…`}
+      trigger={trigger}
+      value={f.selected}
+    />
+  )
+}
+
+/** The glyph each grouping wears elsewhere: release milestone, project folder, parent tree. */
+function GroupIcon({ id }: { id: GroupBy }) {
+  const Icon = id === 'release' ? Milestone : id === 'project' ? Folder : id === 'parent' ? ListTree : Columns3
+  return <Icon className="kb-menu__icon" size={16} />
+}
+
+/** Display: how the board is drawn (group by, empty swimlanes) — a view option, not a filter. */
+function DisplayMenu({ value, onChange, showEmpty, onShowEmptyChange }: GroupControl) {
+  const grouped = value !== 'none'
+  return (
+    <ShadcnDropdownMenu>
+      <ShadcnDropdownMenuTrigger
+        render={<ShadcnButton aria-label="Display" className="kb-tool" data-active={grouped ? 'true' : undefined} size="sm" type="button" variant="ghost" />}
+      >
+        <SlidersHorizontal size={16} />
+        <span className="kb-tool__text">Display</span>
+      </ShadcnDropdownMenuTrigger>
+      <ShadcnDropdownMenuContent align="end" className="kb-menu">
+        <ShadcnDropdownMenuGroup>
+          <ShadcnDropdownMenuLabel>Group by</ShadcnDropdownMenuLabel>
+          <ShadcnDropdownMenuRadioGroup onValueChange={(next) => onChange(coerceGroup(next))} value={value}>
+            {GROUPS.map((group) => (
+              <ShadcnDropdownMenuRadioItem key={group.id} value={group.id}>
+                <GroupIcon id={group.id} />
+                {group.id === 'none' ? 'No grouping' : group.label}
+              </ShadcnDropdownMenuRadioItem>
+            ))}
+          </ShadcnDropdownMenuRadioGroup>
+        </ShadcnDropdownMenuGroup>
+        <ShadcnDropdownMenuSeparator />
+        <ShadcnDropdownMenuCheckboxItem checked={showEmpty} disabled={!grouped} onCheckedChange={onShowEmptyChange}>
+          Show empty swimlanes
+        </ShadcnDropdownMenuCheckboxItem>
+      </ShadcnDropdownMenuContent>
+    </ShadcnDropdownMenu>
+  )
+}
+
+/** The Save view dialog on its own, for the header's ⋯ menu. */
+export function SaveViewDialog({
+  open,
+  onOpenChange,
+  onSave,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSave: (name: string) => void
+}) {
+  return (
+    <ShadcnDialog onOpenChange={onOpenChange} open={open}>
+      <ShadcnDialogContent className="kb-dialog">
+        {open ? (
+          <SaveViewForm
+            onCancel={() => onOpenChange(false)}
+            onSave={(name) => {
+              onOpenChange(false)
+              onSave(name)
+            }}
+          />
+        ) : null}
+      </ShadcnDialogContent>
+    </ShadcnDialog>
   )
 }
 
@@ -760,27 +704,27 @@ function SaveViewForm({ onCancel, onSave }: { onCancel: () => void; onSave: (nam
   const id = useId()
   return (
     <form
+      className="kb-dialog__form"
       onSubmit={(event) => {
         event.preventDefault()
         if (name.trim()) onSave(name.trim())
       }}
     >
-      <DialogTitle>Save view</DialogTitle>
-      <DialogDescription>Saved in this browser only.</DialogDescription>
-      <div className="kanban-dialog__form">
-        <label className="kanban-field" htmlFor={id}>
-          <span className="kanban-field__label">View name</span>
-          <Input autoFocus id={id} onChange={setName} placeholder="Bugs to triage" value={name} />
-        </label>
-      </div>
-      <div className="kanban-dialog__foot">
-        <Button onClick={onCancel} type="button" variant="ghost">
+      <ShadcnDialogHeader>
+        <ShadcnDialogTitle>Save view</ShadcnDialogTitle>
+        <ShadcnDialogDescription>Saved in this browser only.</ShadcnDialogDescription>
+      </ShadcnDialogHeader>
+      <Field htmlFor={id} label="View name">
+        <ShadcnInput autoFocus id={id} onChange={(event) => setName(event.target.value)} placeholder="Bugs to triage" value={name} />
+      </Field>
+      <ShadcnDialogFooter>
+        <ShadcnButton onClick={onCancel} type="button" variant="outline">
           Cancel
-        </Button>
-        <Button disabled={!name.trim()} type="submit" variant="primary">
+        </ShadcnButton>
+        <ShadcnButton disabled={!name.trim()} type="submit">
           Save view
-        </Button>
-      </div>
+        </ShadcnButton>
+      </ShadcnDialogFooter>
     </form>
   )
 }
@@ -794,105 +738,50 @@ export type ViewTabsProps = {
   /** View id -> tickets it matches. */
   counts: Record<string, number>
   onSelect: (view: SavedView) => void
-  /** User views only, never `ALL_VIEW`. */
-  onDelete: (id: string) => void
-  layout: 'board' | 'list'
-  onLayoutChange: (layout: 'board' | 'list') => void
-  /** The pane is narrow (< ~760px): tabs, layout switch and menu get 44px targets. */
-  narrow: boolean
 }
 
-export function ViewTabs({
-  views,
-  activeId,
-  edited,
-  counts,
-  onSelect,
-  onDelete,
-  layout,
-  onLayoutChange,
-  narrow,
-}: ViewTabsProps) {
-  const { confirm, dialog } = useConfirm()
-  const root = useRef<HTMLDivElement>(null)
-  const seen = useRef(views.length)
-  const refocus = useRef(false)
-  const own = views.filter((view) => view.id !== ALL_VIEW.id)
-  /** After the dialog's own focus return (a timer), so this one wins. */
-  const focusActiveTab = () =>
-    setTimeout(() => root.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus(), 0)
-  const remove = async (view: SavedView) => {
-    const ok = await confirm({
-      title: `Delete view “${view.name}”?`,
-      description: "Saved in this browser only; this can't be undone.",
-      confirmLabel: 'Delete view',
-      tone: 'danger',
-    })
-    if (!ok) return
-    // Deleting the last one unmounts Manage views, where the dialog would return the focus.
-    refocus.current = own.length === 1
-    onDelete(view.id)
-  }
-  // A view saved from this pane becomes the active one; the Save button that opened the dialog is gone by then.
-  useEffect(() => {
-    const saved = views.length > seen.current && views[views.length - 1]?.id === activeId
-    seen.current = views.length
-    if (saved || refocus.current) focusActiveTab()
-    refocus.current = false
-  }, [views, activeId])
+/** Saved views as small pills in the header; nothing until the user has saved one. */
+export function ViewTabs({ views, activeId, edited, counts, onSelect }: ViewTabsProps) {
+  if (views.length < 2) return null
   return (
-    <div className="kanban-views" data-narrow={narrow ? 'true' : undefined} ref={root}>
-      <Tabs
-        className="kanban-views__tabs"
-        onValueChange={(id) => {
-          const view = views.find((candidate) => candidate.id === id)
-          if (view) onSelect(view)
-        }}
-        value={activeId}
-      >
-        <TabsList aria-label="Saved views" variant="line">
-          {views.map((view) => (
-            <TabsTrigger
-              icon={false}
-              key={view.id}
-              // Radix reports a change only: re-clicking the active tab is how an edited view goes back to its own filters.
-              onClick={edited && view.id === activeId ? () => onSelect(view) : undefined}
-              value={view.id}
-            >
-              {view.name}
-              <span className="kanban-views__count">{counts[view.id] ?? 0}</span>
-              {edited && view.id === activeId ? <span className="kanban-views__edited">edited</span> : null}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
-      {own.length > 0 ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <IconButton className="kanban-views__manage" label="Manage views" variant="ghost">
-              <MoreHorizontal size={16} />
-            </IconButton>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="kanban-views__menu">
-            {own.map((view) => (
-              <DropdownMenuItem key={view.id} onSelect={() => void remove(view)}>
-                <span className="kanban-views__delete">Delete view “{view.name}”…</span>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : null}
-      <SegmentedControl
-        aria-label="Layout"
-        onChange={onLayoutChange}
-        options={[
-          { value: 'board', label: 'Board', icon: <Columns3 size={16} /> },
-          { value: 'list', label: 'List', icon: <ListIcon size={16} /> },
-        ]}
-        value={layout}
-        variant="radio"
-      />
-      {dialog}
-    </div>
+    <ShadcnTabs
+      className="kb-views__tabs tw:min-w-0"
+      onValueChange={(id) => {
+        const view = views.find((candidate) => candidate.id === id)
+        if (view) onSelect(view)
+      }}
+      value={activeId}
+    >
+      <ShadcnTabsList aria-label="Saved views" className="kb-views__list">
+        {views.map((view) => (
+          <ShadcnTabsTrigger
+            key={view.id}
+            // Tabs report a change only: re-clicking the active tab is how an edited view goes back to its own filters.
+            onClick={edited && view.id === activeId ? () => onSelect(view) : undefined}
+            value={view.id}
+          >
+            {view.name}
+            <span className="kb-views__count">{counts[view.id] ?? 0}</span>
+            {edited && view.id === activeId ? <span className="kb-views__edited">Edited</span> : null}
+          </ShadcnTabsTrigger>
+        ))}
+      </ShadcnTabsList>
+    </ShadcnTabs>
+  )
+}
+
+/** Board / List, as two icon tabs. */
+export function LayoutToggle({ layout, onChange }: { layout: 'board' | 'list'; onChange: (layout: 'board' | 'list') => void }) {
+  return (
+    <ShadcnTabs className="kb-layout" onValueChange={(next) => onChange(next === 'list' ? 'list' : 'board')} value={layout}>
+      <ShadcnTabsList aria-label="Layout">
+        <ShadcnTabsTrigger aria-label="Board" title="Board" value="board">
+          <Columns3 size={16} />
+        </ShadcnTabsTrigger>
+        <ShadcnTabsTrigger aria-label="List" title="List" value="list">
+          <ListIcon size={16} />
+        </ShadcnTabsTrigger>
+      </ShadcnTabsList>
+    </ShadcnTabs>
   )
 }

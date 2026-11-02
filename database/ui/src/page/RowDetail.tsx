@@ -6,7 +6,7 @@
  * to the parent.
  */
 
-import { IconButton, JsonHighlight } from '@iii-dev/console-ui'
+import { IconButton, JsonHighlight, ShadcnBadge } from '@iii-dev/console-ui'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { Check, Copy, KeyRound } from 'lucide-react'
 import { cellText } from '../lib/grid-cursor'
@@ -32,12 +32,12 @@ export function RowDetail({ row, columns }: RowDetailProps) {
         return (
           <div key={name} className="db-field">
             <div className="db-field-head">
-              {col?.pk ? (
-                <KeyRound size={16} style={{ color: 'var(--color-accent)' }} />
-              ) : null}
+              {col?.pk ? <KeyRound size={16} className="db-col-key" aria-label="primary key" /> : null}
               <span className="db-field-name">{name}</span>
               {col?.type ? (
-                <span className="db-field-type">{col.type}</span>
+                <ShadcnBadge variant="outline" className="db-field-type">
+                  {col.type.toLowerCase()}
+                </ShadcnBadge>
               ) : null}
               <FieldCopy name={name} value={value} />
             </div>

@@ -18,7 +18,11 @@
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
-@theme {
+/* `static`: every token here reaches :root even when no utility uses it.
+   Worker sheets read them with var() (the public inventory in
+   packages/console-ui/token-names.mjs), and Tailwind would otherwise drop
+   the ones it inlines, e.g. --shadow-floating in light mode. */
+@theme static {
   --font-sans:
     "Geist", "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
@@ -81,8 +85,24 @@
 
   /* The one structural stroke the system keeps: a VERY subtle edge on the
      main workspace panels (the tab columns), so the floating panels
-     read against the canvas. Never used inside a panel. */
-  --color-edge: #18181829;
+     read against the canvas. Never used inside a panel. Light mode draws
+     every line in neutral-100 — a hairline, never a gray rule. */
+  --color-edge: var(--color-neutral-100);
+  /* The 1px ring on cards, popovers and dialogs (shadcn's
+     `ring-foreground/10`): neutral-100 in light, ink at 10% in dark. */
+  --color-card-edge: var(--color-neutral-100);
+  /* Every popover, menu and select list: a white sheet with a neutral-200
+     line in light, black with neutral-900 in dark (`bg-popover`). */
+  --color-popover-surface: var(--color-white);
+  --color-popover-edge: var(--color-neutral-200);
+  /* Every dialog (modal, confirm, picker): a white sheet with a neutral-200
+     line in light, black with neutral-900 in dark (`bg-dialog-surface`,
+     `ring-dialog-edge`). */
+  --color-dialog-surface: var(--color-white);
+  --color-dialog-edge: var(--color-neutral-200);
+  /* The resting outline of a form control (checkbox, radio). A control is
+     not a divider: it keeps a stroke you can find on the canvas. */
+  --color-control-edge: var(--color-neutral-300);
 
   /* Neutral actions and focus; semantic status colors remain distinct. */
   --color-accent: #383838;
@@ -196,8 +216,8 @@
      drops. The ingredients are theme tokens so the composed value below
      stays a single source; the dark block only re-tints them. */
   --iii-ui-lift-highlight: rgba(255, 255, 255, 0.7);
-  --iii-ui-lift-ring: rgba(24, 24, 24, 0.04);
-  --iii-ui-lift-edge: rgba(24, 24, 24, 0.1);
+  --iii-ui-lift-ring: transparent;
+  --iii-ui-lift-edge: var(--color-neutral-100);
   --iii-ui-lift-drop: rgba(24, 24, 24, 0.08);
   --shadow-lift:
     inset 0 1px 0 0 var(--iii-ui-lift-highlight),
@@ -299,6 +319,12 @@
   --color-rule-strong: transparent;
   --color-rule-focus: rgba(212, 212, 212, 0.7);
   --color-edge: rgba(255, 255, 255, 0.07);
+  --color-card-edge: color-mix(in oklab, var(--color-ink) 10%, transparent);
+  --color-popover-surface: var(--color-black);
+  --color-popover-edge: var(--color-neutral-900);
+  --color-dialog-surface: var(--color-black);
+  --color-dialog-edge: var(--color-neutral-800);
+  --color-control-edge: rgba(255, 255, 255, 0.07);
   --color-accent: #dedede;
   --color-accent-fg: #070909;
   --color-accent-hover: #f5f5f5;
@@ -563,13 +589,13 @@
 
 .configuration-surface .iii-ui-settings-list {
   border-width: 1px 0;
-  border-color: var(--color-neutral-200);
+  border-color: var(--color-neutral-100);
   border-radius: 0;
   background: transparent;
 }
 
 .configuration-surface .iii-ui-settings-row + .iii-ui-settings-row {
-  border-top-color: var(--color-neutral-200);
+  border-top-color: var(--color-neutral-100);
 }
 
 .configuration-surface .iii-ui-settings-row__inner {
@@ -658,8 +684,8 @@
   --obs-card: transparent;
   --obs-surface: var(--color-neutral-100);
   --obs-surface-strong: var(--color-neutral-200);
-  --obs-border: var(--color-neutral-200);
-  --obs-border-soft: var(--color-neutral-200);
+  --obs-border: var(--color-neutral-100);
+  --obs-border-soft: var(--color-neutral-100);
   --obs-border-strong: var(--color-neutral-300);
   --obs-accent: var(--color-neutral-900);
   --obs-accent-muted: var(--color-neutral-100);
@@ -978,10 +1004,12 @@
   font-family: var(--font-geist-mono);
 }
 
-/* ⌘K. Flat by design: a hairline border and a light scrim carry the
-   layering, no shadow. It opens with a short scale-and-fade from just above
-   its resting place; it closes instantly, because the thing you chose is
-   what should be moving then. */
+/* ⌘K. A hairline ring, a soft two-step shadow and a lightly blurred scrim
+   lift it off whatever busy pane sits behind it. Its height is fixed, so
+   the field and filter row never jump while results come and go. It
+   opens with a short scale-and-fade from just above its resting place;
+   it closes instantly, because the thing you chose is what should be
+   moving then. */
 .command-palette-card {
   animation: command-palette-enter var(--motion-duration-panel)
     var(--motion-ease-enter) both;
@@ -1320,9 +1348,9 @@
 }
 
 /* Discoverability nudge on the workspace edge add-panel zones: the `+`
-   panel sliver shakes for ~0.8s once every 10s until the user adds a panel
-   through a zone for the first time; afterwards the sliver is gone and the
-   edge stays bare until a dwell reveals the split preview (below). */
+   tab shakes for ~0.8s once every 10s until the user adds a panel through a
+   zone for the first time; afterwards the edge rests as a slim handle that
+   grows back into the tab when a mouse comes near. */
 @keyframes edge-nudge {
   0%,
   8%,
@@ -1885,27 +1913,23 @@
   }
 }
 
-/* viewport: phone chrome — 16px editor text on phones, 15px on desktop,
-   matching the conversation prose */
+/* viewport: phone chrome — the desktop composer keeps the phone's 16px text
+   on a tighter 24px line (16/24, as ChatGPT and Grok set theirs) and rests
+   at about two lines, growing as the draft does */
 @media (min-width: 640px) {
-  .composer-editor,
-  .composer-placeholder {
-    font-size: 15px;
-  }
-
   .composer-editor {
     min-height: 56px;
   }
 
   .composer-shell .composer-editor,
   .composer-shell .composer-placeholder {
-    padding: 14px 17px 10px;
-    font-size: 15px;
-    line-height: 1.7;
+    padding: 12px 16px 8px;
+    font-size: 16px;
+    line-height: 1.5;
   }
 
   .composer-shell .composer-editor {
-    min-height: 76px;
+    min-height: 60px;
   }
 
   .chat-message-action {
@@ -2004,7 +2028,7 @@
   --foreground: var(--color-ink);
   --card: var(--color-panel-raised);
   --card-foreground: var(--color-ink);
-  --popover: var(--color-panel-raised);
+  --popover: var(--color-popover-surface);
   --popover-foreground: var(--color-ink);
   --primary: var(--color-ink);
   --primary-foreground: var(--color-bg);

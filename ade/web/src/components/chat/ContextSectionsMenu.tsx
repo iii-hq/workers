@@ -157,7 +157,7 @@ export function ContextSectionsMenu({ phone }: { phone: boolean }) {
             aria-label="Sections"
             className={cn(
               uiClasses.panel,
-              'iii-ui-motion-dropdown z-50 flex w-72 max-w-[calc(100vw-1rem)] flex-col bg-panel-raised p-1.5 font-inter text-sm shadow-floating',
+              'iii-ui-motion-dropdown z-50 flex w-72 max-w-[calc(100vw-1rem)] flex-col bg-popover p-1.5 font-inter text-sm shadow-floating ring-1 ring-popover-edge',
             )}
           >
             <div className="flex items-baseline gap-2 px-2 pt-1 pb-1.5">

@@ -341,9 +341,9 @@ export function ModelsStep({
             {needsKey.map(({ choice, key }) => (
               <div
                 key={choice.providerId}
-                className="flex flex-col rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950"
+                className="flex flex-col rounded-xl border border-neutral-100 bg-white dark:border-neutral-800 dark:bg-neutral-950"
               >
-                <span className="flex h-9 items-center gap-2 border-b border-neutral-200 px-3.5 font-sans text-[13px] font-medium text-ink dark:border-neutral-800">
+                <span className="flex h-9 items-center gap-2 border-b border-neutral-100 px-3.5 font-sans text-[13px] font-medium text-ink dark:border-neutral-800">
                   <ProviderMark
                     id={choice.providerId}
                     label={choice.title}
@@ -571,7 +571,7 @@ function ProviderTile({
         'flex h-10 flex-row-reverse rounded-lg border px-3 transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)]',
         selected
           ? 'border-neutral-400 bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-900'
-          : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950',
+          : 'border-neutral-100 bg-white dark:border-neutral-800 dark:bg-neutral-950',
         !disabled &&
           !selected &&
           'hover:bg-neutral-50 dark:hover:bg-neutral-900',

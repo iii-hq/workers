@@ -1,37 +1,20 @@
 import {
-  Button,
-  Card,
-  Chip,
-  EmptyState,
   type Host,
-  IconButton,
   PageHeader,
   PageMain,
+  type PageHeaderMenuItem,
   type PageRenderProps,
   PageShell,
-  Skeleton,
-  StatusDot,
-  StatusPanel,
-  Tabs,
-  TabsList,
-  TabsTrigger,
-  uiClasses,
+  ShadcnButton,
+  ShadcnTabs,
+  ShadcnTabsList,
+  ShadcnTabsTrigger,
+  useConfirm,
 } from '@iii-dev/console-ui'
-import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
-import {
-  Bot,
-  CircleDashed,
-  Columns2,
-  CornerDownRight,
-  ListTree,
-  Maximize2,
-  MessageCircle,
-  Plus,
-  RefreshCw,
-  TriangleAlert,
-} from 'lucide-react'
-import { type DragEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Bookmark, Columns3, Layers, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import { type DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   applyRead,
   applyWrite,
@@ -51,7 +34,7 @@ import {
   type Write,
   type WriteKind,
 } from './board-state'
-import { FilterBar, ViewTabs } from './filter-bar'
+import { FilterBar, LayoutToggle, SaveViewDialog, ViewTabs } from './filter-bar'
 import {
   ALL_VIEW,
   allLabels,
@@ -69,24 +52,22 @@ import {
 } from './filters'
 import { TicketList } from './list'
 import { CreateTicketDialog } from './overlays'
+import { BoardColumnView, BoardSkeleton, COLUMNS } from './board/board-column'
+import { TicketCard } from './board/ticket-card'
+import { useBoardScroll } from './board/use-board-scroll'
 import {
-  type Column,
   type AgentProfile,
   api,
   type BoardColumn,
   type BoardData,
+  CONFIG_EVENT,
   noteOwnWrite,
   OWN_WRITES,
   PLAN_CHANGED_EVENT,
   PROJECTS_PAGE_ID,
-  PriorityChip,
-  StatusPicker,
   RELEASES_PAGE_ID,
-  StatusGlyph,
   statusLabel,
-  CONFIG_EVENT,
   subscribeChanges,
-  Pills,
   summarizeTicket,
   TICKET_PAGE_ID,
   type Ticket,
@@ -95,6 +76,12 @@ import {
 } from './shared'
 import { cellKey, DragLine, type DropTarget, SwimlaneGrid, SwimlaneSections } from './swimlanes'
 import { TicketScreen } from './ticket'
+import { Empty, Notice } from './ui/feedback'
+import { IconAction } from './ui/icon-action'
+
+/* The second header: search and Filter on the left, Display and Board/List on the right. Tailwind (`tw:`). */
+const SUBBAR =
+  'tw:flex tw:min-h-11 tw:shrink-0 tw:items-center tw:gap-1.5 tw:bg-neutral-50 tw:px-6 tw:py-1.5 tw:dark:bg-black'
 
 type DragState = { id: string; from: string; height: number }
 
@@ -162,170 +149,6 @@ type Scroll = {
   swim: { top: number; left: number }
 }
 
-type TicketCardProps = {
-  ticket: TicketSummary
-  dragging: boolean
-  changed: boolean
-  now: number
-  agent: AgentProfile | undefined
-  /** The parent's key, when the board holds the parent. */
-  parentKey: string | undefined
-  subs: { done: number; total: number } | undefined
-  /** The labels the filters ask for: they come first and show selected. */
-  highlight: string[]
-  priorities: string[]
-  columns: Column[]
-  doneStatus: string
-  canceledStatus: string | null
-  canOpenPane: boolean
-  /** A click on the card: the ticket in this pane. */
-  onOpen: (key: string) => void
-  /** The corner button: the ticket in a pane of its own. */
-  onOpenPane: (key: string) => void
-  onStatus: (ticket: TicketSummary, status: string) => void
-  onDragStart: (ticket: TicketSummary, event: DragEvent<HTMLElement>) => void
-}
-
-/** One card. Memoised: a drag over the swimlanes redraws the cells it crosses, not the thousands of cards around them. */
-const TicketCard = memo(function TicketCard({
-  ticket,
-  dragging,
-  changed,
-  now,
-  agent,
-  parentKey,
-  subs,
-  highlight,
-  priorities,
-  columns,
-  doneStatus,
-  canceledStatus,
-  canOpenPane,
-  onOpen,
-  onOpenPane,
-  onStatus,
-  onDragStart,
-}: TicketCardProps) {
-  const assignee = agent?.name ?? ticket.assignee
-  const labels = [...ticket.labels].sort((a, b) => Number(highlight.includes(b)) - Number(highlight.includes(a)))
-  const rest = labels.slice(3)
-  const rank = priorities.indexOf(ticket.priority)
-  const notable = rank > 0 && rank >= priorities.length - 2
-  // A parent in the done status with subtasks still open says so.
-  const openSubs = subs && ticket.status === doneStatus ? subs.total - subs.done : 0
-  const subsLabel = subs
-    ? `${subs.done} of ${subs.total} subtasks done${openSubs > 0 ? `; done with ${openSubs} open` : ''}`
-    : ''
-  return (
-    <Card
-      aria-label={[
-        `${ticket.key}: ${ticket.title}`,
-        parentKey ? `subtask of ${parentKey}` : '',
-        subsLabel,
-        changed ? 'changed since your last visit' : '',
-      ]
-        .filter(Boolean)
-        .join(', ')}
-      className="kanban-card"
-      data-changed={changed ? 'true' : undefined}
-      data-dragging={dragging ? 'true' : undefined}
-      data-ticket-card=""
-      data-ticket-id={ticket.id}
-      draggable
-      interactive
-      onClick={() => onOpen(ticket.key)}
-      onDragStart={(event) => onDragStart(ticket, event)}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          onOpen(ticket.key)
-        }
-      }}
-      role="button"
-      tabIndex={0}
-    >
-      {parentKey ? (
-        <span className="kanban-card__subof">
-          <CornerDownRight size={16} />
-          Subtask of <span className="kanban-card__key">{parentKey}</span>
-        </span>
-      ) : null}
-      <div className="kanban-card__head">
-        <div className="kanban-card__title">{ticket.title}</div>
-        {canOpenPane ? (
-          <IconButton
-            className="kanban-card__here"
-            label="Open in a pane"
-            onClick={(event) => {
-              event.stopPropagation()
-              onOpenPane(ticket.key)
-            }}
-            onKeyDown={(event) => event.stopPropagation()}
-            variant="ghost"
-          >
-            <Maximize2 size={16} />
-          </IconButton>
-        ) : null}
-      </div>
-      {labels.length > 0 ? (
-        <div className="kanban-card__labels">
-          {labels.slice(0, 3).map((label) => (
-            <Chip className="kanban-card__label" key={label} selected={highlight.includes(label)}>
-              {label}
-            </Chip>
-          ))}
-          {rest.length > 0 ? (
-            <Chip className="kanban-card__more" title={rest.join(', ')}>
-              +{rest.length}
-            </Chip>
-          ) : null}
-        </div>
-      ) : null}
-      <Pills pills={ticket.pills} />
-      <div className="kanban-card__foot">
-        <StatusPicker
-          canceledStatus={canceledStatus}
-          columns={columns}
-          doneStatus={doneStatus}
-          onChange={(status) => onStatus(ticket, status)}
-          status={ticket.status}
-        />
-        <span className="kanban-card__key">{ticket.key}</span>
-        {notable ? <PriorityChip priority={ticket.priority} priorities={priorities} /> : null}
-        <span className="kanban-card__spacer" />
-        {changed ? (
-          <span className="kanban-card__changed" title="Changed since your last visit">
-            <StatusDot tone="accent" />
-            {formatRelative(ticket.updated_at, now)}
-          </span>
-        ) : null}
-        {subs ? (
-          <span aria-label={subsLabel} className="kanban-card__subs" role="img">
-            <ListTree size={16} />
-            {subs.done}/{subs.total}
-            {openSubs > 0 ? <StatusDot tone="warn" /> : null}
-          </span>
-        ) : null}
-        {ticket.comment_count > 0 ? (
-          <span className="kanban-card__meta">
-            <MessageCircle size={16} />
-            {ticket.comment_count}
-          </span>
-        ) : null}
-        <span
-          aria-label={assignee ?? 'Unassigned'}
-          className={`${uiClasses.treeItemIcon} kanban-card__assignee`}
-          data-color={agent?.color ?? undefined}
-          role="img"
-          title={assignee ?? 'Unassigned'}
-        >
-          {assignee ? <Bot size={16} /> : <CircleDashed size={16} />}
-        </span>
-      </div>
-    </Card>
-  )
-})
-
 export function BoardPage({
   host,
   onRequestClose,
@@ -348,6 +171,8 @@ export function BoardPage({
     [],
   )
   const [creating, setCreating] = useState<NewTicket | null>(null)
+  const [savingView, setSavingView] = useState(false)
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const [inlineTicketId, setInlineTicketId] = useState<string | null>(null)
   const [drag, setDrag] = useState<DragState | null>(null)
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null)
@@ -355,6 +180,8 @@ export function BoardPage({
   const paneKey = paneId || tabId || 'default'
   const [activeLane, setActiveLane] = usePaneState<string>(`kanban:lane:${paneKey}`, 'backlog')
   const dragRef = useRef<DragState | null>(null)
+  // Wheel, pan and edge auto-scroll on the wide board (see use-board-scroll).
+  const { ref: boardScrollRef, edges: scrollEdges } = useBoardScroll(drag !== null)
   const dragSeq = useRef(0)
   const boardEl = useRef<HTMLElement | null>(null)
   const scrollMemo = useRef<Scroll | null>(null)
@@ -441,20 +268,21 @@ export function BoardPage({
     [tickets, doneStatus, canceledStatus],
   )
   const keyById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket.key])), [tickets])
+  const titleById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket.title])), [tickets])
   const lanes = useMemo(
     () =>
       group === 'none'
         ? []
         : buildSwimlanes({
-            by: group,
-            columns: data?.columns ?? [],
-            shownIds,
-            releases,
-            projects,
-            doneStatus,
-            canceledStatus,
-            showEmpty,
-          }),
+          by: group,
+          columns: data?.columns ?? [],
+          shownIds,
+          releases,
+          projects,
+          doneStatus,
+          canceledStatus,
+          showEmpty,
+        }),
     [group, data, shownIds, releases, projects, doneStatus, canceledStatus, showEmpty],
   )
   const laneById = useMemo(() => new Map(flattenLanes(lanes).map((lane) => [lane.id, lane])), [lanes])
@@ -727,14 +555,14 @@ export function BoardPage({
   const openInline = useCallback((key: string) => {
     const root = boardEl.current
     if (root) {
-      const swim = root.querySelector('.kanban-swimlanes, .kanban-sections')
+      const swim = root.querySelector('.kb-swimlanes, .kb-sections')
       scrollMemo.current = {
         board: root.scrollTop,
-        strip: root.querySelector('.kanban-lanes')?.scrollLeft ?? 0,
+        strip: root.querySelector('.kb-columns')?.scrollLeft ?? 0,
         lanes: Object.fromEntries(
           Array.from(root.querySelectorAll<HTMLElement>('[data-lane]'), (lane) => [
             lane.dataset.lane ?? '',
-            lane.querySelector('.kanban-lane__body')?.scrollTop ?? 0,
+            lane.querySelector('.kb-column__body')?.scrollTop ?? 0,
           ]),
         ),
         swim: { top: swim?.scrollTop ?? 0, left: swim?.scrollLeft ?? 0 },
@@ -749,13 +577,13 @@ export function BoardPage({
     if (inlineTicketId !== null || !root || !saved) return
     scrollMemo.current = null
     root.scrollTop = saved.board
-    const strip = root.querySelector('.kanban-lanes')
+    const strip = root.querySelector('.kb-columns')
     if (strip) strip.scrollLeft = saved.strip
     root.querySelectorAll<HTMLElement>('[data-lane]').forEach((lane) => {
-      const body = lane.querySelector('.kanban-lane__body')
+      const body = lane.querySelector('.kb-column__body')
       if (body) body.scrollTop = saved.lanes[lane.dataset.lane ?? ''] ?? 0
     })
-    const swim = root.querySelector('.kanban-swimlanes, .kanban-sections')
+    const swim = root.querySelector('.kb-swimlanes, .kb-sections')
     if (swim) {
       swim.scrollTop = saved.swim.top
       swim.scrollLeft = saved.swim.left
@@ -802,10 +630,10 @@ export function BoardPage({
           .then(() =>
             facet
               ? api.update(host.iii, { id, [facet.key]: facet.value, actor: 'user' }).then((updated) => {
-                  relocated = updated
-                  noteOwnWrite(updated)
-                  return move()
-                })
+                relocated = updated
+                noteOwnWrite(updated)
+                return move()
+              })
               : move(),
           )
           .then((ticket) => {
@@ -896,11 +724,11 @@ export function BoardPage({
     }
     setDropTarget((current) =>
       current &&
-      current.lane === lane &&
-      current.status === status &&
-      current.index === index &&
-      current.at === at &&
-      current.ids.join() === ids.join()
+        current.lane === lane &&
+        current.status === status &&
+        current.index === index &&
+        current.at === at &&
+        current.ids.join() === ids.join()
         ? current
         : { lane, status, index, ids, at },
     )
@@ -939,14 +767,7 @@ export function BoardPage({
     applyMove(ticket.id, status, index, facet)
   })
 
-  const deletedCount = data?.deleted_count ?? 0
 
-  // Counted from the lanes: the worker's total also holds tickets whose status is no column.
-  const headerDescription = useMemo(() => {
-    if (!data) return 'Board'
-    const base = `${tickets.length} ${tickets.length === 1 ? 'ticket' : 'tickets'} · ${data.id_prefix}`
-    return deletedCount > 0 ? `${base} · ${deletedCount} deleted kept on disk` : base
-  }, [data, tickets, deletedCount])
 
   const priorities = useMemo(() => data?.priorities ?? [], [data?.priorities])
   const dragged = useMemo(() => (drag ? tickets.find((ticket) => ticket.id === drag.id) : undefined), [drag, tickets])
@@ -959,7 +780,7 @@ export function BoardPage({
   const renderCard = useCallback(
     (ticket: TicketSummary, dragging: boolean) => (
       <TicketCard
-        agent={agents.find((a) => a.id === ticket.assignee)}
+        agents={agents}
         canOpenPane={canOpenPane}
         changed={isChangedSinceVisit(ticket, ctx)}
         doneStatus={doneStatus}
@@ -974,6 +795,7 @@ export function BoardPage({
         onStatus={changeStatus}
         // A parent the board does not hold (deleted) is not named: its key would lead nowhere.
         parentKey={ticket.parent_id ? keyById.get(ticket.parent_id) : undefined}
+        parentTitle={ticket.parent_id ? titleById.get(ticket.parent_id) : undefined}
         priorities={priorities}
         subs={subtasks.get(ticket.id)}
         ticket={ticket}
@@ -987,6 +809,7 @@ export function BoardPage({
       filters.labels,
       handleDragStart,
       keyById,
+      titleById,
       openInline,
       openTicket,
       priorities,
@@ -1075,201 +898,147 @@ export function BoardPage({
     empty: filtering ? 'No ticket here matches the filters.' : 'No tickets to group yet.',
   }
 
-  const renderLane = (column: BoardColumn, head: boolean) => {
-    const isDropping = dropTarget?.lane === null && dropTarget.status === column.id && drag !== null
-    const cards = visibleCards(column)
-    // dropTarget.index counts the visible cards without the dragged one.
-    const others = cards.filter((ticket) => ticket.id !== drag?.id)
-    return (
-      <section
-        aria-label={`${column.label}, ${laneCount(column)} ${column.tickets.length === 1 ? 'ticket' : 'tickets'}`}
-        className="kanban-lane"
-        data-drop={isDropping ? 'true' : undefined}
-        data-lane={column.id}
-        key={column.id}
-        onDragLeave={handleDragLeave}
-        onDragOver={(event) => handleDragOver(null, column.id, event)}
-        onDrop={(event) => handleDrop(null, column.id, event)}
-      >
-        {head ? (
-          <header className="kanban-lane__head">
-            <StatusGlyph canceledStatus={canceledStatus} columns={columns} doneStatus={doneStatus} status={column.id} />
-            <span className="kanban-lane__title">{column.label}</span>
-            <span className="kanban-lane__count">{laneCount(column)}</span>
-            <IconButton
-              className="kanban-lane__add"
-              label={`New ticket in ${column.label}`}
-              onClick={() => setCreating({ status: column.id })}
-              variant="ghost"
-            >
-              <Plus size={16} />
-            </IconButton>
-          </header>
-        ) : null}
-        <div className="kanban-lane__body">
-          {cards.length === 0 && !isDropping ? (
-            filtering ? (
-              <p className="kanban-lane__none">No ticket here matches the filters.</p>
-            ) : (
-              <button className="kanban-lane__empty" onClick={() => setCreating({ status: column.id })} type="button">
-                No tickets — add one
-              </button>
-            )
-          ) : null}
-          {cards.map((ticket) => (
-            <div key={ticket.id}>
-              {isDropping && dropTarget && others[dropTarget.index]?.id === ticket.id ? (
-                <div className="kanban-placeholder" style={{ height: drag?.height ?? 58 }} />
-              ) : null}
-              {renderCard(ticket, drag?.id === ticket.id)}
-            </div>
-          ))}
-          {isDropping && dropTarget && dropTarget.index >= others.length ? (
-            <div className="kanban-placeholder" style={{ height: drag?.height ?? 58 }} />
-          ) : null}
-        </div>
-      </section>
-    )
+  const renderLane = (column: BoardColumn, head: boolean) => (
+    <BoardColumnView
+      canceledStatus={canceledStatus}
+      cards={visibleCards(column)}
+      column={column}
+      columns={columns}
+      count={laneCount(column)}
+      doneStatus={doneStatus}
+      drag={drag}
+      dropTarget={dropTarget}
+      filtering={filtering}
+      head={head}
+      key={column.id}
+      onAdd={() => setCreating({ status: column.id })}
+      onDragLeave={handleDragLeave}
+      onDragOver={(event) => handleDragOver(null, column.id, event)}
+      onDrop={(event) => handleDrop(null, column.id, event)}
+      renderCard={renderCard}
+    />
+  )
+
+  // Search, Filter, Display and the layout switch: in the header when wide, on a row of their own when narrow.
+  const controls = (
+    <>
+      <FilterBar
+        agents={agents}
+        canSaveView={edited && filtering}
+        ctx={ctx}
+        filters={filters}
+        narrow={narrow}
+        onChange={setFilters}
+        onSaveView={saveView}
+        priorities={priorities}
+        projects={projects}
+        releases={releases}
+        shownCount={shown.length}
+        tickets={tickets}
+        group={
+          layout === 'board'
+            ? { value: group, onChange: setGroup, showEmpty, onShowEmptyChange: setShowEmpty }
+            : undefined
+        }
+        end={<LayoutToggle layout={layout} onChange={setLayout} />}
+      />
+    </>
+  )
+
+  // The header's ⋯ menu: what isn't used every minute. The pane's Settings joins it.
+  const removeView = async (view: SavedView) => {
+    const ok = await confirm({
+      title: 'Delete this view?',
+      description: "Saved in this browser only; this can't be undone.",
+      confirmLabel: 'Delete view',
+      tone: 'danger',
+    })
+    if (ok) deleteView(view.id)
   }
+  const headerMenu: PageHeaderMenuItem[] = [
+    { id: 'refresh', label: 'Refresh board', icon: <RefreshCw size={16} />, onSelect: () => void load() },
+    ...(views.length < 2 ? [] : views).map((view) => ({
+      id: `view:${view.id}`,
+      label: view.name,
+      checked: view.id === activeView.id,
+      icon: <Layers size={16} />,
+      onSelect: () => selectView(view),
+    })),
+    ...(edited && filtering
+      ? [{ id: 'save-view', label: 'Save filters as a view…', icon: <Bookmark size={16} />, onSelect: () => setSavingView(true) }]
+      : []),
+    ...(filtering ? [{ id: 'clear', label: 'Clear filters', icon: <X size={16} />, onSelect: () => setFilters(EMPTY_FILTERS) }] : []),
+    ...(activeView.id !== ALL_VIEW.id
+      ? [{ id: 'delete-view', label: 'Delete this view…', icon: <Trash2 size={16} />, onSelect: () => void removeView(activeView) }]
+      : []),
+  ]
 
   return (
-    <PageShell className="kanban-shell">
+    <PageShell className="kb kb-shell">
       <PageHeader
         actions={
           <>
-            <IconButton
-              className="kanban-header-action"
-              data-narrow={narrow ? 'true' : undefined}
-              label="Refresh board"
-              onClick={() => void load()}
-              variant="ghost"
-            >
-              <RefreshCw size={16} />
-            </IconButton>
             {narrow ? (
-              <IconButton
-                className="kanban-header-action"
-                data-narrow="true"
-                label={newLabel}
-                onClick={() => setCreating({ status: newStatus })}
-                variant="primary"
-              >
+              <IconAction label={newLabel} onClick={() => setCreating({ status: newStatus })} variant="default">
                 <Plus size={16} />
-              </IconButton>
+              </IconAction>
             ) : (
-              <Button onClick={() => setCreating({ status: newStatus })} variant="primary">
+              <ShadcnButton onClick={() => setCreating({ status: newStatus })} size="sm" type="button">
                 <Plus size={16} />
                 New ticket
-              </Button>
+              </ShadcnButton>
             )}
           </>
         }
-        description={headerDescription}
-        icon={<Columns2 size={16} />}
+        icon={<Columns3 size={16} />}
+        menu={headerMenu}
         onClose={onRequestClose}
         title="Kanban"
-      />
+      >
+        <ViewTabs activeId={activeView.id} counts={viewCounts} edited={edited} onSelect={selectView} views={views} />
+      </PageHeader>
       <PageMain>
         <div
-          className="kanban-board"
+          className="kb-board tw:bg-neutral-100 tw:dark:bg-black"
           data-autofocus=""
           data-narrow={narrow ? 'true' : undefined}
           ref={setBoardEl}
           tabIndex={-1}
         >
           {loadError ? (
-            <div className="kanban-pad">
-              <StatusPanel
-                action={
-                  <Button onClick={() => void load()} size={narrow ? 'lg' : 'md'} variant="pill">
-                    Retry
-                  </Button>
-                }
-                detail={loadError}
-                headline="The board could not be read"
-                icon={<TriangleAlert size={16} />}
-                role="alert"
-                variant="alert"
-              />
-            </div>
+            <Notice actionLabel="Retry" detail={loadError} onAction={() => void load()} title="The board could not be read" />
           ) : null}
 
           {notice ? (
-            <div className="kanban-pad">
-              <StatusPanel
-                action={
-                  <Button onClick={() => setActionError(null)} size={narrow ? 'lg' : 'md'} variant="pill">
-                    Dismiss
-                  </Button>
-                }
-                detail={notice.detail}
-                headline={notice.headline}
-                icon={<TriangleAlert size={16} />}
-                role="alert"
-                variant="alert"
-              />
-            </div>
+            <Notice
+              actionLabel="Dismiss"
+              detail={notice.detail}
+              onAction={() => setActionError(null)}
+              title={notice.headline}
+            />
           ) : null}
 
-          {loading && !data ? (
-            <div className="kanban-lanes">
-              {[0, 1, 2, 3, 4].map((index) => (
-                <section className="kanban-lane" key={index}>
-                  <header className="kanban-lane__head">
-                    <Skeleton className="kanban-skeleton kanban-skeleton--title" />
-                  </header>
-                  <div className="kanban-lane__body">
-                    <Skeleton className="kanban-skeleton kanban-skeleton--card" />
-                    <Skeleton className="kanban-skeleton kanban-skeleton--card" />
-                  </div>
-                </section>
-              ))}
-            </div>
-          ) : null}
+          {loading && !data ? <BoardSkeleton /> : null}
 
           {data && columns.length === 0 ? (
-            <div className="kanban-pad">
-              <EmptyState
-                action={{ label: 'New ticket', onClick: () => setCreating({ status: data.default_status }) }}
-                description="The kanban configuration declares no columns yet. Add one in settings."
-                icon={Columns2}
-                title="No columns configured"
-              />
-            </div>
+            <Empty
+              action={
+                <ShadcnButton onClick={() => setCreating({ status: data.default_status })} size="sm" type="button">
+                  <Plus size={16} />
+                  New ticket
+                </ShadcnButton>
+              }
+              description="The kanban configuration declares no columns yet. Add one in settings."
+              icon={Columns3}
+              title="No columns configured"
+            />
           ) : null}
 
           {data && columns.length > 0 ? (
             <>
-              <ViewTabs
-                activeId={activeView.id}
-                counts={viewCounts}
-                edited={edited}
-                layout={layout}
-                narrow={narrow}
-                onDelete={deleteView}
-                onLayoutChange={setLayout}
-                onSelect={selectView}
-                views={views}
-              />
-              <FilterBar
-                agents={agents}
-                canSaveView={edited && filtering}
-                ctx={ctx}
-                filters={filters}
-                narrow={narrow}
-                onChange={setFilters}
-                onSaveView={saveView}
-                priorities={priorities}
-                projects={projects}
-                releases={releases}
-                shownCount={shown.length}
-                tickets={tickets}
-                group={
-                  layout === 'board'
-                    ? { value: group, onChange: setGroup, showEmpty, onShowEmptyChange: setShowEmpty }
-                    : undefined
-                }
-              />
+              <div aria-label="Board controls" className={SUBBAR} role="toolbar">
+                {controls}
+              </div>
             </>
           ) : null}
 
@@ -1283,6 +1052,7 @@ export function BoardPage({
               labels={allLabels(tickets)}
               narrow={narrow}
               onError={setActionError}
+              onAdd={(status: string) => setCreating({ status })}
               onOpenTicket={openTicket}
               doneStatus={doneStatus}
               canceledStatus={canceledStatus}
@@ -1303,19 +1073,19 @@ export function BoardPage({
 
           {data && columns.length > 0 && layout === 'board' && narrow ? (
             <>
-              <Tabs onValueChange={setActiveLane} value={visibleLane?.id ?? columns[0].id}>
-                <TabsList className="kanban-lane-tabs">
+              <ShadcnTabs className="kb-lane-tabs" onValueChange={setActiveLane} value={visibleLane?.id ?? columns[0].id}>
+                <ShadcnTabsList variant="line">
                   {columns.map((column) => (
-                    <TabsTrigger icon={false} key={column.id} value={column.id}>
+                    <ShadcnTabsTrigger key={column.id} value={column.id}>
                       {column.label}
-                      <span className="kanban-lane__count">{laneCount(column)}</span>
-                    </TabsTrigger>
+                      <span className="kb-column__count">{laneCount(column)}</span>
+                    </ShadcnTabsTrigger>
                   ))}
-                </TabsList>
-              </Tabs>
+                </ShadcnTabsList>
+              </ShadcnTabs>
               {group !== 'none' && drag ? <DragLine message={dragMessage} /> : null}
               {group === 'none' ? (
-                <div className="kanban-lanes kanban-lanes--single">
+                <div className={`kb-columns ${COLUMNS} tw:pt-2 tw:*:max-w-none tw:*:flex-auto`} data-single="true">
                   {visibleLane ? renderLane(visibleLane, false) : null}
                 </div>
               ) : visibleLane ? (
@@ -1325,7 +1095,14 @@ export function BoardPage({
           ) : null}
 
           {data && columns.length > 0 && layout === 'board' && !narrow && group === 'none' ? (
-            <div className="kanban-lanes">{columns.map((column) => renderLane(column, true))}</div>
+            <div
+              className={`kb-columns ${COLUMNS}`}
+              data-edge-left={scrollEdges.left ? 'true' : undefined}
+              data-edge-right={scrollEdges.right ? 'true' : undefined}
+              ref={boardScrollRef}
+            >
+              {columns.map((column) => renderLane(column, true))}
+            </div>
           ) : null}
 
           {data && columns.length > 0 && layout === 'board' && !narrow && group !== 'none' ? (
@@ -1343,17 +1120,22 @@ export function BoardPage({
         </div>
       </PageMain>
 
+      <SaveViewDialog onOpenChange={setSavingView} onSave={saveView} open={savingView} />
+      {confirmDialog}
       <CreateTicketDialog
         agents={agents}
         columns={columns}
         defaultStatus={creating?.status ?? data?.default_status ?? 'backlog'}
+        doneStatus={doneStatus}
+        canceledStatus={canceledStatus}
         defaults={creating ?? undefined}
         host={host}
-        onCreated={(ticket) => {
+        onCreated={(ticket, options) => {
           setActionError(null)
           noteOwnWrite(ticket)
-          setCreating(null)
           write(summarizeTicket(ticket))
+          if (options?.keepOpen) return
+          setCreating(null)
           openTicket(ticket.key)
         }}
         onOpenChange={(open) => {

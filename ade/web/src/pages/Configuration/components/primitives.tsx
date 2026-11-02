@@ -151,8 +151,8 @@ export function SettingsList({
     <ul
       role={role}
       className={cn(
-        'min-w-0 list-none border-y border-neutral-200 dark:border-neutral-800',
-        '[&>*+*]:border-t [&>*+*]:border-neutral-200 dark:[&>*+*]:border-neutral-800',
+        'min-w-0 list-none border-y border-neutral-100 dark:border-neutral-800',
+        '[&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800',
         className,
       )}
       {...props}

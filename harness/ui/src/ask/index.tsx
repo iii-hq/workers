@@ -4,9 +4,10 @@
  * visible in the chat feed while the raw call details stay collapsed.
  *
  * The card draws the questions from the result `details` (`parseAsk`): per
- * question a fieldset with the header chip and the question, radio buttons
- * (single-select) or checkboxes (multi-select) with the description under
- * each label, and a single-line "Other" field. One Send button hands the
+ * question a fieldset with the header chip and the question, a checkbox per
+ * option (one control for both kinds: a single-select question ticks one box
+ * and clears the rest) with the description under each label, and a
+ * single-line "Other" field. One Send button hands the
  * formatted answer to the composer (`host.chat.compose`, submitted), which
  * starts the next turn.
  *
@@ -110,41 +111,6 @@ function useCurrentTurnId(host: Host, sessionId: string, askingTurnId: string) {
   return [turnId, check] as const
 }
 
-function RadioChoice({
-  name,
-  label,
-  checked,
-  describedBy,
-  onPick,
-}: {
-  name: string
-  label: string
-  checked: boolean
-  describedBy?: string
-  onPick: () => void
-}) {
-  // The shared checkbox recipe with a native radio inside: same box, focus
-  // ring and checked fill; the scoped sheet rounds it and draws the dot.
-  return (
-    <label className={`${uiClasses.checkbox} harness-ui-ask-choice harness-ui-ask-radio`}>
-      <span className={uiClasses.checkboxControl}>
-        <input
-          type="radio"
-          name={name}
-          className={uiClasses.checkboxInput}
-          checked={checked}
-          aria-describedby={describedBy}
-          onChange={(event) => {
-            if (event.currentTarget.checked) onPick()
-          }}
-        />
-        <span aria-hidden className="harness-ui-ask-dot" />
-      </span>
-      <span className={uiClasses.checkboxLabel}>{label}</span>
-    </label>
-  )
-}
-
 function QuestionFields({
   question,
   selection,
@@ -163,9 +129,11 @@ function QuestionFields({
       : selection.picked.filter((picked) => picked !== label)
     onChange({ ...selection, picked })
   }
-  // Single-select is a radio group: picking an option clears Other, and
-  // typing in Other clears the pick.
-  const pickOnly = (label: string) => onChange({ picked: [label], other: '' })
+  // Single-select ticks one box at a time: ticking an option clears the
+  // others and Other, unticking it leaves nothing picked, and typing in
+  // Other clears the pick.
+  const pickOnly = (label: string, checked: boolean) =>
+    onChange(checked ? { picked: [label], other: '' } : { ...selection, picked: [] })
   const setOther = (other: string) =>
     onChange(question.multiSelect ? { ...selection, other } : { picked: [], other })
 
@@ -175,32 +143,26 @@ function QuestionFields({
         <Chip>{question.header}</Chip>
         <span className="harness-ui-ask-question">{question.question}</span>
       </legend>
-      {question.multiSelect ? (
-        <p className="harness-ui-ask-note">Choose any that apply.</p>
-      ) : null}
+      <p className="harness-ui-ask-note">
+        {question.multiSelect ? 'Choose any that apply.' : 'Choose one.'}
+      </p>
       <div className="harness-ui-ask-options">
         {question.options.map((option, index) => {
           const checked = selection.picked.includes(option.label)
           const descriptionId = option.description ? `${baseId}-d${index}` : undefined
           return (
             <div key={option.label} className="harness-ui-ask-option">
-              {question.multiSelect ? (
-                <Checkbox
-                  className="harness-ui-ask-choice"
-                  label={option.label}
-                  checked={checked}
-                  aria-describedby={descriptionId}
-                  onChange={(event) => toggle(option.label, event.currentTarget.checked)}
-                />
-              ) : (
-                <RadioChoice
-                  name={`${baseId}-choice`}
-                  label={option.label}
-                  checked={checked}
-                  describedBy={descriptionId}
-                  onPick={() => pickOnly(option.label)}
-                />
-              )}
+              <Checkbox
+                className="harness-ui-ask-choice"
+                label={option.label}
+                checked={checked}
+                aria-describedby={descriptionId}
+                onChange={(event) =>
+                  question.multiSelect
+                    ? toggle(option.label, event.currentTarget.checked)
+                    : pickOnly(option.label, event.currentTarget.checked)
+                }
+              />
               {option.description ? (
                 <span id={descriptionId} className="harness-ui-ask-desc">
                   {option.description}

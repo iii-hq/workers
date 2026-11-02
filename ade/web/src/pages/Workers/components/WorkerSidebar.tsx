@@ -183,7 +183,7 @@ export function WorkerSidebar({
           </button>
         ) : (
           <kbd
-            className="pointer-events-none absolute right-5 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded border border-neutral-200 bg-neutral-50 px-1 font-inter text-[11px] text-neutral-400 pointer-coarse:hidden dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-500"
+            className="pointer-events-none absolute right-5 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded border border-neutral-100 bg-neutral-50 px-1 font-inter text-[11px] text-neutral-400 pointer-coarse:hidden dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-500"
             aria-hidden
           >
             /
@@ -467,11 +467,11 @@ function Pill({
       className={cn(
         'inline-flex h-6 items-center rounded-lg border px-2 font-inter text-[12px] font-medium tabular-nums',
         tone === 'default' &&
-          'border-neutral-200 bg-neutral-100 text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300',
+          'border-neutral-100 bg-neutral-100 text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300',
         // An update: the neutral chip with the version in green, so the
         // list reads calm and the new version still stands out.
         tone === 'accent' &&
-          'border-neutral-200 bg-neutral-100 text-emerald-700 dark:border-neutral-800 dark:bg-neutral-900 dark:text-emerald-400',
+          'border-neutral-100 bg-neutral-100 text-emerald-700 dark:border-neutral-800 dark:bg-neutral-900 dark:text-emerald-400',
         tone === 'alert' && 'border-alert/25 bg-alert-muted text-alert-strong',
         className,
       )}

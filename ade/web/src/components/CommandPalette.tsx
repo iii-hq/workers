@@ -59,6 +59,7 @@ import {
   recordRecent,
 } from '@/lib/palette/recents'
 import {
+  countKinds,
   type EngineSnapshot,
   filterEntries,
   groupEntries,
@@ -118,7 +119,7 @@ const KIND_ACTION: Record<PaletteKind, string> = {
 /** Flat key caps: a hairline box, no fill and no shadow, so a row's
  *  shortcut reads as a label, not a button. */
 const CAP =
-  'h-5 min-w-5 rounded-[5px] border border-neutral-200 bg-transparent px-1 font-inter text-[11px] font-medium text-neutral-500 shadow-none dark:border-neutral-700/80 dark:text-neutral-400'
+  'h-5 min-w-5 rounded-[5px] border border-neutral-100 bg-transparent px-1 font-inter text-[11px] font-medium text-neutral-500 shadow-none dark:border-neutral-700/80 dark:text-neutral-400'
 
 /** The filter row's chips: a quiet label that fills when chosen. Tab
  *  cycles them from the keyboard; the pointer picks one outright. */
@@ -128,6 +129,15 @@ const CHIP_IDLE =
   'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-white/[0.06] dark:hover:text-neutral-100'
 const CHIP_ON =
   'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+
+/** The glyph's tile: a hairline square, so rows read as a column of
+ *  objects rather than a ragged edge of bare icons. */
+const TILE =
+  'relative flex size-7 shrink-0 items-center justify-center rounded-md border transition-colors duration-[var(--motion-duration-control)]'
+const TILE_IDLE =
+  'border-neutral-100 bg-white text-neutral-500 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-neutral-400'
+const TILE_ON =
+  'border-neutral-300/80 bg-white text-neutral-900 dark:border-white/[0.14] dark:bg-white/[0.08] dark:text-neutral-100'
 
 /** One glyph per kind, for rows that bring none of their own. They echo
  *  the rest of the app: a workspace is the tab strip's window, a command
@@ -254,13 +264,13 @@ function FunctionId({
   const marker = id.indexOf('::')
   if (marker <= 0)
     return (
-      <span className="max-w-[70%] shrink-0 truncate font-mono text-sm">
+      <span className="max-w-[70%] shrink-0 truncate font-geist-mono text-[13px] font-medium tracking-[-0.02em]">
         <Highlighted text={id} ranges={ranges} />
       </span>
     )
   const owner = id.slice(0, marker + 2)
   return (
-    <span className="max-w-[70%] shrink-0 truncate font-mono text-sm">
+    <span className="max-w-[70%] shrink-0 truncate font-geist-mono text-[13px] font-medium tracking-[-0.02em]">
       <span className="text-neutral-400 dark:text-neutral-500">
         <Highlighted text={owner} ranges={ranges} />
       </span>
@@ -472,6 +482,7 @@ export function CommandPalette({
         ]
           .filter(Boolean)
           .join(' · '),
+        metaMono: true,
         keywords: [worker.status],
         run: () => onOpenWorker(worker.name),
       }))
@@ -481,6 +492,7 @@ export function CommandPalette({
         title: fn.id,
         detail: fn.description,
         meta: fn.worker,
+        metaMono: true,
         keywords: fn.worker ? [fn.worker] : undefined,
         run: () => onOpenFunction(fn.id, fn.worker),
       }))
@@ -512,10 +524,30 @@ export function CommandPalette({
         : [],
     [localEntries, engineEntries, recents, parsed, filter],
   )
+  // A typed query's top row leads on its own when the fixed group order
+  // would put a weaker group above it.
+  const best = parsed.text ? (results[0] ?? null) : null
   const groups = useMemo(
-    () => groupEntries(results, recentRows),
-    [results, recentRows],
+    () => groupEntries(results, recentRows, best),
+    [results, recentRows, best],
   )
+  // While typing, each chip says how many rows of its kind match — the
+  // functions behind their chip included — so a match the current scope
+  // hides is one Tab away, not invisible.
+  const counts = useMemo(() => {
+    if (!parsed.text || mode) return null
+    const tally = countKinds([...localEntries, ...engineEntries], parsed.text)
+    for (const entry of sourceEntries) {
+      tally.set(entry.kind, (tally.get(entry.kind) ?? 0) + 1)
+    }
+    return tally
+  }, [localEntries, engineEntries, sourceEntries, parsed, mode])
+  // Kinds with matches the current scope does not show, in chip order.
+  const hidden = FILTERS.flatMap(({ id }): Array<[PaletteKind, number]> => {
+    if (id === 'all' || parsed.kinds?.has(id)) return []
+    const count = counts?.get(id) ?? 0
+    return count > 0 ? [[id, count]] : []
+  })
   const flat = useMemo(() => groups.flatMap(([, entries]) => entries), [groups])
 
   // Rows arrive on their own schedule (sources answer late, the engine
@@ -636,7 +668,7 @@ export function CommandPalette({
   return (
     <div
       style={viewportStyle}
-      className="command-palette-scrim fixed inset-0 z-50 flex items-start justify-center bg-neutral-950/10 sm:pt-[14vh] dark:bg-black/50"
+      className="command-palette-scrim fixed inset-0 z-50 flex items-start justify-center bg-neutral-950/15 supports-backdrop-filter:backdrop-blur-[2px] sm:pt-[12vh] dark:bg-black/50"
     >
       {/* The scrim is a real button so dismissing by click is reachable
           without a mouse; the dialog below owns every other key. On a phone
@@ -653,7 +685,7 @@ export function CommandPalette({
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
-        className="command-palette-card relative flex h-full w-full min-w-0 flex-col overflow-hidden border-neutral-200 bg-white font-inter tracking-[-0.006em] antialiased sm:h-auto sm:max-h-[min(34rem,78vh)] sm:w-[min(42rem,92vw)] sm:rounded-xl sm:border dark:border-neutral-800 dark:bg-neutral-900"
+        className="command-palette-card relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-dialog-surface font-inter tracking-[-0.006em] antialiased shadow-[0_24px_56px_-12px_rgb(0_0_0/0.18),0_6px_16px_-6px_rgb(0_0_0/0.08)] ring-dialog-edge sm:h-[min(32rem,76vh)] sm:w-[min(42rem,92vw)] sm:rounded-xl sm:ring-1 dark:shadow-[0_24px_56px_-12px_rgb(0_0_0/0.6),0_6px_16px_-6px_rgb(0_0_0/0.4)]"
         onKeyDown={onKeyDown}
       >
         {/* The field: a magnifier, the mode chip when a prefix is typed, the
@@ -739,6 +771,10 @@ export function CommandPalette({
           >
             {FILTERS.map((option) => {
               const on = option.id === filter
+              const count =
+                counts && option.id !== 'all'
+                  ? (counts.get(option.id) ?? 0)
+                  : null
               return (
                 // biome-ignore lint/a11y/useSemanticElements: a native radio cannot be a styled chip the palette's own Tab handler drives
                 <button
@@ -748,9 +784,22 @@ export function CommandPalette({
                   aria-checked={on}
                   tabIndex={-1}
                   onClick={() => pickFilter(option.id)}
-                  className={`${CHIP} ${on ? CHIP_ON : CHIP_IDLE}`}
+                  className={`${CHIP} ${on ? CHIP_ON : CHIP_IDLE} ${
+                    count === 0 && !on ? 'opacity-50' : ''
+                  }`}
                 >
                   {option.label}
+                  {count ? (
+                    <span
+                      className={`ml-1.5 font-geist-mono text-[11px] tabular-nums ${
+                        on
+                          ? 'text-white/60 dark:text-neutral-900/60'
+                          : 'text-neutral-400 dark:text-neutral-500'
+                      }`}
+                    >
+                      {count > 99 ? '99+' : count}
+                    </span>
+                  ) : null}
                 </button>
               )
             })}
@@ -767,7 +816,7 @@ export function CommandPalette({
             </p>
           ) : null}
           {flat.length === 0 ? (
-            <div className="px-4 py-12 text-center">
+            <div className="flex h-full flex-col items-center justify-center px-4 pb-6 text-center">
               <p className="text-sm text-neutral-600 dark:text-neutral-300">
                 {emptyText(
                   searching,
@@ -776,8 +825,27 @@ export function CommandPalette({
                   sources.length,
                 )}
               </p>
-              {!searching && !mode ? (
-                <p className="mt-2 flex items-center justify-center gap-1.5 text-xs text-neutral-400 dark:text-neutral-500">
+              {!searching && hidden.length > 0 ? (
+                // Matches the scope hides (functions sit behind their chip)
+                // are offered outright rather than left for Tab to find.
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                  {hidden.map(([kind, count]) => (
+                    <button
+                      key={kind}
+                      type="button"
+                      tabIndex={-1}
+                      onClick={() => pickFilter(kind)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-neutral-100 px-3 text-sm text-neutral-700 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-100 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 dark:border-white/10 dark:text-neutral-300 dark:hover:bg-white/[0.06] dark:hover:text-neutral-100"
+                    >
+                      Show {count}{' '}
+                      {FILTERS.find(
+                        (option) => option.id === kind,
+                      )?.label.toLowerCase()}
+                    </button>
+                  ))}
+                </div>
+              ) : !searching && !mode ? (
+                <p className="mt-2 flex items-center justify-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
                   Try
                   <Kbd className={`${CAP} font-mono`}>&gt;</Kbd>
                   for commands or
@@ -822,14 +890,23 @@ export function CommandPalette({
                           : 'hover:bg-neutral-50 dark:hover:bg-white/[0.03]'
                       }`}
                     >
-                      <Icon
+                      <span
                         aria-hidden
-                        className={`size-4 shrink-0 ${
-                          selected
-                            ? 'text-neutral-900 dark:text-neutral-100'
-                            : 'text-neutral-400 dark:text-neutral-500'
-                        }`}
-                      />
+                        className={`${TILE} ${selected ? TILE_ON : TILE_IDLE}`}
+                      >
+                        <Icon className="size-4" />
+                        {/* A worker's status rides its tile, so the name
+                            reads uninterrupted. */}
+                        {entry.kind === 'worker' && entry.keywords?.[0] ? (
+                          <span
+                            className={`absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2 ${
+                              selected
+                                ? 'ring-neutral-100 dark:ring-neutral-800'
+                                : 'ring-white dark:ring-neutral-900'
+                            } ${statusTone(entry.keywords[0])}`}
+                          />
+                        ) : null}
+                      </span>
                       <span className="flex min-w-0 flex-1 items-baseline gap-2">
                         {entry.kind === 'function' ? (
                           <FunctionId id={entry.title} ranges={titleRanges} />
@@ -837,7 +914,7 @@ export function CommandPalette({
                           <span
                             className={`max-w-[70%] shrink-0 truncate text-base text-neutral-900 sm:text-sm dark:text-neutral-100 ${
                               entry.kind === 'worker'
-                                ? 'font-mono sm:text-[13px]'
+                                ? 'font-geist-mono font-medium tracking-[-0.02em] sm:text-[13px]'
                                 : ''
                             }`}
                           >
@@ -847,14 +924,8 @@ export function CommandPalette({
                             />
                           </span>
                         )}
-                        {entry.kind === 'worker' && entry.keywords?.[0] ? (
-                          <span
-                            aria-hidden
-                            className={`size-1.5 shrink-0 self-center rounded-full ${statusTone(entry.keywords[0])}`}
-                          />
-                        ) : null}
                         {entry.detail ? (
-                          <span className="min-w-0 truncate text-[13px] text-neutral-400 dark:text-neutral-500">
+                          <span className="min-w-0 truncate text-sm text-neutral-400 dark:text-neutral-500">
                             <Highlighted
                               text={entry.detail}
                               ranges={matchRanges(entry.detail, parsed.text)}
@@ -879,7 +950,13 @@ export function CommandPalette({
                           capClassName={CAP}
                         />
                       ) : entry.meta ? (
-                        <span className="hidden max-w-[40%] shrink-0 truncate text-xs text-neutral-400 tabular-nums sm:block dark:text-neutral-500">
+                        <span
+                          className={`hidden max-w-[40%] shrink-0 truncate text-neutral-400 tabular-nums sm:block dark:text-neutral-500 ${
+                            entry.metaMono
+                              ? 'font-geist-mono text-[12px] tracking-[-0.01em]'
+                              : 'text-xs'
+                          }`}
+                        >
                           {entry.meta}
                         </span>
                       ) : null}

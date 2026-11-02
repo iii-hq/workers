@@ -65,7 +65,7 @@ export function WorkerPill({
     <button
       type="button"
       onClick={onClick}
-      className="wk-press inline-flex h-7 items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 font-inter text-[13px] font-medium text-neutral-800 transition-[background-color,color,border-color] duration-150 ease-out outline-none hover:border-neutral-300 hover:bg-neutral-100 hover:text-neutral-950 focus-visible:ring-2 focus-visible:ring-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-200 dark:hover:border-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400"
+      className="wk-press inline-flex h-7 items-center gap-2 rounded-lg border border-neutral-100 bg-neutral-50 px-3 font-inter text-[13px] font-medium text-neutral-800 transition-[background-color,color,border-color] duration-150 ease-out outline-none hover:border-neutral-300 hover:bg-neutral-100 hover:text-neutral-950 focus-visible:ring-2 focus-visible:ring-neutral-500 dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-200 dark:hover:border-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-400"
     >
       <span
         aria-hidden

@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, Observe, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -148,7 +148,10 @@ fn register_fn<Req, Resp, F, Fut>(
     })
     .description(description)
     .request_format(schema::<Req>())
-    .response_format(schema::<Resp>());
+    .response_format(schema::<Resp>())
+    // An observer gets a copy of the input and output: a value, or a key
+    // pasted into any other field. Changes are announced by secrets::changed.
+    .observe(Observe::auto().allow(false));
     ctx.iii.register_function(id, registration);
 }
 

@@ -331,7 +331,7 @@ export function SystemPromptPicker({
           position="popper"
           sideOffset={4}
           className={cn(
-            'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-md border border-rule-2 bg-panel-raised text-ink font-inter text-sm shadow-floating',
+            'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] max-w-[var(--radix-select-content-available-width)] overflow-hidden rounded-md border border-popover-edge bg-popover text-ink font-inter text-sm shadow-floating',
           )}
         >
           <SelectPrimitive.Viewport className="p-1">

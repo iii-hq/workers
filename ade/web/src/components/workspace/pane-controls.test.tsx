@@ -39,49 +39,55 @@ describe('EdgeAddZone', () => {
     expect(markup).toContain('show Split right control')
   })
 
-  it('leaves a discovered edge bare: no frame, no glyph, no shake', () => {
+  it('always marks a discovered edge with a slim handle, asleep until a mouse is near', () => {
     const markup = renderToStaticMarkup(
       <EdgeAddZone side="right" onAdd={vi.fn()} />,
     )
 
-    expect(markup).not.toContain('lucide-plus')
-    expect(markup).not.toContain('border-edge')
+    // The handle is always drawn, so the edge is never invisible…
+    expect(markup).toContain('h-10 w-2 border border-edge')
+    // …but it rests slim and still: no tab, no shake.
+    expect(markup).not.toContain('data-awake')
     expect(markup).not.toContain('edge-nudge')
     expect(markup).not.toContain('animation-delay:-5s')
-    // The bare target carries its own focus treatment.
-    expect(markup).toContain('focus-visible:outline-accent')
-    expect(markup).not.toContain('peer-focus-visible')
+    // Near, it grows into a 20×48px `+` tab flat against the screen edge.
+    expect(markup).toContain('lucide-plus')
+    expect(markup).toContain('data-[awake]:w-5')
+    expect(markup).toContain('data-[awake]:h-12')
+    expect(markup).toContain('right-0 rounded-l-sm border-r-0')
+    // Focus wakes it too, in accent.
+    expect(markup).toContain('group-focus-visible/edge:border-accent')
   })
 
-  it('keeps the framed, shaking sliver only while discovery is active', () => {
+  it('keeps the tab out and shaking only while discovery is active', () => {
     const markup = renderToStaticMarkup(
       <EdgeAddZone side="right" nudge onAdd={vi.fn()} />,
     )
 
-    expect(markup).toContain('lucide-plus')
-    expect(markup).toContain('border-edge')
+    expect(markup).toContain('data-awake=""')
     expect(markup).toContain('edge-nudge')
     expect(markup).toContain('animation-delay:-5s')
-    expect(markup).toContain('peer-focus-visible:outline-accent')
     expect(markup).toContain('aria-hidden="true"')
   })
 
-  it('keeps the first-run sliver visible while temporarily disabling interaction', () => {
+  it('keeps the first-run tab visible while temporarily disabling interaction', () => {
     const markup = renderToStaticMarkup(
       <EdgeAddZone side="left" nudge disabled onAdd={vi.fn()} />,
     )
 
-    expect(markup).toContain('lucide-plus')
+    expect(markup).toContain('data-awake=""')
+    expect(markup).toContain('left-0 rounded-r-sm border-l-0')
     expect(markup).toContain('disabled=""')
-    expect(markup.match(/pointer-events-none/g)).toHaveLength(2)
+    expect(markup.match(/pointer-events-none/g)).toHaveLength(1)
   })
 
-  it('disables a bare edge without drawing anything', () => {
+  it('disables a discovered edge but keeps its resting handle', () => {
     const markup = renderToStaticMarkup(
       <EdgeAddZone side="left" disabled onAdd={vi.fn()} />,
     )
 
-    expect(markup).not.toContain('lucide-plus')
+    expect(markup).not.toContain('data-awake')
+    expect(markup).toContain('h-10 w-2 border border-edge')
     expect(markup).toContain('disabled=""')
     expect(markup.match(/pointer-events-none/g)).toHaveLength(1)
   })

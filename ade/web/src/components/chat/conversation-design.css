@@ -656,6 +656,12 @@
 
 .composer-shell .composer-card:focus-within {
   box-shadow:
+    inset 0 0 0 1px var(--color-neutral-200),
+    0 5px 24px -8px rgb(0 0 0 / 16%);
+}
+
+[data-theme="dark"] .composer-shell .composer-card:focus-within {
+  box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--color-ink-faint) 50%, transparent),
     0 5px 24px -8px rgb(0 0 0 / 16%);
 }
@@ -683,6 +689,20 @@
   [data-iii-ui="voice"]
   .voice-recording-bar {
   inset: 0 8px 8px;
+}
+
+/* The New chat dialog's toolbar hosts the same mic: the bar covers the row
+   inside its 12px padding, on the dialog's own surface. */
+.new-chat-dialog-toolbar [data-iii-ui="voice"] .voice-recording-bar {
+  inset: 0 12px;
+  background: var(--color-white);
+}
+
+:where([data-theme="dark"])
+  .new-chat-dialog-toolbar
+  [data-iii-ui="voice"]
+  .voice-recording-bar {
+  background: var(--color-neutral-900);
 }
 
 @container (max-width: 480px) {
@@ -716,6 +736,16 @@
   }
 }
 
+/* Starter prompts fade out under a draft rather than unmount (see Composer):
+   their row keeps its height so the centred composer never shifts. */
+.composer-suggestions {
+  transition: opacity 150ms ease-out;
+}
+
+.composer-suggestions[data-dormant] {
+  opacity: 0;
+}
+
 /* The same mounted composer moves into the reading flow after the first turn. */
 .chat-conversation-body[data-welcome] {
   justify-content: safe center;
@@ -734,7 +764,7 @@
 
 .composer-agent-trigger {
   min-height: 32px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 @container (max-width: 480px) {
@@ -743,13 +773,17 @@
     padding-block: 16px;
   }
 
-  .composer-shell .composer-desktop-toolbar {
-    row-gap: 8px;
+  /* One toolbar row at any width (Cursor's side chat, Grok's narrow
+     window): the agent picker drops to its icon, the model name truncates,
+     and attach/send never wrap below. */
+  .composer-agent-label,
+  .composer-agent-trigger > .lucide-chevron-down {
+    display: none;
   }
 
-  .composer-shell .composer-desktop-toolbar > :last-child {
-    margin-inline-start: auto;
-    max-width: 100%;
+  .composer-agent-trigger {
+    justify-content: center;
+    min-width: 32px;
   }
 }
 
@@ -760,30 +794,31 @@
 }
 
 .composer-shell[data-composer-welcome] .composer-editor {
-  min-height: 88px;
+  min-height: 72px;
 }
 
 /* A narrow pane (a side panel, a split): a compact composer, so the card
    doesn't dwarf the pane. The placeholder keeps to one line and ellipsizes
-   rather than wrapping, the welcome editor is a couple of lines tall, and
-   the starter prompts are kept for a wide pane. On
-   a pointer the text drops to 14px and the welcome sits centred; touch
-   keeps its 16px field (smaller text zooms the page on iOS) and its
-   top-aligned welcome (the keyboard takes the bottom half). */
+   rather than wrapping, the editor rests at one line and grows as you
+   type, and the starter prompts are kept for a wide pane. The text stays
+   16px (smaller text zooms the page on iOS, and reads cramped beside the
+   toolbar); on a pointer the welcome sits centred, on touch it keeps to
+   the top (the keyboard takes the bottom half). */
 @container (max-width: 480px) {
   .composer-shell .composer-card {
     border-radius: 16px;
   }
 
-  .composer-shell .composer-placeholder {
+  .composer-shell .composer-card .composer-placeholder {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .composer-shell .composer-editor,
-  .composer-shell[data-composer-welcome] .composer-editor {
-    min-height: 52px;
+  /* `.composer-card` outranks the desktop sizing in index.css, which
+     loads after this file. */
+  .composer-shell .composer-card .composer-editor {
+    min-height: 44px;
   }
 
   .composer-suggestions {
@@ -791,11 +826,10 @@
   }
 
   @media (pointer: fine) {
-    .composer-shell .composer-editor,
-    .composer-shell .composer-placeholder {
+    .composer-shell
+      .composer-card
+      :is(.composer-editor, .composer-placeholder) {
       padding: 10px 14px 6px;
-      font-size: 14px;
-      line-height: 1.6;
     }
 
     .chat-conversation-body[data-welcome] {
@@ -823,4 +857,3 @@
     );
   }
 }
-
