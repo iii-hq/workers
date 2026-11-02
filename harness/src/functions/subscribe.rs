@@ -1155,6 +1155,7 @@ async fn authorize_conditions(
     for condition in conditions {
         validate_call_target(&condition.function_id, policy)
             .map_err(HarnessError::InvalidRequest)?;
+        check_condition_config(condition.config.as_ref())?;
         let arguments = json!({
             "event": null,
             "condition_config": condition.config.clone().unwrap_or(Value::Null),
@@ -1166,6 +1167,22 @@ async fn authorize_conditions(
             .map_err(HarnessError::InvalidRequest)?;
     }
     Ok(())
+}
+
+/// `config` is handed to the condition AS its `condition_config`, so a config
+/// whose only key is `condition_config` reaches the function nested one level
+/// too deep and fails every fire. Extra keys mean the flat fields are there too.
+fn check_condition_config(config: Option<&Value>) -> Result<(), HarnessError> {
+    match config.and_then(Value::as_object) {
+        Some(map) if map.len() == 1 && map.contains_key("condition_config") => {
+            Err(HarnessError::InvalidRequest(
+                "conditions[].config is the condition's condition_config itself; pass its \
+                 fields (e.g. id, expect) directly, not wrapped in condition_config"
+                    .into(),
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// A call binding's shorthand `metadata` takes only
@@ -1785,6 +1802,26 @@ fn error_result(msg: String) -> ResultData {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// `conditions[].config` IS the condition's `condition_config`; wrapping it
+    /// once more made a barrier fail every fire with "missing field `id`".
+    /// Only the wrapped-only shape is refused: extra flat keys still work.
+    #[test]
+    fn a_condition_config_wrapped_in_condition_config_is_refused() {
+        let wrapped = json!({ "condition_config": { "id": "b", "expect": ["done-00"] } });
+        match check_condition_config(Some(&wrapped)) {
+            Err(HarnessError::InvalidRequest(msg)) => {
+                assert!(msg.contains("not wrapped in condition_config"), "{msg}")
+            }
+            other => panic!("wrapped-only config accepted: {other:?}"),
+        }
+        let flat = json!({ "id": "b", "expect": ["done-00"] });
+        assert!(check_condition_config(Some(&flat)).is_ok());
+        let flat_plus =
+            json!({ "id": "b", "expect": ["done-00"], "condition_config": { "id": "b" } });
+        assert!(check_condition_config(Some(&flat_plus)).is_ok());
+        assert!(check_condition_config(None).is_ok());
+    }
 
     /// An ordinary delivery trigger rides the worker channel with both
     /// namespace fields unset. The SDK then stamps this worker's namespace on
