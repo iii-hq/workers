@@ -288,12 +288,18 @@ proxies `/ws` to the iii engine. The browser only ever talks to one origin.
 
 ## Configuration
 
-Console registers a `console` entry with the central `configuration` worker.
-Its `http_port` value is authoritative after first registration: Console reads
-it before binding, watches `configuration:updated`, and moves the listener live
-when the port changes. The replacement port is bound and started before the old
-listener is gracefully drained; a failed bind keeps the previous listener and
-port active.
+Console registers its own entry with the central `configuration` worker. The
+entry is named by `III_CONFIG_NAME` when a supervisor sets it, else `console`.
+Under Compose that is `<namespace>-<container>` (or the container's
+`config_name`), so the `ade` container in the `default` namespace owns
+`default-ade`; a direct run owns `console`.
+
+The entry's `http_port` value is authoritative after first registration:
+Console reads it before binding, observes `configuration::on-updated` with
+filters on `input.id` (its entry) and `input.event_type`
+(`configuration:updated`), and moves the listener live when the port changes.
+The replacement port is bound and started before the old listener is
+gracefully drained; a failed bind keeps the previous listener and port active.
 
 The local `config.yaml` is a first-registration seed and a fallback for direct
 runs where the configuration worker is unavailable:
@@ -308,9 +314,9 @@ data_dir: data/ade    # ephemeral per-instance state: the workspace layout (defa
 | Key | Default | Description |
 |---|---|---|
 | `http_host` | `0.0.0.0` | HTTP bind address; set `127.0.0.1` for local access only. Applied at startup |
-| `http_port` | `3113` | Initial TCP port seed for `/`, `/assets/*`, and `/ws`; the stored `console.http_port` wins thereafter |
+| `http_port` | `3113` | Initial TCP port seed for `/`, `/assets/*`, and `/ws`; the entry's stored `http_port` wins thereafter |
 | `injectable_ui` | `true` | When `false`, skips the `console::ui::asset` and `console::ui::on-assets-changed` functions, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
-| `data_dir` | `data/ade` | Initial seed for the directory holding ephemeral per-instance state — the workspace tabs/panes layout (`workspace.json`). Relative paths resolve against `III_COMPOSE_DIR` (or the process directory outside Compose); absolute and `~/` paths keep their meaning. The stored `console.data_dir` wins thereafter |
+| `data_dir` | `data/ade` | Initial seed for the directory holding ephemeral per-instance state — the workspace tabs/panes layout (`workspace.json`). Relative paths resolve against `III_COMPOSE_DIR` (or the process directory outside Compose); absolute and `~/` paths keep their meaning. The entry's stored `data_dir` wins thereafter |
 
 The configuration entry also stores UI preferences and
 `injectableUi.disabledWorkers`. Port, `data_dir` and per-worker UI changes apply
