@@ -49,6 +49,15 @@ def test_malformed_range_is_rejected(tmp_path, bad):
     assert any("iii_engine_version must be a semver range" in e for e in errors)
 
 
+@pytest.mark.parametrize("bad", [
+    ">=0.2٦.0",  # an Arabic-Indic digit after a leading ASCII one
+    ">=0.26.0\x1c<0.28.0",  # a separator Python's Unicode \s would accept
+    ">=0.26.0 <0.28.0",  # no-break space
+])
+def test_non_ascii_range_is_rejected(bad):
+    assert not _lib.III_ENGINE_VERSION_RE.fullmatch(bad)
+
+
 def test_non_string_range_is_rejected(tmp_path):
     # YAML reads an unquoted 0.26 as a float.
     errors = validation_errors(tmp_path, "iii_engine_version: 0.26")

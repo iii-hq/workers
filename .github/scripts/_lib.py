@@ -208,7 +208,9 @@ def resolve_release_version(current: str, kind: str, suffix: str, target: str = 
 # No prerelease/build, `v` prefix, wildcards or hyphen ranges.
 _COMPARATOR = r"(?:>=|<=|>|<|=|\^|~)?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
 _COMPARATOR_SET = rf"{_COMPARATOR}(?:\s+{_COMPARATOR})*"
-III_ENGINE_VERSION_RE = re.compile(rf"{_COMPARATOR_SET}(?:\s*\|\|\s*{_COMPARATOR_SET})*")
+III_ENGINE_VERSION_RE = re.compile(
+    rf"{_COMPARATOR_SET}(?:\s*\|\|\s*{_COMPARATOR_SET})*", re.ASCII
+)
 
 
 def parse_semver(v: str) -> SemverKey:
