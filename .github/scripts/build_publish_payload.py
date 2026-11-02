@@ -344,7 +344,8 @@ def build_payload(
     if (kind not in expected_kind) if isinstance(expected_kind, set) else (kind != expected_kind):
         raise ValueError("prepared artifacts differ from the public deploy type")
     payload: dict[str, Any] = {
-        **registry_projection,
+        # Release Control strips skills; the Registry publish schema has no such field.
+        **{k: v for k, v in registry_projection.items() if k != "skills"},
         # The Registry nullable-config rollout requires an explicit key while
         # treating an empty public default as absent.
         "config": config or None,

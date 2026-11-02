@@ -204,7 +204,7 @@ def resolve_release_version(current: str, kind: str, suffix: str, target: str = 
 
 
 # The engine version a worker needs: MAJOR.MINOR.PATCH only, no `v`, prerelease or range.
-MIN_III_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+MIN_III_VERSION_RE = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
 
 
 def parse_semver(v: str) -> SemverKey:

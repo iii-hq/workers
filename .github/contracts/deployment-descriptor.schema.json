@@ -95,7 +95,7 @@
         "config": {"type": ["object", "null"]},
         "experimental": {"type": "boolean"},
         "readme": {"type": "string"},
-        "min_iii_version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"},
+        "min_iii_version": {"type": "string", "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"},
         "skills": {
           "type": "object",
           "propertyNames": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.md$"},

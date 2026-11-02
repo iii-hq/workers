@@ -33,8 +33,8 @@ the public manifest. Fixtures use private `publish: false` and are never
 deployment targets.
 
 Set `min_iii_version: 0.26.0` (`MAJOR.MINOR.PATCH`, no `v`, prerelease or
-range) in the public manifest when the worker needs a newer engine than the
-Registry assumes; CI rejects any other shape.
+range) in the public manifest of every worker built on the 0.26 SDK; CI rejects
+any other shape.
 
 Never put API keys, tokens, `III_*` connection settings, or mutable external
 references in public defaults; the compiler rejects them before producing the

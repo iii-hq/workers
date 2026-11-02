@@ -209,7 +209,16 @@ impl RegistryCell {
         Fut: std::future::Future<Output = Option<String>>,
     {
         let need_fetch = {
-            let st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            // A D521 means the engine may have been upgraded since the read.
+            if st
+                .client
+                .as_ref()
+                .is_some_and(|(_, _, r)| r.take_incompatible())
+            {
+                st.version = None;
+                st.failed_at = None;
+            }
             st.version.is_none()
                 && st
                     .failed_at
@@ -352,8 +361,8 @@ impl Ctx {
     fn check_kit_updates(&self, kit: String) {
         let ctx = self.clone();
         tokio::spawn(async move {
-            let (_cfg, env) = ctx.env();
-            let reg = ctx.registry(&_cfg).await;
+            let (cfg, env) = ctx.env();
+            let reg = ctx.registry(&cfg).await;
             match service::check_updates(&env, reg.as_ref(), Some(&kit)).await {
                 Ok((_, true)) => ctx.emit(json!({ "op": "updates", "kit": kit })).await,
                 Ok(_) => {}
@@ -525,8 +534,8 @@ pub fn register(
         RegisterFunction::new_async(move |req: CheckUpdatesInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env) = ctx.env();
-                let reg = ctx.registry(&_cfg).await;
+                let (cfg, env) = ctx.env();
+                let reg = ctx.registry(&cfg).await;
                 let (cache, changed) =
                     service::check_updates(&env, reg.as_ref(), req.kit.as_deref())
                         .await
@@ -567,8 +576,8 @@ pub fn register(
         RegisterFunction::new_async(move |req: GetInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env) = ctx.env();
-                let reg = ctx.registry(&_cfg).await;
+                let (cfg, env) = ctx.env();
+                let reg = ctx.registry(&cfg).await;
                 service::get(&env, reg.as_ref(), &req.kit, req.registry.unwrap_or(false))
                     .await
                     .map_err(Error::Handler)
@@ -721,8 +730,8 @@ pub fn register(
         RegisterFunction::new_async(move |req: DiffInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env) = ctx.env();
-                let reg = ctx.registry(&_cfg).await;
+                let (cfg, env) = ctx.env();
+                let reg = ctx.registry(&cfg).await;
                 service::file_sides(&env, reg.as_ref(), &req.kit, &req.path)
                     .await
                     .map_err(Error::Handler)
@@ -739,8 +748,8 @@ pub fn register(
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(15)).await;
         loop {
-            let (_cfg, env) = c.env();
-            let reg = c.registry(&_cfg).await;
+            let (cfg, env) = c.env();
+            let reg = c.registry(&cfg).await;
             if env.read_lock().map(|l| !l.kits.is_empty()).unwrap_or(false) {
                 match service::check_updates(&env, reg.as_ref(), None).await {
                     Ok((_, true)) => c.emit(json!({ "op": "updates" })).await,
@@ -776,6 +785,7 @@ fn updates_output(cache: &service::UpdatesCache) -> CheckUpdatesOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kits::registry::KitRegistry;
     use crate::kits::service::{FileSides, KitInfo, KitsListing};
 
     #[tokio::test]
@@ -796,6 +806,37 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &ok), "client rebuilt with the version");
         assert_eq!(ok.iii_version(), Some("0.26.0"));
         assert_eq!(first.iii_version(), None);
+    }
+
+    #[tokio::test]
+    async fn registry_cell_rereads_the_version_after_d521() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "error": "needs 0.26.0", "code": "incompatible_engine"
+            })))
+            .mount(&server)
+            .await;
+        let cell = RegistryCell::default();
+        let cfg = SkillsConfig {
+            registry_url: server.uri(),
+            ..Default::default()
+        };
+        let old = cell
+            .get_with(&cfg, || async { Some("0.25.1".to_string()) })
+            .await;
+        assert!(old
+            .detail("a/k", "latest")
+            .await
+            .unwrap_err()
+            .starts_with("D521"));
+        let new = cell
+            .get_with(&cfg, || async { Some("0.26.0".to_string()) })
+            .await;
+        assert_eq!(new.iii_version(), Some("0.26.0"));
     }
 
     /// The interface boot smoke rejects the permissive `AnyValue` schema an

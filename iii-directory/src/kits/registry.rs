@@ -345,6 +345,8 @@ pub struct HttpKitRegistry {
     timeout_ms: u64,
     blobs: Mutex<HashMap<String, String>>,
     iii_version: Option<String>,
+    /// Set when the registry answered D521, so the holder re-reads the engine version.
+    incompatible: std::sync::atomic::AtomicBool,
 }
 
 impl HttpKitRegistry {
@@ -354,7 +356,23 @@ impl HttpKitRegistry {
             base: base.trim_end_matches('/').to_string(),
             timeout_ms,
             blobs: Mutex::new(HashMap::new()),
+            incompatible: Default::default(),
         }
+    }
+
+    /// Whether a D521 came back since the last call; clears the mark.
+    pub fn take_incompatible(&self) -> bool {
+        self.incompatible
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    async fn failure(&self, response: reqwest::Response) -> String {
+        let err = registry_failure(response).await;
+        if err.starts_with("D521") {
+            self.incompatible
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        err
     }
 
     #[cfg(test)]
@@ -381,7 +399,7 @@ impl HttpKitRegistry {
             return Ok(None);
         }
         if !response.status().is_success() {
-            return Err(registry_failure(response).await);
+            return Err(self.failure(response).await);
         }
         Ok(Some(response))
     }
@@ -529,7 +547,7 @@ impl KitRegistry for HttpKitRegistry {
             .await
             .map_err(|_| unreachable_registry())?;
         if !response.status().is_success() {
-            return Err(registry_failure(response).await);
+            return Err(self.failure(response).await);
         }
         let body: UpdatesEnvelope = response
             .json()
@@ -749,6 +767,8 @@ mod tests {
         };
         let err = reg.updates(&[q]).await.unwrap_err();
         assert!(err.starts_with(want), "{err}");
+        assert!(reg.take_incompatible());
+        assert!(!reg.take_incompatible());
     }
 
     #[tokio::test]

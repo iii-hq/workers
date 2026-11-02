@@ -47,6 +47,12 @@ def test_prerelease_min_iii_version_is_rejected(tmp_path):
     assert any("min_iii_version must be MAJOR.MINOR.PATCH" in e for e in errors)
 
 
+@pytest.mark.parametrize("bad", ['"0.26.0\\n"', '"01.2.3"'])
+def test_trailing_newline_and_leading_zero_are_rejected(tmp_path, bad):
+    errors = validation_errors(tmp_path, f"min_iii_version: {bad}")
+    assert any("min_iii_version must be MAJOR.MINOR.PATCH" in e for e in errors)
+
+
 def test_non_string_min_iii_version_is_rejected(tmp_path):
     # YAML reads an unquoted 0.26 as a float.
     assert validation_errors(tmp_path, "min_iii_version: 0.26")
@@ -81,3 +87,4 @@ def test_build_payload_accepts_min_iii_version():
         artifacts={"kind": "rust-binary", "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/s.tgz", "sha256": "b" * 64}}},
     )
     assert payload["min_iii_version"] == "0.26.0"
+    assert "skills" not in payload
