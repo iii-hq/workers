@@ -241,7 +241,7 @@ fn frame_match() -> Match {
 /// Register the event functions. The frame function's match hook is set by
 /// id first, so it files every observer.
 pub fn register_event_functions(iii: &IIIClient) {
-    iii.on_observer_match_for(ON_FRAME_EVENT_FN, frame_match());
+    iii.on_observation_match_for(ON_FRAME_EVENT_FN, frame_match());
     for kind in EventKind::all() {
         iii.register_function(kind.function_id(), kind.registration());
         tracing::debug!(

@@ -14,9 +14,8 @@
 //! Each fire of a job calls the function once ([`OnTickCaller`]); iii
 //! delivers the tick to the matched observers whose filters accept it. The
 //! handler returns the tick it is called with, so observers observe the tick.
-//! The function is private: only this worker calls it. It registers as a
-//! standby, so a second instance takes over its observers when the first
-//! one leaves, and every expression fires once.
+//! The function is private: only this worker calls it. It has one host per
+//! namespace, so every expression fires once.
 
 use std::sync::Arc;
 
@@ -77,7 +76,7 @@ pub fn register(iii: &IIIClient, scheduler: Arc<Scheduler>) -> FunctionRef {
     iii.on_observer_added_for(ON_TICK_FN, hooks.clone());
     iii.on_observer_removed_for(ON_TICK_FN, hooks);
     // Each tick goes to the observers of its expression.
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         ON_TICK_FN,
         Match::predicate(|obs, call| same_expression(obs.args_value(), &call.input)),
     );
@@ -87,8 +86,7 @@ pub fn register(iii: &IIIClient, scheduler: Arc<Scheduler>) -> FunctionRef {
         RegisterFunction::new(on_tick)
             .description(ON_TICK_DESCRIPTION)
             .args_format::<CronArgs>()
-            .private()
-            .standby(),
+            .private(),
     )
 }
 
@@ -96,7 +94,7 @@ pub fn register(iii: &IIIClient, scheduler: Arc<Scheduler>) -> FunctionRef {
 pub fn clear_hooks(iii: &IIIClient) {
     iii.clear_observer_added_for(ON_TICK_FN);
     iii.clear_observer_removed_for(ON_TICK_FN);
-    iii.clear_observer_match_for(ON_TICK_FN);
+    iii.clear_observation_match_for(ON_TICK_FN);
 }
 
 /// The function's handler: the tick it is called with is what observers

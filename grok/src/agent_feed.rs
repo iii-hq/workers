@@ -272,7 +272,7 @@ impl Feed {
                 feed.release(obs.id());
             }
         });
-        iii.on_observer_match_for(
+        iii.on_observation_match_for(
             &self.id,
             Match::keys(
                 |obs| session_key(obs.args_value()).into(),

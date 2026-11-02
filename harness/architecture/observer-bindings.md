@@ -52,7 +52,7 @@ It is not private, because a private function cannot be an observer's target.
 It takes a call in two shapes. From iii's delivery it gets the `Observed`
 envelope and reads the event from its `output` (for an event source, the
 event itself), falling back to `input` when the output was not captured. A
-source that delivers itself (an `onObserverDeliver` hook: `kanban::on-change`,
+source that delivers itself (an `onObservationDeliver` hook: `kanban::on-change`,
 `stories::on-changed`) calls through the observer, and the payload it sends is
 the event, without the engine's `_caller_worker_id` stamp. Both calls carry the
 observer's metadata sidecar, whose `__binding` names the binding; an envelope

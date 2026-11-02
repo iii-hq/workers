@@ -4,7 +4,7 @@
 //! It receives a call in one of two shapes. iii's delivery hands it the
 //! `Observed` envelope of each matching call, and the event is the call's
 //! `output` (for an event source, the event itself). A source that delivers
-//! itself (an `onObserverDeliver` hook: `kanban::on-change`,
+//! itself (an `onObservationDeliver` hook: `kanban::on-change`,
 //! `stories::on-changed`, ...) calls through the observer, and that call's
 //! payload, as the source sent it, is the event (spec §4.6). The observer's
 //! metadata arrives as the call's metadata sidecar in both shapes and holds a

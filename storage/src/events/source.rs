@@ -3,8 +3,8 @@
 //!
 //! Each observer names one bucket in its args. `onObserverAdded` admits it
 //! only when the bucket's notifications source is wired up (`CONFIG_ERROR`
-//! otherwise), `onObserverMatch` files it under its bucket, and
-//! `onObserverDeliver` calls the target of every matching observer whose
+//! otherwise), `onObservationMatch` files it under its bucket, and
+//! `onObservationDeliver` calls the target of every matching observer whose
 //! filters match the event, each bounded by its `handler_timeout_ms`, and
 //! answers `{ acked }`: true when every target returned `null` or
 //! `{ ack: true }`. The notifications source acks the upstream message on
@@ -86,7 +86,7 @@ pub fn register(iii: &IIIClient, wired_buckets: WiredBuckets, reconfigure_gate: 
             let (wired, gate) = (wired.clone(), gate.clone());
             async move { admit(&obs, &wired, &gate).await }
         });
-        iii.on_observer_match_for(
+        iii.on_observation_match_for(
             id,
             Match::keys(
                 |obs| obs.args_value()["bucket"].as_str().into(),
@@ -94,7 +94,7 @@ pub fn register(iii: &IIIClient, wired_buckets: WiredBuckets, reconfigure_gate: 
             ),
         );
         let engine = iii.clone();
-        iii.on_observer_deliver_for(id, move |call: Call, observers: Vec<Observer>| {
+        iii.on_observation_deliver_for(id, move |call: Call, observers: Vec<Observer>| {
             let engine = engine.clone();
             async move { Ok::<Value, Error>(deliver(&engine, &call, observers).await) }
         });
@@ -175,7 +175,7 @@ pub fn revalidate_observers(iii: &IIIClient, sourced: &HashSet<String>) {
     }
 }
 
-/// `onObserverDeliver`: calls the target of every matching observer whose
+/// `onObservationDeliver`: calls the target of every matching observer whose
 /// filters match, concurrently, and answers whether all of them acked.
 async fn deliver(iii: &IIIClient, call: &Call, observers: Vec<Observer>) -> Value {
     let deliveries = observers

@@ -35,7 +35,7 @@ const iii = registerWorker(import.meta.env.VITE_III_WS_URL) // ws://localhost:31
 
 `registerWorker(address, options?)` is the sole top-level function; everything else hangs off
 the returned `ISdk` — `registerFunction`, `call`, `observe`, `onObserverAdded`,
-`onObserverRemoved`, `onObserverMatch`, `onObserverDeliver`, `observers`, `isObserved`,
+`onObserverRemoved`, `onObservationMatch`, `onObservationDeliver`, `observers`, `isObserved`,
 `currentInvocation`, `withInvocation`, `addConnectionStateListener`, `getFatalError`,
 `shutdown`. Do not destructure these as top-level imports; they are not exported that way.
 The package root also exports `CallAction`, `ObserveRejection`, `EngineSources` and
@@ -145,8 +145,8 @@ worker decides what observing it means with four hooks, each overriding a defaul
 | --- | --- |
 | `onObserverAdded(obs)` | accept the observer; throw `ObserveRejection` to refuse it |
 | `onObserverRemoved(obs)` | stop delivering to it and forget it |
-| `onObserverMatch(obs, call)` | every observer wants every call |
-| `onObserverDeliver(call, observers)` | run every matching observer whose filters match; return the handler's value |
+| `onObservationMatch(obs, call)` | every observer wants every call |
+| `onObservationDeliver(call, observers)` | run every matching observer whose filters match; return the handler's value |
 
 ```ts
 import { CallAction, ObserveRejection } from 'iii-browser-sdk'
@@ -168,12 +168,12 @@ iii
     )
   })
   .onObserverRemoved((obs) => clicks.release(obs.args.selector as string))
-  .onObserverMatch((obs, call) => obs.args.selector === call.input.selector)
+  .onObservationMatch((obs, call) => obs.args.selector === call.input.selector)
 ```
 
 With many observers, match by keys (`{ observer: (obs) => key, call: (call) => key }`): the SDK
 keeps an index, one lookup per key. `iii.isObserved(id, { input })` says whether a call would
-reach anyone, so a source skips building an event nobody receives. `onObserverDeliver` delivers
+reach anyone, so a source skips building an event nobody receives. `onObservationDeliver` delivers
 each call itself through `iii.call({ observer, payload })` and returns what the caller gets back;
 a call through an observer belongs there. To send one observer its current state, call the
 function with `metadata: { for_observer: obs.id }` once `obs.accepted()` resolves (catch the

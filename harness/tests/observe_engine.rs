@@ -353,7 +353,7 @@ async fn event_sources(engine: &Engine) -> IIIClient {
         RegisterFunction::new(|event: Value| Ok::<Value, iii_sdk::Error>(event)).private(),
     );
     let client = source.clone();
-    source.on_observer_deliver_for(
+    source.on_observation_deliver_for(
         "kanban::on-change",
         move |call: Call, observers: Vec<Observer>| {
             let iii = client.clone();

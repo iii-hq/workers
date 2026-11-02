@@ -6,7 +6,7 @@
  * its handler returns the frame. A consumer observes a feed with args
  * `{ session_id }` and receives every frame of that session:
  * `{ session_id, event_id, seq, epoch, source, event }`. iii delivers each
- * frame to the observers filed under its session id (`onObserverMatch` by
+ * frame to the observers filed under its session id (`onObservationMatch` by
  * keys); a frame of a session nobody observes is not sent.
  *
  * - `seq` is contiguous per (feed, session_id, epoch) from 0; each feed keeps
@@ -159,7 +159,7 @@ export function createFeed(
         );
       }
     })
-    .onObserverMatch({
+    .onObservationMatch({
       observer: (obs) => String((obs.args as FeedArgs).session_id),
       call: (call) => call.input.session_id,
     });

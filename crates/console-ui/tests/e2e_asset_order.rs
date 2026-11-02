@@ -113,13 +113,13 @@ fn console(namespace: &str, prefix: &str) -> Console {
     });
     // A content fetch is a call for one asset observer and reaches it alone;
     // a call that names no observer reaches none.
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         ASSET_FN,
         Match::predicate(|obs, call| for_observer(call) == Some(obs.id())),
     );
     // The target receives `{ path }`; the caller gets the target's answer.
     let (record, deliverer) = (deliveries.clone(), iii.clone());
-    iii.on_observer_deliver_for(ASSET_FN, move |call: Call, observers: Vec<Observer>| {
+    iii.on_observation_deliver_for(ASSET_FN, move |call: Call, observers: Vec<Observer>| {
         let (record, iii) = (record.clone(), deliverer.clone());
         async move {
             record.lock().unwrap().push(Delivery {

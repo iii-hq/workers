@@ -491,7 +491,7 @@ async fn the_envelope_of_a_created_observer_names_the_bare_function() {
 }
 
 /// A call through an observer the connection created (another worker's
-/// `onObserverDeliver` calling through it) carries the host's payload, which
+/// `onObservationDeliver` calling through it) carries the host's payload, which
 /// reaches the target as the host sent it, whatever fields it shares with an
 /// envelope.
 #[tokio::test]

@@ -138,7 +138,7 @@ export function createFeed(
         );
       }
     })
-    .onObserverMatch({
+    .onObservationMatch({
       observer: (obs) => String((obs.args as FeedArgs).session_id),
       call: (call) => call.input.session_id,
     });

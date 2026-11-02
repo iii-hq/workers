@@ -866,7 +866,7 @@ pub fn register_changed(iii: &IIIClient, resolver: ResolverCell) {
     let keys = source.clone();
     iii.on_observer_added_for(ON_CHANGED_FN, source.clone())
         .on_observer_removed_for(ON_CHANGED_FN, source)
-        .on_observer_match_for(
+        .on_observation_match_for(
             ON_CHANGED_FN,
             Match::keys(
                 move |obs| Keys::from(keys.key_of(obs.id())),

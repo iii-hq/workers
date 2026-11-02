@@ -70,11 +70,11 @@ pub fn register(iii: &IIIClient, subscribers: Subscribers) -> FunctionRef {
     let observers = OnMessageObservers::new(subscribers);
     iii.on_observer_added_for(ON_MESSAGE_FN, observers.clone())
         .on_observer_removed_for(ON_MESSAGE_FN, observers)
-        .on_observer_match_for(
+        .on_observation_match_for(
             ON_MESSAGE_FN,
             Match::keys(|obs| obs.id().into(), |call| subscriber_of(call).into()),
         )
-        .on_observer_deliver_for(ON_MESSAGE_FN, OnMessageDelivery { iii: iii.clone() });
+        .on_observation_deliver_for(ON_MESSAGE_FN, OnMessageDelivery { iii: iii.clone() });
     iii.register_function(
         ON_MESSAGE_FN,
         RegisterFunction::new(on_message)

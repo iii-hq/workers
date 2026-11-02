@@ -122,12 +122,11 @@ The event, the function's input and what its observers observe:
 - **Private.** Only this worker calls `cron::on-tick`; a call from another
   worker is refused with `FORBIDDEN`, and the function cannot be an
   observer's target.
-- **One host.** The function registers as a standby: a second instance of the
-  worker waits, and takes over the observers when the first one leaves. Each
-  expression fires once per scheduled time. The engine admits one live worker
-  per worker name and namespace, so the second instance runs under its own
-  name (`III_WORKER_NAME=cron-standby`). An instance started under a name that
-  a live worker holds is refused (`WORKER_NAMESPACE_CONFLICT`) and exits.
+- **One host.** `cron::on-tick` has one host per namespace, so each expression
+  fires once per scheduled time. Run one instance: a second one is refused the
+  function, and one started under the name a live worker holds is refused
+  (`WORKER_NAMESPACE_CONFLICT`) and exits. When the instance restarts, the
+  engine hands it the observers back.
 
 A target that needs to know which schedule fired reads `observer_id` from the
 envelope, or observes with its own target per schedule.

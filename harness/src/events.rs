@@ -178,7 +178,7 @@ impl TurnEvents {
         // read after the observer is active: a ready call made before that
         // missed it, and one made after reaches it (a second ready event is
         // harmless).
-        iii.on_observer_match_for(ON_READY_FN, Match::predicate(for_observer_or_every));
+        iii.on_observation_match_for(ON_READY_FN, Match::predicate(for_observer_or_every));
         iii.on_observer_added_for(ON_READY_FN, {
             let iii = iii.clone();
             let ready = ready.clone();

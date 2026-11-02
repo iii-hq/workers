@@ -69,7 +69,7 @@ pub struct BuildEvent {
 /// is set by id before the registration, so it serves every call.
 pub fn register(iii: &Arc<IIIClient>) {
     let engine = iii.clone();
-    iii.on_observer_deliver_for(
+    iii.on_observation_deliver_for(
         ON_CHANGED_FN,
         move |call: Call, observers: Vec<Observer>| {
             let engine = engine.clone();
