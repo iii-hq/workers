@@ -262,20 +262,17 @@ async fn check(signal: Option<&str>) {
             );
         }
     }
-    // A function whose input or output is a value refuses observers, which
-    // would get a copy; the metadata functions stay observable.
-    for frame in frames.iter().filter(|f| f["type"] == "registerfunction") {
-        let carries_value = [
-            "secrets::set",
-            "secrets::compare-and-set",
-            "secrets::resolve",
-        ]
-        .contains(&frame["id"].as_str().unwrap());
+    // Every secrets::* function refuses observers: an observer gets the
+    // input, and a key can be pasted into any field, not only `value`.
+    for id in secrets::api::ids::ALL_FUNCTIONS {
+        let frame = frames
+            .iter()
+            .find(|f| f["type"] == "registerfunction" && f["id"] == id)
+            .unwrap();
         assert_eq!(
-            frame["observe"]["allow"] == json!(false),
-            carries_value,
-            "{} observe: {}",
-            frame["id"],
+            frame["observe"]["allow"],
+            json!(false),
+            "{id} observe: {}",
             frame["observe"]
         );
     }

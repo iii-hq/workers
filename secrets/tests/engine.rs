@@ -150,14 +150,14 @@ async fn console_stores_router_resolves_others_are_refused() {
         .unwrap_err();
     assert_eq!(remote_code(missing), "SECRET_NOT_FOUND");
 
-    // An observer of a function that takes or returns a value would get a
-    // copy of it; the metadata functions stay observable.
+    // An observer would get a copy of every input and output: a value, or a
+    // key pasted into any other field. No secrets::* function admits one.
     intruder.register_function(
         "intruder::sink",
         RegisterFunction::new_async(|_: Value| async { Ok::<Value, Error>(json!({})) }),
     );
     wait_for(&console, "intruder::sink").await;
-    for id in [ids::SET, ids::COMPARE_AND_SET, ids::RESOLVE] {
+    for id in ids::ALL_FUNCTIONS {
         let observer = intruder.observe(Source::function(id), "intruder::sink");
         let refused = tokio::time::timeout(Duration::from_secs(5), observer.ready())
             .await
@@ -165,11 +165,6 @@ async fn console_stores_router_resolves_others_are_refused() {
             .unwrap_err();
         assert_eq!(remote_code(refused), "NOT_OBSERVABLE", "{id}");
     }
-    let metadata = intruder.observe(Source::function(ids::LIST), "intruder::sink");
-    tokio::time::timeout(Duration::from_secs(5), metadata.ready())
-        .await
-        .unwrap()
-        .unwrap();
 
     // Rotation reaches the subscriber and the next resolve.
     invoke(

@@ -132,7 +132,7 @@ fn register_fn<Req, Resp, F, Fut>(
 {
     let shared = ctx.clone();
     let handler = Arc::new(handler);
-    let mut registration = RegisterFunction::new_async(move |payload: Value| {
+    let registration = RegisterFunction::new_async(move |payload: Value| {
         let ctx = shared.clone();
         let handler = handler.clone();
         async move {
@@ -148,11 +148,10 @@ fn register_fn<Req, Resp, F, Fut>(
     })
     .description(description)
     .request_format(schema::<Req>())
-    .response_format(schema::<Resp>());
-    // Their input or output is a value, which an observer would get a copy of.
-    if [ids::SET, ids::COMPARE_AND_SET, ids::RESOLVE].contains(&id) {
-        registration = registration.observe(Observe::auto().allow(false));
-    }
+    .response_format(schema::<Resp>())
+    // An observer gets a copy of the input and output: a value, or a key
+    // pasted into any other field. Changes are announced by secrets::changed.
+    .observe(Observe::auto().allow(false));
     ctx.iii.register_function(id, registration);
 }
 
