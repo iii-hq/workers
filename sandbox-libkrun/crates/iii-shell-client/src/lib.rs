@@ -630,8 +630,13 @@ impl Session {
             };
             let n = match read {
                 Ok(Ok(n)) => n,
+                // A caller's upload that breaks mid-stream is S218 (retryable),
+                // like a stall; returning before FsEnd commits nothing.
                 Ok(Err(e)) => {
-                    return Err(VmClientError::Io(format!("read from caller: {e}")));
+                    return Err(VmClientError::FsError {
+                        code: "S218".into(),
+                        message: format!("read from caller: {e}"),
+                    });
                 }
                 Err(_elapsed) => {
                     return Err(VmClientError::FsError {

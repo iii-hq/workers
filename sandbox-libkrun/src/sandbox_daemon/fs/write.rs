@@ -740,6 +740,63 @@ mod tests {
         assert_eq!(got, b"abcd");
     }
 
+    /// A caller's upload that breaks mid-stream answers S218, retryable, and
+    /// the guest never gets FsEnd, so it commits nothing.
+    #[tokio::test]
+    async fn a_broken_upload_answers_s218_and_commits_nothing() {
+        use crate::sandbox_daemon::fs::adapter::IiiShellFsRunner;
+        use iii_shell_proto::{ShellMessage, decode_frame_body};
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("shell.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // Relay and guest in one: hand out id range 0, then record every frame
+        // until the host hangs up.
+        let guest = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(&0u32.to_be_bytes()).unwrap();
+            let (mut got, mut len) = (Vec::new(), [0u8; 4]);
+            while s.read_exact(&mut len).is_ok() {
+                let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+                s.read_exact(&mut body).unwrap();
+                got.push(decode_frame_body(&body).unwrap().2);
+            }
+            got
+        });
+
+        let frames: Vec<Frame> = vec![
+            Ok(Some(b"partial".to_vec())),
+            Err(iii_sdk::Error::WebSocket("closed with 1011".into())),
+        ];
+        let frames = std::sync::Mutex::new(frames.into_iter());
+        let reader = ChannelReaderAdapter::from_source(move || {
+            let frame = frames.lock().unwrap().next().unwrap_or(Ok(None));
+            Box::pin(async move { frame })
+        });
+        let err = IiiShellFsRunner
+            .fs_write_stream(sock, "/f".into(), "0644".into(), false, Box::new(reader))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code().as_str(), "S218", "got {err:?}");
+        assert!(err.code().retryable());
+
+        let got = guest.join().unwrap();
+        assert!(
+            matches!(
+                got.first(),
+                Some(ShellMessage::FsRequest(FsOp::WriteStart { .. }))
+            ),
+            "got {got:?}"
+        );
+        assert!(
+            !got.iter().any(|m| matches!(m, ShellMessage::FsEnd)),
+            "the guest got FsEnd and would commit: {got:?}"
+        );
+    }
+
     /// Dropping the adapter mid-upload ends its pending channel read.
     #[tokio::test]
     async fn dropping_the_adapter_ends_its_pending_read() {
