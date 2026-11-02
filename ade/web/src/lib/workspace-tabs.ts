@@ -25,7 +25,7 @@ export type TabScreen = string
 
 /**
  * The persisted layout document, as stored and served by the console worker
- * (`ADE::workspace::get` / `set`). Parsers below read `tabs`,
+ * (`ade::workspace::get` / `set`). Parsers below read `tabs`,
  * `activeTabId`, `activatedAt` and `activatedBy` out of it; writers keep
  * every other key untouched.
  */

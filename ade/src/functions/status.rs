@@ -1,4 +1,4 @@
-//! `ADE::status` — health/identity probe.
+//! `ade::status` — health/identity probe.
 //!
 //! Returns the runtime knobs the worker is operating under so callers
 //! (operators, agents, `iii worker info` smoke tests, dashboards) can

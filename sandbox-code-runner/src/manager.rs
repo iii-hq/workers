@@ -3040,7 +3040,7 @@ mod tests {
     /// captured synchronously — no spawn, no bus.
     fn record_events(m: &RuntimeManager) -> Arc<RecordingDeliverer> {
         let subscribers = SubscriberSet::new();
-        subscribers.insert("t1".to_string(), "ADE::recv".to_string());
+        subscribers.insert("t1".to_string(), "ade::recv".to_string());
         let recorder = Arc::new(RecordingDeliverer::default());
         m.set_events(Emitter::new(subscribers, recorder.clone()));
         recorder

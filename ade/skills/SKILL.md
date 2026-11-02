@@ -11,7 +11,7 @@ description: >-
 # console
 
 The console is a single Rust binary that serves the React SPA and proxies the
-engine WebSocket on one port (`http_port`, 3113 by default; `ADE::status`
+engine WebSocket on one port (`http_port`, 3113 by default; `ade::status`
 returns the actual `url`). It renders the
 chat (on the `harness` turn loop), the OpenTelemetry trace explorer, the worker
 catalog, and a tabbed workspace of floating panels the operator arranges. It is
@@ -43,18 +43,18 @@ stack; traces need the engine's OpenTelemetry export.
   record resolved): read `ade/mentions` — two functions and a metadata
   descriptor, no console change.
 - You changed a worker's UI and must prove it is loadable: read
-  `ADE::ui-manifest` and require an empty `warnings` array.
-- The user should watch something in the console: `ADE::workspace::open`
+  `ade::ui-manifest` and require an empty `warnings` array.
+- The user should watch something in the console: `ade::workspace::open`
   with `ext:<page>`, `workers`, `traces`, or a pinned `chat`.
 - You created or cloned a project in another directory and the user asked to
-  continue there: `ADE::working-directory::propose` (never just to inspect
+  continue there: `ade::working-directory::propose` (never just to inspect
   a file).
-- You need to know what the operator currently sees: `ADE::workspace::list`.
+- You need to know what the operator currently sees: `ade::workspace::list`.
 
 ## Chat-owned Context tracking
 
 Users can ask in chat to pin release progress, a goal, a status summary or a checklist.
-Use `ADE::context::list`, `ADE::context::save` and `ADE::context::remove`.
+Use `ade::context::list`, `ade::context::save` and `ade::context::remove`.
 Discover the contracts before calling; Harness stamps the current `session_id`.
 A save stores a structured snapshot, not executable code, an extension or a monitor.
 Default to `conversation`; use `project` only when the user explicitly asks. Project
@@ -91,22 +91,22 @@ Snapshots persist in `<data_dir>/context-tracking.json`, with atomic writes.
 - An injected page placing a screen for the operator in front of it calls
   `host.panels.openScreen({ screen, relativeTo?, direction?, sizes? })`
   (built-in screens like `traces` included): local and optimistic, no bus
-  round trip. Feature-detect it and fall back to `ADE::workspace::open`.
+  round trip. Feature-detect it and fall back to `ade::workspace::open`.
 - Native console UI (`ade/web`) and worker UI change in separate pull
   requests; the shared component surface is `@iii-dev/console-ui`
   (`packages/console-ui`) and its `index.d.ts` is the only API contract.
 
 ## Functions
 
-- `ADE::status` — runtime knobs: `url`, `http_port`, `engine_url`, `version`; use for liveness and readiness, and open ADE pages on this machine (browser sessions, curl) at `url` (`<url>/#/worker/<scope>/<page-id>`) instead of assuming port 3113. `url` is loopback when the console listens on every interface: to show the operator a page, use `ADE::workspace::open`, not a pasted link.
-- `ADE::ui-manifest` — every injected asset currently loadable, with path, kind, content hash, and style-lint warnings; the authoritative check after registering UI.
-- `ADE::workspace::list` — the operator's workspace: tabs, columns, screens, column widths, and the active tab.
-- `ADE::workspace::open` — show a screen next to the conversation (`ext:<page>`, `workers`, `traces`, or a pinned `chat` by `session_id`). It lands right of the chat panel; `relative_to` names another mounted screen to sit beside and `direction` (`right`/`left`) picks the side. `sizes` sets the tab's column widths in the same write — read `workspace::list` first for the widths that are up.
-- `ADE::workspace::close` — remove a screen wherever it is shown; idempotent.
-- `ADE::working-directory::propose` — ask the operator to move the session (chat and paired shell) to a directory created or cloned elsewhere.
-- `ADE::ui-content` — the console's own content function for its injected catalog pages; internal.
-- `ADE::on-config-change`, `ADE::working-directory::inject-guidance`, `ADE::working-directory::stamp-session` — internal wiring; never call directly.
-- `ADE::mentions::trace::search`, `ADE::mentions::trace::get` — the `@trace(id="<trace_id>")` chat mention provider over `engine::traces::list`; internal. Agents read a mentioned trace through `engine::traces::tree` (see `ade/mentions`).
+- `ade::status` — runtime knobs: `url`, `http_port`, `engine_url`, `version`; use for liveness and readiness, and open ADE pages on this machine (browser sessions, curl) at `url` (`<url>/#/worker/<scope>/<page-id>`) instead of assuming port 3113. `url` is loopback when the console listens on every interface: to show the operator a page, use `ade::workspace::open`, not a pasted link.
+- `ade::ui-manifest` — every injected asset currently loadable, with path, kind, content hash, and style-lint warnings; the authoritative check after registering UI.
+- `ade::workspace::list` — the operator's workspace: tabs, columns, screens, column widths, and the active tab.
+- `ade::workspace::open` — show a screen next to the conversation (`ext:<page>`, `workers`, `traces`, or a pinned `chat` by `session_id`). It lands right of the chat panel; `relative_to` names another mounted screen to sit beside and `direction` (`right`/`left`) picks the side. `sizes` sets the tab's column widths in the same write — read `workspace::list` first for the widths that are up.
+- `ade::workspace::close` — remove a screen wherever it is shown; idempotent.
+- `ade::working-directory::propose` — ask the operator to move the session (chat and paired shell) to a directory created or cloned elsewhere.
+- `ade::ui-content` — the console's own content function for its injected catalog pages; internal.
+- `ade::on-config-change`, `ade::working-directory::inject-guidance`, `ade::working-directory::stamp-session` — internal wiring; never call directly.
+- `ade::mentions::trace::search`, `ade::mentions::trace::get` — the `@trace(id="<trace_id>")` chat mention provider over `engine::traces::list`; internal. Agents read a mentioned trace through `engine::traces::tree` (see `ade/mentions`).
 
 ## Reactive triggers
 
@@ -120,10 +120,10 @@ changes.
 - `console:style` — a CSS asset with the same contract and a `.css` path.
 - `console:assets` — a tab's live-update subscription; the console registers
   it itself.
-- `ADE::workspace::changed` — fires after every workspace layout write
+- `ade::workspace::changed` — fires after every workspace layout write
   (`open`, `close`, a browser's own edit), and once when a binding registers.
   Empty config, empty event: a page that watches the layout binds it and
-  re-reads `ADE::workspace::list`.
+  re-reads `ade::workspace::list`.
 
 Bind the first two once per asset at worker startup, after the content
 function is registered. Re-registering the same path with different bytes

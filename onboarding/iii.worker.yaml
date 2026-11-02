@@ -37,7 +37,7 @@ scripts:
 
 dependencies:
   # The console worker is published as `ade`; `console` is still an alias.
-  # The page calls the ADE worker through its `ADE::*` bus surface.
+  # The page calls the ADE worker through its `ade::*` bus surface.
   ade: "latest"
   state: "latest"
   # `learn-iii::steps::complete` announces each closed step on the

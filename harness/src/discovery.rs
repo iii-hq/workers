@@ -16,7 +16,7 @@
 //! presence only, no schemas, outside the fingerprint. An authorized internal
 //! function the public inventory hides (`engine::functions::info`) then
 //! resolves as present instead of removed, while the per-console ephemeral
-//! internals (`ADE::*-watch::r<n>::…`) never become tools or bump the
+//! internals (`ade::*-watch::r<n>::…`) never become tools or bump the
 //! generation. Presence never grants permission.
 //!
 //! The snapshot also carries a `generation` counter: [`apply`] bumps it only
@@ -491,7 +491,7 @@ mod tests {
         apply_with_internal(&cell, fns.clone(), Some(ids(&[]))).await;
         assert!(Arc::ptr_eq(&snap, &*cell.read().await));
         // Internal churn alone (a console watch) never moves the generation.
-        let churned = ids(&["ADE::watch::r1"]);
+        let churned = ids(&["ade::watch::r1"]);
         apply_with_internal(&cell, fns.clone(), Some(churned.clone())).await;
         assert_eq!(cell.read().await.generation, 1);
         assert_eq!(cell.read().await.internal_ids, churned);
@@ -614,7 +614,7 @@ mod tests {
             Hydration::All
         );
         // Internal churn (a console watch) is an id change: cheap path.
-        let churned = ids(&["a::b", "engine::functions::info", "ADE::watch::r1"]);
+        let churned = ids(&["a::b", "engine::functions::info", "ade::watch::r1"]);
         assert_eq!(
             change_hydration(&cached, &listed, Some(&churned)),
             Hydration::Missing

@@ -6,7 +6,7 @@ icon: agent
 color: green
 extends: iii-minimal
 skills: [harness/orchestration/index, harness/orchestration/report, harness/iii-node/index, harness/ade-worker-design/index]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "harness::spawn", "harness::status", "state::get", "state::set", "state::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "directory::agents::get", "directory::skills::get", "engine::workers::list", "ADE::ui-manifest", "browser::fetch", "browser::sessions::start", "browser::sessions::stop", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "browser::console::read", "browser::network::read"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "harness::spawn", "harness::status", "state::get", "state::set", "state::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "directory::agents::get", "directory::skills::get", "engine::workers::list", "ade::ui-manifest", "browser::fetch", "browser::sessions::start", "browser::sessions::stop", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "browser::console::read", "browser::network::read"]
 ---
 # Tech Lead
 

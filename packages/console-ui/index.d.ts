@@ -691,7 +691,7 @@ export interface Host {
     /**
      * Place/reuse any workspace screen (a built-in one like `traces`
      * included) from this browser, in the tab on screen: optimistic, with no
-     * bus round trip, unlike `ADE::workspace::open`. Throws on an unknown
+     * bus round trip, unlike `ade::workspace::open`. Throws on an unknown
      * screen. Optional on consoles that predate it: feature-detect with
      * `host.panels?.openScreen`.
      */

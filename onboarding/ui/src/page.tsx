@@ -195,7 +195,7 @@ export function RemoveLearnIii({
       return
     }
     if (onClose) onClose()
-    else await host.iii.trigger('ADE::workspace::close', { screen: 'ext:learn-iii' }).catch(() => undefined)
+    else await host.iii.trigger('ade::workspace::close', { screen: 'ext:learn-iii' }).catch(() => undefined)
   }, [host, onClose])
   return (
     <>

@@ -37,9 +37,9 @@ export const FIXTURE_PROVIDERS: MentionProvider[] = [
     description: 'An engine trace, by trace id',
     icon: 'trace',
     color: 'teal',
-    search: 'ADE::mentions::trace::search',
+    search: 'ade::mentions::trace::search',
     details: { function_id: 'engine::traces::tree', id_field: 'trace_id' },
-    getFunctionId: 'ADE::mentions::trace::get',
+    getFunctionId: 'ade::mentions::trace::get',
   },
 ]
 

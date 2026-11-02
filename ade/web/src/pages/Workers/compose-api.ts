@@ -185,7 +185,7 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
       const [status, list, project, engine] = await Promise.all([
         call<Status>('compose::status', withFile(), 10_000).catch(() => null),
         call<ProjectList>('compose::list', {}, 10_000).catch(() => null),
-        call<Project>('ADE::compose::project', withFile()).catch(
+        call<Project>('ade::compose::project', withFile()).catch(
           () => null,
         ),
         fetchRawWorkersSnapshot().catch(() => null),
@@ -274,26 +274,26 @@ export function composeApi(iii: ExtensionIii, file: () => string | undefined) {
         waitMs + 10_000,
       ),
     versions: (container: string) =>
-      call<Versions>('ADE::compose::versions', withFile({ container })),
+      call<Versions>('ade::compose::versions', withFile({ container })),
     packageVersions: (name: string) =>
-      call<Versions>('ADE::compose::versions', { name }),
+      call<Versions>('ade::compose::versions', { name }),
     search: (query: string) =>
-      call<{ workers: RegistryWorker[] }>('ADE::compose::search', {
+      call<{ workers: RegistryWorker[] }>('ade::compose::search', {
         query,
       }),
     inspect: (path: string, run?: string | null) =>
       call<Inspection>(
-        'ADE::compose::inspect',
+        'ade::compose::inspect',
         run ? { path, run } : { path },
       ),
     container: (container: string) =>
       call<ContainerEntry>(
-        'ADE::compose::container',
+        'ade::compose::container',
         withFile({ container }),
       ),
     edit: (container: string, patch: EditPatch, operationId?: string) =>
       call<Accepted>(
-        'ADE::compose::edit',
+        'ade::compose::edit',
         withFile({ container, ...patch, ...operation(operationId) }),
         60_000,
       ),

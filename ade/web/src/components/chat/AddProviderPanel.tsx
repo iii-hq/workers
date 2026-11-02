@@ -24,7 +24,7 @@ import { ProviderIcon } from './ProviderIcon'
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 /** Base id for the browser-local handler bound to the `worker` add trigger. */
-const PROVIDER_ADD_WATCH_FN = 'ADE::provider-add-watch'
+const PROVIDER_ADD_WATCH_FN = 'ade::provider-add-watch'
 
 type AddStatus =
   | { kind: 'adding'; progress?: number }

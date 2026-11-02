@@ -7,7 +7,7 @@
 //!      `http_port` and `data_dir` (falling back to the local seed if
 //!      unavailable); point the workspace store at `<data_dir>/workspace.json`
 //!      and move a legacy `workspace` section out of the configuration entry.
-//!   4. Register `ADE::status` and the `ADE::workspace::*` functions.
+//!   4. Register `ade::status` and the `ade::workspace::*` functions.
 //!   5. Bind the HTTP server on `http_port` and serve `/`, `/assets/*`,
 //!      and `/ws` (WebSocket proxy back to the engine).
 //!   6. Subscribe to configuration changes so port edits rebind live.
@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
-    // ADE::status is agent-callable: never hand out URL credentials.
+    // ade::status is agent-callable: never hand out URL credentials.
     let engine_url_redacted = redact_url(&engine_url);
     functions::register_all(
         &iii,

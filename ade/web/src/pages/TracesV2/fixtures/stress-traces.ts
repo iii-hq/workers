@@ -95,9 +95,9 @@ const FIRST_LEVEL: Call[] = [
     kind: 'internal',
   },
   {
-    name: 'execute ADE::workspace::get',
+    name: 'execute ade::workspace::get',
     worker: 'ade',
-    functionId: 'ADE::workspace::get',
+    functionId: 'ade::workspace::get',
     kind: 'internal',
   },
   {

@@ -429,11 +429,11 @@ mod tests {
 
     #[test]
     fn stamp_adds_internal_metadata_when_absent() {
-        let wire = r#"{"type":"registerfunction","id":"ADE::harness-watch::r0::console-abc"}"#;
+        let wire = r#"{"type":"registerfunction","id":"ade::harness-watch::r0::console-abc"}"#;
         let out = stamp_internal_registration(wire).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["metadata"]["internal"], serde_json::json!(true));
-        assert_eq!(v["id"], "ADE::harness-watch::r0::console-abc");
+        assert_eq!(v["id"], "ade::harness-watch::r0::console-abc");
     }
 
     #[test]

@@ -43,9 +43,9 @@ export default function setup(host: Host) {
  */
 async function adoptOldPane(host: Host): Promise<void> {
   try {
-    const ws = await host.iii.trigger<{ tabs: { screens: string[] }[] }>('ADE::workspace::list')
+    const ws = await host.iii.trigger<{ tabs: { screens: string[] }[] }>('ade::workspace::list')
     if (!ws.tabs.some((tab) => tab.screens.includes('ext:learn-iii'))) return
-    await host.iii.trigger('ADE::workspace::close', { screen: 'ext:learn-iii' })
+    await host.iii.trigger('ade::workspace::close', { screen: 'ext:learn-iii' })
     showTour()
   } catch {
     // Nothing to adopt, or nothing that can do it.

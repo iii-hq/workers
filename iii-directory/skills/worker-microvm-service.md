@@ -157,10 +157,10 @@ A worker ships console UI as assets; no console rebuild:
 * `host` = `{ iii: { trigger(fnId, payload), on, registerTrigger, browserId,
   addConnectionStateListener }, components, useTheme, path, pages, functionTriggers,
   configForms }`.
-* `host.pages.register({ id, title, render })` → a console page, opened through `host.panels.open` or `ADE::workspace::open`, or alone at `#/worker/<scope>/<id>`;
+* `host.pages.register({ id, title, render })` → a console page, opened through `host.panels.open` or `ade::workspace::open`, or alone at `#/worker/<scope>/<id>`;
   `host.configForms.register(configId, Component)` overrides a worker's config form;
   `host.functionTriggers.register(renderer)` adds trigger-specific UI.
-* verify with `ADE::ui-manifest` (paths, hashes, style-lint warnings, per-worker
+* verify with `ade::ui-manifest` (paths, hashes, style-lint warnings, per-worker
   enable state); users can disable a worker's UI via the console config
   (`injectableUi.disabledWorkers`).
 * an `<iframe>` to the pump's loopback port works: the console sets no restrictive

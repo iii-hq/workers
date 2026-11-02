@@ -7,7 +7,7 @@ color: blue
 extends: iii-minimal
 hidden: true
 skills: [kanban/iii-node/index, kanban/iii-node/configuration, kanban/tickets/ticket-worker]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "web::fetch", "ADE::status", "ADE::ui-manifest", "kanban::ticket::get", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::config::info", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "web::fetch", "ade::status", "ade::ui-manifest", "kanban::ticket::get", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::config::info", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
 ---
 # Backend Engineer
 

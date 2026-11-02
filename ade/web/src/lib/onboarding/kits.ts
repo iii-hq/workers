@@ -1,7 +1,7 @@
 /**
  * The registry kits the project's template asks the setup wizard to install
  * (`kits:` in `onboarding.yaml`, read with the example prompts through
- * `ADE::onboarding::prompts`). The wizard starts them in the background
+ * `ade::onboarding::prompts`). The wizard starts them in the background
  * as soon as it opens and they keep going after it closes: one
  * `directory::download-kit` with `apply: true` per kit, one at a time (the
  * Directory applies one plan at a time). A kit already installed answers

@@ -33,7 +33,7 @@ use crate::server::{self, AppState, ServerControlCell};
 use crate::ui_assets::UiControl;
 use crate::workspace_store::{default_data_dir, WorkspaceStore};
 
-/// Live port snapshot used by `ADE::status` and the rebind path.
+/// Live port snapshot used by `ade::status` and the rebind path.
 pub type PortCell = Arc<RwLock<u16>>;
 
 /// Serializes fetch → validate → bind → swap across overlapping update events.
@@ -252,7 +252,7 @@ pub async fn register_console_config(
     seed_http_port: u16,
     seed_data_dir: &str,
 ) -> Result<(), String> {
-    iii_console_ui::register_configuration_identity(iii, "ADE", config_id());
+    iii_console_ui::register_configuration_identity(iii, "ade", config_id());
     let existing = existing_value(iii)
         .await
         .map_err(|error| format!("console configuration lookup failed: {error}"))?;
@@ -310,7 +310,7 @@ async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Re
 #[path = "../../crates/config-client/src/initialization.rs"]
 mod initialization;
 
-const CONFIG_CHANGE_FN_ID: &str = "ADE::on-config-change";
+const CONFIG_CHANGE_FN_ID: &str = "ade::on-config-change";
 
 /// Fetch the runtime-owned fields from the authoritative entry. A missing
 /// `http_port` or `data_dir` (including entries created by older Console

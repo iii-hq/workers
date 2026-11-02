@@ -52,7 +52,7 @@ export function useConfigurationsList() {
 }
 
 /** Browser-local handler id bound to the `worker` lifecycle trigger. */
-const WORKER_REGISTRY_WATCH_FN = 'ADE::workers-config-watch'
+const WORKER_REGISTRY_WATCH_FN = 'ade::workers-config-watch'
 
 /**
  * Keep the worker configuration list fresh when workers are added or removed

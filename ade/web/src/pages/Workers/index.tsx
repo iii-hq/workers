@@ -191,7 +191,7 @@ function WorkersPage({
   const api = useMemo(() => composeApi(iii, () => fileRef.current), [iii])
   const live = useWorkerLive<Snapshot>({
     iii,
-    triggers: ['ADE::compose::changed'],
+    triggers: ['ade::compose::changed'],
     handlerId: 'iii::console::workers::changed',
     fetch: api.snapshot,
   })

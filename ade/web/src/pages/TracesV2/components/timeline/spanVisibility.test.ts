@@ -466,7 +466,7 @@ describe('applyHiddenSpanFilters + the harness::turn shape', () => {
       }),
       vis({
         span_id: 'relay',
-        name: 'execute ADE::relay',
+        name: 'execute ade::relay',
         parent_span_id: 'ev-1',
         depth: 2,
       }),

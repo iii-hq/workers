@@ -77,7 +77,7 @@ pub struct StoriesConfig {
     /// resolve from the Compose project directory or the process directory.
     pub data_path: String,
     /// Console origin the browser worker navigates to for headless renders.
-    /// Unset: the ADE's address from `ADE::status`, resolved per render.
+    /// Unset: the ADE's address from `ade::status`, resolved per render.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub console_url: Option<String>,
     /// Rebuild the working tree line when a story input changes.
@@ -148,7 +148,7 @@ pub fn schema() -> Value {
         "required": ["data_path", "workspaces"],
         "properties": {
             "data_path": { "type": "string", "minLength": 1, "description": "Folder holding lines, files, renders and the compiler. Relative paths resolve from the project root." },
-            "console_url": { "type": "string", "description": "Console origin the browser worker navigates to for headless renders. Empty: the ADE's address from ADE::status." },
+            "console_url": { "type": "string", "description": "Console origin the browser worker navigates to for headless renders. Empty: the ADE's address from ade::status." },
             "watch": { "type": "boolean", "description": "Rebuild the working tree line when a story input changes." },
             "keep_lines": { "type": "integer", "minimum": 1, "description": "Built ref lines kept per workspace before the oldest are pruned." },
             "viewport": {
@@ -308,7 +308,7 @@ pub fn normalize(raw: &Value) -> StoriesConfig {
         },
         // MOT-5356: releases before this one seeded "http://127.0.0.1:3113"
         // as the stored value, and `ensure` never replaces it. Treat it as
-        // unset: on a single-project machine ADE::status resolves to the
+        // unset: on a single-project machine ade::status resolves to the
         // same 3113; it only stops renders driving another project's ADE.
         console_url: Some(console_url.trim_end_matches('/').to_string())
             .filter(|u| !u.is_empty() && u != "http://127.0.0.1:3113"),

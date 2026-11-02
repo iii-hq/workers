@@ -146,7 +146,7 @@ export const workflowStartLaunched = base(
   {
     definition: blogDef,
     input: blogInput,
-    notify: { function_id: 'ADE::wf-done' },
+    notify: { function_id: 'ade::wf-done' },
   },
   wrapHarness({ run_id: 'r_f58318bb102841a99134d7a6e7c164df' }),
 )

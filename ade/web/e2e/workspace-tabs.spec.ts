@@ -153,13 +153,13 @@ test('an engine-side open or close reaches the console without waiting for the p
   // up when the console mounted, long before the session opened.
   const traces = page.locator('section[aria-label="traces"]')
   await expect(traces).toBeVisible()
-  await stack.invoke('ADE::workspace::close', { screen: 'traces' })
+  await stack.invoke('ade::workspace::close', { screen: 'traces' })
   await expect(traces).toHaveCount(0)
 
   // Nothing polls the layout: without the ring, each check fails every run.
-  await stack.invoke('ADE::workspace::open', { screen: 'traces' })
+  await stack.invoke('ade::workspace::open', { screen: 'traces' })
   await expect(traces).toBeVisible({ timeout: 2_000 })
-  await stack.invoke('ADE::workspace::close', { screen: 'traces' })
+  await stack.invoke('ade::workspace::close', { screen: 'traces' })
   await expect(traces).toHaveCount(0, { timeout: 2_000 })
 
   expectPassingResult(await stack.finish())

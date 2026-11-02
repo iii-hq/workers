@@ -685,7 +685,7 @@ export function startUiLoader(
   // lets built-in forms fall back instead of waiting forever.
   void client
     .trigger<{ disabled?: boolean }>(
-      'ADE::ui-manifest',
+      'ade::ui-manifest',
       {},
       { timeoutMs: 5_000 },
     )

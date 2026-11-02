@@ -1055,7 +1055,7 @@ Workspace tabs behave like this everywhere:
 - **Selection is per browser tab.** The server pointer
   (`workspace.activeTabId` + `activatedAt`/`activatedBy`) is where a new
   window lands; a live browser keeps its own choice and follows the server
-  only for a newer *function* activation (`ADE::workspace::open`), never
+  only for a newer *function* activation (`ade::workspace::open`), never
   for another browser's click.
 - **Closing** the active tab lands on its right-hand neighbour, else the
   left one; the last tab never closes. A tab or pane whose page reported

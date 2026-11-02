@@ -174,7 +174,7 @@ wait-base:
 	  done; \
 	  if [ -z "$$missing" ] && \
 	     iii trigger harness::status --help --port "$(ENGINE_PORT)" >/dev/null 2>&1 && \
-	     iii trigger ADE::ui-manifest --port "$(ENGINE_PORT)" --json '{}' >/dev/null 2>&1; then \
+	     iii trigger ade::ui-manifest --port "$(ENGINE_PORT)" --json '{}' >/dev/null 2>&1; then \
 	    echo "base stack ready in $(TMUX_SESSION)"; \
 	    exit 0; \
 	  fi; \
@@ -191,7 +191,7 @@ wait-stack:
 	  workers=$$(iii trigger engine::workers::list --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null || true); \
 	  if echo "$$workers" | grep -Fq '"name": "eval"' && \
 	     iii trigger eval::status --help --port "$(ENGINE_PORT)" >/dev/null 2>&1 && \
-	     iii trigger ADE::ui-manifest --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null | grep -Fq '"worker": "eval"'; then \
+	     iii trigger ade::ui-manifest --port "$(ENGINE_PORT)" --json '{}' 2>/dev/null | grep -Fq '"worker": "eval"'; then \
 	    echo "stack ready in $(TMUX_SESSION)"; \
 	    exit 0; \
 	  fi; \

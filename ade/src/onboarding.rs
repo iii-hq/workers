@@ -1,7 +1,7 @@
 //! First-run onboarding: what the setup wizard needs to know about the host,
 //! and whether this machine has already been through it.
 //!
-//! `ADE::onboarding::scan` looks for the Codex and Claude Code CLIs (the
+//! `ade::onboarding::scan` looks for the Codex and Claude Code CLIs (the
 //! `PATH` plus their usual install locations) and for their sign-in, so the
 //! wizard can offer the subscription providers that need no API key. It
 //! reports presence and paths only — a credential's content never leaves the
@@ -10,7 +10,7 @@
 //! login, `provider-claude-code` takes `.credentials.json` only with a
 //! `claudeAiOauth` block (or the macOS Keychain item).
 //!
-//! `ADE::onboarding::get` / `::set` keep the wizard's own progress in
+//! `ade::onboarding::get` / `::set` keep the wizard's own progress in
 //! `<data_dir>/onboarding.json`, beside the workspace layout: whether setup
 //! was finished or dismissed is per-machine state (the credentials it set up
 //! are per-machine too), so it stays out of the committed configuration.
@@ -20,7 +20,7 @@
 //! ADE configuration sets `onboarding.auto_open: false`, nor where the
 //! worker's environment sets `III_CONSOLE_ONBOARDING_AUTO_OPEN=false`.
 //!
-//! `ADE::onboarding::prompts` lists the example prompts the wizard's
+//! `ade::onboarding::prompts` lists the example prompts the wizard's
 //! last step offers, from `onboarding.yaml` at the project root (the Compose
 //! directory, `III_COMPOSE_DIR`), which the project's template ships. It is
 //! read on every call, so an edit shows the next time the step opens. Every
@@ -228,7 +228,7 @@ pub struct PromptsOutput {
 
 pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
     iii.register_function(
-        "ADE::onboarding::scan",
+        "ade::onboarding::scan",
         RegisterFunction::new_async(|_: ScanInput| async move {
             Ok::<_, Error>(ScanOutput {
                 tools: scan_tools().await,
@@ -242,7 +242,7 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
     );
 
     iii.register_function(
-        "ADE::onboarding::prompts",
+        "ade::onboarding::prompts",
         RegisterFunction::new_async(|_: PromptsInput| async move {
             let path = iii_worker_paths::project_path(PROMPTS_FILE);
             Ok::<_, Error>(load_onboarding(&path).await)
@@ -262,7 +262,7 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
     let store = workspace.clone();
     let client = iii.clone();
     iii.register_function(
-        "ADE::onboarding::get",
+        "ade::onboarding::get",
         RegisterFunction::new_async(move |_: GetInput| {
             let store = store.clone();
             let client = client.clone();
@@ -290,7 +290,7 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
     );
 
     iii.register_function(
-        "ADE::onboarding::set",
+        "ade::onboarding::set",
         RegisterFunction::new_async(move |input: SetInput| {
             let store = workspace.clone();
             let lock = lock.clone();

@@ -1,4 +1,4 @@
-//! `ADE::subscribe` — add an address to the iii product-update list.
+//! `ade::subscribe` — add an address to the iii product-update list.
 //!
 //! The console's email prompt hands its address here and nowhere else. The
 //! POST to the list happens in this worker, not the browser: the list checks
@@ -18,7 +18,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-pub const SUBSCRIBE_ID: &str = "ADE::subscribe";
+pub const SUBSCRIBE_ID: &str = "ade::subscribe";
 
 /// Topic the engine's telemetry worker subscribes to.
 const IDENTIFY_TOPIC: &str = "email:signup";

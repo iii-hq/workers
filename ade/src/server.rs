@@ -186,7 +186,7 @@ async fn runtime_handler(State(state): State<AppState>) -> Response {
 /// busts the browser's module map.
 const NO_CACHE: &str = "no-cache";
 
-/// `GET /ui` — the manifest JSON (same shape as `ADE::ui-manifest`),
+/// `GET /ui` — the manifest JSON (same shape as `ade::ui-manifest`),
 /// curl-friendly debugging.
 async fn ui_manifest_handler(State(state): State<AppState>) -> Response {
     let Some(ui) = &state.ui else {

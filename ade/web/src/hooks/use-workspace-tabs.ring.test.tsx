@@ -137,7 +137,7 @@ describe('workspace layout ring', () => {
 
     await settle(1_000)
     expect(bindings).toEqual([
-      expect.objectContaining({ type: 'ADE::workspace::changed' }),
+      expect.objectContaining({ type: 'ade::workspace::changed' }),
     ])
   })
 

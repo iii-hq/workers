@@ -596,7 +596,7 @@ mod tests {
     fn trigger_config(config: Value) -> TriggerConfig {
         TriggerConfig {
             id: "t1".to_string(),
-            function_id: "ADE::on-event".to_string(),
+            function_id: "ade::on-event".to_string(),
             config,
             metadata: None,
             namespace: None,

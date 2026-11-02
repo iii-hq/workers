@@ -2,11 +2,11 @@
  * Server-persisted workspace tabs (see `lib/workspace-tabs.ts` for the
  * model). Tabs live in the console worker's layout store
  * (`<data_dir>/workspace.json`, read and written through
- * `ADE::workspace::get` / `set` — `lib/workspace-layout.ts`), so the
- * layout follows the engine. The console rings `ADE::workspace::changed`
+ * `ade::workspace::get` / `set` — `lib/workspace-layout.ts`), so the
+ * layout follows the engine. The console rings `ade::workspace::changed`
  * after every write and the query re-reads on the ring, so a tab created in
  * another browser (or opened by an agent or an injected page through
- * `ADE::workspace::open`) shows up here at once, without a reload. The
+ * `ade::workspace::open`) shows up here at once, without a reload. The
  * console also rings every binding once when it registers, which catches this
  * tab up after its first read and after each reconnect. The strip polls only
  * until that first ring proves the binding live, and returning to the tab
@@ -69,7 +69,7 @@ import {
 const LOCAL_KEY = 'iii-workspace-tabs'
 const SESSION_ACTIVE_KEY = 'iii-workspace-active'
 const POINTER_WRITE_DELAY_MS = 150
-/** Per-tab handler for `ADE::workspace::changed`; `client.on` appends
+/** Per-tab handler for `ade::workspace::changed`; `client.on` appends
  *  `::<browserId>`. The `iii::` prefix keeps the rings out of user-function
  *  telemetry. */
 const WORKSPACE_CHANGED_FN = 'iii::console::workspace_changed'
@@ -308,7 +308,7 @@ export function useWorkspaceTabs({
         if (cancelled) return
         offHandler = client.on(WORKSPACE_CHANGED_FN, ring)
         offTrigger = client.registerTrigger({
-          type: 'ADE::workspace::changed',
+          type: 'ade::workspace::changed',
           function_id: `${WORKSPACE_CHANGED_FN}::${client.browserId}`,
           config: {},
         })

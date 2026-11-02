@@ -175,7 +175,7 @@ impl TriggerHandler for ChangedTriggerHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
         serde_json::from_value::<ChangedTriggerSpec>(config.config.clone()).map_err(|error| {
             Error::Handler(format!(
-                "ADE::compose::changed config must be an empty object: {error}"
+                "ade::compose::changed config must be an empty object: {error}"
             ))
         })?;
         self.bindings

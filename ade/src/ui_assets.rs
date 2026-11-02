@@ -763,7 +763,7 @@ fn trigger_type_of(kind: AssetKind) -> &'static str {
 /// Register the four `console:*` trigger types and spawn the queue
 /// consumer. Must run **before** `functions::register_all` (the
 /// approval-gate/memory ordering convention). Returns the registry the
-/// HTTP routes and `ADE::ui-manifest` read from, plus the control
+/// HTTP routes and `ade::ui-manifest` read from, plus the control
 /// handle the configuration module feeds the per-worker toggles through.
 pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     let registry = Arc::new(UiRegistry::default());
