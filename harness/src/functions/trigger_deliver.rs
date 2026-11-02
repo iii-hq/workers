@@ -850,14 +850,20 @@ fn condition_failure_text(binding: &Binding, skip: &Skip) -> String {
         .trigger_watch()
         .map(|(ty, cfg)| format!(" watching `{ty}` {cfg}"))
         .unwrap_or_default();
+    // Only a wake that parks the session must be dropped once its writes landed.
+    let parked = if crate::bindings::is_armed_wake(binding, AgentMessage::now_ms()) {
+        " If that read shows every write the condition awaits has already landed, unregister \
+         the re-registered binding before answering: an armed one-shot wake keeps this session \
+         parked."
+    } else {
+        ""
+    };
     format!(
         "[notification] binding {}{label}{watch} fired but was NOT delivered: {reason}. The \
          binding stays armed and every fire will keep skipping until the condition call \
          succeeds. If the condition is misconfigured, unregister the binding, re-register it \
          corrected, and then read the watched state once — events from before the new \
-         registration will never fire it. If that read shows every write the condition awaits \
-         has already landed, unregister the re-registered binding before answering: an armed \
-         one-shot wake keeps this session parked.",
+         registration will never fire it.{parked}",
         binding.id
     )
 }
@@ -1197,6 +1203,30 @@ mod tests {
         let text = condition_failure_text(&b, &huge);
         assert!(text.contains("…(truncated)"), "{text}");
         assert!(text.chars().count() < 1200, "{}", text.chars().count());
+    }
+
+    /// Prevents: telling the owner to unregister a working binding. Only an
+    /// armed one-shot `harness::send` wake parks the session; a recurring
+    /// binding or a function-call target keeps the general recovery step only.
+    #[test]
+    fn only_a_parking_wake_is_told_to_unregister_after_the_reconcile_read() {
+        let skip = Skip {
+            gate: "condition-error",
+            reason: "boom".into(),
+            retire: false,
+        };
+        let mut recurring = wake_binding("state");
+        recurring.lifecycle.once = false;
+        let mut call = wake_binding("state");
+        call.target = crate::bindings::BindingTarget::new("fp::pipe");
+        for b in [recurring, call] {
+            let text = condition_failure_text(&b, &skip);
+            assert!(text.contains("read the watched state once"), "{text}");
+            assert!(
+                !text.contains("unregister the re-registered binding before answering"),
+                "{text}"
+            );
+        }
     }
 
     #[test]
