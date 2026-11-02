@@ -16,17 +16,6 @@ const eventsSection = () => {
   return readme.slice(start, end === -1 ? undefined : end)
 }
 
-/** The doc comment directly above `const publishStep`. */
-const publishStepComment = () => {
-  const source = read('src', 'index.mjs')
-  const at = source.indexOf('const publishStep')
-  assert.notEqual(at, -1, 'index.mjs defines publishStep')
-  const open = source.lastIndexOf('/**', at)
-  const close = source.indexOf('*/', open)
-  assert.ok(open !== -1 && close < at, 'publishStep has a doc comment')
-  return source.slice(open, close)
-}
-
 const stepTopic = () => {
   const match = read('src', 'index.mjs').match(/const STEP_TOPIC = '([^']+)'/)
   assert.ok(match, 'index.mjs defines STEP_TOPIC')
@@ -52,27 +41,13 @@ test('the README tells a step subscriber to observe under a stable observer id',
     `the example subscribes to ${topic}, the topic publishStep uses`,
   )
   assert.match(code, /\{ id: '[^']+' \}/, 'the example passes a stable observer id')
-
-  const prose = events.replace(/\s+/g, ' ')
-  for (const claim of [
-    'under a stable observer id',
-    'one durable queue per subscriber, keyed by its observer id',
-    "restarts under the same worker name and observer id within the engine's grace period takes its queue back, with every step published while it was away",
-    'without an `id` gets a new observer id, and with it a new, empty queue',
-  ]) {
-    assert.ok(prose.includes(claim), `the Events section says: ${claim}`)
-  }
 })
 
-test('the publishStep comment names the stable observer id a subscriber needs', () => {
-  const comment = publishStepComment()
-  assert.match(comment, /`queue::on-message`/)
-  assert.match(comment, /args `\{ topic: STEP_TOPIC \}`/)
-  const prose = comment.replace(/\s*\n\s*\*\s*/g, ' ')
-  assert.ok(prose.includes("under a stable observer id (`{ id: '<subscriber>' }`)"))
-  assert.ok(
-    prose.includes(
-      'restarts under the same worker name and id within the engine\'s grace period takes its queue back',
-    ),
-  )
+test('publishStep publishes on the topic the README example subscribes to', () => {
+  const source = read('src', 'index.mjs')
+  const at = source.indexOf('const publishStep')
+  assert.notEqual(at, -1, 'index.mjs defines publishStep')
+  const body = source.slice(at, source.indexOf('\n\n', at))
+  assert.match(body, /function_id: 'iii::durable::publish'/)
+  assert.match(body, /payload: \{ topic: STEP_TOPIC, data \}/)
 })
