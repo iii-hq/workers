@@ -3,8 +3,6 @@
 use crate::functions::working_directory::{PRE_CALL_HOOK_FN, PRE_GENERATE_HOOK_FN};
 use crate::workspace_store::WorkspaceStore;
 use iii_sdk::{errors::Error, CallRequest, IIIClient, RegisterFunction};
-
-use crate::host::HostFunction;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -320,22 +318,22 @@ fn guidance(base: &str, enabled: bool, items: &[Tracking]) -> GuidanceResponse {
 
 pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
     let (client, data) = (iii.clone(), store.clone());
-    iii.host_function("console::context::list", RegisterFunction::new_async(move |req: ListInput| {
+    iii.register_function("console::context::list", RegisterFunction::new_async(move |req: ListInput| {
         let (client, data) = (client.clone(), data.clone());
         async move { list(&data, &target(&client, &req.session_id).await?).await }
     }).description("List saved Context sidebar tracking snapshots visible to a conversation, including its project tracking. Use ids to edit or remove existing items."));
     let (client, data) = (iii.clone(), store.clone());
-    iii.host_function("console::context::save", RegisterFunction::new_async(move |req: SaveInput| {
+    iii.register_function("console::context::save", RegisterFunction::new_async(move |req: SaveInput| {
         let (client, data) = (client.clone(), data.clone());
         async move { let t = target(&client, &req.session_id).await?; save(&data, &t, req).await }
     }).description("Create or replace a user-requested Context sidebar snapshot (title, summary, progress, checklist, source). Default conversation scope; project requires explicit user request. Omit id to create; same id edits or moves scope. No background monitoring. Harness stamps session_id."));
     let (client, data) = (iii.clone(), store.clone());
-    iii.host_function("console::context::remove", RegisterFunction::new_async(move |req: RemoveInput| {
+    iii.register_function("console::context::remove", RegisterFunction::new_async(move |req: RemoveInput| {
         let (client, data) = (client.clone(), data.clone());
         async move { remove(&data, &target(&client, &req.session_id).await?, &req.id).await }
     }).description("Remove a saved Context sidebar tracking item by id when the user asks. Limited to items visible in this conversation or its project. Harness stamps session_id."));
     let client = iii.clone();
-    iii.host_function(
+    iii.register_function(
         "console::context::inject-guidance",
         RegisterFunction::new_async(move |event: GuidanceEvent| {
             let (client, data) = (client.clone(), store.clone());

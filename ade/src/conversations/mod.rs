@@ -5,8 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use iii_sdk::errors::Error;
-
-use crate::host::HostFunction;
 use iii_sdk::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
@@ -57,7 +55,7 @@ fn handler_error(error: impl std::fmt::Display) -> Error {
 }
 
 pub fn register(iii: &Arc<IIIClient>) {
-    iii.host_function(
+    iii.register_function(
         "console::conversations::discover",
         RegisterFunction::new_async(|req: DiscoverRequest| async move {
             tokio::task::spawn_blocking(move || {
@@ -71,7 +69,7 @@ pub fn register(iii: &Arc<IIIClient>) {
         .metadata(json!({"internal":true})),
     );
 
-    iii.host_function(
+    iii.register_function(
         "console::conversations::preview",
         RegisterFunction::new_async(|req: Selection| async move {
             let mut transcript =
@@ -97,7 +95,7 @@ pub fn register(iii: &Arc<IIIClient>) {
     );
 
     let client = iii.clone();
-    iii.host_function(
+    iii.register_function(
         "console::conversations::import",
         RegisterFunction::new_async(move |req: Selection| {
             let client = client.clone();

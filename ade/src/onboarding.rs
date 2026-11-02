@@ -33,8 +33,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iii_sdk::errors::Error;
-
-use crate::host::HostFunction;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -229,7 +227,7 @@ pub struct PromptsOutput {
 }
 
 pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
-    iii.host_function(
+    iii.register_function(
         "console::onboarding::scan",
         RegisterFunction::new_async(|_: ScanInput| async move {
             Ok::<_, Error>(ScanOutput {
@@ -243,7 +241,7 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
         .metadata(json!({ "internal": true })),
     );
 
-    iii.host_function(
+    iii.register_function(
         "console::onboarding::prompts",
         RegisterFunction::new_async(|_: PromptsInput| async move {
             let path = iii_worker_paths::project_path(PROMPTS_FILE);
@@ -263,7 +261,7 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
     let lock = Arc::new(Mutex::new(()));
     let store = workspace.clone();
     let client = iii.clone();
-    iii.host_function(
+    iii.register_function(
         "console::onboarding::get",
         RegisterFunction::new_async(move |_: GetInput| {
             let store = store.clone();
@@ -291,7 +289,7 @@ pub fn register(iii: &Arc<IIIClient>, workspace: Arc<WorkspaceStore>) {
         .metadata(json!({ "internal": true })),
     );
 
-    iii.host_function(
+    iii.register_function(
         "console::onboarding::set",
         RegisterFunction::new_async(move |input: SetInput| {
             let store = workspace.clone();

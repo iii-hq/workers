@@ -9,7 +9,6 @@ pub mod context_tracking;
 pub mod conversations;
 pub mod for_observer;
 pub mod functions;
-pub mod host;
 pub mod manifest;
 pub mod onboarding;
 pub mod probe;

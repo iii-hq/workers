@@ -9,8 +9,6 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-
-use crate::host::HostFunction;
 use iii_sdk::{CallRequest, IIIClient, RegisterFunction, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -218,7 +216,7 @@ fn guidance_mutations(
 
 pub fn register(iii: &Arc<IIIClient>) {
     let client = iii.clone();
-    iii.host_function(
+    iii.register_function(
         PROPOSE_ID,
         RegisterFunction::new_async(move |request: ProposeWorkingDirectoryRequest| {
             let client = client.clone();
@@ -231,7 +229,7 @@ pub fn register(iii: &Arc<IIIClient>) {
         ),
     );
 
-    iii.host_function(
+    iii.register_function(
         STAMP_SESSION_ID,
         RegisterFunction::new_async(|event: StampSessionEvent| async move {
             Ok::<Option<StampSessionResponse>, Error>(stamp_session(event))
@@ -242,7 +240,7 @@ pub fn register(iii: &Arc<IIIClient>) {
         .metadata(json!({ "internal": true })),
     );
 
-    iii.host_function(
+    iii.register_function(
         GUIDANCE_ID,
         RegisterFunction::new_async(|event: WorkingDirectoryGuidanceEvent| async move {
             Ok::<WorkingDirectoryGuidanceResponse, Error>(WorkingDirectoryGuidanceResponse {

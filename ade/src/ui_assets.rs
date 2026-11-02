@@ -42,8 +42,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use iii_sdk::errors::Error;
-
-use crate::host::HostFunction;
 use iii_sdk::{Call, CallRequest, IIIClient, ObserveRejection, Observer, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -836,7 +834,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     }
     iii.on_observer_match_for(ON_ASSETS_CHANGED_FN, for_observer::every_call());
 
-    iii.host_function(
+    iii.register_function(
         ASSET_FN,
         RegisterFunction::new(|request: ContentRequest| Ok::<_, Error>(request))
             .description(
@@ -853,7 +851,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
             .args_format::<AssetArgs>()
             .private(),
     );
-    iii.host_function(
+    iii.register_function(
         ON_ASSETS_CHANGED_FN,
         RegisterFunction::new(|event: UiAssetsEvent| Ok::<_, Error>(event))
             .description(
@@ -866,7 +864,7 @@ pub fn start(iii: &Arc<IIIClient>) -> (Arc<UiRegistry>, UiControl) {
     );
     tracing::info!(
         functions = ?[ASSET_FN, ON_ASSETS_CHANGED_FN],
-        "registered injectable-ui functions (a standby while another ADE instance hosts them)"
+        "registered injectable-ui functions"
     );
     (registry, control)
 }

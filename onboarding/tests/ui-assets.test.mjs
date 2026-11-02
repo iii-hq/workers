@@ -40,15 +40,14 @@ const stubIii = () => {
   }
 }
 
-test('learn-iii::ui-content is a standby that answers { content, content_type }', async () => {
+test('learn-iii::ui-content answers { content, content_type }', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'learn-iii-ui-'))
   writeFileSync(join(dir, 'page.js'), 'export default () => {}')
   writeFileSync(join(dir, 'styles.css'), '.learn {}')
   const iii = stubIii()
   registerUiContent(iii, dir)
 
-  const { handler, options } = iii.functions.get(UI_CONTENT)
-  assert.equal(options.standby, true, 'a second instance waits instead of conflicting')
+  const { handler } = iii.functions.get(UI_CONTENT)
   assert.deepEqual(await handler({ path: 'learn-iii/page.js' }), {
     content: 'export default () => {}',
     content_type: 'text/javascript',

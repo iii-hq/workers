@@ -12,8 +12,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-
-use crate::host::HostFunction;
 use iii_sdk::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
@@ -143,7 +141,7 @@ async fn publish_identify(iii: &IIIClient, email: &str, source: &str) {
 
 pub fn register(iii: &Arc<IIIClient>) {
     let iii_for_fn = iii.clone();
-    iii.host_function(
+    iii.register_function(
         SUBSCRIBE_ID,
         RegisterFunction::new_async(move |input: SubscribeInput| {
             let iii = iii_for_fn.clone();

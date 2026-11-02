@@ -37,10 +37,6 @@ const string = { type: 'string' }
 /**
  * Assets are read from disk at call time rather than inlined at build time,
  * so the watcher in `index.mjs` is the same code path as production.
- *
- * A standby, as the console-ui contract registers its content function: a
- * second instance of this worker (scale-out, or an overlap during a restart)
- * waits to take the function over instead of conflicting on it.
  */
 export const registerUiContent = (iii, uiDir) =>
   iii.registerFunction(
@@ -54,7 +50,6 @@ export const registerUiContent = (iii, uiDir) =>
     {
       description: 'Serve the injectable learn-iii console page assets.',
       metadata: { internal: true },
-      standby: true,
       request_format: object({ path: string }, ['path']),
       response_format: object({ content: string, content_type: string }, ['content', 'content_type']),
     },
