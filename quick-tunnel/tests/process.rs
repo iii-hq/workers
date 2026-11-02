@@ -339,6 +339,8 @@ exec /usr/bin/python3 -c 'import signal; signal.alarm(10); signal.pause()'
         let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_quick-tunnel"))
             .args(["--local-config", "--url", "ws://127.0.0.1:1", "--config"])
             .arg(yaml)
+            // The worker writes an `iii ps` marker under $HOME/.iii/run.
+            .env("HOME", dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())
             .process_group(0)
