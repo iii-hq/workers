@@ -317,6 +317,7 @@ function KeyOption({
   meta?: string
 }) {
   return (
+    // biome-ignore lint/a11y/noLabelWithoutControl: the Checkbox below renders the control (a role="checkbox" plus its hidden input)
     <label className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-sm px-2 hover:bg-surface-hover">
       {/* One choice, drawn as the console's one selection control (a
           checkbox): ticking a key picks it; the others untick. */}

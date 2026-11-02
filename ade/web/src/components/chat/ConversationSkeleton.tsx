@@ -44,11 +44,8 @@ function Exchange({
     <div aria-hidden className="flex flex-col gap-y-4">
       <Skeleton className={cn('ml-auto h-10 rounded-2xl', BAR, question)} />
       <div className="flex flex-col gap-y-2.5">
-        {lines.map((width, index) => (
-          <Skeleton
-            className={cn('h-4', BAR, width)}
-            key={`${width}-${index}`}
-          />
+        {lines.map((width) => (
+          <Skeleton className={cn('h-4', BAR, width)} key={width} />
         ))}
       </div>
       {card ? <Skeleton className={cn('h-12 w-full rounded-xl', BAR)} /> : null}
