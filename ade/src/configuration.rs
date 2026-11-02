@@ -115,8 +115,8 @@ fn schema() -> Value {
             "http_host": {
                 "type": "string",
                 "minLength": 1,
-                "default": "0.0.0.0",
-                "description": "Interface the ADE listens on: 0.0.0.0 (the default) for every interface, so other machines on the network can open it; 127.0.0.1 for this machine only. Applies at the next start."
+                "default": "127.0.0.1",
+                "description": "Interface the ADE listens on: 127.0.0.1 (the default) for this machine only; set 0.0.0.0 explicitly to let other machines on the network open it. Applies at the next start."
             },
             "data_dir": {
                 "type": "string",
@@ -717,7 +717,7 @@ mod tests {
             runtime_config_from(Some(&json!({ "http_host": "localhost" })), 3113, "data/ade")
                 .is_err()
         );
-        assert_eq!(schema()["properties"]["http_host"]["default"], "0.0.0.0");
+        assert_eq!(schema()["properties"]["http_host"]["default"], "127.0.0.1");
     }
 
     #[test]

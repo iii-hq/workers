@@ -269,7 +269,7 @@ The local `config.yaml` is a first-registration seed and a fallback for direct
 runs where the configuration worker is unavailable:
 
 ```yaml
-http_host: 0.0.0.0    # HTTP bind address (default: all IPv4 interfaces)
+http_host: 127.0.0.1  # HTTP bind address (default: local access only)
 http_port: 3113       # initial port seed for the UI + /ws (default: 3113)
 injectable_ui: true   # kill switch for runtime-injected worker UI (default: true)
 data_dir: data/ade    # ephemeral per-instance state: the workspace layout (default: data/ade)
@@ -277,7 +277,7 @@ data_dir: data/ade    # ephemeral per-instance state: the workspace layout (defa
 
 | Key | Default | Description |
 |---|---|---|
-| `http_host` | `0.0.0.0` | HTTP bind address; set `127.0.0.1` for local access only. Applied at startup |
+| `http_host` | `127.0.0.1` | HTTP bind address; set `0.0.0.0` explicitly to expose all IPv4 interfaces. Applied at startup |
 | `http_port` | `3113` | Initial TCP port seed for `/`, `/assets/*`, and `/ws`; the stored `console.http_port` wins thereafter |
 | `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:module` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
 | `data_dir` | `data/ade` | Initial seed for the directory holding ephemeral per-instance state — the workspace tabs/panes layout (`workspace.json`). Relative paths resolve against `III_COMPOSE_DIR` (or the process directory outside Compose); absolute and `~/` paths keep their meaning. The stored `console.data_dir` wins thereafter |
@@ -286,6 +286,11 @@ The configuration entry also stores UI preferences and
 `injectableUi.disabledWorkers`. Port, `data_dir` and per-worker UI changes apply
 without a Console restart; the local `injectable_ui` kill switch remains
 startup-only.
+
+For access from other machines, explicitly set `http_host: 0.0.0.0` or pass
+`--http-host 0.0.0.0`. The CLI flag wins over a stored `console.http_host`,
+which wins over the local seed. Existing stored addresses remain in effect
+until changed; changing `http_host` requires a restart.
 
 The workspace layout itself (tabs, panes, active tab) is **not** part of the
 entry: it changes on every click, and the configuration YAML is meant to be
