@@ -148,6 +148,7 @@ fn end_to_end_http_ws_proxy_and_configuration_rebind() {
     let output = Command::new(std::env::current_exe().expect("test binary"))
         .args(["--exact", "end_to_end_child", "--ignored", "--nocapture"])
         .env("HOME", home.path())
+        .env("ADE_E2E_CHILD", "1")
         .output()
         .expect("run the end-to-end child");
     let (stdout, stderr) = (
@@ -165,6 +166,11 @@ fn end_to_end_http_ws_proxy_and_configuration_rebind() {
 #[tokio::test]
 #[ignore = "isolated subprocess invoked by end_to_end_http_ws_proxy_and_configuration_rebind"]
 async fn end_to_end_child() {
+    // `--ignored` runs would otherwise use the real HOME; only the parent sets this.
+    if std::env::var_os("ADE_E2E_CHILD").is_none() {
+        eprintln!("skipping: runs only as the isolated child of end_to_end_http_ws_proxy_and_configuration_rebind");
+        return;
+    }
     let Some(harness) = boot().await else {
         eprintln!("skipping: prerequisites not met (see logs above)");
         return;
