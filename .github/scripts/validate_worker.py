@@ -64,6 +64,16 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     ):
         hard(f"{worker}/iii.worker.yaml dependencies must be a string-to-string mapping")
 
+    iii_engine_version = manifest.raw.get("iii_engine_version")
+    if "iii_engine_version" in manifest.raw and not (
+        isinstance(iii_engine_version, str) and _lib.III_ENGINE_VERSION_RE.fullmatch(iii_engine_version)
+    ):
+        hard(
+            f"{worker}/iii.worker.yaml iii_engine_version must be a semver range like "
+            '">=0.26.0" (comparators >=, >, <=, <, =, ^, ~ on MAJOR.MINOR.PATCH, '
+            f"joined by spaces or ||), got {iii_engine_version!r}"
+        )
+
     if "interface_smoke" in manifest.raw:
         hard(f"{worker}/iii.worker.yaml interface_smoke was replaced by registry_interface")
     registry_interface = manifest.raw.get("registry_interface", True)
