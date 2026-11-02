@@ -1,12 +1,13 @@
-//! End-to-end test: spawn the `iii` engine, the `console` worker, and
-//! drive the worker through its HTTP port and the `/ws` proxy.
+//! End-to-end test: spawn a private `iii` engine and the `console` worker,
+//! then drive the worker through its HTTP port and the `/ws` proxy.
 //!
-//! Self-skips when:
-//!   - the `iii` binary is not on `PATH`, or
-//!   - the chosen `HTTP_PORT` is already taken on this host.
+//! Both processes run on free ports with a throwaway `HOME` and working
+//! directory, so a developer's own engine (and `~/.iii`) is never touched.
 //!
-//! When skipped the test prints why so CI logs make the gap visible.
+//! Self-skips, printing why, when the `iii` binary is not on `PATH` or the
+//! stack fails to come up.
 
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -18,79 +19,112 @@ use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
-const ENGINE_WS: &str = "ws://127.0.0.1:49134";
-const HTTP_PORT: u16 = 48217;
-const REBOUND_HTTP_PORT: u16 = 48218;
+/// Kills and reaps the child on drop, so every early return or panic
+/// cleans up instead of orphaning the process.
+struct Reaped(Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 struct Harness {
-    iii: Child,
-    worker: Child,
+    // Fields drop in order: the worker, then its engine, then the tempdir.
+    _worker: Reaped,
+    _iii: Reaped,
+    _dir: tempfile::TempDir,
+    engine_ws: String,
+    http_port: u16,
+    rebound_http_port: u16,
     config_id: String,
 }
 
-impl Drop for Harness {
-    fn drop(&mut self) {
-        let _ = self.worker.kill();
-        let _ = self.worker.wait();
-        let _ = self.iii.kill();
-        let _ = self.iii.wait();
-    }
+/// Distinct free ports: every listener stays bound until all are picked.
+fn free_ports<const N: usize>() -> [u16; N] {
+    [(); N]
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port"))
+        .map(|listener| listener.local_addr().expect("local addr").port())
+}
+
+/// Spawn `command` with a private `HOME` and working directory.
+fn spawn_isolated(mut command: Command, dir: &Path) -> Option<Reaped> {
+    command
+        .current_dir(dir)
+        .env("HOME", dir.join("home"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(Reaped)
+        .inspect_err(|error| eprintln!("skipping: spawn failed: {error}"))
+        .ok()
 }
 
 async fn boot() -> Option<Harness> {
     let iii_bin = which::which("iii").ok()?;
+    let [engine_port, http_port, rebound_http_port] = free_ports();
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("home")).expect("private HOME");
+    let engine_config = dir.path().join("engine.yaml");
+    std::fs::write(
+        &engine_config,
+        format!(
+            r#"workers:
+  - name: iii-worker-manager
+    config:
+      port: {engine_port}
+  - name: configuration
+    config:
+      adapter:
+        name: fs
+        config:
+          directory: "{}"
+      ttl_seconds: 0
+"#,
+            dir.path().join("configuration").display()
+        ),
+    )
+    .expect("write engine config");
 
-    if TcpStream::connect(("127.0.0.1", HTTP_PORT)).await.is_ok() {
-        eprintln!(
-            "skipping: port {HTTP_PORT} already in use on 127.0.0.1; \
-             leftover from a previous test run?"
-        );
+    let mut command = Command::new(&iii_bin);
+    command
+        .args(["--no-update-check", "--config"])
+        .arg(&engine_config);
+    let iii = spawn_isolated(command, dir.path())?;
+    // The configuration functions register before the engine starts listening.
+    if !wait_for_listen(engine_port, Duration::from_secs(30)).await {
+        eprintln!("skipping: the iii engine never listened on {engine_port}");
         return None;
     }
-    if TcpStream::connect(("127.0.0.1", REBOUND_HTTP_PORT))
-        .await
-        .is_ok()
-    {
-        eprintln!("skipping: rebound port {REBOUND_HTTP_PORT} already in use on 127.0.0.1");
-        return None;
-    }
 
-    let iii = Command::new(&iii_bin)
-        .arg("--use-default-config")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-
-    sleep(Duration::from_millis(800)).await;
-
-    let worker_bin = env!("CARGO_BIN_EXE_ade");
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let config_path = format!("{manifest_dir}/config.yaml");
+    let engine_ws = format!("ws://127.0.0.1:{engine_port}");
+    let config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
     let config_id = format!("console-integration-{}", Uuid::new_v4());
-
-    let worker = Command::new(worker_bin)
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ade"));
+    command
+        .args(["--url", &engine_ws, "--config", config_path])
         .args([
-            "--url",
-            ENGINE_WS,
-            "--config",
-            &config_path,
+            "--http-host",
+            "127.0.0.1",
             "--http-port",
-            &HTTP_PORT.to_string(),
+            &http_port.to_string(),
         ])
         .env("III_CONFIG_NAME", &config_id)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-
-    if !wait_for_listen(HTTP_PORT, Duration::from_secs(8)).await {
+        .env("III_COMPOSE_DIR", dir.path());
+    let worker = spawn_isolated(command, dir.path())?;
+    if !wait_for_listen(http_port, Duration::from_secs(8)).await {
+        eprintln!("skipping: the console never listened on {http_port}");
         return None;
     }
 
     Some(Harness {
-        iii,
-        worker,
+        _worker: worker,
+        _iii: iii,
+        _dir: dir,
+        engine_ws,
+        http_port,
+        rebound_http_port,
         config_id,
     })
 }
@@ -106,14 +140,38 @@ async fn wait_for_listen(port: u16, max: Duration) -> bool {
     false
 }
 
+/// Runs the end-to-end body in a child with a private `HOME`: its SDK client
+/// would otherwise write an `iii ps` marker under the real `~/.iii/run`.
+#[test]
+fn end_to_end_http_ws_proxy_and_configuration_rebind() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "end_to_end_child", "--ignored", "--nocapture"])
+        .env("HOME", home.path())
+        .output()
+        .expect("run the end-to-end child");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // A filter that matches nothing also exits 0.
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{stderr}"
+    );
+    eprint!("{stderr}");
+}
+
 #[tokio::test]
-async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
+#[ignore = "isolated subprocess invoked by end_to_end_http_ws_proxy_and_configuration_rebind"]
+async fn end_to_end_child() {
     let Some(harness) = boot().await else {
         eprintln!("skipping: prerequisites not met (see logs above)");
         return;
     };
+    let (http_port, rebound_http_port) = (harness.http_port, harness.rebound_http_port);
 
-    let base = format!("http://127.0.0.1:{HTTP_PORT}");
+    let base = format!("http://127.0.0.1:{http_port}");
 
     // 1. GET / -> 200, contains the SPA root.
     let res = reqwest::get(&base).await.expect("GET / failed");
@@ -167,7 +225,7 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
     //    syntactically-valid iii control frame and expect ANY frame
     //    back from the engine — that proves the proxy is forwarding
     //    bidirectionally. We don't care about the semantic response.
-    let ws_url = format!("ws://127.0.0.1:{HTTP_PORT}/ws");
+    let ws_url = format!("ws://127.0.0.1:{http_port}/ws");
     let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
         .await
         .unwrap_or_else(|e| panic!("WS connect to {ws_url} failed: {e}"));
@@ -200,7 +258,7 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
     // 5. Change the authoritative configuration entry and prove the same
     // process moves to the new listener: replacement serves, status updates,
     // and the original port stops accepting new connections.
-    let client = register_worker(ENGINE_WS, InitOptions::default());
+    let client = register_worker(&harness.engine_ws, InitOptions::default());
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let current = loop {
         match client
@@ -226,7 +284,7 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         }
     };
     let mut value = current["value"].clone();
-    value["http_port"] = serde_json::json!(REBOUND_HTTP_PORT);
+    value["http_port"] = serde_json::json!(rebound_http_port);
     client
         .trigger(
             TriggerRequest {
@@ -244,10 +302,10 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         .expect("configuration::set failed");
 
     assert!(
-        wait_for_listen(REBOUND_HTTP_PORT, Duration::from_secs(8)).await,
+        wait_for_listen(rebound_http_port, Duration::from_secs(8)).await,
         "rebound Console port never started listening"
     );
-    let rebound = reqwest::get(format!("http://127.0.0.1:{REBOUND_HTTP_PORT}/"))
+    let rebound = reqwest::get(format!("http://127.0.0.1:{rebound_http_port}/"))
         .await
         .expect("GET / on rebound port failed");
     assert!(rebound.status().is_success());
@@ -261,15 +319,15 @@ async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
         })
         .await
         .expect("console::status failed after rebind");
-    assert_eq!(status["http_port"], REBOUND_HTTP_PORT);
+    assert_eq!(status["http_port"], rebound_http_port);
     assert_eq!(
         status["url"],
-        format!("http://127.0.0.1:{REBOUND_HTTP_PORT}")
+        format!("http://127.0.0.1:{rebound_http_port}")
     );
 
     let old_deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if TcpStream::connect(("127.0.0.1", HTTP_PORT)).await.is_err() {
+        if TcpStream::connect(("127.0.0.1", http_port)).await.is_err() {
             break;
         }
         assert!(
