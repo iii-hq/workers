@@ -264,7 +264,9 @@ This first version is a local protected store, not a hardware-backed vault.
   removes it from its environment.
 - A resolved value is plaintext in the consumer's memory and crosses the
   local engine connection. This worker turns off the SDK's payload capture in
-  traces for its own handlers. Each consumer is responsible for not logging
-  the value it receives.
+  traces for its own handlers, and `secrets::set`, `secrets::compare-and-set`
+  and `secrets::resolve` refuse observers (`NOT_OBSERVABLE`), which would get
+  a copy of the value. Each consumer is responsible for not logging the value
+  it receives.
 - There is no master-key rotation or OS keychain integration yet. Rotate an
   individual secret with `secrets::set`.

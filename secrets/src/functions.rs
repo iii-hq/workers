@@ -7,7 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{IIIClient, Observe, RegisterFunction};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -132,7 +132,7 @@ fn register_fn<Req, Resp, F, Fut>(
 {
     let shared = ctx.clone();
     let handler = Arc::new(handler);
-    let registration = RegisterFunction::new_async(move |payload: Value| {
+    let mut registration = RegisterFunction::new_async(move |payload: Value| {
         let ctx = shared.clone();
         let handler = handler.clone();
         async move {
@@ -149,6 +149,10 @@ fn register_fn<Req, Resp, F, Fut>(
     .description(description)
     .request_format(schema::<Req>())
     .response_format(schema::<Resp>());
+    // Their input or output is a value, which an observer would get a copy of.
+    if [ids::SET, ids::COMPARE_AND_SET, ids::RESOLVE].contains(&id) {
+        registration = registration.observe(Observe::auto().allow(false));
+    }
     ctx.iii.register_function(id, registration);
 }
 

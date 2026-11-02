@@ -262,6 +262,23 @@ async fn check(signal: Option<&str>) {
             );
         }
     }
+    // A function whose input or output is a value refuses observers, which
+    // would get a copy; the metadata functions stay observable.
+    for frame in frames.iter().filter(|f| f["type"] == "registerfunction") {
+        let carries_value = [
+            "secrets::set",
+            "secrets::compare-and-set",
+            "secrets::resolve",
+        ]
+        .contains(&frame["id"].as_str().unwrap());
+        assert_eq!(
+            frame["observe"]["allow"] == json!(false),
+            carries_value,
+            "{} observe: {}",
+            frame["id"],
+            frame["observe"]
+        );
+    }
     let trigger_type = frames
         .iter()
         .find(|f| f["type"] == "registertriggertype" && f["id"] == "secrets::changed")
