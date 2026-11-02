@@ -746,7 +746,7 @@ mod tests {
         let body = serde_json::json!({
             "error": "acme/k requires iii >= 0.26.0, running 0.25.1; run: iii update",
             "code": "incompatible_engine",
-            "required_iii_version": "0.26.0"
+            "required_iii_engine_version": ">=0.26.0"
         });
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(409).set_body_json(&body))

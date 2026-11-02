@@ -312,7 +312,7 @@ def build_payload(
         "worker_name", "type", "description", "license", "tags",
         "dependencies", "config", "experimental", "readme",
     }
-    optional = {"min_iii_version", "skills"}
+    optional = {"iii_engine_version", "skills"}
     if not isinstance(registry_projection, dict) or not (
         required <= set(registry_projection) <= required | optional
     ):

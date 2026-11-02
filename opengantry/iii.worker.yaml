@@ -2,7 +2,7 @@ iii: v1
 name: opengantry
 language: javascript
 deploy: bundle
-min_iii_version: "0.26.0"
+iii_engine_version: ">=0.26.0"
 manifest: package.json
 license: Apache-2.0
 tags:

@@ -64,13 +64,14 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     ):
         hard(f"{worker}/iii.worker.yaml dependencies must be a string-to-string mapping")
 
-    min_iii_version = manifest.raw.get("min_iii_version")
-    if "min_iii_version" in manifest.raw and not (
-        isinstance(min_iii_version, str) and _lib.MIN_III_VERSION_RE.fullmatch(min_iii_version)
+    iii_engine_version = manifest.raw.get("iii_engine_version")
+    if "iii_engine_version" in manifest.raw and not (
+        isinstance(iii_engine_version, str) and _lib.III_ENGINE_VERSION_RE.fullmatch(iii_engine_version)
     ):
         hard(
-            f"{worker}/iii.worker.yaml min_iii_version must be MAJOR.MINOR.PATCH "
-            f"(e.g. 0.26.0), got {min_iii_version!r}"
+            f"{worker}/iii.worker.yaml iii_engine_version must be a semver range like "
+            '">=0.26.0" (comparators >=, >, <=, <, =, ^, ~ on MAJOR.MINOR.PATCH, '
+            f"joined by spaces or ||), got {iii_engine_version!r}"
         )
 
     if "interface_smoke" in manifest.raw:

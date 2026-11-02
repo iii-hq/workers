@@ -1,4 +1,4 @@
-"""`min_iii_version` in iii.worker.yaml is validated and carried into the publish payload."""
+"""`iii_engine_version` in iii.worker.yaml is validated and carried into the publish payload."""
 import json
 from pathlib import Path
 
@@ -33,50 +33,47 @@ def validation_errors(tmp_path, line):
     return errors
 
 
-def test_valid_min_iii_version_passes(tmp_path):
-    assert validation_errors(tmp_path, "min_iii_version: 0.26.0") == []
+@pytest.mark.parametrize("good", [
+    '">=0.26.0"', '"^0.26.0"', '">=0.26.0 <0.28.0"', '"^0.25.0 || ^0.26.0"', '"0.26.0"',
+])
+def test_valid_range_passes(tmp_path, good):
+    assert validation_errors(tmp_path, f"iii_engine_version: {good}") == []
 
 
-def test_two_part_min_iii_version_is_rejected(tmp_path):
-    errors = validation_errors(tmp_path, 'min_iii_version: "0.26"')
-    assert any("min_iii_version must be MAJOR.MINOR.PATCH" in e for e in errors)
+@pytest.mark.parametrize("bad", [
+    '"0.26"', '"v0.26.0"', '">=0.26.0-rc.1"', '">=01.2.3"', '"0.26.x"',
+    '"1.0.0 - 2.0.0"', '""', '"0.26.0\\n"',
+])
+def test_malformed_range_is_rejected(tmp_path, bad):
+    errors = validation_errors(tmp_path, f"iii_engine_version: {bad}")
+    assert any("iii_engine_version must be a semver range" in e for e in errors)
 
 
-def test_prerelease_min_iii_version_is_rejected(tmp_path):
-    errors = validation_errors(tmp_path, 'min_iii_version: "0.26.0-rc.2"')
-    assert any("min_iii_version must be MAJOR.MINOR.PATCH" in e for e in errors)
-
-
-@pytest.mark.parametrize("bad", ['"0.26.0\\n"', '"01.2.3"'])
-def test_trailing_newline_and_leading_zero_are_rejected(tmp_path, bad):
-    errors = validation_errors(tmp_path, f"min_iii_version: {bad}")
-    assert any("min_iii_version must be MAJOR.MINOR.PATCH" in e for e in errors)
-
-
-def test_non_string_min_iii_version_is_rejected(tmp_path):
+def test_non_string_range_is_rejected(tmp_path):
     # YAML reads an unquoted 0.26 as a float.
-    assert validation_errors(tmp_path, "min_iii_version: 0.26")
+    errors = validation_errors(tmp_path, "iii_engine_version: 0.26")
+    assert any("iii_engine_version must be a semver range" in e for e in errors)
 
 
-def test_projection_carries_min_iii_version(tmp_path):
-    entry, _ = smoke_worker(tmp_path, "min_iii_version: 0.26.0")
+def test_projection_carries_iii_engine_version(tmp_path):
+    entry, _ = smoke_worker(tmp_path, 'iii_engine_version: ">=0.26.0"')
     descriptor = compile_go(tmp_path, entry)
-    assert descriptor["registry_projection"]["min_iii_version"] == "0.26.0"
+    assert descriptor["registry_projection"]["iii_engine_version"] == ">=0.26.0"
     schema = json.loads((ROOT / ".github/contracts/deployment-descriptor.schema.json").read_text())
     pytest.importorskip("jsonschema").Draft202012Validator(schema).validate(descriptor)
 
 
-def test_projection_omits_absent_min_iii_version(tmp_path):
+def test_projection_omits_absent_iii_engine_version(tmp_path):
     entry, _ = smoke_worker(tmp_path)
-    assert "min_iii_version" not in compile_go(tmp_path, entry)["registry_projection"]
+    assert "iii_engine_version" not in compile_go(tmp_path, entry)["registry_projection"]
 
 
-def test_build_payload_accepts_min_iii_version():
+def test_build_payload_accepts_iii_engine_version():
     projection = {
         "worker_name": "smoke", "type": "binary", "description": "smoke",
         "license": "Apache-2.0", "tags": [], "dependencies": [], "config": None,
         "experimental": False, "readme": "# Smoke\n", "skills": {},
-        "min_iii_version": "0.26.0",
+        "iii_engine_version": ">=0.26.0",
     }
     payload = build_payload(
         registry_projection=projection,
@@ -86,5 +83,5 @@ def test_build_payload_accepts_min_iii_version():
         interface_capture="required",
         artifacts={"kind": "rust-binary", "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/s.tgz", "sha256": "b" * 64}}},
     )
-    assert payload["min_iii_version"] == "0.26.0"
+    assert payload["iii_engine_version"] == ">=0.26.0"
     assert "skills" not in payload

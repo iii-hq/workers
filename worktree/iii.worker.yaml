@@ -2,7 +2,7 @@ iii: v1
 name: worktree
 language: rust
 deploy: binary
-min_iii_version: "0.26.0"
+iii_engine_version: ">=0.26.0"
 manifest: Cargo.toml
 license: Apache-2.0
 bin: worktree

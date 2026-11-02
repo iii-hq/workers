@@ -203,8 +203,12 @@ def resolve_release_version(current: str, kind: str, suffix: str, target: str = 
     return resolved
 
 
-# The engine version a worker needs: MAJOR.MINOR.PATCH only, no `v`, prerelease or range.
-MIN_III_VERSION_RE = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+# The engine versions a worker runs on: a node-semver range subset. Comparators are
+# `OP? MAJOR.MINOR.PATCH` (OP: >=, >, <=, <, =, ^, ~), AND-ed by whitespace, OR-ed by `||`.
+# No prerelease/build, `v` prefix, wildcards or hyphen ranges.
+_COMPARATOR = r"(?:>=|<=|>|<|=|\^|~)?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+_COMPARATOR_SET = rf"{_COMPARATOR}(?:\s+{_COMPARATOR})*"
+III_ENGINE_VERSION_RE = re.compile(rf"{_COMPARATOR_SET}(?:\s*\|\|\s*{_COMPARATOR_SET})*")
 
 
 def parse_semver(v: str) -> SemverKey:

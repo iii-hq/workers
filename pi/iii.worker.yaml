@@ -2,7 +2,7 @@ iii: v1
 name: pi
 language: javascript
 deploy: bundle
-min_iii_version: "0.26.0"
+iii_engine_version: ">=0.26.0"
 manifest: package.json
 license: Apache-2.0
 tags: [coding-agent, pi, cli, headless, terminal, console-ui, agent]
