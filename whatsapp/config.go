@@ -252,7 +252,9 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 	if local {
 		return nil
 	}
-	reload := func(ctx context.Context) error {
+	// suspect: a secret:// or env:// reference secrets::changed named, whose
+	// last value is not kept if it cannot be read again.
+	reload := func(ctx context.Context, suspect string) error {
 		if err := lockSessionContext(ctx, &mu); err != nil {
 			return err
 		}
@@ -261,6 +263,7 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 		var accepted Config
 		var pending []string
 		if err == nil {
+			cfg.Cloud = resolveCloudCredentials(ctx, busSecretResolver(client), cfg.Cloud, m.Config().Cloud, suspect)
 			accepted, pending, err = m.applyConfigSnapshotContext(ctx, cfg)
 		}
 		if err != nil {
@@ -284,7 +287,7 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 		if m.interfaceOnly {
 			return callbackOK{}, interfaceCallbackError()
 		}
-		if err := reload(ctx); err != nil {
+		if err := reload(ctx, ""); err != nil {
 			return callbackOK{}, err
 		}
 		return callbackOK{OK: true}, nil
@@ -295,8 +298,58 @@ func registerConfiguration(ctx context.Context, client *iii.Client, m *Manager, 
 	if err := client.RegisterTriggerNamespaced("whatsapp:configuration:"+ConfigID(), "configuration", "whatsapp::on-config-change", Namespace(), b); err != nil {
 		return err
 	}
-	if !m.interfaceOnly {
-		return reload(ctx)
+	// secrets::changed carries no value. Its ref is advisory: an event about a
+	// secret this configuration does not reference is ignored, and any other
+	// one only causes a re-read.
+	if err := iii.RegisterFunctionTyped(client, "whatsapp::on-secret-changed", func(ctx context.Context, request callbackRequest[secretChangedNotification]) (callbackOK, error) {
+		if m.interfaceOnly {
+			return callbackOK{}, interfaceCallbackError()
+		}
+		var event secretChangedNotification
+		if json.Unmarshal(request.Raw, &event) != nil {
+			return callbackOK{}, nil
+		}
+		ref, isRef, err := secretRef(event.Ref)
+		if !isRef || err != nil || !m.Config().Cloud.referencesSecret(ref) {
+			return callbackOK{}, nil
+		}
+		if err := reload(ctx, ref); err != nil {
+			return callbackOK{}, err
+		}
+		return callbackOK{OK: true}, nil
+	}, internal); err != nil {
+		return err
 	}
-	return nil
+	// The engine holds this binding until the secrets worker registers the
+	// trigger type; references are re-read on the refresh interval meanwhile.
+	if err := client.RegisterTriggerNamespaced("whatsapp:secrets:"+ConfigID(), "secrets::changed", "whatsapp::on-secret-changed", Namespace(), json.RawMessage(`{}`)); err != nil {
+		return err
+	}
+	if m.interfaceOnly {
+		return nil
+	}
+	go refreshSecretReferences(ctx, m, func(ctx context.Context) error { return reload(ctx, "") })
+	return reload(ctx, "")
+}
+
+// refreshSecretReferences re-reads the configuration while a reference is
+// unresolved (the secrets worker may start later), and now and then while any
+// is in use, in case a secrets::changed was missed.
+func refreshSecretReferences(ctx context.Context, m *Manager, reload func(context.Context) error) {
+	ticker := time.NewTicker(secretsRetryInterval)
+	defer ticker.Stop()
+	var sinceRead time.Duration
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		sinceRead += secretsRetryInterval
+		cloud := m.Config().Cloud
+		if len(cloud.credentialProblems()) > 0 || cloud.hasSecretRefs() && sinceRead >= secretsRefreshInterval {
+			sinceRead = 0
+			_ = reload(ctx)
+		}
+	}
 }

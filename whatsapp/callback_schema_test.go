@@ -45,7 +45,7 @@ func TestCallbackWireSchemasAndResponses(t *testing.T) {
 	}
 	defer manager.tunnel.Close(context.Background())
 	ids := []string{
-		"whatsapp::configuration-id", "whatsapp::config-status", "whatsapp::on-config-change",
+		"whatsapp::configuration-id", "whatsapp::config-status", "whatsapp::on-config-change", "whatsapp::on-secret-changed",
 		"whatsapp::cloud::webhook::verify", "whatsapp::cloud::webhook::receive",
 		"whatsapp::cloud::flows::endpoint", "whatsapp::cloud::tunnel::changed",
 	}

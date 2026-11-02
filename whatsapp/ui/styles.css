@@ -379,3 +379,9 @@
   [data-iii-ui="whatsapp"] .wa-ui-cloud-send-shortcut { display: none; }
   [data-iii-ui="whatsapp"] .wa-ui-cloud-help > span { font-size: 12px; }
 }
+[data-iii-ui="whatsapp"] .wa-ui-credential { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+[data-iii-ui="whatsapp"] .wa-ui-credential-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+[data-iii-ui="whatsapp"] .wa-ui-credential-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+[data-iii-ui="whatsapp"] .wa-ui-credential-buttons, [data-iii-ui="whatsapp"] .wa-ui-credential-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+[data-iii-ui="whatsapp"] .wa-ui-credential-edit { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+[data-iii-ui="whatsapp"] .wa-ui-credential-actions > .wa-ui-note { flex: 1 1 16ch; }

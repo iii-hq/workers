@@ -30,6 +30,9 @@ type CloudConfig struct {
 	FlowPrivateKey       string `json:"flow_private_key,omitempty" yaml:"flow_private_key,omitempty"`
 	FlowHandlerFunction  string `json:"flow_handler_function,omitempty" yaml:"flow_handler_function,omitempty"`
 	FlowHandlerNamespace string `json:"flow_handler_namespace,omitempty" yaml:"flow_handler_namespace,omitempty"`
+	// The secret:// or env:// reference behind each credential, in
+	// cloudCredentialNames order (cloud_secrets.go); never serialized.
+	credentials [4]cloudCredential
 }
 
 func DefaultCloudConfig() CloudConfig { return CloudConfig{APIVersion: "v26.0"} }
@@ -50,7 +53,12 @@ var cloudMetaIDPattern = regexp.MustCompile(`^[0-9]{1,32}$`)
 var cloudBSUIDPattern = regexp.MustCompile(`^[A-Z]{2}\.(ENT\.)?[A-Za-z0-9]{1,128}$`)
 
 func (c CloudConfig) Validate() error {
-	if c.FlowPrivateKey != "" {
+	for i, value := range c.credentialValues() {
+		if _, _, err := secretRef(*value); err != nil {
+			return fmt.Errorf("cloud.%s %s", cloudCredentialNames[i], err)
+		}
+	}
+	if _, isRef, _ := secretRef(c.FlowPrivateKey); c.FlowPrivateKey != "" && !isRef {
 		if _, err := cloudFlowPrivateKey(c.FlowPrivateKey); err != nil {
 			return err
 		}
@@ -74,7 +82,8 @@ func (c CloudConfig) Validate() error {
 			return fmt.Errorf("cloud.%s is required when Cloud API is enabled", name)
 		}
 	}
-	if c.Enabled && strings.TrimSpace(c.AccessToken) == "" {
+	// An unresolved reference is reported by cloudStatus, not rejected here.
+	if c.Enabled && strings.TrimSpace(c.AccessToken) == "" && c.credentials[0].problem == "" {
 		return errors.New("cloud.access_token is required when Cloud API is enabled")
 	}
 	for name, value := range map[string]string{"access_token": c.AccessToken, "app_secret": c.AppSecret, "verify_token": c.VerifyToken} {
@@ -140,11 +149,13 @@ type CloudStatus struct {
 	VerifyTokenSet    bool     `json:"verify_token_set"`
 	WebhookPath       string   `json:"webhook_path"`
 	WebhookReady      bool     `json:"webhook_ready"`
+	// Why a secret:// or env:// credential is unresolved, by field.
+	CredentialErrors map[string]string `json:"credential_errors"`
 }
 
 func cloudStatus(config Config) CloudStatus {
 	c := config.Cloud
-	s := CloudStatus{Enabled: c.Enabled, MissingFields: []string{}, APIVersion: c.APIVersion, BusinessAccountID: c.BusinessAccountID, PhoneNumberID: c.PhoneNumberID, AccessTokenSet: strings.TrimSpace(c.AccessToken) != "", AppSecretSet: strings.TrimSpace(c.AppSecret) != "", VerifyTokenSet: strings.TrimSpace(c.VerifyToken) != "", WebhookPath: cloudWebhookPath()}
+	s := CloudStatus{Enabled: c.Enabled, MissingFields: []string{}, APIVersion: c.APIVersion, BusinessAccountID: c.BusinessAccountID, PhoneNumberID: c.PhoneNumberID, AccessTokenSet: strings.TrimSpace(c.AccessToken) != "", AppSecretSet: strings.TrimSpace(c.AppSecret) != "", VerifyTokenSet: strings.TrimSpace(c.VerifyToken) != "", WebhookPath: cloudWebhookPath(), CredentialErrors: c.credentialProblems()}
 	for _, field := range []struct{ name, value string }{{"business_account_id", c.BusinessAccountID}, {"phone_number_id", c.PhoneNumberID}, {"access_token", c.AccessToken}, {"app_secret", c.AppSecret}, {"verify_token", c.VerifyToken}} {
 		if strings.TrimSpace(field.value) == "" {
 			s.MissingFields = append(s.MissingFields, field.name)
@@ -197,6 +208,9 @@ func cloudRequestConfig(config Config) error {
 		return cloudError("cloud_disabled", "Cloud API is disabled")
 	}
 	if strings.TrimSpace(config.Cloud.AccessToken) == "" {
+		if problem := config.Cloud.credentials[0].problem; problem != "" {
+			return cloudError("cloud_not_configured", "Cloud API access token is unavailable: "+problem)
+		}
 		return cloudError("cloud_not_configured", "Cloud API access token is missing")
 	}
 	if err := config.Cloud.Validate(); err != nil {
