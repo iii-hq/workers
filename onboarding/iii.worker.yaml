@@ -2,6 +2,7 @@ iii: v1
 name: onboarding
 language: javascript
 deploy: bundle
+min_iii_version: "0.26.0"
 license: Apache-2.0
 manifest: package.json
 tags: [onboarding, learn-iii, tour, console, ui, docs]

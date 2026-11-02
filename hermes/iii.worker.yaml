@@ -2,6 +2,7 @@ iii: v1
 name: hermes
 language: python
 deploy: image
+min_iii_version: "0.26.0"
 manifest: pyproject.toml
 license: Apache-2.0
 tags: [agent, messaging, chat, webhook, multi-channel]

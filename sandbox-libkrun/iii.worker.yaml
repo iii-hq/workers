@@ -2,6 +2,7 @@ iii: v1
 name: sandbox-libkrun
 language: rust
 deploy: binary
+min_iii_version: "0.26.0"
 manifest: Cargo.toml
 license: Elastic-2.0
 bin: sandbox-libkrun

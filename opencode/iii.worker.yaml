@@ -2,6 +2,7 @@ iii: v1
 name: opencode
 language: javascript
 deploy: bundle
+min_iii_version: "0.26.0"
 manifest: package.json
 license: Apache-2.0
 tags: [coding-agent, opencode, cli, headless, agent]
