@@ -855,7 +855,9 @@ fn condition_failure_text(binding: &Binding, skip: &Skip) -> String {
          binding stays armed and every fire will keep skipping until the condition call \
          succeeds. If the condition is misconfigured, unregister the binding, re-register it \
          corrected, and then read the watched state once — events from before the new \
-         registration will never fire it.",
+         registration will never fire it. If that read shows every write the condition awaits \
+         has already landed, unregister the re-registered binding before answering: an armed \
+         one-shot wake keeps this session parked.",
         binding.id
     )
 }
@@ -1180,6 +1182,10 @@ mod tests {
         assert!(
             text.contains("read the watched state once"),
             "the reconcile step is the half agents keep missing: {text}"
+        );
+        assert!(
+            text.contains("unregister the re-registered binding before answering"),
+            "an armed one-shot wake that can no longer fire keeps the session parked: {text}"
         );
 
         // A runaway reason is bounded, never dropped.
