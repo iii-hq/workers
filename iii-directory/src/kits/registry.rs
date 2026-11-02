@@ -344,11 +344,13 @@ pub struct HttpKitRegistry {
     base: String,
     timeout_ms: u64,
     blobs: Mutex<HashMap<String, String>>,
+    iii_version: Option<String>,
 }
 
 impl HttpKitRegistry {
-    pub fn new(base: &str, timeout_ms: u64) -> Self {
+    pub fn new(base: &str, timeout_ms: u64, iii_version: Option<String>) -> Self {
         Self {
+            iii_version,
             base: base.trim_end_matches('/').to_string(),
             timeout_ms,
             blobs: Mutex::new(HashMap::new()),
@@ -365,17 +367,16 @@ impl HttpKitRegistry {
         query: &[(&str, &str)],
     ) -> Result<Option<reqwest::Response>, String> {
         let client = build_http_client(self.timeout_ms)?;
-        let response = client
-            .get(self.url(path))
-            .query(query)
-            .send()
-            .await
-            .map_err(|_| unreachable_registry())?;
+        let mut req = client.get(self.url(path)).query(query);
+        if let Some(v) = &self.iii_version {
+            req = req.query(&[("iii_version", v.as_str())]);
+        }
+        let response = req.send().await.map_err(|_| unreachable_registry())?;
         if response.status().as_u16() == 404 {
             return Ok(None);
         }
         if !response.status().is_success() {
-            return Err(registry_status(response.status().as_u16()));
+            return Err(registry_failure(response).await);
         }
         Ok(Some(response))
     }
@@ -394,6 +395,22 @@ impl HttpKitRegistry {
             None => Ok(None),
         }
     }
+}
+
+/// A failed registry response as an error: a 409 `incompatible_engine` becomes
+/// D521 with the registry's own text, anything else the generic D520.
+async fn registry_failure(response: reqwest::Response) -> String {
+    let status = response.status().as_u16();
+    if status == 409 {
+        let body: serde_json::Value = response.json().await.unwrap_or_default();
+        if body["code"] == "incompatible_engine" {
+            let msg = body["error"]
+                .as_str()
+                .unwrap_or("this kit needs a newer iii");
+            return format!("D521 incompatible_engine: {msg}");
+        }
+    }
+    registry_status(status)
 }
 
 fn unreachable_registry() -> String {
@@ -498,12 +515,12 @@ impl KitRegistry for HttpKitRegistry {
         let client = build_http_client(self.timeout_ms)?;
         let response = client
             .post(self.url("/k/updates"))
-            .json(&serde_json::json!({ "kits": queries }))
+            .json(&serde_json::json!({ "kits": queries, "iii_version": self.iii_version }))
             .send()
             .await
             .map_err(|_| unreachable_registry())?;
         if !response.status().is_success() {
-            return Err(registry_status(response.status().as_u16()));
+            return Err(registry_failure(response).await);
         }
         let body: UpdatesEnvelope = response
             .json()
@@ -612,7 +629,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let reg = HttpKitRegistry::new(&server.uri(), 5_000);
+        let reg = HttpKitRegistry::new(&server.uri(), 5_000, None);
         let detail = reg
             .detail("acme/kanban-team", "latest")
             .await
@@ -642,9 +659,86 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let reg = HttpKitRegistry::new(&server.uri(), 5_000);
+        let reg = HttpKitRegistry::new(&server.uri(), 5_000, None);
         assert_eq!(reg.blob(&sha).await.unwrap().as_deref(), Some("# body\n"));
         assert_eq!(reg.blob(&sha).await.unwrap().as_deref(), Some("# body\n"));
         assert_eq!(reg.blob("not-a-sha").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn detail_sends_iii_version_query() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/k/acme/missing"))
+            .and(query_param("iii_version", "0.26.0"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let reg = HttpKitRegistry::new(&server.uri(), 5_000, Some("0.26.0".into()));
+        assert!(reg
+            .detail("acme/missing", "latest")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn updates_sends_iii_version_in_body() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/k/updates"))
+            .and(body_partial_json(
+                serde_json::json!({"iii_version": "0.26.0"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"kits": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let reg = HttpKitRegistry::new(&server.uri(), 5_000, Some("0.26.0".into()));
+        let q = UpdateQuery {
+            kit: "acme/k".into(),
+            requested: "latest".into(),
+            version: "1.0.0".into(),
+        };
+        reg.updates(&[q]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn incompatible_engine_409_maps_to_d521() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let body = serde_json::json!({
+            "error": "acme/k requires iii >= 0.26.0, running 0.25.1; run: iii update",
+            "code": "incompatible_engine",
+            "required_iii_version": "0.26.0"
+        });
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(&body))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(&body))
+            .mount(&server)
+            .await;
+        let reg = HttpKitRegistry::new(&server.uri(), 5_000, Some("0.25.1".into()));
+        let want = "D521 incompatible_engine: acme/k requires iii >= 0.26.0";
+        let err = reg.detail("acme/k", "latest").await.unwrap_err();
+        assert!(err.starts_with(want), "{err}");
+        let q = UpdateQuery {
+            kit: "acme/k".into(),
+            requested: "latest".into(),
+            version: "1.0.0".into(),
+        };
+        let err = reg.updates(&[q]).await.unwrap_err();
+        assert!(err.starts_with(want), "{err}");
     }
 }

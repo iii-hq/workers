@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -165,17 +165,43 @@ pub struct IgnoreOutput {
 /// The registry client, rebuilt only when `registry_url` changes so its blob
 /// cache survives across calls.
 #[derive(Default)]
-struct RegistryCell(Mutex<Option<(String, Arc<HttpKitRegistry>)>>);
+struct RegistryCell {
+    client: Mutex<Option<(String, Arc<HttpKitRegistry>)>>,
+    /// The live engine version, fetched once; `None` when the engine did not say.
+    engine_version: tokio::sync::OnceCell<Option<String>>,
+}
 
 impl RegistryCell {
-    fn get(&self, cfg: &SkillsConfig) -> Arc<HttpKitRegistry> {
-        let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
+    async fn get(&self, iii: &IIIClient, cfg: &SkillsConfig) -> Arc<HttpKitRegistry> {
+        let iii_version = self
+            .engine_version
+            .get_or_init(|| async {
+                let res = iii
+                    .call(CallRequest {
+                        function_id: "engine::health::check".into(),
+                        payload: json!({}),
+                        action: None,
+                        timeout_ms: Some(5_000),
+                    })
+                    .await;
+                match res {
+                    Ok(v) => v.get("version").and_then(Value::as_str).map(String::from),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "could not read the engine version; the registry will treat this iii as older than 0.26");
+                        None
+                    }
+                }
+            })
+            .await
+            .clone();
+        let mut slot = self.client.lock().unwrap_or_else(|p| p.into_inner());
         match &*slot {
             Some((base, reg)) if base == cfg.registry_base() => reg.clone(),
             _ => {
                 let reg = Arc::new(HttpKitRegistry::new(
                     cfg.registry_base(),
                     cfg.download_timeout_ms,
+                    iii_version,
                 ));
                 *slot = Some((cfg.registry_base().to_string(), reg.clone()));
                 reg
@@ -196,10 +222,10 @@ struct Ctx {
 }
 
 impl Ctx {
-    fn env(&self) -> (Arc<SkillsConfig>, KitsEnv, Arc<HttpKitRegistry>) {
+    async fn env(&self) -> (Arc<SkillsConfig>, KitsEnv, Arc<HttpKitRegistry>) {
         let cfg = self.cfg.load_full();
         let env = KitsEnv::from_config(&cfg);
-        let reg = self.registry.get(&cfg);
+        let reg = self.registry.get(&self.iii, &cfg).await;
         (cfg, env, reg)
     }
 
@@ -288,7 +314,7 @@ impl Ctx {
     fn check_kit_updates(&self, kit: String) {
         let ctx = self.clone();
         tokio::spawn(async move {
-            let (_cfg, env, reg) = ctx.env();
+            let (_cfg, env, reg) = ctx.env().await;
             match service::check_updates(&env, reg.as_ref(), Some(&kit)).await {
                 Ok((_, true)) => ctx.emit(json!({ "op": "updates", "kit": kit })).await,
                 Ok(_) => {}
@@ -345,7 +371,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: DownloadKitInput| {
             let ctx = c.clone();
             async move {
-                let (cfg, env, reg) = ctx.env();
+                let (cfg, env, reg) = ctx.env().await;
                 let compose = EngineCompose::new(ctx.iii.clone());
                 let _guard = if req.apply.unwrap_or(false) {
                     Some(ctx.apply_lock.clone().lock_owned().await)
@@ -386,7 +412,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: ApplyInput| {
             let ctx = c.clone();
             async move {
-                let (cfg, env, reg) = ctx.env();
+                let (cfg, env, reg) = ctx.env().await;
                 let compose = EngineCompose::new(ctx.iii.clone());
                 let _guard = ctx.apply_lock.clone().lock_owned().await;
                 let kit = store::load(&env.plans_dir, &req.plan_id)
@@ -428,7 +454,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: PlanUpdateInput| {
             let ctx = c.clone();
             async move {
-                let (cfg, env, reg) = ctx.env();
+                let (cfg, env, reg) = ctx.env().await;
                 let compose = EngineCompose::new(ctx.iii.clone());
                 let out = service::plan_update(
                     &env,
@@ -457,7 +483,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: CheckUpdatesInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, reg) = ctx.env();
+                let (_cfg, env, reg) = ctx.env().await;
                 let (cache, changed) =
                     service::check_updates(&env, reg.as_ref(), req.kit.as_deref())
                         .await
@@ -482,7 +508,7 @@ pub fn register(
         RegisterFunction::new_async(move |_req: ListInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, _reg) = ctx.env();
+                let (_cfg, env, _reg) = ctx.env().await;
                 service::list(&env).map_err(Error::Handler)
             }
         })
@@ -498,7 +524,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: GetInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, reg) = ctx.env();
+                let (_cfg, env, reg) = ctx.env().await;
                 service::get(&env, reg.as_ref(), &req.kit, req.registry.unwrap_or(false))
                     .await
                     .map_err(Error::Handler)
@@ -517,7 +543,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: KitInput| {
             let ctx = c.clone();
             async move {
-                let (cfg, env, _reg) = ctx.env();
+                let (cfg, env, _reg) = ctx.env().await;
                 let compose = EngineCompose::new(ctx.iii.clone());
                 let out = service::plan_remove(&env, &compose, &req.kit)
                     .await
@@ -540,7 +566,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: PlanIdInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, _reg) = ctx.env();
+                let (_cfg, env, _reg) = ctx.env().await;
                 let kit = store::load(&env.plans_dir, &req.plan_id)
                     .ok()
                     .flatten()
@@ -565,7 +591,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: PlanGetInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, _reg) = ctx.env();
+                let (_cfg, env, _reg) = ctx.env().await;
                 let record = store::load(&env.plans_dir, &req.plan_id)
                     .map_err(Error::Handler)?
                     .ok_or_else(|| {
@@ -594,7 +620,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: IgnoreInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, _reg) = ctx.env();
+                let (_cfg, env, _reg) = ctx.env().await;
                 let mut lock = env.read_lock().map_err(Error::Handler)?;
                 crate::kits::apply::set_ignored(
                     &mut lock,
@@ -651,7 +677,7 @@ pub fn register(
         RegisterFunction::new_async(move |req: DiffInput| {
             let ctx = c.clone();
             async move {
-                let (_cfg, env, reg) = ctx.env();
+                let (_cfg, env, reg) = ctx.env().await;
                 service::file_sides(&env, reg.as_ref(), &req.kit, &req.path)
                     .await
                     .map_err(Error::Handler)
@@ -668,7 +694,7 @@ pub fn register(
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(15)).await;
         loop {
-            let (_cfg, env, reg) = c.env();
+            let (_cfg, env, reg) = c.env().await;
             if env.read_lock().map(|l| !l.kits.is_empty()).unwrap_or(false) {
                 match service::check_updates(&env, reg.as_ref(), None).await {
                     Ok((_, true)) => c.emit(json!({ "op": "updates" })).await,
