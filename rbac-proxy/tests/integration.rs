@@ -242,8 +242,39 @@ fn downstream(proxy_port: u16) -> IIIClient {
     )
 }
 
+/// Runs the end-to-end body in a child with a private `HOME`: its SDK clients
+/// would otherwise write `iii ps` markers under the real `~/.iii/run`.
+#[test]
+fn end_to_end_rbac_through_proxy() {
+    let home = std::env::temp_dir().join(format!("rbac-proxy-itest-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("create the private HOME");
+    let output = Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "end_to_end_child", "--ignored", "--nocapture"])
+        .env("HOME", &home)
+        .env("RBAC_PROXY_E2E_CHILD", "1")
+        .output();
+    let _ = std::fs::remove_dir_all(&home);
+    let output = output.expect("run the end-to-end child");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // A filter that matches nothing also exits 0.
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{stderr}"
+    );
+    eprint!("{stderr}");
+}
+
 #[tokio::test]
-async fn end_to_end_rbac_through_proxy() {
+#[ignore = "isolated subprocess invoked by end_to_end_rbac_through_proxy"]
+async fn end_to_end_child() {
+    // `--ignored` runs would otherwise use the real HOME; only the parent sets this.
+    if std::env::var_os("RBAC_PROXY_E2E_CHILD").is_none() {
+        eprintln!("skipping: runs only as the isolated child of end_to_end_rbac_through_proxy");
+        return;
+    }
     let Some(h) = boot().await else {
         eprintln!("skipping: prerequisites not met (see logs above)");
         return;
