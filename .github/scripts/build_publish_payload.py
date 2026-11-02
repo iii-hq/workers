@@ -312,7 +312,10 @@ def build_payload(
         "worker_name", "type", "description", "license", "tags",
         "dependencies", "config", "experimental", "readme",
     }
-    if not isinstance(registry_projection, dict) or set(registry_projection) != required:
+    optional = {"min_iii_version", "skills"}
+    if not isinstance(registry_projection, dict) or not (
+        required <= set(registry_projection) <= required | optional
+    ):
         raise ValueError("registry_projection differs from the current Registry metadata contract")
     config = registry_projection["config"]
     if config is not None and not isinstance(config, dict):

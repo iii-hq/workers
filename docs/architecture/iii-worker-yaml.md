@@ -36,6 +36,7 @@ public field is present the compiler requires the two lists to match.
 | `runtime` / `scripts.start` | Public local and installed runtime definition | `iii worker`, Compose, release compiler |
 | `scripts.install` | Build command for local install | `compose::add` (local source) |
 | `tags` | Discovery aliases included in the compiled Registry projection | release compiler |
+| `min_iii_version` | Oldest engine the worker runs on, `MAJOR.MINOR.PATCH` (e.g. `0.26.0`; no `v`, prerelease or range). Optional; carried into the Registry publish payload | `validate_worker.py`, release compiler |
 
 `tags` must be a list of strings. The publish pipeline trims values, converts them to lowercase,
 removes duplicates, and omits the field when no non-empty tags remain.
@@ -105,6 +106,7 @@ See [`ide/iii.worker.yaml`](../../ide/iii.worker.yaml).
 ## Validation
 
 - `pr-checks` parses the file via [`validate_worker.py`](../../.github/scripts/validate_worker.py).
+- `validate_worker.py` rejects a `min_iii_version` that is not `MAJOR.MINOR.PATCH`.
 - `deployment_compiler.py` rejects public/private deploy-shape mismatches.
 
 ## Related

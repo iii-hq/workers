@@ -64,6 +64,15 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     ):
         hard(f"{worker}/iii.worker.yaml dependencies must be a string-to-string mapping")
 
+    min_iii_version = manifest.raw.get("min_iii_version")
+    if "min_iii_version" in manifest.raw and not (
+        isinstance(min_iii_version, str) and _lib.MIN_III_VERSION_RE.match(min_iii_version)
+    ):
+        hard(
+            f"{worker}/iii.worker.yaml min_iii_version must be MAJOR.MINOR.PATCH "
+            f"(e.g. 0.26.0), got {min_iii_version!r}"
+        )
+
     if "interface_smoke" in manifest.raw:
         hard(f"{worker}/iii.worker.yaml interface_smoke was replaced by registry_interface")
     registry_interface = manifest.raw.get("registry_interface", True)

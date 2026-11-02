@@ -37,7 +37,8 @@ gates still apply only to workers the PR author edited).
 1. `README.md` exists and is non-empty
 2. the `.deploy/workers.yaml` entry parses with required private build fields
 3. `iii.worker.yaml` remains valid and agrees with the catalog on identity,
-   package manifest, deploy shape and semver dependencies
+   package manifest, deploy shape and semver dependencies; `min_iii_version`,
+   when present, is `MAJOR.MINOR.PATCH`
 4. Package-manifest version ≥ version on base branch
 5. `tests/` exists and is non-empty
 6. `screenshots/screenshots.yaml`, when present, passes the Registry's limits
