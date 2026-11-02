@@ -887,8 +887,8 @@
 /* --- harness::ask card ------------------------------------------------ */
 /* The chat feed's display slot. Hierarchy is surfaces only: the card sits on
    the canvas tone like the metrics card; an option row takes the hover and
-   selected washes. Radios and checkboxes reuse the shared checkbox recipe;
-   only the radio's round shape and dot are drawn here. */
+   selected washes. Every option is the shared checkbox recipe, single- and
+   multi-select alike. */
 [data-iii-ui="harness"] .harness-ui-ask {
   display: flex;
   flex-direction: column;
@@ -971,30 +971,14 @@
   color: var(--color-ink-faint);
   overflow-wrap: anywhere;
 }
-[data-iii-ui="harness"] .harness-ui-ask-radio .iii-ui-checkbox__control {
-  border-radius: 9999px;
+/* An unticked box keeps a visible edge on the card in both themes (the recipe's
+   control edge is a 7% white hairline in dark), a step stronger on hover. */
+[data-iii-ui="harness"] .harness-ui-ask-choice .iii-ui-checkbox__control:not(:has(input:checked)) {
+  border-color: var(--color-ink-ghost);
+  background: transparent;
 }
-/* A radio matches `:indeterminate` while no radio in its group is checked,
-   and the checkbox recipe paints indeterminate with the accent fill. An
-   unchecked radio keeps the resting box, and the hover wash the recipe
-   withholds from indeterminate boxes. */
-[data-iii-ui="harness"] .harness-ui-ask-radio .iii-ui-checkbox__control:not(:has(input:checked)) {
-  border-color: var(--color-edge);
-  background: var(--color-surface);
-}
-[data-iii-ui="harness"] .harness-ui-ask-radio:hover .iii-ui-checkbox__control:not(:has(input:checked)) {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="harness"] .harness-ui-ask-dot {
-  display: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 9999px;
-  background: var(--color-accent-fg);
-  pointer-events: none;
-}
-[data-iii-ui="harness"] .harness-ui-ask-radio .iii-ui-checkbox__control:has(input:checked) .harness-ui-ask-dot {
-  display: block;
+[data-iii-ui="harness"] .harness-ui-ask-option:hover .harness-ui-ask-choice .iii-ui-checkbox__control:not(:has(input:checked)) {
+  border-color: var(--color-ink-faint);
 }
 [data-iii-ui="harness"] .harness-ui-ask-other {
   display: flex;

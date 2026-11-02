@@ -1875,6 +1875,307 @@ export interface PopoverContentProps extends React.HTMLAttributes<HTMLDivElement
     scaled in from its trigger. */
 export declare const PopoverContent: React.ComponentType<PopoverContentProps & React.RefAttributes<HTMLDivElement>>
 
+/* Tabs — Base UI tabs in the shadcn look. `variant="line"` on the list is
+   the underlined strip (a page's panel switcher); the default is the muted
+   pill track. Values are strings here; Base UI accepts any value. */
+export interface ShadcnTabsProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'defaultValue' | 'onChange'> {
+  value?: string
+  defaultValue?: string
+  onValueChange?(value: string): void
+  orientation?: 'horizontal' | 'vertical'
+}
+export declare const ShadcnTabs: React.ComponentType<ShadcnTabsProps>
+export interface ShadcnTabsListProps extends React.HTMLAttributes<HTMLDivElement> {
+  variant?: 'default' | 'line'
+}
+export declare const ShadcnTabsList: React.ComponentType<ShadcnTabsListProps>
+export interface ShadcnTabsTriggerProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'value'> {
+  value: string
+  disabled?: boolean
+}
+export declare const ShadcnTabsTrigger: React.ComponentType<ShadcnTabsTriggerProps>
+export interface ShadcnTabsContentProps extends React.HTMLAttributes<HTMLDivElement> {
+  value: string
+  keepMounted?: boolean
+}
+export declare const ShadcnTabsContent: React.ComponentType<ShadcnTabsContentProps>
+
+/** The shadcn text input: 32px, `rounded-lg`, hairline `input` border. */
+export declare const ShadcnInput: React.ComponentType<
+  React.InputHTMLAttributes<HTMLInputElement> & React.RefAttributes<HTMLInputElement>
+>
+
+export type ShadcnBadgeVariant = 'default' | 'secondary' | 'destructive' | 'outline' | 'ghost' | 'link'
+export interface ShadcnBadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
+  variant?: ShadcnBadgeVariant
+}
+/** A 20px pill label (`text-xs`); `outline` and `secondary` are the quiet ones. */
+export declare const ShadcnBadge: React.ComponentType<ShadcnBadgeProps>
+
+/* Select — Base UI select. Pass `items` (value → label) to the root so the
+   trigger's `ShadcnSelectValue` shows the label rather than the raw value. */
+export interface ShadcnSelectProps {
+  value?: string | null
+  defaultValue?: string | null
+  onValueChange?(value: string | null): void
+  items?: Record<string, React.ReactNode> | ReadonlyArray<{ value: string; label: React.ReactNode }>
+  open?: boolean
+  onOpenChange?(open: boolean): void
+  disabled?: boolean
+  name?: string
+  children?: React.ReactNode
+}
+export declare const ShadcnSelect: React.ComponentType<ShadcnSelectProps>
+export interface ShadcnSelectTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  size?: 'sm' | 'default'
+}
+export declare const ShadcnSelectTrigger: React.ComponentType<ShadcnSelectTriggerProps>
+export interface ShadcnSelectValueProps extends Omit<React.HTMLAttributes<HTMLSpanElement>, 'children'> {
+  placeholder?: React.ReactNode
+  children?: React.ReactNode | ((value: unknown) => React.ReactNode)
+}
+export declare const ShadcnSelectValue: React.ComponentType<ShadcnSelectValueProps>
+export interface ShadcnSelectContentProps extends React.HTMLAttributes<HTMLDivElement> {
+  side?: 'top' | 'right' | 'bottom' | 'left' | 'inline-start' | 'inline-end'
+  align?: 'start' | 'center' | 'end'
+  sideOffset?: number
+  alignOffset?: number
+  /** Overlay the selected item on the trigger (macOS style). Default true. */
+  alignItemWithTrigger?: boolean
+}
+export declare const ShadcnSelectContent: React.ComponentType<ShadcnSelectContentProps>
+export interface ShadcnSelectItemProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'children'> {
+  value: string
+  disabled?: boolean
+  label?: string
+  children?: React.ReactNode
+}
+export declare const ShadcnSelectItem: React.ComponentType<ShadcnSelectItemProps>
+export declare const ShadcnSelectGroup: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const ShadcnSelectLabel: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const ShadcnSelectSeparator: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+
+/* DropdownMenu — Base UI menu in the shadcn look (Inter 14px rows, 12px
+   muted group labels). Triggers take `render` in place of `asChild`. */
+export interface ShadcnDropdownMenuProps {
+  open?: boolean
+  defaultOpen?: boolean
+  onOpenChange?(open: boolean): void
+  modal?: boolean
+  children?: React.ReactNode
+}
+export declare const ShadcnDropdownMenu: React.ComponentType<ShadcnDropdownMenuProps>
+export interface ShadcnDropdownMenuTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  render?: React.ReactElement
+}
+export declare const ShadcnDropdownMenuTrigger: React.ComponentType<ShadcnDropdownMenuTriggerProps>
+export interface ShadcnDropdownMenuContentProps extends React.HTMLAttributes<HTMLDivElement> {
+  side?: 'top' | 'right' | 'bottom' | 'left' | 'inline-start' | 'inline-end'
+  align?: 'start' | 'center' | 'end'
+  sideOffset?: number
+  alignOffset?: number
+}
+export declare const ShadcnDropdownMenuContent: React.ComponentType<ShadcnDropdownMenuContentProps>
+export declare const ShadcnDropdownMenuGroup: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export interface ShadcnDropdownMenuLabelProps extends React.HTMLAttributes<HTMLDivElement> {
+  inset?: boolean
+}
+export declare const ShadcnDropdownMenuLabel: React.ComponentType<ShadcnDropdownMenuLabelProps>
+export interface ShadcnDropdownMenuItemProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onClick'> {
+  inset?: boolean
+  variant?: 'default' | 'destructive'
+  disabled?: boolean
+  closeOnClick?: boolean
+  onClick?: React.MouseEventHandler<HTMLElement>
+}
+export declare const ShadcnDropdownMenuItem: React.ComponentType<ShadcnDropdownMenuItemProps>
+export interface ShadcnDropdownMenuCheckboxItemProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onChange'> {
+  checked?: boolean
+  onCheckedChange?(checked: boolean): void
+  disabled?: boolean
+  inset?: boolean
+}
+export declare const ShadcnDropdownMenuCheckboxItem: React.ComponentType<ShadcnDropdownMenuCheckboxItemProps>
+export interface ShadcnDropdownMenuRadioGroupProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onChange' | 'defaultValue'> {
+  value?: string
+  onValueChange?(value: string): void
+}
+export declare const ShadcnDropdownMenuRadioGroup: React.ComponentType<ShadcnDropdownMenuRadioGroupProps>
+export interface ShadcnDropdownMenuRadioItemProps extends React.HTMLAttributes<HTMLDivElement> {
+  value: string
+  disabled?: boolean
+  inset?: boolean
+}
+export declare const ShadcnDropdownMenuRadioItem: React.ComponentType<ShadcnDropdownMenuRadioItemProps>
+export declare const ShadcnDropdownMenuSeparator: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+/** A right-aligned chord hint inside a menu item. */
+export declare const ShadcnDropdownMenuShortcut: React.ComponentType<React.HTMLAttributes<HTMLSpanElement>>
+
+/* Table — plain `<table>` parts in the shadcn look: 40px heads, `p-2`
+   cells, hairline row rules, `muted` hover. The table sits in its own
+   `overflow-x-auto` container. All DOM props pass through, so a roving
+   cursor's `role`/`tabIndex`/`data-*` work as on bare elements. */
+export declare const ShadcnTable: React.ComponentType<React.TableHTMLAttributes<HTMLTableElement>>
+export declare const ShadcnTableHeader: React.ComponentType<React.HTMLAttributes<HTMLTableSectionElement>>
+export declare const ShadcnTableBody: React.ComponentType<React.HTMLAttributes<HTMLTableSectionElement>>
+export declare const ShadcnTableRow: React.ComponentType<React.HTMLAttributes<HTMLTableRowElement>>
+export declare const ShadcnTableHead: React.ComponentType<React.ThHTMLAttributes<HTMLTableCellElement>>
+export declare const ShadcnTableCell: React.ComponentType<React.TdHTMLAttributes<HTMLTableCellElement>>
+
+/* Base UI parts take `render` instead of Radix's `asChild`: pass the element
+   the part should render as (`render={<ShadcnButton variant="ghost" />}`)
+   and its props merge onto it. */
+type ShadcnRender = React.ReactElement
+
+/* Button — the console's one button. `default` is the primary action,
+   `secondary` the alternative, `destructive` delete/remove; `ghost` and the
+   `icon*` sizes are toolbar chrome. Inter 14px, rounded-xl. */
+export type ShadcnButtonVariant = 'default' | 'secondary' | 'outline' | 'destructive' | 'ghost' | 'link'
+export type ShadcnButtonSize = 'default' | 'xs' | 'sm' | 'lg' | 'icon' | 'icon-xs' | 'icon-sm' | 'icon-lg'
+export interface ShadcnButtonProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'className'> {
+  className?: string
+  variant?: ShadcnButtonVariant
+  size?: ShadcnButtonSize
+  render?: ShadcnRender
+}
+export declare const ShadcnButton: React.ComponentType<ShadcnButtonProps & React.RefAttributes<HTMLButtonElement>>
+
+/* Dialog — Base UI dialog in the shadcn look: a 12px-radius popover panel
+   over a light blurred scrim, `--dialog-max-width` (default 24rem) wide.
+   `ShadcnDialogFooter` is the muted action band. The panel stays under the
+   worker's `[data-iii-ui]` scope. */
+export interface ShadcnDialogProps {
+  open?: boolean
+  defaultOpen?: boolean
+  onOpenChange?: (open: boolean) => void
+  modal?: boolean
+  children?: React.ReactNode
+}
+export declare const ShadcnDialog: React.ComponentType<ShadcnDialogProps>
+export interface ShadcnDialogTriggerProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'className'> {
+  className?: string
+  render?: ShadcnRender
+}
+export declare const ShadcnDialogTrigger: React.ComponentType<ShadcnDialogTriggerProps>
+export declare const ShadcnDialogClose: React.ComponentType<ShadcnDialogTriggerProps>
+export interface ShadcnDialogContentProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'className'> {
+  className?: string
+  /** The corner ✕ (default true). */
+  showCloseButton?: boolean
+  initialFocus?: boolean | React.RefObject<HTMLElement | null>
+  finalFocus?: boolean | React.RefObject<HTMLElement | null>
+}
+export declare const ShadcnDialogContent: React.ComponentType<ShadcnDialogContentProps>
+export declare const ShadcnDialogHeader: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export interface ShadcnDialogFooterProps extends React.HTMLAttributes<HTMLDivElement> {
+  showCloseButton?: boolean
+}
+export declare const ShadcnDialogFooter: React.ComponentType<ShadcnDialogFooterProps>
+export declare const ShadcnDialogTitle: React.ComponentType<Omit<React.HTMLAttributes<HTMLHeadingElement>, 'className'> & { className?: string }>
+export declare const ShadcnDialogDescription: React.ComponentType<Omit<React.HTMLAttributes<HTMLParagraphElement>, 'className'> & { className?: string }>
+
+/* Tooltip — the inverse 12px pill with an arrow. The console mounts the
+   provider (shared delay group) at its root. */
+export interface ShadcnTooltipProps {
+  open?: boolean
+  defaultOpen?: boolean
+  onOpenChange?: (open: boolean) => void
+  disabled?: boolean
+  children?: React.ReactNode
+}
+export declare const ShadcnTooltip: React.ComponentType<ShadcnTooltipProps>
+export interface ShadcnTooltipTriggerProps extends Omit<React.HTMLAttributes<HTMLElement>, 'className'> {
+  className?: string
+  render?: ShadcnRender
+  delay?: number
+}
+export declare const ShadcnTooltipTrigger: React.ComponentType<ShadcnTooltipTriggerProps>
+export interface ShadcnTooltipContentProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'className'> {
+  className?: string
+  side?: 'top' | 'bottom' | 'left' | 'right' | 'inline-start' | 'inline-end'
+  sideOffset?: number
+  align?: 'start' | 'center' | 'end'
+}
+export declare const ShadcnTooltipContent: React.ComponentType<ShadcnTooltipContentProps>
+
+/* Card — rounded-xl card with a hairline ring; `size="sm"` tightens it. */
+export interface ShadcnCardProps extends React.HTMLAttributes<HTMLDivElement> {
+  size?: 'default' | 'sm'
+}
+export declare const ShadcnCard: React.ComponentType<ShadcnCardProps>
+export declare const ShadcnCardHeader: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const ShadcnCardTitle: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const ShadcnCardDescription: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const ShadcnCardAction: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const ShadcnCardContent: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const ShadcnCardFooter: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+
+/* Progress — a 4px muted track; `value` 0–100 (null = indeterminate).
+   Children (a label, the value) sit above the track. */
+export interface ShadcnProgressProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'className'> {
+  className?: string
+  value: number | null
+  max?: number
+}
+export declare const ShadcnProgress: React.ComponentType<ShadcnProgressProps>
+
+/* Checkbox and Switch — Base UI controls. `onCheckedChange` gets the new
+   state first. */
+export interface ShadcnCheckedProps extends Omit<React.HTMLAttributes<HTMLElement>, 'className' | 'onChange' | 'defaultChecked'> {
+  className?: string
+  checked?: boolean
+  defaultChecked?: boolean
+  indeterminate?: boolean
+  disabled?: boolean
+  onCheckedChange?: (checked: boolean) => void
+}
+export declare const ShadcnCheckbox: React.ComponentType<ShadcnCheckedProps>
+export declare const ShadcnSwitch: React.ComponentType<Omit<ShadcnCheckedProps, 'indeterminate'>>
+
+/* Textarea — the shadcn field, auto-growing with its content
+   (`field-sizing: content`). */
+export declare const ShadcnTextarea: React.ComponentType<
+  React.TextareaHTMLAttributes<HTMLTextAreaElement> & React.RefAttributes<HTMLTextAreaElement>
+>
+
+/* Avatar — a round image with a fallback (initials); `size` sm 24px,
+   default 32px, lg 40px. `ShadcnAvatarGroup` overlaps a stack of them. */
+export interface ShadcnAvatarProps extends Omit<React.HTMLAttributes<HTMLSpanElement>, 'className'> {
+  className?: string
+  size?: 'default' | 'sm' | 'lg'
+}
+export declare const ShadcnAvatar: React.ComponentType<ShadcnAvatarProps>
+export declare const ShadcnAvatarImage: React.ComponentType<
+  Omit<React.ImgHTMLAttributes<HTMLImageElement>, 'className'> & { className?: string }
+>
+export declare const ShadcnAvatarFallback: React.ComponentType<
+  Omit<React.HTMLAttributes<HTMLSpanElement>, 'className'> & { className?: string }
+>
+export declare const ShadcnAvatarGroup: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const ShadcnAvatarGroupCount: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+
+/* Kbd — a muted key cap; `ShadcnKbdGroup` spaces a chord. */
+export declare const ShadcnKbd: React.ComponentType<React.HTMLAttributes<HTMLElement>>
+export declare const ShadcnKbdGroup: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+
+/* Skeleton — a pulsing muted block; size it with your own class. */
+export declare const ShadcnSkeleton: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+
+/* Dropdown submenu — a row that opens a nested menu to its side. */
+export interface ShadcnDropdownMenuSubProps {
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  children?: React.ReactNode
+}
+export declare const ShadcnDropdownMenuSub: React.ComponentType<ShadcnDropdownMenuSubProps>
+export interface ShadcnDropdownMenuSubTriggerProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'className'> {
+  className?: string
+  inset?: boolean
+  disabled?: boolean
+}
+export declare const ShadcnDropdownMenuSubTrigger: React.ComponentType<ShadcnDropdownMenuSubTriggerProps>
+export declare const ShadcnDropdownMenuSubContent: React.ComponentType<ShadcnDropdownMenuContentProps>
+
 export interface CodeEditorHandle {
   focus(): void
   /** Put the cursor on `line` (1-based, clamped), scroll the pane that holds

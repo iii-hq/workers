@@ -1,6 +1,5 @@
 import type * as React from 'react'
 import { Button } from '@/components/ui/Button'
-import { Cell } from '@/components/ui/Cell'
 import { cn } from '@/lib/utils'
 
 export interface EmptyStateAction {
@@ -17,7 +16,7 @@ interface EmptyStateProps {
   /** The one action of a full cell. `actions` adds more (first is primary). */
   action?: EmptyStateAction
   actions?: readonly EmptyStateAction[]
-  /** Inside a card or a list: no cell, 13px title, tighter padding. */
+  /** Inside a card or a list: a tinted row, 13px title, tighter padding. */
   compact?: boolean
   className?: string
 }
@@ -33,7 +32,12 @@ export function EmptyState({
 }: EmptyStateProps) {
   const all = [...(action ? [action] : []), ...(actions ?? [])]
   const buttons = all.length ? (
-    <div className={cn('flex flex-wrap gap-1.5', compact ? 'mt-2' : 'mt-3')}>
+    <div
+      className={cn(
+        'flex flex-wrap gap-1.5',
+        compact ? 'mt-2' : 'mt-5 justify-center',
+      )}
+    >
       {all.map((a) => (
         <Button key={a.label} variant="secondary" size="sm" onClick={a.onClick}>
           {a.label}
@@ -62,20 +66,25 @@ export function EmptyState({
       </div>
     )
   }
+  // The full state stands on the canvas, not in a card: a centred column of
+  // icon tile, title, one or two lines of copy, then the actions.
   return (
-    <Cell title={title} className={className}>
-      <div className="flex items-start gap-3">
-        {Icon ? (
-          <Icon
-            aria-hidden
-            className="w-4 h-4 text-ink-faint shrink-0 mt-0.5"
-          />
-        ) : null}
-        <div className="flex-1">
-          <p className="text-ink-faint">{description}</p>
-          {buttons}
+    <div
+      className={cn(
+        'flex flex-col items-center px-6 py-10 text-center font-inter',
+        className,
+      )}
+    >
+      {Icon ? (
+        <div className="mb-4 flex size-10 items-center justify-center rounded-xl border border-transparent bg-card text-ink-faint shadow-[0_0_0_1px_var(--color-card-edge),0_1px_2px_rgb(0_0_0/0.06)]">
+          <Icon aria-hidden className="size-5" />
         </div>
-      </div>
-    </Cell>
+      ) : null}
+      <p className="text-balance text-[14px] font-medium text-ink">{title}</p>
+      <p className="mt-1 max-w-[44ch] text-pretty text-[14px] leading-relaxed text-ink-faint">
+        {description}
+      </p>
+      {buttons}
+    </div>
   )
 }

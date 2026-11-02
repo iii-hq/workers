@@ -36,7 +36,7 @@ const NOTICE: Record<
 > = {
   info: {
     icon: Info,
-    box: 'bg-neutral-50 outline-neutral-200 dark:bg-neutral-900/60 dark:outline-neutral-800',
+    box: 'bg-neutral-50 outline-neutral-100 dark:bg-neutral-900/60 dark:outline-neutral-800',
     icon_: 'text-neutral-500 dark:text-neutral-400',
     title: 'text-neutral-900 dark:text-neutral-50',
   },
@@ -138,7 +138,7 @@ export function Empty({
     return (
       <div
         className={cn(
-          'flex items-start gap-3 rounded-xl border border-neutral-200 px-4 py-3.5 font-inter dark:border-neutral-800',
+          'flex items-start gap-3 rounded-xl border border-neutral-100 px-4 py-3.5 font-inter dark:border-neutral-800',
           className,
         )}
       >
@@ -176,7 +176,7 @@ export function Empty({
       )}
     >
       {Icon ? (
-        <span className="mb-1 flex size-10 items-center justify-center rounded-xl border border-neutral-200 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+        <span className="mb-1 flex size-10 items-center justify-center rounded-xl border border-neutral-100 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
           <Icon aria-hidden className="size-4" />
         </span>
       ) : null}
@@ -379,7 +379,7 @@ function ConfirmBox({
             </DialogDescription>
           ) : null}
           {details && details.length > 0 ? (
-            <ul className="mt-2 flex flex-col gap-1 rounded-xl border border-neutral-200 px-3.5 py-3 text-[13px] leading-5 text-neutral-800 dark:border-neutral-800 dark:text-neutral-200">
+            <ul className="mt-2 flex flex-col gap-1 rounded-xl border border-neutral-100 px-3.5 py-3 text-[13px] leading-5 text-neutral-800 dark:border-neutral-800 dark:text-neutral-200">
               {details.map((line, index) => (
                 <li
                   // biome-ignore lint/suspicious/noArrayIndexKey: lines are positional and may repeat
@@ -392,7 +392,7 @@ function ConfirmBox({
             </ul>
           ) : null}
         </div>
-        <div className="flex flex-wrap justify-end gap-2 border-t border-neutral-200 px-6 py-4 dark:border-neutral-800">
+        <div className="flex flex-wrap justify-end gap-2 border-t border-neutral-100 px-6 py-4 dark:border-neutral-800">
           <Button
             ref={cancelRef}
             type="button"

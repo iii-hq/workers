@@ -37,7 +37,14 @@ import {
   subscribeCompletionBellPreference,
 } from '@/lib/completion-bell'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
+import { shortcutPlatform } from '@/lib/keybindings/bindings'
+import {
+  type NewChatMode,
+  saveNewChatMode,
+  useNewChatMode,
+} from '@/lib/new-chat-mode'
 import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
+import { type SendKey, saveSendKey, useSendKey } from '@/lib/send-key'
 import {
   loadUiSoundsEnabled,
   playUiSound,
@@ -70,6 +77,22 @@ const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: 'system', label: 'System' },
   { value: 'dark', label: 'Dark' },
 ]
+
+const NEW_CHAT_MODE_OPTIONS: { value: NewChatMode; label: string }[] = [
+  { value: 'page', label: 'Blank chat' },
+  { value: 'dialog', label: 'Quick dialog' },
+]
+
+/* Spelled out rather than as key caps, so the closed trigger reads at a
+   glance; Cmd on a Mac, Ctrl everywhere else. */
+function buildSendKeyOptions(): { value: SendKey; label: string }[] {
+  const mod = shortcutPlatform() === 'mac' ? 'Cmd' : 'Ctrl'
+  return [
+    { value: 'enter', label: 'Enter' },
+    { value: 'mod-enter', label: `${mod} + Enter` },
+    { value: 'shift-enter', label: 'Shift + Enter' },
+  ]
+}
 
 const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string }[] = [
   { value: 'manual', label: 'Manual' },
@@ -104,6 +127,9 @@ export function ConsoleSettingsTab({
   const ctx = useConversationsCtxOptional()
   const approvalGateAvailable = ctx ? ctx.approvalGateAvailable : true
   const tabLimit = useTabLimit()
+  const newChatMode = useNewChatMode()
+  const sendKey = useSendKey()
+  const sendKeyOptions = useMemo(buildSendKeyOptions, [])
 
   // Deployment defaults from the approval-gate configuration entry (single source).
   const [defaultMode, setDefaultMode] = useState<PermissionMode>('manual')
@@ -326,6 +352,45 @@ export function ConsoleSettingsTab({
         </SettingsList>
       </SettingsSection>
 
+      <SettingsSection
+        id={GENERAL_ANCHOR.chat}
+        title="Chat"
+        description="How the chat composer behaves in this browser."
+      >
+        <SettingsList>
+          <SettingsRow
+            id={GENERAL_ANCHOR.sendKey}
+            label="Send messages with"
+            description={
+              sendKey === 'enter'
+                ? 'Enter sends; Shift + Enter adds a new line.'
+                : `${sendKeyOptions.find((option) => option.value === sendKey)?.label} sends; Enter adds a new line.`
+            }
+            control={
+              <Select
+                value={sendKey}
+                onValueChange={(value) => saveSendKey(value as SendKey)}
+                items={sendKeyOptions}
+              >
+                <SelectTrigger
+                  aria-label="Send messages with"
+                  className={ROW_SELECT_TRIGGER}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {sendKeyOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            }
+          />
+        </SettingsList>
+      </SettingsSection>
+
       {approvalGateAvailable ? (
         <SettingsSection
           id={GENERAL_ANCHOR.permissions}
@@ -405,7 +470,7 @@ export function ConsoleSettingsTab({
               Auto mode. Existing conversations keep their current selection.
             </DialogDescription>
           </DialogHeader>
-          <div className="min-h-[280px] flex-1 overflow-y-auto overscroll-contain rounded-xl border border-neutral-200 p-2 dark:border-neutral-800">
+          <div className="min-h-[280px] flex-1 overflow-y-auto overscroll-contain rounded-xl border border-neutral-100 p-2 dark:border-neutral-800">
             <FunctionAllowlistTree
               functions={allowlistCandidates}
               allowlist={allowlistSet}
@@ -425,9 +490,35 @@ export function ConsoleSettingsTab({
       <SettingsSection
         id={GENERAL_ANCHOR.workspace}
         title="Workspace"
-        description="How many workspace tabs this ADE lets you open at once."
+        description="How new chats open, and how many workspace tabs this ADE lets you open at once."
       >
         <SettingsList>
+          <SettingsRow
+            id={GENERAL_ANCHOR.newChat}
+            label="New chat opens"
+            description="What the New chat button and its shortcut open: a blank chat with the full composer, or a quick dialog that starts the chat in one step. Stored for this browser."
+            control={
+              <Select
+                value={newChatMode}
+                onValueChange={(value) => saveNewChatMode(value as NewChatMode)}
+                items={NEW_CHAT_MODE_OPTIONS}
+              >
+                <SelectTrigger
+                  aria-label="New chat opens"
+                  className={ROW_SELECT_TRIGGER}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {NEW_CHAT_MODE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            }
+          />
           <SettingsRow
             id={GENERAL_ANCHOR.tabLimit}
             label="Tab limit"

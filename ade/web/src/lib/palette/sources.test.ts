@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   BARE_SEARCH_KINDS,
+  countKinds,
   DEFAULT_KINDS,
   filterEntries,
   groupEntries,
@@ -151,6 +152,46 @@ describe('groupEntries', () => {
     expect(groupEntries(input).flatMap(([, rows]) => rows)).toHaveLength(
       input.length,
     )
+  })
+
+  it('leads with the best match when a weaker group would bury it', () => {
+    const query = 'new ticket'
+    const pool = [
+      entry('Kanban', 'page', { keywords: ['new tickets land here'] }),
+      entry('New ticket', 'command'),
+    ]
+    const results = filterEntries(pool, query, null)
+    const grouped = groupEntries(results, [], results[0])
+    expect(grouped[0]).toEqual(['best', [pool[1]]])
+    // Not repeated below, and its emptied group is gone.
+    expect(grouped.flatMap(([, rows]) => rows)).toHaveLength(results.length)
+    expect(grouped.map(([group]) => group)).not.toContain('command')
+  })
+
+  it('adds no best-match group when the top row already leads', () => {
+    const rows = [entry('Kanban', 'page'), entry('kanban', 'worker')]
+    const grouped = groupEntries(rows, [], rows[0])
+    expect(grouped.map(([group]) => group)).toEqual(['page', 'worker'])
+  })
+})
+
+describe('countKinds', () => {
+  it('counts matches per kind, outside the current scope too', () => {
+    const counts = countKinds(
+      [
+        entry('Kanban', 'page'),
+        entry('kanban', 'worker'),
+        entry('kanban::ticket::create', 'function'),
+        entry('kanban::ticket::list', 'function'),
+        entry('Open settings', 'action'),
+      ],
+      'kanban',
+    )
+    expect(Object.fromEntries(counts)).toEqual({
+      page: 1,
+      worker: 1,
+      function: 2,
+    })
   })
 })
 

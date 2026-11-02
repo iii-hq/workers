@@ -151,7 +151,7 @@ export function ConversationFilterMenu({
       <DropdownMenuTrigger
         render={
           <IconButton
-            label="Conversation view options"
+            label="Chat view options"
             tooltip={describeConversationListView(view)}
             data-filtering={filtering || undefined}
             className={cn(

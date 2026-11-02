@@ -59,7 +59,7 @@ export function RenameConversationDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="w-[min(26rem,calc(100vw-2rem))] gap-0 bg-white p-0 text-neutral-900 ring-1 ring-neutral-200 [--dialog-max-width:26rem] dark:bg-neutral-900 dark:text-neutral-50 dark:ring-neutral-800"
+        className="w-[min(26rem,calc(100vw-2rem))] gap-0 bg-dialog-surface p-0 text-neutral-900 ring-1 ring-dialog-edge [--dialog-max-width:26rem] dark:text-neutral-50"
         initialFocus={inputRef}
         finalFocus={returnFocusTo}
         // The dialog portals to the body but stays inside the row's React

@@ -28,7 +28,7 @@ import {
  * every control in the chrome answers the pointer the same way.
  */
 const GHOST_CONTROL =
-  'icon-host inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:bg-neutral-300 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 dark:active:bg-neutral-700'
+  'icon-host inline-flex shrink-0 items-center justify-center rounded-xl text-neutral-500 transition-colors duration-[var(--motion-duration-control)] ease-[var(--motion-ease-standard)] hover:bg-neutral-200 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 active:bg-neutral-300/70 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400 dark:active:bg-neutral-700'
 
 export interface WorkspaceHeaderProps {
   workspace: UseWorkspaceTabsReturn
@@ -198,10 +198,13 @@ export function WorkspaceHeader({
 
       {/* learn-iii-menu-bar: tour anchor (workers/learn-iii) — a selector,
           not styling. Do not remove. */}
-      {/* The bar is the browser's frame: a step darker than the canvas, so
-          the active tab (canvas-coloured, flared at its feet) reads as the
-          sheet the workspace is drawn on. */}
-      <header className="learn-iii-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 bg-neutral-200 px-3 font-inter text-neutral-900 sm:grid dark:bg-neutral-900 dark:text-neutral-50">
+      {/* The bar is the browser's frame; the active tab (canvas-coloured,
+          flared at its feet) reads as the sheet the workspace is drawn on.
+          Light: the bar is neutral-100 like the canvas, so a neutral-200
+          hairline along its foot separates it from the page — an inset
+          shadow, so the active tab paints over it and opens into the page.
+          Dark: the bar is a step lighter than the canvas; no line. */}
+      <header className="learn-iii-menu-bar hidden h-12 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 bg-neutral-100 px-3 font-inter text-neutral-900 shadow-[inset_0_-1px_0_var(--color-neutral-200)] sm:grid dark:bg-neutral-900 dark:shadow-none dark:text-neutral-50">
         <div className="flex h-full min-w-0 items-end gap-1">
           <span className="flex size-8 shrink-0 items-center justify-center self-center">
             {/* 20% under the 24px mark it replaced: 19.2px. */}
@@ -243,7 +246,7 @@ export function WorkspaceHeader({
             <KeyCombo
               binding={paletteBinding}
               className="gap-2"
-              capClassName="min-w-5 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-200 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
+              capClassName="min-w-5 rounded-md bg-neutral-100 px-1 py-px text-[11px] font-medium text-neutral-500 shadow-none ring-1 ring-neutral-100 dark:bg-neutral-900 dark:text-neutral-400 dark:ring-neutral-700"
             />
           </button>
           <ThemeSwitch value={theme} onChange={onThemeChange} />

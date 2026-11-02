@@ -202,6 +202,10 @@ export function PaletteHost({
         kind: 'page',
         title: capitalised(option.label),
         detail: option.description,
+        // A worker's page names its worker, so four pages from one worker
+        // read as a set and a page is findable by the worker you remember.
+        meta: option.source,
+        metaMono: option.source !== undefined,
         keywords: [
           ...(option.keywords ?? []),
           ...(definition
@@ -314,7 +318,7 @@ export function PaletteHost({
         id: 'action:new-chat',
         kind: 'action',
         title: 'New chat',
-        detail: 'Start a conversation',
+        detail: 'Start a chat',
         keywords: ['conversation', 'session'],
         icon: SquarePen,
         run: () => {

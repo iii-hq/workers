@@ -403,7 +403,7 @@ export function Select<T extends string>({
               collisionPadding={8}
               collisionBoundary={panelBoundary ?? undefined}
               className={cn(
-                'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-panel-raised font-inter text-base text-ink shadow-floating sm:text-sm',
+                'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-popover font-inter text-base text-ink shadow-floating ring-1 ring-popover-edge sm:text-sm',
               )}
             >
               <SelectPrimitive.ScrollUpButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">

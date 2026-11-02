@@ -165,9 +165,9 @@ export function JudgeStep({
 
       <section
         aria-label="What Judge does"
-        className="rounded-xl border border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900"
+        className="rounded-xl border border-neutral-100 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900"
       >
-        <ul className="grid divide-y divide-neutral-200 @md:grid-cols-3 @md:divide-x @md:divide-y-0 dark:divide-neutral-800">
+        <ul className="grid divide-y divide-neutral-100 @md:grid-cols-3 @md:divide-x @md:divide-y-0 dark:divide-neutral-800">
           {JUDGE_USES.map((use) => {
             const Icon = USE_ICONS[use.id]
             return (
@@ -189,7 +189,7 @@ export function JudgeStep({
             )
           })}
         </ul>
-        <p className="border-t border-neutral-200 px-3.5 py-2 text-[13px] leading-5 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+        <p className="border-t border-neutral-100 px-3.5 py-2 text-[13px] leading-5 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
           Without Judge, function search falls back to keyword matching and a
           broken tool call goes back to the main model.
         </p>
@@ -232,7 +232,7 @@ export function JudgeStep({
                       )
                     }
                     keysUrl={option.keysUrl}
-                    className="border-t border-neutral-200 px-3.5 py-3 dark:border-neutral-800"
+                    className="border-t border-neutral-100 px-3.5 py-3 dark:border-neutral-800"
                   />
                 ) : null
               }
@@ -284,7 +284,7 @@ function JudgeRow({
         'flex flex-col rounded-xl border transition-[background-color,border-color] duration-150 ease-[var(--motion-ease-standard)]',
         checked
           ? 'border-neutral-400 bg-neutral-100 dark:border-neutral-600 dark:bg-neutral-900'
-          : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950',
+          : 'border-neutral-100 bg-white dark:border-neutral-800 dark:bg-neutral-950',
         !disabled &&
           !checked &&
           'hover:bg-neutral-50 dark:hover:bg-neutral-900',

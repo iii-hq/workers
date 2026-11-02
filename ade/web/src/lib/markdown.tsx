@@ -314,6 +314,10 @@ function InlineFileMark({ icon }: { icon: string }) {
     <svg
       aria-hidden="true"
       viewBox={svg.viewBox}
+      // Intrinsic size: worker pages render this Markdown outside `.chat-prose`,
+      // where the sizing rule doesn't reach and the svg would fill the column.
+      width={16}
+      height={16}
       className="chat-inline-file-mark"
       // Generated from the bundled Material set, never from message content.
       // biome-ignore lint/security/noDangerouslySetInnerHtml: static, generated icon markup
@@ -485,7 +489,7 @@ function MarkdownImage({
           <PreviewCard.Popup
             className={cn(
               NEUTRAL_SURFACE,
-              'chat-prose-image-preview rounded-xl bg-popover p-1.5 font-inter text-popover-foreground shadow-md ring-1 ring-foreground/10',
+              'chat-prose-image-preview rounded-xl bg-popover p-1.5 font-inter text-popover-foreground shadow-md ring-1 ring-popover-edge',
             )}
           >
             {previewFailed ? (

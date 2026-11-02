@@ -59,7 +59,7 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
         </span>
       </div>
 
-      <div className="divide-y divide-border overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+      <div className="divide-y divide-border overflow-hidden rounded-xl bg-card ring-1 ring-card-edge">
         {baggageEntries.map(([key, value]) => {
           const formatted =
             typeof value === 'object'

@@ -648,7 +648,7 @@ export function ModelPicker({
               collisionPadding={12}
               className={cn(
                 NEUTRAL_SURFACE,
-                'iii-ui-motion-dropdown z-50 flex w-[min(360px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl bg-popover font-inter text-ink shadow-md ring-1 ring-foreground/10',
+                'iii-ui-motion-dropdown z-50 flex w-[min(360px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl bg-popover font-inter text-ink shadow-md ring-1 ring-popover-edge',
                 // Sized to its rows around the favorites (an open All
                 // models fills it and scrolls inside); the provider pages
                 // take the full height so their lists scroll inside. Never

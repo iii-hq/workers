@@ -95,7 +95,7 @@ describe('ChatPanel conversationId', () => {
       <ChatPanel conversationId="deleted-session" density="dock" />,
     )
 
-    expect(html).toContain('Conversation not found.')
+    expect(html).toContain('Chat not found.')
     expect(html).not.toContain('Loading conversation…')
   })
 })

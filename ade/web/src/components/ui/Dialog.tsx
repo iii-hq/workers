@@ -24,7 +24,7 @@ export const DialogContent = React.forwardRef<
         className={cn(
           'iii-ui-motion-panel fixed top-1/2 left-1/2 z-50 -translate-1/2',
           'max-h-[85vh] w-full max-w-2xl overflow-y-auto',
-          'rounded-xl bg-panel-raised p-6 font-sans text-ink shadow-floating',
+          'rounded-xl bg-dialog-surface p-6 font-sans text-ink shadow-floating ring-1 ring-dialog-edge',
           'focus-visible:outline-none',
           className,
         )}

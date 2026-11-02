@@ -54,7 +54,7 @@ describe('ConversationSidebar kind filter', () => {
         />
       </TooltipProvider>,
     )
-    expect(html).toContain('No conversations match these filters.')
+    expect(html).toContain('No chats match these filters.')
     expect(html).toContain('Clear filters')
   })
 })
@@ -75,7 +75,7 @@ describe('ConversationSidebar drafts', () => {
       </TooltipProvider>,
     )
     expect(html).not.toContain('open new chat')
-    expect(html).toContain('No conversations yet.')
+    expect(html).toContain('No chats yet.')
   })
 })
 

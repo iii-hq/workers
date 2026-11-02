@@ -26,8 +26,9 @@ export type PaletteKind =
   | 'file'
   | 'item'
 
-/** A group header: a kind, or the recents the empty query opens on. */
-export type PaletteGroup = PaletteKind | 'recent'
+/** A group header: a kind, the recents the empty query opens on, or the
+ *  one row a typed query ranked above everything else. */
+export type PaletteGroup = PaletteKind | 'recent' | 'best'
 
 /**
  * A leading character picks a mode, the way editors and chat apps do: `>`
@@ -95,6 +96,8 @@ export interface PaletteEntry {
   detail?: string
   /** Right-aligned tag: the owning worker, the page's scope, a status. */
   meta?: string
+  /** The tag is a machine value (a worker name, a version), set in mono. */
+  metaMono?: boolean
   /** Extra words that should match without being displayed. */
   keywords?: string[]
   /** The keybinding that runs this row, if one is registered for it. Shown
@@ -343,7 +346,21 @@ export function filterEntries(
     .map((row) => row.entry)
 }
 
+/** How many rows of each kind match `query`, whatever kinds the current
+ *  mode shows: the filter chips say where the other matches are. */
+export function countKinds(
+  entries: PaletteEntry[],
+  query: string,
+): Map<PaletteKind, number> {
+  const counts = new Map<PaletteKind, number>()
+  for (const entry of filterEntries(entries, query, null)) {
+    counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1)
+  }
+  return counts
+}
+
 export const KIND_LABEL: Record<PaletteGroup, string> = {
+  best: 'Best match',
   recent: 'Recent',
   worker: 'Workers',
   function: 'Functions',
@@ -370,10 +387,30 @@ export const KIND_ORDER: PaletteKind[] = [
 ]
 
 /** Group in a fixed order so the list does not reshuffle as scores change;
-    `recent` rows, when given, lead and are not repeated below. */
+    `recent` rows, when given, lead and are not repeated below. `best`, the
+    top-scoring row of a typed query, leads on its own when the fixed order
+    would otherwise bury it under a weaker group ("new ticket" landing on a
+    command below every page). */
 export function groupEntries(
   entries: PaletteEntry[],
   recent: PaletteEntry[] = [],
+  best: PaletteEntry | null = null,
+): Array<[PaletteGroup, PaletteEntry[]]> {
+  const ordered = orderedGroups(entries, recent)
+  const first = ordered[0]?.[1][0]
+  if (!best || !first || first.id === best.id) return ordered
+  const rest = ordered
+    .map(([group, rows]): [PaletteGroup, PaletteEntry[]] => [
+      group,
+      rows.filter((row) => row.id !== best.id),
+    ])
+    .filter(([, rows]) => rows.length > 0)
+  return [['best', [best]], ...rest]
+}
+
+function orderedGroups(
+  entries: PaletteEntry[],
+  recent: PaletteEntry[],
 ): Array<[PaletteGroup, PaletteEntry[]]> {
   const recentIds = new Set(recent.map((entry) => entry.id))
   const groups = new Map<PaletteKind, PaletteEntry[]>()

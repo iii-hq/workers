@@ -429,14 +429,14 @@ describe('what the Haiku review caught in the ticket screen', () => {
 describe('delete and restore', () => {
   it('deletes only after the destructive confirmation; the board drops the card; restore brings it back', async () => {
     const { host, answers } = await openReview()
-    answers.menus.push('Delete ticket…')
+    answers.menus.push('Delete ticket')
     answers.confirms.push(false)
     await host.press('ticket-menu')
     await host.settle()
     expect(host.dialogs.at(-1)).toMatchObject({ title: 'Delete this ticket?', confirm: 'Delete', destructive: true })
     expect(callsOf(host, 'ticket::delete')).toEqual([])
 
-    answers.menus.push('Delete ticket…')
+    answers.menus.push('Delete ticket')
     answers.confirms.push(true)
     await host.press('ticket-menu')
     await host.settle()

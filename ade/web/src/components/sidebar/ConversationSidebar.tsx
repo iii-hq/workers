@@ -264,7 +264,7 @@ export function ConversationSidebar({
       className={cn('flex min-h-0 flex-1 flex-col font-inter', NEUTRAL_SURFACE)}
     >
       <nav
-        aria-label="Conversation actions"
+        aria-label="Chat actions"
         className="flex flex-col gap-0.5 px-2 pt-1"
       >
         {onCreate ? (
@@ -317,15 +317,15 @@ export function ConversationSidebar({
 
       <div className="flex items-center justify-between gap-2 px-2 pt-4 pb-1 pl-[18px]">
         <h2 className="min-w-0 truncate font-inter text-base font-medium text-neutral-500 sm:text-[13px] dark:text-neutral-400">
-          Conversations
+          Chats
         </h2>
         <div className="flex items-center gap-0.5">
           {onImport ? (
-            <Hint label="Import conversations" disabled={narrow}>
+            <Hint label="Import chats" disabled={narrow}>
               <button
                 type="button"
                 onClick={onImport}
-                aria-label="Import conversations"
+                aria-label="Import chats"
                 className={cn(QUIET_ACTION, narrow ? 'size-12' : 'size-7')}
               >
                 <Download className="size-4" aria-hidden />
@@ -340,16 +340,16 @@ export function ConversationSidebar({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
+      <div className="conversation-list-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-1">
         {sections.length === 0 ? (
           <div className="flex flex-col items-start gap-2 px-[10px] py-6 font-sans text-base text-ink-ghost sm:text-[13px]">
             {started.length === 0 ? (
-              'No conversations yet. Start one above.'
+              'No chats yet. Start one with New chat.'
             ) : (
               <>
                 {/* Every chat is hidden by the kind filter, not missing:
                     say so, and put the way back one click away. */}
-                No conversations match these filters.
+                No chats match these filters.
                 <Button
                   variant="ghost"
                   size="sm"
