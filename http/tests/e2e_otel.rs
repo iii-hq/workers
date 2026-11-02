@@ -386,3 +386,71 @@ async fn otel_span_propagates_outbound_traceparent_to_function() {
 
     boot.shutdown().await;
 }
+
+/// The EXPORTED OTel span (not just the tracing fields) is named after the
+/// matched route's template and carries `http.route` exactly once. The route is
+/// only known after the OTel span started, so a recorded `otel.name` alone
+/// would leave it named after the actual path (`GET /otel/export/5`) and a
+/// pre-filled `http.route` would be exported twice -- the regression this
+/// guards.
+#[tokio::test]
+#[serial]
+async fn otel_exported_span_is_named_after_the_route_template() {
+    install_capture();
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+    backend::register_echo_backend(&iii, "/otel/export/:id", "GET").await;
+    common::wait_for_route(&boot.routes, "GET", "/otel/export/:id").await;
+
+    let url = format!("http://{}/otel/export/5", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.bytes().await.unwrap();
+
+    let span = wait_for_exported_span("/otel/export/5").await;
+    assert_eq!(span.name, "GET /otel/export/:id");
+    let values = |key: &str| -> Vec<String> {
+        span.attributes
+            .iter()
+            .filter(|kv| kv.key.as_str() == key)
+            .map(|kv| kv.value.as_str().to_string())
+            .collect()
+    };
+    assert_eq!(values("http.route"), vec!["/otel/export/:id".to_string()]);
+    assert_eq!(values("url.path"), vec!["/otel/export/5".to_string()]);
+    assert_eq!(values("http.response.status_code"), vec!["200".to_string()]);
+    assert_eq!(span.status, opentelemetry::trace::Status::Ok);
+
+    boot.shutdown().await;
+}
+
+/// With no matching route the exported span keeps the actual path as its
+/// name and `http.route` (documented fallback), again with one `http.route`.
+#[tokio::test]
+#[serial]
+async fn otel_exported_span_falls_back_to_the_actual_path() {
+    install_capture();
+    let Some(iii) = engine::get_or_init().await else {
+        return;
+    };
+    let boot = worker::start_http_worker(iii.clone()).await;
+
+    let url = format!("http://{}/otel/export-missing", boot.local_addr);
+    let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+    assert_eq!(resp.status(), 404);
+    let _ = resp.bytes().await.unwrap();
+
+    let span = wait_for_exported_span("/otel/export-missing").await;
+    assert_eq!(span.name, "GET /otel/export-missing");
+    let routes: Vec<_> = span
+        .attributes
+        .iter()
+        .filter(|kv| kv.key.as_str() == "http.route")
+        .map(|kv| kv.value.as_str().to_string())
+        .collect();
+    assert_eq!(routes, vec!["/otel/export-missing".to_string()]);
+
+    boot.shutdown().await;
+}

@@ -145,19 +145,36 @@ fn apply_control(
     }
 }
 
-/// Records the final response on the current per-request HTTP span: the
-/// matched route's template (`otel.name`, `http.route`; the actual path when
-/// no route matched), `otel.status_code` and `http.response.status_code`.
-/// Increments the OTEL request counter once and logs the request, then
-/// returns the response unchanged.
+/// Records the final response on the per-request HTTP `span`: the matched
+/// route's template (`otel.name`, `http.route`; the actual path when no route
+/// matched), `otel.status_code` and `http.response.status_code`. Increments
+/// the OTEL request counter once and logs the request, then returns the
+/// response unchanged.
 ///
-/// The engine records the same pair wherever the status becomes known
-/// (`views.rs`). The counter attributes mirror the span tags: method + route +
-/// status.
-fn record_status(response: Response, method: &str, route: &str, started: Instant) -> Response {
+/// The engine records the status pair wherever the status becomes known
+/// (`views.rs`) and names its span after the route when it creates it; here
+/// the route is only known after the deliver hook ran, so the already-started
+/// OTel span is renamed instead (see `dynamic_handler`). The counter
+/// attributes mirror the span tags: method + route + status.
+fn record_status(
+    span: &tracing::Span,
+    response: Response,
+    method: &str,
+    route: &str,
+    started: Instant,
+) -> Response {
+    use iii_helpers::observability::opentelemetry::trace::TraceContextExt;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
     let code = response.status().as_u16();
-    let span = tracing::Span::current();
-    span.record("otel.name", format!("{method} {route}").as_str());
+    let name = format!("{method} {route}");
+    // The OTel span started when `span` was first entered, so a recorded
+    // `otel.name` would only update the tracing field: rename the OTel span
+    // itself. The field is still recorded so `tracing` layers (logs, tests)
+    // see the same name.
+    span.context().span().update_name(name.clone());
+    span.record("otel.name", name.as_str());
+    // Declared `Empty`, so this is the attribute's only value.
     span.record("http.route", route);
     span.record("otel.status_code", otel_status_for(code));
     span.record("http.response.status_code", code);
@@ -243,9 +260,17 @@ pub async fn dynamic_handler(
 
     // Per-request OTEL/tracing HTTP span, mirroring the engine's iii-http
     // (`views.rs`). Trace-context parent propagation is applied just below
-    // (after the span is built). `otel.name` and `http.route` start from the
-    // actual request path; `record_status` records the matched route's
-    // template (e.g. `/users/:id`) once the deliver hook matched one.
+    // (after the span is built).
+    //
+    // Unlike the engine, the matched route is not known here: routing happens
+    // later, in the `http::on-request` deliver hook. The OTel bridge starts the
+    // OTel span when this span is first entered, and after that a recorded
+    // `otel.name` no longer renames it (tracing-opentelemetry only applies
+    // `otel.name` to a not-yet-started builder) and every recorded attribute is
+    // appended, not replaced. So `otel.name` starts from the actual path (the
+    // name the span starts with), `http.route` is declared `Empty` and recorded
+    // exactly once, and `record_status` renames the started OTel span to the
+    // matched route's template (e.g. `GET /users/:id`).
     //
     // W3C trace-context parent propagation: read the inbound headers before the
     // span is built. `tracestate` is read for completeness but NOT propagated --
@@ -267,10 +292,13 @@ pub async fn dynamic_handler(
         otel.kind = "server",
         otel.status_code = tracing::field::Empty,
         "http.request.method" = %method,
-        "http.route" = %actual_path,
+        "http.route" = tracing::field::Empty,
         "url.path" = %actual_path,
         "http.response.status_code" = tracing::field::Empty,
     );
+    // Handle for `record_status`: the response is recorded on THIS span
+    // explicitly, never on whatever `Span::current()` happens to be.
+    let request_span = span.clone();
 
     // Make this span a child of the caller's trace when the request carries
     // `traceparent`/`baggage`. `set_parent` operates on the built span
@@ -353,7 +381,7 @@ pub async fn dynamic_handler(
         let (ticket, opened) = state.requests.open(state.public_webhooks_only, body_bytes);
         let response = respond(&state, request, ticket.id(), opened, default_timeout).await;
         let route = ticket.request().route().unwrap_or(&actual_path);
-        record_status(response, method.as_str(), route, started)
+        record_status(&request_span, response, method.as_str(), route, started)
     }
     .instrument(span)
     .await
