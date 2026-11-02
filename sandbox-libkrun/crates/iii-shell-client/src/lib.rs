@@ -610,6 +610,7 @@ impl Session {
         let mut frames = Frames::default();
         let mut credit = SEND_WINDOW;
         let mut buf = vec![0u8; STDIN_CHUNK];
+        let mut started = false;
         loop {
             let read = {
                 let mut read = std::pin::pin!(tokio::time::timeout(
@@ -632,11 +633,17 @@ impl Session {
                 Ok(Ok(n)) => n,
                 // A caller's upload that breaks mid-stream is S218 (retryable),
                 // like a stall; returning before FsEnd commits nothing.
-                Ok(Err(e)) => {
+                Ok(Err(e)) if started => {
                     return Err(VmClientError::FsError {
                         code: "S218".into(),
                         message: format!("read from caller: {e}"),
                     });
+                }
+                // Before any byte the source most likely failed to open (the
+                // engine answers a bad or taken channel ref with HTTP 404), and
+                // retrying that ref cannot work: S216, permanent.
+                Ok(Err(e)) => {
+                    return Err(VmClientError::Io(format!("read from caller: {e}")));
                 }
                 Err(_elapsed) => {
                     return Err(VmClientError::FsError {
@@ -651,6 +658,7 @@ impl Session {
             if n == 0 {
                 break;
             }
+            started = true;
             let chunk_frame = encode_frame(
                 self.corr_id,
                 0,
