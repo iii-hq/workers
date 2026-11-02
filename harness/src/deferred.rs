@@ -596,7 +596,7 @@ pub async fn resolve_parent(
         is_error: Some(is_error),
         details: Some(details),
     };
-    match resolve(deps, req).await {
+    match Box::pin(resolve(deps, req)).await {
         Ok(resp) => resp.resolved,
         Err(e) => {
             tracing::warn!(

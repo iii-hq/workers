@@ -196,6 +196,9 @@ async fn interface_registers_without_cloudflared_and_sdk_preserves_namespace_met
                 action: None,
                 metadata: None,
                 namespace: Some("provider-project".into()),
+                caller: None,
+                observe_depth: None,
+                activation: None,
             })
             .unwrap();
         let reply = next_matching(&mut captured, |v| {
