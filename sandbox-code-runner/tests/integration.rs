@@ -74,6 +74,8 @@ fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
         .arg("-c")
         .arg(&cfg_path)
         .arg("--no-update-check")
+        // Engine and worker write `iii ps` markers under $HOME/.iii/run.
+        .env("HOME", home)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -511,6 +513,7 @@ fn full_loop_eval_register_trigger_teardown() {
             .arg(format!("ws://127.0.0.1:{port}"))
             .arg("--config")
             .arg("/nonexistent-use-defaults.yaml")
+            .env("HOME", &home)
             .spawn()
             .expect("sandbox-code-runner starts"),
     );
