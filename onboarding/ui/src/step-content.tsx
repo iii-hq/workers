@@ -21,6 +21,7 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
   // Open, but in a tab that is not showing: say so, and the spotlight is on
   // that tab. The step waits for it to be the one on screen.
   const screenElsewhere = reading && Boolean(step.to_open) && tour.screenElsewhere && state !== 'complete'
+  const unobserved = tour.unobserved[step.id]
   return (
     <>
       <Body text={step.body} />
@@ -82,6 +83,20 @@ export function StepContent({ host, tour, step }: { host: Host; tour: TourContro
             </Button>
           )}
         </div>
+      ) : null}
+      {step.condition && unobserved && state !== 'complete' ? (
+        // The observer was refused or dropped, so the step would wait forever:
+        // say why, and let the operator close it once they have done it.
+        <>
+          <p className="learn-note learn-note--todo" role="status">
+            This step cannot see its event ({unobserved}). Mark it done once you have done it.
+          </p>
+          <div className="learn-actions">
+            <Button variant="ghost" className="learn-ghost" onClick={() => tour.complete(step.id)}>
+              Mark this step done
+            </Button>
+          </div>
+        </>
       ) : null}
       {step.condition ? (
         <ConditionRow

@@ -1,4 +1,4 @@
-import type { Host } from '@iii-dev/console-ui'
+import type { Host, OverlayRenderProps, PageRenderProps } from '@iii-dev/console-ui'
 import { TourOverlay } from './src/overlay'
 import { LearnIiiPage } from './src/page'
 import { showTour } from './src/visibility'
@@ -13,14 +13,14 @@ export default function setup(host: Host) {
   if (host.overlays?.register) {
     host.overlays.register({
       id: 'learn-iii-tour',
-      render: (props) => <TourOverlay host={host} {...props} />,
+      render: (props: OverlayRenderProps) => <TourOverlay host={host} {...props} />,
     })
     void adoptOldPane(host)
   } else {
     host.pages.register({
       id: 'learn-iii',
       title: 'learn-iii',
-      render: (props) => <LearnIiiPage host={host} {...props} />,
+      render: (props: PageRenderProps) => <LearnIiiPage host={host} {...props} />,
     })
   }
   const overlay = Boolean(host.overlays?.register)

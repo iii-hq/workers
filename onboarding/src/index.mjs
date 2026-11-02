@@ -12,11 +12,11 @@
  */
 
 import { existsSync, watch } from 'node:fs'
-import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerWorker } from 'iii-sdk'
 import { isEmailish, MAX_EMAIL_LENGTH } from './subscribe.mjs'
+import { observeUiAsset, registerUiContent, uiAssets } from './ui-assets.mjs'
 import { findStep, getTour, listTours, TOURS } from './tours.mjs'
 
 const WORKER = 'onboarding'
@@ -386,25 +386,9 @@ iii.registerFunction(
 // Injected console UI
 // ---------------------------------------------------------------------------
 
-const uiAssets = {
-  'learn-iii/page.js': {
-    file: 'page.js',
-    kind: 'script',
-    content_type: 'text/javascript',
-  },
-  'learn-iii/styles.css': {
-    file: 'styles.css',
-    kind: 'style',
-    content_type: 'text/css',
-  },
-}
-
 /**
- * Assets are read from disk at call time rather than inlined at build time, so
- * the watcher below is the same code path as production.
- *
- * Two layouts hold them: beside the published `dist/bundle/index.mjs`, and in
- * `ui/dist` in a source checkout. The first one that has the page wins.
+ * Two layouts hold the assets: beside the published `dist/bundle/index.mjs`,
+ * and in `ui/dist` in a source checkout. The first one that has the page wins.
  */
 const here = dirname(fileURLToPath(import.meta.url))
 const uiDir =
@@ -412,43 +396,12 @@ const uiDir =
   [here, join(here, '..', 'ui', 'dist')].find((candidate) => existsSync(join(candidate, 'page.js'))) ??
   join(here, '..', 'ui', 'dist')
 
-iii.registerFunction(
-  'learn-iii::ui-content',
-  async (input) => {
-    const asset = uiAssets[input.path]
-    if (!asset) throw new Error(`unknown ui asset: ${input.path}`)
-    const content = await readFile(join(uiDir, asset.file), 'utf8')
-    return { content, content_type: asset.content_type }
-  },
-  {
-    description: 'Serve the injectable learn-iii console page assets.',
-    metadata: { internal: true },
-    request_format: object({ path: string }, ['path']),
-    response_format: object({ content: string, content_type: string }, [
-      'content',
-      'content_type',
-    ]),
-  },
-)
+registerUiContent(iii, uiDir)
 
-// One `console::ui::asset` observer per asset; the console fetches its
-// content by calling through the observer with `{ path }`.
-const observeUiAsset = (path) => {
-  const handle = iii.observe(
-    { function_id: 'console::ui::asset', args: { kind: uiAssets[path].kind, path } },
-    'learn-iii::ui-content',
-  )
-  handle.onStateChange((state, reason) => {
-    // Hot reload observes the path afresh, which supersedes the previous one.
-    if (state === 'error' && reason?.code !== 'UI_ASSET_SUPERSEDED') {
-      console.error(`[${WORKER}] ui asset ${path} rejected: ${reason?.code} ${reason?.message ?? ''}`)
-    }
-  })
-  return handle
-}
+const observeAsset = (path) => observeUiAsset(iii, path, { worker: WORKER })
 
 const uiObservers = new Map(
-  Object.keys(uiAssets).map((path) => [path, observeUiAsset(path)]),
+  Object.keys(uiAssets).map((path) => [path, observeAsset(path)]),
 )
 
 // Observing a path afresh with different bytes hot-swaps the asset in every
@@ -463,7 +416,7 @@ if (process.env.III_LEARN_III_UI_WATCH) {
       path,
       setTimeout(() => {
         const previous = uiObservers.get(path)
-        uiObservers.set(path, observeUiAsset(path))
+        uiObservers.set(path, observeAsset(path))
         previous?.dispose().catch(() => {})
         console.error(`[${WORKER}] reloaded ui asset ${path}`)
       }, 150),

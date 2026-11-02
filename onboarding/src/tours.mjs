@@ -66,7 +66,8 @@ export const TOUR_AGENT = "ade-worker-builder";
  * reports it.
  *
  * The filters match the KEY, not the value: whatever shape the agent writes,
- * the write itself is the report.
+ * the write itself is the report. Only a write: a delete of the key (someone
+ * resetting the tour) is a change too, and must not close the step.
  *
  * `tours.test.mjs` holds the two halves together — the sentence and the
  * filter both carry the key, and the test fails when one of them moves.
@@ -81,7 +82,11 @@ const agentStep = (step) => {
     },
     condition: {
       function_id: "state::on-changed",
-      filters: { "input.scope": { $eq: STATE_SCOPE }, "input.key": { $eq: key } },
+      filters: {
+        "input.scope": { $eq: STATE_SCOPE },
+        "input.key": { $eq: key },
+        "input.event_type": { $in: ["state:created", "state:updated"] },
+      },
       label: "Waiting for the agent to report this step done",
       hint: `The agent writes ${key} into the "${STATE_SCOPE}" state scope when it has finished.`,
     },

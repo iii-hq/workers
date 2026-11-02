@@ -1,12 +1,11 @@
 import type { Host } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { bindCondition, type Condition, type Fired, reconcileCondition } from './conditions'
+import { bindCondition, type Condition, type Fired, firesStep, reconcileCondition } from './conditions'
 
 /** The state scope the tour's agent steps report into; its chat is kept there too. */
 const STATE_SCOPE = 'learn-iii'
 const CHAT_SESSION_KEY = 'chat_session'
-const TURN_COMPLETED = 'harness::on-turn-completed'
 
 /**
  * Everything the tour knows and does, shared by its two faces: the floating
@@ -84,6 +83,11 @@ export interface TourController {
   framed: readonly string[] | null
   /** Read progress again — the card coming up after a step closed elsewhere. */
   refresh: () => void
+  /**
+   * Steps whose condition observer will never fire, by id, with why. Such a
+   * step is closed by hand instead of waiting forever.
+   */
+  unobserved: Readonly<Record<string, string | undefined>>
 }
 
 export function useTour(host: Host): TourController {
@@ -273,24 +277,37 @@ export function useTour(host: Host): TourController {
         .map((step) => step.id)
         .join(',')
     : ''
+  // Steps whose observer will never fire (refused, dropped, or impossible to
+  // create), with why: the step shows the reason and a button to close it.
+  const [unobserved, setUnobserved] = useState<Record<string, string>>({})
   useEffect(() => {
     if (!tour || !waiting) return
     const steps = tour.steps.filter((step) => waiting.split(',').includes(step.id))
+    // A fresh bind starts clean; a failure that repeats is reported again.
+    setUnobserved((current) => {
+      const next = { ...current }
+      for (const step of steps) delete next[step.id]
+      return next
+    })
+    let live = true
     const unbinds = steps.map((step) =>
-      bindCondition(host, `${tour.id}::${step.id}`, step.condition as Condition, (fired) => {
-        if (step.condition?.function_id !== TURN_COMPLETED) return complete(step.id, fired)
-        // A turn counts only in the tour's own chat: an example built from
-        // setup, or any other chat, finishing a turn says nothing about it.
-        const session = (fired.payload as { session_id?: unknown } | null)?.session_id
-        void tourChat().then((id) => {
-          if (id && session === id) complete(step.id, fired)
-        })
-      }),
+      bindCondition(
+        host,
+        `${tour.id}::${step.id}`,
+        step.condition as Condition,
+        (fired) => {
+          void firesStep(step.condition as Condition, fired, tourChat).then((closes) => {
+            if (closes) complete(step.id, fired)
+          })
+        },
+        (failure) => {
+          if (live) setUnobserved((current) => ({ ...current, [step.id]: failure }))
+        },
+      ),
     )
     // Bind first, then read what each condition waits on: a write that
     // landed while nothing was listening (a reload, a restart, a console
     // without the tour loaded) still closes its step.
-    let live = true
     for (const step of steps) {
       void reconcileCondition(host, step.condition as Condition).then((fired) => {
         if (live && fired) complete(step.id, fired)
@@ -360,6 +377,7 @@ export function useTour(host: Host): TourController {
     screenElsewhere,
     framed,
     refresh,
+    unobserved,
   }
 }
 
@@ -417,7 +435,9 @@ function useScreenPresent(host: Host, screen: string | null): ScreenPresence | n
       offObserver = host.iii.observe('console::workspace::on-changed', `${localId}::${host.iii.browserId}`)
     } catch {
       // Same rule as `bindCondition`: no handler without its observer. The
-      // read below still runs once.
+      // read below still runs once. Only a console without `observe` (or a
+      // malformed source) lands here; a refusal arrives later on the handle,
+      // and either way the step's Skip button keeps it from being a dead end.
       offHandler()
       offHandler = () => {}
     }
