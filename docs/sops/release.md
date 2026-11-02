@@ -7,8 +7,17 @@ by hand.
 ## Before starting
 
 The selected source commit must contain the worker's `.deploy/workers.yaml`
-entry and public `iii.worker.yaml`. The package-manifest version is source
-metadata; Release Control owns the exact version being released.
+entry and public `iii.worker.yaml`. Release Control owns the exact version
+being released, but the build compiles the package-manifest version into the
+bytes (Rust `CARGO_PKG_VERSION`, Go `main.version`) and Release Control does not
+compare the two. A bump publishes one past the highest published or claimed
+version, while the source manifest holds at most the last published one, so a
+worker that reports its version (sandbox-libkrun's `adapter_version`) reports
+an older one. Until Release Control refuses that mismatch, merge the manifest
+bump first (`manifest_version.py bump <manifest> --kind none --target X.Y.Z`,
+then `manifest_version.py sync-lock <manifest>`), deploy that commit with the
+exact version `X.Y.Z`, and discard a failed deployment before deploying a fixed
+commit at the same version: a new bump while it is live claims the next one.
 For Go binaries, `package.json` owns that metadata version while `go.mod`
 declares the toolchain and module dependencies. The release build stamps
 `main.version` from the descriptor's package version; see
