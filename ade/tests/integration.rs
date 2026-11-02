@@ -73,6 +73,7 @@ async fn boot() -> Option<Harness> {
             r#"workers:
   - name: iii-worker-manager
     config:
+      host: 127.0.0.1
       port: {engine_port}
   - name: configuration
     config:
