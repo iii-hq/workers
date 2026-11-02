@@ -125,7 +125,7 @@ export function FlipMenu<T extends MenuOption>({
   return (
     <div
       ref={menuRef}
-      className="flex w-[300px] max-h-[min(50vh,352px)] flex-col overflow-hidden rounded-md bg-panel-raised font-inter text-sm shadow-floating"
+      className="flex w-[300px] max-h-[min(50vh,352px)] flex-col overflow-hidden rounded-md bg-popover font-inter text-sm shadow-floating ring-1 ring-popover-edge"
     >
       {header ? (
         <Eyebrow as="div" size="lg" className="shrink-0 bg-paper-2 px-3 py-1">

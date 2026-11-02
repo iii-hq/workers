@@ -1,17 +1,5 @@
 import {
-  Button,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-  EmptyState,
-  Eyebrow,
   type Host,
-  IconButton,
-  List,
-  ListGroup,
-  ListItem,
   type LiveAnnouncement,
   LiveRegion,
   PageBody,
@@ -19,35 +7,36 @@ import {
   PageMain,
   type PageRenderProps,
   PageShell,
-  PageSidebar,
-  Panel,
-  PanelBody,
-  PanelHeader,
-  Skeleton,
-  StatusPanel,
-  uiClasses,
+  ShadcnButton,
+  ShadcnDropdownMenu,
+  ShadcnDropdownMenuContent,
+  ShadcnDropdownMenuGroup,
+  ShadcnDropdownMenuItem,
+  ShadcnDropdownMenuLabel,
+  ShadcnDropdownMenuTrigger,
+  ShadcnSkeleton,
   useConfirm,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
 import {
-  Bot,
   ChevronRight,
   CircleCheck,
   Columns3,
-  Flag,
+  Milestone,
   MoreHorizontal,
   Pencil,
   Plus,
+  RotateCcw,
   Tag,
   Trash2,
-  TriangleAlert,
 } from 'lucide-react'
-import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { Callout, Crumbs, Prop, Section } from './plan/parts'
+import { TicketRows } from './plan/ticket-rows'
 import {
   ColumnTiles,
   ConvertDialog,
-  DrillBar,
   NewReleaseDialog,
   openPane,
   ProgressBar,
@@ -81,10 +70,11 @@ import {
   BOARD_PAGE_ID,
   type BoardData,
   type ReleaseView,
-  StatusGlyph,
-  TICKET_PAGE_ID,
   type TicketSummary,
 } from './shared'
+import { Empty, Notice } from './ui/feedback'
+import { ColumnStatusIcon } from './ui/glyphs'
+import { IconAction } from './ui/icon-action'
 
 const FULL_DAY = { month: 'short', day: 'numeric', year: 'numeric' } as const
 const STATUS_TONE = { active: 'ink', planned: 'ghost', released: 'ok' } as const
@@ -108,8 +98,8 @@ export function ReleasesPage({
   const agents = useAgents(host)
   const { ref, narrow } = useContainerNarrow({ below: 720 })
   const [stored, setStored] = usePaneState<string | null>(`kanban:release:${paneKey}`, null)
-  /** Narrow panes show the list or one release, never both. */
-  const [drilled, setDrilled] = useState(false)
+  /** The list is the landing; a release opens over it and the way back is the breadcrumb. Kept per pane. */
+  const [drilled, setDrilled] = usePaneState<boolean>(`kanban:release-open:${paneKey}`, false)
   const [creating, setCreating] = useState(false)
   const [converting, setConverting] = useState(false)
   const [shipping, setShipping] = useState(false)
@@ -121,14 +111,17 @@ export function ReleasesPage({
   const releases = useMemo(() => data?.releases ?? [], [data])
   const groups = useMemo(() => groupReleases(releases), [releases])
   const tickets = useMemo(() => (data?.columns ?? []).flatMap((column) => column.tickets), [data])
-  const chosen = resolveEntity(releases, stored)
-  const fallback = narrow ? undefined : (groups.active[0] ?? groups.planned[0] ?? groups.released[0])
-  const selected = chosen ?? fallback
-  const detailShown = Boolean(selected) && (!narrow || drilled)
+  const selected = resolveEntity(releases, stored)
+  const detailShown = Boolean(drilled && selected)
 
   const pick = (release: ReleaseView) => {
     setStored(release.id)
     setDrilled(true)
+    setActionError(null)
+  }
+  const back = () => {
+    setDrilled(false)
+    setActionError(null)
   }
 
   // Other screens open a release (or a dialog) through `host.panels.open({ pageId, context })`.
@@ -141,226 +134,149 @@ export function ReleasesPage({
     }
     if (request.action === 'new') setCreating(true)
     if (request.action === 'convert') setConverting(true)
-  }, [panelContext, setStored])
+  }, [panelContext, setStored, setDrilled])
 
-  // What is on screen is remembered by id: a release reached by name survives a rename, and the first one shown
-  // stays put when its status moves it to another group.
-  // (A ref that is not loaded yet, a release just created, is never replaced by the first one.)
-  const pinned = chosen?.id ?? (stored ? undefined : fallback?.id)
+  // What is on screen is remembered by id: a release reached by name survives a rename.
+  // (A ref that is not loaded yet, a release just created, is never dropped.)
   useEffect(() => {
-    if (pinned && pinned !== stored) setStored(pinned)
-  }, [pinned, stored, setStored])
+    if (selected && selected.id !== stored) setStored(selected.id)
+  }, [selected, stored, setStored])
 
   useEffect(
     () => commands?.register([{ id: 'refresh', title: 'Refresh releases', run: () => void reload() }]),
     [commands, reload],
   )
 
-  const count = plural(releases.length, 'release')
   const canOpenPane = Boolean(host.panels?.open)
 
   const header = (
     <PageHeader
       actions={
         narrow ? (
-          // One release open: the way back is the toolbar under the header, and nothing is created from here.
           detailShown ? null : (
-            <IconButton
-              className="kanban-plan-touch"
-              label="New release"
-              onClick={() => setCreating(true)}
-              variant="primary"
-            >
+            <IconAction label="New release" onClick={() => setCreating(true)} variant="default">
               <Plus size={16} />
-            </IconButton>
+            </IconAction>
           )
         ) : (
           <>
-            <Button disabled={!data} onClick={() => setConverting(true)} variant="ghost">
+            <ShadcnButton disabled={!data} onClick={() => setConverting(true)} size="sm" type="button" variant="ghost">
               <Tag size={16} />
               Create from a label…
-            </Button>
-            <Button onClick={() => setCreating(true)} variant="primary">
+            </ShadcnButton>
+            <ShadcnButton onClick={() => setCreating(true)} size="sm" type="button">
               <Plus size={16} />
               New release
-            </Button>
+            </ShadcnButton>
           </>
         )
       }
-      description={data ? `${count} · ${data.id_prefix}` : undefined}
-      icon={<Flag size={16} />}
+      description={data ? `${plural(releases.length, 'release')} · ${data.id_prefix}` : undefined}
+      icon={<Milestone size={16} />}
       onClose={onRequestClose}
       title="Releases"
     />
   )
 
-  const rail = (
-    <PageSidebar label="Releases" narrow={narrow} width={300}>
-      <nav aria-label="Releases" className="kanban-plan-nav">
-        <List>
-          {(
-            [
-              ['Active', groups.active],
-              ['Planned', groups.planned],
-              ['Released', groups.released],
-            ] as const
-          ).map(([label, items]) =>
-            items.length === 0 ? null : (
-              <ListGroup aria-label={label} key={label}>
-                <Eyebrow as="div" className="kanban-plan-eyebrow">
-                  {label}
-                </Eyebrow>
-                {items.map((release) => {
-                  const current = !narrow && selected?.id === release.id
-                  return (
-                    <ListItem
-                      aria-current={current ? 'true' : undefined}
-                      description={
-                        release.status === 'released'
-                          ? `Released ${formatStamp(release.released_at ?? '')}`
-                          : release.target_at
-                            ? `Target ${formatTarget(release.target_at)}`
-                            : 'No target date'
-                      }
-                      key={release.id}
-                      label={release.name}
-                      onClick={() => pick(release)}
-                      selected={current}
-                      trailing={
-                        <span className="kanban-plan-mini">
-                          <span className="kanban-plan-mini__count">
-                            <span className="kanban-plan-mono">
-                              {release.done}/{release.total}
-                            </span>
-                            <ProgressBar done={release.done} total={release.total} />
-                          </span>
-                          {narrow ? <ChevronRight size={16} /> : null}
-                        </span>
-                      }
-                    />
-                  )
-                })}
-              </ListGroup>
-            ),
-          )}
-        </List>
-        {narrow ? (
-          <Button
-            className="kanban-plan-touch kanban-plan-nav__more"
-            onClick={() => setConverting(true)}
-            variant="ghost"
-          >
-            <Tag size={16} />
-            Create from a label…
-          </Button>
-        ) : null}
-      </nav>
-    </PageSidebar>
-  )
-
   let body: ReactNode
   if (!data) {
     body = error ? (
-      <PageMain>
-        <div className="kanban-pad">
-          <StatusPanel
-            action={
-              <Button onClick={() => void reload()} variant="pill">
-                Retry
-              </Button>
-            }
-            detail={error}
-            headline="The releases could not be read"
-            icon={<TriangleAlert size={16} />}
-            role="alert"
-            variant="alert"
-          />
-        </div>
-      </PageMain>
+      <Notice actionLabel="Retry" detail={error} onAction={() => void reload()} title="The releases could not be read" />
     ) : (
-      <>
-        <PageSidebar label="Releases" narrow={narrow} width={300}>
-          <div className="kanban-plan-nav" aria-busy={loading}>
-            {[0, 1, 2, 3].map((index) => (
-              <Skeleton className="kanban-plan-skeleton kanban-plan-skeleton--row" key={index} />
-            ))}
-          </div>
-        </PageSidebar>
-        {narrow ? null : (
-          <PageMain>
-            <div className="kanban-plan-scroll">
-              <div className="kanban-plan-main">
-                <Skeleton className="kanban-plan-skeleton kanban-plan-skeleton--title" />
-                <Skeleton className="kanban-plan-skeleton kanban-plan-skeleton--bar" />
-                <Skeleton className="kanban-plan-skeleton kanban-plan-skeleton--block" />
-              </div>
-            </div>
-          </PageMain>
-        )}
-      </>
+      <div aria-busy={loading} aria-label="Loading releases" className="kb-plan-list">
+        {[0, 1, 2, 3].map((index) => (
+          <ShadcnSkeleton className="kb-plan-skeleton kb-plan-skeleton--row" key={index} />
+        ))}
+      </div>
     )
   } else if (releases.length === 0) {
     body = (
-      <PageMain>
-        <div className="kanban-plan-empty">
-          <EmptyState
-            action={{ label: 'Create from a label…', onClick: () => setConverting(true) }}
-            description="Group tickets into a delivery with a target date. You can start from a label like phase-2."
-            icon={Flag}
-            title="No releases yet"
+      <Empty
+        action={
+          <div className="kb-plan-empty-actions">
+            <ShadcnButton onClick={() => setConverting(true)} size="sm" type="button" variant="outline">
+              <Tag size={16} />
+              Create from a label…
+            </ShadcnButton>
+            <ShadcnButton onClick={() => setCreating(true)} size="sm" type="button">
+              <Plus size={16} />
+              New release
+            </ShadcnButton>
+          </div>
+        }
+        description="Group tickets into a delivery with a target date. You can start from a label like phase-2."
+        icon={Milestone}
+        title="No releases yet"
+      />
+    )
+  } else if (detailShown && selected) {
+    body = (
+      <>
+        <Crumbs name={selected.name} onBack={back} root="Releases" />
+        {actionError ? (
+          <Notice
+            actionLabel="Dismiss"
+            detail={actionError}
+            onAction={() => setActionError(null)}
+            title="That change was not saved"
           />
-        </div>
-      </PageMain>
+        ) : null}
+        <ReleaseDetail
+          agents={agents}
+          announce={announce}
+          canOpenPane={canOpenPane}
+          data={data}
+          host={host}
+          key={selected.id}
+          onDeleted={back}
+          onError={setActionError}
+          onShip={() => setShipping(true)}
+          release={selected}
+          reload={reload}
+          tickets={tickets}
+        />
+      </>
     )
   } else {
     body = (
-      <>
-        {narrow && detailShown ? null : rail}
-        {detailShown && selected ? (
-          <PageMain>
-            {narrow ? <DrillBar name={selected.name} onBack={() => setDrilled(false)} root="Releases" /> : null}
-            <div className="kanban-plan-scroll" data-autofocus="" tabIndex={-1}>
-              {actionError ? (
-                <div className="kanban-pad">
-                  <StatusPanel
-                    action={
-                      <Button onClick={() => setActionError(null)} variant="pill">
-                        Dismiss
-                      </Button>
-                    }
-                    detail={actionError}
-                    headline="That change was not saved"
-                    icon={<TriangleAlert size={16} />}
-                    role="alert"
-                    variant="alert"
-                  />
-                </div>
-              ) : null}
-              <ReleaseDetail
-                agents={agents}
-                announce={announce}
-                canOpenPane={canOpenPane}
-                data={data}
-                host={host}
-                key={selected.id}
-                narrow={narrow}
-                onError={setActionError}
-                onShip={() => setShipping(true)}
-                release={selected}
-                reload={reload}
-                tickets={tickets}
-              />
-            </div>
-          </PageMain>
-        ) : null}
-      </>
+      <div className="kb-plan-list">
+        {(
+          [
+            ['Active', groups.active],
+            ['Planned', groups.planned],
+            ['Released', groups.released],
+          ] as const
+        ).map(([label, items]) =>
+          items.length === 0 ? null : (
+            <section aria-label={label} className="kb-plan-group" key={label}>
+              <header className="kb-plan-group__head">
+                <span className="kb-plan-group__title">{label}</span>
+                <span className="kb-plan-group__count">{items.length}</span>
+              </header>
+              <ul className="kb-plan-rows">
+                {items.map((release) => (
+                  <li key={release.id}>
+                    <ReleaseRow data={data} onOpen={() => pick(release)} release={release} />
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ),
+        )}
+      </div>
     )
   }
 
   return (
-    <PageShell className="kanban-shell kanban-plan" data-narrow={narrow ? 'true' : undefined} ref={ref}>
+    <PageShell className="kb kb-shell kb-plan" data-narrow={narrow ? 'true' : undefined} ref={ref}>
       {header}
-      <PageBody side={panelSide}>{body}</PageBody>
+      <PageBody side={panelSide}>
+        <PageMain>
+          <div className="kb-plan-scroll" data-autofocus="" tabIndex={-1}>
+            {body}
+          </div>
+        </PageMain>
+      </PageBody>
 
       <NewReleaseDialog
         host={host}
@@ -417,6 +333,57 @@ export function ReleasesPage({
   )
 }
 
+/* ── one row of the list ──────────────────────────────────────────────── */
+
+/** A release in the list: name and description, status, target, progress, and where its tickets stand. */
+function ReleaseRow({ release, data, onOpen }: { release: ReleaseView; data: BoardData; onOpen: () => void }) {
+  const pct = release.total > 0 ? Math.round((release.done / release.total) * 100) : 0
+  const when =
+    release.status === 'released'
+      ? `Released ${formatStamp(release.released_at ?? '')}`
+      : release.target_at
+        ? formatTarget(release.target_at)
+        : 'No target'
+  const counts = data.columns.filter((column) => (release.counts[column.id] ?? 0) > 0)
+  return (
+    <button className="kb-plan-row" onClick={onOpen} type="button">
+      <span className="kb-plan-row__icon" data-status={release.status}>
+        <Milestone size={16} />
+      </span>
+      <span className="kb-plan-row__name">
+        <span className="kb-plan-row__title">{release.name}</span>
+        {release.description ? <span className="kb-plan-row__desc">{release.description}</span> : null}
+      </span>
+      <span className="kb-plan-row__status">
+        <StatusBadge title={STATUS_TITLE[release.status]} tone={STATUS_TONE[release.status]}>
+          {releaseStatusText(release)}
+        </StatusBadge>
+      </span>
+      <span className="kb-plan-row__when" data-none={!release.target_at && release.status !== 'released' ? 'true' : undefined}>
+        {when}
+      </span>
+      <span className="kb-plan-row__counts" aria-label="Tickets by status">
+        {counts.map((column) => (
+          <span className="kb-plan-row__count" key={column.id} title={column.label}>
+            <ColumnStatusIcon
+              canceledStatus={data.canceled_status}
+              columns={data.columns}
+              doneStatus={data.done_status}
+              status={column.id}
+            />
+            {release.counts[column.id]}
+          </span>
+        ))}
+      </span>
+      <span className="kb-plan-row__progress">
+        <ProgressBar done={release.done} total={release.total} />
+        <span className="kb-plan-row__pct">{release.total > 0 ? `${pct}%` : '—'}</span>
+      </span>
+      <ChevronRight aria-hidden="true" className="kb-plan-row__chevron" size={16} />
+    </button>
+  )
+}
+
 /* ── one release ──────────────────────────────────────────────────────── */
 
 function ReleaseDetail({
@@ -425,26 +392,25 @@ function ReleaseDetail({
   data,
   tickets,
   agents,
-  narrow,
   canOpenPane,
   reload,
   announce,
   onError,
   onShip,
+  onDeleted,
 }: {
   host: Host
   release: ReleaseView
   data: BoardData
   tickets: TicketSummary[]
   agents: AgentProfile[]
-  narrow: boolean
   canOpenPane: boolean
   reload: (quiet?: boolean) => Promise<void>
   announce: (text: string) => void
   onError: (message: string | null) => void
   onShip: () => void
+  onDeleted: () => void
 }) {
-  const uid = useId()
   const { confirm, dialog } = useConfirm()
   const columns = data.columns
   const released = release.status === 'released'
@@ -506,6 +472,7 @@ function ReleaseDetail({
   const doneHeading = data.canceled_status ? 'Done or canceled' : 'Done'
   // Canceled tickets are out of `total` but still in the release: the worker refuses the delete while any is.
   const live = liveCount(release)
+  const pct = release.total > 0 ? Math.round((release.done / release.total) * 100) : 0
 
   const withLabel = release.source_label ? ticketsWithLabel(tickets, release.source_label) : []
   const drift = released ? [] : driftTickets(release, tickets)
@@ -523,7 +490,7 @@ function ReleaseDetail({
   const reopen = () =>
     guarded(async () => {
       const ok = await confirm({
-        title: `Reopen ${release.name}?`,
+        title: 'Reopen this release?',
         description:
           'It is Active or Planned again, by where its tickets are. Tickets that were moved out do not come back.',
         confirmLabel: 'Reopen',
@@ -538,7 +505,7 @@ function ReleaseDetail({
   const remove = () =>
     guarded(async () => {
       const ok = await confirm({
-        title: `Delete ${release.name}?`,
+        title: 'Delete this release?',
         description:
           'No live ticket is in it. Deleted tickets may still reference it; the worker refuses the delete if any do. This cannot be undone.',
         confirmLabel: 'Delete',
@@ -556,6 +523,7 @@ function ReleaseDetail({
       }
       announcePlanChange()
       announce(`Deleted ${release.name}`)
+      onDeleted()
       await reload(true)
     })
 
@@ -565,401 +533,234 @@ function ReleaseDetail({
     (project) => project.status !== 'archived' && !release.projects.some((row) => row.project_id === project.id),
   )
 
-  /* The pieces; a wide pane puts them in two columns, a narrow one in a single stack. */
-
   const actions = (
-    <>
+    <div className="kb-plan-head__actions">
       {canOpenPane ? (
-        <Button
-          className="kanban-plan-touch kanban-plan-actions__wide"
+        <ShadcnButton
           onClick={() => openPane(host, BOARD_PAGE_ID, { group: 'release', release: release.id })}
-          variant="pill"
+          size="sm"
+          type="button"
+          variant="outline"
         >
           <Columns3 size={16} />
           Open on the board
-        </Button>
+        </ShadcnButton>
       ) : null}
       {released ? (
-        <Button className="kanban-plan-touch" disabled={busy} onClick={() => void reopen()} variant="pill">
+        <ShadcnButton disabled={busy} onClick={() => void reopen()} size="sm" type="button" variant="outline">
+          <RotateCcw size={16} />
           Reopen…
-        </Button>
+        </ShadcnButton>
       ) : (
-        <Button className="kanban-plan-touch" onClick={onShip} variant="pill">
+        <ShadcnButton onClick={onShip} size="sm" type="button">
+          <CircleCheck size={16} />
           Mark as released…
-        </Button>
+        </ShadcnButton>
       )}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <IconButton className="kanban-plan-touch" label={`More actions for ${release.name}`} variant="ghost">
-            <MoreHorizontal size={16} />
-          </IconButton>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem disabled={live > 0 || busy} onSelect={() => void remove()}>
-            <Trash2 size={16} />
-            Delete…
-          </DropdownMenuItem>
-          {live > 0 ? (
-            <DropdownMenuLabel className="kanban-plan-menu-note">
-              It has {plural(live, 'ticket')}. Move them to another release first.
-            </DropdownMenuLabel>
-          ) : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </>
+      <ShadcnDropdownMenu>
+        <ShadcnDropdownMenuTrigger
+          render={<ShadcnButton aria-label="More actions for this release" size="icon-sm" type="button" variant="ghost" />}
+        >
+          <MoreHorizontal size={16} />
+        </ShadcnDropdownMenuTrigger>
+        <ShadcnDropdownMenuContent align="end" className="kb-menu">
+          <ShadcnDropdownMenuGroup>
+            <ShadcnDropdownMenuItem onClick={rename.start}>
+              <Pencil size={16} />
+              Rename…
+            </ShadcnDropdownMenuItem>
+            <ShadcnDropdownMenuItem disabled={live > 0 || busy} onClick={() => void remove()} variant="destructive">
+              <Trash2 size={16} />
+              Delete…
+            </ShadcnDropdownMenuItem>
+            {live > 0 ? (
+              <ShadcnDropdownMenuLabel className="kb-plan-menu-note">
+                It has {plural(live, 'ticket')}. Move them to another release first.
+              </ShadcnDropdownMenuLabel>
+            ) : null}
+          </ShadcnDropdownMenuGroup>
+        </ShadcnDropdownMenuContent>
+      </ShadcnDropdownMenu>
+    </div>
   )
 
-  const head = (
-    <header className="kanban-plan-head">
-      <div className="kanban-plan-head__id">
-        <div className="kanban-plan-head__line">
-          {rename.editing ? (
-            rename.editor
-          ) : (
-            <>
-              <h2 className="kanban-plan-title">{release.name}</h2>
-              <IconButton
-                className="kanban-plan-touch"
-                label={`Rename ${release.name}`}
-                onClick={rename.start}
-                variant="ghost"
-              >
-                <Pencil size={16} />
-              </IconButton>
-            </>
-          )}
+  const hasDescription = release.description.trim() !== ''
+
+  return (
+    <div className="kb-plan-detail">
+      <header className="kb-plan-head">
+        <div className="kb-plan-head__top">
+          <span className="kb-plan-head__icon" data-status={release.status}>
+            <Milestone size={16} />
+          </span>
           <StatusBadge title={STATUS_TITLE[release.status]} tone={STATUS_TONE[release.status]}>
             {releaseStatusText(release)}
           </StatusBadge>
-        </div>
-        {release.source_label ? (
-          <span className="kanban-plan-sub">
-            Created from the label <span className="kanban-plan-mono">{release.source_label}</span>
-          </span>
-        ) : null}
-      </div>
-      {narrow ? null : <div className="kanban-plan-head__actions">{actions}</div>}
-    </header>
-  )
-
-  const target = (
-    <div className="kanban-plan-kv">
-      <span className="kanban-plan-k">Target</span>
-      <span className="kanban-plan-v">
-        {retarget.editing ? (
-          retarget.editor
-        ) : release.target_at ? (
-          <>
-            <span className="kanban-plan-mono">{formatDay(release.target_at)}</span>
-            {released ? null : <span className="kanban-plan-faint">{relativeDay(release.target_at)}</span>}
-          </>
-        ) : (
-          <span className="kanban-plan-faint">No target date</span>
-        )}
-      </span>
-      {retarget.editing ? (
-        <span />
-      ) : (
-        <IconButton className="kanban-plan-touch" label="Edit the target date" onClick={retarget.start} variant="ghost">
-          <Pencil size={16} />
-        </IconButton>
-      )}
-    </div>
-  )
-
-  const shippedOn =
-    released && release.released_at ? (
-      <div className="kanban-plan-kv">
-        <span className="kanban-plan-k">Released</span>
-        <span className="kanban-plan-v">
-          <span className="kanban-plan-mono" title={new Date(release.released_at).toLocaleString()}>
-            {new Date(release.released_at).toLocaleDateString('en-US', FULL_DAY)}
-          </span>
-        </span>
-        <span />
-      </div>
-    ) : null
-
-  const hasDescription = release.description.trim() !== ''
-  const editDescription =
-    hasDescription && !describe.editing ? (
-      <IconButton
-        className="kanban-plan-touch kanban-plan-panelh__end"
-        label="Edit the description"
-        onClick={describe.start}
-        variant="ghost"
-      >
-        <Pencil size={16} />
-      </IconButton>
-    ) : null
-  const description = describe.editing ? (
-    describe.editor
-  ) : hasDescription ? (
-    <p className="kanban-plan-desc">{release.description}</p>
-  ) : (
-    <button className="kanban-plan-link kanban-plan-touch" onClick={describe.start} type="button">
-      Add a description
-    </button>
-  )
-
-  const nudge = release.source_label ? (
-    drift.length > 0 ? (
-      <StatusPanel
-        action={
-          <Button className="kanban-plan-touch" disabled={busy} onClick={() => void addDrift()} variant="pill">
-            Add {plural(drift.length, 'ticket')}
-          </Button>
-        }
-        detail="They carry the label but are in no release yet."
-        headline={
-          <>
-            {plural(drift.length, 'ticket')} with <span className="kanban-plan-mono">{release.source_label}</span>{' '}
-            {drift.length === 1 ? 'is' : 'are'} outside this release
-          </>
-        }
-        icon={<Tag size={16} />}
-        role="status"
-        variant="info"
-      />
-    ) : (
-      <p className="kanban-plan-quiet">
-        <CircleCheck size={16} />
-        <span>
-          {elsewhere.length === 0 ? 'All ' : ''}
-          {plural(withLabel.length - elsewhere.length, 'ticket')} with{' '}
-          <span className="kanban-plan-mono">{release.source_label}</span>{' '}
-          {withLabel.length - elsewhere.length === 1 ? 'is' : 'are'} here
-          {elsewhere.length > 0 ? ` · ${elsewhere.length} in another release` : ''}
-        </span>
-      </p>
-    )
-  ) : null
-
-  const progress = (
-    <section aria-label="Progress" className="kanban-plan-progress">
-      <div className="kanban-plan-progress__line">
-        <ProgressBar done={release.done} total={release.total} />
-        <span className="kanban-plan-mono">
-          {release.done} of {release.total} done
-        </span>
-      </div>
-      <ColumnTiles
-        canceledStatus={data.canceled_status}
-        columns={columns}
-        counts={release.counts}
-        doneStatus={data.done_status}
-      />
-    </section>
-  )
-
-  const byProject = (
-    <Panel aria-labelledby={`${uid}-projects`} role="region">
-      <PanelHeader>
-        <h3 className="kanban-plan-panelh" id={`${uid}-projects`}>
-          By project
-        </h3>
-      </PanelHeader>
-      <PanelBody className="kanban-plan-kvs">
-        {release.projects.length === 0 ? <p className="kanban-plan-faint">No tickets in this release yet.</p> : null}
-        {release.projects.map((row) => (
-          <div className="kanban-plan-split" key={row.project_id ?? 'none'}>
-            <div className="kanban-plan-split__top">
-              <span className="kanban-plan-split__name">{projectName(row.project_id)}</span>
-              <span className="kanban-plan-mono">{row.total}</span>
-            </div>
-            <span className="kanban-plan-faint">
-              {row.done} done · {row.total - row.done} not done
+          {release.source_label ? (
+            <span className="kb-plan-head__source">
+              From the label <span className="kb-plan-mono">{release.source_label}</span>
             </span>
-          </div>
-        ))}
-        {release.projects.length > 0 && absent.length > 0 ? (
-          <p className="kanban-plan-faint">
-            {nameList(absent.map((project) => project.name))} {absent.length === 1 ? 'has' : 'have'} no tickets in this
-            release.
-          </p>
-        ) : null}
-      </PanelBody>
-    </Panel>
-  )
-
-  // Both lists are panels: the same surface, the Done one folded until asked for.
-  const lists = (
-    <>
-      {open.length > 0 ? (
-        <Panel aria-labelledby={`${uid}-open`} role="region">
-          <PanelHeader>
-            <h3 className="kanban-plan-panelh" id={`${uid}-open`}>
-              Not done
-            </h3>
-            <span className="kanban-plan-count">{open.length}</span>
-          </PanelHeader>
-          <TicketRows
-            agents={agents}
-            canOpenPane={canOpenPane}
-            data={data}
-            host={host}
-            label="Not done"
-            tickets={open}
-          />
-        </Panel>
-      ) : null}
-      {done.length > 0 ? (
-        <Panel aria-label={doneHeading} role="region">
-          <button
-            aria-expanded={showDone}
-            aria-label={`${showDone ? 'Hide' : 'Show'} the ${done.length} ${doneHeading.toLowerCase()} tickets`}
-            className={`${uiClasses.panelHeader} kanban-plan-collapse__trigger kanban-plan-touch`}
-            onClick={() => setShowDone((now) => !now)}
-            type="button"
-          >
-            <ChevronRight className="kanban-plan-collapse__chevron" size={16} />
-            <span>{doneHeading}</span>
-            <span className="kanban-plan-count">{done.length}</span>
-          </button>
-          {showDone ? (
-            <TicketRows
-              agents={agents}
-              canOpenPane={canOpenPane}
-              data={data}
-              host={host}
-              label={doneHeading}
-              tickets={done}
-            />
           ) : null}
-        </Panel>
-      ) : null}
-    </>
-  )
-
-  if (narrow) {
-    // The target right under the title, the numbers, who it is for, what can be done; the tickets come last.
-    return (
-      <div className="kanban-plan-main">
-        <div className="kanban-plan-stack">
-          {head}
-          <div className="kanban-plan-kvs kanban-plan-kvs--flat">
-            {target}
-            {shippedOn}
-          </div>
-          {nudge}
-          {progress}
-          {byProject}
-          <div className="kanban-plan-actions">{actions}</div>
-          <Panel aria-labelledby={`${uid}-description`} role="region">
-            <PanelHeader>
-              <h3 className="kanban-plan-panelh" id={`${uid}-description`}>
-                Description
-              </h3>
-              {editDescription}
-            </PanelHeader>
-            <PanelBody className="kanban-plan-kvs">{description}</PanelBody>
-          </Panel>
-          {lists}
+          <span className="kb-plan-spacer" />
+          {actions}
         </div>
-        {dialog}
-      </div>
-    )
-  }
+        {rename.editing ? (
+          rename.editor
+        ) : (
+          <h2 className="kb-plan-title">
+            <button className="kb-plan-title__edit" onClick={rename.start} title="Rename" type="button">
+              {release.name}
+            </button>
+          </h2>
+        )}
+        {describe.editing ? (
+          describe.editor
+        ) : hasDescription ? (
+          <button className="kb-plan-desc" onClick={describe.start} title="Edit the description" type="button">
+            {release.description}
+          </button>
+        ) : (
+          <button className="kb-plan-desc" data-empty="true" onClick={describe.start} type="button">
+            Add a description…
+          </button>
+        )}
+      </header>
 
-  return (
-    <div className="kanban-plan-main">
-      <div className="kanban-plan-detail">
-        <div className="kanban-plan-detail__main">
-          {head}
-          {nudge}
-          {progress}
-          {lists}
+      <div className="kb-plan-detail__grid">
+        <div className="kb-plan-detail__main">
+          {release.source_label ? (
+            drift.length > 0 ? (
+              <Callout
+                action={
+                  <ShadcnButton disabled={busy} onClick={() => void addDrift()} size="sm" type="button" variant="outline">
+                    Add {plural(drift.length, 'ticket')}
+                  </ShadcnButton>
+                }
+                detail="They carry the label but are in no release yet."
+                icon={Tag}
+                title={
+                  <>
+                    {plural(drift.length, 'ticket')} with <span className="kb-plan-mono">{release.source_label}</span>{' '}
+                    {drift.length === 1 ? 'is' : 'are'} outside this release
+                  </>
+                }
+              />
+            ) : (
+              <p className="kb-plan-quiet">
+                <CircleCheck size={16} />
+                <span>
+                  {elsewhere.length === 0 ? 'All ' : ''}
+                  {plural(withLabel.length - elsewhere.length, 'ticket')} with{' '}
+                  <span className="kb-plan-mono">{release.source_label}</span>{' '}
+                  {withLabel.length - elsewhere.length === 1 ? 'is' : 'are'} here
+                  {elsewhere.length > 0 ? ` · ${elsewhere.length} in another release` : ''}
+                </span>
+              </p>
+            )
+          ) : null}
+
+          <section aria-label="Progress" className="kb-plan-progress">
+            <div className="kb-plan-progress__line">
+              <span className="kb-plan-progress__pct">{release.total > 0 ? `${pct}%` : '—'}</span>
+              <span className="kb-plan-progress__of">
+                {release.done} of {plural(release.total, 'ticket')} done
+              </span>
+            </div>
+            <ProgressBar done={release.done} total={release.total} />
+            <ColumnTiles
+              canceledStatus={data.canceled_status}
+              columns={columns}
+              counts={release.counts}
+              doneStatus={data.done_status}
+            />
+          </section>
+
+          {open.length > 0 ? (
+            <Section count={open.length} flush title="Not done">
+              <TicketRows agents={agents} canOpenPane={canOpenPane} data={data} host={host} label="Not done" tickets={open} />
+            </Section>
+          ) : null}
+          {done.length > 0 ? (
+            <Section
+              action={
+                <ShadcnButton
+                  aria-expanded={showDone}
+                  onClick={() => setShowDone((now) => !now)}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  {showDone ? 'Hide' : 'Show'}
+                </ShadcnButton>
+              }
+              count={done.length}
+              flush
+              title={doneHeading}
+            >
+              {showDone ? (
+                <TicketRows agents={agents} canOpenPane={canOpenPane} data={data} host={host} label={doneHeading} tickets={done} />
+              ) : null}
+            </Section>
+          ) : null}
+          {mine.length === 0 ? (
+            <p className="kb-plan-quiet">No ticket is in this release yet. Add them from the board or the List layout.</p>
+          ) : null}
         </div>
 
-        <aside aria-label="Release details" className="kanban-plan-detail__aside">
-          <Panel aria-labelledby={`${uid}-details`} role="region">
-            <PanelHeader>
-              <h3 className="kanban-plan-panelh" id={`${uid}-details`}>
-                Details
-              </h3>
-            </PanelHeader>
-            <PanelBody className="kanban-plan-kvs">
-              {target}
-              {shippedOn}
-              <div className="kanban-plan-kv kanban-plan-kv--desc">
-                <span className="kanban-plan-k">Description</span>
-                {editDescription ?? <span />}
+        <aside aria-label="Release details" className="kb-plan-detail__aside">
+          <Section title="Details">
+            <Prop label="Target">
+              {retarget.editing ? (
+                retarget.editor
+              ) : (
+                <button className="kb-plan-value" onClick={retarget.start} title="Edit the target date" type="button">
+                  {release.target_at ? (
+                    <>
+                      <span>{formatDay(release.target_at)}</span>
+                      {released ? null : <span className="kb-plan-faint">{relativeDay(release.target_at)}</span>}
+                    </>
+                  ) : (
+                    <span className="kb-plan-faint">Set a date</span>
+                  )}
+                  <Pencil className="kb-plan-value__pen" size={16} />
+                </button>
+              )}
+            </Prop>
+            {released && release.released_at ? (
+              <Prop label="Released">
+                <span className="kb-plan-value" title={new Date(release.released_at).toLocaleString()}>
+                  {new Date(release.released_at).toLocaleDateString('en-US', FULL_DAY)}
+                </span>
+              </Prop>
+            ) : null}
+            <Prop label="Tickets">
+              <span className="kb-plan-value">{plural(live, 'ticket')}</span>
+            </Prop>
+          </Section>
+
+          <Section title="By project">
+            {release.projects.length === 0 ? <p className="kb-plan-faint">No tickets in this release yet.</p> : null}
+            {release.projects.map((row) => (
+              <div className="kb-plan-split" key={row.project_id ?? 'none'}>
+                <div className="kb-plan-split__top">
+                  <span className="kb-plan-split__name">{projectName(row.project_id)}</span>
+                  <span className="kb-plan-split__n">
+                    {row.done}/{row.total}
+                  </span>
+                </div>
+                <ProgressBar done={row.done} total={row.total} />
               </div>
-              {description}
-            </PanelBody>
-          </Panel>
-          {byProject}
+            ))}
+            {release.projects.length > 0 && absent.length > 0 ? (
+              <p className="kb-plan-faint">
+                {nameList(absent.map((project) => project.name))} {absent.length === 1 ? 'has' : 'have'} no tickets in
+                this release.
+              </p>
+            ) : null}
+          </Section>
         </aside>
       </div>
       {dialog}
-    </div>
-  )
-}
-
-/** Tickets of one list: the first few, then the rest on request. Each opens its ticket in a pane. */
-function TicketRows({
-  host,
-  tickets,
-  data,
-  agents,
-  canOpenPane,
-  label,
-}: {
-  host: Host
-  tickets: TicketSummary[]
-  /** The board: its columns, done and canceled ones name each row's glyph. */
-  data: BoardData
-  agents: AgentProfile[]
-  canOpenPane: boolean
-  label: string
-}) {
-  const [all, setAll] = useState(false)
-  const shown = all ? tickets : tickets.slice(0, 6)
-  return (
-    <div className="kanban-plan-rows">
-      <ul aria-label={label} className="kanban-plan-rows__list">
-        {shown.map((ticket) => {
-          const agent = agents.find((candidate) => candidate.id === ticket.assignee)
-          const assignee = agent?.name ?? ticket.assignee
-          return (
-            <li key={ticket.id}>
-              <button
-                className="kanban-plan-trow kanban-plan-touch"
-                disabled={!canOpenPane}
-                onClick={() => openPane(host, TICKET_PAGE_ID, { id: ticket.key })}
-                type="button"
-              >
-                <StatusGlyph
-                  canceledStatus={data.canceled_status}
-                  columns={data.columns}
-                  doneStatus={data.done_status}
-                  status={ticket.status}
-                />
-                <span className="kanban-plan-mono kanban-plan-trow__key">{ticket.key}</span>
-                <span className="kanban-plan-trow__title">{ticket.title}</span>
-                {assignee ? (
-                  <span className="kanban-plan-trow__who">
-                    <span className={uiClasses.treeItemIcon} data-color={agent?.color ?? undefined}>
-                      <Bot size={16} />
-                    </span>
-                    <span className="kanban-plan-trow__name">{assignee}</span>
-                  </span>
-                ) : null}
-              </button>
-            </li>
-          )
-        })}
-      </ul>
-      {tickets.length > shown.length ? (
-        <Button
-          className="kanban-plan-touch kanban-plan-rows__more"
-          onClick={() => setAll(true)}
-          size="sm"
-          variant="ghost"
-        >
-          Show {tickets.length - shown.length} more
-        </Button>
-      ) : null}
     </div>
   )
 }

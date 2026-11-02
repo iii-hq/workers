@@ -1,177 +1,65 @@
 import {
-  Button,
-  IconButton,
-  Input,
-  SegmentedControl,
-  Selector,
-  StatusPanel,
-  useConfirm,
   type Host,
+  ShadcnButton,
+  ShadcnInput,
+  ShadcnProgress,
+  ShadcnTabs,
+  ShadcnTabsList,
+  ShadcnTabsTrigger,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { ChevronLeft, ChevronRight, CornerLeftUp, Link2, TriangleAlert, Unlink } from 'lucide-react'
+import { ChevronLeft, ChevronRight, CornerLeftUp, Link2, Plus, TriangleAlert, Unlink } from 'lucide-react'
 import { useId, useMemo, useState } from 'react'
+import { statusStep } from './board-state'
+import {
+  type AgentProfile,
+  api,
+  type Brief,
+  type Column,
+  noteOwnWrite,
+  priorityLabel,
+  type ProjectView,
+  type ReleaseView,
+  statusLabel,
+  type Ticket,
+  type TicketSummary,
+} from './shared'
 import {
   archivedProjectIn,
   attachOrder,
   attachReasons,
+  doneWarning,
   openChildren,
-  parentOptions,
   plural,
   prefillHint,
   progressPercent,
-  projectOptions,
-  releaseGroups,
   siblings,
   subtaskDefaults,
-  doneWarning,
 } from './subtask-rules'
-import {
-  PriorityChip,
-  StatusGlyph,
-  api,
-  noteOwnWrite,
-  priorityLabel,
-  statusLabel,
-  type AgentProfile,
-  type Brief,
-  type Column,
-  type ProjectView,
-  type ReleaseView,
-  type Ticket,
-  type TicketSummary,
-} from './shared'
+import { AssigneeAvatar } from './ui/avatar'
+import { PriorityIcon, StatusIcon } from './ui/glyphs'
+import { IconAction } from './ui/icon-action'
+import { SearchPicker } from './ui/search-picker'
 
 /** A ticket key that opens the ticket, in activity sentences. */
 export function TicketRef({ ticketKey, onOpen }: { ticketKey: string; onOpen?: (key: string) => void }) {
   return onOpen ? (
-    <button className="kanban-ref" onClick={() => onOpen(ticketKey)} type="button">
+    <button className="kb-ref" onClick={() => onOpen(ticketKey)} type="button">
       {ticketKey}
     </button>
   ) : (
-    <span className="kanban-ref">{ticketKey}</span>
+    <span className="kb-ref">{ticketKey}</span>
   )
 }
 
-export function ProgressBar({ done, total, className }: { done: number; total: number; className?: string }) {
+/** Subtask progress as a thin shadcn bar. */
+function Progress({ done, total, className }: { done: number; total: number; className?: string }) {
   return (
-    <span
+    <ShadcnProgress
       aria-label={`${done} of ${total} subtasks done`}
-      className={className ? `kanban-bar ${className}` : 'kanban-bar'}
-      role="img"
-    >
-      <span style={{ width: `${progressPercent({ done, total })}%` }} />
-    </span>
-  )
-}
-
-/* ── project, release and parent as selectors ────────────────────────── */
-
-type FacetProps = {
-  /** Project or release id; for the parent, its key. */
-  value: string | null
-  onChange: (next: string | null) => void
-  /** The list is about to be read: the caller refreshes what it knows. */
-  onOpen?: () => void
-  disabled?: boolean
-  id?: string
-  'aria-describedby'?: string
-}
-
-export function ProjectSelector({
-  projects,
-  value,
-  onChange,
-  onOpen,
-  disabled,
-  id,
-  'aria-describedby': describedBy,
-}: FacetProps & { projects: ProjectView[] | null }) {
-  const options = useMemo(() => (projects ? projectOptions(projects, value) : []), [projects, value])
-  return (
-    <Selector
-      allowEmpty
-      aria-describedby={describedBy}
-      aria-label="Project"
-      className="kanban-selector"
-      disabled={disabled || !projects}
-      emptyLabel="No project"
-      id={id}
-      onChange={onChange}
-      onClear={() => onChange(null)}
-      onOpenChange={(open) => {
-        if (open) onOpen?.()
-      }}
-      options={options}
-      placeholder={projects ? 'No project' : 'Loading…'}
-      searchPlaceholder="Find a project…"
-      value={value ?? undefined}
-    />
-  )
-}
-
-export function ReleaseSelector({
-  releases,
-  value,
-  onChange,
-  onOpen,
-  disabled,
-  id,
-  'aria-describedby': describedBy,
-}: FacetProps & { releases: ReleaseView[] | null }) {
-  const groups = useMemo(() => (releases ? releaseGroups(releases, value) : []), [releases, value])
-  return (
-    <Selector
-      allowEmpty
-      aria-describedby={describedBy}
-      aria-label="Release"
-      className="kanban-selector"
-      disabled={disabled || !releases}
-      emptyLabel="No release"
-      groups={groups}
-      id={id}
-      onChange={onChange}
-      onClear={() => onChange(null)}
-      onOpenChange={(open) => {
-        if (open) onOpen?.()
-      }}
-      placeholder={releases ? 'No release' : 'Loading…'}
-      searchPlaceholder="Find a release…"
-      value={value ?? undefined}
-    />
-  )
-}
-
-export function ParentSelector({
-  tickets,
-  selfId,
-  current,
-  value,
-  onChange,
-  onOpen,
-  disabled,
-  id,
-  'aria-describedby': describedBy,
-}: FacetProps & { tickets: TicketSummary[] | null; selfId: string | null; current: Brief | null }) {
-  const options = useMemo(() => (tickets ? parentOptions(tickets, selfId, current) : []), [tickets, selfId, current])
-  return (
-    <Selector
-      allowEmpty
-      aria-describedby={describedBy}
-      aria-label="Parent"
-      className="kanban-selector"
-      disabled={disabled || !tickets}
-      emptyLabel="None"
-      id={id}
-      onChange={onChange}
-      onClear={() => onChange(null)}
-      onOpenChange={(open) => {
-        if (open) onOpen?.()
-      }}
-      options={options}
-      placeholder={tickets ? 'None' : 'Loading…'}
-      searchPlaceholder="Find a ticket by key or title…"
-      value={value ?? undefined}
+      className={className ? `kb-progress ${className}` : 'kb-progress'}
+      value={progressPercent({ done, total })}
     />
   )
 }
@@ -190,6 +78,7 @@ type ParentStripProps = {
   onOpen: (key: string) => void
 }
 
+/** "Subtask of KAN-1 · title · status · 2 of 5 done", then the previous and next sibling. */
 export function ParentStrip({
   parent,
   parentView,
@@ -205,75 +94,54 @@ export function ParentStrip({
   const deleted = parent.deleted_at ? ' (deleted)' : ''
   const progress = parentView?.progress
   return (
-    <div aria-label="Parent ticket" className="kanban-parentbar" role="group">
+    <div aria-label="Parent ticket" className="kb-parentbar" role="group">
       <button
         aria-label={`Subtask of ${parent.key}${deleted}, ${parent.title}. ${status}${
           progress ? `, ${progress.done} of ${progress.total} subtasks done` : ''
         }. Open the parent`}
-        className="kanban-parentbar__link"
+        className="kb-parentbar__link"
         disabled={!canOpen}
         onClick={() => onOpen(parent.key)}
         type="button"
       >
         <CornerLeftUp size={16} />
-        <span className="kanban-parentbar__of">
-          <span className="kanban-parentbar__faint">Subtask of</span> <span className="kanban-mono">{parent.key}</span>
-          {deleted} ·
-        </span>
-        <span className="kanban-parentbar__title" title={parent.title}>
+        <span className="kb-parentbar__of">Subtask of</span>
+        <span className="kb-mono">{parent.key}</span>
+        {deleted ? <span className="kb-parentbar__of">{deleted}</span> : null}
+        <span className="kb-parentbar__title" title={parent.title}>
           {parent.title}
         </span>
-        <span className="kanban-parentbar__status">
-          <span aria-hidden="true" className="kanban-parentbar__faint">
-            ·
-          </span>
-          <StatusGlyph
-            canceledStatus={canceledStatus}
-            columns={columns}
-            doneStatus={doneStatus}
-            status={parent.status}
-          />
+        <span className="kb-parentbar__status">
+          <StatusIcon step={statusStep(columns, parent.status, doneStatus, canceledStatus)} />
           {status}
         </span>
-        {progress ? (
-          <span className="kanban-parentbar__progress">
-            <span className="kanban-mono">
-              {progress.done} of {progress.total} done
+        {progress && progress.total > 0 ? (
+          <span className="kb-parentbar__progress">
+            <span className="kb-parentbar__count">
+              {progress.done}/{progress.total}
             </span>
-            <ProgressBar done={progress.done} total={progress.total} />
+            <Progress done={progress.done} total={progress.total} />
           </span>
         ) : null}
       </button>
       {previous || next ? (
-        <div className="kanban-parentbar__nav">
-          {previous ? (
-            <Button
-              aria-label={`Previous subtask ${previous.key}`}
-              className="kanban-touch"
-              disabled={!canOpen}
-              onClick={() => onOpen(previous.key)}
-              size="sm"
-              title={`Previous subtask ${previous.key}`}
-              variant="ghost"
-            >
-              <ChevronLeft size={16} />
-              <span className="kanban-mono">{previous.key}</span>
-            </Button>
-          ) : null}
-          {next ? (
-            <Button
-              aria-label={`Next subtask ${next.key}`}
-              className="kanban-touch"
-              disabled={!canOpen}
-              onClick={() => onOpen(next.key)}
-              size="sm"
-              title={`Next subtask ${next.key}`}
-              variant="ghost"
-            >
-              <span className="kanban-mono">{next.key}</span>
-              <ChevronRight size={16} />
-            </Button>
-          ) : null}
+        <div className="kb-parentbar__nav">
+          <IconAction
+            disabled={!canOpen || !previous}
+            label={previous ? `Previous subtask ${previous.key}` : 'No previous subtask'}
+            onClick={() => previous && onOpen(previous.key)}
+            size="icon-xs"
+          >
+            <ChevronLeft size={16} />
+          </IconAction>
+          <IconAction
+            disabled={!canOpen || !next}
+            label={next ? `Next subtask ${next.key}` : 'No next subtask'}
+            onClick={() => next && onOpen(next.key)}
+            size="icon-xs"
+          >
+            <ChevronRight size={16} />
+          </IconAction>
         </div>
       ) : null}
     </div>
@@ -296,15 +164,6 @@ async function eachChild(children: Brief[], work: (child: Brief) => Promise<unkn
   }
 }
 
-/** `KAN-2, KAN-3 and 4 more`: the subtasks a confirm names, at most eight. */
-const listed = (children: Brief[], max = 8): string => {
-  const parts = [
-    ...children.slice(0, max).map((child) => child.key),
-    ...(children.length > max ? [`${children.length - max} more`] : []),
-  ]
-  return parts.length < 2 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
-}
-
 /* ── Done with open subtasks ─────────────────────────────────────────── */
 
 type DoneWarningProps = {
@@ -317,6 +176,7 @@ type DoneWarningProps = {
   onAct: Act
 }
 
+/** A warn banner while a parent sits in done with subtasks open: the sentence, then the three ways out. */
 export function DoneWarning({ host, ticket, columns, doneStatus, canceledStatus, busy, onAct }: DoneWarningProps) {
   const { confirm, dialog } = useConfirm()
   const warning = doneWarning(ticket, doneStatus, canceledStatus, columns)
@@ -324,7 +184,6 @@ export function DoneWarning({ host, ticket, columns, doneStatus, canceledStatus,
   const { open, back } = warning
   const doneLabel = statusLabel(columns, doneStatus)
   const count = open.length
-  const one = count === 1
   const total = ticket.progress.total
 
   const moveBack = () =>
@@ -336,7 +195,7 @@ export function DoneWarning({ host, ticket, columns, doneStatus, canceledStatus,
   const closeAll = async () => {
     const yes = await confirm({
       title: `Close ${plural(count, 'subtask')}?`,
-      description: `${listed(open)} ${one ? 'moves' : 'move'} to ${doneLabel}. ${ticket.key} stays where it is.`,
+      description: `They move to ${doneLabel}. This ticket stays where it is.`,
       confirmLabel: `Close ${plural(count, 'subtask')}`,
     })
     if (!yes) return
@@ -350,9 +209,7 @@ export function DoneWarning({ host, ticket, columns, doneStatus, canceledStatus,
   const detachAll = async () => {
     const yes = await confirm({
       title: `Detach ${plural(count, 'subtask')}?`,
-      description: one
-        ? `${listed(open)} stops being a subtask of ${ticket.key} and stays on the board as a ticket of its own.`
-        : `${listed(open)} stop being subtasks of ${ticket.key} and stay on the board as tickets of their own.`,
+      description: 'They stop being subtasks of this ticket and stay on the board as tickets of their own.',
       confirmLabel: `Detach ${plural(count, 'subtask')}`,
     })
     if (!yes) return
@@ -365,32 +222,30 @@ export function DoneWarning({ host, ticket, columns, doneStatus, canceledStatus,
 
   return (
     <>
-      <StatusPanel
-        className="kanban-record__banner"
-        // The three actions sit under the sentence: in the action slot they would squeeze it.
-        detail={
-          <>
+      <div className="kb-banner" data-tone="warn" role="status">
+        <TriangleAlert size={16} />
+        <div className="kb-banner__text">
+          <p className="kb-banner__title">
+            {doneLabel} with {count} open {count === 1 ? 'subtask' : 'subtasks'}
+          </p>
+          <p className="kb-banner__detail">
             {`${ticket.key} is in ${doneLabel} while ${count} of its ${total} subtasks are not. Progress shows ${ticket.progress.done} of ${total} because only the ${doneLabel} column counts.`}
-            <div className="kanban-warn-actions">
-              {back ? (
-                <Button className="kanban-touch" disabled={busy} onClick={() => void moveBack()} variant="pill">
-                  Move back to {back.label}
-                </Button>
-              ) : null}
-              <Button className="kanban-touch" disabled={busy} onClick={() => void closeAll()} variant="pill">
-                Close {plural(count, 'subtask')}…
-              </Button>
-              <Button className="kanban-touch" disabled={busy} onClick={() => void detachAll()} variant="pill">
-                Detach {plural(count, 'subtask')}…
-              </Button>
-            </div>
-          </>
-        }
-        headline={`${doneLabel} with ${count} open ${count === 1 ? 'subtask' : 'subtasks'}`}
-        icon={<TriangleAlert size={16} />}
-        role="status"
-        variant="warn"
-      />
+          </p>
+          <div className="kb-banner__actions">
+            {back ? (
+              <ShadcnButton disabled={busy} onClick={() => void moveBack()} size="sm" type="button" variant="outline">
+                Move back to {back.label}
+              </ShadcnButton>
+            ) : null}
+            <ShadcnButton disabled={busy} onClick={() => void closeAll()} size="sm" type="button" variant="outline">
+              Close {plural(count, 'subtask')}…
+            </ShadcnButton>
+            <ShadcnButton disabled={busy} onClick={() => void detachAll()} size="sm" type="button" variant="outline">
+              Detach {plural(count, 'subtask')}…
+            </ShadcnButton>
+          </div>
+        </div>
+      </div>
       {dialog}
     </>
   )
@@ -471,10 +326,8 @@ export function SubtasksSection({
       const reason = reasons.get(candidate.id)
       return {
         value: candidate.key,
-        label: candidate.title,
-        description: reason
-          ? `${candidate.key} · ${reason}`
-          : `${candidate.key} · ${statusLabel(columns, candidate.status)} · ${priorityLabel(candidate.priority)}`,
+        label: `${candidate.key}  ${candidate.title}`,
+        description: reason ?? `${statusLabel(columns, candidate.status)} · ${priorityLabel(candidate.priority)}`,
         disabled: Boolean(reason),
       }
     })
@@ -529,135 +382,130 @@ export function SubtasksSection({
     }
   }
 
-  const agentName = (id: string) => agents.find((agent) => agent.id === id)?.name ?? id
-
   return (
-    <section aria-labelledby={titleId} className="kanban-subtasks">
-      <div className="kanban-section__head">
-        <h2 className="kanban-section__title" id={titleId}>
+    <section aria-labelledby={titleId} className="kb-section">
+      <header className="kb-section__head">
+        <h2 className="kb-section__title" id={titleId}>
           Subtasks
         </h2>
         {/* Every subtask canceled: no progress (`total` leaves them out), but the toggle still reaches them. */}
-        {children.length > 0 ? (
-          <>
-            {total > 0 ? (
-              <>
-                <span className="kanban-mono">
-                  {done} of {total} done
-                </span>
-                <ProgressBar className="kanban-bar--head" done={done} total={total} />
-              </>
-            ) : null}
-            <SegmentedControl
-              aria-label="Show subtasks"
-              className="kanban-activity-filter"
-              itemClassName="kanban-touch"
-              onChange={(next) => {
-                setView(next)
-                setExpanded(false)
-              }}
-              options={[
-                { value: 'open', label: `Open ${open.length}` },
-                { value: 'all', label: `All ${children.length}` },
-              ]}
-              value={view}
-              variant="radio"
-            />
-          </>
+        {children.length > 0 && total > 0 ? (
+          <span className="kb-section__progress">
+            <span className="kb-section__count">
+              {done}/{total}
+            </span>
+            <Progress done={done} total={total} />
+          </span>
         ) : null}
-      </div>
+        <span className="kb-section__spacer" />
+        {children.length > 0 ? (
+          <ShadcnTabs
+            className="kb-section__tabs"
+            onValueChange={(next) => {
+              setView(next === 'all' ? 'all' : 'open')
+              setExpanded(false)
+            }}
+            value={view}
+          >
+            <ShadcnTabsList aria-label="Show subtasks">
+              <ShadcnTabsTrigger value="open">
+                Open <span className="kb-section__tabcount">{open.length}</span>
+              </ShadcnTabsTrigger>
+              <ShadcnTabsTrigger value="all">
+                All <span className="kb-section__tabcount">{children.length}</span>
+              </ShadcnTabsTrigger>
+            </ShadcnTabsList>
+          </ShadcnTabs>
+        ) : null}
+      </header>
 
-      {children.length === 0 ? (
-        <p className="kanban-muted">No subtasks yet.</p>
-      ) : shown.length === 0 ? (
-        <p className="kanban-muted">
-          {canceledStatus ? 'Every subtask is done or canceled.' : 'Every subtask is done.'}
-        </p>
+      {children.length === 0 ? null : shown.length === 0 ? (
+        <p className="kb-muted">{canceledStatus ? 'Every subtask is done or canceled.' : 'Every subtask is done.'}</p>
       ) : (
-        <ul className="kanban-subs">
+        <ul className="kb-rows">
           {visible.map((child) => (
-            <li className="kanban-subrow" key={child.id}>
+            <li className="kb-row" key={child.id}>
               <button
-                className="kanban-sub"
-                data-assignee={child.assignee ? 'true' : undefined}
+                className="kb-row__main"
                 disabled={!canOpen}
                 onClick={() => onOpen(child.key)}
                 type="button"
               >
-                <StatusGlyph
-                  canceledStatus={canceledStatus}
-                  columns={columns}
-                  doneStatus={doneStatus}
-                  status={child.status}
-                />
-                <span className="kanban-mono">{child.key}</span>
-                <span className="kanban-sub__title">{child.title}</span>
-                <PriorityChip priorities={priorities} priority={child.priority} />
-                {child.assignee ? <span className="kanban-sub__who">{agentName(child.assignee)}</span> : null}
+                <StatusIcon step={statusStep(columns, child.status, doneStatus, canceledStatus)} />
+                <span className="kb-mono kb-row__key">{child.key}</span>
+                <span className="kb-row__title">{child.title}</span>
+                <span className="kb-row__meta">
+                  <PriorityIcon priorities={priorities} priority={child.priority} />
+                  <AssigneeAvatar agents={agents} id={child.assignee} />
+                </span>
               </button>
-              <IconButton
-                className="kanban-touch kanban-sub__x"
-                disabled={deleted || busy}
-                label={`Detach ${child.key} from ${ticket.key}`}
-                onClick={() => void detach(child)}
-                tooltip={`Detach from ${ticket.key}`}
-                variant="ghost"
-              >
-                <Unlink size={16} />
-              </IconButton>
+              <span className="kb-row__action">
+                <IconAction
+                  disabled={deleted || busy}
+                  label={`Detach ${child.key} from ${ticket.key}`}
+                  onClick={() => void detach(child)}
+                  size="icon-xs"
+                >
+                  <Unlink size={16} />
+                </IconAction>
+              </span>
             </li>
           ))}
         </ul>
       )}
       {shown.length > LIMIT && !expanded ? (
-        <Button className="kanban-touch kanban-subs__more" onClick={() => setExpanded(true)} size="sm" variant="ghost">
+        <ShadcnButton className="kb-rows__more" onClick={() => setExpanded(true)} size="sm" type="button" variant="ghost">
           Show {shown.length - LIMIT} more
-        </Button>
+        </ShadcnButton>
       ) : null}
 
       {deleted ? null : (
-        <div className="kanban-subadd">
-          <div className="kanban-subadd__row">
-            <Input
-              aria-label="New subtask title"
-              className="kanban-subadd__title"
-              onChange={(value) => {
-                setTitle(value)
-                setNotice(null)
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-                  event.preventDefault()
-                  void create()
-                }
-              }}
-              placeholder="Add a subtask — press Enter to create it"
-              value={title}
-            />
-            <Selector
-              aria-label="Add an existing ticket as a subtask"
-              className="kanban-selector kanban-subadd__pick"
-              contentClassName="kanban-pick-menu"
+        <div className="kb-subadd">
+          <div className="kb-subadd__row">
+            <div className="kb-subadd__field">
+              <Plus aria-hidden="true" size={16} />
+              <ShadcnInput
+                aria-label="New subtask title"
+                onChange={(event) => {
+                  setTitle(event.target.value)
+                  setNotice(null)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                    event.preventDefault()
+                    void create()
+                  }
+                }}
+                placeholder="Add a subtask — press Enter"
+                value={title}
+              />
+            </div>
+            <SearchPicker
+              align="end"
               disabled={busy}
-              emptyMessage="No ticket matches"
-              loading={!tickets}
+              empty="No ticket can be attached."
+              label="Add an existing ticket"
               onChange={(key) => void attach(key)}
               onOpenChange={(isOpen) => {
                 if (isOpen) onPick()
               }}
               options={pickable}
-              placeholder="Add existing ticket…"
-              searchPlaceholder="Find a ticket by key or title"
-              triggerIcon={<Link2 size={16} />}
-              value={undefined}
+              searchPlaceholder="Find a ticket by key or title…"
+              trigger={
+                <ShadcnButton size="sm" type="button" variant="outline">
+                  <Link2 size={16} />
+                  {tickets ? 'Add existing' : 'Loading…'}
+                </ShadcnButton>
+              }
+              value={null}
             />
           </div>
-          <p className="kanban-muted kanban-subadd__hint">
+          <p className="kb-muted kb-subadd__hint">
             {prefillHint(firstColumn?.label ?? 'the first column', 'project' in prefill, 'release' in prefill)}{' '}
             One level only: a ticket with subtasks can't become a subtask.
           </p>
           {notice ? (
-            <p className="kanban-muted kanban-subadd__hint" role="status">
+            <p className="kb-muted kb-subadd__hint" role="status">
               {notice}
             </p>
           ) : null}

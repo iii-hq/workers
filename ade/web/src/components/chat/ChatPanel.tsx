@@ -27,6 +27,7 @@ import { sendDraftWhenReady } from '@/lib/composer-insert'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import { errText } from '@/lib/errors'
 import { NEUTRAL_SURFACE } from '@/lib/neutral-surface'
+import { useNewChatMode } from '@/lib/new-chat-mode'
 import {
   closeChatTab,
   loadOpenChatTabs,
@@ -44,6 +45,7 @@ import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
 import { ChatTabs } from './ChatTabs'
 import { ChatView } from './ChatView'
 import { ConversationLoadNotice } from './ConversationLoadNotice'
+import { ConversationSkeleton } from './ConversationSkeleton'
 import { ImportConversationsDialog } from './ImportConversationsDialog'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
@@ -106,6 +108,9 @@ export function ChatPanel({
     setModel,
     setThinkingLevel,
     setWorkingDir,
+    setSystemPrompt,
+    setAgentProfile,
+    setDraftAttachments,
     appendMessage,
     updateMessage,
     compactConversation,
@@ -294,6 +299,23 @@ export function ChatPanel({
     [chatTabs, activeId, select],
   )
 
+  // New chat opens what the person chose in Settings: a blank chat (the
+  // welcome screen and its composer) or the quick dialog (project, first
+  // message, model), where the chat is born with its first message on the
+  // way rather than as an empty draft.
+  const newChatMode = useNewChatMode()
+  const [newChatOpen, setNewChatOpen] = useState(false)
+  const openNewChat = useCallback(() => {
+    if (newChatMode === 'dialog') {
+      setNewChatOpen(true)
+      return
+    }
+    createNew()
+    setNarrowView('chat')
+  }, [newChatMode, createNew])
+  const openNewChatRef = useRef(openNewChat)
+  openNewChatRef.current = openNewChat
+
   // The sidebar's verbs, beside the chat's own: both live in the same pane.
   useEffect(() => {
     if (pinned) return
@@ -301,29 +323,42 @@ export function ChatPanel({
       {
         id: 'new-chat',
         title: 'New chat',
-        detail: 'Start a conversation',
+        detail: 'Start a chat',
         keywords: ['conversation', 'session', 'create'],
-        run: () => {
-          createNew()
-          setNarrowView('chat')
-        },
+        run: () => openNewChatRef.current(),
       },
     ])
-  }, [commands, createNew, pinned])
+  }, [commands, pinned])
 
-  // New chat is a dialog (project, first message, model), so the chat is
-  // born with its first message on the way rather than as an empty draft.
-  const [newChatOpen, setNewChatOpen] = useState(false)
+  // `send: false` is the dialog's "open as a full chat": the same choices,
+  // left in a blank chat's composer for the person to finish.
   const handleNewChat = useCallback(
-    (draft: NewChatDraft) => {
+    (draft: NewChatDraft, { send = true }: { send?: boolean } = {}) => {
       const id = createNew({ text: draft.text })
+      setSystemPrompt(id, draft.systemPrompt)
+      // The profile first: it sets its own model and effort, and the
+      // dialog's pickers (which may have overridden them) apply after.
+      if (draft.agentProfile) setAgentProfile(id, draft.agentProfile)
       if (draft.model) setModel(id, draft.model)
       setThinkingLevel(id, draft.thinkingLevel)
       if (draft.workingDir) setWorkingDir(id, draft.workingDir)
-      sendDraftWhenReady(id, draft.text)
+      // The chips ride in the chat's draft, so the composer opens holding
+      // them and a decided send carries them with the text.
+      if (draft.attachments.length > 0) {
+        setDraftAttachments(id, draft.attachments)
+      }
+      if (send) sendDraftWhenReady(id, draft.text)
       setNarrowView('chat')
     },
-    [createNew, setModel, setThinkingLevel, setWorkingDir],
+    [
+      createNew,
+      setSystemPrompt,
+      setAgentProfile,
+      setModel,
+      setThinkingLevel,
+      setWorkingDir,
+      setDraftAttachments,
+    ],
   )
 
   // Add project: a new chat scoped to the folder just added, so the first
@@ -345,7 +380,7 @@ export function ChatPanel({
       pinned
         ? undefined
         : onChatDialogRequest((dialog) => {
-            if (dialog === 'new-chat') setNewChatOpen(true)
+            if (dialog === 'new-chat') openNewChatRef.current()
             else setAddProjectOpen(true)
           }),
     [pinned],
@@ -488,6 +523,7 @@ export function ChatPanel({
         modelOptions={modelOptions}
         catalogLoading={catalogLoading}
         onCreate={handleNewChat}
+        onOpenFull={(draft) => handleNewChat(draft, { send: false })}
       />
       <ConversationLoadNotice
         loading={conversationsLoading && connectionState === 'connected'}
@@ -505,11 +541,12 @@ export function ChatPanel({
             // learn-iii-conversations: tour anchor (workers/learn-iii). Do not remove.
             className={cn(
               'learn-iii-conversations bg-white dark:bg-neutral-950',
-              /* Dark: a neutral-900 edge where the list meets the chat. */
-              'dark:border-neutral-900',
-              panelSide === 'right' ? 'dark:border-l' : 'dark:border-r',
+              /* An edge where the list meets the chat: neutral-200 in
+                 light, neutral-900 in dark. */
+              'border-neutral-200 dark:border-neutral-900',
+              panelSide === 'right' ? 'border-l' : 'border-r',
             )}
-            label="Conversations"
+            label="Chats"
             side={panelSide}
             storageKey="console:chat:conversations"
             defaultWidth={220}
@@ -528,12 +565,12 @@ export function ChatPanel({
                 ? { expanded: PanelRight, collapsed: PanelRight }
                 : { expanded: PanelLeft, collapsed: PanelLeft }
             }
-            header={<span className="sr-only">Conversations</span>}
+            header={<span className="sr-only">Chats</span>}
             collapsedActions={
               <IconButton
                 label="New chat"
                 tooltipSide={panelSide === 'left' ? 'right' : 'left'}
-                onClick={() => setNewChatOpen(true)}
+                onClick={openNewChat}
                 className="size-7"
               >
                 <SquarePen aria-hidden />
@@ -544,7 +581,7 @@ export function ChatPanel({
               conversations={conversations}
               activeId={activeId}
               narrow={narrow}
-              onCreate={() => setNewChatOpen(true)}
+              onCreate={openNewChat}
               onAddProject={() => setAddProjectOpen(true)}
               onCreateInProject={handleProjectAdded}
               onImport={() => setImportOpen(true)}
@@ -572,7 +609,7 @@ export function ChatPanel({
                   recent={recentConversations}
                   onSelect={handleSelect}
                   onClose={handleCloseTab}
-                  onNew={() => setNewChatOpen(true)}
+                  onNew={openNewChat}
                 />
               )
             }
@@ -590,32 +627,40 @@ export function ChatPanel({
         ) : !narrow || pinned ? (
           <section className="flex-1 flex flex-col min-w-0 min-h-0">
             <PageHeader title="Chat" onClose={onRequestClose} />
-            <div className="flex-1 flex items-center justify-center">
-              <div className="font-sans text-base text-ink-faint">
-                {pinned
-                  ? connectionState === 'connected'
-                    ? conversationId &&
-                      missingConversationIds.has(conversationId)
-                      ? 'Conversation not found.'
-                      : 'Loading conversation…'
-                    : 'Waiting for the session connection…'
-                  : 'No conversation selected.'}
+            {pinned &&
+            connectionState === 'connected' &&
+            !(conversationId && missingConversationIds.has(conversationId)) ? (
+              <div
+                aria-live="polite"
+                className="min-h-0 flex-1 overflow-hidden"
+              >
+                <ConversationSkeleton />
               </div>
-            </div>
+            ) : (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="font-sans text-base text-ink-faint">
+                  {pinned
+                    ? connectionState === 'connected'
+                      ? 'Chat not found.'
+                      : 'Waiting for the session connection…'
+                    : 'No chat selected.'}
+                </div>
+              </div>
+            )}
           </section>
         ) : null}
       </div>
       {checkingRemoval || (removalPending && !pendingRemoval) ? (
         <StatusPanel
           role="status"
-          headline={checkingRemoval ? 'Checking conversation…' : 'Deleting…'}
+          headline={checkingRemoval ? 'Checking chat…' : 'Deleting…'}
         />
       ) : null}
       {previewError ? (
         <StatusPanel
           variant="alert"
           role="alert"
-          headline="Could not check this conversation."
+          headline="Could not check this chat."
           detail={previewError.message}
           action={
             <Button
@@ -633,13 +678,13 @@ export function ChatPanel({
         onOpenChange={(open) => {
           if (!open) cancelRemoval()
         }}
-        title={`${removalAction} conversation?`}
+        title={`${removalAction} chat?`}
         description={
           pendingRemoval ? (
             <>
               {pendingRemoval.hasChildren
-                ? 'This conversation and its subagent conversations will be permanently deleted.'
-                : 'This conversation will be permanently deleted.'}{' '}
+                ? 'This chat and its subagent chats will be permanently deleted.'
+                : 'This chat will be permanently deleted.'}{' '}
               {pendingRemoval.hasRunningWork
                 ? 'Running work will be stopped first. '
                 : null}

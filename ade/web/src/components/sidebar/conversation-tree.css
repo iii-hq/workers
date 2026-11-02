@@ -112,11 +112,11 @@
 
 /* ── project sections ─────────────────────────────────────────────── */
 
-/* A project's chats sit under its name: the row content starts where the
-   header's label does (7px gutter + 24px tile + 10px gap), and the wash
-   still spans the full row. */
+/* A project's chats sit one tree step under its name: the header's 10px
+   label inset plus the recipe's 14px indent, the same step a sub-agent
+   takes under its chat. The wash still spans the full row. */
 .conversation-tree .conversation-project-rows {
-  --iii-ui-tree-inset: 41px;
+  --iii-ui-tree-inset: calc(10px + var(--iii-ui-tree-indent));
 }
 
 .conversation-project-header:hover {
@@ -136,5 +136,54 @@
   .conversation-project-header:hover .conversation-project-new,
   .conversation-project-header:focus-within .conversation-project-new {
     opacity: 1;
+  }
+}
+
+/* ── scroll edges ─────────────────────────────────────────────────── */
+
+/* The list fades out under the heading and above the help / settings row
+   only while there is more to scroll that way, so the last row never runs
+   flush into the icons. Scroll-driven: a list that fits, or a browser
+   without scroll timelines, draws no fade at all. */
+@property --conversation-fade-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --conversation-fade-bottom {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes conversation-scroll-edges {
+  0% {
+    --conversation-fade-top: 0px;
+    --conversation-fade-bottom: 24px;
+  }
+  4% {
+    --conversation-fade-top: 16px;
+  }
+  96% {
+    --conversation-fade-bottom: 24px;
+  }
+  100% {
+    --conversation-fade-top: 16px;
+    --conversation-fade-bottom: 0px;
+  }
+}
+
+@supports (animation-timeline: scroll()) {
+  .conversation-list-scroll {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent,
+      black var(--conversation-fade-top),
+      black calc(100% - var(--conversation-fade-bottom)),
+      transparent
+    );
+    animation: conversation-scroll-edges linear both;
+    animation-timeline: scroll(self);
   }
 }

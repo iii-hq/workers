@@ -48,8 +48,8 @@ import { onComposerFocusRequest, onComposerInsert } from '@/lib/composer-insert'
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
-import { bindingMatchesEvent } from '@/lib/keybindings/bindings'
 import type { MentionSearchContext } from '@/lib/mentions/types'
+import { isNewLineEvent, isSendEvent, useSendKey } from '@/lib/send-key'
 import {
   type ComposerEditorSize,
   classifyComposerResize,
@@ -83,7 +83,8 @@ import { WorkerMentionTransformPlugin } from './lexical/WorkerMentionTransformPl
 interface LexicalShellProps {
   lexicalEditorRef?: RefObject<LexicalEditor | null>
   onChange: (text: string) => void
-  /** Called on `SEND_BINDING` or `SEND_CHORD`; the send button is the other way in. */
+  /** Called on the chosen send key (see `lib/send-key`); the send button is
+      the other way in. */
   onSubmit: () => void
   placeholder?: string
   disabled?: boolean
@@ -99,18 +100,6 @@ interface LexicalShellProps {
       requests sent to it land here. */
   composerId?: string
 }
-
-/**
- * The key that sends: a bare Enter, from anywhere in the draft. Exported so
- * the send button can say so. Shift+Enter breaks the line instead.
- */
-export const SEND_BINDING = 'Enter'
-
-/**
- * The composer's earlier send chord (⌘↵ on a Mac, Ctrl+Enter on Windows and
- * Linux) still sends, so the old habit never turns into a stray newline.
- */
-const SEND_CHORD = 'Mod+Enter'
 
 const baseConfig = {
   namespace: 'iii-chat',
@@ -159,11 +148,13 @@ function ChangePlugin({ onChange }: { onChange: (text: string) => void }) {
 }
 
 /**
- * Enter sends from anywhere in the draft, structure or not (so does
- * `SEND_CHORD`); Shift+Enter is always the new line.
+ * The send key sends from anywhere in the draft, structure or not; which key
+ * that is, and so which one breaks the line, is the Settings choice (see
+ * `lib/send-key`: Enter by default, with Shift+Enter the new line; ⌘↵ or
+ * Shift+Enter instead, with a bare Enter the new line). ⌘↵ always sends.
  *
- * The message is markdown with lists and code blocks, so Shift+Enter makes
- * the new line the caret's block expects. In order: "```" alone on a
+ * The message is markdown with lists and code blocks, so the new-line key
+ * makes the new line the caret's block expects. In order: "```" alone on a
  * paragraph opens a code block; inside a code block, the next line (a second
  * blank line at the end leaves the block — see `$insertCodeLine`); inside a
  * list, the next item (ListPlugin; on an empty item it leaves the list); in
@@ -190,6 +181,7 @@ function ComposerEnterPlugin({
   menuOpenRef: React.MutableRefObject<boolean>
 }) {
   const [editor] = useLexicalComposerContext()
+  const sendKey = useSendKey()
   useEffect(() => {
     const offSend = editor.registerCommand(
       KEY_ENTER_COMMAND,
@@ -200,12 +192,7 @@ function ComposerEnterPlugin({
         // break the line.
         if (event.isComposing || event.keyCode === 229) return true
         if (menuOpenRef.current) return false
-        if (
-          !bindingMatchesEvent(SEND_BINDING, event) &&
-          !bindingMatchesEvent(SEND_CHORD, event)
-        ) {
-          return false
-        }
+        if (!isSendEvent(sendKey, event)) return false
         event.preventDefault()
         onSubmit()
         return true
@@ -219,7 +206,7 @@ function ComposerEnterPlugin({
           event?.preventDefault()
           return true
         }
-        if (!event?.shiftKey) return false
+        if (!event || !isNewLineEvent(sendKey, event)) return false
         const selection = $getSelection()
         if (!$isRangeSelection(selection)) return false
         // Opening a fence and adding a code line are caret operations; with a
@@ -257,7 +244,7 @@ function ComposerEnterPlugin({
       offSend()
       offNewLine()
     }
-  }, [editor, onSubmit, menuOpenRef])
+  }, [editor, onSubmit, menuOpenRef, sendKey])
   return null
 }
 
@@ -405,7 +392,7 @@ function HistoryNavPlugin({
 /**
  * Down on the last line of a code block that ends the draft steps out into
  * a fresh paragraph after it. The block is usually the last thing typed,
- * and short of this the only ways out are three Shift+Enters or the mouse.
+ * and short of this the only ways out are three new lines or the mouse.
  * LOW priority, mounted right after HistoryNavPlugin so it registers after
  * it: on a pristine draft the queue still browses first, and this runs only
  * once the arrow has nowhere else to go.

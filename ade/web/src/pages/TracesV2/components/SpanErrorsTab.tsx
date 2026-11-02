@@ -161,7 +161,7 @@ export function SpanErrorsTab({ span, redact }: SpanErrorsTabProps) {
       )}
 
       {!displayMessage && !displayType && !displayStack && (
-        <div className="rounded-xl bg-card ring-1 ring-foreground/10 p-4 text-center">
+        <div className="rounded-xl bg-card ring-1 ring-card-edge p-4 text-center">
           <p className="text-[13px] text-foreground">
             No additional error details
           </p>

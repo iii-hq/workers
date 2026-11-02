@@ -27,7 +27,7 @@ describe('summaryText', () => {
         failed: 0,
         lastSessionId: 'session-a',
       }),
-    ).toBe('Imported 1 conversation · 67 messages')
+    ).toBe('Imported 1 chat · 67 messages')
   })
 
   it('announces a batch with the commands that came across', () => {
@@ -39,7 +39,7 @@ describe('summaryText', () => {
         failed: 0,
         lastSessionId: 'session-b',
       }),
-    ).toBe('Imported 2 conversations · 70 messages · 12 commands')
+    ).toBe('Imported 2 chats · 70 messages · 12 commands')
   })
 
   it('keeps a partial failure visible beside what was imported', () => {
@@ -51,7 +51,7 @@ describe('summaryText', () => {
         failed: 1,
         lastSessionId: 'session-c',
       }),
-    ).toBe('Imported 1 conversation · 1 message · 1 command · 1 failed')
+    ).toBe('Imported 1 chat · 1 message · 1 command · 1 failed')
   })
 
   it('does not claim an import when every conversation failed', () => {
@@ -403,10 +403,10 @@ describe('footer', () => {
         {...handlers}
       />,
     )
-    expect(html).toContain('Import 3 conversations')
+    expect(html).toContain('Import 3 chats')
     expect(html).toContain('Cancel')
     expect(html).toContain('stay behind')
-    expect(html).not.toContain('Open conversation')
+    expect(html).not.toContain('Open chat')
   })
 
   it('names the count on the primary action, and disables it with none', () => {
@@ -421,7 +421,7 @@ describe('footer', () => {
           {...handlers}
         />,
       )
-    expect(footer(1)).toContain('Import 1 conversation<')
+    expect(footer(1)).toContain('Import 1 chat<')
     expect(footer(0)).toMatch(/disabled=""[^>]*>Import</)
   })
 
@@ -460,7 +460,7 @@ describe('footer', () => {
       />,
     )
     expect(html).toContain(
-      'Imported 2 conversations · 41 messages · 9 commands · 1 failed',
+      'Imported 2 chats · 41 messages · 9 commands · 1 failed',
     )
     expect(html).toContain('Open last imported')
     expect(html).toContain('Import more')

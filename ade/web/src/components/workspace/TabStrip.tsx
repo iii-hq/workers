@@ -136,8 +136,21 @@ const INACTIVE_WASH =
 const TAB_LABEL =
   '-mr-2 min-w-0 flex-1 overflow-hidden whitespace-nowrap pr-3 [mask-image:linear-gradient(to_right,black,black_calc(100%-0.75rem),transparent)]'
 
-const TAB_FLARES =
-  'before:pointer-events-none before:absolute before:bottom-0 before:-left-3 before:size-[12px] before:bg-bg before:[mask-image:radial-gradient(circle_at_0_0,transparent_12px,black_12.5px)] after:pointer-events-none after:absolute after:bottom-0 after:-right-3 after:size-[12px] after:bg-bg after:[mask-image:radial-gradient(circle_at_100%_0,transparent_12px,black_12.5px)]'
+/**
+ * The active tab: the canvas colour, flared at its feet, so it reads as the
+ * sheet the workspace is drawn on. The header draws a divider along its
+ * foot (an inset shadow, so this tab paints over it); the tab breaks that
+ * line and, in light — where bar and canvas are both neutral-100 — carries
+ * it up its sides and round its flares as a hairline (`--tab-edge`). Dark
+ * sets the edge to the canvas, so there the stroke disappears.
+ */
+const TAB_ACTIVE = [
+  'z-10 shrink-0 bg-bg text-neutral-900 dark:text-neutral-50',
+  '[--tab-edge:var(--color-neutral-200)] dark:[--tab-edge:var(--color-bg)]',
+  'shadow-[inset_1px_1px_0_var(--tab-edge),inset_-1px_0_0_var(--tab-edge)]',
+  'before:pointer-events-none before:absolute before:bottom-0 before:-left-[11px] before:size-[12px] before:bg-[radial-gradient(circle_at_0_0,transparent_10.5px,var(--tab-edge)_11px,var(--tab-edge)_11.5px,var(--color-bg)_12px)]',
+  'after:pointer-events-none after:absolute after:bottom-0 after:-right-[11px] after:size-[12px] after:bg-[radial-gradient(circle_at_100%_0,transparent_10.5px,var(--tab-edge)_11px,var(--tab-edge)_11.5px,var(--color-bg)_12px)]',
+].join(' ')
 
 /** Where the next focused/activated tab lands for a tablist key. */
 export function tabIndexForKey(
@@ -482,7 +495,7 @@ export function TabStrip({
               <span
                 aria-hidden
                 className={cn(
-                  'h-4 w-px shrink-0 self-center bg-neutral-400/60 transition-opacity duration-[var(--motion-duration-control)] dark:bg-neutral-700',
+                  'h-4 w-px shrink-0 self-center bg-neutral-300 transition-opacity duration-[var(--motion-duration-control)] dark:bg-neutral-700',
                   !divider && 'opacity-0',
                 )}
               />
@@ -617,20 +630,17 @@ export function TabStrip({
                   // The active tab keeps its natural width and the others
                   // absorb the squeeze, so its label is always whole.
                   active
-                    ? cn(
-                        'z-10 shrink-0 bg-bg text-neutral-900 dark:text-neutral-50',
-                        TAB_FLARES,
-                      )
+                    ? TAB_ACTIVE
                     : cn(
                         'text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100',
                         INACTIVE_WASH,
-                        'hover:after:bg-neutral-300/60 dark:hover:after:bg-neutral-800',
+                        'hover:after:bg-neutral-200 dark:hover:after:bg-neutral-800',
                       ),
                   dragging && !isDragged && 'transition-transform',
                   isDragged && 'z-20 cursor-grabbing transition-none',
                   isDragged &&
                     !active &&
-                    'text-neutral-900 after:bg-neutral-300/60 dark:text-neutral-50 dark:after:bg-neutral-800',
+                    'text-neutral-900 after:bg-neutral-200 dark:text-neutral-50 dark:after:bg-neutral-800',
                 )}
               >
                 <Icon
@@ -711,7 +721,7 @@ export function TabStrip({
           }
           onClick={onCreate}
           /* learn-iii-new-tab: tour anchor (workers/learn-iii). Do not remove. */
-          className="learn-iii-new-tab icon-host relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-300/60 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
+          className="learn-iii-new-tab icon-host relative flex size-12 shrink-0 items-center justify-center self-center rounded-lg text-neutral-500 transition-colors duration-[var(--motion-duration-control)] hover:bg-neutral-200 hover:text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500 disabled:pointer-events-none disabled:opacity-40 sm:size-8 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-400"
         >
           <span
             className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
@@ -901,7 +911,7 @@ function TabContextMenu({
         left: Math.min(x, window.innerWidth - 160),
         zIndex: 60,
       }}
-      className="min-w-[150px] rounded-xl bg-white p-1 font-inter shadow-floating ring-1 ring-neutral-200 dark:bg-neutral-900 dark:ring-neutral-800"
+      className="min-w-[150px] rounded-xl bg-popover p-1 font-inter shadow-floating ring-1 ring-popover-edge"
     >
       <button
         type="button"

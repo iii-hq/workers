@@ -6,14 +6,16 @@
  * the cache-invalidation point.
  */
 
-import { Eyebrow, type Host, SearchField, Skeleton } from '@iii-dev/console-ui'
+import { type Host, ShadcnBadge, ShadcnInput, Skeleton } from '@iii-dev/console-ui'
 import {
   ChevronRight,
   Eye,
   KeyRound,
   Link2,
   type LucideIcon,
+  Search,
   Table2,
+  X,
 } from 'lucide-react'
 import { useState } from 'react'
 import {
@@ -134,14 +136,27 @@ export function SchemaTree({
   return (
     <div className="db-tree">
       <div className="db-tree-filter">
-        <SearchField
+        <Search size={16} className="db-tree-filter-icon" aria-hidden />
+        <ShadcnInput
           value={query}
-          onChange={setQuery}
-          placeholder="Filter tables"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && query) {
+              e.preventDefault()
+              setQuery('')
+            }
+          }}
+          placeholder="Search tables…"
           aria-label="filter tables"
+          className="db-tree-filter-input"
           data-autofocus=""
           data-db-tables-filter=""
         />
+        {query ? (
+          <button type="button" className="db-tree-filter-clear" aria-label="clear the table filter" onClick={() => setQuery('')}>
+            <X size={16} aria-hidden />
+          </button>
+        ) : null}
       </div>
       {!anyMatch && needle !== '' ? (
         <p className="db-tree-msg">No tables match "{needle}"</p>
@@ -154,7 +169,12 @@ export function SchemaTree({
         return (
           <div key={group.kind}>
             {group.kind === 'view' ? (
-              <div className="db-tree-grouphead">Views · {entries.length}</div>
+              <div className="db-tree-grouphead">
+                Views
+                <ShadcnBadge variant="secondary" className="count">
+                  {entries.length}
+                </ShadcnBadge>
+              </div>
             ) : null}
             <ul onKeyDown={roveTreeRow}>
               {entries.map((table) => {
@@ -186,10 +206,7 @@ export function SchemaTree({
                         onClick={() => onSelectTable(table.name)}
                         title={table.name}
                       >
-                        <Icon
-                          size={16}
-                          style={{ color: 'var(--color-ink-ghost)' }}
-                        />
+                        <Icon size={16} className="db-tree-icon" aria-hidden />
                         <span className="db-trunc">{display(table.name)}</span>
                       </button>
                     </div>
@@ -239,22 +256,20 @@ function TableSchemaRows({
               .join(' · ')}
           >
             {col.pk ? (
-              <KeyRound size={16} style={{ color: 'var(--color-accent)' }} />
+              <KeyRound size={16} className="db-col-glyph key" aria-label="primary key" />
             ) : col.fkTarget ? (
-              <Link2 size={16} style={{ color: 'var(--color-ink-ghost)' }} />
+              <Link2 size={16} className="db-col-glyph" aria-label="foreign key" />
             ) : (
-              <span style={{ width: 10, flexShrink: 0 }} />
+              <span className="db-col-glyph" />
             )}
             <span className="db-col-name">{col.name}</span>
-            <span className="db-col-type">{col.type}</span>
+            <span className="db-col-type">{col.type.toLowerCase()}</span>
           </li>
         ))
       )}
       {schema.indexes.length > 0 ? (
         <>
-          <li className="db-idx-head">
-            <Eyebrow>Indexes</Eyebrow>
-          </li>
+          <li className="db-idx-head">Indexes</li>
           {schema.indexes.map((idx) => (
             <li
               key={idx.name}
@@ -263,7 +278,7 @@ function TableSchemaRows({
                 .filter(Boolean)
                 .join(' · ')}
             >
-              <span style={{ width: 10, flexShrink: 0 }} />
+              <span className="db-col-glyph" />
               <span className="db-idx-name">{idx.name}</span>
               {idx.unique ? (
                 <span className="db-idx-unique">Unique</span>

@@ -24,6 +24,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FunctionEntry } from '@/lib/functions'
+import { saveSendKey } from '@/lib/send-key'
 import { LexicalShell } from './LexicalShell'
 import { $exportComposerMarkdown } from './lexical/composer-markdown'
 
@@ -59,6 +60,7 @@ afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
   vi.unstubAllGlobals()
+  localStorage.clear()
   // Back to the prototype's getter.
   Reflect.deleteProperty(navigator, 'userAgent')
 })
@@ -258,6 +260,119 @@ describe('composer keyboard submission', () => {
       expect(markdown(editor)).toBe('hello')
     },
   )
+})
+
+// The Settings send key: with ⌘↵ or Shift+Enter chosen, a bare Enter breaks
+// the line (structure included) and only the chosen chord sends; ⌘↵ sends
+// under every choice.
+describe('composer send key preference', () => {
+  function $bulletList(text: string) {
+    const list = $createListNode('bullet')
+    const item = $createListItemNode()
+    item.append($createTextNode(text))
+    list.append(item)
+    $getRoot().append(list)
+  }
+
+  describe('Cmd/Ctrl + Enter', () => {
+    beforeEach(() => saveSendKey('mod-enter'))
+
+    it.each([
+      ['Enter', {}],
+      ['Shift+Enter', { shiftKey: true }],
+    ] as const)(
+      '%s inserts a newline and never submits',
+      async (_, modifiers) => {
+        const { editor, editable, onSubmit } = await renderComposer()
+        await pressEnter(editable, modifiers)
+
+        expect(onSubmit).not.toHaveBeenCalled()
+        expect(markdown(editor)).toBe('hello\n')
+      },
+    )
+
+    it('Cmd+Enter submits on a Mac', async () => {
+      const { editor, editable, onSubmit } = await renderComposer()
+      const event = await pressEnter(editable, { metaKey: true })
+
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+      expect(event.defaultPrevented).toBe(true)
+      expect(markdown(editor)).toBe('hello')
+    })
+
+    it('Ctrl+Enter submits on Windows and Linux', async () => {
+      setUserAgent(WINDOWS_UA)
+      const { editable, onSubmit } = await renderComposer()
+      await pressEnter(editable, { ctrlKey: true })
+
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+    })
+
+    it('Enter inside a list item starts the next item', async () => {
+      const { editor, editable, onSubmit } = await renderComposer({
+        content: () => $bulletList('one'),
+      })
+      await pressEnter(editable, {})
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      editor.getEditorState().read(() => {
+        const list = $getRoot().getFirstChild()
+        expect($isListNode(list) && list.getChildrenSize()).toBe(2)
+      })
+    })
+  })
+
+  describe('Shift + Enter', () => {
+    beforeEach(() => saveSendKey('shift-enter'))
+
+    it.each([
+      ['Shift+Enter', { shiftKey: true }],
+      ['Cmd+Enter', { metaKey: true }],
+    ] as const)(
+      '%s submits without inserting a newline',
+      async (_, modifiers) => {
+        const { editor, editable, onSubmit } = await renderComposer()
+        const event = await pressEnter(editable, modifiers)
+
+        expect(onSubmit).toHaveBeenCalledTimes(1)
+        expect(event.defaultPrevented).toBe(true)
+        expect(markdown(editor)).toBe('hello')
+      },
+    )
+
+    it('Enter inserts a newline and never submits', async () => {
+      const { editor, editable, onSubmit } = await renderComposer()
+      await pressEnter(editable, {})
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(markdown(editor)).toBe('hello\n')
+    })
+
+    it('Enter on a ``` line opens a code block', async () => {
+      const { editor, editable, onSubmit } = await renderComposer({
+        content: () => $paragraph('```ts'),
+      })
+      await pressEnter(editable, {})
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      editor.getEditorState().read(() => {
+        expect($isCodeNode($getRoot().getFirstChild())).toBe(true)
+      })
+    })
+  })
+
+  it('follows a change made while the composer is open', async () => {
+    const { editor, editable, onSubmit } = await renderComposer()
+    await act(async () => saveSendKey('mod-enter'))
+    await pressEnter(editable, {})
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(markdown(editor)).toBe('hello\n')
+
+    await act(async () => saveSendKey('enter'))
+    await pressEnter(editable, {})
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
 })
 
 // A menu that shows options consumes Enter to pick one; a trigger that

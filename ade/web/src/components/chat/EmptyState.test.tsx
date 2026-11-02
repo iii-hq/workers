@@ -18,8 +18,8 @@ describe('EmptyState', () => {
 
   it('keeps provider setup available when there is no model', () => {
     const html = renderToStaticMarkup(<EmptyState variant="no-provider" />)
-    expect(html).toContain('Connect a model.')
-    expect(html).toContain('set up a model')
+    expect(html).toContain('Connect a model')
+    expect(html).toContain('Set up a model')
     expect(html).not.toContain('What would you like to build?')
   })
 })

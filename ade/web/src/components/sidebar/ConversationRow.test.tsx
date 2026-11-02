@@ -131,6 +131,18 @@ describe('ConversationRow row actions', () => {
       'aria-label="more actions for Chat &quot;one&quot;"',
     )
   })
+
+  it('keeps the age of an old chat one short unit wide', () => {
+    const day = 86_400_000
+    const age = (days: number) => {
+      const html = renderRow('Old', { updatedAt: Date.now() - days * day })
+      return html.match(/iii-ui-tree-item__meta[^>]*>([^<]+)</)?.[1]
+    }
+    expect(age(3)).toBe('3d')
+    expect(age(20)).toBe('2w')
+    expect(age(143)).toBe('4mo')
+    expect(age(400)).toBe('1y')
+  })
 })
 
 describe('ConversationRow menu', () => {
