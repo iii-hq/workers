@@ -28,6 +28,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
+
+use crate::host::HostFunction;
 use iii_sdk::{CallAction, CallRequest, IIIClient, Observer, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -863,7 +865,7 @@ fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
         }
     });
     iii.on_observer_match_for(ON_CHANGED_FN, for_observer::every_call());
-    iii.register_function(
+    iii.host_function(
         ON_CHANGED_FN,
         RegisterFunction::new(|event: ChangedEvent| Ok::<_, Error>(event))
             .description(
@@ -1001,7 +1003,7 @@ async fn set(store: &WorkspaceStore, input: SetInput) -> Result<SetOutput, Error
 pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
     register_changed(iii, &store);
     let workspace = store.clone();
-    iii.register_function(
+    iii.host_function(
         "console::workspace::get",
         RegisterFunction::new_async(move |_: GetInput| {
             let store = workspace.clone();
@@ -1025,7 +1027,7 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
     );
 
     let workspace = store.clone();
-    iii.register_function(
+    iii.host_function(
         "console::workspace::set",
         RegisterFunction::new_async(move |input: SetInput| {
             let store = workspace.clone();
@@ -1041,7 +1043,7 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
     );
 
     let workspace = store.clone();
-    iii.register_function(
+    iii.host_function(
         "console::workspace::list",
         RegisterFunction::new_async(move |_: ListInput| {
             let store = workspace.clone();
@@ -1075,7 +1077,7 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
     );
 
     let workspace = store.clone();
-    iii.register_function(
+    iii.host_function(
         "console::workspace::open",
         RegisterFunction::new_async(move |input: OpenInput| {
             let store = workspace.clone();
@@ -1092,7 +1094,7 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
     );
 
     let workspace = store;
-    iii.register_function(
+    iii.host_function(
         "console::workspace::close",
         RegisterFunction::new_async(move |input: CloseInput| {
             let store = workspace.clone();

@@ -17,6 +17,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
+
+use crate::host::HostFunction;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -78,7 +80,7 @@ pub struct UiManifestOutput {
 /// the console knows fetch results and hashes). Debug surface; the SPA
 /// loader itself is fed by `console::ui::on-assets-changed`, never this.
 fn register_ui_manifest(iii: &Arc<IIIClient>, ui: Option<Arc<UiRegistry>>) {
-    iii.register_function(
+    iii.host_function(
         "console::ui-manifest",
         RegisterFunction::new_async(move |_: UiManifestInput| {
             let ui = ui.clone();
@@ -108,7 +110,7 @@ fn register_ui_manifest(iii: &Arc<IIIClient>, ui: Option<Arc<UiRegistry>>) {
 
 fn register_status(iii: &Arc<IIIClient>, port: PortCell, engine_url: &str) {
     let engine_url = engine_url.to_string();
-    iii.register_function(
+    iii.host_function(
         "console::status",
         RegisterFunction::new_async(move |_: StatusInput| {
             let port = port.clone();

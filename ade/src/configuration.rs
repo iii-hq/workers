@@ -24,6 +24,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
+
+use crate::host::HostFunction;
 use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
@@ -426,7 +428,7 @@ pub fn register_config_observer(
     apply_lock: ApplyLock,
 ) {
     let iii_for_fn = iii.clone();
-    iii.register_function(
+    iii.host_function(
         CONFIG_CHANGE_FN_ID,
         RegisterFunction::new_async(move |_: ConfigChangeRequest| {
             let iii = iii_for_fn.clone();

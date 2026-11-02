@@ -11,6 +11,8 @@
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
+
+use crate::host::HostFunction;
 use iii_sdk::CallRequest;
 use iii_sdk::{IIIClient, RegisterFunction};
 use mention_contract::{
@@ -44,7 +46,7 @@ pub fn provider() -> MentionProvider {
 
 pub fn register(iii: &Arc<IIIClient>) {
     let client = iii.clone();
-    iii.register_function(
+    iii.host_function(
         SEARCH_ID,
         RegisterFunction::new_async(move |request: MentionSearchRequest| {
             let client = client.clone();
@@ -56,7 +58,7 @@ pub fn register(iii: &Arc<IIIClient>) {
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
     let client = iii.clone();
-    iii.register_function(
+    iii.host_function(
         GET_ID,
         RegisterFunction::new_async(move |request: MentionGetRequest| {
             let client = client.clone();

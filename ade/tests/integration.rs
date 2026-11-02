@@ -1304,3 +1304,144 @@ async fn ws_proxy_forwards_oversized_engine_message() {
     }
     let _ = ws.close(None).await;
 }
+
+/// A second `ade` process under a worker name of its own in the same
+/// namespace, as a second compose instance runs. Killed on drop.
+struct Standby {
+    worker: Child,
+    http_port: u16,
+}
+
+impl Drop for Standby {
+    fn drop(&mut self) {
+        let _ = self.worker.kill();
+        let _ = self.worker.wait();
+    }
+}
+
+fn spawn_standby(harness: &Harness) -> Standby {
+    let dir = harness.dir.join("standby");
+    std::fs::create_dir_all(&dir).expect("create the standby dir");
+    let http_port = free_port();
+    let log =
+        std::fs::File::create(harness.dir.join("ade-standby.log")).expect("create the standby log");
+    let worker = Command::new(env!("CARGO_BIN_EXE_ade"))
+        .args([
+            "--url",
+            &harness.engine_url,
+            "--config",
+            &format!("{}/config.yaml", env!("CARGO_MANIFEST_DIR")),
+            "--http-port",
+            &http_port.to_string(),
+            "--http-host",
+            "127.0.0.1",
+        ])
+        .current_dir(&dir)
+        .env("III_WORKER_NAME", "ade-standby")
+        .env(
+            "III_CONFIG_NAME",
+            format!("console-integration-standby-{}", Uuid::new_v4()),
+        )
+        .env("III_COMPOSE_DIR", &dir)
+        .stdout(Stdio::null())
+        .stderr(log)
+        .spawn()
+        .expect("start the standby ade worker");
+    Standby { worker, http_port }
+}
+
+/// The port `console::status` reports, if it answers.
+async fn status_port(client: &IIIClient) -> Option<u64> {
+    let status = client
+        .call(CallRequest {
+            function_id: "console::status".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(2_000),
+        })
+        .await
+        .ok()?;
+    status["http_port"].as_u64()
+}
+
+/// Two ADE instances: the second waits as a standby while the first hosts
+/// the `console::*` functions (no `FUNCTION_NAMESPACE_CONFLICT` loss), and
+/// takes them over, the event sources' observers among them, once the
+/// first leaves.
+#[tokio::test]
+async fn a_second_instance_takes_over_the_console_functions_when_the_first_leaves() {
+    let Some(mut harness) = boot().await else {
+        return;
+    };
+    let client = &harness.client;
+    let first_port = u64::from(harness.http_port);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while status_port(client).await != Some(first_port) {
+        assert!(
+            Instant::now() < deadline,
+            "the first ade never served console::status"
+        );
+        sleep(Duration::from_millis(200)).await;
+    }
+
+    // An observer of an event source, held by the first instance.
+    let mut rung = recording_target(client, "integration::standby-rung");
+    let observer = client.observe(
+        Source::function(WORKSPACE_CHANGED_FN).deliver(Deliver::Output),
+        "integration::standby-rung",
+    );
+    active(&observer, "the workspace observer").await;
+    next_event(&mut rung, "the first instance's ring").await;
+
+    let standby = spawn_standby(&harness);
+    assert!(
+        wait_for_listen(standby.http_port, Duration::from_secs(20)).await,
+        "the standby ade never listened (logs in {})",
+        harness.dir.display(),
+    );
+    // Past the standby's first registrations: the first still hosts.
+    sleep(Duration::from_secs(2)).await;
+    assert_eq!(status_port(client).await, Some(first_port));
+
+    harness.worker.kill().expect("stop the first ade");
+    let _ = harness.worker.wait();
+    let second_port = u64::from(standby.http_port);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while status_port(client).await != Some(second_port) {
+        assert!(
+            Instant::now() < deadline,
+            "the standby never took over console::status (logs in {})",
+            harness.dir.display()
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    // The event source moved too: a layout write on the new host rings the
+    // observer the first instance held (after its own takeover ring).
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let written = client
+            .call(CallRequest {
+                function_id: "console::workspace::set".to_string(),
+                payload: json!({ "value": {} }),
+                action: None,
+                timeout_ms: Some(2_000),
+            })
+            .await;
+        if written.is_ok() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the standby never took over console::workspace::set: {written:?}"
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        next_event(&mut rung, "a ring from the instance that took over").await,
+        json!({})
+    );
+    assert_eq!(observer.state(), ObserverState::Active);
+    drop(standby);
+    harness.client.shutdown_async().await;
+}

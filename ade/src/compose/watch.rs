@@ -189,11 +189,23 @@ impl StateWatcher {
     }
 
     /// An observer was added: make sure the watch runs, then count it.
+    ///
+    /// The observer is accepted even when the watch cannot start yet (the
+    /// daemon names no project, `compose::status` fails because the compose
+    /// worker is not connected, or the watch errors): in 0.26 a refused
+    /// observer gets no other answer, so refusing it would leave that tab
+    /// without live updates for good. The watch starts with the next
+    /// observer instead.
     async fn observer_added(&self, observer_id: &str) -> Result<(), Error> {
-        if self.ensure().await?.is_none() {
-            tracing::warn!(
+        match self.ensure().await {
+            Ok(Some(_)) => {}
+            Ok(None) => tracing::warn!(
                 "compose daemon not reachable yet; watching starts with the next observer"
-            );
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                "compose project lookup failed; watching starts with the next observer"
+            ),
         }
         self.observers().insert(observer_id.to_string());
         Ok(())
@@ -585,22 +597,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_lookup_refuses_the_observer_and_leaves_it_uncounted() {
+    async fn a_failed_lookup_accepts_the_observer_and_the_watch_starts_later() {
         let backend = FakeBackend::with_project();
         let watcher = StateWatcher::with_backend(backend.clone());
 
         backend.lookup_fails.store(true, Ordering::SeqCst);
-        assert!(watcher.observer_added("obs-1").await.is_err());
-        assert_eq!(backend.started(), 0);
+        watcher
+            .observer_added("obs-1")
+            .await
+            .expect("a failed compose::status lookup does not refuse the observer");
+        assert_eq!(backend.started(), 0, "nothing to watch yet");
 
         backend.lookup_fails.store(false, Ordering::SeqCst);
         watcher.observer_added("obs-2").await.unwrap();
+        assert_eq!(backend.started(), 1, "the next observer starts the watch");
+
         watcher.observer_removed("obs-2").await;
         assert_eq!(
-            (backend.started(), backend.stopped()),
-            (1, 1),
-            "the refused observer does not keep the watch open"
+            backend.stopped(),
+            0,
+            "obs-1 was accepted and counted, so the watch stays"
         );
+        watcher.observer_removed("obs-1").await;
+        assert_eq!(backend.stopped(), 1);
     }
 
     /// iii-compose uses `III_COMPOSE_STATE_DIR` as given, so the state dir can

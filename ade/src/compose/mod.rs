@@ -18,6 +18,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
+
+use crate::host::HostFunction;
 use iii_sdk::{CallRequest, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -120,7 +122,7 @@ pub fn register(iii: &Arc<IIIClient>) {
     let watcher = StateWatcher::new(iii.clone());
     iii.on_observer_added_for(ON_CHANGED_FN, watcher.clone());
     iii.on_observer_removed_for(ON_CHANGED_FN, watcher);
-    iii.register_function(
+    iii.host_function(
         ON_CHANGED_FN,
         RegisterFunction::new(|event: ChangedEvent| Ok::<_, Error>(event))
             .description(
@@ -133,7 +135,7 @@ pub fn register(iii: &Arc<IIIClient>) {
 
     {
         let iii = iii.clone();
-        iii.clone().register_function(
+        iii.clone().host_function(
             "console::compose::project",
             RegisterFunction::new_async(move |input: ProjectInput| {
                 let iii = iii.clone();
@@ -152,7 +154,7 @@ pub fn register(iii: &Arc<IIIClient>) {
 
     {
         let iii = iii.clone();
-        iii.clone().register_function(
+        iii.clone().host_function(
             "console::compose::versions",
             RegisterFunction::new_async(move |input: VersionsInput| {
                 let iii = iii.clone();
@@ -164,7 +166,7 @@ pub fn register(iii: &Arc<IIIClient>) {
         );
     }
 
-    iii.register_function(
+    iii.host_function(
         "console::compose::search",
         RegisterFunction::new_async(|input: SearchInput| async move {
             registry::search(&input.query)
@@ -177,7 +179,7 @@ pub fn register(iii: &Arc<IIIClient>) {
         ),
     );
 
-    iii.register_function(
+    iii.host_function(
         "console::compose::inspect",
         RegisterFunction::new_async(|input: InspectInput| async move {
             Ok::<Inspection, Error>(inspect(&input).await)
@@ -189,7 +191,7 @@ pub fn register(iii: &Arc<IIIClient>) {
 
     {
         let iii = iii.clone();
-        iii.clone().register_function(
+        iii.clone().host_function(
             "console::compose::container",
             RegisterFunction::new_async(move |input: ContainerInput| {
                 let iii = iii.clone();
@@ -207,7 +209,7 @@ pub fn register(iii: &Arc<IIIClient>) {
 
     {
         let iii = iii.clone();
-        iii.clone().register_function(
+        iii.clone().host_function(
             "console::compose::edit",
             RegisterFunction::new_async(move |input: EditInput| {
                 let iii = iii.clone();
