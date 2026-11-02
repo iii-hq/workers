@@ -262,6 +262,20 @@ async fn check(signal: Option<&str>) {
             );
         }
     }
+    // Every secrets::* function refuses observers: an observer gets the
+    // input, and a key can be pasted into any field, not only `value`.
+    for id in secrets::api::ids::ALL_FUNCTIONS {
+        let frame = frames
+            .iter()
+            .find(|f| f["type"] == "registerfunction" && f["id"] == id)
+            .unwrap();
+        assert_eq!(
+            frame["observe"]["allow"],
+            json!(false),
+            "{id} observe: {}",
+            frame["observe"]
+        );
+    }
     let trigger_type = frames
         .iter()
         .find(|f| f["type"] == "registertriggertype" && f["id"] == "secrets::changed")
