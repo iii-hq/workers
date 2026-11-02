@@ -59,8 +59,16 @@ export interface WorkerLiveOptions<T> {
    * `${handlerId}::${browserId}`. An object form carries `args` (for a
    * function that takes them) and `filters`:
    * `{ function_id: 'state::on-changed', filters: { 'input.scope': { $eq: 'orders' } } }`.
+   * Defaults to none (fetch once, re-read on tab focus).
    */
-  sources: readonly (string | ObserveSource)[]
+  sources?: readonly (string | ObserveSource)[]
+  /**
+   * @deprecated 0.25 trigger types; use `sources`. Ignored when `sources` is
+   * set. A bare type maps to its source function by the 0.26 naming rule
+   * (`my-worker:change` → `my-worker::on-change`); an entry with a binding
+   * `config` has no reliable mapping and is skipped with a warning.
+   */
+  triggers?: readonly (string | { type: string; config?: Record<string, unknown> })[]
   fetch: () => Promise<T>
   /** @deprecated Ignored: without observers the data is re-read on tab focus, never on a timer. */
   pollMs?: number
@@ -71,7 +79,7 @@ export interface WorkerLive<T> {
   data: T | null
   loading: boolean
   error: string | null
-  /** True while updates arrive through the observers. */
+  /** True while every observer is active; false while one is pending, refused or disconnected (the data is then re-read on tab focus). */
   live: boolean
   refresh: () => void
 }

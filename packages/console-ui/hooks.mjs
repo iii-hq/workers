@@ -4,7 +4,7 @@
  * Console's single React copy). Bundleable: `@iii-dev/console-ui/hooks`.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { copyText, errorMessage } from './format.mjs'
 
 /**
@@ -143,16 +143,84 @@ export function useCopyFlash(text, ms = 1400) {
 }
 
 /**
+ * The 0.25 trigger types whose 0.26 source function the naming rule does not
+ * give (workers contract `tech-specs/2026-10-observe-v2/functions.md` §1.1;
+ * the console's `RENAMED_SOURCES`). `subscribe` is left out: its topic lived
+ * in the binding's config, which has no reliable mapping.
+ */
+const RENAMED_TRIGGER_TYPES = {
+  cron: 'cron::on-tick',
+  http: 'http::on-request',
+  'durable:subscriber': 'queue::on-message',
+  'database::row-changed': 'database::on-row-changed',
+  state: 'state::on-changed',
+  'compose-operation': 'compose::on-operation-progress',
+  'console:script': 'console::ui::asset',
+  'console:style': 'console::ui::asset',
+  'console:module': 'console::ui::asset',
+  'console:assets': 'console::ui::on-assets-changed',
+  timer: 'harness::on-timer',
+  'harness::triggers-changed': 'harness::on-observers-changed',
+  'harness::hook::pre-trigger': 'harness::hook::on-pre-call',
+  'harness::hook::post-trigger': 'harness::hook::on-post-call',
+  log: 'observability::on-log',
+  trace: 'observability::on-span',
+  configuration: 'configuration::on-updated',
+  'engine::functions-available': 'engine::on-functions-changed',
+  'engine::workers-available': 'engine::on-workers-changed',
+  stream: 'stream::on-changed',
+  'stream:join': 'stream::on-join',
+  'stream:leave': 'stream::on-leave',
+}
+
+/** The source function of a 0.25 trigger type: the table, then the naming rule (`W::X` → `W::on-X`, `a:b` → `a::on-b`). */
+function sourceOfTriggerType(type) {
+  const renamed = RENAMED_TRIGGER_TYPES[type]
+  if (renamed) return renamed
+  if (type.includes('::')) {
+    const at = type.lastIndexOf('::')
+    const last = type.slice(at + 2)
+    return last.startsWith('on-') ? type : `${type.slice(0, at)}::on-${last}`
+  }
+  const colon = type.indexOf(':')
+  return colon > 0 ? `${type.slice(0, colon)}::on-${type.slice(colon + 1)}` : null
+}
+
+/**
+ * The 0.26 sources of a deprecated 0.25 `triggers` list. Only a bare type
+ * maps reliably; a binding `config` (filters, args, a topic) does not, so
+ * such entries are skipped with a warning and the page re-reads on focus.
+ */
+function sourcesOfTriggers(triggers) {
+  const sources = []
+  for (const t of triggers) {
+    const { type, config } = typeof t === 'string' ? { type: t } : (t ?? {})
+    const hasConfig = config && typeof config === 'object' && Object.keys(config).length > 0
+    const source = typeof type === 'string' && type !== 'subscribe' && !hasConfig ? sourceOfTriggerType(type) : null
+    if (source) sources.push(source)
+    else console.warn(`[console-ui] useWorkerLive: trigger ${JSON.stringify(t)} has no 0.26 source; pass \`sources\` instead`)
+  }
+  if (sources.length > 0) {
+    console.warn(`[console-ui] useWorkerLive: \`triggers\` is deprecated; observing sources ${sources.join(', ')}`)
+  }
+  return sources
+}
+
+const keyOf = (list) => list.map((s) => (typeof s === 'string' ? s : JSON.stringify(s))).join('\u0000')
+
+/**
  * Live worker data: `fetch()` once, re-fetch on every call of the observed
  * `sources` (a function id, or `{ function_id, args?, filters? }` for one
  * that takes args or a filtered feed; each observed with the one tab-scoped
  * handler `handlerId::<browserId>` as target). There is no timer: while the
- * observers are missing (`live: false`), the data is re-read when the tab
- * becomes visible or focused again, and on `refresh()`. Stale responses are
- * dropped by a monotonic token; every observer is disposed on cleanup.
- * `pollMs` is accepted for compatibility and ignored.
+ * observers are not all active (`live: false` — pending, refused, or
+ * disconnected), the data is re-read when the tab becomes visible or focused
+ * again, and on `refresh()`. Stale responses are dropped by a monotonic
+ * token; every observer is disposed on cleanup. `pollMs` is accepted for
+ * compatibility and ignored; the 0.25 `triggers` is a deprecated alias for
+ * bare trigger types, mapped to their source functions.
  */
-export function useWorkerLive({ iii, sources, fetch, handlerId }) {
+export function useWorkerLive({ iii, sources, triggers, fetch, handlerId }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -164,24 +232,40 @@ export function useWorkerLive({ iii, sources, fetch, handlerId }) {
   fetchRef.current = fetch
   const refresh = useCallback(() => setToken((t) => t + 1), [])
 
+  const legacyKey = !sources && Array.isArray(triggers) ? keyOf(triggers) : ''
+  // biome-ignore lint/correctness/useExhaustiveDependencies: legacyKey stands in for the array's contents
+  const legacy = useMemo(() => (legacyKey ? sourcesOfTriggers(triggers) : []), [legacyKey])
+  const observed = sources ?? legacy
   // Keyed on the source list's contents so an inline array literal does
   // not observe again every render.
-  const sourceKey = sources.map((s) => (typeof s === 'string' ? s : JSON.stringify(s))).join('\u0000')
+  const sourceKey = keyOf(observed)
   useEffect(() => {
     const offs = []
-    let ok = sources.length > 0
+    const observers = []
+    const unwatch = []
+    let failed = observed.length === 0
     try {
       offs.push(iii.on(handlerId, refresh))
       const target = `${handlerId}::${iii.browserId}`
-      for (const source of sources) offs.push(iii.observe(source, target))
+      for (const source of observed) {
+        const off = iii.observe(source, target)
+        offs.push(off)
+        observers.push(off)
+      }
     } catch {
-      // The client refused to observe — re-read on tab focus.
-      ok = false
+      // The client could not observe — re-read on tab focus.
+      failed = true
     }
-    setLive(ok)
+    // Live only while every observer is active: a refused or still-pending
+    // one keeps the focus re-read on. A console whose disposer carries no
+    // state (older) counts an observer live once `observe` returned.
+    const tracked = (off) => typeof off?.onStateChange === 'function'
+    const update = () => setLive(!failed && observers.every((off) => !tracked(off) || off.state === 'active'))
+    for (const off of observers) if (tracked(off)) unwatch.push(off.onStateChange(update))
+    update()
     return () => {
       setLive(false)
-      for (const off of offs) {
+      for (const off of [...unwatch, ...offs]) {
         try {
           off()
         } catch {

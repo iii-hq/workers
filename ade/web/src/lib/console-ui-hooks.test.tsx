@@ -148,10 +148,12 @@ describe('useCopyFlash', () => {
   })
 })
 
-function fakeIii(opts: { failObserve?: boolean } = {}) {
+function fakeIii(opts: { failObserve?: boolean; stateful?: boolean } = {}) {
   const handlers = new Map<string, (payload: unknown) => void>()
   const offs: Array<ReturnType<typeof vi.fn>> = []
   const observed: string[] = []
+  /** Per observer (stateful only): move it to a state, as the engine would. */
+  const states: Array<(state: string) => void> = []
   const iii = {
     browserId: 'console-1',
     call: vi.fn(),
@@ -168,12 +170,27 @@ function fakeIii(opts: { failObserve?: boolean } = {}) {
         observed.push(`${id}→${target}`)
         const off = vi.fn()
         offs.push(off)
-        return off
+        if (!opts.stateful) return off
+        let state = 'pending'
+        const listeners = new Set<(state: string) => void>()
+        states.push((next) => {
+          state = next
+          for (const listener of [...listeners]) listener(next)
+        })
+        return Object.defineProperties(off, {
+          state: { get: () => state },
+          onStateChange: {
+            value: (listener: (state: string) => void) => {
+              listeners.add(listener)
+              return () => listeners.delete(listener)
+            },
+          },
+        })
       },
     ),
     addConnectionStateListener: vi.fn(() => () => {}),
   } as unknown as ExtensionIii
-  return { iii, handlers, offs, observed }
+  return { iii, handlers, offs, observed, states }
 }
 
 describe('useWorkerLive', () => {
@@ -263,5 +280,78 @@ describe('useWorkerLive', () => {
       window.dispatchEvent(new Event('focus'))
     })
     expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('is live only while every observer is active; a refusal turns the focus re-read back on', async () => {
+    const { iii, states } = fakeIii({ stateful: true })
+    const fetch = vi.fn(async () => 'ok')
+    const hook = renderHook(() =>
+      useWorkerLive({
+        iii,
+        sources: ['t::on-x', 't::on-y'],
+        fetch,
+        handlerId: 'h',
+      }),
+    )
+    await act(async () => {})
+    expect(hook.current.live).toBe(false)
+    act(() => states[0]?.('active'))
+    expect(hook.current.live).toBe(false)
+    act(() => states[1]?.('active'))
+    expect(hook.current.live).toBe(true)
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    act(() => states[1]?.('error'))
+    expect(hook.current.live).toBe(false)
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('works without sources: fetches once and re-reads on focus', async () => {
+    const { iii, observed } = fakeIii()
+    const fetch = vi.fn(async () => 'ok')
+    const hook = renderHook(() => useWorkerLive({ iii, fetch, handlerId: 'h' }))
+    await act(async () => {})
+    expect(hook.current.data).toBe('ok')
+    expect(hook.current.live).toBe(false)
+    expect(observed).toEqual([])
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps the deprecated triggers to their source functions, skipping bindings with config', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { iii, observed } = fakeIii()
+    const hook = renderHook(() =>
+      useWorkerLive({
+        iii,
+        triggers: [
+          'my-worker:change',
+          'state',
+          { type: 'my-worker::item-changed' },
+          { type: 'state', config: { scope: 'orders' } },
+        ],
+        fetch: async () => 'ok',
+        handlerId: 'h',
+      }),
+    )
+    await act(async () => {})
+    expect(observed).toEqual([
+      'my-worker::on-change→h::console-1',
+      'state::on-changed→h::console-1',
+      'my-worker::on-item-changed→h::console-1',
+    ])
+    expect(hook.current.live).toBe(true)
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(String(warn.mock.calls[0]?.[0])).toContain('has no 0.26 source')
+    expect(String(warn.mock.calls[1]?.[0])).toContain('deprecated')
+    warn.mockRestore()
   })
 })

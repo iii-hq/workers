@@ -45,10 +45,35 @@ export interface ExtensionIii {
    * Observes `source` with `target` (a function registered with `on`, by its
    * full id `<functionId>::<browserId>`). `deliver` defaults to `'output'`,
    * so the handler receives the event the observed function returned.
-   * Returns its disposer.
+   * Returns its disposer, which also carries the observer's `state`,
+   * `ready()` and `onStateChange`: a refusal (`FORBIDDEN`,
+   * `TOO_MANY_LISTENERS`, ...) never throws, it turns the state `error`.
    */
-  observe(source: string | ObserveSource, target: string, options?: ObserverOptions): () => void
+  observe(source: string | ObserveSource, target: string, options?: ObserverOptions): ObserverDisposer
   addConnectionStateListener(handler: (state: unknown) => void): () => void
+}
+
+/** An observer's state: `pending` until it is accepted, `active`, `suspended` while disconnected, `error` when refused, `disposed`. */
+export type ObserverState = 'pending' | 'active' | 'suspended' | 'error' | 'disposed'
+
+/** Why an observer is in its state, e.g. `{ code: 'FORBIDDEN', message }`. */
+export interface ObserveReason {
+  code: string
+  message: string
+}
+
+/**
+ * What `iii.observe` returns: call it to dispose the observer. The readiness
+ * members are absent on consoles that predate them; check before use.
+ */
+export type ObserverDisposer = (() => void) & {
+  readonly id?: string
+  readonly state?: ObserverState
+  readonly reason?: ObserveReason
+  /** Resolves when `active`; rejects with the code on `error` or `disposed`. */
+  ready?(): Promise<void>
+  /** Calls `listener` on every state change; returns the unsubscribe. */
+  onStateChange?(listener: (state: ObserverState, reason?: ObserveReason) => void): () => void
 }
 
 /** The function an extension observes, with its args and filters. */
