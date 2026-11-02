@@ -6,6 +6,7 @@ Set up an existing WhatsApp Business Platform account, expose its signed webhook
 
 - [Account setup](#account-setup)
 - [Worker environment configuration](#worker-environment-configuration)
+- [Secrets worker references](#secrets-worker-references)
 - [Central environment references and local files](#central-environment-references-and-local-files)
 - [Development webhook URL](#development-webhook-url)
 - [Upload and send documents](#upload-and-send-documents)
@@ -95,6 +96,31 @@ are not automatically removed. ADE and `whatsapp::config-status` show which
 fields are overridden and their variable names, without exposing secret values.
 Saved edits to those fields take effect only after removing the corresponding
 environment override and restarting the worker.
+
+## Secrets worker references
+
+`cloud.access_token`, `cloud.app_secret`, `cloud.verify_token` and
+`cloud.flow_private_key` accept a reference instead of a value:
+`secret://NAME` for a value in the [secrets worker](https://github.com/iii-hq/workers/blob/main/secrets/README.md)'s
+encrypted vault, or `env://NAME` for a variable the secrets worker shares. The
+configuration then holds only the reference, so it can be versioned and read
+by other workers without exposing the credential. The secret must list
+`whatsapp` among its consumers, and the secrets worker must run in the
+WhatsApp worker's namespace: it serves callers from its own namespace only.
+
+In ADE, **Save to secrets** stores a new credential in the secrets worker as
+`secret://WHATSAPP_CLOUD_ACCESS_TOKEN` (the field's environment variable name,
+suffixed with the configuration id when it is not `whatsapp`) and saves the
+reference. A plain-text value saved earlier is flagged, with **Move to secrets**
+to replace it. Plain values keep working.
+
+The worker resolves references when it starts and whenever the configuration
+changes, and re-reads one when `secrets::changed` reports a rotation, deletion
+or consumer change. A refused reference (missing secret, `whatsapp` not a
+consumer) leaves the credential empty and the Cloud API status names the
+reason. While the secrets worker is not running, a reference keeps its last
+value and is retried every 10 seconds; at startup it stays empty until the
+secrets worker answers.
 
 ## Central environment references and local files
 

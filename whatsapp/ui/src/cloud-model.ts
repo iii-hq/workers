@@ -13,6 +13,8 @@ export interface CloudStatus {
   verify_token_set: boolean
   webhook_path: string
   webhook_ready: boolean
+  /** Why a secret:// or env:// credential is unresolved, by field. Absent from older workers. */
+  credential_errors?: Record<string, string>
 }
 export interface CloudTunnelStatus {
   enabled: boolean
