@@ -142,9 +142,9 @@ UPDATE_GOLDENS=1 cargo test  # regenerate tests/golden/ after an intentional sur
 downstream worker through the proxy port (exposed call, forbidden call,
 forbidden trigger binding, channel round-trip, filtered discovery, a call in
 another namespace, `observe`). The engine is `III_BIN` or the `iii` on `PATH`,
-started from a temporary directory on its own port (49381; the proxy on
-49382), never the default 49134. It **self-skips** when there is no `iii`
-binary, a port is taken, or the proxy does not come up (e.g. the
+started from a temporary directory with a private `HOME`, on free ports picked
+at boot, never the default 49134. It **self-skips** when there is no `iii`
+binary or the proxy does not come up (e.g. the
 `configuration` worker is not deployed).
 
 `tests/observe_protocol.rs` runs iii 0.25's observe wire fixtures (vendored in
