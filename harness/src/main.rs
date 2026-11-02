@@ -177,6 +177,9 @@ async fn main() -> Result<()> {
     // LAST: observe configuration changes.
     let _config_observer = configuration::observe_config_changes(&iii, cell, handles);
 
+    // Claim the private state namespace before its first read (recover), so
+    // that read never misses the not-yet-registered `harness::state::*`.
+    harness::state::claim_private_namespace_at_boot(&iii, cfg.session_timeout_ms).await;
     harness::functions::delete_session_tree::recover(&deps)
         .await
         .context("recovering durable session deletions")?;
