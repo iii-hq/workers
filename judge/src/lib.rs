@@ -3,6 +3,7 @@ pub mod config;
 pub mod configuration;
 pub mod mentions;
 pub mod register;
+mod usage;
 pub use config::JudgeConfig;
 pub use configuration::SharedConfig;
 pub use register::{register, validate_provider, DEFAULT_PROVIDER};

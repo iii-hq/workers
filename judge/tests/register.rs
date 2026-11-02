@@ -55,6 +55,8 @@ async fn invoke(
             .unwrap();
         match kind {
             "registration" => registration = Some(frame),
+            // The hub names its caller beside the forwarded call.
+            "forwarded" if frame["function_id"] == "engine::workers::list" => {}
             "forwarded" => forwarded = Some(frame),
             _ => response = Some(frame),
         }

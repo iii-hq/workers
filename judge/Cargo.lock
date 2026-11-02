@@ -859,6 +859,7 @@ dependencies = [
  "judge-typesafe",
  "mention-contract",
  "opentelemetry",
+ "opentelemetry_sdk",
  "schemars",
  "serde",
  "serde_json",

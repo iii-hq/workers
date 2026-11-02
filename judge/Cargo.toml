@@ -28,10 +28,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 anyhow = "1"
 # Same major as iii-sdk's, so Context::current() sees the handler's baggage.
-opentelemetry = { version = "0.32", default-features = false }
+opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 
 [dev-dependencies]
 futures-util = "0.3"
+opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing"] }
 judge-openai = { path = "../judge-openai", default-features = false }
 judge-typesafe = { path = "../judge-typesafe", default-features = false }
 tempfile = "3"

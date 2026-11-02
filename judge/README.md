@@ -101,6 +101,17 @@ accepts request ids up to 512 bytes; the hub needs no change. See
 [Configuration](reference.md#configuration) and
 [Cancellation](reference.md#cancellation).
 
+## Usage by caller
+
+Every `judge::evaluate` is counted by the worker that called it (named from
+`engine::workers::list`), the provider, the model and the outcome (`ok`, the
+error code, `provider_unavailable` or `transport`): the `judge.calls` and
+`judge.tokens` (`direction` input or output) counters and the
+`judge.duration_ms` histogram, read with `engine::metrics::list`. The same
+facts are attributes of the call's span (`judge.caller`, `judge.model`,
+`judge.outcome`, `judge.input_tokens`, `judge.output_tokens`,
+`judge.duration_ms`), so a turn's trace shows what its judge calls took.
+
 ## Chat mentions
 
 Because the harness always runs the judge, the judge also delivers chat
