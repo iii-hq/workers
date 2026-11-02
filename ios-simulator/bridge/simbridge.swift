@@ -74,10 +74,11 @@ guard dlopen("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreS
 else { fail("CoreSimulator.framework not found; install Xcode") }
 // SimulatorKit lives in Contents/Developer/Library/PrivateFrameworks on older
 // Xcode; Xcode 27+ moved it to Contents/SharedFrameworks. developerDir is
-// Xcode.app/Contents/Developer, so its parent is Contents.
+// Xcode.app/Contents/Developer, so its parent is Contents. Symlinks are
+// resolved first so a linked developerDir still yields Xcode's Contents.
 let simKitCandidates = [
   developerDir + "/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit",
-  ((developerDir as NSString).standardizingPath as NSString).deletingLastPathComponent
+  ((developerDir as NSString).resolvingSymlinksInPath as NSString).deletingLastPathComponent
     + "/SharedFrameworks/SimulatorKit.framework/SimulatorKit",
 ]
 guard let simKit = simKitCandidates.lazy.compactMap({ dlopen($0, RTLD_NOW) }).first
