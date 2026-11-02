@@ -29,6 +29,10 @@ pub struct MessagesRequest {
     /// Interleave `kind: "custom"` entries at their path position.
     /// Default false.
     pub include_custom: Option<bool>,
+    /// With `include_custom`, only the custom entries of these
+    /// `custom_type`s (e.g. a usage reader skipping compaction summaries).
+    /// Absent keeps every type.
+    pub custom_types: Option<Vec<String>>,
     /// Default true. When false, `image` blocks that carry an
     /// `attachment_id` come back with `data: ""`; the reader fetches the
     /// bytes on demand with `session::get-attachment`. Images without a

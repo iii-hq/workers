@@ -23,14 +23,12 @@ use base64::Engine as _;
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
-use llm_router::types::events::ErrorKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 use crate::config::{config_from_resolve, ConfigError};
-use crate::errors::classify_bus_error;
 use crate::state;
 
 /// The image models this surface accepts. Anything else is rejected up
@@ -590,26 +588,16 @@ pub async fn handle(
     let params = validate(req).map_err(|m| Error::Handler(format!("invalid_input: {m}")))?;
 
     // Token + resolve are cached (ScaffoldCache): zero engine round trips
-    // on the hot path within the TTL. An auth-classified resolve failure
-    // drops the cache so the next attempt re-resolves fresh.
+    // on the hot path within the TTL; a resolve error is never cached.
     let token = cache.load_token(iii, state::STATE_SCOPE).await;
-    let resolved = match cache
+    let resolved = cache
         .resolve(
             iii,
             crate::PROVIDER_ID,
             token.as_deref(),
             Some(crate::register::CREDENTIAL_ENV_VAR),
         )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            if classify_bus_error(&e) == ErrorKind::AuthExpired {
-                cache.invalidate();
-            }
-            return Err(e);
-        }
-    };
+        .await?;
     // Reuse the chat-path credential validation; the api_url from resolve
     // targets the chat endpoint, so images derive their sibling URL from it.
     let cfg = config_from_resolve(&params.model, None, &resolved).map_err(|e| match e {

@@ -50,6 +50,7 @@ export function ConfirmDialog({
   error: outsideError = null,
 }: ConfirmDialogProps) {
   const cancelRef = React.useRef<HTMLButtonElement>(null)
+  const titleId = React.useId()
   const [busy, setBusy] = React.useState(false)
   const [ownError, setError] = React.useState<string | null>(null)
   const error = ownError ?? outsideError
@@ -97,14 +98,25 @@ export function ConfirmDialog({
       <DialogContent
         role="alertdialog"
         aria-busy={busy || undefined}
-        className="w-[calc(100%-24px)] max-w-[440px] overflow-hidden rounded-2xl p-0 font-inter"
+        className="flex w-[calc(100%-24px)] max-w-[440px] flex-col overflow-hidden rounded-2xl p-0 font-inter"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           cancelRef.current?.focus()
         }}
       >
-        <div className="px-6 pt-6 pb-5">
-          <DialogTitle className="pr-8 font-inter text-[16px] leading-6 font-semibold break-words">
+        {/* The text scrolls when it is taller than the dialog (at most 85vh), so
+            the actions below always stay on screen. Its tab stop lets a
+            keyboard scroll it (Safari focuses no scroll container itself). */}
+        <section
+          aria-labelledby={titleId}
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: the scrolling region must be reachable by keyboard
+          tabIndex={0}
+          className="min-h-0 overflow-y-auto px-6 pt-6 pb-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-inset"
+        >
+          <DialogTitle
+            id={titleId}
+            className="pr-8 font-inter text-[16px] leading-6 font-semibold break-words"
+          >
             {title}
           </DialogTitle>
           {description ? (
@@ -112,17 +124,22 @@ export function ConfirmDialog({
               {description}
             </DialogDescription>
           ) : null}
-          {error ? (
-            <p
-              role="alert"
-              className="mt-3 font-inter text-[14px] leading-[22px] break-words text-alert"
-            >
-              {error}
-            </p>
-          ) : null}
-        </div>
+        </section>
+        {/* Why the action failed stays in sight, above the actions, however
+            far the text above is scrolled; on a very short screen it shrinks
+            and scrolls before the actions do. */}
+        {error ? (
+          <p
+            role="alert"
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: the error scrolls when long and must be reachable by keyboard
+            tabIndex={0}
+            className="max-h-[30vh] min-h-0 overflow-y-auto px-6 pb-5 font-inter text-[14px] leading-[22px] break-words text-alert focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus focus-visible:ring-inset"
+          >
+            {error}
+          </p>
+        ) : null}
         {/* The actions sit on their own band, one surface step down. */}
-        <div className="flex flex-col-reverse justify-end gap-2 bg-surface px-6 py-4 sm:flex-row">
+        <div className="flex shrink-0 flex-col-reverse justify-end gap-2 bg-surface px-6 py-4 sm:flex-row">
           <Button
             ref={cancelRef}
             type="button"

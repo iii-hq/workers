@@ -1,3 +1,10 @@
 # Goldens are compared byte for byte; Windows checkouts would otherwise turn
 # them into CRLF and fail every schema test.
 computer/tests/golden/** text eol=lf
+sandbox-libkrun/firmware/** binary
+# Store screenshots (<worker>/screenshots/screenshots.yaml) are published by
+# SHA-256: their bytes must never be normalized.
+*/screenshots/**/*.png binary
+*/screenshots/**/*.jpg binary
+*/screenshots/**/*.jpeg binary
+*/screenshots/**/*.webp binary

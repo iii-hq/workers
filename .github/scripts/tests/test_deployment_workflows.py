@@ -126,6 +126,12 @@ def test_release_build_validates_rust_targets_and_oci_platforms():
     assert '(.target // .platform // "none") == $target' in text
 
 
+def test_aarch64_gnu_unit_points_capng_at_the_arm64_library():
+    # capng's build.rs reads only LIBCAPNG_LIB_PATH; LIBRARY_PATH alone may not link.
+    text = body("_deploy-build.yml")
+    assert 'echo "LIBCAPNG_LIB_PATH=/usr/lib/aarch64-linux-gnu" >> "$GITHUB_ENV"' in text
+
+
 def test_release_build_falls_back_when_optional_sccache_is_unavailable():
     workflow = yaml.safe_load(body("_deploy-build.yml"))
     steps = workflow["jobs"]["build"]["steps"]
@@ -144,6 +150,9 @@ def test_release_build_falls_back_when_optional_sccache_is_unavailable():
 def test_release_build_restores_frontends_with_a_portable_copy():
     text = body("_deploy-build.yml")
     assert "shutil.copytree('.release-frontend', '.', dirs_exist_ok=True)" in text
+    steps = yaml.safe_load(text)["jobs"]["build"]["steps"]
+    build = next(step for step in steps if step.get("name") == "Build immutable artifact")
+    assert build["env"]["SKIP_UI_BUILD"] == "1"
     # rsync is not guaranteed on the Windows and macOS release runners: it may
     # be named only in comments, never invoked.
     for line in text.splitlines():
@@ -261,6 +270,21 @@ def test_build_workflow_only_builds_and_uploads_immutable_bytes():
     assert "deployment_interface.py verify-evidence" in text
     assert "build_manifest.py plan" in text
     assert "build_manifest.py write" in text
+
+
+def test_build_uploads_screenshots_through_the_same_asset_plan():
+    text = body(BUILD)
+    # The plan reads the descriptor's screenshots; the upload loop and its
+    # identical-bytes rule then treat them like every other asset.
+    assert "--worker \"$WORKER\" --descriptor deploy-prepared/deployment-descriptor.json" in text
+    assert text.count("build_manifest.py plan") == 1
+    assert text.count("gh release upload") == 1
+    # assemble runs the source SHA's own deployment_train.py: an option an
+    # older source does not know would fail every rebuild of it.
+    assemble = yaml.safe_load(text)["jobs"]["assemble"]["steps"]
+    step = next(step for step in assemble if step.get("name") == "Assemble immutable release")
+    assert "--source-root" not in step["run"]
+    assert "python3 .github/scripts/deployment_train.py assemble" in step["run"]
 
 
 def test_build_workflow_checks_out_the_exact_source_sha_without_credentials():

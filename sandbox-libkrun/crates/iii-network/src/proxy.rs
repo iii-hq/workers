@@ -1,0 +1,447 @@
+//! Bidirectional TCP proxy: smoltcp socket <-> channels <-> tokio socket.
+//!
+//! Each outbound guest TCP connection gets a proxy task that opens a real
+//! TCP connection to the destination via tokio and relays data between the
+//! channel pair (connected to the smoltcp socket in the poll loop) and the
+//! real server.
+//!
+//! Connections to the gateway IP are rewritten to 127.0.0.1 — the gateway
+//! represents the host from the guest's perspective (like QEMU's 10.0.2.2).
+
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+
+use bytes::Bytes;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
+
+use crate::shared::SharedState;
+
+const SERVER_READ_BUF_SIZE: usize = 16384;
+
+/// Spawn a TCP proxy task for a newly established connection.
+///
+/// Connects to `dst` via tokio, then bidirectionally relays data between
+/// the smoltcp socket (via channels) and the real server. Wakes the poll
+/// thread via `shared.proxy_wake` whenever data is sent toward the guest.
+///
+/// If `dst` targets `gateway_ipv4`, the connection is redirected to
+/// `127.0.0.1` (the host loopback) since the gateway IP is virtual.
+pub fn spawn_tcp_proxy(
+    handle: &tokio::runtime::Handle,
+    dst: SocketAddr,
+    from_smoltcp: mpsc::Receiver<Bytes>,
+    to_smoltcp: mpsc::Sender<Bytes>,
+    shared: Arc<SharedState>,
+    gateway_ipv4: Ipv4Addr,
+) {
+    handle.spawn(async move {
+        if let Err(e) = tcp_proxy_task(dst, from_smoltcp, to_smoltcp, shared, gateway_ipv4).await {
+            tracing::debug!(dst = %dst, error = %e, "TCP proxy task ended");
+        }
+    });
+}
+
+/// Rewrite the destination address: if the guest targeted the gateway IP,
+/// connect to localhost instead (the gateway is the host from the guest's
+/// perspective).
+pub(crate) fn resolve_host_dst(dst: SocketAddr, gateway_ipv4: Ipv4Addr) -> SocketAddr {
+    match dst.ip() {
+        std::net::IpAddr::V4(ip) if ip == gateway_ipv4 => {
+            SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), dst.port())
+        }
+        _ => dst,
+    }
+}
+
+async fn tcp_proxy_task(
+    dst: SocketAddr,
+    mut from_smoltcp: mpsc::Receiver<Bytes>,
+    to_smoltcp: mpsc::Sender<Bytes>,
+    shared: Arc<SharedState>,
+    gateway_ipv4: Ipv4Addr,
+) -> io::Result<()> {
+    let host_dst = resolve_host_dst(dst, gateway_ipv4);
+    let stream = TcpStream::connect(host_dst).await?;
+    // The other half of the Nagle fix in `conn::create_tcp_socket`. This relay
+    // has TWO delegate sockets — the smoltcp one facing the guest and this
+    // kernel one facing the destination — and leaving Nagle on either
+    // reintroduces the same stall, just on the other leg: small relayed
+    // writes held awaiting the peer's delayed ACK (~40ms against a Linux
+    // peer). Only loopback destinations were exonerated by measurement,
+    // because loopback ACKs immediately.
+    if let Err(e) = stream.set_nodelay(true) {
+        tracing::debug!(%dst, error = %e, "set_nodelay failed; small writes may stall");
+    }
+    tracing::debug!(%dst, %host_dst, "proxy connected");
+    let (mut server_rx, mut server_tx) = stream.into_split();
+    let shared = &*shared;
+
+    // Each direction runs on its own: a server that stops reading until its
+    // writes drain (echo, bidirectional streaming) must not stall the
+    // download while the upload waits on it. An error in either ends both.
+    let upload = async move {
+        while let Some(bytes) = from_smoltcp.recv().await {
+            // Guest payload moved: refresh the idle-reaper beacon.
+            // This channel only ever carries application data
+            // (conn.rs relays recv'd bytes, never bare frames).
+            shared.note_activity();
+            server_tx.write_all(&bytes).await?;
+        }
+        // Guest sent FIN: half-close toward the server; the download keeps
+        // relaying its remaining response bytes back.
+        let _ = server_tx.shutdown().await;
+        Ok::<_, io::Error>(())
+    };
+
+    let guest = to_smoltcp.clone();
+    let download = async move {
+        let mut server_buf = vec![0u8; SERVER_READ_BUF_SIZE];
+        loop {
+            let n = server_rx.read(&mut server_buf).await?;
+            if n == 0 {
+                break;
+            }
+            // Response payload toward the guest counts too — a
+            // slow server reply keeps its sandbox alive.
+            shared.note_activity();
+            let data = Bytes::copy_from_slice(&server_buf[..n]);
+            if to_smoltcp.send(data).await.is_err() {
+                return Err(io::ErrorKind::ConnectionAborted.into());
+            }
+            shared.proxy_wake.wake();
+        }
+        // Server EOF: an empty chunk tells conn.rs to FIN the guest once the
+        // response is flushed, while the upload keeps relaying guest bytes.
+        let _ = to_smoltcp.send(Bytes::new()).await;
+        shared.proxy_wake.wake();
+        Ok(())
+    };
+
+    tokio::select! {
+        result = async { tokio::try_join!(upload, download) } => result.map(|_| ()),
+        // The guest connection was reaped (RST, or a close after server EOF).
+        // Without this, a server that neither writes nor reads pins the task,
+        // its socket and any upload stuck in `write_all`.
+        () = guest.closed() => Err(io::ErrorKind::ConnectionAborted.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::ActivityStamp;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::time::{Duration, SystemTime};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn aged_beacon(name: &str) -> (std::path::PathBuf, SystemTime) {
+        let path = std::env::temp_dir().join(format!(
+            "iii-net-activity-proxy-{}-{name}",
+            std::process::id()
+        ));
+        let old = SystemTime::now() - Duration::from_secs(600);
+        (path, old)
+    }
+
+    fn age(path: &std::path::Path, to: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(to)
+            .unwrap();
+    }
+
+    fn assert_refreshed(path: &std::path::Path, old: SystemTime, dir: &str) {
+        let mtime = std::fs::metadata(path).unwrap().modified().unwrap();
+        assert!(
+            mtime > old + Duration::from_secs(300),
+            "{dir} payload must refresh the activity beacon (mtime {mtime:?} vs aged {old:?})"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// The regression the beacon closes: a resident guest process serving
+    /// request/response traffic over this proxy was reaped as idle because
+    /// nothing daemon-visible recorded the traffic. Guest→server payload
+    /// must refresh the beacon.
+    #[tokio::test]
+    async fn guest_to_server_payload_refreshes_activity_beacon() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (path, old) = aged_beacon("g2s");
+        let shared = Arc::new(SharedState::with_activity(
+            64,
+            Some(ActivityStamp::create(&path).unwrap()),
+        ));
+        // Age BEFORE any stamp so the once-per-second throttle gate is
+        // untouched when the payload flows.
+        age(&path, old);
+
+        let (to_task_tx, to_task_rx) = mpsc::channel(8);
+        let (from_task_tx, _from_task_rx) = mpsc::channel(8);
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let _task = tokio::spawn(tcp_proxy_task(
+            addr,
+            to_task_rx,
+            from_task_tx,
+            shared.clone(),
+            gateway,
+        ));
+        let (mut server_conn, _) = listener.accept().await.unwrap();
+
+        to_task_tx.send(Bytes::from_static(b"ping")).await.unwrap();
+        let mut buf = [0u8; 4];
+        server_conn.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+
+        assert_refreshed(&path, old, "guest->server");
+    }
+
+    /// ...and the response leg: a server reply toward the guest is equally
+    /// "the sandbox is doing work".
+    #[tokio::test]
+    async fn server_to_guest_payload_refreshes_activity_beacon() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (path, old) = aged_beacon("s2g");
+        let shared = Arc::new(SharedState::with_activity(
+            64,
+            Some(ActivityStamp::create(&path).unwrap()),
+        ));
+        age(&path, old);
+
+        let (_to_task_tx, to_task_rx) = mpsc::channel::<Bytes>(8);
+        let (from_task_tx, mut from_task_rx) = mpsc::channel(8);
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let _task = tokio::spawn(tcp_proxy_task(
+            addr,
+            to_task_rx,
+            from_task_tx,
+            shared.clone(),
+            gateway,
+        ));
+        let (mut server_conn, _) = listener.accept().await.unwrap();
+
+        server_conn.write_all(b"pong").await.unwrap();
+        let got = from_task_rx.recv().await.expect("relayed response");
+        assert_eq!(&got[..], b"pong");
+
+        assert_refreshed(&path, old, "server->guest");
+    }
+
+    /// A server that writes its whole response before reading the request
+    /// must not deadlock the relay: while the upload waits for the server to
+    /// read, the download has to keep draining the server's writes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn full_duplex_transfer_does_not_deadlock() {
+        const TOTAL: usize = 32 << 20;
+        const CHUNK: usize = 16 << 10;
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            conn.write_all(&vec![1u8; TOTAL]).await.unwrap();
+            let mut got = Vec::new();
+            conn.read_to_end(&mut got).await.unwrap();
+            got.len()
+        });
+
+        let (to_task_tx, to_task_rx) = mpsc::channel(32);
+        let (from_task_tx, mut from_task_rx) = mpsc::channel(32);
+        let shared = Arc::new(SharedState::new(64));
+        let _task = tokio::spawn(tcp_proxy_task(
+            addr,
+            to_task_rx,
+            from_task_tx,
+            shared,
+            Ipv4Addr::new(10, 0, 2, 2),
+        ));
+
+        let upload = async move {
+            let chunk = Bytes::from(vec![2u8; CHUNK]);
+            for _ in 0..TOTAL / CHUNK {
+                to_task_tx.send(chunk.clone()).await.unwrap();
+            }
+        };
+        let download = async {
+            let mut got = 0;
+            while got < TOTAL {
+                got += from_task_rx.recv().await.expect("relayed response").len();
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(upload, download);
+            assert_eq!(server.await.unwrap(), TOTAL);
+        })
+        .await
+        .expect("relay deadlocked under full-duplex backpressure");
+    }
+
+    /// A guest RST reaps the tracker entry, dropping both channel ends. The
+    /// proxy must exit even when the server never writes or closes, or each
+    /// such connection leaks a host socket and task.
+    #[tokio::test]
+    async fn proxy_exits_when_guest_connection_is_reaped() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (to_task_tx, to_task_rx) = mpsc::channel::<Bytes>(8);
+        let (from_task_tx, from_task_rx) = mpsc::channel(8);
+        let task = tokio::spawn(tcp_proxy_task(
+            addr,
+            to_task_rx,
+            from_task_tx,
+            Arc::new(SharedState::new(64)),
+            Ipv4Addr::new(10, 0, 2, 2),
+        ));
+        let (_silent_server, _) = listener.accept().await.unwrap();
+
+        drop(to_task_tx);
+        drop(from_task_rx);
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("proxy task must exit once the guest connection is gone")
+            .unwrap()
+            .ok();
+    }
+
+    /// Server EOF ends only the download: the guest is told (an empty chunk)
+    /// while bytes it sends afterwards still reach the server.
+    #[tokio::test]
+    async fn server_eof_keeps_upload_flowing() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (to_task_tx, to_task_rx) = mpsc::channel(8);
+        let (from_task_tx, mut from_task_rx) = mpsc::channel(8);
+        let task = tokio::spawn(tcp_proxy_task(
+            addr,
+            to_task_rx,
+            from_task_tx,
+            Arc::new(SharedState::new(64)),
+            Ipv4Addr::new(10, 0, 2, 2),
+        ));
+        let (mut server_conn, _) = listener.accept().await.unwrap();
+
+        server_conn.write_all(b"bye").await.unwrap();
+        server_conn.shutdown().await.unwrap();
+        assert_eq!(&from_task_rx.recv().await.unwrap()[..], b"bye");
+        assert!(
+            from_task_rx.recv().await.unwrap().is_empty(),
+            "server EOF must reach the guest as an empty chunk"
+        );
+
+        to_task_tx.send(Bytes::from_static(b"late")).await.unwrap();
+        drop(to_task_tx);
+        let mut got = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), server_conn.read_to_end(&mut got))
+            .await
+            .expect("guest EOF must reach the server")
+            .unwrap();
+        assert_eq!(got, b"late");
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("both directions closed: the proxy must exit")
+            .unwrap()
+            .unwrap();
+    }
+
+    /// After server EOF the upload can sit in `write_all` forever on a server
+    /// that never reads. Reaping the guest connection must still end the
+    /// task: once the slot is freed the connection cap no longer counts it.
+    #[tokio::test]
+    async fn proxy_exits_when_guest_is_reaped_after_server_eof() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (to_task_tx, to_task_rx) = mpsc::channel(8);
+        let (from_task_tx, mut from_task_rx) = mpsc::channel(8);
+        let task = tokio::spawn(tcp_proxy_task(
+            addr,
+            to_task_rx,
+            from_task_tx,
+            Arc::new(SharedState::new(64)),
+            Ipv4Addr::new(10, 0, 2, 2),
+        ));
+        let (mut server_conn, _) = listener.accept().await.unwrap();
+        server_conn.shutdown().await.unwrap();
+        assert!(from_task_rx.recv().await.unwrap().is_empty());
+
+        // Upload until the unread server side backs up into the proxy.
+        let chunk = Bytes::from(vec![0u8; 64 << 10]);
+        while let Ok(sent) =
+            tokio::time::timeout(Duration::from_millis(500), to_task_tx.send(chunk.clone())).await
+        {
+            sent.expect("proxy exited while the server was still open");
+        }
+
+        drop(to_task_tx);
+        drop(from_task_rx);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("proxy task leaked after the guest connection was reaped")
+            .unwrap()
+            .ok();
+    }
+
+    #[test]
+    fn resolve_host_dst_rewrites_gateway_to_localhost() {
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let dst = SocketAddr::new(IpAddr::V4(gateway), 8080);
+        let result = resolve_host_dst(dst, gateway);
+        assert_eq!(
+            result,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080)
+        );
+    }
+
+    #[test]
+    fn resolve_host_dst_preserves_non_gateway_ipv4() {
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+        let result = resolve_host_dst(dst, gateway);
+        assert_eq!(result, dst);
+    }
+
+    #[test]
+    fn resolve_host_dst_preserves_ipv6() {
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let dst = SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), 80);
+        let result = resolve_host_dst(dst, gateway);
+        assert_eq!(result, dst);
+    }
+
+    #[test]
+    fn resolve_host_dst_preserves_port_on_rewrite() {
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let dst = SocketAddr::new(IpAddr::V4(gateway), 49134);
+        let result = resolve_host_dst(dst, gateway);
+        assert_eq!(result.port(), 49134);
+        assert_eq!(result.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn resolve_host_dst_different_gateway() {
+        let gateway = Ipv4Addr::new(192, 168, 1, 1);
+        let dst = SocketAddr::new(IpAddr::V4(gateway), 3000);
+        let result = resolve_host_dst(dst, gateway);
+        assert_eq!(
+            result,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3000)
+        );
+    }
+}

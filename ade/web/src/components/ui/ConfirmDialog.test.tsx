@@ -138,13 +138,31 @@ describe('ConfirmDialog with an action that takes time', () => {
       if (attempts === 1) throw new Error('the session is gone')
     })
     await act(async () => button('Delete')?.click())
-    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
-      'the session is gone',
-    )
+    const alert = dialog()?.querySelector('[role="alert"]')
+    expect(alert?.textContent).toBe('the session is gone')
+    // Outside the scrolling text, so it shows however far that is scrolled.
+    expect(
+      dialog()
+        ?.querySelector('h2')
+        ?.parentElement?.contains(alert ?? null),
+    ).toBe(false)
     expect(button('Close')).toBeDefined()
     await act(async () => button('Retry delete')?.click())
     expect(attempts).toBe(2)
     expect(dialog()).toBeNull()
+  })
+
+  it('scrolls a long text and keeps the actions on screen', () => {
+    mountDialog(async () => {})
+    const body = dialog()
+    expect(body?.className).toContain('max-h-[85vh]')
+    expect(body?.className).toContain('flex-col')
+    const text = body?.querySelector('h2')?.parentElement
+    expect(text?.className).toContain('overflow-y-auto')
+    expect(text?.className).toContain('min-h-0')
+    const actions = button('Cancel')?.parentElement
+    expect(actions?.className).toContain('shrink-0')
+    expect(text?.contains(actions ?? null)).toBe(false)
   })
 
   it('has a title, a description and the actions, nothing else', () => {

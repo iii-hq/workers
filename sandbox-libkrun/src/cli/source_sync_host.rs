@@ -1,0 +1,523 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
+// See LICENSE and PATENTS files for details.
+
+//! Host-side source transport for local worker VMs.
+//!
+//! This module observes the host project and sends changed entries to
+//! `iii-init`. It never restarts a process or VM. Restart policy stays inside
+//! the worker, where normal tools consume the guest kernel's file events.
+
+use std::collections::{BTreeSet, HashSet};
+use std::fs::{File, Metadata};
+use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
+
+use iii_supervisor::source_sync::{self, EntryHeader, EntryKind};
+use notify::event::ModifyKind;
+use notify::{Event, EventKind, Watcher};
+
+use super::source_watcher::{
+    DEBOUNCE_MS, forget_watches, register_new_dirs, should_ignore_path, watch_pruned,
+};
+
+const FILE_READ_ATTEMPTS: usize = 3;
+
+/// Longest a burst may keep extending, so a host file written more often
+/// than DEBOUNCE_MS (a log, say) cannot hold the flush back forever.
+const MAX_BURST: Duration = Duration::from_secs(2);
+
+#[derive(Debug)]
+struct FileSnapshot {
+    contents: Vec<u8>,
+    mode: u32,
+}
+
+pub fn spawn(source_root: PathBuf, stream: UnixStream) -> io::Result<()> {
+    let source_root = std::fs::canonicalize(&source_root)?;
+    let (tx, rx) = mpsc::channel::<Event>();
+    let filter_root = source_root.clone();
+    let mut watcher = notify::RecommendedWatcher::new(
+        move |result: Result<Event, notify::Error>| match result {
+            Ok(event)
+                if matches!(
+                    event.kind,
+                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                ) && event.paths.iter().any(|path| {
+                    path != &filter_root && !should_ignore_path(path, &filter_root)
+                }) =>
+            {
+                let _ = tx.send(event);
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "source sync: notify backend error"),
+        },
+        notify::Config::default(),
+    )
+    .map_err(io::Error::other)?;
+
+    let mut registered = HashSet::new();
+    watch_pruned(&mut watcher, &source_root, &mut registered).map_err(io::Error::other)?;
+
+    std::thread::Builder::new()
+        .name("iii-source-sync".to_string())
+        .spawn(move || {
+            if let Err(error) = run_loop(source_root, stream, watcher, registered, rx) {
+                tracing::warn!(%error, "source sync stopped");
+            }
+        })?;
+    Ok(())
+}
+
+fn run_loop(
+    source_root: PathBuf,
+    mut stream: UnixStream,
+    mut watcher: notify::RecommendedWatcher,
+    mut registered: HashSet<PathBuf>,
+    rx: mpsc::Receiver<Event>,
+) -> io::Result<()> {
+    tracing::info!(path = %source_root.display(), "source sync: online");
+
+    loop {
+        let first = match rx.recv() {
+            Ok(event) => event,
+            Err(_) => return Ok(()),
+        };
+        let Some((paths, gone)) = collect_burst(first, &rx, MAX_BURST) else {
+            return Ok(());
+        };
+        let paths: Vec<PathBuf> = paths.into_iter().collect();
+
+        forget_watches(&mut registered, &gone);
+        register_new_dirs(&mut watcher, &paths, &source_root, &mut registered);
+        for path in coalesce_paths(paths, &source_root) {
+            send_current_entry(&mut stream, &source_root, &path)?;
+        }
+    }
+}
+
+/// Gathers the paths of `first` and of the events after it until the tree is
+/// quiet for DEBOUNCE_MS or the burst is `max_burst` old, plus the paths that
+/// were removed or renamed (see [`forget_watches`]). None once the watcher is
+/// gone.
+fn collect_burst(
+    first: Event,
+    rx: &mpsc::Receiver<Event>,
+    max_burst: Duration,
+) -> Option<(BTreeSet<PathBuf>, BTreeSet<PathBuf>)> {
+    let deadline = Instant::now() + max_burst;
+    let (mut paths, mut gone) = (BTreeSet::new(), BTreeSet::new());
+    let mut event = first;
+    loop {
+        if matches!(
+            event.kind,
+            EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+        ) {
+            gone.extend(event.paths.iter().cloned());
+        }
+        paths.extend(event.paths);
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        event = match rx.recv_timeout(left.min(Duration::from_millis(DEBOUNCE_MS))) {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => break,
+            Err(RecvTimeoutError::Disconnected) => return None,
+        };
+    }
+    Some((paths, gone))
+}
+
+fn coalesce_paths(paths: Vec<PathBuf>, root: &Path) -> Vec<PathBuf> {
+    let mut unique: Vec<PathBuf> = paths
+        .into_iter()
+        .filter(|path| path != root && path.starts_with(root))
+        .filter(|path| !should_ignore_path(path, root))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    unique.sort_by_key(|path| path.components().count());
+
+    // A directory resend re-sends what exists but cannot express a removed
+    // child, so a child collapses only if it still exists or its parent was
+    // removed too (that Remove covers the whole subtree).
+    let mut selected: Vec<(PathBuf, bool)> = Vec::new();
+    for path in unique {
+        let gone = std::fs::symlink_metadata(&path).is_err();
+        if selected
+            .iter()
+            .any(|(parent, parent_gone)| path.starts_with(parent) && (*parent_gone || !gone))
+        {
+            continue;
+        }
+        selected.push((path, gone));
+    }
+    selected.into_iter().map(|(path, _)| path).collect()
+}
+
+fn send_current_entry(stream: &mut UnixStream, root: &Path, path: &Path) -> io::Result<()> {
+    if should_ignore_path(path, root) {
+        return Ok(());
+    }
+    // The wire format carries UTF-8 paths only: skip such a path (and its
+    // subtree), as an error here would end the sync thread for good.
+    let relative = match relative_utf8(root, path) {
+        Ok(relative) => relative,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "source sync: path skipped");
+            return Ok(());
+        }
+    };
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let link = match std::fs::read_link(path) {
+                Ok(link) => link,
+                Err(error) => return send_path_error(stream, relative, path, error),
+            };
+            let bytes = link.as_os_str().as_bytes();
+            send_header(
+                stream,
+                EntryKind::Symlink,
+                relative,
+                metadata.permissions().mode(),
+                bytes.len() as u64,
+            )?;
+            stream.write_all(bytes)?;
+            finish_entry(stream)
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            send_header(
+                stream,
+                EntryKind::Directory,
+                relative,
+                metadata.permissions().mode(),
+                0,
+            )?;
+            finish_entry(stream)?;
+
+            let children = std::fs::read_dir(path).and_then(|entries| entries.collect());
+            let mut children: Vec<std::fs::DirEntry> = match children {
+                Ok(children) => children,
+                Err(error) => return send_path_error(stream, relative, path, error),
+            };
+            children.sort_by_key(|entry| entry.file_name());
+            for child in children {
+                send_current_entry(stream, root, &child.path())?;
+            }
+            Ok(())
+        }
+        Ok(metadata) if metadata.is_file() => {
+            let snapshot = match read_stable_file(path) {
+                Ok(snapshot) => snapshot,
+                Err(error) => return send_path_error(stream, relative, path, error),
+            };
+            send_header(
+                stream,
+                EntryKind::File,
+                relative,
+                snapshot.mode,
+                snapshot.contents.len() as u64,
+            )?;
+            stream.write_all(&snapshot.contents)?;
+            finish_entry(stream)
+        }
+        Ok(_) => {
+            tracing::debug!(path = %path.display(), "source sync: unsupported file type skipped");
+            Ok(())
+        }
+        Err(error) => send_path_error(stream, relative, path, error),
+    }
+}
+
+/// A filesystem error on `path` itself: a path that vanished mid-walk is
+/// sent as a Remove, and any other error skips the path, since only stream
+/// errors may end the sync thread.
+fn send_path_error(
+    stream: &mut UnixStream,
+    relative: &str,
+    path: &Path,
+    error: io::Error,
+) -> io::Result<()> {
+    if error.kind() == io::ErrorKind::NotFound {
+        send_header(stream, EntryKind::Remove, relative, 0, 0)?;
+        return finish_entry(stream);
+    }
+    tracing::warn!(path = %path.display(), %error, "source sync: path skipped");
+    Ok(())
+}
+
+fn read_stable_file(path: &Path) -> io::Result<FileSnapshot> {
+    for attempt in 0..FILE_READ_ATTEMPTS {
+        let mut file = File::open(path)?;
+        let before = file.metadata()?;
+        if before.len() > source_sync::MAX_FILE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "source file is too large: {} bytes (maximum {})",
+                    before.len(),
+                    source_sync::MAX_FILE_BYTES
+                ),
+            ));
+        }
+
+        let capacity = usize::try_from(before.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "source file size does not fit in memory on this host",
+            )
+        })?;
+        let mut contents = Vec::new();
+        contents.try_reserve_exact(capacity).map_err(|error| {
+            io::Error::other(format!(
+                "could not reserve memory for source file {}: {error}",
+                path.display()
+            ))
+        })?;
+        let copied = (&mut file).take(before.len()).read_to_end(&mut contents)? as u64;
+        let after = std::fs::symlink_metadata(path)?;
+
+        if copied == before.len() && same_file_version(&before, &after) {
+            return Ok(FileSnapshot {
+                contents,
+                mode: before.permissions().mode(),
+            });
+        }
+
+        if attempt + 1 < FILE_READ_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::WouldBlock,
+        format!(
+            "source file {} kept changing while it was being synchronized",
+            path.display()
+        ),
+    ))
+}
+
+fn same_file_version(before: &Metadata, after: &Metadata) -> bool {
+    after.is_file()
+        && before.dev() == after.dev()
+        && before.ino() == after.ino()
+        && before.len() == after.len()
+        && before.mtime() == after.mtime()
+        && before.mtime_nsec() == after.mtime_nsec()
+        && before.ctime() == after.ctime()
+        && before.ctime_nsec() == after.ctime_nsec()
+        && before.permissions().mode() == after.permissions().mode()
+}
+
+fn send_header(
+    stream: &mut UnixStream,
+    kind: EntryKind,
+    path: &str,
+    mode: u32,
+    payload_len: u64,
+) -> io::Result<()> {
+    source_sync::write_header(
+        stream,
+        &EntryHeader {
+            kind,
+            path: path.to_string(),
+            mode,
+            payload_len,
+        },
+    )
+}
+
+fn finish_entry(stream: &mut UnixStream) -> io::Result<()> {
+    stream.flush()?;
+    source_sync::read_ack(stream)
+}
+
+fn relative_utf8<'a>(root: &Path, path: &'a Path) -> io::Result<&'a str> {
+    path.strip_prefix(root)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path is outside source root"))?
+        .to_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "source path is not UTF-8"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_paths_are_collapsed_under_changed_directory() {
+        let root = Path::new("/project");
+        let paths = vec![
+            root.join("src/lib.rs"),
+            root.join("src"),
+            root.join("src/nested/mod.rs"),
+        ];
+
+        assert_eq!(coalesce_paths(paths, root), vec![root.join("src")]);
+    }
+
+    /// A directory resend cannot say that a child is gone, so a removed child
+    /// of a directory that still exists keeps its own entry (a Remove); under
+    /// a removed directory it collapses, as that Remove covers it.
+    #[test]
+    fn removed_children_are_not_collapsed_under_an_existing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/kept.ts"), "").unwrap();
+        let paths = vec![
+            root.join("src/old.ts"),
+            root.join("src"),
+            root.join("src/kept.ts"),
+            root.join("gone/child.ts"),
+            root.join("gone"),
+        ];
+
+        assert_eq!(
+            coalesce_paths(paths, &root),
+            vec![root.join("gone"), root.join("src"), root.join("src/old.ts")]
+        );
+    }
+
+    /// A host file written more often than the debounce window must not
+    /// postpone the flush forever, nor grow the burst by one entry per event.
+    #[test]
+    fn a_continuous_writer_cannot_postpone_the_flush_forever() {
+        let event = || Event::new(EventKind::Any).add_path(PathBuf::from("/project/app.log"));
+        let (tx, rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..100 {
+                if tx.send(event()).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let started = Instant::now();
+        let (paths, gone) = collect_burst(event(), &rx, Duration::from_millis(300)).unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(paths, BTreeSet::from([PathBuf::from("/project/app.log")]));
+        assert!(gone.is_empty());
+        drop(rx);
+        writer.join().unwrap();
+    }
+
+    /// Removed or renamed paths are reported, so their stale watch
+    /// registrations get forgotten; a content change is not.
+    #[test]
+    fn burst_reports_removed_and_renamed_paths() {
+        use notify::event::{DataChange, RemoveKind, RenameMode};
+        let event = |kind, path: &str| Event::new(kind).add_path(PathBuf::from(path));
+        let (tx, rx) = mpsc::channel();
+        let renamed = EventKind::Modify(ModifyKind::Name(RenameMode::From));
+        let edited = EventKind::Modify(ModifyKind::Data(DataChange::Any));
+        tx.send(event(renamed, "/p/old")).unwrap();
+        tx.send(event(edited, "/p/edited")).unwrap();
+
+        let removed = event(EventKind::Remove(RemoveKind::Folder), "/p/src");
+        let (paths, gone) = collect_burst(removed, &rx, Duration::from_millis(100)).unwrap();
+
+        assert_eq!(paths.len(), 3);
+        assert_eq!(
+            gone,
+            BTreeSet::from([PathBuf::from("/p/old"), PathBuf::from("/p/src")])
+        );
+        drop(tx);
+    }
+
+    #[test]
+    fn ignored_dependency_paths_are_removed_from_burst() {
+        let root = Path::new("/project");
+        let paths = vec![
+            root.join("node_modules/pkg/index.js"),
+            root.join("src/index.js"),
+        ];
+
+        assert_eq!(coalesce_paths(paths, root), vec![root.join("src/index.js")]);
+    }
+
+    #[test]
+    fn changed_file_is_framed_with_its_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let changed = source.join("main.rs");
+        std::fs::write(&changed, b"fn main() {}\n").unwrap();
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+
+        let receiver = std::thread::spawn(move || {
+            let header = source_sync::read_header(&mut guest).unwrap();
+            let mut payload = vec![0u8; header.payload_len as usize];
+            guest.read_exact(&mut payload).unwrap();
+            source_sync::write_ack(&mut guest, Ok(())).unwrap();
+            (header, payload)
+        });
+
+        send_current_entry(&mut host, &source, &changed).unwrap();
+        let (header, payload) = receiver.join().unwrap();
+        assert_eq!(header.path, "main.rs");
+        assert_eq!(payload, b"fn main() {}\n");
+    }
+
+    /// Linux allows non-UTF-8 names; one such path is skipped instead of
+    /// ending the sync thread for the rest of the VM's life.
+    #[test]
+    fn non_utf8_path_is_skipped_without_stopping_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut host, _guest) = UnixStream::pair().unwrap();
+        let path = temp
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"bad-\xff.ts"));
+
+        send_current_entry(&mut host, temp.path(), &path).unwrap();
+    }
+
+    /// One unreadable directory (or one that vanishes mid-walk) is skipped:
+    /// only a stream error may end the sync thread for the VM's life.
+    #[test]
+    fn an_unreadable_directory_does_not_stop_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let locked = temp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        let receiver = std::thread::spawn(move || {
+            let mut paths = Vec::new();
+            while let Ok(header) = source_sync::read_header(&mut guest) {
+                let mut payload = vec![0u8; header.payload_len as usize];
+                guest.read_exact(&mut payload).unwrap();
+                source_sync::write_ack(&mut guest, Ok(())).unwrap();
+                paths.push(header.path);
+            }
+            paths
+        });
+
+        let sent = send_current_entry(&mut host, temp.path(), &locked);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        drop(host);
+
+        sent.unwrap();
+        assert_eq!(receiver.join().unwrap(), vec!["locked".to_string()]);
+    }
+
+    #[test]
+    fn oversized_file_is_rejected_before_a_frame_is_sent() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.bin");
+        let file = File::create(&path).unwrap();
+        file.set_len(source_sync::MAX_FILE_BYTES + 1).unwrap();
+
+        let error = read_stable_file(&path).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+}

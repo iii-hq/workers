@@ -12,6 +12,7 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _lib  # noqa: E402
+import worker_screenshots  # noqa: E402
 
 
 BINARY_NAME_EXCEPTIONS = frozenset({"acp"})
@@ -134,6 +135,12 @@ def main(argv: list[str] | None = None) -> int:
         expected_path = pathlib.Path(worker).resolve()
         if spec.path != expected_path:
             hard(f"{worker}: source.path must be {worker!r}, got {spec.source.get('path')!r}")
+        # The descriptor compiler runs these same checks on main; a list the
+        # Registry would refuse fails the whole descriptor index there.
+        try:
+            worker_screenshots.collect(spec.path, root=spec.path.parent, kind=spec.artifact_kind, worker=worker)
+        except worker_screenshots.ScreenshotError as error:
+            hard(str(error))
         readme = spec.path / "README.md"
         if not readme.exists():
             soft(f"{worker}/README.md is missing")

@@ -295,11 +295,11 @@ pub fn compile(pattern: &str, case_insensitive: bool) -> Result<Compiled, Error>
         max.min(u32::MAX as u64) as u32,
     ]);
     if min != 0
-        && let Some(set) = first_charset(&parsed)
+        && let Some((set, flags)) = first_charset(&parsed, parser.state.flags)
     {
         codes[info_skip + 1] = crate::SreInfo::CHARSET.bits();
         let mut compiled_set = Vec::new();
-        compile_set(set, parser.state.flags, &mut compiled_set);
+        compile_set(set, flags, &mut compiled_set);
         codes.extend_from_slice(&compiled_set[2..]);
     }
     codes[info_skip] = (codes.len() - info_skip) as u32;
@@ -1088,12 +1088,24 @@ fn combine_flags(mut flags: u16, add: u16, del: u16) -> u16 {
 
 // Mirrors CPython 3.12's `_get_charset_prefix`: scoped type flags affect the
 // real opcode but the INFO search charset is compiled with the outer flags.
-// That observable quirk is why `(?a:\W)` search differs from fullmatch.
-fn first_charset(pattern: &Pattern) -> Option<&[SetOp]> {
+// Scoped ignore-case still affects the search charset; otherwise it can skip
+// Unicode case-folded matches before the real opcode sees them.
+fn first_charset(pattern: &Pattern, flags: u16) -> Option<(&[SetOp], u16)> {
     let first = pattern.first()?;
     match first {
-        Op::Set(items) => Some(items),
-        Op::Subpattern { body, .. } => first_charset(body),
+        Op::Set(items) => Some((items, flags)),
+        Op::Subpattern {
+            body,
+            add_flags,
+            del_flags,
+            ..
+        } => {
+            let scoped = combine_flags(flags, *add_flags, *del_flags);
+            first_charset(
+                body,
+                (flags & !FLAG_IGNORECASE) | (scoped & FLAG_IGNORECASE),
+            )
+        }
         _ => None,
     }
 }
@@ -1615,6 +1627,15 @@ mod tests {
         assert_eq!(findall(r"\d", "٣", false), vec![vec![String::from("٣")]]);
         assert_eq!(
             findall("[a-z]", "İıſK", true),
+            vec![
+                vec![String::from("İ")],
+                vec![String::from("ı")],
+                vec![String::from("ſ")],
+                vec![String::from("K")],
+            ]
+        );
+        assert_eq!(
+            findall(r"(?i:[a-z])", "İıſK", false),
             vec![
                 vec![String::from("İ")],
                 vec![String::from("ı")],

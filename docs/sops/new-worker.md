@@ -15,6 +15,9 @@ are in [`binary-worker.md`](binary-worker.md) for Rust and
 - Add `iii.worker.yaml` for local development, scaffolding and `iii worker`.
 - Add an entry to the private
   [`.deploy/workers.yaml`](../../.deploy/workers.yaml) build catalog.
+- Optionally add `screenshots/` with the images the Worker Store shows and
+  their list, `screenshots/screenshots.yaml`; see
+  [`screenshots.md`](screenshots.md).
 
 The private entry contains exactly `source`, `artifact`, and `publish`. Public
 runtime and Registry metadata stay in `iii.worker.yaml`.
@@ -71,6 +74,10 @@ If registration needs safe startup defaults, add `config.collect.yaml` beside
 `iii.worker.yaml`. The compiler records its SHA-256 in the immutable descriptor;
 release prepare reads those exact bytes from the selected source SHA and passes
 the file only to the isolated interface-capture process.
+
+When the worker has `screenshots/screenshots.yaml`, both commands above check
+it against the Registry's limits (format, pixel size, file size, counts,
+captions) and name each entry that fails; see [`screenshots.md`](screenshots.md).
 
 ## Release readiness
 

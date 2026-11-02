@@ -53,6 +53,10 @@ tags:
   - api
 ```
 
+Store screenshots are not a key of this file: the iii engine refuses keys it
+does not know. They live in `screenshots/screenshots.yaml` beside it; see
+[`../sops/screenshots.md`](../sops/screenshots.md).
+
 ## Bundle-specific
 
 | Field | Purpose |

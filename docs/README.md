@@ -12,6 +12,7 @@ workers in this monorepo. Per-worker deep docs stay inside each worker folder
 | Scaffold a Rust `deploy: binary` worker | [`sops/binary-worker.md`](sops/binary-worker.md) |
 | Wire a Rust worker's console UI into its binary (authoring the UI itself is [`ade/skills/`](../ade/skills/)) | [`sops/injectable-console-ui.md`](sops/injectable-console-ui.md) |
 | Ship a version to the registry | [`sops/release.md`](sops/release.md) |
+| Show a worker's screenshots in the Worker Store | [`sops/screenshots.md`](sops/screenshots.md) |
 | Fix a failed release | [`sops/release.md`](sops/release.md) § Troubleshooting |
 | Write a consumer `README.md` | [`worker-readme.md`](https://github.com/iii-hq/workers/blob/main/worker-readme.md) |
 | Author `skills/SKILL.md` | [`DOCUMENTATION_GUIDELINES.md`](https://github.com/iii-hq/workers/blob/main/DOCUMENTATION_GUIDELINES.md) |
@@ -29,6 +30,7 @@ docs/
 ├── sops/                     # step-by-step procedures
 │   ├── new-worker.md         # cross-cutting onboarding
 │   ├── binary-worker.md      # Rust binary scaffold
+│   ├── screenshots.md        # store screenshots per version
 │   └── release.md            # cut, monitor, verify releases
 └── architecture/             # shared reference (not step-by-step)
     ├── worker-model.md

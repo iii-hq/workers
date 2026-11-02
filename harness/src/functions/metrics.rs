@@ -17,6 +17,7 @@ use crate::context_snapshot::ContextSnapshotV1;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::types::content::ContentBlock;
+use crate::types::event::Usage;
 use crate::types::message::{AgentMessage, AssistantMessage};
 
 use super::session_tree::{self, SessionTreeNodeV1};
@@ -441,9 +442,24 @@ fn fold_entries(
         if let Some(message) = entry.message.as_ref() {
             usage.observe(message);
         }
+        if let Some(custom) = entry
+            .custom
+            .as_ref()
+            .filter(|c| c.custom_type == crate::turn_loop::SUPERSEDED_GENERATION)
+        {
+            usage.observe_superseded(&custom.data);
+        }
         last_entry_id = Some(entry.entry_id);
     }
     (usage, last_entry_id)
+}
+
+/// One session's totals from its entries, as `harness::metrics` reads them.
+#[cfg(test)]
+pub(crate) fn fold_totals(entries: Vec<LoadedEntry>) -> SessionUsageTotalsV1 {
+    fold_entries(UsageAccumulator::default(), None, entries)
+        .0
+        .finish_totals(1)
 }
 
 /// One session's usage and lifecycle; `None` when the session is gone.
@@ -680,15 +696,12 @@ pub async fn forked_usage(
     let Some(created_at) = session.forked_at(session_id).await? else {
         return Ok(None);
     };
-    let mut usage = UsageAccumulator::default();
-    for entry in session
-        .messages_from(session_id, None, Projection::Usage)
-        .await?
-    {
-        if let Some(message) = entry.message.filter(|m| m.timestamp() < created_at) {
-            usage.observe(&message);
-        }
-    }
+    let usage = copied_usage(
+        session
+            .messages_from(session_id, None, Projection::Usage)
+            .await?,
+        created_at,
+    );
     let node = SessionTreeNodeV1 {
         session_id: session_id.to_string(),
         parent_session_id: None,
@@ -696,6 +709,20 @@ pub async fn forked_usage(
         depth: 0,
     };
     Ok(Some(usage.finish_session(&node, None)))
+}
+
+/// The usage of the entries a fork created at `created_at` copied.
+fn copied_usage(entries: Vec<LoadedEntry>, created_at: i64) -> UsageAccumulator {
+    let copied = entries.into_iter().filter(|entry| {
+        // A kept generation carries its reply's timestamp: custom entries have none.
+        let timestamp = match (&entry.message, &entry.custom) {
+            (Some(message), _) => Some(message.timestamp()),
+            (None, Some(custom)) => custom.data["timestamp"].as_i64(),
+            (None, None) => None,
+        };
+        timestamp.is_some_and(|t| t < created_at)
+    });
+    fold_entries(UsageAccumulator::default(), None, copied.collect()).0
 }
 
 /// The context snapshot a session reports, and whether the durable
@@ -918,7 +945,11 @@ impl StepSums {
             .iter()
             .filter(|block| matches!(block, ContentBlock::FunctionCall { .. }))
             .count() as u64;
-        let usage = assistant.usage.as_ref();
+        self.observe_usage(assistant.usage.as_ref());
+    }
+
+    /// Usage alone: a generation that is billed but is not a step.
+    fn observe_usage(&mut self, usage: Option<&Usage>) {
         self.input.observe(usage.and_then(|value| value.input));
         self.output.observe(usage.and_then(|value| value.output));
         self.cache_read
@@ -966,6 +997,18 @@ impl UsageAccumulator {
             }
             _ => {}
         }
+    }
+
+    /// A generation a regenerated step overwrote: billed, so its usage counts,
+    /// but the step it belongs to is counted by the reply that replaced it.
+    fn observe_superseded(&mut self, data: &serde_json::Value) {
+        let usage = serde_json::from_value::<Usage>(data["usage"].clone()).ok();
+        let key = |field: &str| data[field].as_str().unwrap_or_default().to_string();
+        self.steps.observe_usage(usage.as_ref());
+        self.by_model
+            .entry((key("provider"), key("model")))
+            .or_default()
+            .observe_usage(usage.as_ref());
     }
 
     fn finish_by_model(by_model: BTreeMap<(String, String), StepSums>) -> Vec<ModelUsageV1> {
@@ -1465,6 +1508,58 @@ mod tests {
             (1, 1, 1)
         );
         assert_eq!(projected.input_tokens, Some(10));
+    }
+
+    #[test]
+    fn a_superseded_generation_counts_its_usage_but_no_step() {
+        // A redelivered text-only step regenerated over a billed reply: the
+        // reply holds the second generation, the custom entry the first. The
+        // running session cost counted both (0.25 + 0.5).
+        let entries: Vec<LoadedEntry> = serde_json::from_value(json!([
+            {"entry_id": "e_t1_0_superseded_0", "custom": {
+                "custom_type": crate::turn_loop::SUPERSEDED_GENERATION,
+                "data": {"usage": {"input": 10, "output": 4, "cost_usd": 0.25},
+                         "model": "model", "provider": "provider"}}},
+            {"entry_id": "e_t1_0_assistant", "message": {
+                "role": "assistant", "stop_reason": "end", "model": "model",
+                "provider": "provider", "timestamp": 1, "content": [],
+                "usage": {"input": 10, "output": 2, "cost_usd": 0.5}}}
+        ]))
+        .unwrap();
+        let (usage, _) = fold_entries(UsageAccumulator::default(), None, entries);
+        let totals = usage.finish_totals(1);
+        assert_eq!((totals.turns, totals.function_calls), (1, 0));
+        assert_eq!(totals.input_tokens, Some(20));
+        assert_eq!(totals.output_tokens, Some(6));
+        assert_eq!(totals.cost_usd, Some(0.75));
+        assert_eq!(totals.by_model.len(), 1);
+        assert_eq!(totals.by_model[0].turns, 1);
+        assert_eq!(totals.by_model[0].cost_usd, Some(0.75));
+    }
+
+    // Prevents: a fork counting its source's superseded generations again —
+    // the copied entries' usage is the fork's baseline, and a copied
+    // superseded_generation entry is part of it.
+    #[test]
+    fn a_fork_baseline_includes_the_superseded_generations_it_copied() {
+        let superseded = |id: &str, timestamp: i64, cost: f64| {
+            json!({"entry_id": id, "custom": {
+                "custom_type": crate::turn_loop::SUPERSEDED_GENERATION,
+                "data": {"usage": {"input": 1, "cost_usd": cost},
+                         "model": "model", "provider": "provider", "timestamp": timestamp}}})
+        };
+        let entries: Vec<LoadedEntry> = serde_json::from_value(json!([
+            superseded("e_copied", 5, 0.25),
+            {"entry_id": "e_reply", "message": {
+                "role": "assistant", "stop_reason": "end", "model": "model",
+                "provider": "provider", "timestamp": 6, "content": [],
+                "usage": {"input": 1, "cost_usd": 0.5}}},
+            superseded("e_own", 20, 2.0)
+        ]))
+        .unwrap();
+        let totals = copied_usage(entries, 10).finish_totals(1);
+        assert_eq!(totals.turns, 1);
+        assert_eq!(totals.cost_usd, Some(0.75));
     }
 
     #[test]

@@ -2,8 +2,9 @@ name: Build
 run-name: Build · ${{ inputs.worker }} · ${{ inputs.source_sha }} · ${{ inputs.correlation_id }}
 
 # Builds one worker from one exact source SHA and uploads only immutable,
-# content-addressed bytes: release assets under `build-<source_sha>`, an OCI
-# index tagged `build-<source_sha>`, and an attested `build-manifest` artifact.
+# content-addressed bytes: release assets under `build-<source_sha>` (the
+# worker's archives and, when its descriptor lists them, its screenshots), an
+# OCI index tagged `build-<source_sha>`, and an attested `build-manifest` artifact.
 # Versions, channels, versioned releases and image version tags are published
 # by Release Control from that manifest; nothing here talks to Release Control.
 
@@ -219,6 +220,10 @@ jobs:
           pattern: release-build-${{ inputs.worker }}-*
           path: release-builds
 
+      # This step runs the source SHA's own tooling, so it takes no option an
+      # older source would not know. A descriptor that lists screenshots has its
+      # images copied from this checkout into deploy-prepared/screenshots/,
+      # checked byte for byte against it.
       - name: Assemble immutable release
         run: |
           set -euo pipefail
@@ -427,8 +432,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # One row per prepared archive, then one per screenshot
+          # (deploy-prepared/screenshots/<name> as <worker>-screenshot-<name>).
           python3 .github/scripts/build_manifest.py plan \
-            --worker "$WORKER" --prepared deploy-prepared/prepared-artifacts.json > asset-plan.tsv
+            --worker "$WORKER" --descriptor deploy-prepared/deployment-descriptor.json \
+            --prepared deploy-prepared/prepared-artifacts.json > asset-plan.tsv
           test -s asset-plan.tsv
           mkdir -p upload-stage
           gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$BUILD_TAG" > release.json
@@ -654,6 +662,7 @@ jobs:
             echo "- worker: \`$WORKER\`"
             echo "- release: \`$BUILD_TAG\`"
             echo "- assets: $(jq '.artifacts | length' manifest.json)"
+            echo "- screenshots: $(jq -r 'if has("screenshots") then (.screenshots | length | tostring) else "not listed (inherits the previous version)" end' manifest.json)"
             echo "- image: \`$(jq -r '.image.digest // "none"' manifest.json)\`"
             echo "- correlation: \`${CORRELATION_ID:-none}\`"
           } >> "$GITHUB_STEP_SUMMARY"

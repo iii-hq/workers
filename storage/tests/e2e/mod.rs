@@ -6,3 +6,5 @@ pub mod gcs;
 pub mod local;
 pub mod r2;
 pub mod s3;
+
+pub mod multipart;
