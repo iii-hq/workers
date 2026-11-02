@@ -95,8 +95,7 @@ async fn boot(seed: &str) -> Option<Harness> {
     let mut iii = Command::new(&iii_bin)
         .args(["--config", config_path.to_str()?, "--no-update-check"])
         .current_dir(&data_dir)
-        // The engine writes an `iii ps` marker under $HOME/.iii/run. The
-        // worker keeps the real HOME: its Chromium lookup reads it.
+        // The engine writes an `iii ps` marker under $HOME/.iii/run.
         .env("HOME", &data_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -112,7 +111,14 @@ async fn boot(seed: &str) -> Option<Harness> {
         .arg(&engine_ws)
         .arg("--config")
         .arg(&seed_path)
-        .env("III_COMPOSE_DIR", &data_dir);
+        .env("III_COMPOSE_DIR", &data_dir)
+        // The worker writes its `iii ps` marker under the private HOME too, so
+        // it gets the Chromium the real HOME resolves through `CHROME`.
+        .env("HOME", &data_dir)
+        .envs(
+            browser::chromium::resolve_executable(&browser::config::WorkerConfig::default())
+                .map(|found| ("CHROME", found.path)),
+        );
     match worker_log {
         Some(file) => {
             let err = file

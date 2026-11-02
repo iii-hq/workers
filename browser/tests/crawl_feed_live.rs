@@ -125,8 +125,7 @@ async fn boot() -> Option<Live> {
     let mut iii = Command::new(&iii_bin)
         .args(["--config", config_path.to_str()?, "--no-update-check"])
         .current_dir(&dir)
-        // The engine writes an `iii ps` marker under $HOME/.iii/run. The
-        // worker keeps the real HOME: its Chromium lookup reads it.
+        // The engine and the worker write `iii ps` markers under $HOME/.iii/run.
         .env("HOME", &dir)
         .stdout(Stdio::from(engine_log.try_clone().ok()?))
         .stderr(Stdio::from(engine_log))
@@ -140,6 +139,8 @@ async fn boot() -> Option<Live> {
         .arg("--config")
         .arg(&seed_path)
         .env("III_COMPOSE_DIR", &dir)
+        // No Chromium lookup to keep: the crawl uses the http fetcher.
+        .env("HOME", &dir)
         .env("RUST_LOG", "info")
         .stdout(worker_stdout)
         .stderr(Stdio::from(worker_log))

@@ -70,6 +70,21 @@ fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
     );
     std::fs::write(&cfg_path, &cfg_body).expect("write engine config.yaml");
 
+    // The sandbox daemon the engine starts keeps pulled images in
+    // $HOME/.iii/cache and libkrunfw in $HOME/.iii/lib. Link the real ones
+    // in so the scratch home starts warm; `remove_dir_all` on it removes the
+    // links, not what they point at.
+    if let Some(real_home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        std::fs::create_dir_all(home.join(".iii")).expect("create scratch ~/.iii");
+        for dir in ["cache", "lib"] {
+            let shared = real_home.join(".iii").join(dir);
+            if shared.is_dir() {
+                std::os::unix::fs::symlink(&shared, home.join(".iii").join(dir))
+                    .expect("link the real ~/.iii dir into the scratch home");
+            }
+        }
+    }
+
     std::process::Command::new(&iii_bin)
         .arg("-c")
         .arg(&cfg_path)
