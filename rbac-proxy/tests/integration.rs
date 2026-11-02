@@ -128,6 +128,17 @@ async fn boot(seed_path: &str) -> Option<Harness> {
         }
     }
 
+    // Seed config: RBAC on, exposing only api::* and the functions-discovery
+    // surface. Written before any child starts, so failing here leaks none.
+    std::fs::write(
+        seed_path,
+        format!(
+            "host: 127.0.0.1\nport: {PROXY_PORT}\nengine_url: {ENGINE_WS}\n\
+             rbac:\n  auth_function_id: test::auth\n  expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
+        ),
+    )
+    .ok()?;
+
     // The engine keeps its state (configuration entries) under its working
     // directory: a fresh one per run.
     let dir = std::env::temp_dir().join(format!("rbac-proxy-itest-{}", std::process::id()));
@@ -144,6 +155,8 @@ async fn boot(seed_path: &str) -> Option<Harness> {
         .args(["-c", "config.yaml"])
         .current_dir(&dir)
         .env_remove("III_URL")
+        // Engine and proxy write `iii ps` markers under $HOME/.iii/run.
+        .env("HOME", &dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
@@ -167,25 +180,19 @@ async fn boot(seed_path: &str) -> Option<Harness> {
     let support = register_support();
     sleep(Duration::from_millis(600)).await;
 
-    // Seed config: RBAC on, exposing only api::* and the functions-discovery
-    // surface.
-    std::fs::write(
-        seed_path,
-        format!(
-            "host: 127.0.0.1\nport: {PROXY_PORT}\nengine_url: {ENGINE_WS}\n\
-             rbac:\n  auth_function_id: test::auth\n  expose_functions:\n    - match(\"api::*\")\n    - match(\"engine::functions::*\")\n"
-        ),
-    )
-    .ok()?;
-
     let proxy_bin = env!("CARGO_BIN_EXE_rbac-proxy");
-    let proxy = Command::new(proxy_bin)
+    let spawned = Command::new(proxy_bin)
         .args(["--url", ENGINE_WS, "--config", seed_path])
         .env_remove("III_URL")
+        .env("HOME", &dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .spawn();
+    let Ok(proxy) = spawned else {
+        kill_tree(&mut iii);
+        let _ = std::fs::remove_dir_all(&dir);
+        return None;
+    };
 
     if !wait_for_listen(PROXY_PORT, Duration::from_secs(10)).await {
         eprintln!(
