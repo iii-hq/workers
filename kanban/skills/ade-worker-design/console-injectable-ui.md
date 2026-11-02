@@ -632,8 +632,8 @@ automatically on hot reload and worker disconnect. Each `register` also
 returns a remover for manual teardown.
 
 `host.pages.register({id, title, render})` registers a page (opened through
-`host.panels.open` or `console::workspace::open`; `<url>/#/worker/<scope>/<id>`,
-with `url` from `console::status` (an older console answers only `http_port`:
+`host.panels.open` or `ADE::workspace::open`; `<url>/#/worker/<scope>/<id>`,
+with `url` from `ADE::status` (an older console answers only `http_port`:
 use `http://127.0.0.1:<http_port>`; never `engine_url`), renders it alone) and
 adds it to the nav. Its `render` receives:
 
@@ -786,7 +786,7 @@ link-swap with no flash. Unchanged content is hash-deduped end to end.
 | A dragged card vanishes and never comes back | the list removed the card while dragging and `dragend` never fired; keep it mounted (dimmed) and clear state from document-level `dragend`/`drop` |
 | Detail opened inside the board instead of a new pane | use `host.panels.open({ pageId })` with a separately registered page rather than local selection state |
 
-Inspect `console::ui-manifest` (or `GET <url>/ui`, with `url` from `console::status`),
+Inspect `ADE::ui-manifest` (or `GET <url>/ui`, with `url` from `ADE::status`),
 `/ui/<path>`, registered triggers, and `[iii-ui]` browser logs in that order.
 The manifest is authoritative; its `warnings` must be empty.
 
@@ -801,7 +801,7 @@ Validate all four layers; a successful esbuild run alone is not enough.
 3. **Delivery:** boot engine + console + worker; require manifest paths,
    hashes, no warnings, fetchable bytes, and a changed hash after hot reload.
 4. **Real rendering:** exercise the actual console, not only an isolated
-   component harness — the `browser` worker can drive it (`browser::sessions::start` on the `url` from `console::status`, never an assumed 3113, `browser::snapshot` for structure, `browser::act`/`browser::evaluate` for interaction, `browser::screenshot` for both themes; toggle `document.documentElement.dataset.theme` to preview dark). Open `<url>/#/worker/<scope>[/<page-id>]` to render the page alone — no tab strip, no chat, the shared workspace layout untouched; `?context=<json>` in the hash replays a `host.panels.open` context, and in that shell `host.panels.open` for another page opens a new browser tab. The page's settings action, the settings shortcut and its keyed commands work there (`#/traces` renders the traces explorer the same way); chat slots and the palette need the full console, opened through `console::workspace::open`. Synthetic pointer drags do not fire HTML5 drag events; dispatch `DragEvent`s to test drag-and-drop. Cover at least a phone-sized pane (~320–430 px), a
+   component harness — the `browser` worker can drive it (`browser::sessions::start` on the `url` from `ADE::status`, never an assumed 3113, `browser::snapshot` for structure, `browser::act`/`browser::evaluate` for interaction, `browser::screenshot` for both themes; toggle `document.documentElement.dataset.theme` to preview dark). Open `<url>/#/worker/<scope>[/<page-id>]` to render the page alone — no tab strip, no chat, the shared workspace layout untouched; `?context=<json>` in the hash replays a `host.panels.open` context, and in that shell `host.panels.open` for another page opens a new browser tab. The page's settings action, the settings shortcut and its keyed commands work there (`#/traces` renders the traces explorer the same way); chat slots and the palette need the full console, opened through `ADE::workspace::open`. Synthetic pointer drags do not fire HTML5 drag events; dispatch `DragEvent`s to test drag-and-drop. Cover at least a phone-sized pane (~320–430 px), a
    narrow split pane, and a wide pane; left and right split positions; light
    and dark themes; keyboard-only navigation; reduced motion; long names and
    payloads; loading, empty, error, success, and live-update states; dirty

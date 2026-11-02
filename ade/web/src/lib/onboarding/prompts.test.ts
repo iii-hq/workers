@@ -117,7 +117,7 @@ describe('fetchExamplePrompts', () => {
       { title: 'T', agent: 'default', prompt: 'P', models: [] },
     ])
     expect(trigger).toHaveBeenCalledWith(
-      'console::onboarding::prompts',
+      'ADE::onboarding::prompts',
       {},
       expect.anything(),
     )

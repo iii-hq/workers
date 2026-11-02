@@ -1,7 +1,7 @@
 /**
  * The example prompts the setup wizard's last step offers. The project's
  * template declares them in `onboarding.yaml` at the project root (the
- * harness template ships four); `console::onboarding::prompts` reads and
+ * harness template ships four); `ADE::onboarding::prompts` reads and
  * validates that file on every call, and answers `[]` when it is missing or
  * broken, so a project without one simply shows none.
  *
@@ -36,7 +36,7 @@ export interface ExamplePrompt {
   models: PromptModel[]
 }
 
-export const PROMPTS_FUNCTION = 'console::onboarding::prompts'
+export const PROMPTS_FUNCTION = 'ADE::onboarding::prompts'
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined

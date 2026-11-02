@@ -120,7 +120,7 @@ A green build proves nothing about a runtime contract.
    event, rather than trusting the registration response.
 5. Re-run the failure path: missing field, unknown id, unauthorized caller.
    If the error is unhelpful, fix the contract.
-6. For the UI delivery, `console::ui-manifest` lists the worker's asset
+6. For the UI delivery, `ADE::ui-manifest` lists the worker's asset
    paths with hashes and an empty `warnings` array.
 7. For the dev loop, prove hot reload: with the worker running under
    `pnpm dev`, touch `ui/styles.css`, read the manifest again and see the

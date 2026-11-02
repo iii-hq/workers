@@ -54,6 +54,7 @@ const STYLES_CSS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/d
 
 fn console_ui() -> ConsoleUi {
     ConsoleUi::new("console")
+        .content_function_id("ADE::ui-content")
         .script(CONFIG_FORM_PATH, CONFIG_FORM_JS)
         .script(CATALOG_PAGE_PATH, CATALOG_PAGE_JS)
         .script(WORKSPACE_PROPOSAL_PATH, WORKSPACE_PROPOSAL_JS)
@@ -156,7 +157,7 @@ mod tests {
     #[test]
     fn embedded_workspace_proposal_is_nonempty_esm() {
         assert!(
-            WORKSPACE_PROPOSAL_JS.contains("console::working-directory::propose"),
+            WORKSPACE_PROPOSAL_JS.contains("ADE::working-directory::propose"),
             "built workspace-proposal.js looks wrong"
         );
     }

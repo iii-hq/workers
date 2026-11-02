@@ -1565,7 +1565,7 @@ impl TurnLog {
                         path,
                         root: Some(root.clone()),
                         kind: "created".into(),
-                        cause: "console::working-directory::propose".into(),
+                        cause: "ADE::working-directory::propose".into(),
                         first_seen: at,
                         last_seen: at,
                         from: None,
@@ -2989,7 +2989,7 @@ mod tests {
             .all(|file| file.before.as_ref().is_some_and(|before| before.missing)));
         assert!(files
             .iter()
-            .all(|file| file.cause == "console::working-directory::propose"));
+            .all(|file| file.cause == "ADE::working-directory::propose"));
         assert!(!files.iter().any(|file| file.path.contains("node_modules")));
     }
 

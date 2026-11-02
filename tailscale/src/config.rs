@@ -15,7 +15,7 @@ const SEEDED_CONSOLE_URL: &str = "http://127.0.0.1:3113";
 pub struct WorkerConfig {
     /// Tailscale CLI executable name or absolute path.
     pub tailscale_binary: String,
-    /// Local iii Console URL. Empty asks this project's ADE (`console::status`) at share time.
+    /// Local iii Console URL. Empty asks this project's ADE (`ADE::status`) at share time.
     /// Only loopback HTTP(S) targets are accepted.
     pub console_url: String,
     /// HTTPS port used when a share request does not provide one.
@@ -44,7 +44,7 @@ impl WorkerConfig {
         let mut config: Self = serde_json::from_value(inner.clone())
             .map_err(|error| format!("invalid tailscale config: {error}"))?;
         // MOT-5356: `ensure` never replaces a stored value, so existing installs still hold the
-        // old seeded default. Read it as unset so share asks console::status: on a single-project
+        // old seeded default. Read it as unset so share asks ADE::status: on a single-project
         // machine that resolves to the same 3113; it only stops pointing at another project's ADE.
         let stored = config.console_url.strip_suffix('/');
         if stored.unwrap_or(&config.console_url) == SEEDED_CONSOLE_URL {

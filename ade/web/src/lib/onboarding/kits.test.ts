@@ -16,7 +16,7 @@ vi.mock('@/lib/iii-client', () => ({
       options?: { timeoutMs?: number },
     ) => {
       harness.calls.push({ fn, payload, timeoutMs: options?.timeoutMs })
-      if (fn === 'console::onboarding::prompts') return { kits: harness.kits }
+      if (fn === 'ADE::onboarding::prompts') return { kits: harness.kits }
       const answer = harness.answers.get(payload.kit ?? '')
       if (answer instanceof Error || answer === MISSING) throw answer
       return answer
@@ -31,7 +31,7 @@ vi.mock('./api', () => ({
     error instanceof Error ? error.message : String(error),
 }))
 vi.mock('./prompts', () => ({
-  PROMPTS_FUNCTION: 'console::onboarding::prompts',
+  PROMPTS_FUNCTION: 'ADE::onboarding::prompts',
 }))
 
 import {

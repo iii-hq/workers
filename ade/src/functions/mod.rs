@@ -1,10 +1,10 @@
 //! Function registrations against the iii engine.
 //!
 //! `console` is mostly an HTTP server + WS proxy, so the SDK surface is
-//! deliberately small: one health/identity function (`console::status`)
+//! deliberately small: one health/identity function (`ADE::status`)
 //! that returns the runtime knobs the worker booted with, the
-//! injectable-UI debug surface (`console::ui-manifest`), and the workspace
-//! layout functions (`console::workspace::*`) that let an agent show a
+//! injectable-UI debug surface (`ADE::ui-manifest`), and the workspace
+//! layout functions (`ADE::workspace::*`) that let an agent show a
 //! screen to the human.
 
 pub mod mentions;
@@ -27,10 +27,10 @@ use crate::ui_assets::{ManifestAsset, ManifestWorker, UiRegistry};
 use crate::workspace_store::WorkspaceStore;
 use status::{StatusInput, StatusOutput};
 
-/// Register every `console::*` function. Called once from `main` after
+/// Register every `ADE::*` function. Called once from `main` after
 /// `register_worker` (and after `ui_assets::start`, which owns the
 /// injectable-UI trigger types — types register before functions;
-/// `workspace::register` does the same for `console::workspace::changed`).
+/// `workspace::register` does the same for `ADE::workspace::changed`).
 /// Each handler captures the live runtime state without re-parsing the YAML.
 pub fn register_all(
     iii: &Arc<IIIClient>,
@@ -53,7 +53,7 @@ pub fn register_all(
     crate::compose::register(iii);
     mentions::register(iii);
     tracing::info!(
-        "registered console::status, console::ui-manifest, console::subscribe, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}, console::conversations::*, console::onboarding::{{scan,get,set,prompts}}, console::compose::*, console::mentions::trace::{{search,get}}, and the console::workspace::changed and console::compose::changed trigger types"
+        "registered ADE::status, ADE::ui-manifest, ADE::subscribe, ADE::working-directory::{{propose,inject-guidance}}, ADE::workspace::{{get,set,list,open,close}}, ADE::conversations::*, ADE::onboarding::{{scan,get,set,prompts}}, ADE::compose::*, ADE::mentions::trace::{{search,get}}, and the ADE::workspace::changed and ADE::compose::changed trigger types"
     );
 }
 
@@ -73,12 +73,12 @@ pub struct UiManifestOutput {
     pub workers: Vec<ManifestWorker>,
 }
 
-/// `console::ui-manifest` — the authoritative *loadable* asset set (only
+/// `ADE::ui-manifest` — the authoritative *loadable* asset set (only
 /// the console knows fetch results and hashes). Debug surface; the SPA
 /// loader itself is fed by `console:assets` pushes, never this.
 fn register_ui_manifest(iii: &Arc<IIIClient>, ui: Option<Arc<UiRegistry>>) {
     iii.register_function(
-        "console::ui-manifest",
+        "ADE::ui-manifest",
         RegisterFunction::new_async(move |_: UiManifestInput| {
             let ui = ui.clone();
             async move {
@@ -108,7 +108,7 @@ fn register_ui_manifest(iii: &Arc<IIIClient>, ui: Option<Arc<UiRegistry>>) {
 fn register_status(iii: &Arc<IIIClient>, port: PortCell, engine_url: &str) {
     let engine_url = engine_url.to_string();
     iii.register_function(
-        "console::status",
+        "ADE::status",
         RegisterFunction::new_async(move |_: StatusInput| {
             let port = port.clone();
             let engine_url = engine_url.clone();

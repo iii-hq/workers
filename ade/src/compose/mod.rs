@@ -4,7 +4,7 @@
 //! fires when the daemon writes its state or the compose file changes.
 //!
 //! Lifecycle stays the daemon's: the page calls `compose::*` itself. The one
-//! write here, `console::compose::edit`, merges a settings change with the
+//! write here, `ADE::compose::edit`, merges a settings change with the
 //! declared entry and hands the result to `compose::add`.
 
 pub mod declaration;
@@ -28,7 +28,7 @@ use inspect::{inspect, InspectInput, Inspection};
 use registry::{PackageVersion, RegistryWorker};
 use watch::{compose_status, ChangedEvent, ChangedTriggerHandler, ChangedTriggerSpec};
 
-pub const CHANGED_TRIGGER: &str = "console::compose::changed";
+pub const CHANGED_TRIGGER: &str = "ADE::compose::changed";
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct ProjectInput {
@@ -113,7 +113,7 @@ async fn read_compose_file(iii: &IIIClient, file: Option<&str>) -> Result<(Strin
     Ok((file, source))
 }
 
-/// Register the trigger type, then every `console::compose::*` function.
+/// Register the trigger type, then every `ADE::compose::*` function.
 pub fn register(iii: &Arc<IIIClient>) {
     let _ = iii.register_trigger_type(
         RegisterTriggerType::new(
@@ -128,7 +128,7 @@ pub fn register(iii: &Arc<IIIClient>) {
     {
         let iii = iii.clone();
         iii.clone().register_function(
-            "console::compose::project",
+            "ADE::compose::project",
             RegisterFunction::new_async(move |input: ProjectInput| {
                 let iii = iii.clone();
                 async move {
@@ -147,7 +147,7 @@ pub fn register(iii: &Arc<IIIClient>) {
     {
         let iii = iii.clone();
         iii.clone().register_function(
-            "console::compose::versions",
+            "ADE::compose::versions",
             RegisterFunction::new_async(move |input: VersionsInput| {
                 let iii = iii.clone();
                 async move { versions(&iii, input).await }
@@ -159,7 +159,7 @@ pub fn register(iii: &Arc<IIIClient>) {
     }
 
     iii.register_function(
-        "console::compose::search",
+        "ADE::compose::search",
         RegisterFunction::new_async(|input: SearchInput| async move {
             registry::search(&input.query)
                 .await
@@ -172,7 +172,7 @@ pub fn register(iii: &Arc<IIIClient>) {
     );
 
     iii.register_function(
-        "console::compose::inspect",
+        "ADE::compose::inspect",
         RegisterFunction::new_async(|input: InspectInput| async move {
             Ok::<Inspection, Error>(inspect(&input).await)
         })
@@ -184,7 +184,7 @@ pub fn register(iii: &Arc<IIIClient>) {
     {
         let iii = iii.clone();
         iii.clone().register_function(
-            "console::compose::container",
+            "ADE::compose::container",
             RegisterFunction::new_async(move |input: ContainerInput| {
                 let iii = iii.clone();
                 async move {
@@ -202,7 +202,7 @@ pub fn register(iii: &Arc<IIIClient>) {
     {
         let iii = iii.clone();
         iii.clone().register_function(
-            "console::compose::edit",
+            "ADE::compose::edit",
             RegisterFunction::new_async(move |input: EditInput| {
                 let iii = iii.clone();
                 async move { edit(&iii, input).await }

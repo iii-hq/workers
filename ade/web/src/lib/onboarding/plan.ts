@@ -37,7 +37,7 @@ import {
 export type { KeyDetection, KeyInput, KeySource, KeySourceKind }
 export { preferredSource, sourceLabel }
 
-/** One CLI found (or not) by `console::onboarding::scan`. */
+/** One CLI found (or not) by `ADE::onboarding::scan`. */
 export interface ToolScan {
   id: string
   name: string

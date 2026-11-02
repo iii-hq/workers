@@ -56,7 +56,7 @@ fn handler_error(error: impl std::fmt::Display) -> Error {
 
 pub fn register(iii: &Arc<IIIClient>) {
     iii.register_function(
-        "console::conversations::discover",
+        "ADE::conversations::discover",
         RegisterFunction::new_async(|req: DiscoverRequest| async move {
             tokio::task::spawn_blocking(move || {
                 source::discover(req.source, req.query.as_deref(), req.cursor.as_deref())
@@ -70,7 +70,7 @@ pub fn register(iii: &Arc<IIIClient>) {
     );
 
     iii.register_function(
-        "console::conversations::preview",
+        "ADE::conversations::preview",
         RegisterFunction::new_async(|req: Selection| async move {
             let mut transcript =
                 tokio::task::spawn_blocking(move || source::read(req.source, &req.id))
@@ -96,7 +96,7 @@ pub fn register(iii: &Arc<IIIClient>) {
 
     let client = iii.clone();
     iii.register_function(
-        "console::conversations::import",
+        "ADE::conversations::import",
         RegisterFunction::new_async(move |req: Selection| {
             let client = client.clone();
             async move {

@@ -118,7 +118,7 @@ rules:
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
-  - '!console::conversations::*'
+  - '!ADE::conversations::*'
   # session-manager: deny-by-default for in-run agents (integration.md §2).
   # An agent that can write here can rewrite its own transcript; the raw
   # store protocol (session::store::*) bypasses every invariant. Reads stay
@@ -302,10 +302,10 @@ rules:
   # port, local base URL) and its last reload error: read-only, so agents
   # build page URLs from it instead of assuming port 3111.
   - http::status
-  # console::status only reports where this project's ADE listens (port,
+  # ADE::status only reports where this project's ADE listens (port,
   # local base URL), the engine URL it proxies and its version: read-only, so
   # agents build ADE URLs from it instead of assuming port 3113.
-  - console::status
+  - ADE::status
   # browser::chromium::status only reports which Chromium the worker would
   # launch (path, version, where it searched) and the latest install job:
   # read-only, never starts a browser. browser::chromium::install downloads

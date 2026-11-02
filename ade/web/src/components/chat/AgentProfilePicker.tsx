@@ -113,7 +113,7 @@ function useKitUpdates(provided: KitUpdateEntry[] | undefined) {
         )
         offs.push(reset)
         // Per-mount id: the route chat and the dock can both show a picker.
-        const fnId = `console::kit-updates::${instanceId}`
+        const fnId = `ADE::kit-updates::${instanceId}`
         try {
           offs.push(
             client.on<{ op?: unknown }>(fnId, (change) => {

@@ -21,8 +21,8 @@ import {
  * `enabled` on worktree presence, this is defense-in-depth for races.
  */
 
-const LANDED_FN = 'console::worktree-landed'
-const LAND_BLOCKED_FN = 'console::worktree-land-blocked'
+const LANDED_FN = 'ADE::worktree-landed'
+const LAND_BLOCKED_FN = 'ADE::worktree-land-blocked'
 
 export interface UseWorktreeEventsOptions {
   /** Only subscribe on the real backend with the worktree worker present. */

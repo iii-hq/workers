@@ -9,7 +9,7 @@ import {
 import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 import { useState } from 'react'
 
-const PROPOSE_ID = 'console::working-directory::propose'
+const PROPOSE_ID = 'ADE::working-directory::propose'
 
 interface WorkingDirectoryProposal {
   sessionId: string
@@ -95,7 +95,7 @@ function render(host: Host, message: FunctionTriggerMessage) {
 function FunctionIdLabel() {
   return (
     <>
-      <span style={{ color: 'var(--color-ink-faint)' }}>console::</span>
+      <span style={{ color: 'var(--color-ink-faint)' }}>ADE::</span>
       <span style={{ color: 'var(--color-ink)', fontWeight: 500 }}>
         working-directory::propose
       </span>

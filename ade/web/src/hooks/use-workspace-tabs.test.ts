@@ -100,7 +100,7 @@ describe('pending-layout replay vs a deep-linked screen', () => {
 })
 
 describe('pointer provenance on the server', () => {
-  // What `console::workspace::open` leaves in `<data_dir>/workspace.json`.
+  // What `ADE::workspace::open` leaves in `<data_dir>/workspace.json`.
   const functionActivated: WorkspaceLayoutValue = {
     tabs: [
       { id: 'tab-home', columns: 2, screens: ['chat', 'traces'] },

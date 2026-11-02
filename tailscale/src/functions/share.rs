@@ -26,7 +26,7 @@ const SERVE_REMOVE_DESC: &str = "Remove one route by mode, HTTPS port, and path.
 const SERVE_RESET_DESC: &str = "Remove every Serve and Funnel route on this node (`serve reset` and `funnel reset`). Requires confirm=true.";
 
 const FUNNEL_PORTS: [u16; 3] = [443, 8443, 10000];
-const CONSOLE_STATUS_ID: &str = "console::status";
+const CONSOLE_STATUS_ID: &str = "ADE::status";
 const CONSOLE_STATUS_TIMEOUT_MS: u64 = 5_000;
 
 pub fn catalog() -> Vec<FunctionSpec> {
@@ -255,20 +255,20 @@ async fn console_url(iii: &IIIClient, config: &WorkerConfig) -> Result<String, S
     console_url_from_status(status)
 }
 
-/// Reads the ADE origin from a `console::status` reply: its `url`, else loopback on its
+/// Reads the ADE origin from a `ADE::status` reply: its `url`, else loopback on its
 /// `http_port`. Never guesses a port, so another project's ADE is never published.
 pub fn console_url_from_status(status: Result<Value, String>) -> Result<String, String> {
     let status = status.map_err(|error| {
-        format!("this project's ADE is not reachable (console::status: {error}); start this project's ADE, or set console_url to this project's own ADE URL — never another project's")
+        format!("this project's ADE is not reachable (ADE::status: {error}); start this project's ADE, or set console_url to this project's own ADE URL — never another project's")
     })?;
     let url = match (string_at(&status, "/url"), u64_at(&status, "/http_port")) {
         (Some(url), _) => url,
         (None, Some(port)) => format!("http://127.0.0.1:{port}"),
         (None, None) => {
-            return Err("console::status reported neither url nor http_port; set console_url to this project's own ADE URL".to_string());
+            return Err("ADE::status reported neither url nor http_port; set console_url to this project's own ADE URL".to_string());
         }
     };
-    validate_console_url(&url).map_err(|error| format!("console::status reported {url}: {error}"))
+    validate_console_url(&url).map_err(|error| format!("ADE::status reported {url}: {error}"))
 }
 
 async fn serve_add(config: &WorkerConfig, input: ServeAddInput) -> Result<ShareOutput, String> {

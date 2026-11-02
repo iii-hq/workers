@@ -13,15 +13,15 @@ type Results = {
     request_schema: Record<string, unknown>
     response_schema: Record<string, unknown>
   }
-  'console::status': unknown
+  'ADE::status': unknown
   'session::list': unknown
   'session::create': { session_id: string }
   'session::append': unknown
   'session::set-meta': unknown
-  'console::context::save': ContextTrackingItem
-  'console::context::list': { items: ContextTrackingItem[] }
-  'console::context::remove': { removed: boolean }
-  'console::context::inject-guidance': { mutations: { system_prompt?: string } }
+  'ADE::context::save': ContextTrackingItem
+  'ADE::context::list': { items: ContextTrackingItem[] }
+  'ADE::context::remove': { removed: boolean }
+  'ADE::context::inject-guidance': { mutations: { system_prompt?: string } }
 }
 export const snapshot = {
   title: 'Release adversarial',
@@ -153,7 +153,7 @@ export const test = base.extend<{ stack: Stack }>({
       await expect
         .poll(async () => {
           try {
-            await call('console::status')
+            await call('ADE::status')
             await call('session::list')
             return true
           } catch {

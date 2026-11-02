@@ -5,7 +5,7 @@
  * The layout is ephemeral per-instance state (it changes on every click), so
  * it does NOT live in the `console` configuration entry — whose YAML is meant
  * to be committed — but in `<data_dir>/workspace.json`, owned by the console
- * worker and exposed through `console::workspace::get` / `set`
+ * worker and exposed through `ADE::workspace::get` / `set`
  * (`ade/src/functions/workspace.rs`). `data_dir` is the entry's `data_dir`
  * setting (default `data/ade`).
  *
@@ -24,8 +24,8 @@
 
 import { getIiiClient } from '@/lib/iii-client'
 
-export const WORKSPACE_GET_FUNCTION_ID = 'console::workspace::get'
-export const WORKSPACE_SET_FUNCTION_ID = 'console::workspace::set'
+export const WORKSPACE_GET_FUNCTION_ID = 'ADE::workspace::get'
+export const WORKSPACE_SET_FUNCTION_ID = 'ADE::workspace::set'
 
 /** The stored document: `tabs`, `activeTabId`, `activatedAt`, `activatedBy`, … */
 export type WorkspaceLayoutValue = Record<string, unknown>

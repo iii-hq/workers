@@ -8,14 +8,14 @@ import { type ISdk, registerWorker } from 'iii-browser-sdk'
 import type { ContextTrackingItem } from '../src/components/chat/ContextTracking'
 
 type RpcResults = {
-  'console::status': unknown
+  'ADE::status': unknown
   'session::list': unknown
   'session::create': { session_id: string }
   'session::append': unknown
-  'console::context::save': ContextTrackingItem
-  'console::context::list': { items: ContextTrackingItem[] }
-  'console::context::remove': { removed: boolean }
-  'console::context::inject-guidance': { mutations: { system_prompt: string } }
+  'ADE::context::save': ContextTrackingItem
+  'ADE::context::list': { items: ContextTrackingItem[] }
+  'ADE::context::remove': { removed: boolean }
+  'ADE::context::inject-guidance': { mutations: { system_prompt: string } }
 }
 
 // Opt-in, real isolated engine + session-manager + the Console built from this tree.
@@ -121,7 +121,7 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
     await expect
       .poll(async () => {
         try {
-          await call('console::status')
+          await call('ADE::status')
           await call('session::list')
           return true
         } catch {
@@ -151,19 +151,19 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       ],
       source: { label: 'Release board', url: 'https://example.com/release' },
     }
-    let item = await call('console::context::save', {
+    let item = await call('ADE::context::save', {
       session_id: a.session_id,
       snapshot,
     })
     expect(
-      (await call('console::context::list', { session_id: b.session_id }))
+      (await call('ADE::context::list', { session_id: b.session_id }))
         .items,
     ).toEqual([])
-    const hook = await call('console::context::inject-guidance', {
+    const hook = await call('ADE::context::inject-guidance', {
       session_id: a.session_id,
       generate: {
         system_prompt: 'BASE',
-        tools: [{ name: 'console::context::save' }],
+        tools: [{ name: 'ADE::context::save' }],
       },
     })
     expect(hook.mutations.system_prompt).toContain(item.id)
@@ -215,17 +215,17 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
     await section.getByRole('button', { name: 'Update in chat' }).click()
     // A draft action never saves a new snapshot or starts a background turn.
     expect(
-      (await call('console::context::list', { session_id: a.session_id }))
+      (await call('ADE::context::list', { session_id: a.session_id }))
         .items[0].updated_at,
     ).toBe(item.updated_at)
-    item = await call('console::context::save', {
+    item = await call('ADE::context::save', {
       session_id: a.session_id,
       id: item.id,
       scope: 'project',
       snapshot: { ...snapshot, progress: 80 },
     })
     expect(
-      (await call('console::context::list', { session_id: b.session_id }))
+      (await call('ADE::context::list', { session_id: b.session_id }))
         .items[0].progress,
     ).toBe(80)
     // Restart the actual Console, not just the React component.
@@ -236,7 +236,7 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       .poll(async () => {
         try {
           return (
-            await call('console::context::list', { session_id: a.session_id })
+            await call('ADE::context::list', { session_id: a.session_id })
           ).items[0]?.progress
         } catch {
           return null
@@ -261,7 +261,7 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       '80',
     )
     expect(
-      await call('console::context::remove', {
+      await call('ADE::context::remove', {
         session_id: a.session_id,
         id: item.id,
       }),

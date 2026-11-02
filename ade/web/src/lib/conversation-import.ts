@@ -270,7 +270,7 @@ export async function discoverConversations(input: {
   query?: string
 }) {
   return (await getIiiClient()).trigger<Discovery>(
-    'console::conversations::discover',
+    'ADE::conversations::discover',
     input,
   )
 }
@@ -279,7 +279,7 @@ export async function previewConversation(
   id: string,
 ) {
   return (await getIiiClient()).trigger<ConversationPreview>(
-    'console::conversations::preview',
+    'ADE::conversations::preview',
     { source, id },
   )
 }
@@ -290,7 +290,7 @@ export async function importConversation(
   try {
     // The client's own trigger timeout applies: an import runs batch after batch server-side.
     return await (await getIiiClient()).trigger<ImportResult>(
-      'console::conversations::import',
+      'ADE::conversations::import',
       { source, id },
     )
   } catch (error) {

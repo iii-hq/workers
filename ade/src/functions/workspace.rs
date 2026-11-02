@@ -1,9 +1,9 @@
-//! `console::workspace::*` — open, list, and close workspace screens over
+//! `ADE::workspace::*` — open, list, and close workspace screens over
 //! the bus, plus the `get`/`set` pair the SPA persists the strip through.
 //!
 //! The workspace layout (tabs, columns, screens, active pointer) is
 //! server-persisted in `<data_dir>/workspace.json` ([`WorkspaceStore`]). Every
-//! write rings `console::workspace::changed`, which each connected browser
+//! write rings `ADE::workspace::changed`, which each connected browser
 //! binds to re-read at once, so a caller that writes it is showing the human
 //! something next to the conversation. It is ephemeral per-instance
 //! state — deliberately NOT part of the `console` configuration entry, whose
@@ -52,7 +52,7 @@ const CODE_UNAVAILABLE: &str = "WORKSPACE_UNAVAILABLE";
 const CODE_CONFLICT: &str = "WORKSPACE_CONFLICT";
 
 /// Rung after every layout write; the event is empty, re-read with `list`.
-pub const CHANGED_TRIGGER: &str = "console::workspace::changed";
+pub const CHANGED_TRIGGER: &str = "ADE::workspace::changed";
 const RING_GAP: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -892,7 +892,7 @@ impl TriggerHandler for ChangedHandler {
     }
 }
 
-/// Ring every `console::workspace::changed` binding after each store write:
+/// Ring every `ADE::workspace::changed` binding after each store write:
 /// browsers do not poll the layout, they re-read it on the ring. The writer's
 /// own tab is rung too: an injected page (learn-iii) calling `open` over the
 /// bus is the tab that has to show the result.
@@ -904,7 +904,7 @@ fn register_changed(iii: &Arc<IIIClient>, store: &WorkspaceStore) {
             CHANGED_TRIGGER,
             "Fires after every change to the console workspace layout: open, close, or a \
              browser's own edit, and once when a binding registers. Bind with an empty \
-             config. The event is empty; re-read the layout with console::workspace::list.",
+             config. The event is empty; re-read the layout with ADE::workspace::list.",
             ChangedHandler {
                 bindings: bindings.clone(),
                 joined,
@@ -1057,7 +1057,7 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
     register_changed(iii, &store);
     let workspace = store.clone();
     iii.register_function(
-        "console::workspace::get",
+        "ADE::workspace::get",
         RegisterFunction::new_async(move |_: GetInput| {
             let store = workspace.clone();
             async move {
@@ -1074,14 +1074,14 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
         })
         .description(
             "Internal: read the raw console workspace layout document the SPA renders \
-             (`<data_dir>/workspace.json`). Agents use `console::workspace::list`.",
+             (`<data_dir>/workspace.json`). Agents use `ADE::workspace::list`.",
         )
         .metadata(json!({ "internal": true })),
     );
 
     let workspace = store.clone();
     iii.register_function(
-        "console::workspace::set",
+        "ADE::workspace::set",
         RegisterFunction::new_async(move |input: SetInput| {
             let store = workspace.clone();
             async move { set(&store, input).await }
@@ -1089,7 +1089,7 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
         .description(
             "Internal: replace the raw console workspace layout document wholesale \
              (the SPA's read-modify-write path; `expected_revision` refuses a stale \
-             copy with WORKSPACE_CONFLICT). Agents use `console::workspace::open` \
+             copy with WORKSPACE_CONFLICT). Agents use `ADE::workspace::open` \
              and `close`.",
         )
         .metadata(json!({ "internal": true })),
@@ -1097,7 +1097,7 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
 
     let workspace = store.clone();
     iii.register_function(
-        "console::workspace::list",
+        "ADE::workspace::list",
         RegisterFunction::new_async(move |_: ListInput| {
             let store = workspace.clone();
             async move {
@@ -1131,7 +1131,7 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
 
     let workspace = store.clone();
     iii.register_function(
-        "console::workspace::open",
+        "ADE::workspace::open",
         RegisterFunction::new_async(move |input: OpenInput| {
             let store = workspace.clone();
             async move { open(&store, input).await }
@@ -1148,7 +1148,7 @@ pub fn register(iii: &Arc<IIIClient>, store: Arc<WorkspaceStore>) {
 
     let workspace = store;
     iii.register_function(
-        "console::workspace::close",
+        "ADE::workspace::close",
         RegisterFunction::new_async(move |input: CloseInput| {
             let store = workspace.clone();
             async move {

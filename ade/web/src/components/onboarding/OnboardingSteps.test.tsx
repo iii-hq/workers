@@ -75,7 +75,7 @@ function controller(
 
 const noop = () => undefined
 
-/** The harness template's four, as `console::onboarding::prompts` serves them. */
+/** The harness template's four, as `ADE::onboarding::prompts` serves them. */
 const PROMPTS: ExamplePrompt[] = [
   'Build a link shortener',
   'Build an expense tracker',

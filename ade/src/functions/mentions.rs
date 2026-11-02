@@ -1,4 +1,4 @@
-//! `console::mentions::trace::{search,get}` — the `@trace(id="<trace_id>")`
+//! `ADE::mentions::trace::{search,get}` — the `@trace(id="<trace_id>")`
 //! chat mention provider.
 //!
 //! Traces belong to the engine (`engine::traces::*`), which registers no
@@ -20,8 +20,8 @@ use mention_contract::{
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
-pub const SEARCH_ID: &str = "console::mentions::trace::search";
-pub const GET_ID: &str = "console::mentions::trace::get";
+pub const SEARCH_ID: &str = "ADE::mentions::trace::search";
+pub const GET_ID: &str = "ADE::mentions::trace::get";
 pub const MENTION_NAME: &str = "trace";
 pub const ICON: &str = "trace";
 /// The console screen a trace opens in.

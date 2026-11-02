@@ -249,14 +249,14 @@ export function useTour(host: Host): TourController {
 
   /**
    * Open the step's screen beside the chat, in the tab showing. The layout
-   * change rings `console::workspace::changed`, which `useScreenPresent`
+   * change rings `ADE::workspace::changed`, which `useScreenPresent`
    * follows, so the step moves on by itself.
    */
   const openScreen = useCallback(
     (step: Step) => {
       if (!step.to_open) return
       void host.iii
-        .trigger('console::workspace::open', { screen: step.to_open.screen, relative_to: 'chat' })
+        .trigger('ADE::workspace::open', { screen: step.to_open.screen, relative_to: 'chat' })
         .catch((cause: unknown) => setError(errorMessage(cause)))
     },
     [host],
@@ -337,7 +337,7 @@ export function useTour(host: Host): TourController {
   const closing = openStep?.to_close && records[openStep.id]?.status !== 'complete' ? openStep.to_close.screen : null
   useEffect(() => {
     if (!closing) return
-    void host.iii.trigger('console::workspace::close', { screen: closing }).catch(() => undefined)
+    void host.iii.trigger('ADE::workspace::close', { screen: closing }).catch(() => undefined)
   }, [host, closing])
 
   const markSubscribed = useCallback(() => setSubscribed(true), [])
@@ -376,7 +376,7 @@ interface ScreenPresence {
  * Whether `screen` is in any workspace tab: `null` while unknown — not
  * watching, not read yet, or a console too old to say.
  *
- * The console rings `console::workspace::changed` after every layout write,
+ * The console rings `ADE::workspace::changed` after every layout write,
  * opening or closing a pane or a tab included. That makes this reactive
  * rather than polled: one read of the layout per layout change, and none
  * while nothing moves. A console without the trigger leaves the binding
@@ -392,7 +392,7 @@ function useScreenPresent(host: Host, screen: string | null): ScreenPresence | n
     let live = true
     const check = () =>
       void host.iii
-        .trigger<{ tabs: { id: string; screens: string[]; active?: boolean }[] }>('console::workspace::list')
+        .trigger<{ tabs: { id: string; screens: string[]; active?: boolean }[] }>('ADE::workspace::list')
         .then((ws) => {
           if (!live) return
           const holding = ws.tabs.filter((tab) => tab.screens.includes(screen))
@@ -415,7 +415,7 @@ function useScreenPresent(host: Host, screen: string | null): ScreenPresence | n
     try {
       offHandler = host.iii.on(localId, check)
       offTrigger = host.iii.registerTrigger({
-        type: 'console::workspace::changed',
+        type: 'ADE::workspace::changed',
         function_id: `${localId}::${host.iii.browserId}`,
         config: {},
       })

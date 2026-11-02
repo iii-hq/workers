@@ -177,8 +177,8 @@ export function StoriesConfigForm({ value, onChange, errors, focusField }: Confi
             (next) => update('console_url', next || undefined),
             {
               description:
-                "Origin the browser worker opens for screenshots and trees. Empty: the ADE's address from console::status.",
-              placeholder: "the ADE's address from console::status",
+                "Origin the browser worker opens for screenshots and trees. Empty: the ADE's address from ADE::status.",
+              placeholder: "the ADE's address from ADE::status",
             },
           )}
           <SettingsField

@@ -108,7 +108,7 @@ export function stepPosition(
 
 /**
  * The first-run setup wizard. Mounted once in `App`: it opens by itself the
- * first time a person loads this machine's ADE (`console::onboarding::get`
+ * first time a person loads this machine's ADE (`ADE::onboarding::get`
  * reports `new` and does not turn auto-open off; never in a browser under
  * automation; never once a model is connected — see
  * `shouldAutoOpenOnboarding`), and whenever something calls
@@ -121,7 +121,7 @@ export function stepPosition(
  *
  * Ready shows what setup connected. Explore iii, after it, offers three
  * ways in: the example prompts the project's template declares
- * (`onboarding.yaml`, read through `console::onboarding::prompts`; a click
+ * (`onboarding.yaml`, read through `ADE::onboarding::prompts`; a click
  * opens a new chat that sends the prompt, its agent profile and model chosen
  * — see `openExamplePrompt`), the learn-iii tour (its worker added when it
  * is not running yet), or closing setup to explore alone.

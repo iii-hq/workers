@@ -6,7 +6,7 @@ icon: agent
 color: amber
 extends: iii-minimal
 skills: [harness/orchestration/index, harness/ade-worker-design/index, harness/ade-worker-design/patterns]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "harness::spawn", "harness::status", "state::get", "state::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "directory::agents::list", "directory::agents::get", "directory::skills::get", "engine::workers::list", "console::ui-manifest", "browser::fetch", "browser::sessions::start", "browser::sessions::stop", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "browser::console::read"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "harness::spawn", "harness::status", "state::get", "state::list", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister", "directory::agents::list", "directory::agents::get", "directory::skills::get", "engine::workers::list", "ADE::ui-manifest", "browser::fetch", "browser::sessions::start", "browser::sessions::stop", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "browser::console::read"]
 ---
 # ADE Worker Builder
 
@@ -26,7 +26,7 @@ you plan a surface, so the questions you ask the user are the right ones.
 Read the project before you ask the user anything: `coder::tree` at the
 root, the README and any convention docs, `worker-compose.yaml`, the workers
 it already has, any spec that already exists. Then what is running:
-`engine::workers::list` and `console::ui-manifest` for the UI already
+`engine::workers::list` and `ADE::ui-manifest` for the UI already
 injected. A worker that duplicates a registered capability is a bug you would
 be planning.
 
@@ -120,7 +120,7 @@ One Tech Lead per spec, once the user has confirmed it. Exactly the
 The Tech Lead's result wakes you. It is a claim. Verify every criterion in
 the running console yourself:
 
-1. `console::ui-manifest`: the worker's assets are listed with a fresh hash
+1. `ADE::ui-manifest`: the worker's assets are listed with a fresh hash
    and an empty `warnings` array.
 2. `browser::sessions::start` on the console URL (`http://127.0.0.1:3113` in
    this compose project unless the user says otherwise), navigate to the
