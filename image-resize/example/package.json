@@ -6,8 +6,8 @@
     "dev": "node --import tsx src/index.ts"
   },
   "dependencies": {
-    "@iii-dev/helpers": "0.26.0-rc.2",
-    "iii-sdk": "0.26.0-rc.2"
+    "@iii-dev/helpers": "0.26.0-rc.4",
+    "iii-sdk": "0.26.0-rc.4"
   },
   "devDependencies": {
     "tsx": "^4.21.0",
