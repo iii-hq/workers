@@ -440,11 +440,15 @@ pub(crate) fn watch(
         }
         data_version = version;
 
+        // The head is read before `observed()`: a row committed once an
+        // observer is active lies past it, so this pass or the next (its
+        // commit moves `data_version`) drains it instead of skipping it.
+        let at_head = head(&conn, cursor);
         let drained = if observed() {
             drain(&conn, cursor)
         } else {
             // Nobody observes the function: no row is read or decoded.
-            head(&conn, cursor).map(|head| (Vec::new(), head))
+            at_head.map(|head| (Vec::new(), head))
         };
         match drained {
             Ok((runs, new_cursor)) => {
@@ -979,6 +983,74 @@ mod tests {
         assert_eq!(ev.op, Op::Insert);
         assert_eq!(ev.affected_rows, 1);
         assert_eq!(ev.returning.as_ref().unwrap(), &vec![key(3)]);
+
+        stop.store(true, Ordering::Relaxed);
+        let _ = stop_wake.send(());
+        thread.join().unwrap();
+    }
+
+    /// A pass that finds the function unobserved skips only the rows already
+    /// there: a write committed once an observer became active, even while
+    /// that pass runs, is delivered. Here the first `observed()` answers
+    /// `false` as an observer turns active and its write commits right after,
+    /// before the pass reads the changelog head.
+    #[test]
+    fn a_write_after_an_observer_turns_active_is_never_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("watched.db");
+        let external = Connection::open(&db_path).unwrap();
+        external
+            .execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, n INT)")
+            .unwrap();
+        external
+            .execute_batch(&install_sql("items", &["id".into()]).unwrap())
+            .unwrap();
+        let start = open_watch("primary", &db_path).unwrap();
+        // Unobserved: this write wakes the first pass and is skipped.
+        external
+            .execute_batch("INSERT INTO items (n) VALUES (1)")
+            .unwrap();
+
+        let writer = std::sync::Mutex::new(Connection::open(&db_path).unwrap());
+        let active = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let stop_wake = wake_tx.clone();
+        let thread = {
+            let stop = Arc::clone(&stop);
+            let active = Arc::clone(&active);
+            let path = db_path.clone();
+            std::thread::spawn(move || {
+                watch(
+                    "primary",
+                    &path,
+                    start,
+                    &stop,
+                    wake_tx,
+                    &wake_rx,
+                    move || {
+                        if active.swap(true, Ordering::SeqCst) {
+                            return true;
+                        }
+                        writer
+                            .lock()
+                            .unwrap()
+                            .execute_batch("INSERT INTO items (n) VALUES (2)")
+                            .unwrap();
+                        false
+                    },
+                    move |ev| tx.send(ev).is_ok(),
+                )
+            })
+        };
+
+        let ev = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the write made once the observer was active was skipped");
+        assert_eq!(ev.op, Op::Insert);
+        assert_eq!(ev.returning.as_ref().unwrap(), &vec![key(2)]);
+        assert!(rx.recv_timeout(Duration::from_millis(400)).is_err());
 
         stop.store(true, Ordering::Relaxed);
         let _ = stop_wake.send(());
