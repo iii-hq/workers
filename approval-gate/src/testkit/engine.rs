@@ -98,6 +98,8 @@ pub async fn spawn_engine() -> Option<Engine> {
         .arg("--config")
         .arg(&config_path)
         .current_dir(&dir)
+        // The engine writes an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -301,11 +303,13 @@ impl Drop for TestStack {
     }
 }
 
-fn spawn_harness_worker(engine_url: &str) -> Option<std::process::Child> {
+fn spawn_harness_worker(engine: &Engine) -> Option<std::process::Child> {
     let bin = std::env::var("CARGO_BIN_EXE_harness").ok()?;
     std::process::Command::new(bin)
         .arg("--url")
-        .arg(engine_url)
+        .arg(&engine.url)
+        // Its SDK client writes an `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &engine.dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -470,18 +474,11 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
     configuration::register_config_trigger(&iii, config.clone())
         .expect("register configuration change trigger");
 
-    let harness_child = if opts.real_harness {
-        let child = spawn_harness_worker(&engine.url).expect("spawn harness worker");
-        assert!(
-            wait_for_harness(&iii).await,
-            "harness worker did not become ready"
-        );
-        Some(child)
-    } else {
-        None
-    };
-
-    TestStack {
+    let harness_child = opts
+        .real_harness
+        .then(|| spawn_harness_worker(engine).expect("spawn harness worker"));
+    // Built before the readiness check, so a failed check reaps the child.
+    let stack = TestStack {
         iii,
         deps,
         config,
@@ -489,7 +486,14 @@ pub async fn boot(engine: &Engine, opts: BootOpts) -> TestStack {
         created,
         resolved,
         harness_child,
+    };
+    if opts.real_harness {
+        assert!(
+            wait_for_harness(&stack.iii).await,
+            "harness worker did not become ready"
+        );
     }
+    stack
 }
 
 pub async fn call(
