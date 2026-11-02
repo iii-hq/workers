@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::sandbox_daemon::{
-    errors::{SandboxError, SandboxErrorWire},
+    errors::{Payload, SandboxError, SandboxErrorWire},
     fs::adapter::FsRunner,
     registry::SandboxRegistry,
 };
@@ -371,11 +371,12 @@ pub(super) fn register(
     let engine_address = iii.address().to_string();
     iii.register_function(
         "sandbox-libkrun::fs::write",
-        RegisterFunction::new_async(move |req: WriteRequest| {
+        RegisterFunction::new_async(move |req: Payload<WriteRequest>| {
             let registry = registry.clone();
             let runner = runner.clone();
             let engine_address = engine_address.clone();
             async move {
+                let req = req.decode()?;
                 let sid = req.sandbox_id.clone();
                 let start = std::time::Instant::now();
                 let result = handle_write(req, &registry, &*runner, &engine_address).await;

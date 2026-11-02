@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::sandbox_daemon::{
-    errors::{SandboxError, SandboxErrorWire},
+    errors::{Payload, SandboxError, SandboxErrorWire},
     fs::adapter::FsRunner,
     registry::SandboxRegistry,
 };
@@ -72,10 +72,11 @@ pub(super) fn register(
 ) -> iii_sdk::runtime::FunctionRef {
     iii.register_function(
         "sandbox-libkrun::fs::ls",
-        RegisterFunction::new_async(move |req: LsRequest| {
+        RegisterFunction::new_async(move |req: Payload<LsRequest>| {
             let registry = registry.clone();
             let runner = runner.clone();
             async move {
+                let req = req.decode()?;
                 let sid = req.sandbox_id.clone();
                 let start = std::time::Instant::now();
                 let result = handle_ls(req, &registry, &*runner).await;
