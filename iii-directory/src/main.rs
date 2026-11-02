@@ -43,6 +43,7 @@ use iii_directory::functions::download::{
     download_worker_skills, reconcile_decision, refresh_decision, InFlightGuard,
 };
 use iii_directory::functions::registry::RegistryCache;
+use iii_directory::functions::search_index::ToolSchema;
 use iii_directory::functions::skills::{
     compose_status_request, make_registered_cache, RegisteredWorkersCache, ENGINE_NAMESPACE,
 };
@@ -228,10 +229,19 @@ async fn main() -> Result<()> {
     functions::search::observe_catalog_changes(&iii);
     // The judge's context window (compact options, tournament) follows the
     // hub's default provider: re-read it as soon as the hub's configuration
-    // changes instead of when the cache expires.
+    // changes instead of when the cache expires. The judge worker is
+    // optional and `follow` retries `judge::configuration-id` every 5 s until
+    // it answers: on a project without the judge every miss is an engine
+    // `Function not found` ERROR. So the follow starts only once the hub's
+    // entry point is in the discovery catalog, which
+    // engine::on-functions-changed keeps fresh: the wait costs no engine call.
     let judge = search_deps.judge.clone();
     let follower = iii.clone();
+    let judge_catalog = search_catalog.clone();
     tokio::spawn(async move {
+        while !judge_hub_installed(&judge_catalog.read().await) {
+            tokio::time::sleep(JUDGE_HUB_CHECK_INTERVAL).await;
+        }
         match iii_config_client::follow(
             &follower,
             "judge",
@@ -403,6 +413,18 @@ struct WorkersChangedAck {
 
 /// The engine's worker connection events.
 const WORKERS_ON_CHANGED_FN: &str = "engine::on-workers-changed";
+
+/// The judge hub's public entry point: once it is in the discovery catalog the
+/// optional `judge` worker is installed and its configuration can be followed.
+const JUDGE_HUB_FN: &str = "judge::evaluate";
+
+/// How often the judge-config follower re-reads the local catalog for the hub.
+const JUDGE_HUB_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether the judge hub is installed, by its entry point in `catalog`.
+fn judge_hub_installed(catalog: &[ToolSchema]) -> bool {
+    catalog.iter().any(|tool| tool.name == JUDGE_HUB_FN)
+}
 
 /// Register the internal `directory::__on_workers_changed` handler and
 /// observe `engine::on-workers-changed` with it: each worker connection
@@ -783,5 +805,23 @@ mod tests {
         // A path:// worker reports `local`, which is no registry version.
         worker_pass(&cfg, &in_flight, &status("local", "2.1.0")).await;
         assert_eq!(asked().await, 4);
+    }
+
+    #[test]
+    fn judge_hub_counts_as_installed_only_by_its_entry_point() {
+        let tool = |name: &str| ToolSchema {
+            name: name.to_string(),
+            description: String::new(),
+            parameters: json!({ "type": "object" }),
+        };
+        assert!(!judge_hub_installed(&[]));
+        assert!(!judge_hub_installed(&[
+            tool("judge-typesafe::evaluate"),
+            tool("directory::search_functions"),
+        ]));
+        assert!(judge_hub_installed(&[
+            tool("state::get"),
+            tool("judge::evaluate")
+        ]));
     }
 }
