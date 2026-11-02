@@ -49,6 +49,8 @@ impl Engine {
             .args(["--no-update-check", "--config"])
             .arg(config)
             .current_dir(root.path())
+            // The engine writes an `iii ps` marker under $HOME/.iii/run.
+            .env("HOME", root.path())
             .env_remove("TYPESAFE_API_KEY")
             .env("RUST_LOG", "info")
             .env("OTEL_ENABLED", "false")

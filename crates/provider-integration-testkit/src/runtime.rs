@@ -58,6 +58,8 @@ impl Engine {
             .arg("--config")
             .arg(&config_path)
             .current_dir(directory.path())
+            // Engine and state worker write `iii ps` markers under $HOME/.iii/run.
+            .env("HOME", directory.path())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()
@@ -85,6 +87,7 @@ impl Engine {
             .arg("--config")
             .arg(&state_config_path)
             .current_dir(engine._directory.path())
+            .env("HOME", engine._directory.path())
             .stdout(Stdio::from(state_stdout))
             .stderr(Stdio::from(state_stderr))
             .spawn()

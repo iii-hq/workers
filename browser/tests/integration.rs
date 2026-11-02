@@ -164,10 +164,18 @@ async fn boot_with(lane: Lane, chromium_seed: Option<String>) -> Option<Harness>
         uuid::Uuid::new_v4().simple()
     ));
     std::fs::create_dir_all(&data_dir).ok()?;
+    // Written before the engine starts, so failing here leaks no process.
+    let seed_path = data_dir.join("browser-seed.yaml");
+    if let Some(seed) = &seed {
+        std::fs::write(&seed_path, seed).ok()?;
+    }
 
     let mut iii = Command::new(&iii_bin)
         .args(["--config", config_path.to_str()?, "--no-update-check"])
         .current_dir(&data_dir)
+        // The engine writes an `iii ps` marker under $HOME/.iii/run. The
+        // worker keeps the real HOME: its Chromium lookup reads it.
+        .env("HOME", &data_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -183,9 +191,7 @@ async fn boot_with(lane: Lane, chromium_seed: Option<String>) -> Option<Harness>
         .arg("--url")
         .arg(&engine_ws)
         .env("III_COMPOSE_DIR", &data_dir);
-    if let Some(seed) = seed {
-        let seed_path = data_dir.join("browser-seed.yaml");
-        std::fs::write(&seed_path, seed).ok()?;
+    if seed.is_some() {
         worker_cmd.arg("--config").arg(&seed_path);
     }
     match worker_log {

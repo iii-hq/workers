@@ -88,18 +88,22 @@ async fn boot(seed: &str) -> Option<Harness> {
         uuid::Uuid::new_v4().simple()
     ));
     std::fs::create_dir_all(&data_dir).ok()?;
+    // Written before the engine starts, so failing here leaks no process.
+    let seed_path = data_dir.join("browser-seed.yaml");
+    std::fs::write(&seed_path, format!("browser:\n{seed}")).ok()?;
 
     let mut iii = Command::new(&iii_bin)
         .args(["--config", config_path.to_str()?, "--no-update-check"])
         .current_dir(&data_dir)
+        // The engine writes an `iii ps` marker under $HOME/.iii/run. The
+        // worker keeps the real HOME: its Chromium lookup reads it.
+        .env("HOME", &data_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
     sleep(Duration::from_millis(800)).await;
 
-    let seed_path = data_dir.join("browser-seed.yaml");
-    std::fs::write(&seed_path, format!("browser:\n{seed}")).ok()?;
     let worker_log = std::env::var_os("BROWSER_TEST_WORKER_LOG")
         .and_then(|path| std::fs::File::create(path).ok());
     let mut worker_cmd = Command::new(env!("CARGO_BIN_EXE_browser"));

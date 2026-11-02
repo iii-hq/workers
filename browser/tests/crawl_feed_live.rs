@@ -111,16 +111,8 @@ async fn boot() -> Option<Live> {
         format!("workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n"),
     )
     .ok()?;
-    let engine_log = std::fs::File::create(dir.join("engine.log")).ok()?;
-    let mut iii = Command::new(&iii_bin)
-        .args(["--config", config_path.to_str()?, "--no-update-check"])
-        .current_dir(&dir)
-        .stdout(Stdio::from(engine_log.try_clone().ok()?))
-        .stderr(Stdio::from(engine_log))
-        .spawn()
-        .ok()?;
-    sleep(Duration::from_millis(1000)).await;
-
+    // Seed and worker log are ready before the engine starts, so failing
+    // here leaks no process.
     let seed_path = dir.join("browser-seed.yaml");
     std::fs::write(
         &seed_path,
@@ -128,6 +120,20 @@ async fn boot() -> Option<Live> {
     )
     .ok()?;
     let worker_log = std::fs::File::create(dir.join("worker.log")).ok()?;
+    let worker_stdout = Stdio::from(worker_log.try_clone().ok()?);
+    let engine_log = std::fs::File::create(dir.join("engine.log")).ok()?;
+    let mut iii = Command::new(&iii_bin)
+        .args(["--config", config_path.to_str()?, "--no-update-check"])
+        .current_dir(&dir)
+        // The engine writes an `iii ps` marker under $HOME/.iii/run. The
+        // worker keeps the real HOME: its Chromium lookup reads it.
+        .env("HOME", &dir)
+        .stdout(Stdio::from(engine_log.try_clone().ok()?))
+        .stderr(Stdio::from(engine_log))
+        .spawn()
+        .ok()?;
+    sleep(Duration::from_millis(1000)).await;
+
     let worker = match Command::new(env!("CARGO_BIN_EXE_browser"))
         .arg("--url")
         .arg(format!("ws://127.0.0.1:{port}"))
@@ -135,7 +141,7 @@ async fn boot() -> Option<Live> {
         .arg(&seed_path)
         .env("III_COMPOSE_DIR", &dir)
         .env("RUST_LOG", "info")
-        .stdout(Stdio::from(worker_log.try_clone().ok()?))
+        .stdout(worker_stdout)
         .stderr(Stdio::from(worker_log))
         .spawn()
     {

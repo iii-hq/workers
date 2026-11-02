@@ -108,6 +108,8 @@ async fn spawn_engine() -> Option<Engine> {
         .args(["--no-update-check", "--config"])
         .arg(&config_path)
         .current_dir(&directory)
+        // Engine and bridge write `iii ps` markers under $HOME/.iii/run.
+        .env("HOME", &directory)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
@@ -160,6 +162,7 @@ async fn bridge_registers_on_non_default_local_engine_from_iii_url() {
             .arg(&seed_path)
             .env("III_URL", &engine.url)
             .env("III_CONFIG_NAME", format!("bridge-local-url-{remote_port}"))
+            .env("HOME", &engine.directory)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

@@ -1046,6 +1046,8 @@ impl Engine {
             .arg("-c")
             .arg(&config)
             .current_dir(dir.path())
+            // The engine writes an `iii ps` marker under $HOME/.iii/run.
+            .env("HOME", dir.path())
             .env("III_TELEMETRY_ENABLED", "false")
             .stdout(log.try_clone().unwrap())
             .stderr(log)
