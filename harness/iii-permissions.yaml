@@ -1,1 +1,679 @@
-../iii-permissions.yaml
+# Default agent permissions (first match wins).
+#   bare string        → allow (exact id, or glob when pattern contains *)
+#   '*'                → allow any function_id (catch-all; order matters)
+#   'worker::*'        → allow any id matching that glob (e.g. shell::fs::read)
+#   '*::list'          → allow any worker's ::list leaf
+#   '!function_id'     → deny (quote required — bare ! is YAML tag syntax)
+#   no match           → needs_approval
+# Harness loads via config `permissions_path` and hot-reloads on save.
+
+version: 1
+
+rules:
+  # Gate, state, auth, routing — agents must not call these directly.
+  - '!approval::resolve'
+  # Read-only verdict probe. The harness calls it worker-to-worker before
+  # binding a trigger to an ordinary function; an agent probing its own
+  # approval posture is reconnaissance, not a tool.
+  - '!approval::evaluate'
+  - '!hook-fanout::publish_collect'
+  - '!state::set'
+  - '!state::update'
+  - '!state::delete'
+  # Deprecated iii-stream write; keep denied while engines still host it.
+  - '!stream::set'
+  - '!iii::durable::publish'
+  - '!email::on-config-change'
+  - '!email::config-status'
+  # Provider credentials live in the `llm-router` configuration entry. Agents
+  # must never resolve a secret through router internals, self-register a
+  # provider, poison the model catalog, or rewrite the configuration value
+  # (which carries plaintext api keys). Direct router spend (chat/complete)
+  # bypasses the harness
+  # loop's accounting; the routing preview is orchestrator-internal. The
+  # console edits config as a user-initiated SDK call, which bypasses this gate.
+  - '!router::provider::resolve'
+  - '!router::provider::register'
+  - '!router::provider::update_credential'
+  - '!router::models::reconcile'
+  - '!router::chat'
+  - '!router::complete'
+  - '!router::abort'
+  - '!router::route'
+  - '!router::on_config_changed'
+  # Internal: re-reads a rotated or revoked secret:// key and nudges its providers.
+  - '!router::on_secret_changed'
+  # Direct provider calls (provider::anthropic::*, provider::openai::*, …)
+  # bypass the router's accounting, budgets, and retry policy. The router
+  # invokes these worker-to-worker; agents never call them.
+  - '!provider::*'
+  # configuration::get can expose stored secrets, so it has no default rule:
+  # no match means needs_approval. list/schema return no stored values and are
+  # safe read-only introspection. Mutations stay denied.
+  - '!configuration::set'
+  - '!configuration::register'
+  # configuration::ensure is the atomic register/seed twin (same schema/seed
+  # mutation power under a new name); deny it too so an agent cannot bypass the
+  # register deny above.
+  - '!configuration::ensure'
+  # secrets: credential values live in the secrets worker, referenced from
+  # configuration as secret://NAME. Agents never resolve a value, store,
+  # import or delete one, or change which workers may resolve it; the console
+  # makes those calls on the person's behalf. list/get/status/detect return
+  # metadata only (masked hints, fingerprints) and stay at the default.
+  - '!secrets::resolve'
+  - '!secrets::set'
+  - '!secrets::delete'
+  - '!secrets::access'
+  - '!secrets::import'
+  - '!secrets::on-config-change'
+  # queue's engine event handler (functions/workers available): wakes waits
+  # for a target function and the engine-restart check; engine dispatch only.
+  - '!queue::on-engine-change'
+  # judge-typesafe's and judge-openai's own secrets::changed handlers (drop a
+  # rotated key).
+  - '!judge-typesafe::on-secret-change'
+  - '!judge-openai::on-secret-change'
+  - '!directory::pre-generate'
+  - '!directory::on-functions-change'
+  - '!directory::hint-preview'
+  - directory::search_functions
+  # Internal hot-reload trigger handler — must not be agent-callable; it is
+  # invoked only by the engine's `configuration:updated` trigger dispatch.
+  - '!shell::on-config-change'
+  - '!cursor::on-config-change'
+  # Operator/automation health signal, not an agent tool: it can surface a
+  # build-error string (e.g. a host_root path). Operators/console reach it via
+  # the privileged dispatch path that bypasses this agent gate.
+  - '!shell::config-status'
+  # Harness-internal stop sweep: kills every job a session owns, so a model
+  # could reap another session's jobs. harness::stop calls it worker-to-worker.
+  - '!shell::kill-session-jobs'
+  # The agent-CLI terminals (the terminal halves of claude-code and pi) are opened by
+  # a person from the console: their describe/activity/ui-content surfaces are
+  # plumbing, `activity` writes to the events stream on the session's behalf,
+  # and `auth::status` carries the operator's account, organization, and
+  # billing mode. The console reaches all of it as user-initiated calls, not
+  # this path.
+  - '!claude::terminal::*'
+  - '!claude::auth::status'
+  - '!claude::ui-content'
+  - '!pi::terminal::*'
+  - '!pi::auth::status'
+  - '!pi::ui-content'
+  # Read-only terminal diagnostics (program, cwd, sequence, replay state — no
+  # credentials), allowed ahead of the lifecycle deny below so an agent asked
+  # why a terminal shows nothing can answer without an operator.
+  - shell::pty::sessions
+  # Interactive PTY lifecycle is driven only by the console UI.
+  - '!shell::pty::*'
+  # The explorer page's per-pane state (open tabs, folder, terminal layout):
+  # developer-local files the console reads and writes on the person's behalf.
+  - '!shell::ui-state::*'
+  # The Commit panel's Generate button: `commit-message` spends an LLM call
+  # through router::complete, outside the harness loop's accounting (the same
+  # reason router::complete itself is denied above), and both functions are
+  # console plumbing the page calls on the person's behalf.
+  - '!shell::scm::*'
+  - '!oauth::anthropic::login'
+  - '!oauth::openai-codex::login'
+  - '!run::start'
+  - '!console::conversations::*'
+  # session-manager: deny-by-default for in-run agents (integration.md §2).
+  # An agent that can write here can rewrite its own transcript; the raw
+  # store protocol (session::store::*) bypasses every invariant. Reads stay
+  # at the needs_approval default (tenancy-sensitive).
+  - '!session::store::*'
+  - '!session::create'
+  - '!session::ensure'
+  - '!session::set-meta'
+  - '!session::set-draft'
+  - '!session::set-status'
+  - '!session::delete'
+  - '!session::append'
+  - '!session::append-many'
+  - '!session::update-message'
+  - '!session::fork'
+  - '!session::set-active-leaf'
+  # Uploading/deleting attachments are transcript writes too (the stored file
+  # is what a `file` block resolves to). get-/list-attachments are reads and
+  # stay at the needs_approval default.
+  - '!session::put-attachment'
+  - '!session::delete-attachment'
+  # Operator/automation health signal, not an agent tool: it can surface a
+  # build-error string (e.g. a data_dir path). Operators/console reach it via
+  # the privileged dispatch path that bypasses this agent gate.
+  - '!session::config-status'
+  # context-manager: assemble/compact are pure transforms (nothing to leak)
+  # but each can spend a summariser LLM call, so deny them to in-run agents in
+  # this cost-sensitive deployment (context-manager.md § Agent exposure).
+  # count_tokens/prune are always safe and stay at the needs_approval default.
+  - '!context::assemble'
+  - '!context::compact'
+  # Internal lifecycle hooks — agents must never force a config reload directly.
+  # The handlers already re-fetch from configuration::get (ignoring the event
+  # payload), so a direct call cannot inject config. These denies are
+  # defense-in-depth: they close the agent-callable surface so a future handler
+  # change cannot inadvertently re-open the injection path.
+  - '!storage::on-config-change'
+  - '!database::on-config-change'
+  # database: the secrets::changed sink, connection management (rewrites
+  # servers and credentials, like configuration::set; getConnection exposes
+  # the stored entry; testConnection sends referenced credentials to the
+  # server a candidate names) and the chat mention provider (console
+  # plumbing; agents use database::listTables) are never agent-callable.
+  - '!database::on-secret-change'
+  - '!database::saveConnection'
+  - '!database::deleteConnection'
+  - '!database::getConnection'
+  - '!database::testConnection'
+  - '!database::mention::search'
+  - '!database::mention::get'
+  - '!judge::on-config-change'
+  - '!judge-semif::on-config-change'
+  - '!judge-semif::on-judge-config-change'
+  - '!judge-decider::on-config-change'
+  - '!judge-decider::on-judge-config-change'
+  - '!judge-laya::on-config-change'
+  - '!judge-laya::on-judge-config-change'
+  - '!judge-clef::on-config-change'
+  - '!judge-clef::on-judge-config-change'
+  - '!directory::on-judge-config-change'
+  - '!judge-typesafe::on-config-change'
+  - '!judge-openai::on-config-change'
+  - '!session::on-config-change'
+  # (coder::on-config-change retired: the code surface folded into the shell
+  # worker, whose shell::on-config-change is already denied above.)
+  # storage: the secrets::changed sink and bucket management (rewrites which
+  # providers and credentials the worker uses; testBucket sends a candidate's
+  # credentials wherever the candidate points; getBucket returns stored
+  # entries) are the human's call, made from a bucket editor.
+  - '!storage::on-secret-change'
+  - '!storage::getBucket'
+  - '!storage::saveBucket'
+  - '!storage::deleteBucket'
+  - '!storage::testBucket'
+  # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
+  # send/run let a model start arbitrary turns outside any max_turns guard;
+  # compact rewrites a session's history (the console's control plane);
+  # turn is the internal loop step; function::trigger/resolve forge call ids
+  # and parked results; stop cancels turns. harness::spawn is the only
+  # model-reachable way to start new turns and is left at the needs_approval
+  # default (the harness self-enforces depth/fan-out and walls spawned
+  # children out of the control plane unless the spawn passes
+  # options.orchestrator). The internal config/cron/session-deleted hooks
+  # must never be agent-callable.
+  - '!harness::send'
+  - '!harness::compact'
+  - '!harness::run'
+  - '!harness::turn'
+  - '!harness::function::trigger'
+  - '!harness::function::resolve'
+  - '!harness::stop'
+  - '!harness::on-config-change'
+  - '!harness::sweep-pending'
+  - '!harness::on-session-deleted'
+  # Engine event handlers (worker connect/disconnect, compose operations) that
+  # drive binding expiry, orphaned-turn recovery and discovery instead of
+  # timers: invoked only by the engine's trigger dispatch.
+  - '!harness::on-engine-change'
+  - '!harness::on-compose-operation'
+  # kanban: console asset delivery and the configuration reload sink are
+  # engine plumbing. Deleting/restoring a ticket is the human's call from the
+  # ticket screen; the ticket working loop is allowlisted below. Planning is
+  # the human's call too: agents file tickets under a project or release but
+  # never create, rename, ship or convert them. One exception: the deepwork
+  # orchestrator files each run under its own project, so a create whose
+  # `lead` is `deepwork` is allowed. Rules cannot see the caller, so this is
+  # scoped by argument (an agent could spoof it; the worst case is a stray
+  # project). Any other create matches no rule and waits for a person.
+  - '!kanban::ui-content'
+  - '!kanban::on-config-change'
+  - '!kanban::ticket::delete'
+  - '!kanban::ticket::restore'
+  - function: kanban::project::create
+    action: allow
+    rule_id: deepwork-run-project
+    args:
+      lead: { equals: deepwork }
+  - '!kanban::project::update'
+  - '!kanban::project::archive'
+  - '!kanban::project::restore'
+  - '!kanban::release::create'
+  - '!kanban::release::update'
+  - '!kanban::release::ship'
+  - '!kanban::release::reopen'
+  - '!kanban::release::delete'
+  - '!kanban::label::convert'
+  # stories: console asset delivery, the /ui-files content function and the
+  # configuration reload sink are engine plumbing. Reads, comparisons,
+  # renders and line builds are allowlisted below.
+  - '!stories::ui-content'
+  - '!stories::ui-file'
+  - '!stories::on-config-change'
+  # eval: durable orchestration internals are trigger/queue targets only.
+  # Starting, cancelling, and deleting evaluations remain approval-gated by
+  # the default. Status/result are read-only and the exact evaluator is pure.
+  - '!eval::step'
+  - '!eval::on-turn-completed'
+  - '!eval::sweep'
+  # security-scan: durable queue, cron, and Harness callback targets trust
+  # private State checkpoints or operator configuration. Agents must use the
+  # report-only request/list/read surface.
+  - '!security-scan::execute'
+  - '!security-scan::on-turn-completed'
+  - '!security-scan::on-schedule'
+  # sentinel: trigger and queue targets only. The console drives grouping
+  # through the read surface; the investigation session gets the four
+  # functions below and nothing else.
+  - '!sentinel::ingest'
+  - '!sentinel::on-trace-activity'
+  - '!sentinel::on-log'
+  - '!sentinel::on-turn-completed'
+  - '!sentinel::on-schedule'
+  - '!sentinel::on-config-change'
+  - '!sentinel::ui-content'
+  - 'sentinel::evidence::get'
+  - 'sentinel::trace::get'
+  - 'sentinel::logs::list'
+  - 'sentinel::diagnosis::record'
+  # The shaping hop for a trigger bound to an ordinary function: the engine
+  # fires it, agents never call it. Agents name their real target in
+  # engine::register_trigger's `function_id`, which is checked against the
+  # registrant's own policy at registration.
+  - '!harness::trigger-call'
+  - '!context::on-config-change'
+  - '!approval::on-config-change'
+  # browser: console-UI plumbing, never agent-callable. pick::* and hint are
+  # human gestures (the console drives them as user-initiated SDK calls,
+  # which bypass this gate); screencast::*/frame exist only to feed the
+  # console viewport. The agent-facing surface (sessions, navigate, snapshot,
+  # act, evaluate, console/network reads, dom/styles, history, screenshot)
+  # stays at the needs_approval default.
+  - '!browser::pick::start'
+  - '!browser::pick::resolve'
+  - '!browser::pick::stop'
+  - '!browser::pick::hint'
+  - '!browser::screencast::start'
+  - '!browser::screencast::stop'
+  - '!browser::frame'
+  - '!browser::on-config-change'
+  # http::status only reports where the public HTTP server listens (host,
+  # port, local base URL) and its last reload error: read-only, so agents
+  # build page URLs from it instead of assuming port 3111.
+  - http::status
+  # console::status only reports where this project's ADE listens (port,
+  # local base URL), the engine URL it proxies and its version: read-only, so
+  # agents build ADE URLs from it instead of assuming port 3113.
+  - console::status
+  # browser::chromium::status only reports which Chromium the worker would
+  # launch (path, version, where it searched) and the latest install job:
+  # read-only, never starts a browser. browser::chromium::install downloads
+  # and unpacks ~200 MB of executable code into the user's cache, so it
+  # stays at the needs_approval default (the ADE calls it as the user).
+  - browser::chromium::status
+  # computer: same split as browser. screencast::*/frame exist only to feed the
+  # console viewport; the desktop surface the agent actually uses (sessions,
+  # screenshot, observe, find, act, displays) stays at the needs_approval default,
+  # because every act drives a real machine (a click, keystroke or accessibility action).
+  - '!computer::screencast::start'
+  - '!computer::screencast::stop'
+  - '!computer::frame'
+  - '!computer::on-config-change'
+  # ios-simulator: touch/watch/frame feed the console's live iPhone; agents
+  # use gesture/screenshot. tenants::list is operator-only (it names every
+  # consumer on a shared Mac). The device surface stays at needs_approval.
+  - '!ios-simulator::touch'
+  - '!ios-simulator::watch'
+  - '!ios-simulator::frame'
+  - '!ios-simulator::tenants::list'
+  - '!ios-simulator::on-config-change'
+  # rbac-proxy: internal reload + catalog-cache hooks — invoked only by the
+  # engine's trigger dispatch, never agent-callable. The handlers already
+  # re-fetch/ignore the event payload; these denies are defense-in-depth.
+  # The proxy is an enforcement boundary, not a callable API — rbac-proxy::status
+  # (read-only) stays at the needs_approval default; deny it on deployments where
+  # the engine URL / bound port topology is itself sensitive.
+  - '!rbac-proxy::on-config-change'
+  - '!rbac-proxy::on-functions-available'
+  - '!telegram-bot::on-config-change'
+  - '!telegram-bot::on-message-added'
+  - '!telegram-bot::on-message-updated'
+  - '!telegram-bot::on-status-changed'
+  - '!telegram-bot::on-turn-completed'
+  - '!telegram-bot::on-pending-created'
+  - '!telegram-bot::on-pending-resolved'
+  # worktree: internal hot-reload hook plus the queue-bound land step. The
+  # step executor trusts its persisted job record; agents must go through
+  # worktree::land, which validates ownership and enqueues. Mutating ops
+  # (create/claim/release/remove/prune/land) stay at the needs_approval
+  # default, like the coder write paths.
+  - '!worktree::on-config-change'
+  - '!worktree::land-step'
+  # slack: deny operator-only ingress, internal bindings, and config reload.
+  - '!slack::events'
+  - '!slack::interactions'
+  - '!slack::on-config-change'
+  - '!slack::on-message-added'
+  - '!slack::on-message-updated'
+  - '!slack::on-turn-completed'
+  - '!slack::on-pending-created'
+  - '!slack::on-pending-resolved'
+  # github: internal hot-reload hook — invoked only by the engine's
+  # configuration:updated trigger dispatch, never agent-callable.
+  - '!github::on-config-change'
+  # Webhook ingress, queue consumers, and tunnel lifecycle callbacks are
+  # trusted engine plumbing, never direct agent calls. Starting/stopping a
+  # watch or acquiring/releasing a public tunnel stays approval-gated.
+  - '!github::webhooks::*'
+  - '!quick-tunnel::on-config-change'
+  # openwiki: internal trigger targets. cron::refresh-due is the per-wiki cron
+  # target; on-turn-started/completed are harness trigger-bridge targets whose
+  # direct call could forge generation progress. The hot-reload hook follows
+  # the same pattern as the other on-config-change denies.
+  - '!openwiki::cron::refresh-due'
+  - '!openwiki::on-turn-started'
+  - '!openwiki::on-turn-completed'
+  - '!openwiki::on-config-change'
+
+  # pdf: internal target. The hot-reload hook follows the same pattern as the
+  # other on-config-change denies.
+  - '!pdf::on-config-change'
+
+  # document: internal target. The hot-reload hook follows the same pattern as
+  # the other on-config-change denies.
+  - '!document::on-config-change'
+
+  # canvas: internal target. The hot-reload hook follows the same pattern as
+  # the other on-config-change denies.
+  - '!canvas::on-config-change'
+  # a2ui: Console action ingress and lifecycle hooks are trusted plumbing.
+  # Agents compose/apply surfaces through the public functions below; only the
+  # Console may inject a user gesture into an existing Harness session.
+  - '!a2ui::action'
+  - '!a2ui::binding::apply'
+  - '!a2ui::stamp-session'
+  - '!a2ui::on-config-change'
+  # code-runner: internal hot-reload hook, same pattern as the other
+  # on-config-change denies.
+  - '!code-runner::on-config-change'
+
+  # The guidance-knob configuration entries (web/workflow/fp/
+  # sandbox-code-runner): internal hot-reload hooks, same pattern
+  # as the other on-config-change denies.
+  - '!web::on-config-change'
+  - '!workflow::on-config-change'
+  - '!fp::on-config-change'
+  - '!sandbox-code-runner::on-config-change'
+
+  # opengantry: bus-internal registration hooks; agents must not call them.
+  # gantry::verify and gantry::middleware stay at needs_approval (not listed).
+  - '!gantry::on-function-registration'
+  - '!gantry::on-trigger-registration'
+  - '!gantry::on-trigger-type-registration'
+
+  # Read-only / introspection (extend below for your tools).
+  - configuration::list
+  - configuration::schema
+  - state::get
+  - state::list
+  - router::models::list
+  - router::models::get
+  - router::models::budget
+  - router::models::supports
+  - router::provider::list
+  # harness::status is read-only (current turn status for a session), and
+  # harness::triggers::list is the matching read over a session's own trigger
+  # bindings. The teardown half (harness::triggers::unregister) is NOT listed:
+  # agents unregister through the intercepted engine::unregister_trigger,
+  # which enforces ownership; the standalone teardown stays behind the
+  # needs_approval default for the console's privileged path.
+  - harness::status
+  - eval::status
+  - eval::result
+  - eval::assert::exact
+  - harness::triggers::list
+  - oauth::anthropic::status
+  - oauth::openai-codex::status
+  - engine::functions::list
+  - engine::functions::info
+  - engine::triggers::list
+  - engine::triggers::info
+  - engine::workers::list
+  - engine::workers::info
+  - engine::registered-triggers::list
+  - engine::registered-triggers::info
+  # Subscriptions: engine::register_trigger is intercepted by the harness and
+  # produces a binding that either WAKES the registering session or CALLS a
+  # plain function — a binding never starts an agent (`harness::spawn` is
+  # refused as a target, so nothing fires engine-side past this gate
+  # anymore). Call targets are checked at registration against the
+  # registrant's own policy AND the approval gate's verdict, so a binding
+  # cannot grant an unattended call the session could not make itself.
+  # Bindings registered against the removed `harness::react` / spawn targets
+  # are purged on startup; register a wake and spawn directly instead.
+  - engine::register_trigger
+  - engine::unregister_trigger
+  - worker::list
+  # Public worker-registry catalogue reads — the system prompt's
+  # search-before-build ladder starts here. worker::add stays approval-gated.
+  - directory::registry::workers::list
+  - directory::registry::workers::info
+  # Read-only worktree registry surface; mutating worktree ops stay
+  # approval-gated (see the deny block above).
+  - worktree::list
+  - worktree::get
+  - worktree::status
+  - worktree::validate
+  # kanban: reads plus the ticket working loop (claim, report, move) that the
+  # bundled agent profiles run — see kanban/skills/kanban-tickets.md.
+  - kanban::config::info
+  - kanban::board::get
+  - kanban::ticket::list
+  - kanban::ticket::get
+  - kanban::ticket::links
+  - kanban::ticket::create
+  - kanban::ticket::update
+  - kanban::ticket::move
+  - kanban::project::list
+  - kanban::release::list
+  - kanban::comment::create
+  - kanban::comment::list
+  - kanban::activity::list
+  - kanban::agent::list
+  # stories: reads, comparisons and renders, plus building a line (git plus
+  # the project's own Vite inside data/stories) — see stories/skills/.
+  - stories::workspaces
+  - stories::lines
+  - stories::components::list
+  - stories::components::get
+  - stories::tree::fs
+  - stories::builds::create
+  - stories::builds::get
+  - stories::compare
+  - stories::diff::file
+  - stories::screenshot
+  - stories::tree
+  - stories::diff
+  - stories::history
+  # vscode: the Console page starts a loopback-only VS Code Server per folder.
+  # Stop/delete remain approval-gated; the config-reload callback and the
+  # Console asset function are bus-internal.
+  - '!vscode::on-config-change'
+  - '!vscode::ui-content'
+  - vscode::start
+  - vscode::instances::list
+  # tmux: reading sessions, agent states and ports is safe. Creating,
+  # renaming, selecting (switches the person's own terminal) and killing stay
+  # approval-gated. The Console terminal types into the person's sessions and
+  # is driven only by the page; config reload and Console asset are internal.
+  - '!tmux::terminal::*'
+  - '!tmux::on-config-change'
+  - '!tmux::ui-content'
+  - tmux::status
+  - tmux::sessions::list
+  - tmux::ports::list
+  # tailscale: read-only status/configuration are safe; share publishes the
+  # Console on a new listener and stop tears a route down, so both stay
+  # approval-gated. Config-reload callback and Console asset are bus-internal.
+  - '!tailscale::on-config-change'
+  - '!tailscale::ui-content'
+  - tailscale::status
+  - tailscale::configuration
+  - tailscale::version
+  - tailscale::ip
+  - tailscale::netcheck
+  - tailscale::ping
+  - tailscale::whois
+  - tailscale::dns::status
+  - tailscale::dns::query
+  - tailscale::peers::list
+  - tailscale::exit-node::list
+  - tailscale::exit-node::suggest
+  - tailscale::prefs::get
+  - tailscale::serve::list
+  - tailscale::file::targets
+  - tailscale::drive::list
+  - tailscale::lock::status
+  - tailscale::accounts::list
+  - tailscale::metrics
+  # Read-only code surface (coder::*, now served by the shell worker).
+  # Mutating ops (create/update/move/delete-file) stay approval-gated, and so
+  # does coder::scaffold-worker: it writes a whole worker package, so it has
+  # no rule here and falls through to needs_approval.
+  - coder::info
+  - coder::read-file
+  - coder::search
+  - coder::list-folder
+  - coder::tree
+  # Lists scaffoldable templates; a refresh only updates the IDE's own cache.
+  - coder::list-templates
+  # fp: the twenty-three pure value transforms are side-effect-free reshapes (no
+  # I/O, no authority). fp::pipe stays at the needs_approval default ON
+  # PURPOSE: its steps run with the fp worker's authority, so the pipe
+  # call itself is the surface an approver reviews (the worker statically
+  # refuses hard-denied classes as steps; see fp/src/pipe.rs). Allowlisting
+  # fp::pipe would also grant un-approved shell::*/coder::* execution: scoped
+  # steps ride the harness-stamped filesystem scope on the pipe call.
+  - fp::get
+  - fp::pick
+  - fp::omit
+  - fp::take
+  - fp::drop
+  - fp::map
+  - fp::filter
+  - fp::split
+  - fp::join
+  - fp::uniq
+  - fp::size
+  - fp::compact
+  - fp::nth
+  - fp::getOr
+  - fp::flatten
+  - fp::sortBy
+  - fp::reverse
+  - fp::sum
+  - fp::mean
+  - fp::min
+  - fp::max
+  - fp::groupBy
+  - fp::countBy
+  # github: read-only GitHub queries (list/view/diff/checks/search) are safe
+  # reads. Mutations (create/edit/merge/comment/review/close/rerun/cancel/
+  # workflow run/release create) and the escape hatches (github::exec —
+  # arbitrary gh commands; github::api — any REST endpoint including writes)
+  # stay at the needs_approval default.
+  - github::pr::list
+  - github::pr::view
+  - github::pr::diff
+  - github::pr::checks
+  - github::pr::watch-status
+  # Read-only webhook prerequisite checklist; enable-http-listener and
+  # enable-webhooks change configuration and keep needs_approval.
+  - github::setup::webhooks-status
+  - quick-tunnel::status
+  - github::issue::list
+  - github::issue::view
+  - github::repo::view
+  - github::repo::list
+  - github::run::list
+  - github::run::view
+  - github::workflow::list
+  - github::release::list
+  - github::release::view
+  - github::search::repos
+  - github::search::issues
+  - github::search::prs
+  - github::search::code
+  # web::fetch is load-bearing for the system prompt's SDK-reference gate and
+  # HTTP-trigger verification; it enforces size/timeout caps and server-side
+  # SSRF protection, so it is allowed by default.
+  - web::fetch
+
+  # pdf: every function is a pure read of a document the agent could already
+  # reach through the filesystem scope, and reaching it any other way returns
+  # binary noise. Nothing here writes, spends, or leaves the machine, and each
+  # response is capped by the worker's own configuration. Gating these would
+  # mean an approval prompt to read a file the agent is already allowed to open.
+  - pdf::classify
+  - pdf::to-markdown
+  - pdf::extract-text
+  - pdf::extract-items
+  - pdf::extract-regions
+
+  # document: same reasoning as pdf. Every function listed is a pure read of a
+  # file the agent could already reach through the filesystem scope, and reaching
+  # an office document any other way returns compressed noise. Nothing here
+  # writes, spends, or leaves the machine, and each response is capped by the
+  # worker's own configuration.
+  #
+  # `document::ocr` is deliberately absent: it renders pages and reads them with
+  # a vision model, so it spends money per page. It stays behind an approval,
+  # which is also what keeps an agent from transcribing a four-hundred-page scan
+  # because a document happened to be attached.
+  - document::detect
+  - document::to-markdown
+  - document::extract-assets
+
+  # canvas: every function touches only the worker's own store (state scope
+  # "canvas"), sources are size-capped by its configuration, and nothing here
+  # spends, executes, or leaves the machine. Storing and revising a diagram is
+  # the point of the surface, so the write half stays agent-callable too —
+  # gating it would mean an approval prompt to draw a picture.
+  - canvas::create
+  - canvas::get
+  - canvas::list
+  - canvas::update
+  - canvas::delete
+  - canvas::syntax
+  - canvas::validate
+  - canvas::element::add
+  - canvas::element::update
+  - canvas::element::delete
+  - canvas::element::list
+
+  # a2ui: generated content is declarative data rendered through the fixed
+  # Console catalog, never executable code. Size/component caps and the bounded
+  # router correction budget are enforced by the worker. Surface reads and
+  # writes stay agent-callable so requesting a UI does not create an approval
+  # prompt in the middle of an ordinary Harness turn.
+  - a2ui::generate
+  - a2ui::surface::apply
+  - a2ui::surface::get
+  - a2ui::surface::list
+  - a2ui::surface::delete
+  - a2ui::surface::patch
+  - a2ui::surface::export
+  - a2ui::surface::history
+  - a2ui::surface::undo
+  - a2ui::surface::duplicate
+  - a2ui::surface::pin
+  - a2ui::surface::import
+  - a2ui::surface::export-code
+  - a2ui::binding::set
+  - a2ui::binding::delete
+  - a2ui::template::save
+  - a2ui::template::list
+  - a2ui::template::get
+  - a2ui::template::apply
+  - a2ui::template::delete
