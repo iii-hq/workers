@@ -15,8 +15,8 @@ importers:
         specifier: ^1.9.1
         version: 1.9.1
       iii-sdk:
-        specifier: 0.26.0-rc.1
-        version: 0.26.0-rc.1
+        specifier: 0.26.0-rc.2
+        version: 0.26.0-rc.2
       yaml:
         specifier: ^2.6.0
         version: 2.9.0
@@ -633,8 +633,8 @@ packages:
     peerDependencies:
       hono: ^4
 
-  '@iii-dev/helpers@0.26.0-rc.1':
-    resolution: {integrity: sha512-qNWSG40ea9g6sJZ303OmnCWOQnYyJvsXTYT0rZ9CQZV7tJmKcMfLdKMLVThqAmVy2ijnfcsW/Q35OzTN3DWk/w==}
+  '@iii-dev/helpers@0.26.0-rc.2':
+    resolution: {integrity: sha512-fRc3pWgKu84YY6unG/HJd9GI1ju87kddzjVryHpO64zVtv8HLnK6cO8Q4HRxfK4F+MLutb4skydzLqSGYb3V3Q==}
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -1157,8 +1157,8 @@ packages:
     resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==}
     engines: {node: '>=0.10.0'}
 
-  iii-sdk@0.26.0-rc.1:
-    resolution: {integrity: sha512-v4zfuEJ1HtkKZgvDZHdeaaIF0CEtwemkl+y7BX8gACGXUrnSWqR0v/q3I3Kok9+T1nh/YuU8bkbh7K+V/jhAOQ==}
+  iii-sdk@0.26.0-rc.2:
+    resolution: {integrity: sha512-K/Ztj22Kq75uSGizFsEINePaURKWVjiKn0fukcHqEt3Bi4nMZwOF2qwmqp26lrIIiWJb14u3nt+ZZI/OqwgjQQ==}
 
   import-in-the-middle@3.5.2:
     resolution: {integrity: sha512-WseIA/4o56+GYO3RmlOPvejYi771OFeJEeK/ejROsr9bdjW+E5NXTOD1Di8TL40Qgg3JJX9aa97Hf8iiSVIKZw==}
@@ -1868,7 +1868,7 @@ snapshots:
     dependencies:
       hono: 4.12.25
 
-  '@iii-dev/helpers@0.26.0-rc.1':
+  '@iii-dev/helpers@0.26.0-rc.2':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.222.0
@@ -2465,9 +2465,9 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
-  iii-sdk@0.26.0-rc.1:
+  iii-sdk@0.26.0-rc.2:
     dependencies:
-      '@iii-dev/helpers': 0.26.0-rc.1
+      '@iii-dev/helpers': 0.26.0-rc.2
       '@opentelemetry/api': 1.9.1
       ws: 8.21.0
     transitivePeerDependencies:
