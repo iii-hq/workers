@@ -22,11 +22,14 @@
 
 ## Notice: renamed from `console`
 
-This worker used to be called `console`. Only its identity changed, so nothing that talks to it needs to be rewritten:
+This worker used to be called `console`. Its worker identity and function namespace now use `ade`:
 
 - worker name, binary, Cargo package and registry entry: `console` → `ade` (`iii trigger compose::add worker=ade`, `npx skills add iii-hq/workers --skill ade`)
 - source directory: `console/` → `ade/`; dependents pin `ade` in their `iii.worker.yaml`
-- unchanged on purpose: the `console::*` function ids (`console::status`, `console::ui-manifest`, `console::workspace::*`, …), the `iii::console::*` stream topics, the `console` configuration entry, and the `console:script` / `console:style` trigger types shared through `iii-console-ui` / `@iii-dev/console-ui`
+- function IDs: `console::*` → `ade::*` (case-sensitive), including `ade::status`, `ade::ui-manifest`, `ade::configuration-id`, `ade::ui-content` and `ade::workspace::*`; workspace and compose change trigger types also use `ade::`
+- the `iii::console::*` stream topics, the `console` configuration entry, asset paths and the `console:script` / `console:style` trigger types shared through `iii-console-ui` / `@iii-dev/console-ui` keep their existing names
+
+Update consumers, permissions and agent tool lists together with ADE. The old function IDs are no longer registered; there are no compatibility aliases.
 
 ## Install
 
@@ -64,16 +67,16 @@ iii trigger compose::add worker=harness
 
 The provider workers install with the harness, but they need credentials before any model appears — until then the model picker reads **no models** and chat won't generate. The first time a person loads the ADE on a machine it opens a setup wizard that does this for you — never in a browser under automation (an e2e run, an agent's browser session), which gets the page it asked for. Reopen it any time from the command palette: **Set up the harness**.
 
-1. **Models** — `console::onboarding::scan` looks for the Claude Code and Codex CLIs and whether each is signed in (presence and paths only, never a credential), and the step recommends what it found: a signed-in Claude Code or Codex adds [`provider-claude-code`](https://github.com/iii-hq/workers/tree/main/provider-claude-code) / [`provider-openai-codex`](https://github.com/iii-hq/workers/tree/main/provider-openai-codex) and needs no key; a CLI installed but not signed in says what to do, then **Scan again**. The [`secrets`](https://github.com/iii-hq/workers/tree/main/secrets) worker comes with `llm-router` (a dependency, so the wizard never asks to add it), and `secrets::detect` looks for provider keys in your shell profile and the project's `.env`, shows them masked (`sk-ant…9f2c`) and recommends their providers. Each key is kept where you choose: **Encrypted** (the default; a found key is imported by the secrets worker itself, a pasted one is stored there) or **Environment variable** (the variable already in `.env` is shared as it is, or a pasted key is written to `.env`). Either way only a reference, `secret://ANTHROPIC_API_KEY` or `env://ANTHROPIC_API_KEY`, is written to the `llm-router` configuration, so no key lands in `./config`. The same choice is in each provider's key field in the model picker and in **Settings → Workers → llm-router**. Every other provider worker in the registry is listed too.
+1. **Models** — `ade::onboarding::scan` looks for the Claude Code and Codex CLIs and whether each is signed in (presence and paths only, never a credential), and the step recommends what it found: a signed-in Claude Code or Codex adds [`provider-claude-code`](https://github.com/iii-hq/workers/tree/main/provider-claude-code) / [`provider-openai-codex`](https://github.com/iii-hq/workers/tree/main/provider-openai-codex) and needs no key; a CLI installed but not signed in says what to do, then **Scan again**. The [`secrets`](https://github.com/iii-hq/workers/tree/main/secrets) worker comes with `llm-router` (a dependency, so the wizard never asks to add it), and `secrets::detect` looks for provider keys in your shell profile and the project's `.env`, shows them masked (`sk-ant…9f2c`) and recommends their providers. Each key is kept where you choose: **Encrypted** (the default; a found key is imported by the secrets worker itself, a pasted one is stored there) or **Environment variable** (the variable already in `.env` is shared as it is, or a pasted key is written to `.env`). Either way only a reference, `secret://ANTHROPIC_API_KEY` or `env://ANTHROPIC_API_KEY`, is written to the `llm-router` configuration, so no key lands in `./config`. The same choice is in each provider's key field in the model picker and in **Settings → Workers → llm-router**. Every other provider worker in the registry is listed too.
 2. **Browser** (shown only when the [`browser`](https://github.com/iii-hq/workers/tree/main/browser) worker is installed and `browser::chromium::status` finds no Chromium) — one click on **Download Chromium** runs `browser::chromium::install` (about 200 MB, once per machine) and follows its `browser::chromium-install-progress` events; **I'd rather install it myself** shows the command for the OS and **Check again**. The command palette's **Install Chromium for the browser worker** and an **Install Chromium** action on a failed `browser::*` call (`chromium_missing`) open the wizard on this step.
 3. **Judge** (optional) — adds [`judge`](https://github.com/iii-hq/workers/tree/main/judge) with Jev ([`judge-typesafe`](https://github.com/iii-hq/workers/tree/main/judge-typesafe), its `TYPESAFE_API_KEY` stored encrypted by `secrets`) or a local judge, and explains where the harness uses it.
-4. **Ready** — what is connected, every worker setup added, and the project's example prompts. **Finish** closes the wizard. The prompts come from `onboarding.yaml` in the project folder (`console::onboarding::prompts`, read on each call; a missing or invalid file shows none): each one has a `title`, an optional `description`, the `agent` profile it runs with, the `prompt`, and `models`, a priority list of `{ provider, model, effort? }`. Clicking one opens a new chat with the prompt in the message box (not sent), its agent profile selected, and the first listed model the router serves here, at that effort; with none available the chat keeps its usual model.
+4. **Ready** — what is connected, every worker setup added, and the project's example prompts. **Finish** closes the wizard. The prompts come from `onboarding.yaml` in the project folder (`ade::onboarding::prompts`, read on each call; a missing or invalid file shows none): each one has a `title`, an optional `description`, the `agent` profile it runs with, the `prompt`, and `models`, a priority list of `{ provider, model, effort? }`. Clicking one opens a new chat with the prompt in the message box (not sent), its agent profile selected, and the first listed model the router serves here, at that effort; with none available the chat keeps its usual model.
 
    `onboarding.yaml` may also list registry kits under `kits:` (`<handle>/<name>`, optionally `@<version>`; the harness template lists `iii/deepwork`). The wizard installs them in the background as soon as it opens, one at a time, with `directory::download-kit {kit, apply: true}`; the install keeps going if setup is skipped or closed, and runs once per page load. A kit already installed is `up_to_date`. Ready shows each kit: installing, installed, **needs a review** (its plan was not applied automatically, for example because a profile with the same id exists; **Review** opens Directory → Kits on it) or failed (**Try again**). A project whose iii-directory has no kit support shows nothing.
 
-Nothing is added without a click, and every worker a step adds is named before it runs and logged as it is added: iii is composable, and each worker adds behavior to the project (`worker-compose.yaml`). The wizard keeps everything else in plain words (no function ids, configuration entries, key references or paths); the actions behind each step are `compose::add`, `secrets::import` / `secrets::set` and a configuration write. Finishing or skipping is remembered per machine in `<data_dir>/onboarding.json` (`console::onboarding::get` / `::set`).
+Nothing is added without a click, and every worker a step adds is named before it runs and logged as it is added: iii is composable, and each worker adds behavior to the project (`worker-compose.yaml`). The wizard keeps everything else in plain words (no function ids, configuration entries, key references or paths); the actions behind each step are `compose::add`, `secrets::import` / `secrets::set` and a configuration write. Finishing or skipping is remembered per machine in `<data_dir>/onboarding.json` (`ade::onboarding::get` / `::set`).
 
-The wizard opens by itself only where it can help: never once a model is connected (the router already serves one from a running provider worker), never when the router cannot answer, and never where it is turned off. A deployed ADE starts with an empty data directory, which reads as a first run, so turn it off there: `onboarding.auto_open: false` in the ADE configuration (**Settings → Workers → ADE → Setup**), or `III_CONSOLE_ONBOARDING_AUTO_OPEN=false` in the worker's environment for one environment whatever the configuration says. `console::onboarding::get` reports the result as `auto_open`. The command palette opens the wizard either way.
+The wizard opens by itself only where it can help: never once a model is connected (the router already serves one from a running provider worker), never when the router cannot answer, and never where it is turned off. A deployed ADE starts with an empty data directory, which reads as a first run, so turn it off there: `onboarding.auto_open: false` in the ADE configuration (**Settings → Workers → ADE → Setup**), or `III_CONSOLE_ONBOARDING_AUTO_OPEN=false` in the worker's environment for one environment whatever the configuration says. `ade::onboarding::get` reports the result as `auto_open`. The command palette opens the wizard either way.
 
 After setup, every place that takes a provider key uses the same field: **Configure** in the model picker (applied at once, then checked — a key the provider refuses lists no models and is flagged as such), **Settings → Workers → llm-router**, and **Settings → Workers → judge-typesafe** (both apply on Save). It shows the reference and the masked key with **Replace** and **Remove**, offers a key found on the machine, and moves a plain-text or `${VAR}` value into the secrets worker. Where the consumer resolves `env://` references (the `environment` prop; `llm-router` does, `judge-typesafe` does not yet), it also offers keeping the key as an environment variable in the project's `.env`. Injected worker forms get it as `host.components.SecretKeyField`. A configured provider that lists no models stays in the picker, so its key can be fixed from there.
 
@@ -93,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
     let result = iii.trigger(TriggerRequest {
-        function_id: "console::status".into(),
+        function_id: "ade::status".into(),
         payload: json!({}),
         action: None,
         timeout_ms: Some(5_000),
@@ -159,7 +162,7 @@ preview card — the generic one, or the worker's own
 (`host.mentions.registerRenderer`) — and clicking it opens the item. What
 the agent was told about the mentions shows as a quiet "Context for the
 agent" row in the turn. The console itself provides `@trace`:
-`console::mentions::trace::search` / `console::mentions::trace::get` wrap
+`ade::mentions::trace::search` / `ade::mentions::trace::get` wrap
 `engine::traces::list`, and a trace pill opens the traces screen on that
 trace.
 
@@ -213,14 +216,14 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 
 | Function | Input | Output |
 |---|---|---|
-| `console::status` | `{}` | `{ url, http_port, engine_url, version }` |
-| `console::workspace::list` | `{}` | `{ tabs: [{ id, name?, columns, screens, sizes, active }], active_tab_id }` |
-| `console::workspace::open` | `{ screen, session_id?, relative_to?, direction?, sizes?, activate? }` | `{ tab_id, column, placement, screens, sizes, activated }` |
-| `console::workspace::close` | `{ screen, session_id? }` | `{ tab_ids }` |
-| `console::workspace::get` (internal) | `{}` | `{ value, path }` — the raw layout document and the file it lives in |
-| `console::workspace::set` (internal) | `{ value, expected_revision? }` | `{ ok }` — replaces the document wholesale (the SPA's read-modify-write path). Every write stamps the document's `revision`; with `expected_revision` older than the stored one, nothing is written and the call fails `WORKSPACE_CONFLICT` |
+| `ade::status` | `{}` | `{ url, http_port, engine_url, version }` |
+| `ade::workspace::list` | `{}` | `{ tabs: [{ id, name?, columns, screens, sizes, active }], active_tab_id }` |
+| `ade::workspace::open` | `{ screen, session_id?, relative_to?, direction?, sizes?, activate? }` | `{ tab_id, column, placement, screens, sizes, activated }` |
+| `ade::workspace::close` | `{ screen, session_id? }` | `{ tab_ids }` |
+| `ade::workspace::get` (internal) | `{}` | `{ value, path }` — the raw layout document and the file it lives in |
+| `ade::workspace::set` (internal) | `{ value, expected_revision? }` | `{ ok }` — replaces the document wholesale (the SPA's read-modify-write path). Every write stamps the document's `revision`; with `expected_revision` older than the stored one, nothing is written and the call fails `WORKSPACE_CONFLICT` |
 
-A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:ide`, `ext:browser`, `ext:editor`, ...). Call `open` with `{ screen: "chat", session_id: "<id>" }` to open a panel pinned to one conversation; the structured input is persisted as `chat:<session-id>`, and opening that exact session again reuses its existing panel. The workspace layout is stored by the console worker in `<data_dir>/workspace.json` (`data_dir` is a `console` configuration setting, default `data/ade`) and every write rings the `console::workspace::changed` trigger type (empty config, empty event: re-read with `list`), which each browser pointed at this engine binds to pick the change up at once (every binding is also rung once as it registers, which catches a browser up after its first read and after each reconnect; a tab polls only until that first ring arrives, and re-reads when it regains focus); it is ephemeral per-instance state and is deliberately kept out of the committed configuration YAML. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside an anchor column (adjacent empty column, any empty column, new column), else opens a fresh tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). The anchor is `relative_to` — a screen in the same vocabulary, defaulting to `chat`, which matches whichever chat panel the active tab shows — and `direction` (`right`, the default, or `left`) picks the side of it. A named anchor (anything but `chat`) is looked for in every tab, the active one first, because the active pointer is whichever browser clicked last; an anchor mounted nowhere puts the column at the end of the active tab. `activate` (default `true`) stamps a function activation every time, pointer moved or not, so every open console switches to the tab holding the screen. `sizes` sets the tab's column widths — one positive number per column of the tab AFTER the call, normalized by their sum — in the same write that places the screen, so no other writer can land between placement and sizing; `list` reports the current widths to compute them from, and a list that does not match the column count fails with `WORKSPACE_INVALID_SIZES` rather than being ignored. It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent; pass the same `screen: "chat"` and `session_id` to close one pinned conversation panel. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreadable or unwritable `data_dir` with `WORKSPACE_UNAVAILABLE`.
+A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:ide`, `ext:browser`, `ext:editor`, ...). Call `open` with `{ screen: "chat", session_id: "<id>" }` to open a panel pinned to one conversation; the structured input is persisted as `chat:<session-id>`, and opening that exact session again reuses its existing panel. The workspace layout is stored by the console worker in `<data_dir>/workspace.json` (`data_dir` is a `console` configuration setting, default `data/ade`) and every write rings the `ade::workspace::changed` trigger type (empty config, empty event: re-read with `list`), which each browser pointed at this engine binds to pick the change up at once (every binding is also rung once as it registers, which catches a browser up after its first read and after each reconnect; a tab polls only until that first ring arrives, and re-reads when it regains focus); it is ephemeral per-instance state and is deliberately kept out of the committed configuration YAML. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside an anchor column (adjacent empty column, any empty column, new column), else opens a fresh tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). The anchor is `relative_to` — a screen in the same vocabulary, defaulting to `chat`, which matches whichever chat panel the active tab shows — and `direction` (`right`, the default, or `left`) picks the side of it. A named anchor (anything but `chat`) is looked for in every tab, the active one first, because the active pointer is whichever browser clicked last; an anchor mounted nowhere puts the column at the end of the active tab. `activate` (default `true`) stamps a function activation every time, pointer moved or not, so every open console switches to the tab holding the screen. `sizes` sets the tab's column widths — one positive number per column of the tab AFTER the call, normalized by their sum — in the same write that places the screen, so no other writer can land between placement and sizing; `list` reports the current widths to compute them from, and a list that does not match the column count fails with `WORKSPACE_INVALID_SIZES` rather than being ignored. It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent; pass the same `screen: "chat"` and `session_id` to close one pinned conversation panel. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreadable or unwritable `data_dir` with `WORKSPACE_UNAVAILABLE`.
 
 Defined in [`src/functions/status.rs`](src/functions/status.rs) and [`src/functions/workspace.rs`](src/functions/workspace.rs); the file store is [`src/workspace_store.rs`](src/workspace_store.rs).
 
@@ -232,14 +235,14 @@ The console adds what the daemon does not expose, read from the compose file and
 
 | Function | Input | Output |
 |---|---|---|
-| `console::compose::project` | `{ file? }` | The compose file as declared: namespace, engine endpoint, timeouts, each container's source, version, `start_after`, environment keys and run script |
-| `console::compose::versions` | `{ container? , name?, file? }` | `{ container, reference, declared, versions: [{ version, tags, created_at }] }` from the registry, newest first |
-| `console::compose::search` | `{ query }` | `{ workers: [{ name, version, description, dependencies }] }`; engine workers are left out |
-| `console::compose::inspect` | `{ path, run? }` | `{ path, exists, manifest, run_found, checkouts, workers }`: a directory's `iii.worker.yaml`, whether a relative run command is built, its git checkouts (branch, HEAD commit time, uncommitted changes), or the workers inside a folder |
-| `console::compose::container` | `{ container, file? }` | One declaration; literal values whose names look like credentials are masked |
-| `console::compose::edit` | `{ container, worker?, run?, start_after?, environment?: { set, unset }, config_override?, file? }` | The accepted `compose::add` operation. The change merges with the declared entry, so masked values keep their file values; a new path must keep the container's name |
+| `ade::compose::project` | `{ file? }` | The compose file as declared: namespace, engine endpoint, timeouts, each container's source, version, `start_after`, environment keys and run script |
+| `ade::compose::versions` | `{ container? , name?, file? }` | `{ container, reference, declared, versions: [{ version, tags, created_at }] }` from the registry, newest first |
+| `ade::compose::search` | `{ query }` | `{ workers: [{ name, version, description, dependencies }] }`; engine workers are left out |
+| `ade::compose::inspect` | `{ path, run? }` | `{ path, exists, manifest, run_found, checkouts, workers }`: a directory's `iii.worker.yaml`, whether a relative run command is built, its git checkouts (branch, HEAD commit time, uncommitted changes), or the workers inside a folder |
+| `ade::compose::container` | `{ container, file? }` | One declaration; literal values whose names look like credentials are masked |
+| `ade::compose::edit` | `{ container, worker?, run?, start_after?, environment?: { set, unset }, config_override?, file? }` | The accepted `compose::add` operation. The change merges with the declared entry, so masked values keep their file values; a new path must keep the container's name |
 
-`console::compose::changed` fires when the daemon writes `state.json` or the compose file changes (bind with an empty config; the event carries `kind`, `file`, `namespace`, `state_dir`, `path`, `captured_at`). Defined in [`src/compose/`](src/compose/).
+`ade::compose::changed` fires when the daemon writes `state.json` or the compose file changes (bind with an empty config; the event carries `kind`, `file`, `namespace`, `state_dir`, `path`, `captured_at`). Defined in [`src/compose/`](src/compose/).
 
 ## Architecture
 
@@ -249,7 +252,7 @@ flowchart LR
     Browser -->|"HTTP GET /runtime"| Console
     Browser -->|"WS /ws"| Console
     Console["console binary<br/>(axum + rust-embed)"] -->|"WebSocket"| Engine["iii engine<br/>:49134"]
-    Console -. "registers console::status, console::workspace::*" .-> Engine
+    Console -. "registers ade::status, ade::workspace::*" .-> Engine
 ```
 
 `console` is a thin HTTP server. It serves the embedded SPA bundle and
@@ -279,7 +282,7 @@ data_dir: data/ade    # ephemeral per-instance state: the workspace layout (defa
 |---|---|---|
 | `http_host` | `127.0.0.1` | HTTP bind address; set `0.0.0.0` explicitly to expose all IPv4 interfaces. Applied at startup |
 | `http_port` | `3113` | Initial TCP port seed for `/`, `/assets/*`, and `/ws`; the stored `console.http_port` wins thereafter |
-| `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:module` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
+| `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:module` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`ade::ui-manifest` answers `disabled: true`) |
 | `data_dir` | `data/ade` | Initial seed for the directory holding ephemeral per-instance state — the workspace tabs/panes layout (`workspace.json`). Relative paths resolve against `III_COMPOSE_DIR` (or the process directory outside Compose); absolute and `~/` paths keep their meaning. The stored `console.data_dir` wins thereafter |
 
 The configuration entry also stores UI preferences and
@@ -330,7 +333,7 @@ removes it from the entry.
 | `GET /` | Embedded `index.html` (SPA shell, hash-routed client-side). `Cache-Control: no-cache, must-revalidate` |
 | `GET /assets/*` | Embedded JS / CSS, content-hashed filenames. `Cache-Control: public, max-age=31536000, immutable` |
 | `GET /runtime` | Runtime settings for the SPA: the console worker namespace and the [usage reporting](#anonymous-usage-reporting) settings. `Cache-Control: no-store` |
-| `GET /ui` | Injected-asset manifest JSON (same shape as `console::ui-manifest`). `no-cache` |
+| `GET /ui` | Injected-asset manifest JSON (same shape as `ade::ui-manifest`). `no-cache` |
 | `GET /ui/*` | Current bytes for a registered injected UI asset. `no-cache` + `ETag: "<hash>"` (304 on `If-None-Match`) |
 | `GET /vendor/*` | Shared-dep ESM shims for injected scripts (react, `@iii-dev/console-ui`), generated at web build time. `no-cache` |
 | `GET /ws` (Upgrade) | WebSocket upgrade; transparent proxy to `engine_url` (drops browser-originated `registertriggertype` frames; stamps `metadata.internal` on `registerfunction`) |
@@ -404,7 +407,7 @@ The trigger's `function_id` is the worker's *content function*
 hashes, serves from `/ui/*`, and pushes invalidations so every open tab
 disposes the old module and re-imports the new one. Injected scripts default-
 export `setup(host)` and register through `host.pages` (whole pages, opened
-through `host.panels.open` or `console::workspace::open`; built-in screens open through `host.panels.openScreen` (below); `#/worker/<scope>/<id>`
+through `host.panels.open` or `ade::workspace::open`; built-in screens open through `host.panels.openScreen` (below); `#/worker/<scope>/<id>`
 renders one alone), `host.functionTriggers` (function-trigger message renderers —
 injected renderers dispatch before the built-in families, so matching a
 built-in id overrides it; `metadata.display` promotes the winning renderer's
@@ -420,7 +423,7 @@ is absent or throws). There is no generic schema-generated form fallback. A
 configuration form can opt into `{ layout: 'full' }` to receive the entire
 available editor width and height; contained layout remains the default.
 Renders are fenced by an ErrorBoundary and scoped under
-`data-iii-ui="<worker>"`. `console::ui-manifest` (internal) lists the
+`data-iii-ui="<worker>"`. `ade::ui-manifest` (internal) lists the
 loadable assets. The `state` worker's `ui/` directory is the broad delivery
 reference; `cron/ui/` is the trigger-activity renderer reference.
 

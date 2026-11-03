@@ -38,7 +38,7 @@ export async function fetchConsoleConfigValue(): Promise<ConsoleConfigValue | nu
     const client = await getIiiClient()
     const resp = await client.trigger<{ value?: unknown }>(
       'configuration::get',
-      { id: await resolveConfigurationId(client, 'console'), raw: true },
+      { id: await resolveConfigurationId(client, 'ade'), raw: true },
     )
     const value = resp?.value
     return value && typeof value === 'object' && !Array.isArray(value)
@@ -56,7 +56,7 @@ export async function setConsoleConfigValue(
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('configuration::set', {
-    id: await resolveConfigurationId(client, 'console'),
+    id: await resolveConfigurationId(client, 'ade'),
     value,
   })
 }

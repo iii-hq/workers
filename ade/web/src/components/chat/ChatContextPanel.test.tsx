@@ -41,7 +41,7 @@ const GIT: Record<string, string> = {
 }
 
 function respond(fn: string, payload: Record<string, unknown> = {}) {
-  if (fn === 'console::context::list') return Promise.resolve({ items: [] })
+  if (fn === 'ade::context::list') return Promise.resolve({ items: [] })
   if (fn === 'shell::exec') {
     const args = payload.args as string[]
     const verb = args.find((arg) => arg in GIT) ?? ''
@@ -823,7 +823,7 @@ describe('ChatContextPanel', () => {
     const view = await render(chat('main'))
     expect(view.textContent).toContain('No project folder')
     expect(mocks.trigger).toHaveBeenCalledExactlyOnceWith(
-      'console::context::list',
+      'ade::context::list',
       { session_id: 'main' },
     )
   })

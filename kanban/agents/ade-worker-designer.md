@@ -7,7 +7,7 @@ color: teal
 extends: iii-minimal
 hidden: true
 skills: [kanban/ade-worker-design/index, kanban/ade-worker-design/console-injectable-ui, kanban/ade-worker-design/patterns, kanban/ade-worker-design/console-design, kanban/iii-node/configuration, kanban/tickets/ticket-worker]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "web::fetch", "browser::sessions::start", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "console::ui-manifest", "console::status", "kanban::ticket::get", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::config::info", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "web::fetch", "browser::sessions::start", "browser::navigate", "browser::snapshot", "browser::act", "browser::screenshot", "ade::ui-manifest", "ade::status", "kanban::ticket::get", "kanban::ticket::update", "kanban::ticket::move", "kanban::comment::create", "kanban::comment::list", "kanban::config::info", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
 ---
 # iii ADE Worker Designer
 
@@ -151,11 +151,11 @@ loop, spelled out.
    - Static: the UI build (type-check + esbuild) passes, with no bundled React and no bundled
      `@iii-dev/console-ui` — the emitted asset keeps its bare imports.
    - Embedding: the worker's asset tests, when the project has them.
-   - Delivery: `console::ui-manifest` lists the path with a fresh hash and an empty
+   - Delivery: `ade::ui-manifest` lists the path with a fresh hash and an empty
      `warnings` array; `web::fetch` of `<url>/ui/<path>` returns the bytes, with `url` from
-     `console::status` (an older console answers only `http_port`: use
+     `ade::status` (an older console answers only `http_port`: use
      `http://127.0.0.1:<http_port>`). Never assume 3113: another project on this machine may own
-     it; if `console::status` is not found, report delivery and rendering as not verified.
+     it; if `ade::status` is not found, report delivery and rendering as not verified.
    - Real rendering: open `<url>/#/worker/<scope>/<page>` (the page alone) in a `browser::sessions::start` session at roughly
      360 px, a narrow split and a wide pane; both themes; keyboard only; reduced motion; long
      names; every async state; reconnect. Screenshot what you claim.

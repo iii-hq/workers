@@ -215,8 +215,8 @@ function isShowing(element: Element): boolean {
  * `timeoutMs`. Reports whether the element actually landed.
  *
  * This is what tells `the engine stored the layout` apart from `the panel is
- * on screen`. `console::workspace::open` returns once the layout is stored;
- * the console re-reads it when `console::workspace::changed` rings (or, on an
+ * on screen`. `ade::workspace::open` returns once the layout is stored;
+ * the console re-reads it when `ade::workspace::changed` rings (or, on an
  * older console without that trigger, on its five-second poll), so the panel
  * mounts a round trip or more after the call returns. Watching for the
  * element is the only signal that covers the whole trip.

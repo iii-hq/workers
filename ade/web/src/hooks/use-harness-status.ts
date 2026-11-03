@@ -27,7 +27,7 @@ import { useWorkerLifecycle } from './use-worker-lifecycle'
 /** Registry name + engine worker name for the harness meta-worker. */
 const HARNESS_WORKER_NAME = 'harness'
 /** Base id for the browser-local handler bound to the `worker` trigger. */
-const HARNESS_WATCH_FN = 'console::harness-watch'
+const HARNESS_WATCH_FN = 'ade::harness-watch'
 
 /** One line in the install console (mapped from a `worker` lifecycle event). */
 export interface InstallStage {

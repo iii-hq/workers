@@ -377,7 +377,7 @@ functions! {
         "Erase a shut-down simulator's content and settings (factory reset).",
         DeviceInput => DeviceOutput;
     OPEN = "ios-simulator::open",
-        "Open a simulator for the user: a live iPhone floating over the console, booting it first if it is shut down. Use it (not console::workspace::open) whenever the user asks to open, show or watch a simulator; driving one with gesture, type, button, apps or screenshot shows it too.",
+        "Open a simulator for the user: a live iPhone floating over the console, booting it first if it is shut down. Use it (not ade::workspace::open) whenever the user asks to open, show or watch a simulator; driving one with gesture, type, button, apps or screenshot shows it too.",
         DeviceInput => DeviceOutput;
     SCREENSHOT = "ios-simulator::screenshot",
         "Take a screenshot of a booted simulator. Saves the PNG to the tenant's media and returns a preview; its pixels are the coordinate space of touch and gesture.",
