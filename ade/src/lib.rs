@@ -1,4 +1,4 @@
-//! `console` worker library surface — exposed for integration tests and
+//! `ade` worker library surface — exposed for integration tests and
 //! sibling crates that want to embed parts of the worker.
 
 pub mod assets;

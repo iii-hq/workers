@@ -140,7 +140,7 @@ describe('/compact while sub-agents run', () => {
 describe('/compact persistence', () => {
   // The browser used to own the round trip: context-manager summarised and
   // the browser persisted the record, so a WebSocket reset mid-summary (the
-  // console proxy logged several that night) threw the summary away. The
+  // ADE worker's proxy logged several that night) threw the summary away. The
   // harness persists it now; the browser never writes the record.
   it('a dropped connection is a local error, and the browser writes nothing', async () => {
     handlers['harness::compact'] = () => {

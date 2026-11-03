@@ -1,4 +1,4 @@
-//! Publish-time manifest emitted by `console --manifest`.
+//! Publish-time manifest emitted by `ade --manifest`.
 //!
 //! Five required fields: `name`, `version`, `description`,
 //! `default_config` (object), `supported_targets` (non-empty array).

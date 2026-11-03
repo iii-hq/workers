@@ -2,7 +2,7 @@
 # configuration worker entry is authoritative and port edits apply live.
 http_port: 3113
 # Interface the listener binds. Local access only by default; set 0.0.0.0
-# to expose the console and its engine WebSocket proxy on all IPv4 interfaces. Boot-time only.
+# to expose the ADE worker and its engine WebSocket proxy on all IPv4 interfaces. Boot-time only.
 http_host: 127.0.0.1
 # Directory for ephemeral per-instance state — the workspace tabs/panes layout
 # (`workspace.json`). It changes on every click, so it is kept out of the

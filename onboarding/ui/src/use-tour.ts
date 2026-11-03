@@ -376,7 +376,7 @@ interface ScreenPresence {
  * Whether `screen` is in any workspace tab: `null` while unknown — not
  * watching, not read yet, or a console too old to say.
  *
- * The console rings `ade::workspace::changed` after every layout write,
+ * The ADE worker rings `ade::workspace::changed` after every layout write,
  * opening or closing a pane or a tab included. That makes this reactive
  * rather than polled: one read of the layout per layout change, and none
  * while nothing moves. A console without the trigger leaves the binding

@@ -5,7 +5,7 @@
 //! One builder owns the whole worker-side registration contract so an author
 //! cannot get it subtly wrong:
 //!
-//! - the *content function* (`<worker>::ui-content` by default) the console
+//! - the *content function* (`<worker>::ui-content` by default) the ADE worker
 //!   invokes with `{path}` to fetch an asset's source,
 //! - one `console:script` / `console:style` / `console:module` trigger per
 //!   asset, registered over the SDK Message path (disconnect GC + reconnect
@@ -26,13 +26,13 @@
 //! ```
 //!
 //! The builder panics on wire-contract violations (bad path, extension/kind
-//! mismatch, duplicate path) — the console would reject the registration
+//! mismatch, duplicate path) — the ADE worker would reject the registration
 //! anyway, and a panic at first boot or in a unit test is a far shorter
 //! feedback loop than a warn-log on a running engine.
 //!
 //! This crate is linked by path (`iii-console-ui = { path =
 //! "../crates/console-ui" }`) and deliberately not published: it versions
-//! with the console worker in this repo, not with the SDK.
+//! with the ADE worker in this repo, not with the SDK.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -178,7 +178,7 @@ impl ConsoleUi {
     /// `import()` and call `setup(host)` on). `content` is the initial
     /// source — typically `include_str!` of the build output.
     ///
-    /// Panics on a path the console would reject (see crate docs).
+    /// Panics on a path the ADE worker would reject (see crate docs).
     pub fn script(self, path: impl Into<String>, content: impl Into<String>) -> Self {
         self.asset(AssetKind::Script, path.into(), content.into())
     }
@@ -186,7 +186,7 @@ impl ConsoleUi {
     /// Add a `console:style` asset (a stylesheet the console tabs mount as a
     /// `<link>`); every rule must be scoped under `[data-iii-ui="<worker>"]`.
     ///
-    /// Panics on a path the console would reject (see crate docs).
+    /// Panics on a path the ADE worker would reject (see crate docs).
     pub fn style(self, path: impl Into<String>, content: impl Into<String>) -> Self {
         self.asset(AssetKind::Style, path.into(), content.into())
     }
@@ -197,7 +197,7 @@ impl ConsoleUi {
     /// (a terminal emulator, a diagram renderer) stays out of every tab's
     /// first load.
     ///
-    /// Panics on a path the console would reject (see crate docs).
+    /// Panics on a path the ADE worker would reject (see crate docs).
     pub fn module(self, path: impl Into<String>, content: impl Into<String>) -> Self {
         self.asset(AssetKind::Module, path.into(), content.into())
     }
@@ -327,7 +327,7 @@ impl ConsoleUi {
     }
 }
 
-/// Enforce the console's path rules at build time — the console rejects the
+/// Enforce the ADE worker's path rules at build time — it rejects the
 /// registration otherwise, with a much slower feedback loop.
 fn validate_path(path: &str, kind: AssetKind) {
     assert!(!path.is_empty(), "ui asset path must not be empty");
@@ -422,7 +422,7 @@ impl Served {
 }
 
 // `register_trigger` is deprecated in iii-sdk 0.25 but still served by every
-// engine: the console:script / console:style types stay until the console
+// engine: the console:script / console:style types stay until the ADE worker
 // moves to observe.
 #[allow(deprecated)]
 fn register_asset_trigger(

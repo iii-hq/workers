@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn ui_builder_accepts_the_assets() {
-        // The builder panics on any path/kind the console would reject.
+        // The builder panics on any path/kind the ADE worker would reject.
         let _ = console_ui();
     }
 

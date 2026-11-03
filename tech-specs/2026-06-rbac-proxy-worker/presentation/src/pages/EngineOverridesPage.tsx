@@ -82,7 +82,7 @@ export function EngineOverridesPage() {
             </SpecRow>
             <SpecRow name="refresh" type="ttl + trigger">
               lazy on a short ttl, proactively on engine::functions-available,
-              mirroring console&apos;s function-list cache.
+              mirroring ade&apos;s function-list cache.
             </SpecRow>
           </div>
         </SpecSheet>

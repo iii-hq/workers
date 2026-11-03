@@ -1,5 +1,5 @@
 /**
- * Entry for the console worker's own injected UI — compiled by esbuild
+ * Entry for the ADE worker's own injected UI — compiled by esbuild
  * (react + @iii-dev/console-ui external) into dist/config-form.js and
  * served over the `console:script` trigger (see src/ui.rs). The stylesheet
  * is its own asset: styles.css ships over `console:style` as

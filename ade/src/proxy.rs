@@ -9,10 +9,10 @@
 //! The proxy is intentionally dumb — no buffering, no auth — with THREE
 //! exceptions on the browser→engine leg:
 //!
-//! 1. The browser worker registration gets the Console worker's namespace
+//! 1. The browser worker registration gets the ADE worker's namespace
 //!    stamped on (see [`enforce_worker_namespace`]). This is authoritative at
 //!    the proxy boundary, so stale/cached bundles cannot reconnect in
-//!    `default` while the Console worker runs in a project namespace.
+//!    `default` while the ADE worker runs in a project namespace.
 //! 2. `registerfunction` messages get `metadata.internal = true` stamped
 //!    on (see [`stamp_internal_registration`]). Everything a console page
 //!    registers is a live-update delivery target for that page, never a
@@ -216,7 +216,7 @@ async fn handle_ws(client: WebSocket, config: ProxyConfig) {
 }
 
 /// If `text` is the browser SDK's `engine::workers::register` invocation,
-/// return a copy whose `data.namespace` matches this Console worker.
+/// return a copy whose `data.namespace` matches this ADE worker.
 ///
 /// `None` as the configured namespace means the engine's `default` namespace,
 /// so an explicit namespace from a stale bundle is removed. A `None` return

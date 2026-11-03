@@ -15,7 +15,7 @@ does not restate any of it.
 | How injection works, the `ui/` project layout, `setup(host)` and every slot, the wire contract, the shared build driver and its lint, scoped CSS, hooks/format/icons, debugging, the testing layers, the definition of done | `ade/skills/injectable-ui.md` (`ade/injectable-ui`) |
 | Responsive UX, archetypes, configuration and provider forms, the validation matrix | `ade/skills/design-console-ui.md` (`ade/design-console-ui`) |
 | Tokens, typography, shared components, every number | `ade/skills/design-system.md` (`ade/design-system`) |
-| The console worker: functions, trigger types, `ade::ui-manifest` | `ade/skills/SKILL.md` |
+| The ADE worker: functions, trigger types, `ade::ui-manifest` | `ade/skills/SKILL.md` |
 | Trigger-activity renderer authoring and its test matrix | `ade/web/docs/custom-trigger-components.md` |
 | Per-worker conformance inventory and the deliberate local exceptions | `docs/sops/console-ui-conformance.md` |
 | The crate: defaults, overrides, what `register` does | `crates/console-ui/README.md`, `crates/console-ui/src/lib.rs` |
@@ -39,7 +39,7 @@ does not restate any of it.
 iii-console-ui = { path = "../crates/console-ui" }
 ```
 
-Linked by path, never published: it versions with the console worker in this
+Linked by path, never published: it versions with the ADE worker in this
 repo, not with the SDK.
 
 ## 2. Keep `ui/dist` fresh from `build.rs`
@@ -92,8 +92,8 @@ pub fn register(iii: &Arc<IIIClient>) {
 
 - `pub mod ui;` in `lib.rs`; `crate::ui::register(&iii)` in the boot path
   right after the functions are registered (`state/src/boot.rs`). The content
-  function must exist before the triggers name it. The console may come up
-  later: the engine parks the registration until a console owns the type.
+  function must exist before the triggers name it. The ADE worker may come up
+  later: the engine parks the registration until an ADE worker owns the type.
 - The name passed to `ConsoleUi::new` is the worker's registry name. Every
   asset path starts with it: the first segment becomes the `data-iii-ui`
   style scope and the only attribution, and the builder warns when it does
@@ -107,7 +107,7 @@ pub fn register(iii: &Arc<IIIClient>) {
   `dist/<name>.js`. The console serves it but never imports it at mount; the
   page calls `host.importModule<typeof import('./<name>')>(path)` and imports
   the library itself only as types (`ade/injectable-ui` › Lazy modules).
-- The builder panics on a path the console would reject: empty, over 512
+- The builder panics on a path the ADE worker would reject: empty, over 512
   characters, a leading `/`, an empty, `.` or `..` segment, characters outside
   `[a-z0-9._-]`, an extension that does not match the asset kind, or a
   duplicate. Runtime trigger failures are warn-logged, not fatal.

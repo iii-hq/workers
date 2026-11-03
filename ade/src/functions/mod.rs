@@ -1,6 +1,6 @@
 //! Function registrations against the iii engine.
 //!
-//! `console` is mostly an HTTP server + WS proxy, so the SDK surface is
+//! `ade` is mostly an HTTP server + WS proxy, so the SDK surface is
 //! deliberately small: one health/identity function (`ade::status`)
 //! that returns the runtime knobs the worker booted with, the
 //! injectable-UI debug surface (`ade::ui-manifest`), and the workspace
@@ -74,7 +74,7 @@ pub struct UiManifestOutput {
 }
 
 /// `ade::ui-manifest` — the authoritative *loadable* asset set (only
-/// the console knows fetch results and hashes). Debug surface; the SPA
+/// the ADE worker knows fetch results and hashes). Debug surface; the SPA
 /// loader itself is fed by `console:assets` pushes, never this.
 fn register_ui_manifest(iii: &Arc<IIIClient>, ui: Option<Arc<UiRegistry>>) {
     iii.register_function(

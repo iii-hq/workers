@@ -1,4 +1,4 @@
-//! The console worker's *own* injected UI — shipped through the same
+//! The ADE worker's *own* injected UI — shipped through the same
 //! `console:script` / `console:style` trigger types it hosts (the engine
 //! routes the registration straight back to this worker).
 //!
@@ -23,7 +23,7 @@
 //! the bytes built from `ui/` (see `build.rs`). Dev loop:
 //! `cd ui && pnpm watch` + `III_CONSOLE_UI_WATCH=1`.
 //!
-//! The registry refuses to disable the `console` worker itself
+//! The registry refuses to disable the ADE worker itself
 //! (`ui_assets::UNDISABLEABLE_WORKER`), so this form cannot lock the
 //! operator out of its own toggles.
 
@@ -61,7 +61,7 @@ fn console_ui() -> ConsoleUi {
         .style(STYLES_PATH, STYLES_CSS)
 }
 
-/// Register the console's own UI assets. Call only when `injectable_ui` is
+/// Register the ADE worker's own UI assets. Call only when `injectable_ui` is
 /// on (the trigger types must exist), after `ui_assets::start`.
 pub fn register(iii: &Arc<IIIClient>) {
     console_ui().register(iii);
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn ui_builder_accepts_the_assets() {
-        // The builder panics on any path/kind the console would reject.
+        // The builder panics on any path/kind the ADE worker would reject.
         let _ = console_ui();
     }
 

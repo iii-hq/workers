@@ -10,7 +10,7 @@ middleware and registration hooks, and
 **rewriting the results of the built-in `engine::*` discovery functions** so a
 caller only ever sees what its boundaries allow.
 
-It is the [`console`](../../console) reverse-proxy pattern (`src/proxy.rs`: one
+It is the [`ade`](../../ade) reverse-proxy pattern (`src/proxy.rs`: one
 outbound engine WebSocket per inbound connection, frames shuttled 1:1) with an
 RBAC interceptor spliced into the middle and a second proxied route for
 channels.
@@ -101,12 +101,12 @@ flowchart LR
 
 The proxy maintains **two kinds of engine connection**:
 
-- **One control connection** — the proxy's own worker identity (like `console`'s
+- **One control connection** — the proxy's own worker identity (like `ade`'s
   `register_worker(...)`). It registers `rbac-proxy::status`, integrates with the
   `configuration` worker, and invokes the operator's `auth` / `middleware` /
   registration-hook functions via `iii.trigger`. This mirrors how the engine's
   own worker-manager calls those functions with `engine.call(...)`.
-- **One data connection per downstream worker** — exactly the `console` model: a
+- **One data connection per downstream worker** — exactly the `ade` model: a
   fresh outbound WebSocket to the engine's internal listener, frames pumped both
   ways, but with the interceptor between the two halves. Per-connection identity,
   per-connection registrations, and cleanup-on-disconnect all fall out of the
@@ -176,7 +176,7 @@ config.
 ## Spec index
 
 - [rbac-proxy.md](rbac-proxy.md) — the worker: the two connection planes, file
-  layout (mirroring `console`), `configuration`-worker integration and the
+  layout (mirroring `ade`), `configuration`-worker integration and the
   port-rebind hot reload, the functions it registers, deployment, boundaries,
   agent exposure, dependencies, and testing.
 - [rbac.md](rbac.md) — the RBAC contract, structured exactly like the existing
@@ -195,7 +195,7 @@ config.
 
 ## Prior art
 
-- [`console`](../../console) — the binary worker whose `src/proxy.rs` /
+- [`ade`](../../ade) — the binary worker whose `src/proxy.rs` /
   `src/server.rs` / `src/main.rs` this worker mirrors for the proxy machinery and
   graceful-shutdown lifecycle.
 - [`iii-worker-manager`](../../../iii/engine/src/workers/worker/README.md) — the

@@ -80,7 +80,7 @@ prefix keeps the per-event invocations out of the trace feed.
   `packages/console-ui` (repo-root pnpm workspace).
 - Deployment: boot registers a `console:script` trigger for `state/page.js`
   and a `console:style` trigger for `state/styles.css`, both with
-  `function_id` `state::ui-content`; the console fetches, hashes, and
+  `function_id` `state::ui-content`; the ADE worker fetches, hashes, and
   serves the assets, and disposes them when this worker disconnects. The
   stylesheet is scoped under `[data-iii-ui="state"]` and mounted as a
   `<link>` (styles-before-scripts on boot, link-swap on change).

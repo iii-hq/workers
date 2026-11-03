@@ -165,7 +165,7 @@ jobs:
         working-directory: ade/web
         run: pnpm build
 
-      - name: Build Console worker
+      - name: Build ADE worker
         env:
           RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
         run: >-

@@ -146,7 +146,7 @@ impl Stack {
         self.spawn_worker_with_env("harness", &bins.harness, extra_env)
     }
 
-    /// Spawn the production Console on a run-scoped loopback port.
+    /// Spawn the production ADE worker on a run-scoped loopback port.
     pub fn spawn_console(&mut self, bin: &Path) -> anyhow::Result<String> {
         let port = free_loopback_port()?;
         let args = vec![

@@ -166,7 +166,7 @@ async fn not_found() -> (StatusCode, &'static str) {
 }
 
 /// `GET /runtime` — connection settings that cannot be baked into the SPA.
-/// A browser has no process environment, so it needs the console worker to
+/// A browser has no process environment, so it needs the ADE worker to
 /// tell it which namespace its proxied engine connection must join, and
 /// whether telemetry may run (see [`crate::telemetry`]).
 async fn runtime_handler(State(state): State<AppState>) -> Response {
@@ -294,7 +294,7 @@ pub fn bind_host() -> std::net::IpAddr {
 
 /// Bind `<bind_host>:<http_port>` without changing any live server state.
 /// Rebinds use this bind-new-before-stop-old step so a failed port change
-/// leaves the existing Console listener untouched.
+/// leaves the existing ADE listener untouched.
 pub async fn bind_listener(http_port: u16) -> anyhow::Result<TcpListener> {
     let addr = SocketAddr::new(bind_host(), http_port);
     TcpListener::bind(addr)
@@ -312,16 +312,16 @@ pub fn spawn_server(listener: TcpListener, state: AppState) -> ServerControl {
     let app = router(state);
 
     let join = tokio::spawn(async move {
-        tracing::info!(addr = %local_addr, "console http listening");
+        tracing::info!(addr = %local_addr, "ade http listening");
         if let Err(error) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 let _ = graceful_rx.await;
             })
             .await
         {
-            tracing::error!(%error, "console http server exited with error");
+            tracing::error!(%error, "ade http server exited with error");
         }
-        tracing::info!(addr = %local_addr, "console http stopped");
+        tracing::info!(addr = %local_addr, "ade http stopped");
     });
 
     let abort = join.abort_handle();
@@ -537,7 +537,7 @@ mod tests {
 
 #[cfg(test)]
 mod bind_host_tests {
-    /// Prevents: the console silently listening on every interface. The bind
+    /// Prevents: the ADE worker silently listening on every interface. The bind
     /// host is loopback unless the operator pins another one at boot.
     #[test]
     fn listeners_bind_loopback_unless_pinned() {

@@ -7,7 +7,7 @@ test.skip(
   !process.env.CONTEXT_ENGINE_BIN ||
     !process.env.CONTEXT_SESSION_BIN ||
     !process.env.CONTEXT_CONSOLE_BIN,
-  'Interface smoke requires real engine, session-manager and Console binaries',
+  'Interface smoke requires real engine, session-manager and ADE binaries',
 )
 
 test('Context functions publish typed schemas accepted by the CI interface validator', async ({

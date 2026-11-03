@@ -18,7 +18,7 @@ type RpcResults = {
   'ade::context::inject-guidance': { mutations: { system_prompt: string } }
 }
 
-// Opt-in, real isolated engine + session-manager + the Console built from this tree.
+// Opt-in, real isolated engine + session-manager + the ADE worker built from this tree.
 // No LLM/network provider needed; invoke the same public functions an agent uses.
 test('chat-owned tracking persists, changes scope and renders safely at every pane width', async ({
   page,
@@ -228,7 +228,7 @@ test('chat-owned tracking persists, changes scope and renders safely at every pa
       (await call('ade::context::list', { session_id: b.session_id }))
         .items[0].progress,
     ).toBe(80)
-    // Restart the actual Console, not just the React component.
+    // Restart the actual ADE worker, not just the React component.
     consoleProcess.kill('SIGTERM')
     await new Promise((resolve) => consoleProcess.once('exit', resolve))
     consoleProcess = bootConsole()

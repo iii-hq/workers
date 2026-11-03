@@ -34,7 +34,7 @@ The injectable UI reference may describe repository-internal `workspace:*` depen
 
 Do not use `file:`, `link:`, or `workspace:*` for this dependency.
 
-Any repository path mentioned by a reference—such as `packages/console-ui`, `console/`, `database/`, `state/`, `iii-directory/`, or `app/`—is an optional upstream example, not a required destination-project file. If such a path is absent, do not search for it, recreate its surrounding monorepo, or block implementation on it. Use the self-contained templates in this file, the installed `@iii-dev/console-ui` public types, and the runtime contracts available in the destination project.
+Any repository path mentioned by a reference—such as `packages/console-ui`, `ade/`, `database/`, `state/`, `iii-directory/`, or `app/`—is an optional upstream example, not a required destination-project file. If such a path is absent, do not search for it, recreate its surrounding monorepo, or block implementation on it. Use the self-contained templates in this file, the installed `@iii-dev/console-ui` public types, and the runtime contracts available in the destination project.
 
 ## Choose project identifiers once
 
@@ -635,7 +635,7 @@ This enables injectable UI hot development: an edit changes `dist/ui`, Node rest
 
 ## Chat mentions (optional)
 
-When users should point the agent at one of the worker's records — a ticket, an event, an email — make the worker a **mention provider**: users type `@<name>` in the ADE composer, Tab into the worker's search and insert `@<name>(id="<id>")`; it renders as a pill that previews on hover and opens on click, and the agent receives the record's one-line summary plus a pre-verified call for the full record. No console or harness change is involved: register two functions and declare the provider in the get function's metadata. The full contract (ranking rules, view fields, icon and color vocabulary, open targets) is the console's `chat-mentions` skill (`directory::skills::get { "id": "ade/mentions" }`); the shape:
+When users should point the agent at one of the worker's records — a ticket, an event, an email — make the worker a **mention provider**: users type `@<name>` in the ADE composer, Tab into the worker's search and insert `@<name>(id="<id>")`; it renders as a pill that previews on hover and opens on click, and the agent receives the record's one-line summary plus a pre-verified call for the full record. No ADE or harness change is involved: register two functions and declare the provider in the get function's metadata. The full contract (ranking rules, view fields, icon and color vocabulary, open targets) is the ADE worker's `chat-mentions` skill (`directory::skills::get { "id": "ade/mentions" }`); the shape:
 
 ```ts
 const MENTION = {
@@ -694,10 +694,10 @@ scripts:
 
 dependencies:
   configuration: "0.x"
-  console: "0.x"
+  ade: "0.x"
 ```
 
-Replace all placeholders. Declare only dependencies the worker actually uses. If there is no configuration integration, remove `configuration`. If there is no injectable UI, remove `console` and the UI-specific structure from the project.
+Replace all placeholders. Declare only dependencies the worker actually uses. If there is no configuration integration, remove `configuration`. If there is no injectable UI, remove `ade` and the UI-specific structure from the project.
 
 ## Add the worker to `worker-compose.yaml`
 
@@ -720,7 +720,7 @@ Path rules:
 - If it lives elsewhere, use the correct relative path; do not assume `./workers/` or any particular project layout.
 - Preserve all existing Compose entries and indentation.
 - Use a unique container key.
-- Add no `start_after` naming the console container. The engine holds the worker's `console:*` triggers (`console:script`, `console:style`) until the console registers those trigger types, and applies them again each time the console comes back. A `start_after` would make the worker a dependent, and Compose stops a container's dependents when it exits, so a console exit would take the worker offline.
+- Add no `start_after` naming the `ade` container. The engine holds the worker's `console:*` triggers (`console:script`, `console:style`) until the ADE worker registers those trigger types, and applies them again each time the ADE worker comes back. A `start_after` would make the worker a dependent, and Compose stops a container's dependents when it exits, so an ADE worker exit would take the worker offline.
 - Use `pnpm dev`, not the production `start` script, for this local development block.
 
 If the destination Compose file already has a declaration for the worker, update that declaration instead of adding a duplicate.
@@ -750,7 +750,7 @@ The first `pnpm dev` run restarts the worker once or twice while the watchers wr
 10. Add the coordinated `scripts/dev.mjs` loop.
 11. Add or update `iii.worker.yaml`.
 12. Manually add or update the `worker-compose.yaml` block.
-13. Validate static builds, runtime registration, asset delivery, hot reload, and real rendering. Drive the real Console through the `browser` worker (`browser::sessions::start` on the `url` from `ade::status` (an older console answers only `http_port`: use `http://127.0.0.1:<http_port>`; never `engine_url`), never an assumed 3113, then `browser::snapshot`, `browser::act`, `browser::evaluate`, `browser::screenshot`) so both light and dark themes, narrow and wide panes, and the chat renderer are checked with screenshots, not assumptions.
+13. Validate static builds, runtime registration, asset delivery, hot reload, and real rendering. Drive the real Console through the `browser` worker (`browser::sessions::start` on the `url` from `ade::status` (an older ADE worker answers only `http_port`: use `http://127.0.0.1:<http_port>`; never `engine_url`), never an assumed 3113, then `browser::snapshot`, `browser::act`, `browser::evaluate`, `browser::screenshot`) so both light and dark themes, narrow and wide panes, and the chat renderer are checked with screenshots, not assumptions.
 
 ## Validation checklist
 
@@ -774,4 +774,4 @@ Before declaring the worker complete:
 - A record opens as its own pane in the same workspace tab through `host.panels.open`, and the collection page adapts when the tab splits (narrow mode).
 - The real Console renders the page in narrow and wide panes, light and dark themes, with keyboard navigation, visible focus, stable async states, and no browser-console errors.
 - Reconnects and repeated UI edits do not accumulate duplicate functions, triggers, pages, renderers, or forms.
-- `worker-compose.yaml` contains exactly one local worker block and Compose launches it with `pnpm dev` after `console`.
+- `worker-compose.yaml` contains exactly one local worker block and Compose launches it with `pnpm dev` after `ade`.

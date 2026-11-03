@@ -195,7 +195,7 @@ discovery results and filters operate on):
   comes only from the registered-trigger instances.
 
 Both are refreshed lazily on a short TTL (seconds) and proactively on the
-`engine::functions-available` trigger; mirror `console`'s function-list cache.
+`engine::functions-available` trigger; mirror `ade`'s function-list cache.
 
 **Cache-miss semantics.** A miss is not uniformly fail-closed — it depends on
 the filter kind:

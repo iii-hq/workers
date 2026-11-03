@@ -9,7 +9,7 @@ const tabs = (page: Page) => strip(page).getByRole('tab')
 const heading = (page: Page, name: string) =>
   page.getByRole('heading', { name, exact: true })
 
-// The console's own catalog script (`console/catalog-page.js`) registers the
+// The ADE worker's own catalog script (`console/catalog-page.js`) registers the
 // `functions` and `triggers` pages, so the isolated shell has a worker page
 // to render without any extra worker in the stack.
 const settingsModifier = process.platform === 'darwin' ? 'Control' : 'Alt'

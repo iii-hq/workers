@@ -2,7 +2,7 @@
 //! chat mention provider.
 //!
 //! Traces belong to the engine (`engine::traces::*`), which registers no
-//! function metadata, so the console — the worker that owns the traces page
+//! function metadata, so the ADE worker — the one that owns the traces page
 //! — declares the provider and wraps `engine::traces::list`. Search feeds
 //! the composer's `@trace:` menu; get turns one trace id into the pill, the
 //! preview card and the agent's one-line summary. Agents read the span tree

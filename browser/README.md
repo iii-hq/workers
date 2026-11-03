@@ -8,7 +8,7 @@ accessibility-tree outline, click and type against element refs, and read the
 page's own console and network history back as data. The single most
 important thing it gives you: "why is my dev server page blank?" becomes
 answerable, because the page's console errors are one
-`browser::console::read` away. The [console](https://github.com/iii-hq/workers/tree/main/ade)
+`browser::console::read` away. The [ADE](https://github.com/iii-hq/workers/tree/main/ade)
 worker adds the human window: a Chrome-style tab strip over a streaming
 viewport (Chromium-pushed screencast frames), an address bar, developer tools
 behind the menu, and click-to-pick elements into chat.

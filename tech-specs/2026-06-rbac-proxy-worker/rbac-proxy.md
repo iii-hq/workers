@@ -8,7 +8,7 @@ Worker prefix: `rbac-proxy::*` · Deploy mode: `binary` (Rust) · Config id:
 `rbac-proxy` is a binary Rust worker that opens a public WebSocket port, speaks
 the iii worker protocol, and reverse-proxies every connection — functions and
 channels — to a trusted engine listener while enforcing RBAC at the boundary. It
-is structurally the [`console`](../../console) worker with the RBAC interceptor
+is structurally the [`ade`](../../ade) worker with the RBAC interceptor
 of [protocol-interception.md](protocol-interception.md) spliced into the proxy
 pump and a second proxied route for `/ws/channels/{id}`.
 
@@ -41,7 +41,7 @@ like every binary worker. Used for:
 
 ### Data connections (one per downstream worker)
 
-Exactly the `console` model: each inbound connection on the public port gets a
+Exactly the `ade` model: each inbound connection on the public port gets a
 fresh outbound WebSocket to `engine_url`, with the two halves pumped through the
 interceptor. Per-connection `worker_id`, per-connection registrations, and
 cleanup-on-disconnect are inherited from the engine's existing per-connection
@@ -54,7 +54,7 @@ The control connection is a single point of dependency (auth, middleware, hooks,
 catalog/binding caches all run over it), so its failure mode is specified:
 
 - **Control connection drops** → the SDK reconnects with backoff (the standard
-  worker SDK behaviour `console` already relies on). While it is down, the proxy
+  worker SDK behaviour `ade` already relies on). While it is down, the proxy
   **fails closed**: new upgrades that need the auth function are rejected with the
   error frame, and gated invocations needing middleware/hooks are denied — a
   broken control plane never opens the door (same contract as
@@ -70,7 +70,7 @@ catalog/binding caches all run over it), so its failure mode is specified:
 
 ## File layout
 
-Mirrors `console` (see [`binary-worker.md`](../../docs/sops/binary-worker.md) for
+Mirrors `ade` (see [`binary-worker.md`](../../docs/sops/binary-worker.md) for
 the canonical layout); new/changed modules called out:
 
 ```text
@@ -84,7 +84,7 @@ rbac-proxy/
 │   ├── config.rs            # WorkerConfig (+ JsonSchema, from_json/to_json/json_schema/boot_signature)
 │   ├── configuration.rs     # ConfigCell, register/fetch, on-config-change, port rebind
 │   ├── server.rs            # axum router: GET / (worker proto) + GET /ws/channels/{id}
-│   ├── proxy.rs             # console-style WS pump (data connections)
+│   ├── proxy.rs             # ade-style WS pump (data connections)
 │   ├── interceptor.rs       # per-frame parse/gate/rewrite (protocol-interception.md)
 │   ├── rbac.rs              # vendored is_function_allowed + wildcard + carve-out + ProxySession
 │   ├── engine_overrides.rs  # the eight discovery-result rewrites (engine-overrides.md)
@@ -237,7 +237,7 @@ Deny-by-default for in-run agents (see
 - **Allow with care:** `rbac-proxy::status` — read-only operational metadata. It
   reports the engine URL and bound port; deny it on deployments where that
   topology is itself sensitive. The handler **must** pass `engine_url` through a
-  `console`-style `redact_url` (strip any `user:pass@` userinfo) before
+  `ade`-style `redact_url` (strip any `user:pass@` userinfo) before
   returning, so a credentialed `wss://user:secret@host` upstream never leaks to
   an agent-callable probe.
 

@@ -1,13 +1,13 @@
 /**
  * Server-persisted workspace tabs (see `lib/workspace-tabs.ts` for the
- * model). Tabs live in the console worker's layout store
+ * model). Tabs live in the ADE worker's layout store
  * (`<data_dir>/workspace.json`, read and written through
  * `ade::workspace::get` / `set` — `lib/workspace-layout.ts`), so the
- * layout follows the engine. The console rings `ade::workspace::changed`
+ * layout follows the engine. The ADE worker rings `ade::workspace::changed`
  * after every write and the query re-reads on the ring, so a tab created in
  * another browser (or opened by an agent or an injected page through
  * `ade::workspace::open`) shows up here at once, without a reload. The
- * console also rings every binding once when it registers, which catches this
+ * ADE worker also rings every binding once when it registers, which catches this
  * tab up after its first read and after each reconnect. The strip polls only
  * until that first ring proves the binding live, and returning to the tab
  * re-reads a stale copy.
@@ -17,7 +17,7 @@
  * the click), then writes through the serialized read-modify-write funnel;
  * the next read reconciles with whatever the server actually stored.
  *
- * When the console worker's store is unreachable (an older worker without
+ * When the ADE worker's store is unreachable (an older worker without
  * the functions, engine down), tabs degrade to localStorage so the strip
  * keeps working offline.
  */
