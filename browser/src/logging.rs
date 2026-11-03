@@ -54,7 +54,15 @@ mod tests {
         }
     }
 
+    /// tracing caches each callsite's `Interest` process-wide, so two tests
+    /// emitting from the same callsites under different thread-local
+    /// subscribers race: whichever registers first decides whether the other
+    /// even consults its filter. Run them one at a time and recompute the
+    /// cache under the subscriber being tested.
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
     fn captured(filter: EnvFilter) -> String {
+        let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         let buffer = Buffer::default();
         let writer = buffer.clone();
         let subscriber = tracing_subscriber::registry().with(filter).with(
@@ -63,6 +71,7 @@ mod tests {
                 .with_ansi(false),
         );
         tracing::subscriber::with_default(subscriber, || {
+            tracing::callsite::rebuild_interest_cache();
             tracing::warn!(target: "chromiumoxide::handler", "WS Invalid message");
             tracing::error!(target: "chromiumoxide::handler", "WS Connection error");
             tracing::warn!(target: "browser::session", "worker warn passes");
