@@ -5,6 +5,9 @@
 //! fails before `shutdown_async` leaves the marker behind, and under the real
 //! HOME that is ~/.iii/run.
 
+use browser::chromium::{self, SearchEnv, Source};
+use browser::config::WorkerConfig;
+
 const CHILD_ENV: &str = "BROWSER_TEST_PRIVATE_HOME";
 
 /// `true` in the child, which goes on with the test. The parent runs the
@@ -25,15 +28,24 @@ pub fn in_child() -> bool {
         uuid::Uuid::new_v4().simple()
     ));
     std::fs::create_dir_all(&home).expect("create the scratch HOME");
+    let real = SearchEnv::current(&WorkerConfig::default());
+    // Only a system Chrome under HOME (macOS ~/Applications) is out of the child's sight.
+    let home_chrome = real.resolve().filter(|found| {
+        found.source == Source::System
+            && std::env::var_os("HOME").is_some_and(|h| found.path.starts_with(h))
+    });
     let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
         .args(["--exact", &test, "--include-ignored", "--nocapture"])
         .env("HOME", &home)
         .env(CHILD_ENV, "1")
-        // The child's own Chromium lookup no longer sees the real HOME.
+        // The real caches, not CHROME: the source decides whether Chromium runs with --no-sandbox.
+        .env(chromium::CACHE_DIR_ENV, chromium::cache_root())
         .envs(
-            browser::chromium::resolve_executable(&browser::config::WorkerConfig::default())
-                .map(|found| ("CHROME", found.path)),
+            real.playwright_dir
+                .map(|dir| ("PLAYWRIGHT_BROWSERS_PATH", dir)),
         )
+        .envs(real.puppeteer_dir.map(|dir| ("PUPPETEER_CACHE_DIR", dir)))
+        .envs(home_chrome.map(|found| ("CHROME", found.path)))
         .output()
         .expect("run the test in a private HOME");
     let _ = std::fs::remove_dir_all(&home);

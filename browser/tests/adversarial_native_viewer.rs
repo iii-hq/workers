@@ -115,13 +115,8 @@ async fn boot(seed: &str) -> Option<Harness> {
         .arg("--config")
         .arg(&seed_path)
         .env("III_COMPOSE_DIR", &data_dir)
-        // The worker writes its `iii ps` marker under the private HOME too, so
-        // it gets the Chromium the real HOME resolves through `CHROME`.
-        .env("HOME", &data_dir)
-        .envs(
-            browser::chromium::resolve_executable(&browser::config::WorkerConfig::default())
-                .map(|found| ("CHROME", found.path)),
-        );
+        // The worker writes its `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &data_dir);
     match worker_log {
         Some(file) => {
             let err = file

@@ -196,13 +196,8 @@ async fn boot_with(lane: Lane, chromium_seed: Option<String>) -> Option<Harness>
         .arg("--url")
         .arg(&engine_ws)
         .env("III_COMPOSE_DIR", &data_dir)
-        // The worker writes its `iii ps` marker under the private HOME too, so
-        // it gets the Chromium the real HOME resolves through `CHROME`.
-        .env("HOME", &data_dir)
-        .envs(
-            browser::chromium::resolve_executable(&browser::config::WorkerConfig::default())
-                .map(|found| ("CHROME", found.path)),
-        );
+        // The worker writes its `iii ps` marker under $HOME/.iii/run.
+        .env("HOME", &data_dir);
     if seed.is_some() {
         worker_cmd.arg("--config").arg(&seed_path);
     }
