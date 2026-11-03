@@ -489,7 +489,7 @@ mod tests {
         // its own fix text: the ide must keep both the code and the text.
         let stub = StubFwd::remote_err(
             "invocation_failed",
-            r#"{"type":"transient","code":"S301","message":"adapter sandbox-libkrun not connected in namespace my-proj; compose::add iii-sandbox installs it in the Compose project there, or, if none runs, declare a container with worker: package://sandbox-libkrun in a worker-compose.yaml for my-proj","retryable":true}"#,
+            r#"{"type":"transient","code":"S301","message":"adapter sandbox-libkrun not connected in namespace my-proj; in the Compose project there, compose::up container=<the key that runs sandbox-libkrun> starts it if declared, and compose::add worker=iii-sandbox installs it if not; if none runs, declare a container with worker: package://sandbox-libkrun in a worker-compose.yaml for my-proj","retryable":true}"#,
         );
         let b = backend(stub, Uuid::new_v4());
         let err = b
@@ -497,7 +497,9 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "S301");
-        assert!(err.message.contains("compose::add iii-sandbox installs it"));
+        assert!(err
+            .message
+            .contains("compose::add worker=iii-sandbox installs it"));
     }
 
     #[tokio::test]
