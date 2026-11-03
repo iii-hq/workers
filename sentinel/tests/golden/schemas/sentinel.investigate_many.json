@@ -1,0 +1,80 @@
+{
+  "description": "Investigate 2 to 5 issues in one read-only session using an installed profile and a required idempotency request_id. Overlapping active investigations are refused atomically.",
+  "function_id": "sentinel::investigate_many",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "group_ids": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 5,
+        "minItems": 2,
+        "type": "array"
+      },
+      "hypothesis": {
+        "default": null,
+        "maxLength": 2000,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "profile_id": {
+        "type": "string"
+      },
+      "request_id": {
+        "maxLength": 128,
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "group_ids",
+      "profile_id",
+      "request_id"
+    ],
+    "title": "InvestigateManyRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "existing": {
+        "type": "boolean"
+      },
+      "first_pass_turn_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "group_ids": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "investigation_id": {
+        "type": "string"
+      },
+      "profile_id": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "existing",
+      "group_ids",
+      "investigation_id",
+      "profile_id",
+      "session_id"
+    ],
+    "title": "InvestigateManyResponseV1",
+    "type": "object"
+  }
+}

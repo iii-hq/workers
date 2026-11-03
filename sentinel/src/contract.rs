@@ -837,6 +837,33 @@ pub struct DiagnosisRecordV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_result: Option<String>,
 }
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigateManyRequestV1 {
+    #[schemars(length(min = 2, max = 5))]
+    pub group_ids: Vec<String>,
+    pub profile_id: String,
+    #[serde(default)]
+    #[schemars(length(max = 2000))]
+    pub hypothesis: Option<String>,
+    #[schemars(length(min = 1, max = 128))]
+    pub request_id: String,
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigateManyResponseV1 {
+    pub investigation_id: String,
+    pub session_id: String,
+    pub group_ids: Vec<String>,
+    pub profile_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_pass_turn_id: Option<String>,
+    pub existing: bool,
+}
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

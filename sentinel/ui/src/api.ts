@@ -220,6 +220,9 @@ export interface GroupsListResponse {
   noise_total: number
 }
 
+export interface InvestigationProfile { id: string; name: string; description: string; inheritance_error?: string }
+export interface InvestigationManyResult { investigation_id: string; session_id: string; existing: boolean; group_ids: string[]; profile_id: string; first_pass_turn_id?: string }
+
 /** Typed calls into the worker. Nothing else in the page talks to `iii`. */
 export function client(iii: ExtensionIii) {
   const call = <T,>(functionId: string, payload: Record<string, unknown> = {}) =>
@@ -227,6 +230,9 @@ export function client(iii: ExtensionIii) {
 
   return {
     status: () => call<StatusResponse>(FN.status),
+    profiles: () => call<{ agents: InvestigationProfile[] }>('directory::agents::list'),
+    investigateMany: (group_ids: string[], profile_id: string, hypothesis: string | undefined, request_id: string) =>
+      call<InvestigationManyResult>('sentinel::investigate_many', { group_ids, profile_id, ...(hypothesis ? { hypothesis } : {}), request_id }),
     groups: (request: GroupsListRequest) =>
       call<GroupsListResponse>(FN.groupsList, { ...request }),
     group: (group_id: string) => call<GroupDetail>(FN.groupsGet, { group_id }),

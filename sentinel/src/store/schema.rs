@@ -23,7 +23,7 @@
 //!   change later rather than a migration.
 
 /// The schema version this build expects.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub const META_TABLE: &str =
     "CREATE TABLE IF NOT EXISTS sentinel_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
@@ -32,7 +32,7 @@ pub const SCHEMA_VERSION_KEY: &str = "schema_version";
 
 /// Statements for one version, applied in order inside a single transaction.
 pub fn migrations() -> Vec<(u32, Vec<&'static str>)> {
-    vec![(1, v1()), (2, v2())]
+    vec![(1, v1()), (2, v2()), (3, v3())]
 }
 
 /// v2 records **why a group is where it is**, instead of leaving a reader to
@@ -44,6 +44,15 @@ pub fn migrations() -> Vec<(u32, Vec<&'static str>)> {
 /// this, and when" is exactly the question somebody asks months later. One
 /// row per move, written in the same transaction as the move itself, is the
 /// cheapest way to keep the answer.
+fn v3() -> Vec<&'static str> {
+    vec![
+        "CREATE TABLE IF NOT EXISTS sentinel_investigation_members (investigation_id TEXT NOT NULL REFERENCES sentinel_investigations(id), group_id TEXT NOT NULL REFERENCES sentinel_groups(id), evidence TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (investigation_id, group_id))",
+        "CREATE UNIQUE INDEX IF NOT EXISTS sentinel_members_active ON sentinel_investigation_members (group_id) WHERE active = 1",
+        "INSERT INTO sentinel_investigation_members (investigation_id, group_id, evidence, active) SELECT id, group_id, '', CASE WHEN status = 'running' THEN 1 ELSE 0 END FROM sentinel_investigations WHERE NOT EXISTS (SELECT 1 FROM sentinel_investigation_members m WHERE m.investigation_id = sentinel_investigations.id) ON CONFLICT (investigation_id, group_id) DO NOTHING",
+        "CREATE TABLE IF NOT EXISTS sentinel_joint_requests (request_id TEXT PRIMARY KEY, investigation_id TEXT NOT NULL UNIQUE REFERENCES sentinel_investigations(id), signature TEXT NOT NULL, profile_id TEXT NOT NULL, payload TEXT NOT NULL)",
+    ]
+}
+
 fn v2() -> Vec<&'static str> {
     vec![
         r#"CREATE TABLE IF NOT EXISTS sentinel_transitions (
@@ -248,7 +257,10 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join(" ");
                 assert!(
-                    head.contains("IF NOT EXISTS") || statement.contains("IF NOT EXISTS"),
+                    head.contains("IF NOT EXISTS")
+                        || statement.contains("IF NOT EXISTS")
+                        || statement
+                            .contains("ON CONFLICT (investigation_id, group_id) DO NOTHING"),
                     "v{version} statement is not reentrant: {head}"
                 );
             }

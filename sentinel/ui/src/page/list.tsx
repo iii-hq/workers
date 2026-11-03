@@ -24,8 +24,9 @@ import {
   TableViewport,
 } from '@iii-dev/console-ui'
 import { ChevronRight, Inbox } from 'lucide-react'
-import { useEffect, useState } from 'react'
-import type { GroupSummary, StatusResponse } from '../api'
+import { useState } from 'react'
+import { InvestigateMany } from './InvestigateMany'
+import type { Client, GroupSummary, StatusResponse, InvestigationManyResult } from '../api'
 import type { Filters } from './index'
 import { Dot, Sparkline, StatusBadge } from './marks'
 import {
@@ -45,6 +46,8 @@ import {
 } from './present.js'
 
 interface Props {
+  api: Client
+  onInvestigationStarted: (result: InvestigationManyResult) => void
   busy: boolean
   onBulk: (action: string, groupIds: string[]) => void
   status: StatusResponse | null
@@ -70,6 +73,8 @@ const WINDOW_WORDS: Record<string, string> = {
 }
 
 export function GroupsListView({
+  api,
+  onInvestigationStarted,
   busy,
   onBulk,
   status,
@@ -98,9 +103,7 @@ export function GroupsListView({
   const actions = bulkActions(
     selection.map((id) => groups.find((group) => group.id === id)?.status ?? 'new'),
   )
-  useEffect(() => {
-    if (narrow) setPicked([])
-  }, [narrow])
+  const [reviewing, setReviewing] = useState<GroupSummary[] | null>(null)
 
   const toggle = (id: string) =>
     setPicked((previous) =>
@@ -237,6 +240,8 @@ export function GroupsListView({
       {selection.length > 0 ? (
         <div className="sentinel-ui-bulk" role="region" aria-label="Selected groups">
           <span>{selection.length} selected</span>
+          <Button size="sm" disabled={busy || selection.length < 2 || selection.length > 5} onClick={() => setReviewing(groups.filter(group => selection.includes(group.id)))}>Investigate in group</Button>
+          <span className="sentinel-ui-quiet">2–5 issues per investigation</span>
           {actions.length === 0 ? (
             <span className="sentinel-ui-quiet">nothing applies to all of them — narrow the selection</span>
           ) : null}
@@ -299,7 +304,7 @@ export function GroupsListView({
                 <ListItem key={index} as="div" label={<Skeleton />} description={<Skeleton />} />
               ))
             : groups.map((group) => (
-                <GroupRowNarrow key={group.id} group={group} now={now} onOpen={onOpen} />
+                <GroupRowNarrow key={group.id} group={group} now={now} onOpen={onOpen} picked={selection.includes(group.id)} onPick={() => toggle(group.id)} />
               ))}
         </List>
       ) : (
@@ -358,6 +363,7 @@ export function GroupsListView({
         </TableViewport>
       )}
 
+      {reviewing ? <InvestigateMany api={api} groups={reviewing} onCancel={() => setReviewing(null)} onStarted={result => { setReviewing(null); setPicked([]); onInvestigationStarted(result) }} /> : null}
       {total > groups.length ? (
         // Without this every group past the first page was unreachable.
         <div className="sentinel-ui-more">
@@ -532,16 +538,23 @@ function GroupRowNarrow({
   group,
   now,
   onOpen,
+  picked,
+  onPick,
 }: {
   group: GroupSummary
   now: number
   onOpen: (groupId: string) => void
+  picked: boolean
+  onPick: () => void
 }) {
   return (
     // The title is the task; the facts that sat beside it go under it, where
     // they cost a line instead of half the width. The dot carries the tone.
     <ListItem
-      onClick={() => onOpen(group.id)}
+      as="div"
+      selected={picked}
+      leading={<Checkbox aria-label={`Select ${group.title}`} checked={picked} onChange={onPick} />}
+      trailing={<Button variant="ghost" aria-label={`Open ${group.title}`} onClick={() => onOpen(group.id)}>Open</Button>}
       data-regressed={group.status === 'regressed' ? 'true' : undefined}
       label={
         <Issue
